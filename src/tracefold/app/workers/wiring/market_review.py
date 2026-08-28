@@ -38,6 +38,10 @@ def _price_venue_enabled(settings: Any, source_key: str) -> bool:
         return bool(venues.hyperliquid)
     if source_key.startswith("okx."):
         return bool(venues.okx)
+    if source_key.startswith("lighter."):
+        return bool(venues.lighter)
+    if source_key.startswith("bitget."):
+        return bool(venues.bitget)
     return False
 
 
@@ -151,7 +155,7 @@ def _candle_fetcher_for(settings: Any, venue: str, *, interval: str) -> Any | No
 def _delivery_price_fetcher_for(settings: Any, venue: str) -> Any | None:
     if not _price_venue_enabled(settings, venue):
         return None
-    if not venue.startswith(("binance.", "hl.", "okx.")):
+    if not venue.startswith(("binance.", "hl.", "okx.", "lighter.", "bitget.")):
         return None
 
     async def fetch(venue_symbol: str, targets_ms: Sequence[int]) -> Any:

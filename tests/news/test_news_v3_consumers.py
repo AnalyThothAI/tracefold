@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
 from types import SimpleNamespace
@@ -1074,6 +1074,7 @@ class RecordingEditableSender(RecordingSender):
         super().__init__(order)
         self.edited_cards: list[dict[str, Any]] = []
         self.edited_presentations: list[ReaderDeliveryPresentation] = []
+        self.deleted_receipts: list[dict[str, Any]] = []
         self._message_id = 41
 
     def send_card(
@@ -1103,6 +1104,11 @@ class RecordingEditableSender(RecordingSender):
         self.edited_cards.append(dict(card))
         self.edited_presentations.append(presentation or ReaderDeliveryPresentation())
         return {**dict(receipt), "edited_at_ms": NOW_MS + 1_000}
+
+    def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        self.order.append("delete")
+        self.deleted_receipts.append(dict(receipt))
+        return {**dict(receipt), "deleted_at_ms": NOW_MS + 2_000}
 
 
 class FailingEditSender(RecordingEditableSender):
@@ -1143,6 +1149,54 @@ class BlockingEditSender(RecordingEditableSender):
         self.order.append("close")
 
 
+class BlockingProgressionVerifier:
+    def __init__(self, order: list[str], *, response: Mapping[str, Any] | None = None) -> None:
+        self.order = order
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls: list[dict[str, Any]] = []
+        self.response = dict(
+            response
+            or {
+                "state": "confirmed",
+                "candidate_i": 0,
+                "candidate_headline_zh": "美光工会此前启动劳资协商",
+                "reason_zh": "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
+                "verifier_id": "scripted-progression-review-v1",
+            }
+        )
+
+    async def review(
+        self,
+        *,
+        event: Mapping[str, Any],
+        verdict: Mapping[str, Any],
+        candidates: Sequence[Mapping[str, Any]],
+    ) -> Mapping[str, Any]:
+        self.order.append("review")
+        self.calls.append(
+            {
+                "event": dict(event),
+                "verdict": dict(verdict),
+                "candidates": [dict(candidate) for candidate in candidates],
+            }
+        )
+        self.started.set()
+        await self.release.wait()
+        return self.response
+
+
+class ScriptedTradabilityVerifier:
+    def __init__(self, response: Mapping[str, Any], order: list[str] | None = None) -> None:
+        self.response = dict(response)
+        self.order = order
+
+    async def review(self, **_kwargs: Any) -> Mapping[str, Any]:
+        if self.order is not None:
+            self.order.append("market-search")
+        return self.response
+
+
 def _deliverer(
     news: RecordingNews,
     bus: FakeBus,
@@ -1151,6 +1205,8 @@ def _deliverer(
     sender: RecordingSender | None = None,
     candle_fetcher_for: Any | None = None,
     price_fetcher_for: Any | None = None,
+    progression_verifier: Any | None = None,
+    tradability_verifier: Any | None = None,
 ) -> DelivererConsumer:
     return DelivererConsumer(
         bus=bus,
@@ -1160,6 +1216,8 @@ def _deliverer(
         min_interval_seconds=0.0,
         candle_fetcher_for=candle_fetcher_for,
         price_fetcher_for=price_fetcher_for,
+        progression_verifier=progression_verifier,
+        tradability_verifier=tradability_verifier,
     )
 
 
@@ -1180,6 +1238,9 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
         "begin_delivery_edit": True,
         "settle_delivery_edit": True,
         "mark_delivery_edit_ambiguous": True,
+        "begin_delivery_delete": True,
+        "settle_delivery_delete": True,
+        "mark_delivery_delete_ambiguous": True,
     }
     responses.update(overrides)
     return RecordingNews(**responses)
@@ -1382,6 +1443,291 @@ def test_deliverer_links_a_progression_only_at_fifty_percent_title_similarity(
 
     assert sender.presentations[0].novelty == "progression"
     assert sender.presentations[0].progression_from_headline == expected_previous
+
+
+def test_telegram_sends_a_progression_before_llm_association_review_then_edits_with_reason() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, BlockingProgressionVerifier, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bearish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "progression",
+                    "headline_zh": "美光台湾工会初步投票支持罢工比例达 80%",
+                    "why_zh": "工会行动从劳资协商进入有明确门槛的罢工程序。",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "tier": "storyline",
+                            "similarity": 0.31,
+                            "headline_zh": "美光工会此前启动劳资协商",
+                            "event_type": "product",
+                            "symbols": ["MU"],
+                            "ago_min": 90,
+                        }
+                    ]
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(order)
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            sender=sender,
+            progression_verifier=verifier,
+        )
+
+        await asyncio.wait_for(
+            consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})),
+            timeout=0.2,
+        )
+        assert order[:2] == ["prepare", "send"]
+        assert "edit" not in order
+        assert sender.presentations[0].progression_from_headline is None
+        assert sender.presentations[0].progression_review_state == "pending"
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+
+        await asyncio.wait_for(verifier.started.wait(), timeout=0.2)
+        assert order == ["prepare", "send", "review"]
+        verifier.release.set()
+        await consumer.close()
+        return news, sender, verifier, order
+
+    news, sender, verifier, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "review", "edit"]
+    assert verifier.calls[0]["candidates"][0]["headline_zh"] == "美光工会此前启动劳资协商"
+    updated = sender.edited_presentations[0]
+    assert updated.progression_from_headline == "美光工会此前启动劳资协商"
+    assert updated.progression_review_state == "confirmed"
+    assert updated.progression_review_reason == "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
+    assert sender.edited_cards[0]["progression_review"]["state"] == "confirmed"
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_telegram_removes_an_unverified_previous_headline_and_marks_the_reason() -> None:
+    async def scenario() -> tuple[RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(grounded_assets=[]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "macro",
+                    "novelty": "progression",
+                    "headline_zh": "巴拿马运河拥堵迫使液化气油轮绕行",
+                    "assets": [],
+                },
+                "trace": {
+                    "told": [
+                        {
+                            "i": 0,
+                            "tier": "storyline",
+                            "similarity": 0.35,
+                            "headline_zh": "a16z 推出 Machine Age Fund",
+                        }
+                    ]
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = BlockingProgressionVerifier(
+            order,
+            response={
+                "state": "rejected",
+                "reason_zh": "两条新闻的主体、事件和影响链路均不同，只是被归入了宽泛主题。",
+                "verifier_id": "scripted-progression-review-v1",
+            },
+        )
+        verifier.release.set()
+        consumer = _deliverer(news, FakeBus(), sender=sender, progression_verifier=verifier)
+
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        assert sender.presentations[0].progression_review_state == "pending"
+        assert sender.presentations[0].progression_from_headline is None
+        await consumer.close()
+        return sender, order
+
+    sender, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "review", "edit"]
+    updated = sender.edited_presentations[0]
+    assert updated.progression_from_headline is None
+    assert updated.progression_review_state == "rejected"
+    assert updated.progression_review_reason == "两条新闻的主体、事件和影响链路均不同，只是被归入了宽泛主题。"
+    assert sender.edited_cards[0]["progression_review"]["state"] == "rejected"
+
+
+def test_single_name_is_sent_first_then_edited_with_a_fresh_cross_venue_contract() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(
+                leader_title="MetaLight (02605.HK) announces interim results",
+                grounded_assets=["2605"],
+            ),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
+                    "assets": [{"symbol": "2605", "role": "primary"}],
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "matched",
+                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [
+                    {
+                        "requested_symbol": "2605",
+                        "venue_family": "bitget",
+                        "venue": "bitget.perp",
+                        "venue_symbol": "METALIGHTUSDT",
+                        "price_symbol": "METALIGHTUSDT",
+                        "base_symbol": "METALIGHT",
+                        "quote_asset": "USDT",
+                        "instrument_class": "equity",
+                    }
+                ],
+                "reason_zh": "已在 bitget.perp 官方市场目录命中可交易合约。",
+            },
+            order,
+        )
+
+        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
+            return {
+                target: PricePoint(at_ms=target, price=Decimal("10") + Decimal(index), basis="trade")
+                for index, target in enumerate(targets_ms)
+            }
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            sender=sender,
+            tradability_verifier=verifier,
+            price_fetcher_for=lambda venue: fetch if venue == "bitget.perp" else None,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        assert order[:2] == ["prepare", "send"]
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert sender.deleted_receipts == []
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "matched"
+    assert sender.edited_presentations[0].trade_targets == (
+        ReaderTradeTarget(
+            ticker="2605",
+            venue="bitget.perp",
+            venue_symbol="METALIGHTUSDT",
+            base_symbol="METALIGHT",
+            quote_asset="USDT",
+        ),
+    )
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_single_name_is_deleted_only_after_all_five_catalogues_confirm_absence() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(
+                leader_title="MetaLight (02605.HK) announces interim results",
+                grounded_assets=["2605"],
+            ),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
+                    "assets": [{"symbol": "2605", "role": "primary"}],
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "absent",
+                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [],
+                "reason_zh": "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。",
+            },
+            order,
+        )
+        consumer = _deliverer(news, FakeBus(), sender=sender, tradability_verifier=verifier)
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        assert order[:2] == ["prepare", "send"]
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert sender.edited_cards == []
+    assert len(sender.deleted_receipts) == 1
+    assert news.kwargs_of("begin_delivery_delete")["evidence"]["tradability_review"]["state"] == "absent"
+    assert news.kwargs_of("settle_delivery_delete")["receipt"]["deleted_at_ms"] == NOW_MS + 2_000
+
+
+def test_single_name_is_kept_when_even_one_catalogue_check_is_incomplete() -> None:
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender]:
+        news = _delivery_news(
+            event_card=_card(leader_title="MetaLight (02605.HK)", grounded_assets=["2605"]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "headline_zh": "MetaLight（02605.HK）公布中期业绩",
+                    "assets": [{"symbol": "2605", "role": "primary"}],
+                },
+            },
+        )
+        sender = RecordingEditableSender([])
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "incomplete",
+                "candidates": ["2605", "02605", "HK2605", "METALIGHT"],
+                "checked_venues": ["hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": ["binance"],
+                "matches": [],
+                "reason_zh": "部分交易所目录查询失败，按安全规则保留消息。",
+            }
+        )
+        consumer = _deliverer(news, FakeBus(), sender=sender, tradability_verifier=verifier)
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender
+
+    news, sender = asyncio.run(scenario())
+
+    assert sender.deleted_receipts == []
+    assert sender.edited_cards[0]["tradability_review"]["state"] == "incomplete"
+    assert "begin_delivery_delete" not in news.names()
 
 
 def test_deliverer_prices_exactly_the_assets_the_card_names() -> None:
@@ -1619,7 +1965,15 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
 
     assert calls == [("binance.perp", "MSFTUSDT"), ("hl.xyz", "xyz:MSFT")]
     assert sender.presentations[0].market_movements == (ReaderMarketMovement("MSFT", 202, 100, None, "available"),)
-    assert sender.presentations[0].trade_targets == ()
+    assert sender.presentations[0].trade_targets == (
+        ReaderTradeTarget(
+            ticker="MSFT",
+            venue="hl.builder",
+            venue_symbol="xyz:MSFT",
+            base_symbol="MSFT",
+            quote_asset="",
+        ),
+    )
 
 
 def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_message(

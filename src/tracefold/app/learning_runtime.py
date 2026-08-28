@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
-from tracefold.news import NEWS_RETRIEVAL_SHA256
+from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.program.artifact import (
@@ -22,6 +22,11 @@ from tracefold.news.program.dspy_adapter import (
     RuntimeModelIdentity,
 )
 from tracefold.news.program.graph import DspyNewsSemanticProgram
+from tracefold.news.program.progression_review import (
+    PROGRESSION_REVIEW_MAX_TOKENS,
+    PROGRESSION_REVIEW_MODEL_BINDING,
+    DspyProgressionVerifier,
+)
 from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
 from tracefold.platform.config.models import news_model_availability
 
@@ -124,6 +129,30 @@ class NewsProgramRuntimeComposition:
             artifact,
             primary_adapter=primary_adapters,
             fallback_adapter=fallback_adapters,
+        )
+
+    def progression_verifier(
+        self,
+        *,
+        adapter_type: Any = DspyPredictorAdapter,
+    ) -> DspyProgressionVerifier | None:
+        """Bind the post-delivery relationship check to the primary event-semantics endpoint."""
+
+        if not self.program_configured:
+            return None
+        endpoint = self.event_semantics_primary
+        adapter = adapter_type.from_runtime(
+            model_name=endpoint.model_name,
+            api_key=endpoint.api_key,
+            api_base=endpoint.api_base,
+            timeout=PROGRESSION_REVIEW_TIMEOUT_SECONDS,
+            max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
+            model_sha256=_endpoint_model_sha256(endpoint),
+            model_kwargs=endpoint.model_kwargs,
+        )
+        return DspyProgressionVerifier(
+            adapter=adapter,
+            model_binding=PROGRESSION_REVIEW_MODEL_BINDING,
         )
 
 

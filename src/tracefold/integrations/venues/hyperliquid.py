@@ -28,6 +28,7 @@ async def fetch_hyperliquid_instruments(
     *,
     transport: httpx.AsyncBaseTransport | None = None,
     base_url: str = HYPERLIQUID_BASE_URL,
+    strict: bool = False,
 ) -> tuple[Instrument, ...]:
     """Main perps + spot tokens + every HIP-3 builder DEX. A failing builder DEX is skipped, not fatal."""
 
@@ -41,6 +42,8 @@ async def fetch_hyperliquid_instruments(
         spot = await _post(client, url, {"type": "spotMeta"}, venue="hl.spot")
         out.extend(_parse_spot(spot))
         dexs = await _post_list(client, url, {"type": "perpDexs"}, venue="hl.perp")
+        if strict and len(dexs) > _MAX_BUILDER_DEXS:
+            raise VenueExpectedError("venue_catalog_incomplete", venue="hyperliquid")
         for entry in dexs[:_MAX_BUILDER_DEXS]:
             if not isinstance(entry, Mapping):
                 continue  # the main DEX is a null entry in this list
@@ -51,6 +54,8 @@ async def fetch_hyperliquid_instruments(
             try:
                 dex_meta = await _post(client, url, {"type": "meta", "dex": name}, venue=venue)
             except VenueExpectedError:
+                if strict:
+                    raise
                 continue  # one builder DEX must not cost us the rest of the universe
             out.extend(_parse_universe(dex_meta, venue=venue))
     return tuple(out)

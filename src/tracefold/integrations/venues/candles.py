@@ -23,6 +23,8 @@ BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
 HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
 OKX_BASE_URL: Final = "https://www.okx.com"
+LIGHTER_BASE_URL: Final = "https://mainnet.zklighter.elliot.ai"
+BITGET_BASE_URL: Final = "https://api.bitget.com"
 
 # Binance caps a klines page at 1000 (spot) / 1500 (USD-M); one merged 4 h window is 49 five-minute bars, so
 # the cap is only reached by a backfill range and the request is truncated rather than paged.
@@ -148,6 +150,99 @@ async def fetch_okx_candles(
     return tuple(out)
 
 
+async def fetch_lighter_candles(
+    venue_symbol: str,
+    *,
+    venue: str,
+    start_ms: int,
+    end_ms: int,
+    interval: str = CANDLE_INTERVAL,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = LIGHTER_BASE_URL,
+) -> tuple[Candle, ...]:
+    interval_ms = _interval_ms(interval)
+    try:
+        market_id = int(venue_symbol)
+    except ValueError:
+        raise VenueExpectedError("venue_symbol_invalid", venue=venue) from None
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v1/candles",
+            venue=venue,
+            params={
+                "market_id": market_id,
+                "resolution": interval,
+                "start_timestamp": int(start_ms),
+                "end_timestamp": int(end_ms),
+                "count_back": min(500, _limit_for(start_ms, end_ms, interval_ms=interval_ms)),
+            },
+        )
+    if not isinstance(payload, Mapping) or int(payload.get("code") or 0) != 200:
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    rows = payload.get("c")
+    if isinstance(rows, str | bytes) or not isinstance(rows, Sequence):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return _mapping_candles(rows, venue=venue, interval_ms=interval_ms, time_key="t", close_key="c")
+
+
+async def fetch_bitget_candles(
+    venue_symbol: str,
+    *,
+    venue: str,
+    start_ms: int,
+    end_ms: int,
+    interval: str = CANDLE_INTERVAL,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = BITGET_BASE_URL,
+) -> tuple[Candle, ...]:
+    interval_ms = _interval_ms(interval)
+    category = "SPOT" if venue == "bitget.spot" else "USDT-FUTURES"
+    api_interval = "1m" if interval == "1m" else "5m"
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v3/market/history-candles",
+            venue=venue,
+            params={
+                "category": category,
+                "symbol": str(venue_symbol).upper(),
+                "interval": api_interval,
+                "startTime": int(start_ms),
+                "endTime": int(end_ms),
+                "limit": min(100, _limit_for(start_ms, end_ms, interval_ms=interval_ms)),
+            },
+        )
+    if not isinstance(payload, Mapping) or str(payload.get("code") or "") != "00000":
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    rows = payload.get("data")
+    if isinstance(rows, str | bytes) or not isinstance(rows, Sequence):
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    out: list[Candle] = []
+    for entry in rows:
+        if not isinstance(entry, Sequence) or isinstance(entry, str | bytes) or len(entry) < 5:
+            continue
+        open_at_ms, close = _optional_int(entry[0]), parse_price(entry[4])
+        if open_at_ms is not None and close is not None:
+            out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
+    return tuple(out)
+
+
+def _mapping_candles(
+    rows: Sequence[Any], *, venue: str, interval_ms: int, time_key: str, close_key: str
+) -> tuple[Candle, ...]:
+    out: list[Candle] = []
+    for entry in rows:
+        if not isinstance(entry, Mapping):
+            continue
+        open_at_ms, close = _optional_int(entry.get(time_key)), parse_price(entry.get(close_key))
+        if open_at_ms is not None and close is not None:
+            out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
+    if not out and rows:
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return tuple(out)
+
+
 def _limit_for(start_ms: int, end_ms: int, *, interval_ms: int) -> int:
     span = max(0, int(end_ms) - int(start_ms))
     return max(1, min(_BINANCE_LIMIT_MAX, span // int(interval_ms) + 2))
@@ -174,6 +269,8 @@ __all__ = [
     "BINANCE_SPOT_BASE_URL",
     "HYPERLIQUID_BASE_URL",
     "fetch_binance_candles",
+    "fetch_bitget_candles",
     "fetch_hyperliquid_candles",
+    "fetch_lighter_candles",
     "fetch_okx_candles",
 ]

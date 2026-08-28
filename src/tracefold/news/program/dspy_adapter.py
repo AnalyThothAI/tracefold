@@ -210,7 +210,7 @@ class PredictorRequest(_ExactModel):
     program_version: str
     program_sha256: str
     context_sha256: str
-    predictor: Literal["event_semantics", "reader_card"]
+    predictor: Literal["event_semantics", "reader_card", "progression_review"]
     route: Literal["primary", "fallback"]
     attempt: int = Field(ge=1, le=2)
     model_binding: str
@@ -682,12 +682,16 @@ class RecordReplayPredictorAdapter:
 def _safe_adapter_partial_output(
     exc: AdapterParseError | ValidationError,
     *,
-    predictor: Literal["event_semantics", "reader_card"],
+    predictor: Literal["event_semantics", "reader_card", "progression_review"],
 ) -> dict[str, Any] | None:
     if not isinstance(exc, AdapterParseError):
         return None
     parsed = getattr(exc, "parsed_result", None)
-    output_field = "semantics" if predictor == "event_semantics" else "card"
+    output_field = {
+        "event_semantics": "semantics",
+        "reader_card": "card",
+        "progression_review": "review",
+    }[predictor]
     if not isinstance(parsed, Mapping) or set(parsed) != {output_field}:
         return None
     try:

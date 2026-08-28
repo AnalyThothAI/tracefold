@@ -42,8 +42,8 @@ _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
 _MARKDOWN_RE = re.compile(r"[*_`#>\[\]()]")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SPACE_RE = re.compile(r"\s+")
-_BINANCE_PAIR_PART_RE = re.compile(r"^[A-Z0-9]{1,20}$")
 _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
+_LINKABLE_VENUE_SYMBOL_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@:/._-]{0,63}$")
 
 _DIRECTION_COLOR = {"bullish": "green", "bearish": "red", "neutral": "grey", "unclear": "grey"}
 _MAX_ASSETS = 4
@@ -136,11 +136,7 @@ def _format_change(value: object, basis: object) -> str:
 
 
 def reader_trade_targets(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderTradeTarget, ...]:
-    """Strict Binance contract identities for adapter-only reader actions.
-
-    The displayed ticker must be the catalogue base and the venue symbol must be exactly ``base + quote``.
-    Aliases and incomplete/inconsistent rows remain ordinary text because the destination cannot be proven here.
-    """
+    """Typed, catalogue-backed contract identities for adapter-only reader actions."""
 
     targets: list[ReaderTradeTarget] = []
     for quote in quotes[:_MAX_ASSETS]:
@@ -152,26 +148,40 @@ def reader_trade_targets(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderTra
         venue = str(quote.get("venue") or "")
         venue_symbol = str(quote.get("venue_symbol") or "").strip()
         quote_asset = str(quote.get("quote_asset") or "").strip()
-        target_venue: Literal["binance.perp", "binance.spot"]
-        if venue == "binance.perp":
-            target_venue = "binance.perp"
-        elif venue == "binance.spot":
-            target_venue = "binance.spot"
+        if venue.startswith("hl.") and venue not in {"hl.perp", "hl.spot"}:
+            target_venue = "hl.builder"
+        elif venue in {
+            "binance.perp",
+            "binance.spot",
+            "hl.perp",
+            "hl.spot",
+            "okx.perp",
+            "okx.spot",
+            "lighter.perp",
+            "lighter.spot",
+            "bitget.perp",
+            "bitget.spot",
+        }:
+            target_venue = venue
         else:
             continue
         if (
             _LINKABLE_TICKER_RE.fullmatch(ticker) is None
-            or _BINANCE_PAIR_PART_RE.fullmatch(base_symbol) is None
-            or _BINANCE_PAIR_PART_RE.fullmatch(quote_asset) is None
-            or ticker != base_symbol
-            or symbol != base_symbol
-            or venue_symbol != f"{base_symbol}{quote_asset}"
+            or _LINKABLE_TICKER_RE.fullmatch(base_symbol) is None
+            or _LINKABLE_VENUE_SYMBOL_RE.fullmatch(venue_symbol) is None
+            or not symbol
         ):
+            continue
+        if venue.startswith("binance.") and (
+            ticker != base_symbol or symbol != base_symbol or venue_symbol != f"{base_symbol}{quote_asset}"
+        ):
+            continue
+        if venue.startswith("okx.") and not venue_symbol.startswith(f"{base_symbol}-"):
             continue
         targets.append(
             ReaderTradeTarget(
                 ticker=ticker,
-                venue=target_venue,
+                venue=target_venue,  # type: ignore[arg-type]
                 venue_symbol=venue_symbol,
                 base_symbol=base_symbol,
                 quote_asset=quote_asset,

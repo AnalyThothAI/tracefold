@@ -112,6 +112,8 @@ news:
     binance: true
     hyperliquid: true
     okx: true
+    lighter: true
+    bitget: true
     us_reference: true
     snapshot_period_hours: 6.0
   watchlist: []

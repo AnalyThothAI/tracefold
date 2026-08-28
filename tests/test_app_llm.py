@@ -166,6 +166,7 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
 
     assert composition.program_configured is False
     assert composition.semantic_judge(load_stable_program_artifact()) is None
+    assert composition.progression_verifier() is None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
         "reader_card.primary": None,
@@ -198,6 +199,40 @@ def test_news_runtime_composition_assigns_role_specific_kimi_request_profiles() 
     assert composition.reader_card_primary.request_profile == "news_reader"
     assert composition.event_semantics_primary.model_kwargs["extra_body"] == {"reasoning_effort": "low"}
     assert "extra_body" not in composition.reader_card_primary.model_kwargs
+
+
+def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
+    created: list[dict[str, Any]] = []
+
+    class ScriptedFactory:
+        @classmethod
+        def from_runtime(cls, **kwargs: Any) -> ScriptedPredictorAdapter:
+            created.append(dict(kwargs))
+            return ScriptedPredictorAdapter(
+                [{"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}],
+                model_name=str(kwargs["model_name"]),
+                provider="openai",
+                model_sha256=str(kwargs["model_sha256"]),
+            )
+
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+            }
+        }
+    )
+
+    verifier = learning_runtime.compose_news_program_runtime(settings).progression_verifier(
+        adapter_type=ScriptedFactory
+    )
+
+    assert verifier is not None
+    assert created[0]["model_name"] == "openai/triage-model"
+    assert created[0]["max_tokens"] == 512
+    assert created[0]["timeout"] == 12.0
 
 
 def test_news_experiment_student_inherits_the_production_kimi_event_profile() -> None:
@@ -726,13 +761,17 @@ def _wire_startup_test(
     )
     stable_artifact = SimpleNamespace(program_sha256="b" * 64)
     stable_program = object()
+    progression_verifier = object()
     news = _StartupNewsRepository(
         candidate_manifest_sha=candidate_manifest_sha,
         candidate_bundle_sha=candidate_bundle_sha,
     )
     database = _StartupDatabase(news)
     monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
-    composition = SimpleNamespace(semantic_judge=lambda _artifact: stable_program)
+    composition = SimpleNamespace(
+        semantic_judge=lambda _artifact: stable_program,
+        progression_verifier=lambda: progression_verifier,
+    )
     monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
     monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
     monkeypatch.setattr(workers, "load_stable_program_artifact", lambda: stable_artifact)
@@ -755,6 +794,7 @@ def _wire_startup_test(
 
     assert bus.connected is True
     assert pipeline.triage.judge is stable_program
+    assert pipeline.deliverer._progression_verifier is progression_verifier
     assert identity_reads == 1
     manifest = pipeline.triage.runtime_manifest
     assert manifest["image_digest"] == "image"

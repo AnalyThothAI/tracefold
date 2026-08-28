@@ -186,6 +186,8 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             observed_at_ms=1_787_885_301_000,
             novelty="progression",
             progression_from_headline="美光工会此前启动劳资协商",
+            progression_review_state="confirmed",
+            progression_review_reason="同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
         ),
     )
 
@@ -193,6 +195,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     assert observed["text"] == (
         "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
         "🔄 <b>新进展</b> · 接续「美光工会此前启动劳资协商」\n\n"
+        "✅ <b>关联复核</b>  已确认 · 同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"
@@ -288,6 +291,8 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
         presentation=ReaderDeliveryPresentation(
             news_at_ms=1_787_885_301_000,
             market_data_state="pending",
+            novelty="progression",
+            progression_review_state="pending",
         ),
     )
     updated = sender.edit_card(
@@ -296,18 +301,100 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
         presentation=ReaderDeliveryPresentation(
             market_movements=(ReaderMarketMovement("BTC", 0, -25, -511, "available"),),
             news_at_ms=1_787_885_301_000,
+            novelty="progression",
+            progression_review_state="rejected",
+            progression_review_reason="候选报道的主体和事件链不同。",
         ),
     )
 
     assert [method for method, _payload in observed] == ["sendMessage", "editMessageText"]
     assert "新闻后 计算中\n1h 计算中，\n24h 计算中" in str(observed[0][1]["text"])
+    assert "⏳ <b>关联复核</b>  分析中" in str(observed[0][1]["text"])
     assert observed[1][1]["chat_id"] == CHANNEL_ID
     assert observed[1][1]["message_id"] == 42
     assert "新闻后 0.00%\n1h -0.25%，\n24h -5.11%" in str(observed[1][1]["text"])
+    assert "✏️ <b>关联修正</b>  未确认承接关系 · 候选报道的主体和事件链不同。" in str(observed[1][1]["text"])
+    assert "接续「" not in str(observed[1][1]["text"])
     assert "推送时间  10:48:33" in str(observed[1][1]["text"])
     assert initial["pushed_at_ms"] == 1_787_885_313_000
     assert updated["pushed_at_ms"] == initial["pushed_at_ms"]
     assert updated["edited_at_ms"] == 1_787_885_315_000
+
+
+def test_sender_deletes_only_the_exact_receipted_message() -> None:
+    observed: list[tuple[str, dict[str, object]]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        payload = json.loads(request.content)
+        observed.append((method, payload))
+        result: object = (
+            True
+            if method == "deleteMessage"
+            else {
+                "message_id": 42,
+                "chat": {"id": CHANNEL_ID, "type": "channel"},
+            }
+        )
+        return httpx.Response(200, json={"ok": True, "result": result})
+
+    clock = iter((1_787_885_313_000, 1_787_885_315_000))
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: next(clock),
+    )
+    sender.prepare()
+    initial = sender.send_card(_card())
+    deleted = sender.delete_card(initial)
+
+    assert [method for method, _payload in observed] == ["sendMessage", "deleteMessage"]
+    assert observed[1][1] == {"chat_id": CHANNEL_ID, "message_id": 42}
+    assert deleted["message_id"] == 42
+    assert deleted["deleted_at_ms"] == 1_787_885_315_000
+
+
+def test_sender_links_a_fresh_bitget_target_even_when_prices_are_unavailable() -> None:
+    observed: dict[str, object] = {}
+    card = _card()
+    card["elements"][0]["content"] = "业绩改善\n利多 · 影响明显 · 2605 · rtpr.io · 14:32"
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="2605",
+                    venue="bitget.perp",
+                    venue_symbol="METALIGHTUSDT",
+                    base_symbol="METALIGHT",
+                    quote_asset="USDT",
+                ),
+            )
+        ),
+    )
+
+    assert '<a href="https://www.bitget.com/futures/usdt/metalightusdt">2605</a>' in str(observed["text"])
 
 
 def test_edit_failure_does_not_invalidate_the_preflight_for_the_next_initial_send() -> None:

@@ -132,7 +132,7 @@ optional `feishu_signing_secret`, or Telegram fields
 `telegram_bot_token_file` and `telegram_chat_id`, plus
 `min_interval_seconds`), and
 `news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
-`okx`, reference-only `us_reference`, and `snapshot_period_hours`), and
+`okx`, `lighter`, `bitget`, reference-only `us_reference`, and `snapshot_period_hours`), and
 `news.watchlist[]` (`{symbol, market_type}`) are the only News knobs.
 `news.triage.concurrency` (default 4) is the real consumer width of its queue.
 Lexicons, prefix tables, LSH geometry, the code-owned Program registry, and
@@ -146,18 +146,32 @@ Telegram requires a secure bot-token file and one private channel Bot API ID
 beginning with `-100`. Provider conflicts, invalid targets, and missing or
 insecure credentials fail closed: Serve remains credential-free, while an
 explicitly enabled invalid provider configuration makes Workers fail startup.
-On Telegram, a reader ticker is clickable only when the same quote read proves an exact Binance contract;
-perpetuals open the matching Futures contract and spot instruments open the matching base/quote trade page.
-Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
+On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
+Destinations are built from typed Binance, Hyperliquid, OKX, Lighter, or Bitget identities; untyped URLs and
+inconsistent metadata remain plain text. A pushed `single_name` card with exactly one candidate ticker is checked
+after the initial send against fresh catalogues from all five venue families. Any exact match keeps the message and
+is added through one in-place edit; its delivery prices use trade-first anchors and closed one-minute candles as
+fallback. An absent result authorizes `deleteMessage` only when all five catalogues answered successfully and none
+matched. A timeout, blocked endpoint, malformed catalogue, incomplete issuer identity, or any other partial result
+retains the message. PostgreSQL records the complete five-venue evidence and reason before deletion, then settles
+the exact receipt as `deleted` or `ambiguous`; startup and the stale-intent sweep terminalize inherited `deleting`
+intents instead of retrying an uncertain destructive action. A settled deletion is excluded from the durable
+reader-history ledger, so a removed untradeable issuer cannot suppress a later genuinely tradable listing. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
 line between them. The novelty badge sits directly below the title: `🆕 新事实`, or `🔄 新进展` with the prior
-headline only for an exact-fact retrieval or a stored title-similarity score of at least `0.50`. A broad macro or sector
+headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
+title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
+`关联复核 分析中` and never waits for another model call. The same message is later edited to `关联复核 已确认`
+with the stored parent headline and a bounded reason, `关联修正 未确认承接关系` with a reason and no parent, or an
+explicit unavailable state. The verifier considers at most eight already-delivered told-ledger candidates and its
+structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
 verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
 or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
 send, the first `sendMessage` contains the complete news facts immediately and labels all three market values
 `计算中`; it performs no public price read first. The returned message ID and original send timestamp are settled
-as `sent` before a background enrichment reads prices. That enrichment replaces the same Telegram message with
+as `sent` before a background enrichment reads prices and, for a progression, verifies the claimed historical
+relationship. Those operations run concurrently. That enrichment replaces the same Telegram message with
 `editMessageText`; it never sends a second card. Before that provider mutation, PostgreSQL stores the desired card
 as `pending_card` with `edit_state=editing`, bound to the same provider, message ID, original push timestamp, and
 target digest. A confirmed edit promotes that card and canonical receipt under `edit_state=edited`. A crash,
@@ -826,6 +840,8 @@ cohort at zero.
 least-privilege Workers, Serve, and Nautilus grants.
 `20260828_0317` adds the News delivery edit-intent columns and stale-intent index used to distinguish a desired,
 confirmed, or ambiguous in-place Telegram update without changing the initial `sent` state.
+`20260828_0318` adds the receipt-bound deletion intent, five-venue evidence, reason, settlement timestamps, and
+stale-intent index used only after authoritative single-name tradeability absence.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

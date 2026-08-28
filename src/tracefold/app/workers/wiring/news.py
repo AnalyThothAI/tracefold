@@ -31,6 +31,8 @@ from tracefold.app.workers.wiring.market_review import (
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.integrations.telegram import TelegramNewsPushSender
+from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
+from tracefold.news import ProgressionVerifier
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_review.loops import MarketReviewDatabasePort
 from tracefold.news.oi_signals import OiPolicy
@@ -64,6 +66,7 @@ class _ProgramArms:
     """What one Workers process may execute this deployment: the stable arm, plus any runnable candidate."""
 
     judge: SemanticJudge | None
+    progression_verifier: ProgressionVerifier | None
     stable_artifact: ProgramStrategyArtifactV1
     stable_bundle_sha: str
     canary_arms: dict[str, CanaryRuntimeArm]
@@ -145,6 +148,7 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     if stable_arm.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable_arm.program_sha256:
         raise RuntimeError("news_stable_program_manifest_mismatch")
     semantic_judge = runtime_composition.semantic_judge(stable_artifact)
+    progression_verifier = runtime_composition.progression_verifier()
     canary_arms: dict[str, CanaryRuntimeArm] = {}
     candidate_failures: dict[str, str] = {}
     if semantic_judge is not None:
@@ -165,6 +169,7 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     )
     return _ProgramArms(
         judge=semantic_judge,
+        progression_verifier=progression_verifier,
         stable_artifact=stable_artifact,
         stable_bundle_sha=stable_arm.bundle_sha,
         canary_arms=canary_arms,
@@ -323,6 +328,17 @@ def _compose_news_pipeline(
             min_interval_seconds=settings.news.push.min_interval_seconds,
             oi_policy=oi_policy,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
+            progression_verifier=arms.progression_verifier,
+            tradability_verifier=(
+                VenueCatalogTradabilityVerifier()
+                if settings.news.venues.enabled
+                and settings.news.venues.binance
+                and settings.news.venues.hyperliquid
+                and settings.news.venues.okx
+                and settings.news.venues.lighter
+                and settings.news.venues.bitget
+                else None
+            ),
         ),
         janitor=JanitorLoop(
             db=news_db,

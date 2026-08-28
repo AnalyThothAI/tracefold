@@ -69,6 +69,17 @@
 | `attempted_at_ms` | `BIGINT` | False | `None` |
 | `settled_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `edit_state` | `TEXT` | True | `None` |
+| `pending_card` | `JSONB` | True | `None` |
+| `edit_error_code` | `TEXT` | True | `None` |
+| `edit_attempted_at_ms` | `BIGINT` | True | `None` |
+| `edit_settled_at_ms` | `BIGINT` | True | `None` |
+| `delete_state` | `TEXT` | True | `None` |
+| `delete_evidence` | `JSONB` | True | `None` |
+| `delete_reason` | `TEXT` | True | `None` |
+| `delete_error_code` | `TEXT` | True | `None` |
+| `delete_attempted_at_ms` | `BIGINT` | True | `None` |
+| `delete_settled_at_ms` | `BIGINT` | True | `None` |
 
 ## `news_event_assets`
 

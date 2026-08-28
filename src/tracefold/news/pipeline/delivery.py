@@ -12,12 +12,19 @@ from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
-from ..market_review.pricing import Candle, PriceInstrument, PricePoint, select_candle
+from ..market_review.pricing import Candle, PriceInstrument, PricePoint, return_bps, select_candle
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
+from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..telemetry import NewsWorkSemantics
+from ..tradability import (
+    TRADABILITY_REVIEW_TIMEOUT_SECONDS,
+    TradabilityMatch,
+    TradabilityReview,
+    TradabilityVerifier,
+)
 from .runtime import NewsDatabasePort
 
 # The quote read gets its own short session. A price is display-only and must
@@ -31,6 +38,7 @@ _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
 _PROGRESSION_LINK_SIMILARITY_MIN = 0.5
+_PROGRESSION_REVIEW_CANDIDATE_MAX = 8
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +101,49 @@ def _progression_from_headline(triage_row: Mapping[str, Any], verdict: Mapping[s
     return None
 
 
+def _progression_review_candidates(
+    triage_row: Mapping[str, Any], verdict: Mapping[str, Any]
+) -> tuple[dict[str, Any], ...]:
+    if verdict.get("novelty") != "progression":
+        return ()
+    trace = triage_row.get("trace")
+    told = trace.get("told") if isinstance(trace, Mapping) else None
+    if not isinstance(told, Sequence) or isinstance(told, str | bytes):
+        return ()
+    candidates: list[dict[str, Any]] = []
+    for fallback_i, entry in enumerate(told):
+        if not isinstance(entry, Mapping):
+            continue
+        headline = str(entry.get("headline_zh") or "").strip()
+        if not headline:
+            continue
+        raw_i = entry.get("i", fallback_i)
+        candidate_i = raw_i if isinstance(raw_i, int) and not isinstance(raw_i, bool) and raw_i >= 0 else fallback_i
+        raw_similarity = entry.get("similarity")
+        similarity = (
+            min(1.0, max(0.0, float(raw_similarity)))
+            if isinstance(raw_similarity, int | float) and not isinstance(raw_similarity, bool)
+            else 0.0
+        )
+        candidates.append(
+            {
+                "i": candidate_i,
+                "event_id": str(entry.get("event_id") or "")[:128],
+                "headline_zh": headline[:120],
+                "tier": str(entry.get("tier") or "recency")[:32],
+                "similarity": similarity,
+                "ago_min": max(0, int(entry.get("ago_min") or 0)),
+                "event_type": str(entry.get("event_type") or entry.get("type") or "")[:32],
+                "symbols": [str(value)[:32] for value in entry.get("symbols") or entry.get("sym") or ()][:6],
+                "magnitude": max(0, min(3, int(entry.get("magnitude") or entry.get("m") or 0))),
+                "direction": str(entry.get("direction") or entry.get("dir") or "")[:32],
+            }
+        )
+        if len(candidates) >= _PROGRESSION_REVIEW_CANDIDATE_MAX:
+            break
+    return tuple(candidates)
+
+
 class NewsPushSender(Protocol):
     """Synchronous provider boundary executed by the finite-operation runner."""
 
@@ -121,6 +172,13 @@ class EditableNewsPushSender(Protocol):
     ) -> Mapping[str, Any]: ...
 
 
+@runtime_checkable
+class DeletableNewsPushSender(Protocol):
+    """Provider capability for deleting one exactly receipted reader message."""
+
+    def delete_card(self, receipt: Mapping[str, Any]) -> Mapping[str, Any]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class _EnrichmentEditContext:
     sender: EditableNewsPushSender
@@ -134,6 +192,8 @@ class _EnrichmentEditContext:
     degraded: bool
     receipt: TelegramDeliveryReceipt
     presentation: ReaderDeliveryPresentation
+    progression_candidates: tuple[dict[str, Any], ...]
+    tradability_pending: bool
 
 
 class DelivererConsumer:
@@ -152,6 +212,8 @@ class DelivererConsumer:
         oi_policy: OiPolicy = DEFAULT_OI_POLICY,
         candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
+        progression_verifier: ProgressionVerifier | None = None,
+        tradability_verifier: TradabilityVerifier | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
@@ -161,6 +223,8 @@ class DelivererConsumer:
         self._oi_program_sha256 = program_sha256(oi_policy)
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
+        self._progression_verifier = progression_verifier
+        self._tradability_verifier = tradability_verifier
         self._last_send_at = 0.0
         self._last_edit_at = 0.0
         self._edit_lock = asyncio.Lock()
@@ -176,6 +240,10 @@ class DelivererConsumer:
         await self.db.tx(
             "news_delivery_edit_reconcile",
             lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
+        )
+        await self.db.tx(
+            "news_delivery_delete_reconcile",
+            lambda repos: repos.news.terminalize_interrupted_delivery_deletes(now_ms=now_ms()),
         )
         consume_task = asyncio.create_task(
             self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event),
@@ -206,9 +274,15 @@ class DelivererConsumer:
                 await self._reconcile_stale_delivery_edits()
 
     async def _reconcile_stale_delivery_edits(self) -> None:
-        await self.db.tx(
-            "news_delivery_edit_stale_reconcile",
-            lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
+        await asyncio.gather(
+            self.db.tx(
+                "news_delivery_edit_stale_reconcile",
+                lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
+            ),
+            self.db.tx(
+                "news_delivery_delete_stale_reconcile",
+                lambda repos: repos.news.terminalize_stale_delivery_deletes(now_ms=now_ms()),
+            ),
         )
 
     async def handle(self, message: BusMessage) -> None:
@@ -255,12 +329,20 @@ class DelivererConsumer:
         )
         news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
+        progression_candidates = _progression_review_candidates(triage_row, tv)
+        progression_review_pending = self._progression_verifier is not None and bool(progression_candidates)
+        tradability_pending = (
+            self._tradability_verifier is not None and _reader_market_scope(tv) == "single_name" and len(shown) == 1
+        )
         base_presentation = ReaderDeliveryPresentation(
             news_at_ms=news_at_ms,
             observed_at_ms=observed_at_ms,
             market_scope=_reader_market_scope(tv),
             novelty=_reader_novelty(tv),
-            progression_from_headline=_progression_from_headline(triage_row, tv),
+            progression_from_headline=(
+                None if progression_review_pending else _progression_from_headline(triage_row, tv)
+            ),
+            progression_review_state="pending" if progression_review_pending else None,
         )
         wait = self.min_interval - (time.monotonic() - self._last_send_at)
         if wait > 0:
@@ -338,7 +420,12 @@ class DelivererConsumer:
         if not settlement_recorded:
             logger.warning("News delivery settlement failed: news_delivery_settlement_conflict")
             return
-        if progressive_sender is None or settled_state != "sent" or receipt is None or not shown:
+        if (
+            progressive_sender is None
+            or settled_state != "sent"
+            or receipt is None
+            or (not shown and not progression_review_pending and not tradability_pending)
+        ):
             return
         try:
             parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
@@ -358,6 +445,8 @@ class DelivererConsumer:
                 degraded=bool(triage_row.get("degraded")),
                 receipt=parsed_receipt,
                 presentation=base_presentation,
+                progression_candidates=progression_candidates,
+                tradability_pending=tradability_pending,
             )
         )
 
@@ -372,11 +461,24 @@ class DelivererConsumer:
     async def _enrich_and_edit(self, context: _EnrichmentEditContext) -> None:
         intent_started = False
         try:
-            quotes = await self._market_data(
-                context.shown,
-                context.receipt.pushed_at_ms,
-                news_at_ms=context.presentation.news_at_ms,
+            quotes_task = self._market_data(
+                context.shown, context.receipt.pushed_at_ms, news_at_ms=context.presentation.news_at_ms
             )
+            review_task = self._progression_review(context)
+            tradability_task = self._tradability_review(context)
+            quotes, progression_review, tradability_review = await asyncio.gather(
+                quotes_task, review_task, tradability_task
+            )
+            if (
+                tradability_review is not None
+                and tradability_review.state == "matched"
+                and not reader_trade_targets(quotes)
+            ):
+                quotes = await self._market_data_for_matches(
+                    tradability_review.matches,
+                    context.receipt.pushed_at_ms,
+                    news_at_ms=context.presentation.news_at_ms,
+                )
             card_payload = render_first_card(
                 event=context.event,
                 verdict=context.verdict,
@@ -386,10 +488,37 @@ class DelivererConsumer:
                 degraded=context.degraded,
                 quotes=quotes,
             )
+            if progression_review is not None:
+                card_payload["progression_review"] = progression_review.model_dump(mode="json", exclude_none=True)
+            if tradability_review is not None:
+                card_payload["tradability_review"] = tradability_review.model_dump(mode="json", exclude_none=True)
+            if (
+                tradability_review is not None
+                and tradability_review.state == "absent"
+                and not reader_trade_targets(quotes)
+                and isinstance(context.sender, DeletableNewsPushSender)
+            ):
+                await self._delete_untradeable(context, tradability_review, progression_review)
+                return
             presentation = replace(
                 context.presentation,
                 trade_targets=reader_trade_targets(quotes),
                 market_movements=reader_market_movements(context.shown, quotes),
+                progression_from_headline=(
+                    progression_review.candidate_headline_zh
+                    if progression_review is not None and progression_review.state == "confirmed"
+                    else context.presentation.progression_from_headline
+                ),
+                progression_review_state=(
+                    progression_review.state
+                    if progression_review is not None
+                    else context.presentation.progression_review_state
+                ),
+                progression_review_reason=(
+                    progression_review.reason_zh
+                    if progression_review is not None
+                    else context.presentation.progression_review_reason
+                ),
             )
             async with self._edit_lock:
                 wait = self.min_interval - (time.monotonic() - self._last_edit_at)
@@ -448,6 +577,128 @@ class DelivererConsumer:
             if intent_started:
                 await self._mark_edit_ambiguous(context, str(error_code))
             logger.warning("News delivery enrichment edit failed: %s", error_code)
+
+    async def _tradability_review(self, context: _EnrichmentEditContext) -> TradabilityReview | None:
+        verifier = self._tradability_verifier
+        if verifier is None or not context.tradability_pending:
+            return None
+        try:
+            async with asyncio.timeout(TRADABILITY_REVIEW_TIMEOUT_SECONDS):
+                raw = await verifier.review(
+                    event=context.event,
+                    verdict=context.verdict,
+                    symbols=context.shown,
+                )
+            return raw if isinstance(raw, TradabilityReview) else TradabilityReview.model_validate(raw)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return TradabilityReview(
+                state="incomplete",
+                candidates=tuple(context.shown),
+                checked_venues=(),
+                failed_venues=(),
+                matches=(),
+                reason_zh="交易所目录核验超时或返回异常，按安全规则保留消息。",
+            )
+
+    async def _delete_untradeable(
+        self,
+        context: _EnrichmentEditContext,
+        review: TradabilityReview,
+        progression_review: ProgressionReview | None,
+    ) -> None:
+        sender = context.sender
+        if not isinstance(sender, DeletableNewsPushSender):
+            return
+        evidence: dict[str, Any] = {"tradability_review": review.model_dump(mode="json", exclude_none=True)}
+        if progression_review is not None:
+            evidence["progression_review"] = progression_review.model_dump(mode="json", exclude_none=True)
+        intent_started = bool(
+            await self.db.tx(
+                "news_delivery_begin_delete",
+                lambda repos: repos.news.begin_delivery_delete(
+                    event_id=context.event_id,
+                    kind=context.kind,
+                    evidence=evidence,
+                    reason=review.reason_zh,
+                    receipt=context.receipt.canonical(),
+                    now_ms=now_ms(),
+                ),
+            )
+        )
+        if not intent_started:
+            logger.warning("News delivery delete failed: news_delivery_delete_intent_conflict")
+            return
+        try:
+            result = await self.finite.run(
+                "news_delivery_delete",
+                sender.delete_card,
+                context.receipt.canonical(),
+                timeout_seconds=_DELIVERY_EDIT_TIMEOUT_SECONDS,
+                allow_shutdown=True,
+            )
+            deleted_receipt = TelegramDeliveryReceipt.model_validate(result)
+            if deleted_receipt.deleted_at_ms is None:
+                raise RuntimeError("news_delivery_delete_receipt_unsettled")
+            recorded = bool(
+                await self.db.tx(
+                    "news_delivery_settle_delete",
+                    lambda repos: repos.news.settle_delivery_delete(
+                        event_id=context.event_id,
+                        kind=context.kind,
+                        receipt=deleted_receipt.canonical(),
+                        now_ms=now_ms(),
+                    ),
+                )
+            )
+            if not recorded:
+                raise RuntimeError("news_delivery_delete_receipt_conflict")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error_code = getattr(exc, "code", None) or f"{type(exc).__module__}.{type(exc).__name__}"
+            await self.db.tx(
+                "news_delivery_ambiguous_delete",
+                lambda repos: repos.news.mark_delivery_delete_ambiguous(
+                    event_id=context.event_id,
+                    kind=context.kind,
+                    receipt=context.receipt.canonical(),
+                    error_code=str(error_code)[:160],
+                    now_ms=now_ms(),
+                ),
+            )
+            logger.warning("News delivery delete failed: %s", error_code)
+
+    async def _progression_review(self, context: _EnrichmentEditContext) -> ProgressionReview | None:
+        verifier = self._progression_verifier
+        if verifier is None or not context.progression_candidates:
+            return None
+        try:
+            async with asyncio.timeout(PROGRESSION_REVIEW_TIMEOUT_SECONDS):
+                raw = await verifier.review(
+                    event=context.event,
+                    verdict=context.verdict,
+                    candidates=context.progression_candidates,
+                )
+            review = raw if isinstance(raw, ProgressionReview) else ProgressionReview.model_validate(raw)
+            if review.state != "confirmed":
+                return review
+            candidate = next(
+                (item for item in context.progression_candidates if item["i"] == review.candidate_i),
+                None,
+            )
+            if candidate is None:
+                raise ValueError("news_progression_review_candidate_missing")
+            return review.model_copy(update={"candidate_headline_zh": candidate["headline_zh"]})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return ProgressionReview(
+                state="unavailable",
+                reason_zh="模型未返回可验证的关联结论。",
+                verifier_id=str(getattr(verifier, "verifier_id", type(verifier).__name__))[:120],
+            )
 
     async def _mark_edit_ambiguous(self, context: _EnrichmentEditContext, error_code: str) -> None:
         try:
@@ -594,6 +845,83 @@ class DelivererConsumer:
             elif result:
                 out.append(result)
         return out
+
+    async def _market_data_for_matches(
+        self,
+        matches: Sequence[TradabilityMatch],
+        stamp: int,
+        *,
+        news_at_ms: int | None,
+    ) -> list[dict[str, Any]]:
+        """Price a freshly discovered exact contract without waiting for the periodic universe snapshot."""
+
+        if not matches:
+            return []
+        news_target = (
+            news_at_ms
+            if isinstance(news_at_ms, int) and not isinstance(news_at_ms, bool) and 0 < news_at_ms <= stamp
+            else None
+        )
+        targets = [stamp, stamp - _ONE_HOUR_MS, stamp - 24 * _ONE_HOUR_MS]
+        if news_target is not None:
+            targets.append(news_target)
+        first_placeholder: dict[str, Any] | None = None
+        first_partial: dict[str, Any] | None = None
+        for match in matches:
+            placeholder = {
+                "requested_symbol": match.requested_symbol,
+                "symbol": match.base_symbol,
+                "base_symbol": match.base_symbol,
+                "venue": match.venue,
+                "venue_symbol": match.venue_symbol,
+                "instrument_class": match.instrument_class,
+                "quote_asset": match.quote_asset,
+                "state": "unavailable",
+                "state_zh": "暂无",
+            }
+            if first_placeholder is None:
+                first_placeholder = placeholder
+            fetcher = self._price_fetcher_for(match.venue) if self._price_fetcher_for else None
+            if fetcher is None:
+                continue
+            try:
+                points = await asyncio.wait_for(
+                    fetcher(match.price_symbol, targets),
+                    timeout=_DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS,
+                )
+            except Exception:  # noqa: S112 - one venue failure must fall through to the next exact match
+                continue
+            if stamp not in points:
+                continue
+            instrument = PriceInstrument(
+                venue=match.venue,
+                venue_symbol=match.price_symbol,
+                base_symbol=match.base_symbol,
+                instrument_class=match.instrument_class,
+                quote_asset=match.quote_asset,
+            )
+            quote = self._quote_from_points(
+                match.requested_symbol,
+                {},
+                instrument,
+                points,
+                stamp=stamp,
+                news_target_ms=news_target,
+            )
+            quote["venue_symbol"] = match.venue_symbol
+            day = points.get(stamp - 24 * _ONE_HOUR_MS)
+            if day is not None:
+                day_bps = return_bps(day.price, points[stamp].price)
+                if day_bps is not None:
+                    quote["change_pct"] = float(day_bps) / 100.0
+                    quote["change_basis"] = "rolling_24h"
+                    quote["change_basis_zh"] = "24 小时"
+            if first_partial is None:
+                first_partial = quote
+            if all(target in points for target in targets):
+                return [quote]
+        fallback = first_partial or first_placeholder
+        return [fallback] if fallback is not None else []
 
     async def _point_quote(
         self,

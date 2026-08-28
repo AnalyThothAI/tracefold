@@ -227,6 +227,15 @@ def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received(
         {"state": "sent", "settled_at_ms": 123, "card": {"header": {"title": {"content": "实际卡片"}}}}
     )
     assert sent.state == "received" and sent.received_at_ms == 123 and sent.rendered_card is not None
+    deleted = ReaderReceipt.from_delivery(
+        {
+            "state": "sent",
+            "settled_at_ms": 123,
+            "delete_state": "deleted",
+            "card": {"header": {"title": {"content": "已删除卡片"}}},
+        }
+    )
+    assert deleted.state == "not_received" and deleted.rendered_card is None
 
 
 # ---------------------------------------------------------------- tokens / minhash
@@ -1385,9 +1394,20 @@ def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_cha
         "行情 LRCX $317.53 24h +1.12%（永续）",
     ]
 
-    # The adapter gets no target for another venue, malformed contracts, or any ticker/base/pair mismatch.
+    assert reader_trade_targets(
+        [_quote("ETH", "2300", 1.0, requested_symbol="ETH", base_symbol="ETH", venue="hl.perp", venue_symbol="ETH")]
+    ) == (
+        ReaderTradeTarget(
+            ticker="ETH",
+            venue="hl.perp",
+            venue_symbol="ETH",
+            base_symbol="ETH",
+            quote_asset="",
+        ),
+    )
+
+    # The adapter gets no target for malformed contracts or a Binance ticker/base/pair mismatch.
     unsafe = [
-        _quote("ETH", "2300", 1.0, requested_symbol="ETH", base_symbol="ETH", venue="hl.perp", venue_symbol="ETH"),
         _quote(
             "SOL",
             "200",

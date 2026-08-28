@@ -22,8 +22,12 @@ PUBLIC_NEWS_INTERFACE = {
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
     "OpenNewsStrategyHistory",
+    "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
+    "REQUIRED_TRADABILITY_VENUES",
+    "TRADABILITY_REVIEW_TIMEOUT_SECONDS",
     "ProgramTrace",
     "ProgramUsage",
+    "ProgressionVerifier",
     "ReaderCardSemanticView",
     "ReaderDeliveryPresentation",
     "ReaderMarketMovement",
@@ -39,6 +43,9 @@ PUBLIC_NEWS_INTERFACE = {
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",
+    "TradabilityMatch",
+    "TradabilityReview",
+    "TradabilityVerifier",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}
@@ -56,6 +63,9 @@ WRITE_REPOSITORY_METHODS = (
     "begin_delivery_edit",
     "settle_delivery_edit",
     "mark_delivery_edit_ambiguous",
+    "begin_delivery_delete",
+    "settle_delivery_delete",
+    "mark_delivery_delete_ambiguous",
     "open_incident",
     "close_open_incidents",
     "complete_recovery",
@@ -68,7 +78,9 @@ WRITE_REPOSITORY_METHODS = (
     "purge_before",
     "terminalize_interrupted_deliveries",
     "terminalize_interrupted_delivery_edits",
+    "terminalize_interrupted_delivery_deletes",
     "terminalize_stale_delivery_edits",
+    "terminalize_stale_delivery_deletes",
 )
 
 

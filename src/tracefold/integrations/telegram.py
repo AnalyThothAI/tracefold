@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http.client import HTTPException, HTTPSConnection
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -41,7 +41,7 @@ _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong)>|<a href="[^"]+">|</a>')
-_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText"})
+_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
 _MAGNITUDE_LABELS = {
@@ -195,6 +195,8 @@ class TelegramNewsPushSender:
             market_scope=view.market_scope,
             novelty=view.novelty,
             progression_from_headline=view.progression_from_headline,
+            progression_review_state=view.progression_review_state,
+            progression_review_reason=view.progression_review_reason,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         try:
@@ -245,6 +247,8 @@ class TelegramNewsPushSender:
             market_scope=view.market_scope,
             novelty=view.novelty,
             progression_from_headline=view.progression_from_headline,
+            progression_review_state=view.progression_review_state,
+            progression_review_reason=view.progression_review_reason,
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         result = self._call_api(
@@ -263,6 +267,35 @@ class TelegramNewsPushSender:
             message_id=message_id,
             pushed_at_ms=pushed_at_ms,
             edited_at_ms=int(self._wall_clock_ms()),
+            target_sha256=self._target_sha256,
+        ).canonical()
+
+    def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        """Delete exactly one previously receipted message from the configured private channel."""
+
+        if not self._target_validated:
+            raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
+        try:
+            parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
+        except ValueError:
+            raise TelegramDeliveryError("news_delivery_telegram_delete_receipt_invalid") from None
+        if parsed_receipt.target_sha256 != self._target_sha256 or parsed_receipt.deleted_at_ms is not None:
+            raise TelegramDeliveryError("news_delivery_telegram_delete_receipt_invalid")
+        deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
+        result = self._call_api_result(
+            "deleteMessage",
+            {"chat_id": self._chat_id, "message_id": parsed_receipt.message_id},
+            error_prefix="news_delivery_telegram_delete",
+            deadline_at=deadline_at,
+        )
+        if result is not True:
+            raise TelegramDeliveryError("news_delivery_telegram_delete_response_invalid")
+        return TelegramDeliveryReceipt(
+            provider="telegram",
+            message_id=parsed_receipt.message_id,
+            pushed_at_ms=parsed_receipt.pushed_at_ms,
+            edited_at_ms=parsed_receipt.edited_at_ms,
+            deleted_at_ms=int(self._wall_clock_ms()),
             target_sha256=self._target_sha256,
         ).canonical()
 
@@ -343,6 +376,24 @@ class TelegramNewsPushSender:
         error_prefix: str,
         deadline_at: float,
     ) -> Mapping[str, Any]:
+        result = self._call_api_result(
+            method,
+            payload,
+            error_prefix=error_prefix,
+            deadline_at=deadline_at,
+        )
+        if not isinstance(result, Mapping):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        return result
+
+    def _call_api_result(
+        self,
+        method: str,
+        payload: Mapping[str, Any],
+        *,
+        error_prefix: str,
+        deadline_at: float,
+    ) -> Any:
         remaining = deadline_at - self._monotonic()
         if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
             raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
@@ -372,10 +423,7 @@ class TelegramNewsPushSender:
             raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
         if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
             raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
-        result = response_payload.get("result")
-        if not isinstance(result, Mapping):
-            raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code)
-        return result
+        return response_payload.get("result")
 
     def close(self) -> None:
         self._client.close()
@@ -392,6 +440,8 @@ def _telegram_message(
     market_scope: str | None = None,
     novelty: str | None = None,
     progression_from_headline: str | None = None,
+    progression_review_state: str | None = None,
+    progression_review_reason: str | None = None,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
@@ -422,7 +472,7 @@ def _telegram_message(
     facts_line = content_lines.pop() if content_lines else ""
     explanation = "\n".join(content_lines)
     facts = _telegram_facts(facts_line)
-    ticker_links = _binance_ticker_links(trade_targets)
+    ticker_links = _trade_target_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
     novelty_line = _telegram_novelty_html(
@@ -431,6 +481,12 @@ def _telegram_message(
     )
     if novelty_line:
         sections.append(novelty_line)
+    progression_review_line = _telegram_progression_review_html(
+        progression_review_state,
+        reason=progression_review_reason,
+    )
+    if progression_review_line:
+        sections.append(progression_review_line)
     if explanation:
         sections.append(_escape_html(_clip(explanation, 1800)))
 
@@ -481,6 +537,22 @@ def _telegram_novelty_html(value: str, *, progression_from_headline: str | None)
         return f"🔄 <b>新进展</b>{suffix}"
     if value in {"restatement", "复述"}:
         return "♻️ <b>复述</b>"
+    return ""
+
+
+def _telegram_progression_review_html(value: str | None, *, reason: str | None) -> str:
+    bounded_reason = _escape_html(_clip(str(reason or "").strip(), 160))
+    if value == "pending":
+        return "⏳ <b>关联复核</b>  分析中"
+    if value == "confirmed":
+        suffix = f" · {bounded_reason}" if bounded_reason else ""
+        return f"✅ <b>关联复核</b>  已确认{suffix}"
+    if value == "rejected":
+        suffix = f" · {bounded_reason}" if bounded_reason else ""
+        return f"✏️ <b>关联修正</b>  未确认承接关系{suffix}"
+    if value == "unavailable":
+        suffix = f" · {bounded_reason}" if bounded_reason else ""
+        return f"⚠️ <b>关联复核</b>  未完成{suffix}"
     return ""
 
 
@@ -745,7 +817,7 @@ def _safe_binance_trade_url(value: str) -> bool:
     )
 
 
-def _binance_ticker_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str, str]:
+def _trade_target_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[str, str]:
     links: dict[str, str] = {}
     for target in trade_targets:
         if not isinstance(target, ReaderTradeTarget):
@@ -754,23 +826,60 @@ def _binance_ticker_links(trade_targets: Sequence[ReaderTradeTarget]) -> dict[st
         base_symbol = target.base_symbol
         quote_asset = target.quote_asset
         venue_symbol = target.venue_symbol
-        if (
-            _LINKABLE_TICKER_RE.fullmatch(ticker) is None
-            or _LINKABLE_TICKER_RE.fullmatch(base_symbol) is None
-            or _LINKABLE_TICKER_RE.fullmatch(quote_asset) is None
-            or ticker != base_symbol
-            or venue_symbol != f"{base_symbol}{quote_asset}"
+        if _LINKABLE_TICKER_RE.fullmatch(ticker) is None or _LINKABLE_TICKER_RE.fullmatch(base_symbol) is None:
+            continue
+        if target.venue.startswith("binance.") and (
+            ticker != base_symbol or venue_symbol != f"{base_symbol}{quote_asset}"
         ):
             continue
         if target.venue == "binance.perp":
             url = f"https://www.binance.com/en/futures/{venue_symbol}"
         elif target.venue == "binance.spot":
             url = f"https://www.binance.com/en/trade/{base_symbol}_{quote_asset}"
+        elif target.venue in {"hl.perp", "hl.spot", "hl.builder"}:
+            url = f"https://app.hyperliquid.xyz/trade/{quote(venue_symbol, safe=':@')}"
+        elif target.venue == "okx.perp":
+            url = f"https://www.okx.com/trade-swap/{quote(venue_symbol.lower(), safe='-')}"
+        elif target.venue == "okx.spot":
+            url = f"https://www.okx.com/trade-spot/{quote(venue_symbol.lower(), safe='-')}"
+        elif target.venue in {"lighter.perp", "lighter.spot"}:
+            url = f"https://app.lighter.xyz/trade/{quote(base_symbol, safe='')}"
+        elif target.venue == "bitget.perp":
+            url = f"https://www.bitget.com/futures/usdt/{quote(venue_symbol.lower(), safe='')}"
+        elif target.venue == "bitget.spot":
+            url = f"https://www.bitget.com/spot/{quote(venue_symbol.lower(), safe='')}"
         else:
             continue
-        if _safe_binance_trade_url(url):
+        if _safe_trade_url(url):
             links.setdefault(ticker, url)
     return links
+
+
+def _safe_trade_url(value: str) -> bool:
+    if _safe_binance_trade_url(value):
+        return True
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    allowed_paths = {
+        "app.hyperliquid.xyz": ("/trade/",),
+        "www.okx.com": ("/trade-swap/", "/trade-spot/"),
+        "app.lighter.xyz": ("/trade/",),
+        "www.bitget.com": ("/futures/usdt/", "/spot/"),
+    }
+    prefixes = allowed_paths.get(str(parsed.hostname or ""))
+    return bool(
+        prefixes
+        and parsed.scheme == "https"
+        and port in {None, 443}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and any(parsed.path.startswith(prefix) and len(parsed.path) > len(prefix) for prefix in prefixes)
+    )
 
 
 __all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]

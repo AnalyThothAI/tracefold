@@ -56,7 +56,19 @@ class ReaderTradeTarget:
     """One exact venue contract that a delivery adapter may expose as a reader action."""
 
     ticker: str
-    venue: Literal["binance.perp", "binance.spot"]
+    venue: Literal[
+        "binance.perp",
+        "binance.spot",
+        "hl.perp",
+        "hl.spot",
+        "hl.builder",
+        "okx.perp",
+        "okx.spot",
+        "lighter.perp",
+        "lighter.spot",
+        "bitget.perp",
+        "bitget.spot",
+    ]
     venue_symbol: str
     base_symbol: str
     quote_asset: str
@@ -65,6 +77,7 @@ class ReaderTradeTarget:
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 ReaderMarketDataState = Literal["pending", "ready"]
 ReaderMarketScope = Literal["macro", "sector", "single_name"]
+ProgressionReviewState = Literal["pending", "confirmed", "rejected", "unavailable"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +103,8 @@ class ReaderDeliveryPresentation:
     market_scope: ReaderMarketScope | None = None
     novelty: Novelty | None = None
     progression_from_headline: str | None = None
+    progression_review_state: ProgressionReviewState | None = None
+    progression_review_reason: str | None = None
 
 
 class ExactNewsModel(BaseModel):
@@ -104,11 +119,14 @@ class TelegramDeliveryReceipt(ExactNewsModel):
     pushed_at_ms: int = Field(gt=0, strict=True)
     target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
     edited_at_ms: int | None = Field(default=None, gt=0, strict=True)
+    deleted_at_ms: int | None = Field(default=None, gt=0, strict=True)
 
     @model_validator(mode="after")
     def validate_lifecycle_order(self) -> TelegramDeliveryReceipt:
         if self.edited_at_ms is not None and self.edited_at_ms < self.pushed_at_ms:
             raise ValueError("telegram_delivery_receipt_edit_before_push")
+        if self.deleted_at_ms is not None and self.deleted_at_ms < (self.edited_at_ms or self.pushed_at_ms):
+            raise ValueError("telegram_delivery_receipt_delete_before_last_mutation")
         return self
 
     def canonical(self) -> dict[str, Any]:
@@ -147,6 +165,10 @@ class ReaderReceipt(ExactNewsModel):
             return cls(state="not_received")
         delivery_state = str(delivery.get("state") or "") or None
         error_code = str(delivery.get("error_code") or "") or None
+        # A card intentionally removed after authoritative tradability review is not part of the durable reader
+        # history. Keeping it as "received" would let an untradeable, deleted issuer suppress a future listing.
+        if delivery.get("delete_state") == "deleted":
+            return cls(state="not_received", delivery_state=delivery_state, error_code=error_code)
         if delivery_state == "sent":
             return cls(
                 state="received",

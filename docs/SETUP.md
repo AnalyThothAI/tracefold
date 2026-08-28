@@ -220,6 +220,9 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    okx: true
+    lighter: true                 # post-send exact market lookup and price anchors
+    bitget: true                  # post-send exact market lookup and price anchors
     us_reference: true          # US listed-symbol directory (#91): tells the Gate a ticker is a stock, not tradeable here
     snapshot_period_hours: 6.0
   watchlist:

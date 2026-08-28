@@ -21,6 +21,8 @@ BINANCE_SPOT_BASE_URL: Final = "https://api.binance.com"
 BINANCE_FUTURES_BASE_URL: Final = "https://fapi.binance.com"
 HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
 OKX_BASE_URL: Final = "https://www.okx.com"
+LIGHTER_BASE_URL: Final = "https://mainnet.zklighter.elliot.ai"
+BITGET_BASE_URL: Final = "https://api.bitget.com"
 
 
 async def fetch_binance_trade_before(
@@ -83,6 +85,49 @@ async def fetch_okx_recent_trades(
     return _parse_trades(payload.get("data"), venue=venue, price_key="px", time_key="ts")
 
 
+async def fetch_lighter_recent_trades(
+    venue_symbol: str,
+    *,
+    venue: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = LIGHTER_BASE_URL,
+) -> tuple[Trade, ...]:
+    try:
+        market_id = int(venue_symbol)
+    except ValueError:
+        raise VenueExpectedError("venue_symbol_invalid", venue=venue) from None
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v1/recentTrades",
+            venue=venue,
+            params={"market_id": market_id, "limit": 100},
+        )
+    if not isinstance(payload, Mapping) or int(payload.get("code") or 0) != 200:
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return _parse_trades(payload.get("trades"), venue=venue, price_key="price", time_key="timestamp")
+
+
+async def fetch_bitget_recent_trades(
+    venue_symbol: str,
+    *,
+    venue: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    base_url: str = BITGET_BASE_URL,
+) -> tuple[Trade, ...]:
+    category = "SPOT" if venue == "bitget.spot" else "USDT-FUTURES"
+    async with price_client(transport) as client:
+        payload = await get_json(
+            client,
+            f"{base_url.rstrip('/')}/api/v3/market/fills",
+            venue=venue,
+            params={"category": category, "symbol": str(venue_symbol).upper(), "limit": 100},
+        )
+    if not isinstance(payload, Mapping) or str(payload.get("code") or "") != "00000":
+        raise VenueExpectedError("venue_payload_invalid", venue=venue)
+    return _parse_trades(payload.get("data"), venue=venue, price_key="price", time_key="ts")
+
+
 def _parse_trades(payload: Any, *, venue: str, price_key: str, time_key: str) -> tuple[Trade, ...]:
     if isinstance(payload, str | bytes) or not isinstance(payload, Sequence):
         raise VenueExpectedError("venue_payload_invalid", venue=venue)
@@ -110,6 +155,8 @@ def _optional_int(value: Any) -> int | None:
 __all__ = [
     "OKX_BASE_URL",
     "fetch_binance_trade_before",
+    "fetch_bitget_recent_trades",
     "fetch_hyperliquid_recent_trades",
+    "fetch_lighter_recent_trades",
     "fetch_okx_recent_trades",
 ]

@@ -14,6 +14,7 @@ side (``classify()``) never learns Binance's field names.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
@@ -67,6 +68,42 @@ async def fetch_binance_instruments(
         futures = await _get(client, f"{futures_base_url.rstrip('/')}/fapi/v1/exchangeInfo", venue="binance.perp")
         out.extend(_parse(futures, venue="binance.perp", quote_filter=None))
     return tuple(out)
+
+
+async def fetch_binance_instruments_for_candidates(
+    candidates: Sequence[str],
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+    spot_base_url: str = BINANCE_SPOT_BASE_URL,
+    futures_base_url: str = BINANCE_FUTURES_BASE_URL,
+) -> tuple[Instrument, ...]:
+    """Resolve candidates against every active Binance spot quote and USD-M contract.
+
+    Deletion requires proof that *no* trade pair exists, not merely no stablecoin pair. The spot request therefore
+    keeps the complete official catalogue but asks Binance to omit its large, irrelevant permission-set arrays.
+    A timeout or malformed response fails the venue review and keeps the Telegram message.
+    """
+
+    candidate_keys = {
+        str(candidate).strip().upper() for candidate in candidates if _is_exact_binance_base_candidate(candidate)
+    }
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(_TIMEOUT_SECONDS), follow_redirects=False, transport=transport
+    ) as client:
+        spot, futures = await asyncio.gather(
+            _get(
+                client,
+                f"{spot_base_url.rstrip('/')}/api/v3/exchangeInfo",
+                venue="binance.spot",
+                params={"showPermissionSets": "false"},
+            ),
+            _get(client, f"{futures_base_url.rstrip('/')}/fapi/v1/exchangeInfo", venue="binance.perp"),
+        )
+    rows = (
+        *_parse(spot, venue="binance.spot", quote_filter=None),
+        *_parse(futures, venue="binance.perp", quote_filter=None),
+    )
+    return tuple(row for row in rows if row.base_symbol in candidate_keys)
 
 
 def _parse(payload: Mapping[str, Any], *, venue: str, quote_filter: frozenset[str] | None) -> tuple[Instrument, ...]:
@@ -126,9 +163,15 @@ def _declared_class(entry: Mapping[str, Any]) -> InstrumentClass | None:
     return declared
 
 
-async def _get(client: httpx.AsyncClient, url: str, *, venue: str) -> Mapping[str, Any]:
+async def _get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    venue: str,
+    params: Mapping[str, object] | None = None,
+) -> Mapping[str, Any]:
     try:
-        response = await client.get(url)
+        response = await client.get(url, params=params)
     except httpx.TimeoutException:
         raise VenueExpectedError("venue_timeout", venue=venue) from None
     except httpx.HTTPError:
@@ -150,4 +193,14 @@ async def _get(client: httpx.AsyncClient, url: str, *, venue: str) -> Mapping[st
     return payload
 
 
-__all__ = ["BINANCE_FUTURES_BASE_URL", "BINANCE_SPOT_BASE_URL", "fetch_binance_instruments"]
+def _is_exact_binance_base_candidate(value: object) -> bool:
+    candidate = str(value).strip().upper()
+    return 1 <= len(candidate) <= 20 and candidate.isalnum()
+
+
+__all__ = [
+    "BINANCE_FUTURES_BASE_URL",
+    "BINANCE_SPOT_BASE_URL",
+    "fetch_binance_instruments",
+    "fetch_binance_instruments_for_candidates",
+]

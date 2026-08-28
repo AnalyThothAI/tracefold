@@ -7,8 +7,20 @@ from collections.abc import Mapping, Sequence
 
 from tracefold.news.market_review.pricing import Candle, PricePoint, Trade, select_candle, select_trade
 
-from .candles import fetch_binance_candles, fetch_hyperliquid_candles, fetch_okx_candles
-from .trades import fetch_binance_trade_before, fetch_hyperliquid_recent_trades, fetch_okx_recent_trades
+from .candles import (
+    fetch_binance_candles,
+    fetch_bitget_candles,
+    fetch_hyperliquid_candles,
+    fetch_lighter_candles,
+    fetch_okx_candles,
+)
+from .trades import (
+    fetch_binance_trade_before,
+    fetch_bitget_recent_trades,
+    fetch_hyperliquid_recent_trades,
+    fetch_lighter_recent_trades,
+    fetch_okx_recent_trades,
+)
 
 _TRADE_MAX_GAP_MS = 60_000
 _CANDLE_MAX_GAP_MS = 90_000
@@ -61,6 +73,10 @@ async def _trades_for_targets(
             recent = await fetch_hyperliquid_recent_trades(venue_symbol, venue=venue)
         elif venue.startswith("okx."):
             recent = await fetch_okx_recent_trades(venue_symbol, venue=venue)
+        elif venue.startswith("lighter."):
+            recent = await fetch_lighter_recent_trades(venue_symbol, venue=venue)
+        elif venue.startswith("bitget."):
+            recent = await fetch_bitget_recent_trades(venue_symbol, venue=venue)
         else:
             return {}
     except Exception:
@@ -98,6 +114,22 @@ async def _candles_for_target(venue_symbol: str, *, venue: str, target_ms: int) 
         )
     if venue.startswith("okx."):
         return await fetch_okx_candles(
+            venue_symbol,
+            venue=venue,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            interval="1m",
+        )
+    if venue.startswith("lighter."):
+        return await fetch_lighter_candles(
+            venue_symbol,
+            venue=venue,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            interval="1m",
+        )
+    if venue.startswith("bitget."):
+        return await fetch_bitget_candles(
             venue_symbol,
             venue=venue,
             start_ms=start_ms,
