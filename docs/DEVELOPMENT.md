@@ -116,13 +116,19 @@ belong to an explicit, evidence-gated identity migration.
 Issue #193 is one such explicit hard cut. The artifact becomes one canonical
 document holding `schema_version` `news_program_strategy_artifact_v1`,
 `factory_id` and the two instructions, with `program_sha256` over exactly those
-four values. Issue #306 is the current one. It bumps the factory to
-`tracefold.news.program.factory_v8` and the epoch to `program_v8`, and the sole
-stable root is `c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
-Prompt bytes move twice inside that one migration, deliberately paid once: the
-kernel/RulePack/advisory/seal layering collapses into one seed text per
-Predictor (`program/seed.py`), and the self-owned chat transport composes the
-field envelope that DSPy's JSON adapter used to compose.
+four values. Issue #306 bumped the factory to
+`tracefold.news.program.factory_v8` and the epoch to `program_v8`: prompt bytes
+moved twice inside that one migration, deliberately paid once — the
+kernel/RulePack/advisory/seal layering collapsed into one seed text per
+Predictor (`program/seed.py`), and the self-owned chat transport composed the
+field envelope that DSPy's JSON adapter used to compose. Issue #310 is the
+current one. Its transport sent `json_schema` to every endpoint, and DeepSeek
+rejects that format, so the structured-output constraint now follows the
+endpoint — `json_schema` where supported, `json_object` with the same schema
+inlined into the system message where not. That moves fallback-route prompt
+bytes: `factory_v9`, epoch `program_v9`, and the sole stable root — the seed
+texts unchanged — is
+`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
 
 ## Tests
 

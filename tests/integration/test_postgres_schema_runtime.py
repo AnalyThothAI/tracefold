@@ -154,7 +154,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260828_0318"
+    assert version == latest_migration_version() == "20260828_0319"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -179,4 +179,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260828_0318"
+    assert version == latest_migration_version() == "20260828_0319"

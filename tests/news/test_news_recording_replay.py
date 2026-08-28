@@ -533,3 +533,38 @@ def test_an_unknown_error_code_still_refuses_rather_than_guessing() -> None:
 
     with pytest.raises(RecordingReplayError, match="outcome_unreplayable:news_program_invented_code"):
         _error_behavior("news_program_invented_code")
+
+
+def test_provider_error_detail_is_audit_only_and_leaves_the_verification_root() -> None:
+    """#310: recordings do not carry the provider's error prose and a replayed refusal cannot reproduce
+    it, so the strict verification root must not see it — on either the trace's calls or the flattened
+    copy — while a changed error *code* still moves the root."""
+
+    from tracefold.news.learning.projection import _recording_verification_roots
+
+    def observation(error_detail: str | None, *, error_code: str = "news_program_provider_http_400") -> dict:
+        call = {"predictor": "event_semantics", "error_code": error_code}
+        if error_detail is not None:
+            call["error_detail"] = error_detail
+        return {
+            "case_ref": {"case_id": "case-1"},
+            "stable": {
+                "program": [
+                    {
+                        "usage": {"wall_latency_ms": 12},
+                        "calls": [dict(call)],
+                        "trace": {"calls": [dict(call)]},
+                    }
+                ]
+            },
+            "candidate": {"program": []},
+            "comparison": {},
+        }
+
+    _, with_detail = _recording_verification_roots([observation("invalid_request_error: refused")])
+    _, without_detail = _recording_verification_roots([observation(None)])
+    _, null_detail = _recording_verification_roots([observation(None) | {}])
+    _, other_code = _recording_verification_roots([observation(None, error_code="news_program_provider_http_502")])
+
+    assert with_detail == without_detail == null_detail
+    assert other_code != without_detail

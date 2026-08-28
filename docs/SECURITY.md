@@ -127,7 +127,7 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v8`, and
+holds a schema version, `factory_id` `tracefold.news.program.factory_v9`, and
 the two complete Predictor instructions; `program_sha256` is the canonical hash
 of exactly those four values. The loader re-verifies that hash, the schema and
 the factory, applies the instruction bounds — NFC, byte and estimated-token

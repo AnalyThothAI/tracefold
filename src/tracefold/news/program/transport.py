@@ -43,8 +43,8 @@ from ...integrations.chat_completions import (
     chat_completions_url,
     post_chat_completion,
 )
-from ..artifact_identity import canonical_sha
-from .runtime import _ExactModel
+from ..artifact_identity import canonical_json, canonical_sha
+from .runtime import _HIGH_CONFIDENCE_SECRET_PATTERNS, _ExactModel
 
 _RETRYABLE_MARKERS: Final[tuple[str, ...]] = (
     "timeout",
@@ -66,6 +66,28 @@ _RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 409, 425, 429, 500, 5
 # OpenAI-compatible servers that have never heard of it. Anything else an operator writes — including a
 # genuine `vendor/model` identifier — is sent through unchanged.
 _WIRE_MODEL_PREFIX: Final[str] = "openai/"
+
+StructuredOutputMode = Literal["json_schema", "json_object"]
+
+# Endpoints that reject the `json_schema` response_format outright. DeepSeek answers it with HTTP 400
+# "This response_format type is unavailable now" (#310), which killed the whole fallback route and the
+# metric judge the day the self-owned transport shipped. The mode is decided here, per model, at
+# composition time — never per call and never as a fallback after a failure — so one request stays one
+# request and a recording's bytes stay reproducible. Matched on the wire model name; a capability this
+# table gets wrong fails loudly as a 400 with `error_detail`, not silently as a degraded format.
+_JSON_OBJECT_ONLY_MODEL_PREFIXES: Final[tuple[str, ...]] = ("deepseek",)
+
+
+def structured_output_mode(model_name: str) -> StructuredOutputMode:
+    """Which structured-output constraint this model's endpoint accepts."""
+
+    # Matched on the leaf after the last "/" — the same convention `app/llm.py` uses to recognize a
+    # provider family — so a gateway-aliased route (`accounts/fireworks/models/deepseek-v3`) still lands
+    # on the mode its model actually accepts.
+    leaf = wire_model_name(model_name).casefold().rsplit("/", 1)[-1]
+    if any(leaf.startswith(prefix) for prefix in _JSON_OBJECT_ONLY_MODEL_PREFIXES):
+        return "json_object"
+    return "json_schema"
 
 
 class RuntimeModelIdentity(_ExactModel):
@@ -149,8 +171,25 @@ _OUTPUT_CONTRACT: Final[str] = (
     "supplied with this request. Every field the schema marks required must be present."
 )
 
+# The `json_object` variant carries the schema in the message itself: that mode has no schema riding the
+# request, so a model that never sees the shape cannot be held to it. The schema text is the same envelope
+# `response_format` would have sent, canonically serialized so the rendered bytes are deterministic.
+_OUTPUT_CONTRACT_INLINE: Final[str] = (
+    "\n\n# OUTPUT CONTRACT\n"
+    "Reply with one JSON object and nothing else: no prose, no explanation, no markdown fence. "
+    'The object has exactly one key, "{field}", whose value is a {model} object. The entire reply must '
+    "match this JSON schema exactly; every field the schema marks required must be present.\n"
+    "{schema}"
+)
 
-def system_message(instruction: str, *, output_field: str, output_model: type[BaseModel]) -> str:
+
+def system_message(
+    instruction: str,
+    *,
+    output_field: str,
+    output_model: type[BaseModel],
+    structured_output: StructuredOutputMode = "json_schema",
+) -> str:
     """One complete instruction plus the output contract, in that order.
 
     The contract is appended rather than expected inside the instruction because it describes the wire
@@ -158,7 +197,13 @@ def system_message(instruction: str, *, output_field: str, output_model: type[Ba
     sentence that says what shape the answer takes.
     """
 
-    return f"{instruction}{_OUTPUT_CONTRACT.format(field=output_field, model=output_model.__name__)}"
+    if structured_output == "json_schema":
+        return f"{instruction}{_OUTPUT_CONTRACT.format(field=output_field, model=output_model.__name__)}"
+    schema = response_format(output_field, output_model)["json_schema"]["schema"]
+    contract = _OUTPUT_CONTRACT_INLINE.format(
+        field=output_field, model=output_model.__name__, schema=canonical_json(schema)
+    )
+    return f"{instruction}{contract}"
 
 
 def user_message(field_order: Sequence[str], values: Mapping[str, Any]) -> str:
@@ -208,27 +253,36 @@ def chat_request_body(
     temperature: float = 0,
     extras: Mapping[str, Any] | None = None,
     extra_body: Mapping[str, Any] | None = None,
+    structured_output: StructuredOutputMode | None = None,
 ) -> dict[str, Any]:
     """The one wire envelope every structured call in this package sends.
 
     Shared by the two production Predictors and by the metric judge on purpose: they ask different
     questions but they are the same kind of request, and two renderings of "one system message, one user
-    message, one JSON-schema constraint" would eventually disagree about one of them.
+    message, one structured-output constraint" would eventually disagree about one of them. The
+    constraint's form follows the model's endpoint (#310): `json_schema` where supported, otherwise
+    `json_object` with the same schema inlined into the system message — decided here once, from the model
+    name, so every caller of this envelope inherits the same answer.
     """
 
+    mode = structured_output or structured_output_mode(model)
     return {
         "model": wire_model_name(model),
         "messages": [
             {
                 "role": "system",
-                "content": system_message(instruction, output_field=output_field, output_model=output_model),
+                "content": system_message(
+                    instruction, output_field=output_field, output_model=output_model, structured_output=mode
+                ),
             },
             {"role": "user", "content": user_message(field_order, values)},
         ],
         "temperature": temperature,
         "max_tokens": int(max_tokens),
         "stream": False,
-        "response_format": response_format(output_field, output_model),
+        "response_format": (
+            response_format(output_field, output_model) if mode == "json_schema" else {"type": "json_object"}
+        ),
         **dict(extras or {}),
         **dict(extra_body or {}),
     }
@@ -332,6 +386,7 @@ class PredictorAdapterError(Exception):
         finish_reason: str | None = None,
         provider_observation: ProviderCallObservation | None = None,
         provider_reached: bool = False,
+        provider_detail: str | None = None,
     ) -> None:
         self.code = code
         self.retryable = retryable
@@ -339,6 +394,9 @@ class PredictorAdapterError(Exception):
         self.finish_reason = finish_reason
         self.provider_observation = provider_observation
         self.provider_reached = provider_reached or provider_observation is not None
+        # A bounded, secret-scrubbed summary of the provider's own error body. #310 was diagnosed with an
+        # offline probe because the 400 that named the exact rejection was discarded here.
+        self.provider_detail = provider_detail
         super().__init__(code)
 
 
@@ -480,6 +538,7 @@ class ChatCompletionsPredictorAdapter:
                 f"news_program_provider_http_{reply.status_code}",
                 retryable=reply.status_code in _RETRYABLE_STATUS,
                 provider_reached=True,
+                provider_detail=provider_error_detail(reply.payload),
             )
         if reply.payload is None:
             raise PredictorAdapterError("news_program_provider_body_not_json", retryable=False, provider_reached=True)
@@ -560,6 +619,30 @@ def choice_content(payload: Mapping[str, Any]) -> str | None:
         return None
     content = message.get("content")
     return content if isinstance(content, str) and content.strip() else None
+
+
+def provider_error_detail(payload: Mapping[str, Any] | None) -> str | None:
+    """A bounded, secret-scrubbed summary of one provider error body.
+
+    Provider-authored text, so it is scrubbed with the same high-confidence secret patterns the artifact
+    loader applies and capped, then carried on the failed attempt's trace — the difference between reading
+    "This response_format type is unavailable now" in the audit row and reproducing the request offline to
+    learn the same thing (#310).
+    """
+
+    if not isinstance(payload, Mapping):
+        return None
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return None
+    code = str(error.get("code") or error.get("type") or "").strip()
+    message = str(error.get("message") or "").strip()
+    detail = ": ".join(part for part in (code, message) if part)
+    if not detail:
+        return None
+    for pattern in _HIGH_CONFIDENCE_SECRET_PATTERNS:
+        detail = pattern.sub("[redacted]", detail)
+    return detail[:200]
 
 
 def provider_call_metrics(payload: Mapping[str, Any]) -> ProviderCallMetrics:
@@ -769,7 +852,9 @@ __all__ = [
     "chat_request_body",
     "choice_content",
     "provider_call_metrics",
+    "provider_error_detail",
     "response_format",
+    "structured_output_mode",
     "system_message",
     "user_message",
     "wire_model_name",

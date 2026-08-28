@@ -743,6 +743,7 @@ class NewsSemanticProgram:
                 provider_cost_microusd=(observation.provider_cost_microusd if observation is not None else None),
                 finish_reason=(observation.finish_reason if observation is not None else exc.finish_reason),
                 error_code=exc.code,
+                error_detail=exc.provider_detail,
             )
             calls.append(call)
             # No `raw_output` here on purpose. A provider answer that reached this branch never parsed
