@@ -14,7 +14,7 @@ from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
-_READ_COMMANDS = frozenset({"status", "cases", "show", "replay-oi"})
+_READ_COMMANDS = frozenset({"status", "cases", "show"})
 
 
 def _now_ms() -> int:

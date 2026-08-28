@@ -445,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     trading_cases.add_argument("--limit", type=_positive_int, default=20)
     trading_replay = trading_subcommands.add_parser(
         "replay-oi",
-        help="read-only: every parsed OI fact in a window, and the rule each one stopped on (#265)",
+        help="source-native BAR replay with an audited artifact and immutable receipt (#286)",
     )
     trading_replay.add_argument(
         "--days",

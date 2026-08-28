@@ -79,6 +79,8 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
     gate = trading_settings_gate(settings)
     runtime_config = trading_config_from_settings(settings)
     try:
+        with repositories(settings, role="workers") as repos, repos.transaction():
+            repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         with repositories(settings, role="serve") as repos, repos.transaction():
             repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             snapshot, blacklist = repos.trading.replay_authority_snapshot(now_ms=now_ms)

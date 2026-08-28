@@ -845,8 +845,8 @@ positional arguments:
                         cold refresh of the Binance Demo execution capability
                         snapshot
     cases               list Trading cases newest first
-    replay-oi           read-only: every parsed OI fact in a window, and the
-                        rule each one stopped on (#265)
+    replay-oi           source-native BAR replay with an audited artifact and
+                        immutable receipt (#286)
     show                one case with its intent and current outcome
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying

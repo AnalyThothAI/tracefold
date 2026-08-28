@@ -735,33 +735,31 @@ Changing a threshold does not rewrite history: `gate_config_digest` is half the
 key, so an edit starts a new row and the old one stays as the record of what the
 old rule decided.
 
-### Which OI rule is actually binding (#265)
+### OI BAR replay and attribution (#286)
 
-`uv run tracefold trading replay-oi --days 7` replays every parsed OI fact in a
-window through the same pure functions the scanner runs — the source stage, the
-Candidate Gate and `oi_smart_money_momentum_v1` — and reports where each one
-stopped. It is read-only, runs as `serve`, writes nothing, and proposes no
-threshold: survivor counts per rule say which condition is binding, and reading
-a better number off the same window that produced them is how a lane ends up
-tuned to its own history.
+`uv run tracefold trading replay-oi --days 7 --venues
+binance.perp,hl.perp --fidelity bar_v1` freezes the bounded parsed OI source
+population, active capability snapshot and canonical blacklist, then fetches
+source-native public Binance/Hyperliquid OHLCV bars. It gives every selected
+source one terminal decision, coverage reason or fresh Nautilus
+`BacktestEngine` outcome and keeps capital admission separate from the Alpha
+decision.
 
-Two things it will not answer, both by design. The pre-move band and any
-outcome need market data the report does not fetch, so a fact that survives the
-deterministic rules is reported as `pending_market_context` with its
-measurements attached rather than as an entry. And freshness is excluded — every
-row in a seven-day window is stale against now, so replaying it would stop
-everything at `trigger_stale` and say nothing about the rules under test.
+This is a cold audited research command, not a read-only diagnostic. Before the
+Serve repeatable-read snapshot it uses one short Workers transaction to
+materialize timed blacklist expiry under the canonical revision contract. It
+then performs public market-data I/O outside database transactions, atomically
+publishes a content-addressed artifact under `--out`, and uses one final short
+Workers transaction to insert the immutable `trading_replay_runs` receipt.
+Rerunning an identical spec verifies and reuses the existing artifact/receipt.
 
-`target_cohort` is a separate list from the funnel and answers a different
-question: how often the three-dimensional shape occurs at all, ignoring
-liquidity, rank and routing. A frame in the cohort but not in `surviving` is the
-useful case — the shape occurred and something else refused it — and merging the
-two would make "the shape never happens" and "it happens and we cannot trade it"
-look identical when they call for opposite responses.
-
-The report carries `gate_config_digest` and `strategy_config_digest`, which are
-the digests the durable rows are filed under, so a report and the ledger it
-describes cannot silently be about different thresholds.
+The replay process never mounts Binance Demo execution credentials and never
+constructs an execution adapter or performs a provider order write. BAR-v1 is
+reported as BAR-v1: funding and portfolio drawdown remain unavailable, and
+missing source-native history receives a stable coverage reason rather than
+fabricated data. `run_id` binds the source rows, market slices, capability,
+blacklist payload, Gate, Strategy, regime, notional, execution policy, engine,
+fees and fidelity identities.
 
 ### Price Review plane (#88)
 

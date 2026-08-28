@@ -1694,12 +1694,13 @@ fenced entry per UTC day.
 ### OI BAR replay and attribution
 
 `tracefold trading replay-oi` is App-owned composition over public News and
-Trading interfaces. It reads the exact bounded OI projection plus the active
-capability and blacklist from one database snapshot, then fetches each fact's
-source-native Binance or Hyperliquid OHLCV bars. Every source fact receives
-exactly one terminal replay outcome. Alpha evaluation ignores the current
-blacklist; capital admission is a separate field, so research is not rewritten
-by today's deny policy.
+Trading interfaces. After one short Workers transaction materializes timed
+blacklist expiry, it reads the exact bounded OI projection plus the active
+capability and blacklist from one Serve repeatable-read snapshot, then fetches
+each fact's source-native Binance or Hyperliquid OHLCV bars. Every source fact
+receives exactly one terminal replay outcome. Alpha evaluation ignores the
+current blacklist; capital admission is a separate field, so research is not
+rewritten by today's deny policy.
 
 Every directional scenario produces a typed replay intent and runs in a fresh
 Nautilus `BacktestEngine`. Live and replay share the quantity, spread/drift,

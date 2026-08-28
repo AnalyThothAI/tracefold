@@ -1428,7 +1428,7 @@ Event with admission, grounded assets, and preliminary storyline. `news why
 and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
 
-The `trading` family is read-mostly and has no execution write command.
+The `trading` family is read-mostly and has no provider-execution write command.
 `trading status` reports the frozen Demo identity, target notional, control,
 Nautilus readiness, active/fenced/closed Intent counts, the day's funnel,
 durable admission counts, stage latency, Cases by trigger/strategy, and
@@ -1437,11 +1437,15 @@ the CLI does not infer flat, protection, PnL, or fees.
 
 `trading cases [--state] [--limit]` lists the Case ledger.
 `trading show <case-id>` returns exactly `case`, optional immutable `intent`,
-and optional current `outcome`. The only Trading writes are
+and optional current `outcome`. Operator control writes are
 `trading blacklist add|remove`, which manages the canonical deny-list, and
 `trading control running|close-only|paused`. `PAUSED` and `CLOSE_ONLY`
 block new entry fences but do not stop an already-fenced Nautilus lifecycle.
-`trading replay-oi --days N` is a read-only Candidate Gate/strategy report.
+`trading refresh-capabilities` appends and conditionally activates a capability
+snapshot. `trading replay-oi --days N` fetches public source-native BAR data,
+publishes one content-addressed artifact, materializes timed blacklist expiry
+through a short Workers transaction, and inserts one immutable replay receipt;
+it has no execution credentials and performs no provider order write.
 
 Trading consumes `news_trade_projection_v5`: separate editorial News,
 deterministic OI, and typed liquidation rows. The liquidation row preserves
