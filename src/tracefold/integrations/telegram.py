@@ -344,33 +344,33 @@ def _telegram_message(
 
     metadata_groups: list[str] = []
     if facts.assets:
-        metadata_groups.append(
-            "🎯 <b>标的</b>\n"
-            + "\n".join(
-                _telegram_asset_lines(
-                    facts.assets,
-                    market_line=market_line,
-                    ticker_links=ticker_links,
-                    market_movements=market_movements,
-                )
+        metadata_groups.extend(
+            _telegram_asset_blocks(
+                facts.assets,
+                market_line=market_line,
+                ticker_links=ticker_links,
+                market_movements=market_movements,
             )
         )
     if facts.direction or facts.magnitude:
         direction = _escape_html(facts.direction or "不明确")
-        magnitude = _escape_html(_MAGNITUDE_LABELS.get(facts.magnitude, facts.magnitude or "未知"))
-        judgment = [f"🧭 <b>方向</b>  {direction}", f"📊 <b>影响程度</b>  {magnitude}"]
+        magnitude = _escape_html(_MAGNITUDE_LABELS.get(facts.magnitude, facts.magnitude))
+        judgment = [f"🧭 <b>方向</b>  {magnitude}{direction}"]
         if facts.novelty:
             judgment.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
         metadata_groups.append("\n".join(judgment))
     elif facts.novelty:
         metadata_groups.append(f"🆕 <b>进展</b>  {_escape_html(facts.novelty)}")
+    footer: list[str] = []
+    timing = _telegram_timing_html(news_at_ms=news_at_ms, pushed_at_ms=pushed_at_ms)
+    if timing:
+        footer.append(timing)
     if facts.origin or source_url:
         source = _telegram_source_html(facts.origin, source_url)
         count = f" · {facts.report_count} 条报道" if facts.report_count is not None else ""
-        metadata_groups.append(f"🔗 <b>来源</b>  {source}{count}")
-    timing = _telegram_timing_html(news_at_ms=news_at_ms, pushed_at_ms=pushed_at_ms)
-    if timing:
-        metadata_groups.append(f"⏱ <b>时间</b>\n{timing}")
+        footer.append(f"🔗 <b>来源</b>  {source}{count}")
+    if footer:
+        metadata_groups.append("\n".join(footer))
     if metadata_groups:
         sections.append("\n\n".join(metadata_groups))
 
@@ -407,7 +407,7 @@ def _telegram_facts(value: str) -> _TelegramFacts:
     )
 
 
-def _telegram_asset_lines(
+def _telegram_asset_blocks(
     assets: Sequence[str],
     *,
     market_line: str,
@@ -417,7 +417,7 @@ def _telegram_asset_lines(
     movements = {
         movement.ticker: movement for movement in market_movements if isinstance(movement, ReaderMarketMovement)
     }
-    lines: list[str] = []
+    blocks: list[str] = []
     for asset in assets:
         ticker = _telegram_ticker_html(asset, ticker_links)
         movement = movements.get(asset)
@@ -434,15 +434,16 @@ def _telegram_asset_lines(
                 }[movement.one_hour_state]
             )
             day_change = _format_bps(movement.change_24h_bps) if movement.change_24h_bps is not None else "暂无"
-            lines.append(f"{ticker} 新闻后 {after_news}，1h {one_hour}，24h {day_change}")
-            continue
-        change_match = re.search(
-            rf"(?<![A-Z0-9.-]){re.escape(asset)}\s+\$[0-9,.]+\s+24h\s+(?P<pct>[+-]?[0-9]+(?:\.[0-9]+)?%)(?![A-Z0-9.-])",
-            market_line,
-        )
-        day_change = _escape_html(change_match.group("pct")) if change_match is not None else "暂无"
-        lines.append(f"{ticker} 新闻后 暂无，1h 暂无，24h {day_change}")
-    return lines
+        else:
+            after_news = "暂无"
+            one_hour = "暂无"
+            change_match = re.search(
+                rf"(?<![A-Z0-9.-]){re.escape(asset)}\s+\$[0-9,.]+\s+24h\s+(?P<pct>[+-]?[0-9]+(?:\.[0-9]+)?%)(?![A-Z0-9.-])",
+                market_line,
+            )
+            day_change = _escape_html(change_match.group("pct")) if change_match is not None else "暂无"
+        blocks.append(f"🎯 <b>标的</b>  {ticker}\n新闻后 {after_news}\n1h {one_hour}，\n24h {day_change}")
+    return blocks
 
 
 def _format_bps(value: int) -> str:

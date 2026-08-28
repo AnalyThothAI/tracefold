@@ -67,7 +67,11 @@ def _card(*, source_url: str = "https://www.coindesk.com/news/1") -> dict[str, o
 def _without_timing(value: object) -> str:
     """Keep layout assertions deterministic; timing has its own fixed-clock contract tests below."""
 
-    return str(value).rsplit("\n⏱ <b>时间</b>", maxsplit=1)[0].rstrip()
+    return "\n".join(
+        line
+        for line in str(value).splitlines()
+        if not line.startswith("新闻时间  ") and not line.startswith("推送时间  ")
+    ).rstrip()
 
 
 def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() -> None:
@@ -105,10 +109,11 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
     assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
-        "🎯 <b>标的</b>\n"
-        "BTC 新闻后 暂无，1h 暂无，24h +7.91%\n\n"
-        "🧭 <b>方向</b>  利多\n"
-        "📊 <b>影响程度</b>  明显\n"
+        "🎯 <b>标的</b>  BTC\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h +7.91%\n\n"
+        "🧭 <b>方向</b>  明显利多\n"
         "🆕 <b>进展</b>  新进展\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
@@ -122,6 +127,82 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
     assert receipt["message_id"] == 42
     assert len(str(receipt["target_sha256"])) == 64
     assert str(CHANNEL_ID) not in json.dumps(receipt)
+
+
+def test_sender_renders_the_compact_single_asset_layout() -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url="https://x.com/jukan05/status/1234567890123456789")
+    card["header"] = {
+        "title": {"content": "美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制"},
+        "template": "red",
+    }
+    card["elements"][0]["content"] = (
+        "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
+        "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
+        "压低美光产能利用率与现金流。\n"
+        "利空 · 新进展 · 影响明显 · MU · jukan05 · 10:48\n"
+        "行情 MU $127.00 24h -5.11%"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: 1_787_885_313_000,
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="MU",
+                    venue="binance.perp",
+                    venue_symbol="MUUSDT",
+                    base_symbol="MU",
+                    quote_asset="USDT",
+                ),
+            ),
+            market_movements=(
+                ReaderMarketMovement(
+                    ticker="MU",
+                    after_news_bps=0,
+                    return_1h_bps=-25,
+                    change_24h_bps=-511,
+                    one_hour_state="available",
+                ),
+            ),
+            news_at_ms=1_787_885_301_000,
+            observed_at_ms=1_787_885_301_000,
+        ),
+    )
+
+    ticker = '<a href="https://www.binance.com/en/futures/MUUSDT">MU</a>'
+    assert observed["text"] == (
+        "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
+        "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
+        "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
+        "压低美光产能利用率与现金流。\n\n"
+        f"🎯 <b>标的</b>  {ticker}\n"
+        "新闻后 0.00%\n"
+        "1h -0.25%，\n"
+        "24h -5.11%\n\n"
+        "🧭 <b>方向</b>  明显利空\n"
+        "🆕 <b>进展</b>  新进展\n\n"
+        "新闻时间  10:48:21\n"
+        "推送时间  10:48:33\n"
+        '🔗 <b>来源</b>  <a href="https://x.com/jukan05/status/1234567890123456789">jukan05 的推特</a>'
+    )
 
 
 def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
@@ -168,17 +249,21 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
     assert _without_timing(observed["text"]) == (
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
-        "🎯 <b>标的</b>\n"
-        "BTC-USDT 新闻后 暂无，1h 暂无，24h 暂无\n"
-        f"{ticker} 新闻后 暂无，1h 暂无，24h +7.91%\n\n"
-        "🧭 <b>方向</b>  利多\n"
-        "📊 <b>影响程度</b>  明显\n"
+        "🎯 <b>标的</b>  BTC-USDT\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h 暂无\n\n"
+        f"🎯 <b>标的</b>  {ticker}\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h +7.91%\n\n"
+        "🧭 <b>方向</b>  明显利多\n"
         "🆕 <b>进展</b>  新进展\n\n"
         '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
     )
 
 
-def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
+def test_sender_renders_each_asset_in_its_own_complete_market_block() -> None:
     observed: dict[str, object] = {}
     card = _card(source_url="https://x.com/serenity/status/1234567890123456789")
     card["header"]["template"] = "red"
@@ -247,11 +332,15 @@ def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
     assert _without_timing(observed["text"]) == (
         "🔴 <b>BTC ETF 净流入</b>\n\n"
         "资金从 BTC 轮动至 ETH\n\n"
-        "🎯 <b>标的</b>\n"
-        f"{btc} 新闻后 +1.10%，1h +0.80%，24h +3.20%\n"
-        f"{eth} 新闻后 -0.40%，1h 暂无，24h +1.70%\n\n"
-        "🧭 <b>方向</b>  利空\n"
-        "📊 <b>影响程度</b>  重大\n\n"
+        f"🎯 <b>标的</b>  {btc}\n"
+        "新闻后 +1.10%\n"
+        "1h +0.80%，\n"
+        "24h +3.20%\n\n"
+        f"🎯 <b>标的</b>  {eth}\n"
+        "新闻后 -0.40%\n"
+        "1h 暂无，\n"
+        "24h +1.70%\n\n"
+        "🧭 <b>方向</b>  重大利空\n\n"
         '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>'
     )
     assert "reply_markup" not in observed
@@ -290,10 +379,9 @@ def test_sender_shows_second_level_news_and_push_times() -> None:
     )
 
     assert str(observed["text"]).endswith(
-        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>\n\n'
-        "⏱ <b>时间</b>\n"
         "新闻时间  14:32:05\n"
-        "推送时间  14:32:13"
+        "推送时间  14:32:13\n"
+        '🔗 <b>来源</b>  <a href="https://www.bloomberg.com/news/articles/2026-08-28/bitcoin">彭博社</a>'
     )
     assert "处理时长" not in str(observed["text"])
 
@@ -320,7 +408,11 @@ def test_sender_keeps_known_push_time_when_news_time_is_missing() -> None:
     sender.prepare()
     sender.send_card(_card(), presentation=ReaderDeliveryPresentation())
 
-    assert str(observed["text"]).endswith("⏱ <b>时间</b>\n新闻时间  暂无\n推送时间  14:32:13")
+    assert str(observed["text"]).endswith(
+        "新闻时间  暂无\n"
+        "推送时间  14:32:13\n"
+        '🔗 <b>来源</b>  <a href="https://www.coindesk.com/news/1">CoinDesk</a> · 2 条报道'
+    )
 
 
 def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:
@@ -499,10 +591,11 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
     assert _without_timing(observed["text"]) == (
         "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
-        "🎯 <b>标的</b>\n"
-        "A&amp;B 新闻后 暂无，1h 暂无，24h 暂无\n\n"
-        "🧭 <b>方向</b>  利空\n"
-        "📊 <b>影响程度</b>  明显\n\n"
+        "🎯 <b>标的</b>  A&amp;B\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h 暂无\n\n"
+        "🧭 <b>方向</b>  明显利空\n\n"
         "🔗 <b>来源</b>  路透社"
     )
 
@@ -535,9 +628,14 @@ def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -
 
     assert _without_timing(observed["text"]) == (
         "⚪ <b>交易所恢复提现</b>\n\n"
-        "🎯 <b>标的</b>\n"
-        "BTC 新闻后 暂无，1h 暂无，24h 暂无\n"
-        "ETH 新闻后 暂无，1h 暂无，24h 暂无\n\n"
+        "🎯 <b>标的</b>  BTC\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h 暂无\n\n"
+        "🎯 <b>标的</b>  ETH\n"
+        "新闻后 暂无\n"
+        "1h 暂无，\n"
+        "24h 暂无\n\n"
         "🔗 <b>来源</b>  opennews"
     )
 
@@ -711,7 +809,8 @@ def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str
 
     assert "reply_markup" not in observed
     assert "<a href=" not in str(observed["text"])
-    assert "🔗 <b>来源</b>  CoinDesk · 2 条报道\n\n⏱ <b>时间</b>" in str(observed["text"])
+    assert str(observed["text"]).endswith("🔗 <b>来源</b>  CoinDesk · 2 条报道")
+    assert "⏱ <b>时间</b>" not in str(observed["text"])
 
 
 @pytest.mark.parametrize(

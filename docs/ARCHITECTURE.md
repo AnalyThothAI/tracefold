@@ -1239,12 +1239,15 @@ falls back to the last closed one-minute candle within 90 seconds. Binance is
 tried first, Hyperliquid second and OKX third; one row always retains the same
 venue and contract for all its anchors. `24h` is retained only from a fresh
 same-contract quote that explicitly declares `rolling_24h`. A missing value is
-shown as `暂无`, never borrowed from another window. Telegram renders each asset on its own row as
-`BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`, then renders direction and impact on two independent rows. It turns
+shown as `暂无`, never borrowed from another window. Telegram renders each asset as a separate four-line block:
+`🎯 标的 BTC`, `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%`; multiple assets repeat the complete block with
+a blank line between them. Impact and polarity share one direction row, such as `🧭 方向 明显利空`, while
+novelty remains separate. It turns
 the normalized reporting-origin
 text itself into the original-source HTTPS link (X/Twitter handles become `<handle> 的推特`; known wire brands
-use their reader names), so it has no separate source button. A final time row shows the original artifact or
-provider publication time and send-start time, both in the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
+use their reader names), so it has no separate source button. The footer has no time heading and lists the
+original artifact or provider publication time, send-start time, and normalized linked source in that order.
+Times use the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
 remain visible. This presentation context is not persisted and Feishu still receives the stable card unchanged.
 The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or

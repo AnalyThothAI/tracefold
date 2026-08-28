@@ -149,17 +149,19 @@ explicitly enabled invalid provider configuration makes Workers fail startup.
 On Telegram, a reader ticker is clickable only when the same quote read proves an exact Binance contract;
 perpetuals open the matching Futures contract and spot instruments open the matching base/quote trade page.
 Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
-Telegram projection lists one asset per line as
-`BTC 新闻后 +1.10%，1h +0.80%，24h +3.20%`. Current-vs-anchor and fixed 1 h returns come only from the
+Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
+`新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
+line between them. Current-vs-anchor and fixed 1 h returns come only from the
 same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
 push-minus-1H and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
 at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
 The calculation never mixes venues or contracts, needs no continuously collected tick history, and does not
 write these presentation returns into `reaction_v1`. The 24 h value appears only from that asset's fresh,
 same-contract `rolling_24h` quote. An unavailable value is labelled rather than replaced with another window.
-Direction and impact are two independent lines. The normalized source words carry
-the original HTTPS link; there is no separate source button. The time line names news publication,
-send start at whole-second precision in UTC+8; any missing
+Direction renders impact and polarity together on one line, such as `🧭 方向 明显利空`; novelty remains its
+own line. The footer has no time heading: it lists news publication time, send-start time, and then the
+normalized source words carrying the original HTTPS link, with no separate source button. Times use
+whole-second precision in UTC+8; any missing
 input is displayed as `暂无` without hiding known timestamps. The persisted reader card and Feishu payload are
 unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
