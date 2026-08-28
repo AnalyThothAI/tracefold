@@ -48,6 +48,7 @@ _MAGNITUDE_LABELS = {
 _HEADER_ICON = {"green": "🟢", "red": "🔴", "grey": "⚪"}
 _READER_TIMEZONE = timezone(timedelta(hours=8))
 _NEWSLIQUID_RELAY_HOSTS = frozenset({"news-history.newsliquid.com"})
+_NEWSLIQUID_REUTERS_PATH_RE = re.compile(r"^/b/nL[0-9A-Z]+$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,6 +522,10 @@ def _normalized_source_label(origin: str, source_url: str) -> str:
         # transport domain as a newsroom or guessing a publisher from an opaque article id.
         if normalized and lowered not in {host, "newsliquid", "opennews"}:
             return aliases.get(lowered, normalized)
+        # NewsLiquid's public viewer identifies its `nL…` wire ids as Reuters News. Keep this exact and
+        # fail closed: another relay id shape remains unidentified instead of inheriting the Reuters brand.
+        if parsed is not None and _NEWSLIQUID_REUTERS_PATH_RE.fullmatch(parsed.path):
+            return "路透社"
         return "原始媒体未识别（NewsLiquid 中转）"
     if host in {"jin10.com", "jin10.com.cn"} or host.endswith((".jin10.com", ".jin10.com.cn")):
         return "金十"

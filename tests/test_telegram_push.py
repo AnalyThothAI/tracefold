@@ -364,9 +364,14 @@ def test_sender_uses_source_url_host_when_card_origin_is_missing() -> None:
         (
             "news-history.newsliquid.com",
             "https://news-history.newsliquid.com/b/nL1N44P00N",
-            "原始媒体未识别（NewsLiquid 中转）",
+            "路透社",
         ),
         ("Reuters", "https://news-history.newsliquid.com/b/nL1N44P00N", "路透社"),
+        (
+            "news-history.newsliquid.com",
+            "https://news-history.newsliquid.com/b/opaque-provider-id",
+            "原始媒体未识别（NewsLiquid 中转）",
+        ),
         (
             "Reuters",
             "https://news-history.newsliquid.com.evil.test/b/nL1N44P00N",
