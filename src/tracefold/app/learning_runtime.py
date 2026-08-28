@@ -18,6 +18,7 @@ from tracefold.news.program.artifact import (
 )
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.graph import NewsSemanticProgram
+from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
 from tracefold.news.program.transport import (
     ChatCompletionsPredictorAdapter,
@@ -191,6 +192,7 @@ def active_arm_manifest(
     return ArmManifest(
         program_version=PROGRAM_VERSION,
         program_sha256=artifact.program_sha256,
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
         runtime_model_bindings_sha256=composition.runtime_model_bindings_sha256,
         # Composite identity for both bounded source assembly and candidate-conditioned selection.
         retrieval_sha256=NEWS_RETRIEVAL_SHA256,

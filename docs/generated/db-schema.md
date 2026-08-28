@@ -270,13 +270,15 @@
 | `epoch_id` | `TEXT` | False | `None` |
 | `starts_at_ms` | `BIGINT` | False | `None` |
 | `source_issue` | `TEXT` | False | `None` |
-| `program_factory_id` | `TEXT` | False | `None` |
+| `program_factory_id` | `TEXT` | True | `None` |
 | `artifact_schema_version` | `TEXT` | False | `None` |
 | `baseline_program_version` | `TEXT` | False | `None` |
 | `baseline_program_sha256` | `TEXT` | False | `None` |
 | `prior_evidence_disposition` | `TEXT` | False | `None` |
 | `reset_reason` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `bundle_sha` | `TEXT` | True | `None` |
+| `envelope_sha256` | `TEXT` | True | `None` |
 
 ## `news_learning_retention_state`
 

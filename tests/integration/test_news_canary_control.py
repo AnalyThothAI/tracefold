@@ -414,6 +414,10 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
     first = {
         "manifest_sha": "1" * 64,
         "stable_bundle_sha": "2" * 64,
+        "envelope_sha256": "4" * 64,
+        "artifact_schema_version": "news_program_strategy_artifact_v1",
+        "program_version": "news_semantic_program_v5",
+        "program_sha256": "5" * 64,
         "candidate_shas": ("3" * 64,),
         "image_digest": "sha256:first",
         "runtime_revision": "git:first",
@@ -449,6 +453,10 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
         repos.news.register_agent_runtime_manifest(
             manifest_sha="4" * 64,
             stable_bundle_sha="5" * 64,
+            envelope_sha256="6" * 64,
+            artifact_schema_version="news_program_strategy_artifact_v1",
+            program_version="news_semantic_program_v5",
+            program_sha256="7" * 64,
             candidate_shas=(),
             image_digest="sha256:second",
             runtime_revision="git:second",

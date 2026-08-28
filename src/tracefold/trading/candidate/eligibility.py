@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Any, get_args
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -31,7 +31,6 @@ from ..contracts import (
     LiquidationSourceContract,
     LiquidationTradeCandidate,
     NewsCandidateRow,
-    NewsLearningEpoch,
     NewsTradeCandidate,
     OiCandidateRow,
     OiTradeCandidate,
@@ -396,7 +395,7 @@ def _uses_current_news_generation(raw: object) -> bool:
         found = True
         if (
             not isinstance(source, Mapping)
-            or source.get("learning_epoch") not in get_args(NewsLearningEpoch)
+            or not str(source.get("learning_epoch") or "")
             or source.get("policy_version") != "news_triage_policy_v10"
             or source.get("program_version") != expected_program
         ):

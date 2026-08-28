@@ -61,17 +61,17 @@ from .contracts import (
     TriageContext,
     aggregate_program_usage,
 )
+from .identity import EXECUTION_ENVELOPE_SHA256
 from .runtime import (
-    PROGRAM_FACTORY_ID,
-    PROGRAM_LEARNING_EPOCH,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
     PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
     PROGRAM_ROUTE_DEADLINE_SECONDS,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
-    PredictorName,
 )
 from .signatures import (
+    PREDICTOR_INPUT_FIELDS,
+    PREDICTOR_OUTPUT,
     EventSemantics,
     ReaderCard,
 )
@@ -92,25 +92,15 @@ from .transport import (
     _is_retryable_exception,
 )
 
-# The bounded fields each Predictor is shown, in the fixed order the transport renders them.
-_PREDICTOR_INPUT_FIELDS: dict[PredictorName, tuple[str, ...]] = {
-    "event_semantics": ("evidence_json",),
-    "reader_card": ("evidence_json", "semantics_json"),
-}
-_PREDICTOR_OUTPUT: dict[PredictorName, tuple[str, type[BaseModel]]] = {
-    "event_semantics": ("semantics", EventSemantics),
-    "reader_card": ("card", ReaderCard),
-}
-
 
 def predictor_spec(state: PredictorState) -> PredictorSpec:
     """One Predictor's complete request shape, derived from its ready-to-execute state."""
 
-    output_field, output_model = _PREDICTOR_OUTPUT[state.name]
+    output_field, output_model = PREDICTOR_OUTPUT[state.name]
     return PredictorSpec(
         name=state.name,
         instruction=state.instruction,
-        input_fields=_PREDICTOR_INPUT_FIELDS[state.name],
+        input_fields=PREDICTOR_INPUT_FIELDS[state.name],
         output_field=output_field,
         output_model=output_model,
         max_tokens=state.max_tokens,
@@ -911,7 +901,7 @@ class NewsSemanticProgram:
             program_version=PROGRAM_VERSION,
             program_sha256=self.artifact.program_sha256,
             context_sha256=context_sha,
-            factory_id=self.artifact.factory_id,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             event_semantics_sha256=event_semantics_sha256,
             reader_card_sha256=reader_card_sha256,
             verdict_sha256=verdict_sha256,
@@ -955,8 +945,7 @@ class NewsSemanticProgram:
 
 
 __all__ = [
-    "PROGRAM_FACTORY_ID",
-    "PROGRAM_LEARNING_EPOCH",
+    "EXECUTION_ENVELOPE_SHA256",
     "PROGRAM_SCHEMA_VERSION",
     "PROGRAM_VERSION",
     "ChatCompletionsPredictorAdapter",

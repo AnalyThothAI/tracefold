@@ -25,13 +25,15 @@ import json
 from typing import Any
 
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
-from .contracts import LEARNING_EPOCH, LEARNING_PROFILE_ID
+from .contracts import LEARNING_PROFILE_ID
 
 EVALUATOR_VERSION = "news_candidate_evaluator_v2"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
-    "learning_epoch": LEARNING_EPOCH,
+    # No `learning_epoch` (#314). The profile names the gates a corpus must clear; which epoch a corpus was
+    # frozen in is a per-deployment fact carried by the dataset's own `learning_epoch` and `agent_cohort`,
+    # and naming it here made a static document claim to know the running bundle.
     # Coverage, not calendar: independent connected fact clusters by role, the strata both split halves
     # have to carry, and at least one safety case. #259 deleted `natural_days_min` from this set.
     "development": {

@@ -555,19 +555,21 @@ The trace binds `verdict_sha256`, `editorial_sha256`, Program version/SHA,
 runtime manifest/provider/model identity, every frozen `DecidePolicy` value,
 input/told/seen/storyline hashes and snapshots, every initial/re-ask execution,
 and per-Predictor request/input/upstream/output,
-finish reason, latency, token and cost identity. The rendered instruction is
-derived from `factory_id` plus the artifact's advisory, so the Program SHA
-already commits to it and the call trace no longer repeats a signature,
-instruction or demo digest. A told-only re-ask may restore
+finish reason, latency, token and cost identity, plus `envelope_sha256`: the
+computed identity of everything the code decided about the call. What the model
+was sent is the artifact's instruction unchanged, so the Program SHA already
+commits to it and the call trace no longer repeats a signature, instruction or
+demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
-`news_program_strategy_artifact_v1`, factory
-`tracefold.news.program.factory_v9`, source classifier
-`opennews_source_classifier_v1`, and epoch `program_v9`.
-The exact Program identity is its content SHA, not the display version alone.
+`news_program_strategy_artifact_v1`, and source classifier
+`opennews_source_classifier_v1`. The epoch is the running bundle's
+(`bundle_<sha8>`) and is not a declared version. The exact Program identity is
+its content SHA plus `envelope_sha256`, not the display version alone; see
+`docs/ARCHITECTURE.md` for the identity model.
 
 The normalized tuple `2000 / 实时清算 / market / market` is a separate
 deterministic contract composed after Gate v5; strategy id `2000` alone has no
@@ -581,25 +583,24 @@ side, quantity/notional/price semantics, completeness and throttle assumptions.
 Its current `complete=false` is a material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
-it is one canonical JSON document — `schema_version`, `factory_id`, the
+it is one canonical JSON document — `schema_version`, the
 `event_semantics_instruction` and `reader_card_instruction` texts, and the
-`program_sha256` over exactly those four values — carried in the application
+`program_sha256` over exactly those three values — carried in the application
 image as `<program_sha256>.json` and selected by the code-owned registry. Since
 #306 Phase 2 each instruction is the complete prompt for its Predictor rather
 than an advisory appended to a rendered stack, and the reviewed seed text lives
-in `tracefold/news/program/seed.py`; #310 re-issued the root under
-`factory_v9`, seed texts unchanged, when the structured-output envelope became
-endpoint-capable. The stable root is
-`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
+in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
+code identity is computed rather than declared. The stable root is
+`c71bd9041f26d8ee75f055dc0997a92a2b44c1fbdb0d00d1a2e9ecb18ee675a4`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
 `ProposalReceipt`, and since #202 it is *derived* at registration by re-applying
 the patch to the running stable rather than declared by the candidate.
-The graph, schemas, ordered code-owned RulePacks, renderer, normalizer,
-assembler, model route and execution budget are code, versioned by `factory_id`;
-a semantic change to any of them is an explicit factory bump, not a cascade of
-component hashes. Rendered instructions are derived bytes, never a
+The graph, schemas, normalizer, assembler, model route and execution budget are
+code, and `envelope_sha256` is computed over what that code renders; a semantic
+change to any of them moves that hash by construction, which one contract test
+pins. See `docs/ARCHITECTURE.md` for the identity model. Rendered instructions are derived bytes, never a
 second editable truth, and they contain no identity hash and no demo section.
 Loading fails closed on an unknown hash/version/factory, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
@@ -770,6 +771,12 @@ receipts, the active capability/blacklist revisions, the distinct bootstrap
 account-zero proof, TradeIntentV2, and immutable News instrument-listing
 validity events used by source-time replay. It requires `PAUSED` with no
 nonterminal Intent, rejects every new V1 insert, and has no downgrade.
+`20260828_0321` is #314's computed-identity cut and the last epoch migration
+there will be: `news_learning_epochs` gains `bundle_sha` and `envelope_sha256`,
+`epoch_id` is tied to `left(bundle_sha, 8)` by CHECK, `program_factory_id`
+becomes nullable, and `tracefold_workers` gains INSERT so the running deployment
+opens its own epoch at the startup barrier. UPDATE and DELETE stay revoked and
+the append-only trigger stays.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

@@ -127,10 +127,9 @@ provider exists. Item identity, Event identity, Gate admission, storyline keys,
 The only loadable semantic image is one canonical, content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
-holds a schema version, `factory_id` `tracefold.news.program.factory_v9`, and
-the two complete Predictor instructions; `program_sha256` is the canonical hash
-of exactly those four values. The loader re-verifies that hash, the schema and
-the factory, applies the instruction bounds — NFC, byte and estimated-token
+holds a schema version and the two complete Predictor instructions;
+`program_sha256` is the canonical hash of exactly those three values. The loader
+re-verifies that hash and the schema, applies the instruction bounds — NFC, byte and estimated-token
 size, template/script/URL/credential-header/injection markers, secret patterns
 (#306 Phase 2 retired the authority patterns with the layering they policed) —
 and rejects non-canonical or duplicate-keyed
@@ -138,8 +137,10 @@ JSON, non-finite numbers, unsafe or secret-bearing keys, a symlinked or
 traversing path, and a file whose name is not its own root.
 Everything the loader used to re-verify component by component — RulePacks, the
 graph, Signatures, the Adapter, the normalizer/assembler contracts, the model
-route, the token and deadline budgets — is code, versioned by `factory_id`, so
-it is proved by shipping the image rather than by the package hashing itself.
+route, the token and deadline budgets — is code, proved by shipping the image
+rather than by the package hashing itself. Its identity travels beside the
+artifact as the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the
+model.
 An optimizer's write set is those two instructions and nothing else; there is no
 DemoBank to write to, and the transport composes its two messages from the
 instruction and the bounded fields, so no demo path exists to reach a provider.
@@ -326,9 +327,9 @@ retry; a crash between send and ack terminalizes as `ambiguous_after_crash`.
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols. It
 never receives credentials, webhook material, or unrelated corpus context.
-Each Predictor instruction is rendered from `factory_id` plus the artifact's
-advisory, so the Program root commits to the exact bytes without a second
-per-Predictor digest, and there is no demonstration set. Every request is bound
+Each Predictor is sent the artifact's instruction unchanged, so the Program root
+commits to the exact bytes without a second per-Predictor digest, and there is no
+demonstration set. Every request is bound
 to the resolved runtime provider/model
 identity. The trace persists only validated semantic/card output plus bounded
 finish/usage/cost metadata; raw provider responses and hidden reasoning are not

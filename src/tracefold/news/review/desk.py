@@ -473,21 +473,41 @@ def _event_task_statement(event_id: str, *, evidence_version: int | None) -> Rev
     )
 
 
-def _coverage_statement(*, lower_ms: int, upper_ms: int, learning_epoch: str) -> ReviewReadStatement:
-    return ReviewReadStatement(
-        name="news_review_coverage_source",
-        sql="""
-            WITH current_epoch AS (
-              SELECT starts_at_ms
-                FROM news_learning_epochs
-               WHERE epoch_id = %s
-            ),
+# Which epoch is current is a join, not a constant (#314). An epoch is opened by the deployment that runs
+# under it and keyed to that deployment's bundle, so the active agent *is* the answer — and a desk that
+# derived it from an imported literal instead would keep reporting a live cohort after the deployment it
+# named had been replaced.
+_CURRENT_EPOCH_CTE = """
             active_agent AS (
               SELECT stable_sha
                 FROM news_review_active_agent_v1
                ORDER BY created_at_ms DESC
                LIMIT 1
-            )
+            ),
+            current_epoch AS (
+              SELECT epoch.epoch_id, epoch.starts_at_ms
+                FROM news_learning_epochs epoch
+                JOIN active_agent ON active_agent.stable_sha = epoch.bundle_sha
+            )"""
+
+
+def _epoch_of(stable_sha: str | None) -> str | None:
+    """The epoch label one bundle accrues under, or None when no deployment has been appointed.
+
+    Imported lazily: `CandidateEvaluator` imports the reader/rubric contract from this module, so a
+    module-level import of the learning contracts would close a cycle.
+    """
+
+    from ..learning.contracts import epoch_id_for_bundle
+
+    return None if not stable_sha else epoch_id_for_bundle(stable_sha)
+
+
+def _coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadStatement:
+    return ReviewReadStatement(
+        name="news_review_coverage_source",
+        sql=f"""
+            WITH {_CURRENT_EPOCH_CTE}
             SELECT source.*
               FROM news_review_task_source_v1 source
               JOIN current_epoch ON true
@@ -495,25 +515,16 @@ def _coverage_statement(*, lower_ms: int, upper_ms: int, learning_epoch: str) ->
              WHERE source.opened_at_ms >= greatest(%s, current_epoch.starts_at_ms)
                AND source.opened_at_ms < %s
                AND source.ingest_mode = 'live'
-               AND COALESCE(source.trace #>> '{agent_assignment,bundle_sha}', '') = active_agent.stable_sha
+               AND COALESCE(source.trace #>> '{{agent_assignment,bundle_sha}}', '') = active_agent.stable_sha
         """,
-        params=(learning_epoch, int(lower_ms), int(upper_ms)),
+        params=(int(lower_ms), int(upper_ms)),
     )
-
-
-def _current_learning_epoch() -> str:
-    # CandidateEvaluator imports the reader/rubric contract from this module,
-    # so resolve its epoch lazily rather than creating an import cycle.
-    from ..learning.contracts import LEARNING_EPOCH
-
-    return LEARNING_EPOCH
 
 
 def _pairwise_queue_statement(
     *,
     proposal: str,
     status: str,
-    learning_epoch: str,
     cursor: tuple[int, int, str] | None,
     limit: int,
 ) -> ReviewReadStatement:
@@ -527,22 +538,18 @@ def _pairwise_queue_statement(
             "(CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END, c.created_at_ms, c.case_id) > (%s, %s, %s)"
         )
         params.extend(cursor)
+    # One current-cohort filter, not two. The dataset's `learning_epoch` is derived from the very bundle
+    # named beside it, so comparing both said the same thing twice (#314).
+    current_cohort = (
+        "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
+        "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
+    )
     if status == "pending":
         filters.append("accepted_pair.review_id IS NULL")
-        filters.append("dataset.payload ->> 'learning_epoch' = %s")
-        filters.append(
-            "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
-            "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
-        )
-        params.append(learning_epoch)
+        filters.append(current_cohort)
     elif status == "accepted":
         filters.append("accepted_pair.review_id IS NOT NULL")
-        filters.append("dataset.payload ->> 'learning_epoch' = %s")
-        filters.append(
-            "dataset.payload #>> '{agent_cohort,bundle_sha}' = "
-            "(SELECT stable_sha FROM news_review_active_agent_v1 ORDER BY created_at_ms DESC LIMIT 1)"
-        )
-        params.append(learning_epoch)
+        filters.append(current_cohort)
     elif status != "all":
         raise ValueError("news_review_status_invalid")
     params.append(int(limit) + 1)
@@ -842,7 +849,6 @@ class ReviewDesk:
         statement = _pairwise_queue_statement(
             proposal=query.proposal,
             status=query.status,
-            learning_epoch=_current_learning_epoch(),
             cursor=cursor,
             limit=query.limit,
         )
@@ -878,8 +884,8 @@ class ReviewDesk:
         }
 
     def _proposals(self, query: DeskQuery) -> dict[str, Any]:
-        current_epoch = _current_learning_epoch()
         active_stable_sha = self._active_agent_cohort_sha()
+        current_epoch = _epoch_of(active_stable_sha)
         candidate_statement = _proposal_candidates_statement(query.limit)
         candidates = self._conn.execute(candidate_statement.sql, candidate_statement.params).fetchall()
         release_statement = _proposal_releases_statement()
@@ -1101,12 +1107,7 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
-        current_epoch = _current_learning_epoch()
-        statement = _coverage_statement(
-            lower_ms=lower,
-            upper_ms=self._now_ms,
-            learning_epoch=current_epoch,
-        )
+        statement = _coverage_statement(lower_ms=lower, upper_ms=self._now_ms)
         rows = self._conn.execute(statement.sql, statement.params).fetchall()
         accepted_by_task = self._accepted_event_tasks([str(row["event_id"]) for row in rows])
         cohorts: dict[str, dict[str, Any]] = {}
@@ -1152,20 +1153,19 @@ class ReviewDesk:
             bucket["accepted_pct"] = _pct(k, n)
             bucket["accepted_interval_95"] = _wilson(k, n)
         external = self._conn.execute(
-            """
-            WITH current_epoch AS (
-              SELECT greatest(%s, starts_at_ms) AS lower_ms
-                FROM news_learning_epochs
-               WHERE epoch_id = %s
+            f"""
+            WITH {_CURRENT_EPOCH_CTE},
+            window_lower AS (
+              SELECT greatest(%s, current_epoch.starts_at_ms) AS lower_ms FROM current_epoch
             )
-            SELECT count(source.snapshot_id) AS n, current_epoch.lower_ms
-              FROM current_epoch
+            SELECT count(source.snapshot_id) AS n, window_lower.lower_ms
+              FROM window_lower
               LEFT JOIN news_review_external_source_v1 source
-                ON source.occurred_at_ms >= current_epoch.lower_ms
+                ON source.occurred_at_ms >= window_lower.lower_ms
                AND source.occurred_at_ms < %s
-             GROUP BY current_epoch.lower_ms
+             GROUP BY window_lower.lower_ms
             """,
-            (lower, current_epoch, self._now_ms),
+            (lower, self._now_ms),
         ).fetchone()
         if external is None:
             raise RuntimeError("news_review_learning_epoch_missing")
@@ -1195,15 +1195,13 @@ class ReviewDesk:
               LEFT JOIN accepted_pair
                 ON accepted_pair.pairwise_case_id = c.run_sha || ':' || c.case_id
              WHERE c.dataset_role = 'validation'
-               AND dataset.payload ->> 'learning_epoch' = %s
                AND dataset.payload #>> '{agent_cohort,bundle_sha}' = (
                  SELECT stable_sha
                    FROM news_review_active_agent_v1
                   ORDER BY created_at_ms DESC
                   LIMIT 1
                )
-            """,
-            (_current_learning_epoch(),),
+            """
         ).fetchone()
         blind_case_n = int(blind["case_n"] or 0)
         blind_accepted_n = int(blind["accepted_case_n"] or 0)
@@ -1708,12 +1706,8 @@ class ReviewDesk:
         if not event_ids:
             return {}
         rows = self._conn.execute(
-            """
-            WITH current_epoch AS (
-              SELECT starts_at_ms
-                FROM news_learning_epochs
-               WHERE epoch_id = %s
-            )
+            f"""
+            WITH {_CURRENT_EPOCH_CTE}
             SELECT DISTINCT ON (j.task_id, j.task_version) j.*, a.created_at_ms AS accepted_at_ms
               FROM news_review_records_v1 a
               JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
@@ -1725,25 +1719,18 @@ class ReviewDesk:
                AND j.created_at_ms >= current_epoch.starts_at_ms
              ORDER BY j.task_id, j.task_version, a.created_at_ms DESC, a.review_id DESC
             """,
-            (_current_learning_epoch(), list(event_ids), READER_CONTRACT_VERSION),
+            (list(event_ids), READER_CONTRACT_VERSION),
         ).fetchall()
         return {(str(row["task_id"]), str(row["task_version"])): _review_public(row) for row in rows}
 
     def _event_matches_current_release(self, task: _VirtualTask) -> bool:
         row = self._conn.execute(
-            """
-            WITH active_agent AS (
-              SELECT stable_sha
-                FROM news_review_active_agent_v1
-               ORDER BY created_at_ms DESC
-               LIMIT 1
-            )
-            SELECT epoch.starts_at_ms, active_agent.stable_sha
-              FROM news_learning_epochs epoch
+            f"""
+            WITH {_CURRENT_EPOCH_CTE}
+            SELECT current_epoch.starts_at_ms, active_agent.stable_sha
+              FROM current_epoch
               JOIN active_agent ON true
-             WHERE epoch.epoch_id = %s
-            """,
-            (_current_learning_epoch(),),
+            """
         ).fetchone()
         if row is None:
             return False
@@ -1754,10 +1741,7 @@ class ReviewDesk:
         )
 
     def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
-        row = self._conn.execute(
-            "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id = %s",
-            (_current_learning_epoch(),),
-        ).fetchone()
+        row = self._conn.execute(f"WITH {_CURRENT_EPOCH_CTE} SELECT starts_at_ms FROM current_epoch").fetchone()
         return row is not None and int(at_ms) >= int(row["starts_at_ms"])
 
     def _active_agent_cohort_sha(self) -> str | None:
@@ -1893,11 +1877,12 @@ def _pairwise_task_public(task: _VirtualTask, *, accepted: Mapping[str, Any] | N
 
 
 def _pairwise_evidence_disposition(row: Mapping[str, Any]) -> str:
+    active_stable_sha = str(row.get("active_stable_sha") or "")
     return (
         "current"
-        if row.get("learning_epoch") == _current_learning_epoch()
-        and row.get("dataset_bundle_sha") == row.get("active_stable_sha")
-        and bool(row.get("active_stable_sha"))
+        if active_stable_sha
+        and row.get("dataset_bundle_sha") == active_stable_sha
+        and row.get("learning_epoch") == _epoch_of(active_stable_sha)
         else "audit_only"
     )
 
@@ -2426,18 +2411,8 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         ),
         _event_task_statement("event", evidence_version=None),
         _event_task_statement("event", evidence_version=1),
-        _coverage_statement(
-            lower_ms=lower,
-            upper_ms=int(now_ms),
-            learning_epoch=_current_learning_epoch(),
-        ),
-        _pairwise_queue_statement(
-            proposal="",
-            status="pending",
-            learning_epoch=_current_learning_epoch(),
-            cursor=None,
-            limit=30,
-        ),
+        _coverage_statement(lower_ms=lower, upper_ms=int(now_ms)),
+        _pairwise_queue_statement(proposal="", status="pending", cursor=None, limit=30),
         _proposal_candidates_statement(100),
         _proposal_releases_statement(),
         _proposal_reports_statement(),

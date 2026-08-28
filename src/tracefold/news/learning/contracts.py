@@ -25,7 +25,6 @@ from ..triage_rules import DecidePolicy
 # so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
 # report prints, and one readable name must not stand for two different sets of gates.
 LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
-LEARNING_EPOCH: Literal["program_v9"] = "program_v9"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
@@ -63,6 +62,26 @@ OptimizationOutcome = Literal["NO_OP", "REJECTED", "ADVANCE"]
 
 def _sha(value: Any) -> str:
     return canonical_sha(value)
+
+
+def epoch_id_for_bundle(bundle_sha: str) -> str:
+    """The learning epoch one running bundle accrues evidence under.
+
+    Derived, never declared (#314). An epoch used to be a hand-written `program_vN` opened by a hand-written
+    migration, which meant a deployment that changed behavior without anyone writing a migration kept
+    accruing evidence into the previous epoch — the shape of all three identity-clearing incidents. A bundle
+    already names everything a judgment is conditioned on: the two instructions, the computed execution
+    envelope, the four model slots, the retrieval contract and the policy. Keying the epoch to it makes
+    "behavior changed but the epoch did not" unrepresentable rather than merely discouraged.
+
+    The label is truncated for readability; `news_learning_epochs.bundle_sha` carries the whole identity and
+    is what every lookup joins on.
+    """
+
+    identity = str(bundle_sha)
+    if len(identity) != 64 or any(char not in "0123456789abcdef" for char in identity):
+        raise ValueError("news_learning_epoch_bundle_sha_invalid")
+    return f"bundle_{identity[:8]}"
 
 
 def _proposal_json(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -210,10 +229,16 @@ class ClosedWindow(BaseModel):
 
 
 class ArmManifest(BaseModel):
+    """Everything one running Program arm is conditioned on, and the bundle hash over all of it."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     program_version: str = Field(min_length=1, max_length=128)
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # The computed identity of the code around the two instructions (#314). It took over `factory_id`'s job
+    # in cohort compatibility, and it does the job better: a declared factory could stay put across an
+    # envelope change, and this cannot.
+    envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime_model_bindings_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     retrieval_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy: dict[str, Any]
@@ -327,7 +352,7 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: Literal["program_v9"] = LEARNING_EPOCH
+    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
 
@@ -572,7 +597,6 @@ def dataset_coverage(counts: Mapping[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "COMPILE_EPISODE_PROJECTION_SCHEMA",
-    "LEARNING_EPOCH",
     "LEARNING_PROFILE_ID",
     "LEARNING_PROGRAM_VERSION",
     "METRIC_JUDGE_MAX_TOKENS",
@@ -598,4 +622,5 @@ __all__ = [
     "ProposalReceipt",
     "dataset_coverage",
     "endpoint_fingerprint",
+    "epoch_id_for_bundle",
 ]

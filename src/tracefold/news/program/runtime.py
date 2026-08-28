@@ -4,10 +4,10 @@ Exact-by-default Pydantic configuration, the JSON-state safety rules that keep a
 duplicate keys, non-finite numbers, JSON constants and credential-shaped state, and the numbers the graph
 runs on: model route ceilings, the route deadline and the primary breaker.
 
-Those numbers are code, not artifact state. `factory_id` is the one behavior-compatibility version they move
-under: change the graph, the schemas, the rules, the renderer, the normalizer, the route or the execution
-budget and bump the factory, rather than cascading a component hash per file. Nothing here knows what a
-Program is; it is the floor every other `tracefold.news.program` module stands on.
+Those numbers are code, not artifact state, and nobody declares a version for them: `identity.py` renders
+what they compose and hashes the render, so changing the graph, the schemas, the rules, the normalizer,
+the route or the execution budget moves the Program's code identity by construction. Nothing here knows
+what a Program is; it is the floor every other `tracefold.news.program` module stands on.
 """
 
 from __future__ import annotations
@@ -149,15 +149,11 @@ PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v9"
-
 PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
-
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v9"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.
-# Only `factory_id` versions them now.
+# They are material of `identity.compute_execution_identity` instead.
 PROGRAM_EVENT_SEMANTICS_MAX_TOKENS: Final[int] = 1_200
 
 PROGRAM_READER_CARD_MAX_TOKENS: Final[int] = 600

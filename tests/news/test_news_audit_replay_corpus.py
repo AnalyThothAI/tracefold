@@ -33,7 +33,7 @@ _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
 _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6d0fd3"
-# #193 rebinds the report to the strategy-artifact Program identity: the receipt now names `factory_id`
+# #193 rebinds the report to the strategy-artifact Program identity: the receipt then named `factory_id`
 # where it named `state_sha256`, and the stable root moved with the hard cut. The corpus, every score and
 # every case result are byte-for-byte what the previous pin covered — re-hashing this report with the old
 # identity block still yields b234ba2fd4a3f0297e1e59b7a76b3a6ad58fb8f78de8929e73212106b68eccd3. Nothing about
@@ -54,6 +54,11 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # identity. This fixture has no frozen objective, so its corpus, case results and score pins remain unchanged;
 # only the report content address moves with that source receipt.
 #
+# #314 moves it for the narrowest reason yet, and the score pins below are again untouched: the report's
+# identity block names `envelope_sha256` where it named `factory_id`, and `program_sha256` moved because the
+# artifact lost that field. Nothing the metric reads changed — every assertion in this file except this one
+# content address passes unedited, which is the evidence that claim rests on.
+#
 # #259 moves it once more, and this time nothing about the *plan* moved either: the readiness report gained
 # the frozen dataset's `coverage` block and its schema went to v2, both inside `learning/objective.py`, which
 # the metric receipt commits to whole. Diffing the report against `main@f56f9a67` changes exactly two lines —
@@ -64,7 +69,7 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
 # request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
 # result are byte-identical again; only the identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "b8eae55d8625d8e41ac04a6ac64d978a4c9ffb2fe54af096883911f731ecc29a"
+_EXPECTED_REPORT_SHA256 = "cf7351fa1a470e26f288dd290369187b0f9cbfcecaf2f381aad34e4cac1a129d"
 
 
 @pytest.fixture(scope="module")
@@ -161,7 +166,7 @@ def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
 # is deliberately NOT re-stamped with the new sha: it was not produced by the new Program, and a fixture
 # that claims otherwise is a forged record. Its job here is unaffected, because that job is to prove the
 # *metric wiring* is unchanged, and `recorded` mode scores persisted verdicts without executing the
-# Program at all. Re-record it against `program_v9` once that epoch has accepted reviews.
+# Program at all. Re-record it against the current epoch once that epoch has accepted reviews.
 #
 # #306 Phase 1 is the first move that changes a score, and the pins above moved with it. The metric gained
 # the deterministic `reader_card_lint` component, and this fixture's cards are redaction markers rather
@@ -179,7 +184,7 @@ def test_audit_corpus_keeps_its_original_program_identity_and_recorded_mode_uses
     # The report names the Program it ran under; the corpus names the one that produced it.
     assert report.identity["program_sha256"] == shipped
     assert corpus["program_sha256"] == _V6_AUDIT_CORPUS_PROGRAM_SHA256
-    assert shipped != corpus["program_sha256"], "re-point this test once a program_v9 corpus is recorded"
+    assert shipped != corpus["program_sha256"], "re-point this test once a current-epoch corpus is recorded"
     assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v5"
     # Recorded mode uses the persisted complete DecisionResult and never replays today's policy.
     assert report.identity["policy_sha256"] is None

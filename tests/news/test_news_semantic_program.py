@@ -43,6 +43,7 @@ from tracefold.news.program.contracts import (
 from tracefold.news.program.graph import (
     NewsSemanticProgram,
 )
+from tracefold.news.program.identity import compute_execution_identity, execution_envelope
 from tracefold.news.program.runtime import PROGRAM_PREDICTOR_MAX_TOKENS
 from tracefold.news.program.seed import seed_instruction
 from tracefold.news.program.signatures import (
@@ -173,16 +174,16 @@ def test_builtin_artifact_is_registered_and_canonical() -> None:
     assert artifact.program_sha256 == artifact.computed_sha256()
 
 
-def test_stable_root_is_one_factory_and_two_instructions() -> None:
+def test_stable_root_is_two_instructions_and_nothing_else() -> None:
     artifact = load_stable_program_artifact()
 
     assert artifact.schema_version == "news_program_strategy_artifact_v1"
-    assert artifact.factory_id == "tracefold.news.program.factory_v9"
     assert artifact.event_semantics_instruction == seed_instruction("event_semantics")
     assert artifact.reader_card_instruction == seed_instruction("reader_card")
+    # #314 removed `factory_id`. What is left is exactly the write-set a human or GEPA may author, which
+    # is what makes "an artifact cannot claim a factory it is not running under" structural.
     assert set(artifact.model_dump(mode="json")) == {
         "schema_version",
-        "factory_id",
         "event_semantics_instruction",
         "reader_card_instruction",
         "program_sha256",
@@ -231,13 +232,24 @@ def test_any_instruction_byte_changes_the_program_identity(updates: dict[str, st
     assert changed.program_sha256 != base.program_sha256
 
 
-def test_factory_id_is_part_of_the_program_identity() -> None:
+def test_code_identity_is_computed_beside_the_artifact_not_declared_inside_it() -> None:
+    """The two halves of Program identity move for two different authors, and neither can fake the other.
+
+    The artifact hash covers the write-set and nothing else, so an unrelated code change leaves it still —
+    which is the property that lets a cohort survive a refactor. The envelope hash covers the code, so a
+    change to what the provider is sent moves it whether or not anyone remembered to say so. A declared
+    `factory_id` sat inside the artifact and did neither job honestly: it moved the write-set hash for a
+    code change, and it stayed put when the code changed and nobody edited the literal.
+    """
+
     artifact = load_stable_program_artifact()
     payload = artifact.model_dump(mode="json", exclude={"program_sha256"})
     assert artifact.program_sha256 == canonical_sha(payload)
+    assert "factory_id" not in payload
 
-    forked = dict(payload, factory_id="tracefold.news.program.factory_v10")
-    assert canonical_sha(forked) != artifact.program_sha256
+    envelope = execution_envelope()
+    envelope["route"]["deadline_seconds"] = int(envelope["route"]["deadline_seconds"]) + 1
+    assert canonical_sha(envelope) != compute_execution_identity()
 
 
 def test_the_predictor_prompt_is_the_artifact_instruction_and_nothing_else() -> None:
@@ -370,7 +382,7 @@ def test_codec_rejects_coercive_state_that_cannot_round_trip_exactly() -> None:
 def test_codec_rejects_a_duplicate_key_document() -> None:
     artifact = load_stable_program_artifact()
     document = ProgramStrategyArtifactCodec.encode(artifact).rstrip("\n")
-    duplicated = document[:-1] + ',"factory_id":"tracefold.news.program.factory_v7"}'
+    duplicated = document[:-1] + ',"schema_version":"news_program_strategy_artifact_v1"}'
 
     with pytest.raises(ValueError, match="artifact_json_invalid"):
         ProgramStrategyArtifactCodec.decode(duplicated)
@@ -1279,7 +1291,6 @@ def test_trusted_patch_applier_writes_exactly_the_two_instructions() -> None:
 
     candidate = apply_program_patch(parent, patch)
 
-    assert candidate.factory_id == parent.factory_id
     assert candidate.schema_version == parent.schema_version
     assert candidate.event_semantics_instruction == "Prefer explicit causal facts."
     assert candidate.reader_card_instruction == "Keep the mechanism concrete."
@@ -1355,6 +1366,8 @@ def test_program_schemas_carry_only_allowlisted_digests() -> None:
         (ProgramCallTrace, "runtime_model_sha256"),
         (ProgramCallTrace, "runtime_binding_sha256"),
         (ProgramTrace, "program_sha256"),
+        # The computed code identity a judgment ran under (#314), replacing the declared `factory_id`.
+        (ProgramTrace, "envelope_sha256"),
         (ProgramTrace, "context_sha256"),
         (ProgramTrace, "event_semantics_sha256"),
         (ProgramTrace, "reader_card_sha256"),

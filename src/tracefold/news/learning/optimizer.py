@@ -43,6 +43,7 @@ from ..program.artifact import (
     validate_program_instruction,
 )
 from ..program.graph import NewsSemanticProgram
+from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.runtime import PredictorName
 from ..program.transport import (
     ChatCompletionsPredictorAdapter,
@@ -895,7 +896,7 @@ def trajectory_receipt(run: Any) -> dict[str, Any]:
 def checkpoint_receipt(parent: ProgramStrategyArtifactV1, winner: Mapping[str, str]) -> dict[str, Any]:
     return {
         "schema": "tracefold.news.compile_checkpoint_receipt.v2",
-        "factory": parent.factory_id,
+        "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
         # The instruction text itself, not a digest of it: this receipt is the record of what the run
         # produced, and the winner's two instructions are already carried by the patch beside it.
         "predictors": {name: {"instruction": str(winner[name])} for name in COMPONENTS},

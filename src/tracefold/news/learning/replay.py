@@ -18,7 +18,6 @@ from ..program.artifact import ProgramStrategyArtifactV1
 from ..program.contracts import SemanticJudgment, TriageContext
 from ..program.graph import NewsSemanticProgram
 from ..program.runtime import (
-    PROGRAM_FACTORY_ID,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
 )
@@ -296,10 +295,7 @@ def load_recording_replay_capability(
     specs = {spec.arm: spec for spec in arms}
     if set(specs) != {"stable", "candidate"} or len(specs) != len(arms):
         raise RecordingReplayError("news_learning_recording_replay_arms_invalid")
-    if any(
-        spec.artifact.schema_version != PROGRAM_SCHEMA_VERSION or spec.artifact.factory_id != PROGRAM_FACTORY_ID
-        for spec in specs.values()
-    ):
+    if any(spec.artifact.schema_version != PROGRAM_SCHEMA_VERSION for spec in specs.values()):
         raise RecordingReplayError("news_learning_recording_replay_program_v1_unsupported")
     rows = conn.execute(
         """
