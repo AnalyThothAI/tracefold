@@ -1253,7 +1253,6 @@ def test_0320_to_0321_opens_the_table_to_the_runtime_without_letting_it_rewrite_
             conn.execute("UPDATE news_learning_epochs SET starts_at_ms = starts_at_ms + 1")
         conn.rollback()
 
-        # One bundle, one epoch: a second row for the same bundle cannot exist even under a different id.
         now_ms = int(time.time() * 1000)
         insert = (
             "INSERT INTO news_learning_epochs (epoch_id, starts_at_ms, source_issue, bundle_sha, "
@@ -1263,9 +1262,19 @@ def test_0320_to_0321_opens_the_table_to_the_runtime_without_letting_it_rewrite_
             "'news_program_strategy_artifact_v1', 'news_semantic_program_v5', %s, 'audit_only', "
             "'runtime_bundle_identity_change', %s)"
         )
+        # The label abbreviates its own bundle or the row does not exist. This is what makes the eight-hex
+        # id safe to look up by: it cannot drift from the identity it names, so "same bundle under another
+        # label" is unrepresentable rather than merely unexpected.
+        with pytest.raises(CheckViolation, match="news_learning_epoch_id_derives_from_bundle"):
+            conn.execute(insert, ("bundle_bbbbbbbb", now_ms, "a" * 64, "b" * 64, "c" * 64, now_ms))
+        conn.rollback()
+
+        # And one bundle gets one epoch. With the derivation constraint above, a repeated open resolves to
+        # the same label and loses on the primary key; the partial-unique index on `bundle_sha` sits behind
+        # that as defence for a future migration that changes how the label is derived.
         conn.execute(insert, ("bundle_aaaaaaaa", now_ms, "a" * 64, "b" * 64, "c" * 64, now_ms))
         with pytest.raises(UniqueViolation):
-            conn.execute(insert, ("bundle_bbbbbbbb", now_ms + 1, "a" * 64, "b" * 64, "c" * 64, now_ms + 1))
+            conn.execute(insert, ("bundle_aaaaaaaa", now_ms + 1, "a" * 64, "b" * 64, "c" * 64, now_ms + 1))
         conn.rollback()
 
         # A runtime row must carry both halves of its identity or neither.
