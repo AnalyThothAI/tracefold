@@ -39,7 +39,8 @@ def upgrade() -> None:
     )
     # Partial-unique, not plain unique: every historical row is NULL here and two NULLs do not collide in
     # PostgreSQL, but being explicit is what keeps a future migration from reading this as "bundles may
-    # repeat".
+    # repeat". With the derivation constraint below it, one bundle has exactly one epoch and one epoch
+    # names exactly one bundle — the label cannot drift from the identity it abbreviates.
     op.execute(
         "CREATE UNIQUE INDEX news_learning_epochs_bundle_sha_key "
         "ON news_learning_epochs (bundle_sha) WHERE bundle_sha IS NOT NULL"
@@ -52,7 +53,9 @@ def upgrade() -> None:
           ADD CONSTRAINT news_learning_epoch_envelope_sha
             CHECK (envelope_sha256 IS NULL OR envelope_sha256 ~ '^[0-9a-f]{64}$'),
           ADD CONSTRAINT news_learning_epoch_runtime_identity
-            CHECK ((bundle_sha IS NULL) = (envelope_sha256 IS NULL))
+            CHECK ((bundle_sha IS NULL) = (envelope_sha256 IS NULL)),
+          ADD CONSTRAINT news_learning_epoch_id_derives_from_bundle
+            CHECK (bundle_sha IS NULL OR epoch_id = 'bundle_' || left(bundle_sha, 8))
         """
     )
     op.execute("GRANT INSERT ON news_learning_epochs TO tracefold_workers")

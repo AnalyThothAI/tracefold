@@ -502,6 +502,17 @@ class LearningStorage:
             ),
         ).fetchone()
         if row is None:
+            # The insert lost. Either this bundle already has its epoch — the ordinary restart — or an
+            # unrelated bundle already holds the eight-hex label this one abbreviates to. The second is
+            # vanishingly unlikely and completely silent if left alone: the freeze that needed the epoch
+            # would fail hours later as `news_learning_epoch_not_deployed`, naming the wrong problem. So
+            # the barrier reads back what it lost to and refuses to start if it is not this bundle's.
+            existing = self.conn.execute(
+                "SELECT bundle_sha FROM news_learning_epochs WHERE epoch_id = %s",
+                (epoch_id_for_bundle(bundle_sha),),
+            ).fetchone()
+            if existing is None or str(existing["bundle_sha"] or "") != bundle_sha:
+                raise ValueError("news_learning_epoch_id_collision")
             return False
         # A canary compares a candidate against the stable arm it was registered under. That arm no longer
         # runs here, so every nonterminal activation is comparing against something absent — the same

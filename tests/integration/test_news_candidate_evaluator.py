@@ -3770,3 +3770,40 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
     assert case["evaluation_stage"] == "canary"
     assert case["stable_observation"]["not_assigned"] is True
     assert case["candidate_observation"]["delivery"] == "observed_sent"
+
+
+def test_an_epoch_label_claimed_by_another_bundle_fails_the_startup_barrier(conn) -> None:
+    """The eight-hex label is an abbreviation, and an abbreviation can in principle collide.
+
+    Left alone the collision is silent: the losing deployment starts, runs, and the freeze that needed its
+    epoch fails hours later as `news_learning_epoch_not_deployed` — a message about the wrong thing. The
+    barrier reads back what its insert lost to and refuses instead.
+    """
+
+    stable = _arm()
+    impostor = "f" * 8 + "0" * 56
+    repositories = repositories_for_connection(conn)
+    with repositories.transaction():
+        assert (
+            repositories.news.open_learning_epoch(
+                bundle_sha=impostor,
+                envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+                artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+                program_version=stable.program_version,
+                program_sha256=stable.program_sha256,
+                now_ms=NOW,
+            )
+            is True
+        )
+
+    colliding = impostor[:8] + "1" * 56
+    assert epoch_id_for_bundle(colliding) == epoch_id_for_bundle(impostor)
+    with pytest.raises(ValueError, match="news_learning_epoch_id_collision"), repositories.transaction():
+        repositories.news.open_learning_epoch(
+            bundle_sha=colliding,
+            envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+            artifact_schema_version=PROGRAM_SCHEMA_VERSION,
+            program_version=stable.program_version,
+            program_sha256=stable.program_sha256,
+            now_ms=NOW + 1,
+        )
