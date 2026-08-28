@@ -27,6 +27,7 @@ from ..program.transport import (
     choice_content,
     provider_call_metrics,
     provider_error_detail,
+    reject_owned_model_kwargs,
 )
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 
@@ -162,23 +163,7 @@ class MetricJudgeEndpoint:
         model_kwargs: Mapping[str, Any] | None = None,
         transport: Any = None,
     ) -> None:
-        extras = dict(model_kwargs or {})
-        owned = {
-            "api_key",
-            "api_base",
-            "base_url",
-            "max_tokens",
-            "messages",
-            "model",
-            "response_format",
-            "stream",
-            "temperature",
-        }
-        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
-        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
-        overlap = owned.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
-        if overlap:
-            raise ValueError(f"news_program_compile_metric_judge_kwargs_owned:{','.join(sorted(overlap))}")
+        extras = reject_owned_model_kwargs(model_kwargs, code="news_program_compile_metric_judge_kwargs_owned")
         self.model = str(model_name)
         self.api_base = str(api_base)
         self.max_tokens = int(max_tokens)

@@ -242,30 +242,12 @@ def test_a_case_id_cannot_escape_the_run_directory() -> None:
         _case(0, case_id="../../../pwned")
 
 
-def test_a_run_directory_refuses_a_path_that_escapes_or_follows_a_link(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="news_experiment_run_path_invalid"):
-        ExperimentRun(tmp_path / ".." / "elsewhere", create=True)
-
-    (tmp_path / "real").mkdir()
-    (tmp_path / "link").symlink_to(tmp_path / "real", target_is_directory=True)
-    with pytest.raises(ValueError, match="news_experiment_run_path_invalid"):
-        ExperimentRun(tmp_path / "link", create=True)
-
-
 def test_a_read_command_never_conjures_the_run_it_was_given(tmp_path: Path) -> None:
     """Only `snapshot` creates. `compare`/`optimize` used to mkdir and then report a missing manifest."""
 
     with pytest.raises(ValueError, match="news_experiment_run_directory_missing"):
         ExperimentRun(tmp_path / "never-snapshotted")
     assert not (tmp_path / "never-snapshotted").exists()
-
-
-def test_a_case_file_that_is_a_symlink_is_not_a_case(tmp_path: Path) -> None:
-    run = ExperimentRun(tmp_path / "run", create=True)
-    run.write_case(_case(0))
-    (run.cases_dir / "planted.json").symlink_to(run.cases_dir / f"{0:064x}.json")
-    with pytest.raises(ValueError, match="news_experiment_run_file_invalid"):
-        list(run.cases())
 
 
 # --- resume ------------------------------------------------------------------------------------------

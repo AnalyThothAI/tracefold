@@ -57,6 +57,7 @@ from ..program.transport import (
     _is_retryable_exception,
     provider_call_metrics,
     provider_error_detail,
+    reject_owned_model_kwargs,
     wire_model_name,
 )
 from .contracts import (
@@ -303,9 +304,6 @@ def _instruction_rejection(text: str) -> str | None:
 
 # --- the bounded GEPA run (was `compiler/gepa.py`) ------------------------------------------------
 
-_OWNED_LM_KWARGS = frozenset(
-    {"api_key", "api_base", "base_url", "max_tokens", "messages", "model", "stream", "temperature"}
-)
 # The task route answers the Program's own schemas, so it keeps production's determinism: temperature 0 and
 # the route's own token ceiling. The reflection role does something else entirely — it reads a minibatch of
 # failures and writes a whole new instruction — and the guidance for it is the opposite on every axis. Until
@@ -736,12 +734,7 @@ class ReflectionLM:
         model_kwargs: Mapping[str, Any] | None = None,
         transport: Any = None,
     ) -> None:
-        extras = dict(model_kwargs or {})
-        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
-        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
-        overlap = _OWNED_LM_KWARGS.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
-        if overlap:
-            raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
+        extras = reject_owned_model_kwargs(model_kwargs, code="news_program_compile_model_kwargs_owned")
         self.model_name = str(model_name)
         self._wire_model = wire_model_name(self.model_name)
         self._api_key = str(api_key)
