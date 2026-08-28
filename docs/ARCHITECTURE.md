@@ -1740,7 +1740,8 @@ execution projection, and the least-privilege grants for that separate runtime.
 `20260828_0323` adds the durable deleting/deleted/ambiguous lifecycle and five-venue evidence for confirmed
 untradeable single-name Telegram messages.
 `20260828_0324` closes the PostgreSQL `NULL`-truth gap in both delivery lifecycle shape constraints and rejects
-any preexisting partial edit or delete intent before replacing those constraints.
+any preexisting partial edit or delete intent before replacing those constraints; #325 owns its evidence-preserving
+repair and roll-forward plan.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

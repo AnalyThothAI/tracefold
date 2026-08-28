@@ -90,6 +90,7 @@ The operator-owned runtime directory is:
 
 ```text
 ~/.tracefold/config.yaml                 # 0600
+~/.tracefold/telegram_bot_token          # optional Telegram secret; 0600
 ~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
 ~/.tracefold/postgres_serve_password     # read-only runtime; 0600
 ~/.tracefold/postgres_workers_password   # writer runtime; 0600

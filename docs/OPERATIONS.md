@@ -977,6 +977,9 @@ index for authoritative five-venue single-name absence.
 `0324` replaces both lifecycle shape constraints with two-valued predicates so
 PostgreSQL `NULL` semantics cannot admit partial edit or delete intent. It fails
 closed if an existing row violates either lifecycle before replacing the constraints.
+Issue #325 owns the operator-approved recovery: keep the database at `0323`,
+repair only the invalid lifecycle tuple from provider evidence, and then roll
+forward to `0324`; never start an older-schema image after that migration commits.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
