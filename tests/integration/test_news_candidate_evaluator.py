@@ -1524,7 +1524,7 @@ def test_the_ledger_stores_a_prompt_candidate_under_the_identity_its_receipt_nam
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="Written through the repository.",
-            reader_card_instruction="",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
     written = repositories_for_connection(conn).news.append_proposal_artifact(
@@ -1649,7 +1649,7 @@ def test_a_candidate_is_only_as_good_as_the_write_set_it_names(conn) -> None:
             stable=stable,
             patch=PromptPatchV1(
                 event_semantics_instruction="An operator wrote this advisory by hand.",
-                reader_card_instruction="",
+                reader_card_instruction="Keep the mechanism concrete.",
             ),
             # No optimizer receipt and no objective summary: an external proposal claims nothing about how
             # it was produced, and registration binds it to the corpus it re-projected.
@@ -1731,7 +1731,7 @@ def test_a_candidate_requires_the_exact_persisted_write_set(
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction=f"A bounded fixture advisory for {mode}.",
-            reader_card_instruction="",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
     payload = registered.model_dump(mode="json")
@@ -1917,7 +1917,10 @@ def test_a_dataset_bound_baseline_scores_the_objective_corpus_and_republishes_it
         conn,
         development_sha=development.artifact_sha,
         stable=stable,
-        patch=PromptPatchV1(event_semantics_instruction="Dataset baseline parity.", reader_card_instruction=""),
+        patch=PromptPatchV1(
+            event_semantics_instruction="Dataset baseline parity.",
+            reader_card_instruction="Keep the mechanism concrete.",
+        ),
     )
     assert exported.episode_projection_root_sha256 == report.identity["episode_projection_root_sha256"]
     assert registered.objective_summary["episode_projection_root_sha256"] == exported.episode_projection_root_sha256
@@ -1958,7 +1961,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A stale population must never be registered.",
-            reader_card_instruction="",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
     )
     stale = _prompt_candidate(
@@ -2032,7 +2035,10 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
             conn,
             development_sha=development.artifact_sha,
             stable=stable,
-            patch=PromptPatchV1(event_semantics_instruction="Objective tamper baseline.", reader_card_instruction=""),
+            patch=PromptPatchV1(
+                event_semantics_instruction="Objective tamper baseline.",
+                reader_card_instruction="Keep the mechanism concrete.",
+            ),
         ).objective_summary
     )
     tampered_split = _prompt_candidate(
@@ -2040,7 +2046,8 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         development_sha=development.artifact_sha,
         stable=stable,
         patch=PromptPatchV1(
-            event_semantics_instruction="A split this corpus never produced.", reader_card_instruction=""
+            event_semantics_instruction="A split this corpus never produced.",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary={
             **honest_summary,
@@ -2054,7 +2061,8 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         development_sha=development.artifact_sha,
         stable=stable,
         patch=PromptPatchV1(
-            event_semantics_instruction="A legacy objective identity cannot be re-armed.", reader_card_instruction=""
+            event_semantics_instruction="A legacy objective identity cannot be re-armed.",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary=legacy_summary,
     )
@@ -2064,7 +2072,7 @@ def test_a_candidate_cannot_declare_an_objective_the_corpus_does_not_support(con
         stable=stable,
         patch=PromptPatchV1(
             event_semantics_instruction="A representative root this corpus never produced.",
-            reader_card_instruction="",
+            reader_card_instruction="Keep the mechanism concrete.",
         ),
         objective_summary={**honest_summary, "optimizer_case_root_sha256": "0" * 64},
     )
