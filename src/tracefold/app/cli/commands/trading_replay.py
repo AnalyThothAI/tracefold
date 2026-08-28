@@ -103,7 +103,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
     except RuntimeError as exc:
         return 1, {"ok": False, "error": str(exc)}
 
-    market_slices = asyncio.run(_fetch_market_slices(plans))
+    market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms))
     outcomes = immediate + evaluate_replay_market_slices(
         market_slices,
         strategy=strategy,
@@ -289,7 +289,7 @@ def _plans(
     return plans, immediate, research_rows
 
 
-async def _fetch_market_slices(plans: list[DirectionalReplayPlan]) -> list[ReplayMarketSlice]:
+async def _fetch_market_slices(plans: list[DirectionalReplayPlan], *, now_ms: int) -> list[ReplayMarketSlice]:
     semaphore = asyncio.Semaphore(8)
 
     async def fetch(plan: DirectionalReplayPlan) -> ReplayMarketSlice:
@@ -314,7 +314,7 @@ async def _fetch_market_slices(plans: list[DirectionalReplayPlan]) -> list[Repla
                 )
         except VenueExpectedError:
             return ReplayMarketSlice(plan, [], "market_history_missing", start_ms, end_ms)
-        bars = [_to_replay_bar(plan, bar) for bar in fetched if bar.close_at_ms <= end_ms]
+        bars = [_to_replay_bar(plan, bar) for bar in fetched if bar.close_at_ms <= min(end_ms, now_ms)]
         reason = None if bars else "market_history_missing"
         return ReplayMarketSlice(plan, bars, reason, start_ms, end_ms)
 

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+from decimal import Decimal
 from types import SimpleNamespace
 
+from tracefold.app.cli.commands import trading_replay as trading_replay_command
+from tracefold.integrations.venues import VenueBar
 from tracefold.trading import (
     BlacklistSnapshotV1,
     ExecutionCapabilitySnapshotV1,
@@ -71,6 +75,36 @@ def _snapshot() -> ExecutionCapabilitySnapshotV1:
         },
         excluded={},
     )
+
+
+def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) -> None:
+    plan = DirectionalReplayPlan(
+        source=_source(),
+        instrument=InstrumentRef(
+            exchange_id="binance",
+            venue="binance.perp",
+            provider_symbol="TUTUSDT",
+            base_symbol="TUT",
+            instrument_class="crypto",
+            quote_asset="USDT",
+            observed_at_ms=NOW,
+        ),
+        venue="binance.perp",
+        instrument_id=INSTRUMENT_ID,
+    )
+
+    async def fetched(*_args, **_kwargs):
+        return (
+            VenueBar(NOW - 300_000, NOW, *(Decimal("1") for _ in range(5))),
+            VenueBar(NOW, NOW + 300_000, *(Decimal("2") for _ in range(5))),
+        )
+
+    monkeypatch.setattr(trading_replay_command, "fetch_binance_bars", fetched)
+
+    market_slice = asyncio.run(trading_replay_command._fetch_market_slices([plan], now_ms=NOW))[0]
+
+    assert market_slice.end_ms > NOW
+    assert [bar.close_at_ms for bar in market_slice.bars] == [NOW]
 
 
 def test_blacklist_denies_capital_without_rewriting_directional_alpha(monkeypatch) -> None:
