@@ -853,6 +853,22 @@ def test_nautilus_poll_and_runtime_heartbeat_share_the_business_row(conn: Any) -
     assert runtime["nautilus_unexpected_exposure"] is False
 
 
+def test_event_projection_selects_the_complete_intent(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    intent = _intent()
+    assert repos.trading.insert_intent(intent) is True
+    conn.commit()
+
+    row = repos.trading.console_case_for_source_key(primary_source_key="source-case-intent-1")
+
+    assert row is not None
+    assert row["valid_until_ms"] == intent.valid_until_ms
+    assert row["created_at_ms"] == intent.created_at_ms
+    assert isinstance(row["updated_at_ms"], int)
+    assert row["case_state"] == "RUNNING"
+
+
 def _case_without_reset(connection: Any, *, case_id: str) -> None:
     connection.execute("UPDATE trading_cases SET state = 'ORDER_PREPARED' WHERE state = 'RUNNING'")
     connection.execute(

@@ -355,7 +355,7 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "strategy_id": str(row["strategy_id"]),
         "strategy_version": str(row["strategy_version"]),
         "trigger_kind": str(row["trigger_kind"]),
-        "created_at_ms": int(row["created_at_ms"]),
+        "created_at_ms": int(row["case_created_at_ms"] if "case_created_at_ms" in row else row["created_at_ms"]),
         "decided_at_ms": row.get("decided_at_ms"),
         "observed_at_ms": int(row["observed_at_ms"]),
         "policy_decision": row.get("policy_decision"),

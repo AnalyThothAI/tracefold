@@ -221,14 +221,18 @@ class QueryStorage:
                    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
                    c.manifest -> 'strategy_config' AS strategy_config,
                    (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason,
-                   c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms,
+                   c.policy_decision, c.policy_reason, c.observed_at_ms,
+                   c.created_at_ms AS case_created_at_ms, c.decided_at_ms,
                    i.intent_id, i.execution_environment, i.instrument_id, i.side,
-                   i.target_notional_usd, i.reference_price, i.execution_state,
+                   i.target_notional_usd, i.reference_price, i.valid_until_ms,
+                   i.execution_state,
                    i.execution_phase, i.terminal_outcome, i.reason_code,
                    i.entry_fenced_at_ms, i.actual_quantity, i.protected_quantity,
-                   i.avg_entry_price, i.avg_exit_price, i.opened_at_ms, i.closed_at_ms,
+                   i.avg_entry_price, i.avg_exit_price, i.stop_price,
+                   i.opened_at_ms, i.protected_at_ms, i.closed_at_ms,
                    i.flat_verified_at_ms, i.realized_pnl_amount, i.realized_pnl_currency,
-                   i.commissions_by_currency
+                   i.commissions_by_currency, i.created_at_ms, i.updated_at_ms,
+                   c.state AS case_state, c.observed_at_ms AS case_observed_at_ms
               FROM trading_cases c
               LEFT JOIN trading_intents i ON i.case_id = c.case_id
              WHERE c.primary_source_key = %s

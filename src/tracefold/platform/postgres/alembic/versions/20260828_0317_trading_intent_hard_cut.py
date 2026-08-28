@@ -21,6 +21,13 @@ def upgrade() -> None:
         """
         DO $cutover$
         BEGIN
+          LOCK TABLE trading_runtime_state, trading_cases, trading_intents, trading_orders,
+                     trading_order_observations IN SHARE ROW EXCLUSIVE MODE;
+          IF NOT EXISTS (
+            SELECT 1 FROM trading_runtime_state WHERE id = 1 AND control = 'PAUSED'
+          ) THEN
+            RAISE EXCEPTION 'trading_hard_cut_not_paused';
+          END IF;
           IF EXISTS (SELECT 1 FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')) THEN
             RAISE EXCEPTION 'trading_hard_cut_pending_case';
           END IF;

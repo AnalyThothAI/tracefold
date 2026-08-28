@@ -376,6 +376,7 @@ def _seed_pre_hard_cut_intent(conn: Any) -> None:
 @pytest.mark.parametrize(
     ("blocker", "error"),
     [
+        ("control", "trading_hard_cut_not_paused"),
         ("case", "trading_hard_cut_pending_case"),
         ("intent", "trading_hard_cut_nonterminal_intent"),
         ("order", "trading_hard_cut_active_legacy_order"),
@@ -386,11 +387,15 @@ def test_0317_refuses_every_durable_legacy_or_nonterminal_owner(blocker: str, er
     try:
         _fresh_schema_at(BEFORE_INTENT_HARD_CUT)
         conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            "UPDATE trading_runtime_state SET control = %s WHERE id = 1",
+            ("RUNNING" if blocker == "control" else "PAUSED",),
+        )
         if blocker == "case":
             _seed_pre_hard_cut_case(conn, case_id="pending-case", state="PENDING")
         elif blocker == "intent":
             _seed_pre_hard_cut_intent(conn)
-        else:
+        elif blocker == "order":
             _seed_pre_snapshot_order(
                 conn,
                 order_id="active-order",
@@ -413,6 +418,11 @@ def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at(BEFORE_INTENT_HARD_CUT)
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
         _upgrade("20260828_0317")
         conn = connect_postgres_test(read_only=False)
         _seed_pre_hard_cut_case(conn, case_id="emitted-case", state="INTENT_EMITTED")
