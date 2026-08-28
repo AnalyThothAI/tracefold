@@ -21,8 +21,8 @@ OpenNews Strategy WSS
   -> HTTP / React
 ```
 
-Beside that hot path runs one strictly bounded cold plane, the Price Review
-plane (#88): two polling loops in Workers read their own work from PostgreSQL,
+Beside that hot path runs one strictly bounded review plane, the Price Review
+plane (#88, #304): two polling loops in Workers read their own work from PostgreSQL,
 call public venue REST with no database connection held, and write two derived
 read models — latest-only current quotes and versioned Event Reactions. It is
 not a market lane: no tick history, no socket, no OI, no order book, and no
@@ -35,8 +35,10 @@ CandidateRunner in Workers reads persisted Triage/OI facts through two
 **public News projections**, freezes one content-addressed Case, decides it —
 arithmetic for an OI case, one Predictor call for a News one — and, only
 for the exact frozen Demo contract, atomically inserts one TradeIntent while
-advancing the Case. It shares the price plane's one-slot cold database
-admission rather than the four News lane slots.
+advancing the Case. It shares Event Reaction's one-slot heavy database
+admission rather than the four News lane slots; Quote plan/store uses an
+existing ordinary business permit so a Reaction backlog cannot age display
+quotes.
 
 One separate Nautilus process is the sole execution authority. It polls
 `trading_intents`, fences each economic entry before a provider write, owns
@@ -160,9 +162,9 @@ does not apply.
 | RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; retry/DLQ/recovery semantics remain explicit (#187) |
 | RabbitMQ event handoff | message delivery | durable backlog | Event ID | configured bounded Triage prefetch | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / no / no | versioned verdict persistence is idempotent; settlement gaps remain owned by #187 |
 | RabbitMQ verdict handoff | message delivery | durable backlog | Event ID + delivery kind | delivery prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | delivery ledger preserves the at-most-once reader contract; outbox/recovery gaps remain owned by #187 |
-| Binance spot quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
-| Binance perpetual quote/day quote | 20 s price; 300 s day reference | fresh through 60 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 groups; 100 requested symbols where supported | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
-| Hyperliquid quote | 20 s | fresh through 60 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 groups; one group request | shared cap 4 calls | 10 s turn / 8 s provider | no / yes / yes | failed or empty answer leaves the previous source row untouched |
+| Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
+| Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
+| Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=360 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
 | Binance candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
 | Hyperliquid candles | planned Event/Trading demand | useful while provider history exists | venue symbol + merged time range | shared Reaction cap 100 due rows; Trading policy bounded | shared Reaction cap 32 requests | shared Reaction cap 4; Trading serial | 8 s for Reaction; Trading adapter-owned | yes / merge identical ranges / no | unanswered Reaction work stays due; Trading cannot create a case without price evidence |
 | Binance instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | one catalogue snapshot | one family fetch; adapter owns spot/perp subrequests | venue families serial | 20 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
@@ -333,7 +335,7 @@ tracefold.news
   similarity.py       Program-bound reader-card similarity; relocation waits for an approved identity migration
   market_review/
     instruments.py / pricing.py  instrument and quote/reaction domain contracts
-    loops.py           the two cold polling loops and their one-slot DB lane
+    loops.py           current Quotes on ordinary DB admission; Event Reactions on one-slot heavy admission
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review/
     desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
@@ -426,8 +428,8 @@ Trading can consume News truth without a cross-domain import or a reach-through
 read.
 
 That seam is typed on both sides. Each business package declares the narrow
-port it needs from the process — `NewsDatabasePort`, `MarketReviewDatabasePort`,
-`TradingDatabasePort`, each just a bounded read and a bounded transaction — and
+port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
+`ReactionDatabasePort`, `TradingDatabasePort`, each just a bounded read and a bounded transaction — and
 `app/workers/wiring/database.py` implements them over `WorkerDatabase`, choosing
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
@@ -516,15 +518,17 @@ per-message ack are their fences.
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
 health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-deliverer`, `news-janitor`), the bounded cold loops
+`news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
 `news-reactions`), the one Trading loop when Trading is enabled
 (`trading-candidate`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
-sync task. The four cold loops poll public catalogues, prices and their own
-PostgreSQL work on code-owned cadences and admit their database work through a
-separate one-slot lane, never the four News hot-path slots.
+sync task. The polling loops read public catalogues and prices on code-owned
+cadences. Their database admission is explicit per capability: instrument
+snapshots use the four-slot News lane; current Quotes use ordinary business
+admission; Janitor, Event Reactions and Trading share the one-slot heavy
+admission. None creates another pool or worker.
 
 ## Product flows
 
@@ -571,24 +575,26 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
   -> Janitor: outbox catch-up, band expiry, 30/365-day Item retention,
-              bounded learning-evidence retention on the one-slot cold lane,
+              bounded learning-evidence retention on the one-slot heavy gate,
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
-#### Price Review plane (#88)
+#### Price Review plane (#88, #304)
 
-Two cold loops beside the hot path, sharing one instrument-resolution strategy
+Two bounded loops beside the hot path, sharing one instrument-resolution strategy
 and no state with it:
 
 ```text
 recent live Events + watchlist -> exact-symbol-first resolution (alias only as fallback,
   reference tiers never candidates) -> unique Price Instruments deduplicated by
   (venue, venue_symbol, price_kind) -> grouped by provider source
-  -> one batch REST request per source (Hyperliquid metaAndAssetCtxs /
-     spotMetaAndAssetCtxs / one per HIP-3 dex; Binance ticker/price, or
-     ticker/24hr on the one turn in 15 that refreshes its day reference, #109)
-  -> one latest-only row per source in news_quote_snapshots
+  -> mandatory current REST phase: <=12 source groups, concurrency 4, deadline 10 s;
+     preserve done, cancel+await pending, sample received_at_ms per normalized source response
+  -> all successful current sources in one short transaction, one latest-only row per source
+     in news_quote_snapshots
+  -> after commit, <=2 due Binance ticker/24hr calls in parallel update only the
+     in-process reference cache; the next natural current turn persists the reference
   -> GET /api/news/quotes (<=100 symbols, resolved server-side, fresh|stale|unavailable|unlisted)
 
 due Event-assets (live Events, pushed and held alike) -> pinned or resolved instrument
@@ -612,7 +618,7 @@ due; only a stable semantic reason (`instrument_unresolved`, `reference_only`,
 `history_expired`, `no_candle_within_gap`) terminalizes one. Price never enters
 the Gate, Triage, `decide()`, a throttle key or a ranking signal. Since card v10
 (#113) it does reach the reader's card, as display and only as display: one
-行情 line rendered from a `fresh` (<= 60 s) Quote Snapshot, never read back by
+行情 line rendered from a `fresh` (effective age <= 45 s) Quote Snapshot, never read back by
 any decision, and absent rather than approximated when no fresh value exists —
 68.7% of a week's cards carried one.
 
@@ -627,16 +633,26 @@ The price remains display-only: it cannot change OI judgment, policy, rank, or
 delivery eligibility, and a stale or unavailable quote silently removes the
 行情 line.
 
-The price and the day change are two questions on two cadences (#109). Binance
+The price and the day change are two questions on two cadences (#304 hard-cuts
+#109's replacement rule). Binance
 answers "what is it worth now" in 45.5 kB (`ticker/price`, whole USD-M market,
 weight 2) and both questions in 270 kB (`ticker/24hr`, weight 42) — 92% of the
-bigger payload is fields we never display, for symbols nobody asked about. So a
-Binance source alternates: `ticker/24hr` every 300 s, `ticker/price` on the
-turns between. The wide read **replaces** that turn's narrow read rather than
-joining it, which is what keeps "one batch request per source per turn" literally
-true and keeps an optional question off the mandatory one's deadline — a second
-request inside the same `asyncio.wait_for` would cancel the whole gather on a
-slow response and discard every price already fetched, on every venue.
+bigger payload is fields we never display, for symbols nobody asked about. Every
+turn therefore asks mandatory current first. The loop uses start-based,
+non-overlapping 20 s cadence; a turn taking 8 s sleeps 12 s and one taking 25 s
+starts the next turn immediately, without catch-up work. Binance spot/perp are
+in the first current wave. At the 10 s deadline every completed result is kept,
+pending tasks are cancelled and awaited, and all successful sources commit in
+one transaction. Each source is stamped when its own normalized response
+finishes rather than when the slowest source or database write finishes.
+
+Only after that transaction succeeds can the two due Binance day reads run in
+parallel. They update the bounded process-local `openPrice` cache and never
+perform a reference-only write; the next natural current snapshot carries the
+new reference. Thus a turn makes at most 12 current plus 2 day calls, and a day
+timeout cannot delay, replace or roll back a current price. Quote plan/store
+uses ordinary business admission; Event Reaction, Janitor and Trading keep the
+one-slot heavy gate over the same existing business pool.
 
 What the wide read caches is the rolling window's `openPrice`, **not** the
 percentage. `priceChangePercent` is `lastPrice/openPrice - 1`, and the numerator
@@ -647,18 +663,29 @@ a push. Caching the denominator instead means the percentage is recomputed from
 each turn's own price, and the only thing ageing is a 24 h window open, which
 moves 0.023% per turn.
 
-Nothing is cached for a read that failed or was cancelled, so a failed day read
-leaves the source due: it writes nothing that turn, its previous row ages, and
-the next turn asks again — the same stale-not-blank rule as any other venue
-failure, and the reason a good percentage can never be overwritten with a blank.
+Nothing is cached for a day read that failed or was cancelled, so the source
+remains due while its already-written current row stays intact. A reference is
+valid through 360,000 ms; at 360,001 ms, when missing, or when more than 5,000 ms
+in the future, only `change_pct` becomes `null`. The price, `change_basis`, raw
+timestamps and reference timestamp stay visible. Hyperliquid never adds a day
+request: its current response already carries `prevDayPx`, stamped with that
+current response's receipt time.
+
+Current freshness is one read-time calculation shared by Quote HTTP, status and
+Delivery. Receipt and applicable provider ages are exposed separately and
+clamped only for display; `effective_age_ms` is their maximum. A provider or
+receipt timestamp more than 5,000 ms in the future remains visible but forces
+`stale`. With no provider timestamp the basis is `received_only`; otherwise it
+is `source_and_received`. This is not a timer write and does not add another
+stored state.
+
 A symbol that joins the working set triggers a wide read immediately instead of
 waiting out the cadence, since the plan is ordered newest Event first and that
 symbol is the card the operator is looking at; coverage records what the last
 wide read *asked* for, so a symbol no venue lists cannot pin a source to the
 expensive endpoint. `binance.spot` asks by name on both endpoints, with the
 `symbols=` list dropped only on `ticker/24hr` past 100 symbols where the weight
-tiers make the whole market cheaper. Hyperliquid never alternates — its single
-request already carries `midPx` and `prevDayPx`.
+tiers make the whole market cheaper.
 
 ### Why the quote source is REST and not a WebSocket
 
@@ -673,7 +700,7 @@ rows do:
 |---|---|---|
 | REST `fapi/v1/ticker/price` @ 20 s (whole market) | 45.5 kB/turn | 0.20 GB |
 | REST `fapi/v1/ticker/24hr` @ 20 s (whole market) | 270.1 kB/turn | 1.19 GB |
-| REST after #109 (price @ 20 s + 24hr @ 300 s) | — | **0.26 GB** |
+| REST after #304 (mandatory price @ 20 s + post-store 24hr @ 300 s) | — | **0.27 GB** |
 | WSS `fstream` `!miniTicker@arr` (whole market) | **0 frames in 22 s** | — |
 | WSS spot `<sym>@miniTicker` x 218 | 185 B/frame, ~1 fps | ~3.5 GB |
 | WSS Hyperliquid `allMids` | 3.0 kB/s | 0.27 GB |
@@ -694,8 +721,8 @@ own architecture decision; (2) a product requirement names a freshness SLO
 tighter than the collector cadence, and someone can say what a reader does with
 it; (3) the venue's socket is verified to deliver from the deployment host for a
 sustained window; (4) its steady-state bandwidth measures lower than the
-REST plane it would replace at the accepted cadence — 0.26 GB/day for USD-M
-after #109, not the 1.19 GB/day figure that motivated the question. If it is ever built it
+REST plane it would replace at the accepted cadence — 0.27 GB/day for USD-M
+after #304, not the 1.19 GB/day figure that motivated the question. If it is ever built it
 must meet what the OpenNews receiver already meets — jittered reconnect with
 resubscription, forced reconnect before the venue's connection lifetime,
 ping/pong liveness, **a per-symbol staleness watchdog that degrades a

@@ -35,6 +35,7 @@ import { NewsEmptyNote, NewsPageShell, NewsTechnical } from "../chrome/NewsChrom
 import { NewsDirectionChip } from "../chrome/NewsDirectionChip";
 import { NewsKindBadge } from "../chrome/NewsKindBadge";
 import { NewsOutcomeBadge } from "../chrome/NewsOutcomeBadge";
+import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 import { NewsReactionValue } from "../chrome/NewsQuoteValue";
 
 import { NewsEventPager } from "./NewsEventPager";
@@ -74,7 +75,11 @@ export function NewsEventDetailPage({ eventId, token }: { eventId: string; token
       {query.isError && !detail ? (
         <PageState.Error error={query.error} onRetry={() => void query.refetch()} />
       ) : null}
-      {detail ? <EventDocument detail={detail} quotes={quotes} token={token} /> : null}
+      {detail ? (
+        <NewsQuoteReadState query={quotesQuery}>
+          <EventDocument detail={detail} quotes={quotes} token={token} />
+        </NewsQuoteReadState>
+      ) : null}
     </NewsPageShell>
   );
 }

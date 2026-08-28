@@ -775,15 +775,23 @@ reader/writer.
   Each result carries the requested symbol, the exact resolved symbol/base, the
   venue and venue symbol, instrument class, quote asset, price, `price_kind`
   (`last|mark|mid`), optional `change_pct` with the `change_basis` it came from
-  (`rolling_24h|provider_day`), provider and receipt timestamps, `age_ms`, and
-  one `state`: `fresh` (age <= 60 s, three collector turns), `stale`, `unavailable` (nothing quoted
-  yet) or `unlisted` (no venue we poll lists it). A price is a positive decimal
+  (`rolling_24h|provider_day`), `source_at_ms`, `received_at_ms`,
+  `received_age_ms`, optional `source_age_ms`, `effective_age_ms`, and
+  `freshness_basis` (`source_and_received|received_only`). It also carries the
+  independent `reference_at_ms` / `reference_age_ms` clock. `age_ms` does not
+  exist. `state` is `fresh` when every applicable raw clock is no more than
+  5,000 ms in the future and effective age is <=45,000 ms; otherwise a result
+  with a price is `stale`. `unavailable` (nothing quoted yet) and `unlisted`
+  (no venue we poll lists it) carry null timestamps, ages, basis and reference.
+  A price is a positive decimal
   string or `null`; it is never `0`, and a failed venue leaves the previous row
   in place rather than blanking it. `change_pct` is `null` until the venue's day
-  reference is known — always recomputed from the same response's price, never
-  carried over from another turn (#109) — and `source_at_ms` is `null` for venues
-  that publish no timestamp of their own (Hyperliquid always; `binance.spot`
-  between day reads). Current quotes are deliberately **not** feed
+  reference is known and becomes `null` again above 360,000 ms or beyond the
+  future-skew bound. Reference expiry removes only the percentage: current
+  price, basis and timestamps stay. Binance refreshes the reference only after
+  a successful current store and persists it on the next natural turn;
+  Hyperliquid's native reference shares the current receipt time. Current
+  quotes are deliberately **not** feed
   fields — a price that changed must not invalidate the Feed ETag or re-run its
   count query every three seconds.
 - `GET /api/news/symbols/{base}` returns what one `base_symbol` *is* (#207
@@ -865,7 +873,8 @@ reader/writer.
   response types with different words; no field named simply `change` carries
   either meaning.
 - `/api/news/status.price` reports per-source quote freshness (source key,
-  target and quote counts, age, state) and the Reaction backlog
+  target and quote counts, receipt/source/effective ages, freshness basis and
+  worst state across that source's applicable quotes) and the Reaction backlog
   (partial/complete/unavailable over 7 days) beside the pipeline's own health.
 
 ## CLI

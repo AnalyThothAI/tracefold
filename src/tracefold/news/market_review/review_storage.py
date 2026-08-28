@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -15,7 +15,7 @@ from .pricing import (
     REACTION_METRIC_VERSION,
     REVIEW_POTENTIAL_MISS_LIMIT,
     median_bps,
-    quote_state,
+    quote_freshness,
 )
 from .projections import _coverage_rows, _optional_int, _reaction_public
 
@@ -370,18 +370,44 @@ class ReviewStorage:
         """What an operator needs before the UI shows it: source freshness and Reaction backlog."""
 
         snapshots = self.quote_snapshots()  # type: ignore[attr-defined]
-        sources = [
-            {
-                "source_key": key,
-                "target_count": int(row.get("target_count") or 0),
-                "quote_count": len(row.get("quotes") or {}),
-                "age_ms": max(0, int(now_ms) - int(row["received_at_ms"])),
-                "state": quote_state(max(0, int(now_ms) - int(row["received_at_ms"]))),
-                "source_at_ms": _optional_int(row.get("source_at_ms")),
-                "received_at_ms": int(row["received_at_ms"]),
-            }
-            for key, row in sorted(snapshots.items())
-        ]
+        sources: list[dict[str, Any]] = []
+        for key, row in sorted(snapshots.items()):
+            received_at_ms = int(row["received_at_ms"])
+            entries = [entry for entry in (row.get("quotes") or {}).values() if isinstance(entry, Mapping)]
+            freshness = [
+                quote_freshness(
+                    measured_at_ms=now_ms,
+                    received_at_ms=received_at_ms,
+                    source_at_ms=_optional_int(entry.get("source_at_ms")),
+                )
+                for entry in entries
+            ]
+            source_ages = [item.source_age_ms for item in freshness if item.source_age_ms is not None]
+            source_times = [
+                value for entry in entries if (value := _optional_int(entry.get("source_at_ms"))) is not None
+            ]
+            sources.append(
+                {
+                    "source_key": key,
+                    "target_count": int(row.get("target_count") or 0),
+                    "quote_count": len(entries),
+                    "received_age_ms": max((item.received_age_ms for item in freshness), default=None),
+                    "source_age_ms": max(source_ages, default=None),
+                    "effective_age_ms": max((item.effective_age_ms for item in freshness), default=None),
+                    "freshness_basis": (
+                        "source_and_received" if source_ages else "received_only" if freshness else None
+                    ),
+                    "state": (
+                        "stale"
+                        if any(item.state == "stale" for item in freshness)
+                        else "fresh"
+                        if freshness
+                        else "unavailable"
+                    ),
+                    "source_at_ms": min(source_times, default=None),
+                    "received_at_ms": received_at_ms,
+                }
+            )
         row = self.conn.execute(
             """
             SELECT count(*) FILTER (WHERE state = 'partial') AS partial_n,

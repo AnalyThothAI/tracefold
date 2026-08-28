@@ -300,7 +300,12 @@ class _FakePriceRepository:
                 "change_basis_zh": "",
                 "source_at_ms": None,
                 "received_at_ms": None,
-                "age_ms": None,
+                "received_age_ms": None,
+                "source_age_ms": None,
+                "effective_age_ms": None,
+                "freshness_basis": None,
+                "reference_at_ms": None,
+                "reference_age_ms": None,
                 "state": "unlisted",
                 "state_zh": "无可交易合约",
             }
@@ -370,6 +375,54 @@ def test_news_exposes_read_routes_and_no_write_route_at_all() -> None:
 
 
 def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> None:
+    assert set(event_schemas.NewsQuoteData.model_fields) == {
+        "requested_symbol",
+        "symbol",
+        "base_symbol",
+        "venue",
+        "venue_symbol",
+        "instrument_class",
+        "quote_asset",
+        "price",
+        "price_kind",
+        "price_kind_zh",
+        "change_pct",
+        "change_basis",
+        "change_basis_zh",
+        "source_at_ms",
+        "received_at_ms",
+        "received_age_ms",
+        "source_age_ms",
+        "effective_age_ms",
+        "freshness_basis",
+        "reference_at_ms",
+        "reference_age_ms",
+        "state",
+        "state_zh",
+    }
+    assert set(status_schemas.NewsQuoteVenueData.model_fields) == {
+        "source_key",
+        "target_count",
+        "quote_count",
+        "received_age_ms",
+        "source_age_ms",
+        "effective_age_ms",
+        "freshness_basis",
+        "state",
+        "source_at_ms",
+        "received_at_ms",
+    }
+    assert {
+        "received_age_ms",
+        "source_age_ms",
+        "effective_age_ms",
+        "freshness_basis",
+        "reference_at_ms",
+        "reference_age_ms",
+    } <= {name for name, field in event_schemas.NewsQuoteData.model_fields.items() if field.is_required()}
+    assert {"received_age_ms", "source_age_ms", "effective_age_ms", "freshness_basis"} <= {
+        name for name, field in status_schemas.NewsQuoteVenueData.model_fields.items() if field.is_required()
+    }
     assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
     assert set(feed_schemas.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
@@ -771,6 +824,7 @@ def test_quotes_returns_one_result_per_requested_symbol(client) -> None:
     assert [quote["requested_symbol"] for quote in payload["data"]["quotes"]] == ["BTC", "ETH"]
     assert {quote["state"] for quote in payload["data"]["quotes"]} == {"unlisted"}
     assert payload["data"]["quotes"][0]["price"] is None  # never a fabricated zero
+    assert set(payload["data"]["quotes"][0]) == set(event_schemas.NewsQuoteData.model_fields)
 
 
 def test_the_symbol_card_names_every_contract_and_keeps_the_reference_tier_visible(client) -> None:

@@ -135,7 +135,7 @@ def _format_change(value: object, basis: object) -> str:
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
     """The market's own number for the assets already named on the facts line, or nothing at all.
 
-    Only `fresh` quotes render (the freshness rule is `pricing.quote_state`, not this module's). A `stale`,
+    Only `fresh` quotes render (the freshness rule is `pricing.quote_freshness`, not this module's). A `stale`,
     `unavailable` or `unlisted` answer leaves no line, no placeholder and no zero — #88's whole point is that
     "we have not managed to quote this" and "this is worth nothing" are different sentences.
 

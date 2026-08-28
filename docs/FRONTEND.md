@@ -343,10 +343,18 @@ the route components into the eager shell chunk.
   — Case states, Intent/Outcome states and rule keys are the capital lane's vocabulary,
   and a copy inside News would be a second place they could drift.
 
-  Polling: Feed every 3 seconds; the OI frame table every 5 seconds; Event
-  detail, Status and the trading reads every 15 seconds (one shared status query feeds the Feed
+  Polling: Feed every 3 seconds; the OI frame table every 5 seconds; Quote,
+  Event detail, Status and the trading reads every 15 seconds (one shared status query feeds the Feed
   header, the topbar health lamp, the OI monitor, the token page's rank window
   and `/news/status`). Token identity does not poll.
+  Quote batches preserve Feed order while deduplicating, select the first 100,
+  and only then sort that selected identity for the request/cache key. Their
+  interval pauses in a background tab and `refetchOnWindowFocus` immediately
+  revalidates on return. A stale server quote keeps its number with a visible
+  `陈旧 Xm` marker and three-clock tooltip. A failed poll with same-session LKG
+  keeps the cached number but dims it and shows
+  `行情读取失败 · 上次成功于 …`; a cold failure uses the shared error surface.
+  Neither client condition invents a fifth quote state.
   Feed, Event, and Status retain ETag revalidation and a `304` reuses the
   cached body. There is no archive, revision timeline, read state, favorites,
   subscriptions, per-Event AI panel, push inbox, notification settings,
@@ -569,3 +577,10 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     you actually left and returns you to it with its query state intact — the
     referrer travels as route state (`shared/routing/routeReferrer.ts`), and a
     cold token-page URL correctly falls back to 事件流.
+13. At `1920px`, `1366px`, `834px`, and `390px`, seed a stale quote and confirm
+    its number remains visible beside `陈旧 Xm`, the tooltip names venue plus
+    provider/receipt/reference clocks and ages, and the dense Feed has no page
+    overflow. Then fail a quote refetch: with LKG, confirm the cached number is
+    visibly degraded under `行情读取失败 · 上次成功于 …`; without cache, confirm
+    the shared loading/error surface renders. Background the tab long enough
+    to pause interval polling, return, and confirm one immediate quote refetch.

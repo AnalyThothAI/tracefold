@@ -17,7 +17,7 @@ export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
   // The oldest row in the table, because that is the only freshness the whole table can honour. A stale
   // quote stays on screen by design (#88), and a blanket "刚刚" would have been flatly wrong for it.
   const oldest = quotes.reduce((worst, quote) =>
-    (worst.age_ms ?? 0) >= (quote.age_ms ?? 0) ? worst : quote,
+    (worst.effective_age_ms ?? 0) >= (quote.effective_age_ms ?? 0) ? worst : quote,
   );
   return (
     <div className="news-quote-table">
@@ -33,7 +33,7 @@ export function NewsQuoteTable({ quotes }: { quotes: NewsQuote[] }) {
             <b>{quote.venue_symbol ?? quote.symbol}</b>
           </code>
           <NewsQuotePrice quote={quote} />
-          <NewsQuoteChange quote={quote} />
+          <NewsQuoteChange quote={quote} showStale={false} />
         </div>
       ))}
       <p className="news-quote-table-note">

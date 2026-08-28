@@ -17,9 +17,10 @@ from tracefold.app.learning_runtime import (
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import (
-    WorkerMarketReviewDatabase,
     WorkerNewsColdDatabase,
     WorkerNewsDatabase,
+    WorkerQuoteDatabase,
+    WorkerReactionDatabase,
 )
 from tracefold.app.workers.wiring.market_review import (
     _event_reaction_loop,
@@ -29,7 +30,7 @@ from tracefold.app.workers.wiring.market_review import (
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
-from tracefold.news.market_review.loops import MarketReviewDatabasePort
+from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
 from tracefold.news.oi_signals import OiPolicy
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
@@ -78,7 +79,8 @@ async def _wire_news_pipeline(
     bus = await _connect_news_bus(settings)
     news_db = WorkerNewsDatabase(db)
     cold_db = WorkerNewsColdDatabase(db)
-    market_review_db = WorkerMarketReviewDatabase(db)
+    quote_db = WorkerQuoteDatabase(db)
+    reaction_db = WorkerReactionDatabase(db)
 
     ws_client = OpenNewsWebSocketClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     history_client = (
@@ -105,7 +107,8 @@ async def _wire_news_pipeline(
         bus=bus,
         news_db=news_db,
         cold_db=cold_db,
-        market_review_db=market_review_db,
+        quote_db=quote_db,
+        reaction_db=reaction_db,
         finite=finite,
         arms=arms,
         receiver=receiver,
@@ -261,7 +264,8 @@ def _compose_news_pipeline(
     bus: RabbitMQBus,
     news_db: NewsDatabasePort,
     cold_db: NewsDatabasePort,
-    market_review_db: MarketReviewDatabasePort,
+    quote_db: QuoteDatabasePort,
+    reaction_db: ReactionDatabasePort,
     finite: FiniteOperations,
     arms: _ProgramArms,
     receiver: OpenNewsReceiver | None,
@@ -314,11 +318,11 @@ def _compose_news_pipeline(
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
         quotes=_quote_snapshot_loop(
             settings,
-            db=market_review_db,
+            db=quote_db,
             watchlist=sorted(watchlist_symbols),
             telemetry=telemetry,
         ),
-        reactions=_event_reaction_loop(settings, db=market_review_db, telemetry=telemetry),
+        reactions=_event_reaction_loop(settings, db=reaction_db, telemetry=telemetry),
     )
 
 

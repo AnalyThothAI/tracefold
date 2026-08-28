@@ -3151,17 +3151,6 @@
         "additionalProperties": false,
         "description": "One current quote (#88). `state` is derived when read, never maintained by a timer write.\n\n`unlisted` and `unavailable` answer different questions \u2014 \"no venue we poll lists this tag\" versus \"we have\nnot managed to quote it yet\" \u2014 and neither ever renders as a price of zero. `price_kind` and `change_basis`\nare explicit because a derivative mid must never be presented as a cash-equity last price.",
         "properties": {
-          "age_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Age Ms"
-          },
           "base_symbol": {
             "title": "Base Symbol",
             "type": "string"
@@ -3192,6 +3181,32 @@
               }
             ],
             "title": "Change Pct"
+          },
+          "effective_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Age Ms"
+          },
+          "freshness_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source_and_received",
+                  "received_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Basis"
           },
           "instrument_class": {
             "anyOf": [
@@ -3242,6 +3257,17 @@
             ],
             "title": "Quote Asset"
           },
+          "received_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Age Ms"
+          },
           "received_at_ms": {
             "anyOf": [
               {
@@ -3253,9 +3279,42 @@
             ],
             "title": "Received At Ms"
           },
+          "reference_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference Age Ms"
+          },
+          "reference_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reference At Ms"
+          },
           "requested_symbol": {
             "title": "Requested Symbol",
             "type": "string"
+          },
+          "source_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Age Ms"
           },
           "source_at_ms": {
             "anyOf": [
@@ -3314,6 +3373,12 @@
           "requested_symbol",
           "symbol",
           "base_symbol",
+          "received_age_ms",
+          "source_age_ms",
+          "effective_age_ms",
+          "freshness_basis",
+          "reference_at_ms",
+          "reference_age_ms",
           "state"
         ],
         "title": "NewsQuoteData",
@@ -3322,17 +3387,61 @@
       "NewsQuoteVenueData": {
         "additionalProperties": false,
         "properties": {
-          "age_ms": {
-            "title": "Age Ms",
-            "type": "integer"
+          "effective_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Age Ms"
+          },
+          "freshness_basis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "source_and_received",
+                  "received_only"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Freshness Basis"
           },
           "quote_count": {
             "title": "Quote Count",
             "type": "integer"
           },
+          "received_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received Age Ms"
+          },
           "received_at_ms": {
             "title": "Received At Ms",
             "type": "integer"
+          },
+          "source_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Age Ms"
           },
           "source_at_ms": {
             "anyOf": [
@@ -3350,6 +3459,11 @@
             "type": "string"
           },
           "state": {
+            "enum": [
+              "fresh",
+              "stale",
+              "unavailable"
+            ],
             "title": "State",
             "type": "string"
           },
@@ -3362,7 +3476,10 @@
           "source_key",
           "target_count",
           "quote_count",
-          "age_ms",
+          "received_age_ms",
+          "source_age_ms",
+          "effective_age_ms",
+          "freshness_basis",
           "state",
           "received_at_ms"
         ],

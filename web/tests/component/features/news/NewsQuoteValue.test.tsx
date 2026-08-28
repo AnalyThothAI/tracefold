@@ -33,14 +33,30 @@ describe("NewsQuotePrice / NewsQuoteChange", () => {
   });
 
   it("keeps a stale quote visible and marked rather than blanking it", () => {
-    const stale = newsQuoteFixture({ age_ms: 90_000, state: "stale", state_zh: "报价已陈旧" });
+    const stale = newsQuoteFixture({
+      effective_age_ms: 90_000,
+      received_age_ms: 90_000,
+      state: "stale",
+      state_zh: "报价陈旧",
+    });
     render(<NewsQuotePrice quote={stale} />);
 
     // The number stays: a blanked price looks exactly like a market that did not move. Staleness is carried
-    // by the dimmed state and named in the tooltip, where it costs the row no width.
+    // by the server state and a nearby age marker; hover is supporting detail, never the only signal.
     const price = screen.getByText("68,123.40");
-    expect(price).toHaveAttribute("data-state", "stale");
+    expect(price.closest("[data-state='stale']")).toBeInTheDocument();
+    expect(screen.getByText("陈旧 2m")).toBeInTheDocument();
     expect(price.getAttribute("title")).toContain("报价陈旧");
+  });
+
+  it("names provider, receipt, and reference clocks in the tooltip", () => {
+    render(<NewsQuotePrice quote={newsQuoteFixture()} />);
+
+    const title = screen.getByText("68,123.40").getAttribute("title") ?? "";
+    expect(title).toContain("提供方时间");
+    expect(title).toContain("Tracefold 接收");
+    expect(title).toContain("24H 参考");
+    expect(title).toContain("有效时效");
   });
 
   it("renders a price with no percentage, and does not claim a window it has no number for", () => {
