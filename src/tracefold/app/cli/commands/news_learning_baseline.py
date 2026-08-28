@@ -10,8 +10,9 @@ from tracefold.news.artifact_identity import canonical_json
 from .news_learning_documents import _write_json
 
 if TYPE_CHECKING:
-    # Annotation-only. A module-level import would pull DSPy (and litellm) into every
-    # `tracefold news learning ...` invocation, including the ones that never call a model.
+    # Annotation-only. A module-level import would pull the whole learning module tree
+    # (transport, judge, optimizer) into every `tracefold news learning ...` invocation,
+    # including the ones that never call a model.
     from tracefold.news.learning.baseline import BaselineMode
 
 _BASELINE_MODES: tuple[BaselineMode, ...] = ("recorded", "compile_live", "runtime_live")
