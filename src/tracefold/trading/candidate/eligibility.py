@@ -395,7 +395,7 @@ def _uses_current_news_generation(raw: object) -> bool:
         found = True
         if (
             not isinstance(source, Mapping)
-            or source.get("learning_epoch") != "program_v8"
+            or source.get("learning_epoch") != "program_v9"
             or source.get("policy_version") != "news_triage_policy_v10"
             or source.get("program_version") != expected_program
         ):

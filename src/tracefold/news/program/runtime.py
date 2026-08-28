@@ -149,11 +149,11 @@ PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v8"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v9"
 
 PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
 
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v8"
+PROGRAM_LEARNING_EPOCH: Final[str] = "program_v9"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

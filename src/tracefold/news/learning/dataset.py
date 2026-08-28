@@ -48,7 +48,7 @@ class DatasetSpec(BaseModel):
     window: ClosedWindow
     role: Literal["development", "validation"]
     profile_id: Literal["news_learning_release_v2"] = LEARNING_PROFILE_ID
-    learning_epoch: Literal["program_v8"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v9"] = LEARNING_EPOCH
     observation_ref: str | None = None
 
 
@@ -59,7 +59,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: Literal["program_v8"]
+    learning_epoch: Literal["program_v9"]
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int

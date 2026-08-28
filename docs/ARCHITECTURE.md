@@ -297,12 +297,12 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v8` epoch was opened for `news_semantic_program_v5`, and its
+current `program_v9` epoch was opened for `news_semantic_program_v5`, and its
 row keeps naming the factory, artifact schema and baseline root it was *opened*
-with; the running image is `tracefold.news.program.factory_v8` on the
+with; the running image is `tracefold.news.program.factory_v9` on the
 `news_program_strategy_artifact_v1` document. Every earlier Prompt/Program row
 remains append-only audit history. Only accepted `news_review_v4` evidence
-created in the v8 epoch and bound to the exact current factory/Program bundle
+created in the v9 epoch and bound to the exact current factory/Program bundle
 is eligible for metric v5, compiler, replay or release gates.
 Beside that plane, and deliberately not in it, sits the operator's fast loop
 (`tracefold.news.learning.experiment`, #193). It freezes one closed window into
@@ -907,15 +907,17 @@ per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
 The only executable generation is `news_semantic_program_v5` from
-`tracefold.news.program.factory_v8` in learning epoch `program_v8`.
+`tracefold.news.program.factory_v9` in learning epoch `program_v9`.
 Issue #193 hard-cuts the artifact to one canonical JSON document holding
 `schema_version` `news_program_strategy_artifact_v1`, one `factory_id`, and one
 instruction per Predictor. Issue #306 keeps that shape and changes what the two
 instructions *are*: each is now the complete prompt for its Predictor rather
 than a bounded advisory appended to a rendered stack, and the code-owned seed
-text lives in `tracefold/news/program/seed.py`. `program_sha256` is the
+text lives in `tracefold/news/program/seed.py`. Issue #310 re-issued the root
+under `factory_v9`, seed texts unchanged, when the transport's structured-output
+constraint became endpoint-capable. `program_sha256` is the
 canonical hash of exactly those four values, and the stable root is
-`c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
+`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
@@ -1285,7 +1287,7 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v8` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
+`program_v9` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and

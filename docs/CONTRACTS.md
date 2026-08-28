@@ -563,8 +563,8 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, factory
-`tracefold.news.program.factory_v8`, source classifier
-`opennews_source_classifier_v1`, and epoch `program_v8`.
+`tracefold.news.program.factory_v9`, source classifier
+`opennews_source_classifier_v1`, and epoch `program_v9`.
 The exact Program identity is its content SHA, not the display version alone.
 
 The normalized tuple `2000 / 实时清算 / market / market` is a separate
@@ -585,8 +585,10 @@ it is one canonical JSON document — `schema_version`, `factory_id`, the
 image as `<program_sha256>.json` and selected by the code-owned registry. Since
 #306 Phase 2 each instruction is the complete prompt for its Predictor rather
 than an advisory appended to a rendered stack, and the reviewed seed text lives
-in `tracefold/news/program/seed.py`. The stable root is
-`c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
+in `tracefold/news/program/seed.py`; #310 re-issued the root under
+`factory_v9`, seed texts unchanged, when the structured-output envelope became
+endpoint-capable. The stable root is
+`23bb047c1ca2e2caef2b713154f7d0fe5eabe98bfdaddb4417aa7a889982b754`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -755,6 +757,12 @@ is irreversible. Two byte changes land under that one identity migration —
 the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
 per Predictor, and the Program's self-owned chat transport composing the request
 envelope — deliberately paid once rather than twice.
+`20260828_0319` is #310's envelope hard cut: it appends the `program_v9` epoch
+for `factory_v9`, trips every armed or active canary, adds no column, and is
+irreversible. The structured-output constraint now follows the endpoint —
+`json_schema` where supported, `json_object` with the same schema inlined into
+the system message where not — which moves fallback-route prompt bytes while
+leaving both seed texts unchanged.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

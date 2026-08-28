@@ -61,7 +61,10 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # result and dimension outcome below is byte-identical, which is the whole claim this pin exists to check.
 # #288 rebinds the same report to factory v7 for the exact source-contract route. The corpus and every
 # score remain unchanged; only the release-identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "7f2f24572b59cd5d7b13f099e59269555c338c3ab49bd7261b105a2f05553213"
+# #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
+# request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
+# result are byte-identical again; only the identity block and the report root move.
+_EXPECTED_REPORT_SHA256 = "b8eae55d8625d8e41ac04a6ac64d978a4c9ffb2fe54af096883911f731ecc29a"
 
 
 @pytest.fixture(scope="module")
@@ -158,7 +161,7 @@ def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
 # is deliberately NOT re-stamped with the new sha: it was not produced by the new Program, and a fixture
 # that claims otherwise is a forged record. Its job here is unaffected, because that job is to prove the
 # *metric wiring* is unchanged, and `recorded` mode scores persisted verdicts without executing the
-# Program at all. Re-record it against `program_v8` once that epoch has accepted reviews.
+# Program at all. Re-record it against `program_v9` once that epoch has accepted reviews.
 #
 # #306 Phase 1 is the first move that changes a score, and the pins above moved with it. The metric gained
 # the deterministic `reader_card_lint` component, and this fixture's cards are redaction markers rather
@@ -176,7 +179,7 @@ def test_audit_corpus_keeps_its_original_program_identity_and_recorded_mode_uses
     # The report names the Program it ran under; the corpus names the one that produced it.
     assert report.identity["program_sha256"] == shipped
     assert corpus["program_sha256"] == _V6_AUDIT_CORPUS_PROGRAM_SHA256
-    assert shipped != corpus["program_sha256"], "re-point this test once a program_v8 corpus is recorded"
+    assert shipped != corpus["program_sha256"], "re-point this test once a program_v9 corpus is recorded"
     assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v5"
     # Recorded mode uses the persisted complete DecisionResult and never replays today's policy.
     assert report.identity["policy_sha256"] is None
