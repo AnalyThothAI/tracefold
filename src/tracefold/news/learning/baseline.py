@@ -11,7 +11,10 @@ Three modes, each with its own question and its own exclusions:
 ``compile_live``  Run the production `NewsSemanticProgram` against one task endpoint, with no fallback
                   route configured. This is literally what the optimizer evaluates (#306 Phase 3 collapsed
                   the separate optimizer student), so it is the optimizer's baseline; with one slot and no
-                  second route its failure rate is not production's.
+                  second route its failure rate is not production's. It is *not* stateless: the graph's
+                  fast retry, route deadline and primary breaker come with it, and an open breaker
+                  short-circuits later cases in the same run. `execution_scope` says so, because a report
+                  that claimed otherwise would invite reading a short-circuited stretch as measurement.
 ``runtime_live``  Run the configured `NewsSemanticProgram` through `composition.semantic_judge()`: four
                   slots, one shared fast retry per route, fallback restarting the graph, per-route deadline
                   and the primary circuit breaker. This is the production *Program route*, and nothing more —
@@ -79,13 +82,14 @@ BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefo
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
 _EXECUTION_SCOPE = {
     "recorded": ("no model call", "no policy replay", "scores the action that shipped"),
+    # #306 Phase 3 made this the production graph on one slot, so it inherits the graph's own controls.
+    # Only the second route is genuinely absent, and saying otherwise would let an operator read a run
+    # short-circuited by an open breaker as a stateless per-case measurement.
     "compile_live": (
-        "the graph GEPA optimizes",
-        "single task endpoint",
+        "the graph GEPA evaluates: the production Program on a single task endpoint",
         "no fallback route",
-        "no fast retry",
-        "no per-route deadline",
-        "no circuit breaker",
+        "one shared fast retry per route",
+        "per-route deadline and primary circuit breaker, both carried across cases within the run",
     ),
     "runtime_live": (
         "configured four-slot Program route",

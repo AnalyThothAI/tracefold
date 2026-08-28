@@ -1098,24 +1098,33 @@ class _MeteredPredictorAdapter:
             try:
                 response = await self._adapter.invoke(request, spec)
             except PredictorAdapterError as exc:
-                observation = exc.provider_observation
-                if observation is not None:
-                    # The provider answered and the answer did not parse: settle what it actually cost.
+                if exc.provider_reached:
+                    # The provider answered — with a refusal, an unparseable body or a truncation — so the
+                    # attempt is settled before anything else happens to it. An observation carries exact
+                    # usage; a bare status code carries none, and `_cost` then charges the operator's own
+                    # declared per-call ceiling, which is the safe direction. Skipping this is how a run of
+                    # 429s spends real provider work against a ledger that never moves: `before()` refuses
+                    # a call the budget cannot afford, but it accumulates nothing on its own.
+                    observation = exc.provider_observation
                     self._meter.after(
                         ProviderCallMetrics(
-                            response_model=observation.model,
-                            input_tokens=observation.input_tokens,
-                            output_tokens=observation.output_tokens,
-                            cached_tokens=observation.cached_tokens,
-                            total_tokens=observation.total_tokens,
-                            provider_cost_microusd=observation.provider_cost_microusd,
-                            finish_reason=observation.finish_reason,
+                            response_model=observation.model if observation else None,
+                            input_tokens=observation.input_tokens if observation else 0,
+                            output_tokens=observation.output_tokens if observation else 0,
+                            cached_tokens=observation.cached_tokens if observation else 0,
+                            total_tokens=observation.total_tokens if observation else 0,
+                            provider_cost_microusd=observation.provider_cost_microusd if observation else None,
+                            finish_reason=observation.finish_reason if observation else exc.finish_reason,
                         )
                     )
-                    raise
-                # A transport failure means the provider never returned a response, so nothing reported
-                # usage or cost. `before()` has already reserved this attempt's worst-case cost, so the
-                # budget stays bounded without a settle-up the provider never supplied.
+                    if not exc.retryable or attempt == _NUM_RETRIES:
+                        raise
+                    self.transport_retries += 1
+                    last = exc
+                    continue
+                # The request never arrived, so nothing reported usage and nothing was billed. `before()`
+                # refused to start it unless the budget could afford one worst-case call, which is the
+                # bound that matters when there is nothing to settle.
                 if not exc.retryable or attempt == _NUM_RETRIES:
                     self.transport_failures += 1
                     raise

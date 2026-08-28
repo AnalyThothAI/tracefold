@@ -186,6 +186,12 @@ def test_each_mode_publishes_the_route_facts_only_it_can_know() -> None:
     # them is what was bound to it, and `execution_scope` is where the report says so.
     assert compiled.route["answered_by"] == {"primary": 1}
     assert "no fallback route" in compiled.execution_scope
+    # And it must not go on claiming the controls it inherited. A scope that still said "no circuit
+    # breaker" would invite reading a stretch of cases short-circuited by an open one as measurement.
+    assert not any(
+        line.startswith("no fast retry") or line.startswith("no circuit") for line in compiled.execution_scope
+    )
+    assert any("circuit breaker" in line and "carried across cases" in line for line in compiled.execution_scope)
 
     program = NewsSemanticProgram(
         load_stable_program_artifact(),

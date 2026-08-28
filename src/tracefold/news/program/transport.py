@@ -314,6 +314,15 @@ class ProviderCallObservation(_ExactModel):
 
 
 class PredictorAdapterError(Exception):
+    """One failed Predictor call, and enough about it to charge and classify the attempt.
+
+    `provider_reached` is what separates "the provider refused" from "the request never arrived", and the
+    two settle differently: a refusal is a call the operator may be billed for even though it carries no
+    usage block, while a connection that never opened costs nothing. A meter that could not tell them
+    apart charged neither, so a run of 429s spent real provider work against a cost ledger that never
+    moved.
+    """
+
     def __init__(
         self,
         code: str,
@@ -322,12 +331,14 @@ class PredictorAdapterError(Exception):
         output_failure: bool = False,
         finish_reason: str | None = None,
         provider_observation: ProviderCallObservation | None = None,
+        provider_reached: bool = False,
     ) -> None:
         self.code = code
         self.retryable = retryable
         self.output_failure = output_failure
         self.finish_reason = finish_reason
         self.provider_observation = provider_observation
+        self.provider_reached = provider_reached or provider_observation is not None
         super().__init__(code)
 
 
@@ -468,9 +479,10 @@ class ChatCompletionsPredictorAdapter:
             raise PredictorAdapterError(
                 f"news_program_provider_http_{reply.status_code}",
                 retryable=reply.status_code in _RETRYABLE_STATUS,
+                provider_reached=True,
             )
         if reply.payload is None:
-            raise PredictorAdapterError("news_program_provider_body_not_json", retryable=False)
+            raise PredictorAdapterError("news_program_provider_body_not_json", retryable=False, provider_reached=True)
         payload = reply.payload
         metrics = provider_call_metrics(payload)
         observation = self._observation(metrics, elapsed=elapsed)

@@ -1188,3 +1188,57 @@ def test_the_reflection_role_keeps_its_metered_transport_retry() -> None:
     assert lm.transport_retries == 1
     # Both physical attempts are charged: a retry the budget could not see would not be a budget.
     assert meter.reflection_model_calls == 2
+
+
+def test_a_provider_that_refuses_is_still_charged_to_the_cost_budget() -> None:
+    """`before()` refuses a call the budget cannot afford; it does not accumulate anything itself.
+
+    So an attempt that reached the provider and came back 429 or 503 has to be settled, or a run of them
+    spends real provider-side work against a ledger that never moves and the usage receipt reports a run
+    as within a budget it exceeded. There is no usage block on a status error, so the settle charges the
+    operator's own declared per-call ceiling — the conservative direction, and the same one an unpriced
+    success takes.
+    """
+
+    from tracefold.news.program.transport import PredictorAdapterError
+
+    class _RefusingEndpoint(_MeteredTaskAdapter):
+        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+            raise PredictorAdapterError("news_program_provider_http_429", retryable=True, provider_reached=True)
+
+    meter = _BudgetMeter(_budget(max_task_model_calls=8), imputed_call_cost_microusd=5)
+    adapter = _MeteredPredictorAdapter(_RefusingEndpoint(), meter=meter)
+    spec = _spec()
+
+    with pytest.raises(PredictorAdapterError, match="http_429"):
+        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
+
+    # Three attempts (the retry is metered too), each charged the declared per-call ceiling.
+    assert meter.task_model_calls == 3
+    assert meter.actual_cost_microusd == 15
+    assert meter.imputed_cost_calls == 3
+
+
+def test_a_request_that_never_arrived_is_not_charged() -> None:
+    """The other half of the same rule: nothing answered, so nothing was billed.
+
+    Charging here would invent spend, and the bound that matters for an unarrived request is the one
+    `before()` already applied — it refuses to start a call the budget could not afford.
+    """
+
+    from tracefold.news.program.transport import PredictorAdapterError
+
+    class _UnreachableEndpoint(_MeteredTaskAdapter):
+        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+            raise PredictorAdapterError("news_program_transport_connecttimeout", retryable=True)
+
+    meter = _BudgetMeter(_budget(max_task_model_calls=8), imputed_call_cost_microusd=5)
+    adapter = _MeteredPredictorAdapter(_UnreachableEndpoint(), meter=meter)
+    spec = _spec()
+
+    with pytest.raises(PredictorAdapterError, match="connecttimeout"):
+        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
+
+    assert meter.task_model_calls == 3
+    assert meter.actual_cost_microusd == 0
+    assert adapter.transport_failures == 1
