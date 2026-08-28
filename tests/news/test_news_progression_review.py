@@ -52,3 +52,44 @@ def test_progression_verifier_confirms_only_a_named_candidate_and_uses_its_store
     visible = json.loads(request.inputs["evidence_json"])
     assert visible["current"]["headline_zh"] == "美光台湾工会初步罢工投票支持率达 80%"
     assert visible["candidates"][0]["headline_zh"] == "美光工会此前启动劳资协商"
+
+
+def test_progression_verifier_compacts_a_long_multiline_reason_before_it_reaches_delivery() -> None:
+    adapter = ScriptedPredictorAdapter(
+        [
+            {
+                "review": {
+                    "related": False,
+                    "candidate_i": -1,
+                    "reason_zh": (
+                        "两条新闻只是共享宽泛的行业标签，\n并不涉及同一个主体、同一个事件链或前后状态变化，"
+                        "因此不能把当前新闻定义成候选新闻的后续进展，也不应重复展示候选标题。"
+                    ),
+                }
+            }
+        ]
+    )
+    verifier = DspyProgressionVerifier(adapter=adapter, model_binding="progression_review.primary")
+
+    review = asyncio.run(
+        verifier.review(
+            event={"leader_title": "Current"},
+            verdict={"headline_zh": "当前新闻", "why_zh": "当前影响"},
+            candidates=[
+                {
+                    "i": 0,
+                    "headline_zh": "候选新闻",
+                    "tier": "recency",
+                    "similarity": 0.5,
+                    "ago_min": 5,
+                    "event_type": "other",
+                    "symbols": [],
+                }
+            ],
+        )
+    )
+
+    assert review.state == "rejected"
+    assert "\n" not in review.reason_zh
+    assert len(review.reason_zh) <= 60
+    assert review.reason_zh.endswith("…")

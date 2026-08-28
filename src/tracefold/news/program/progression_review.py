@@ -6,10 +6,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview
+from ..progression_review import (
+    PROGRESSION_REVIEW_REASON_MAX_CHARS,
+    PROGRESSION_REVIEW_TIMEOUT_SECONDS,
+    ProgressionReview,
+    compact_progression_reason,
+)
 from .dspy_adapter import PredictorAdapter, PredictorRequest
 
 PROGRESSION_REVIEW_VERSION = "news_progression_review_v1"
@@ -39,7 +44,12 @@ class _ExactModel(BaseModel):
 class ProgressionReviewAnswer(_ExactModel):
     related: bool
     candidate_i: int = Field(ge=-1)
-    reason_zh: str = Field(min_length=1, max_length=160)
+    reason_zh: str = Field(min_length=1, max_length=PROGRESSION_REVIEW_REASON_MAX_CHARS)
+
+    @field_validator("reason_zh", mode="before")
+    @classmethod
+    def _compact_reason(cls, value: object) -> str:
+        return compact_progression_reason(value)
 
     @model_validator(mode="after")
     def _candidate_matches_answer(self) -> ProgressionReviewAnswer:

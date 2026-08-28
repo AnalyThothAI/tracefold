@@ -34,7 +34,11 @@ from .program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
-from .progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionVerifier
+from .progression_review import (
+    PROGRESSION_REVIEW_REASON_MAX_CHARS,
+    PROGRESSION_REVIEW_TIMEOUT_SECONDS,
+    ProgressionVerifier,
+)
 from .source_contracts import EVENT_KINDS, EventKind, SourceContractReason
 from .told_context import NEWS_RETRIEVAL_SHA256
 from .tradability import (
@@ -48,6 +52,7 @@ from .tradability import (
 __all__ = [
     "EVENT_KINDS",
     "NEWS_RETRIEVAL_SHA256",
+    "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "REQUIRED_TRADABILITY_VENUES",
     "TRADABILITY_REVIEW_TIMEOUT_SECONDS",

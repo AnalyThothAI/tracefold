@@ -19,6 +19,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from tracefold.news import (
+    PROGRESSION_REVIEW_REASON_MAX_CHARS,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
     ReaderTradeTarget,
@@ -552,12 +553,12 @@ def _telegram_progression_review_html(
     reason: str | None,
     parent_age_minutes: int | None,
 ) -> str:
-    bounded_reason = _escape_html(_clip(str(reason or "").strip(), 88))
+    bounded_reason = _escape_html(_telegram_compact_progression_reason(reason))
     if value == "pending":
         return "<blockquote>⏳ <b>关联确认中</b></blockquote>"
     if value == "confirmed":
         age = _telegram_parent_age(parent_age_minutes)
-        suffix = f" ({age} 前)" if age else ""
+        suffix = f"({age} 前)" if age else ""
         detail = bounded_reason or "同一事件链出现了新的状态变化。"
         return f"<blockquote>✅ <b>已确认关联:</b> {detail}{suffix}</blockquote>"
     if value == "rejected":
@@ -567,6 +568,19 @@ def _telegram_progression_review_html(
         detail = bounded_reason or "后台复核暂未完成。"
         return f"<blockquote>⚠️ <b>关联待确认:</b> {detail}</blockquote>"
     return ""
+
+
+def _telegram_compact_progression_reason(value: object) -> str:
+    text = " ".join(str(value or "").split())
+    if not text:
+        return ""
+    if len(text) > PROGRESSION_REVIEW_REASON_MAX_CHARS:
+        return f"{text[: PROGRESSION_REVIEW_REASON_MAX_CHARS - 1].rstrip()}…"
+    if text.endswith(("。", "！", "？", "…", ".", "!", "?")):
+        return text
+    if len(text) == PROGRESSION_REVIEW_REASON_MAX_CHARS:
+        return f"{text[:-1].rstrip()}…"
+    return f"{text}。"
 
 
 def _telegram_parent_age(value: int | None) -> str:

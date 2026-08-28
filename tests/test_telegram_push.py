@@ -197,7 +197,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
         "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
         "🔄 <b>新进展</b>\n"
         "<blockquote>✅ <b>已确认关联:</b> 同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
-        " (1h 1mins 前)</blockquote>\n\n"
+        "(1h 1mins 前)</blockquote>\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"
@@ -323,6 +323,39 @@ def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
     assert initial["pushed_at_ms"] == 1_787_885_313_000
     assert updated["pushed_at_ms"] == initial["pushed_at_ms"]
     assert updated["edited_at_ms"] == 1_787_885_315_000
+
+
+def test_sender_keeps_an_unavailable_progression_reason_to_one_nested_line() -> None:
+    observed: dict[str, object] = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        _card(),
+        presentation=ReaderDeliveryPresentation(
+            novelty="progression",
+            progression_review_state="unavailable",
+            progression_review_reason="上游复核服务暂时不可用，\n请稍后确认。",
+        ),
+    )
+
+    assert (
+        "🔄 <b>新进展</b>\n<blockquote>⚠️ <b>关联待确认:</b> 上游复核服务暂时不可用， 请稍后确认。</blockquote>"
+    ) in str(observed["text"])
 
 
 def test_sender_deletes_only_the_exact_receipted_message() -> None:
