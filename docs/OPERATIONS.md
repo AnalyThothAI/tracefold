@@ -74,7 +74,9 @@ fresh account-wide `nautilus_bootstrap_account_zero_at_ms` proof while
 `/readyz` correctly remains red, refreshes/activates the snapshot, stops that
 process, and recreates the normal capability-governed Nautilus service. This
 same sequence handles both first activation and replacement, including recovery
-from an old snapshot that the provider can no longer load. Deploy/migrate the
+from an old snapshot that the provider can no longer load. The proof remains
+valid for the bounded provider load (at most five minutes) and activation clears
+it. Deploy/migrate the
 exact reviewed image to `20260828_0320`, then run:
 
 ```text

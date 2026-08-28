@@ -1668,7 +1668,8 @@ the explicit zero-claim process; that process binds the expected active pointer,
 never reports formal readiness, and cannot run outside `PAUSED`. The deployment
 lifecycle uses it for first activation and replacement so an unloadable old
 snapshot cannot prevent its own safe rotation. Activation clears the bootstrap
-proof and invalidates readiness. The replacement process then loads every
+proof and invalidates readiness; before activation it remains valid for the
+bounded provider load, up to five minutes. The replacement process then loads every
 included instrument, revalidates all frozen provider facts, and reconciles a
 complete provider account report before it can become ready.
 

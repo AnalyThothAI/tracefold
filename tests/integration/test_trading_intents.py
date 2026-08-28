@@ -562,6 +562,24 @@ def test_capability_replacement_accepts_a_fresh_zero_claim_recovery_proof(conn: 
     _reset_authority(conn)
 
 
+def test_capability_replacement_accepts_zero_proof_across_bounded_provider_load(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "provider-load-revision"})
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
+        "nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+
+    assert repos.trading.append_and_activate_execution_capability_snapshot(
+        replacement,
+        created_at_ms=NOW + 60_000,
+    )
+    _reset_authority(conn)
+
+
 def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: Any) -> None:
     repos = repositories_for_connection(conn)
     initial = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "initial-revision"})
@@ -577,7 +595,7 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
 
     conn.execute(
         "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
-        (NOW - 15_001,),
+        (NOW - 300_001,),
     )
     assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
 

@@ -828,8 +828,9 @@ reader/writer.
   `nautilus run --bootstrap-zero-claims`; initial activation uses that same
   zero-claim proof while the process remains formally unready. The deployment
   lifecycle uses the explicit zero-claim form so a mechanically invalid old
-  snapshot cannot prevent its own safe replacement. Activation clears that
-  bootstrap proof and invalidates readiness.
+  snapshot cannot prevent its own safe replacement. The proof is valid for the
+  bounded provider load, up to five minutes; activation clears it and invalidates
+  readiness.
 - `tracefold trading replay-oi --days 7 --strategy
   oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
