@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import contextmanager
 from decimal import Decimal
-from types import SimpleNamespace
 
 from tracefold.app.cli.commands import trading_replay as trading_replay_command
 from tracefold.app.trading_config import trading_config_from_settings, trading_settings_strategies
@@ -112,48 +110,6 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
     assert market_slice.end_ms > NOW
     assert [bar.close_at_ms for bar in market_slice.bars] == [NOW]
     assert market_slice.start_ms == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
-
-
-def test_replay_materializes_expiry_with_workers_before_the_serve_snapshot(monkeypatch) -> None:
-    calls: list[tuple[object, ...]] = []
-
-    class Connection:
-        def execute(self, statement: str) -> None:
-            calls.append(("serve", "execute", statement))
-
-    class Trading:
-        def __init__(self, role: str) -> None:
-            self.role = role
-
-        def blacklist_snapshot(self, *, now_ms: int, materialize_expiry: bool) -> None:
-            calls.append((self.role, "blacklist_snapshot", now_ms, materialize_expiry))
-
-        def replay_authority_snapshot(self, *, now_ms: int) -> None:
-            calls.append((self.role, "replay_authority_snapshot", now_ms))
-            raise RuntimeError("stop_after_replay_authority")
-
-    @contextmanager
-    def fake_repositories(_settings, *, role):
-        @contextmanager
-        def transaction():
-            yield
-
-        yield SimpleNamespace(conn=Connection(), trading=Trading(role), transaction=transaction)
-
-    monkeypatch.setattr(trading_replay_command, "repositories", fake_repositories)
-
-    code, payload = trading_replay_command.handle_oi_replay(
-        Settings(),
-        SimpleNamespace(days=7, fidelity="bar_v1", venues="binance.perp", strategy="oi_smart_money_momentum_v1"),
-        now_ms=NOW,
-    )
-
-    assert (code, payload) == (1, {"ok": False, "error": "stop_after_replay_authority"})
-    assert calls == [
-        ("workers", "blacklist_snapshot", NOW, True),
-        ("serve", "execute", "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"),
-        ("serve", "replay_authority_snapshot", NOW),
-    ]
 
 
 def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() -> None:

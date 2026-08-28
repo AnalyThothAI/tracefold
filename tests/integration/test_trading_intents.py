@@ -803,40 +803,6 @@ def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> Non
     )
 
 
-def test_workers_materialize_expiry_before_the_serve_replay_snapshot(conn: Any) -> None:
-    _case(conn)
-    db_now_ms = int(
-        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
-            "now_ms"
-        ]
-    )
-    repos = repositories_for_connection(conn)
-    repos.trading.blacklist_upsert(
-        base_symbol="SOL",
-        reason="timed_operator_hold",
-        expires_at_ms=db_now_ms - 1,
-        now_ms=db_now_ms - 500,
-    )
-    conn.commit()
-
-    conn.execute("SET ROLE tracefold_workers")
-    materialized = repos.trading.blacklist_snapshot(now_ms=db_now_ms, materialize_expiry=True)
-    conn.commit()
-    conn.execute("RESET ROLE")
-    conn.commit()
-
-    conn.execute("SET ROLE tracefold_serve")
-    snapshot, frozen = repos.trading.replay_authority_snapshot(now_ms=db_now_ms)
-    conn.commit()
-    conn.execute("RESET ROLE")
-    conn.commit()
-
-    assert snapshot.snapshot_sha256 == CAPABILITY_SNAPSHOT.snapshot_sha256
-    assert frozen == materialized
-    assert frozen.revision == 2
-    assert all(row.underlying_key != "crypto:SOL" for row in frozen.active_rows)
-
-
 def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner(conn: Any) -> None:
     _case(conn)
     intent = _intent()

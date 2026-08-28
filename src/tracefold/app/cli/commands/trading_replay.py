@@ -6,6 +6,8 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 
+from psycopg import Error as PostgresError
+
 from tracefold.app.cli.replay_artifacts import publish_replay_artifact, verify_replay_artifact
 from tracefold.app.repository_session import repositories
 from tracefold.app.trading_config import (
@@ -110,6 +112,8 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
             )
     except RuntimeError as exc:
         return 1, {"ok": False, "error": str(exc)}
+    except (OSError, PostgresError):
+        return 1, {"ok": False, "error": "replay_authority_unavailable"}
 
     market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms, regime_policy=runtime_config.regime))
     outcomes = immediate + evaluate_replay_market_slices(
@@ -204,7 +208,10 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         outcomes=outcomes,
         summary=summary,
     )
-    existing = _existing_receipt(settings, spec.run_id)
+    try:
+        existing = _existing_receipt(settings, spec.run_id)
+    except (OSError, PostgresError):
+        return 1, {"ok": False, "error": "replay_receipt_read_failed"}
     if existing is not None:
         try:
             verify_replay_artifact(Path(existing.artifact_path), expected_sha256=existing.artifact_sha256)
@@ -237,6 +244,8 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
                 raise RuntimeError("replay_receipt_conflict")
     except (RuntimeError, ValueError) as exc:
         return 1, {"ok": False, "error": str(exc)}
+    except (OSError, PostgresError):
+        return 1, {"ok": False, "error": "replay_receipt_write_failed"}
     return 0, _success(receipt, summary, reused=False)
 
 
