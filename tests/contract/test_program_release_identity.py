@@ -15,7 +15,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "890c3012470d25e5ddcee80aef77ca1e03925635919bcd313a594db8de327b4b"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "b4f16799f2b46dae7d195eee533a9078177504fb7d0f5bddf560151999af80d8"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.

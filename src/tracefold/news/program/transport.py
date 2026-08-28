@@ -164,17 +164,25 @@ class PredictorSpec:
         return dict(self.output_model.model_json_schema())
 
 
+# One contract, both modes (#315). The schema always rides the message, canonically serialized so the
+# rendered bytes are deterministic.
+#
+# There used to be two variants, on the reasoning that a `json_schema` endpoint already receives the schema
+# with the request and does not need a second copy. That reasoning was wrong about what the second copy is
+# *for*. A structured-output constraint is a shape: it says which keys exist and what type each one is.
+# Everything a field's `description` says — that `restates` is a visible `event_status.told` index only when
+# novelty is restatement, that `magnitude` runs 0-3 — is prose the constraint cannot carry. Under the DSPy
+# adapter that prose reached the model as ~5.3 KB of rendered field documentation; #306 Phase 3 moved it into
+# `response_format` and the model stopped seeing it. llama.cpp compiles `response_format` into a GBNF
+# grammar, so the primary route was being held to a shape while the rules it needed were in a document it
+# never read: `restatement_index_invalid` went from zero to the dominant failure class overnight, and the
+# route defaulted on roughly a third of judgments until DeepSeek's `json_object` mode — which had been
+# inlining the schema all along, for a different reason — started answering the questions it got wrong.
+#
+# So the schema text is not redundancy on a `json_schema` endpoint; it is the only channel the descriptions
+# have. The two modes now differ in exactly one value, `response_format`, which is what they always should
+# have differed in.
 _OUTPUT_CONTRACT: Final[str] = (
-    "\n\n# OUTPUT CONTRACT\n"
-    "Reply with one JSON object and nothing else: no prose, no explanation, no markdown fence. "
-    'The object has exactly one key, "{field}", whose value is a {model} object matching the JSON schema '
-    "supplied with this request. Every field the schema marks required must be present."
-)
-
-# The `json_object` variant carries the schema in the message itself: that mode has no schema riding the
-# request, so a model that never sees the shape cannot be held to it. The schema text is the same envelope
-# `response_format` would have sent, canonically serialized so the rendered bytes are deterministic.
-_OUTPUT_CONTRACT_INLINE: Final[str] = (
     "\n\n# OUTPUT CONTRACT\n"
     "Reply with one JSON object and nothing else: no prose, no explanation, no markdown fence. "
     'The object has exactly one key, "{field}", whose value is a {model} object. The entire reply must '
@@ -183,26 +191,20 @@ _OUTPUT_CONTRACT_INLINE: Final[str] = (
 )
 
 
-def system_message(
-    instruction: str,
-    *,
-    output_field: str,
-    output_model: type[BaseModel],
-    structured_output: StructuredOutputMode = "json_schema",
-) -> str:
+def system_message(instruction: str, *, output_field: str, output_model: type[BaseModel]) -> str:
     """One complete instruction plus the output contract, in that order.
+
+    No `structured_output` parameter (#315): both modes render the same message, so a mode argument here
+    would name a distinction that no longer exists. `chat_request_body` still knows the mode, because the
+    mode still decides `response_format`.
 
     The contract is appended rather than expected inside the instruction because it describes the wire
     envelope, not the judgment: an optimizer rewriting the instruction must not be able to remove the
     sentence that says what shape the answer takes.
     """
 
-    if structured_output == "json_schema":
-        return f"{instruction}{_OUTPUT_CONTRACT.format(field=output_field, model=output_model.__name__)}"
     schema = response_format(output_field, output_model)["json_schema"]["schema"]
-    contract = _OUTPUT_CONTRACT_INLINE.format(
-        field=output_field, model=output_model.__name__, schema=canonical_json(schema)
-    )
+    contract = _OUTPUT_CONTRACT.format(field=output_field, model=output_model.__name__, schema=canonical_json(schema))
     return f"{instruction}{contract}"
 
 
@@ -259,10 +261,12 @@ def chat_request_body(
 
     Shared by the two production Predictors and by the metric judge on purpose: they ask different
     questions but they are the same kind of request, and two renderings of "one system message, one user
-    message, one structured-output constraint" would eventually disagree about one of them. The
-    constraint's form follows the model's endpoint (#310): `json_schema` where supported, otherwise
-    `json_object` with the same schema inlined into the system message — decided here once, from the model
-    name, so every caller of this envelope inherits the same answer.
+    message, one structured-output constraint" would eventually disagree about one of them.
+
+    The two messages are identical across modes (#315) — every model sees the schema, because the schema is
+    where the field descriptions live and no constraint format carries those. Only `response_format`
+    follows the endpoint (#310): the real thing where it is accepted, `{"type": "json_object"}` where it is
+    refused. Decided here once, from the model name, so every caller inherits the same answer.
     """
 
     mode = structured_output or structured_output_mode(model)
@@ -271,9 +275,7 @@ def chat_request_body(
         "messages": [
             {
                 "role": "system",
-                "content": system_message(
-                    instruction, output_field=output_field, output_model=output_model, structured_output=mode
-                ),
+                "content": system_message(instruction, output_field=output_field, output_model=output_model),
             },
             {"role": "user", "content": user_message(field_order, values)},
         ],

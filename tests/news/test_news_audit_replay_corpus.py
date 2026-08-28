@@ -59,6 +59,10 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # artifact lost that field. Nothing the metric reads changed — every assertion in this file except this one
 # content address passes unedited, which is the evidence that claim rests on.
 #
+# #315 moves it once more and for the same kind of reason: the envelope hash in that identity block follows
+# the unified OUTPUT CONTRACT. `recorded` mode makes no provider call, so the prompt change cannot reach a
+# score, and every score pin below is again untouched.
+#
 # #259 moves it once more, and this time nothing about the *plan* moved either: the readiness report gained
 # the frozen dataset's `coverage` block and its schema went to v2, both inside `learning/objective.py`, which
 # the metric receipt commits to whole. Diffing the report against `main@f56f9a67` changes exactly two lines —
@@ -69,11 +73,10 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
 # request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
 # result are byte-identical again; only the identity block and the report root move.
-# The configurable request-envelope cut adds prompt-only JSON and records temperature/structured-output
-# behavior in the computed execution identity. Replacing only the new envelope digest with the preceding
-# digest reproduces the preceding report hash exactly, so the corpus, metric, scores and case results did
-# not move.
-_EXPECTED_REPORT_SHA256 = "6bb6329d5d4142195ee0664a8440f11dbd34b25196f3dd3f2be7c4cfa198414f"
+# #315 unifies the model-visible OUTPUT CONTRACT across endpoint modes. The configurable request-envelope
+# cut additionally records prompt-only JSON and its temperature/request behavior. Recorded mode makes no
+# provider call, so neither change can reach a score; only the identity block and report root move.
+_EXPECTED_REPORT_SHA256 = "07ee75d474f1614e9c5fe7cce654ccc277845f1d069a5af4840622d2f476e4bb"
 
 
 @pytest.fixture(scope="module")

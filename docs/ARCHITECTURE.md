@@ -949,8 +949,8 @@ three values. The stable root is
 `envelope_sha256` — `compute_execution_identity()` in
 `tracefold/news/program/identity.py` — addresses everything the code decides
 about a model call: the golden render of each Predictor's complete chat request
-in all three structured-output modes, the two output contracts and their JSON
-schemas, the model-visible input shapes and their delimiters, the endpoint
+in all three structured-output modes, the single output contract and its JSON
+schema, the model-visible input shapes and their delimiters, the endpoint
 capability table, the model binding slots, the route deadline, the token
 ceilings and the breaker. It is computed from those values rather than declared
 beside them, so a change to any of them moves the identity whether or not anyone
@@ -981,6 +981,17 @@ code, and `envelope_sha256` is computed over what that code renders. It is one
 hash over one golden render rather than twenty-odd component hashes that the
 same package generated and verified in the same process; that was a self-proof,
 not an attestation, and neither it nor this replaces exact image/CI evidence.
+
+Every model is sent the same two messages, whatever structured-output format its
+endpoint accepts (#315). Only `response_format` follows the endpoint: the real
+constraint where it is accepted, `{"type": "json_object"}` where it is refused.
+The output contract always carries the schema inline, because a structured-output
+constraint expresses shape and the schema's field descriptions express meaning —
+`restates` is a visible `event_status.told` index only when novelty is
+restatement, and no format carries that. #306 Phase 3 briefly moved those
+descriptions out of the model's view into `response_format` alone; llama.cpp
+compiles that into a GBNF grammar, so the primary route was held to a shape while
+the rules it needed sat in a document it never read.
 
 There is one prompt text per Predictor and no renderer (#306 Phase 2). Until
 then the prompt was a layering — a sealed QualityKernel, nine ordered code-owned
