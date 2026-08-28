@@ -43,7 +43,8 @@ _WORKER_HEAVY_ADMISSION_TIMEOUT_SECONDS = 16.0
 # timeout classification wins before the outer executor envelope.
 _WORKER_BUSINESS_OPERATION_COMPLETION_GRACE_SECONDS = 6.0
 _WORKER_CONTROL_OPERATION_COMPLETION_GRACE_SECONDS = 6.0
-_WORKER_POOL_MIN_SIZE = 1
+# The singleton lock pins one connection; pre-open a second for the control lane.
+_WORKER_POOL_MIN_SIZE = 2
 # 1 steady singleton lock + 2 business slots + 4 News-lane slots + 1 control slot.
 _WORKER_POOL_MAX_SIZE = 8
 _WORKER_POOL_MAX_WAITING = 3

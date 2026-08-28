@@ -19,6 +19,12 @@ from nautilus_trader.common.component import LiveClock, MessageBus
 from nautilus_trader.config import InstrumentProviderConfig
 from nautilus_trader.model.identifiers import TraderId
 
+from tracefold.app.nautilus import root
+from tracefold.integrations.nautilus.messages import (
+    BootstrapAccountZeroConfirmed,
+    BootstrapAccountZeroUnproven,
+    strategy_queues,
+)
 from tracefold.integrations.nautilus.reconciliation import load_complete_account_reports
 
 
@@ -101,6 +107,18 @@ def test_complete_account_reports_proves_empty_provider_account(
     monkeypatch.setattr(BinanceFuturesAccountHttpAPI, "query_open_algo_orders", no_algo_orders)
 
     assert asyncio.run(load_complete_account_reports(nautilus_client)) == ([], [])
+    client_id = object()
+    engine = type(
+        "Engine",
+        (),
+        {"registered_clients": [client_id], "_clients": {client_id: nautilus_client}},
+    )()
+    node = type("Node", (), {"kernel": type("Kernel", (), {"exec_engine": engine})()})()
+    queues = strategy_queues()
+
+    asyncio.run(root._run_bootstrap_account_zero_proof(node=node, queues=queues))
+
+    assert queues.commands.get_nowait() == BootstrapAccountZeroConfirmed()
 
 
 def test_partial_algo_order_query_failure_is_not_an_empty_account_proof(
@@ -202,3 +220,33 @@ def test_position_query_failure_is_not_an_empty_account_proof(
 
     with pytest.raises(RuntimeError, match="binance_position_query_failed"):
         asyncio.run(load_complete_account_reports(nautilus_client))
+
+
+def test_bootstrap_transport_failure_never_becomes_account_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    nautilus_client: BinanceFuturesExecutionClient,
+) -> None:
+    async def failed_position_query(
+        _api: BinanceFuturesAccountHttpAPI,
+        _symbol: str | None = None,
+        _recv_window: str | None = None,
+    ) -> list[object]:
+        raise RuntimeError("binance_position_query_failed")
+
+    monkeypatch.setattr(
+        BinanceFuturesAccountHttpAPI,
+        "query_futures_position_risk",
+        failed_position_query,
+    )
+    queues = strategy_queues()
+    client_id = object()
+    engine = type(
+        "Engine",
+        (),
+        {"registered_clients": [client_id], "_clients": {client_id: nautilus_client}},
+    )()
+    node = type("Node", (), {"kernel": type("Kernel", (), {"exec_engine": engine})()})()
+
+    asyncio.run(root._run_bootstrap_account_zero_proof(node=node, queues=queues))
+
+    assert queues.commands.get_nowait() == BootstrapAccountZeroUnproven(unexpected_exposure=False)

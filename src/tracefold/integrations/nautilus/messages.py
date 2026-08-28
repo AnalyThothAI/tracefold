@@ -13,6 +13,18 @@ OrderLeg = Literal["entry", "stop", "close"]
 
 
 @dataclass(frozen=True, slots=True)
+class BootstrapAccountZeroConfirmed:
+    """Confirm a complete provider report proved the bootstrap account empty."""
+
+
+@dataclass(frozen=True, slots=True)
+class BootstrapAccountZeroUnproven:
+    """Keep bootstrap closed after provider failure or observed account exposure."""
+
+    unexpected_exposure: bool
+
+
+@dataclass(frozen=True, slots=True)
 class AdoptIntent:
     """Ask the strategy to preflight or recover one durable Intent."""
 
@@ -183,7 +195,15 @@ class OrderOutcomeUnknown:
     observed_at_ms: int
 
 
-StrategyCommand = AdoptIntent | EntryFenceGranted | IntentReleased | VenueFlatConfirmed | VenueFlatUnproven
+StrategyCommand = (
+    AdoptIntent
+    | BootstrapAccountZeroConfirmed
+    | BootstrapAccountZeroUnproven
+    | EntryFenceGranted
+    | IntentReleased
+    | VenueFlatConfirmed
+    | VenueFlatUnproven
+)
 StrategyEvent = (
     ReadinessChanged
     | EntryFenceRequested
@@ -216,6 +236,8 @@ def strategy_queues(*, maxsize: int = 64) -> StrategyQueues:
 
 __all__ = [
     "AdoptIntent",
+    "BootstrapAccountZeroConfirmed",
+    "BootstrapAccountZeroUnproven",
     "CloseSubmitted",
     "EntryFenceGranted",
     "EntryFenceRequested",

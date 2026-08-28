@@ -33,6 +33,8 @@ from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
+    BootstrapAccountZeroConfirmed,
+    BootstrapAccountZeroUnproven,
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
@@ -289,6 +291,50 @@ def test_strategy_config_allows_zero_claim_bootstrap() -> None:
 
     assert config.oms_type == "NETTING"
     assert config.external_order_claims == []
+
+
+def test_zero_claim_bootstrap_stays_unready_until_complete_account_zero_is_confirmed() -> None:
+    queues = strategy_queues()
+    requests: list[None] = []
+    clock = TestClock()
+    clock.set_time(NOW_MS * 1_000_000)
+    msgbus = MessageBus(TraderId("TRACEFOLD-001"), clock)
+    cache = Cache()
+    cache.add_account(TestExecStubs.margin_account(AccountId("BINANCE-001")))
+    strategy = TracefoldNautilusStrategy(
+        engine_identity="nt-bootstrap-v1",
+        instrument_ids=[],
+        capabilities={},
+        queues=queues,
+        request_venue_flat=lambda _request: None,
+        request_bootstrap_account_zero=lambda: requests.append(None),
+    )
+    strategy.register(TraderId("TRACEFOLD-001"), Portfolio(msgbus, cache, clock), msgbus, cache, clock)
+
+    strategy.on_start()
+
+    assert requests == [None]
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="bootstrap_account_zero_unproven",
+        unexpected_exposure=False,
+    )
+
+    queues.commands.put_nowait(BootstrapAccountZeroUnproven(unexpected_exposure=True))
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="external_exposure",
+        unexpected_exposure=True,
+    )
+
+    queues.commands.put_nowait(BootstrapAccountZeroConfirmed())
+    strategy.on_timer(None)
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=True,
+        reason="ready",
+        unexpected_exposure=False,
+    )
 
 
 def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -> None:

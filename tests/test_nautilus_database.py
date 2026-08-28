@@ -118,6 +118,7 @@ def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> Non
     with pytest.raises(RuntimeError, match="nautilus_capability_snapshot_changed"):
         bridge._cycle(repos)
 
+    repos.trading.nautilus_runtime_state.assert_called_once_with(for_update=True)
     repos.trading.active_intent.assert_not_called()
     repos.trading.set_nautilus_runtime.assert_not_called()
 

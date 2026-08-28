@@ -71,14 +71,14 @@ class ControlStorage:
         ).fetchone()
         return dict(row) if row is not None else None
 
-    def nautilus_runtime_state(self) -> dict[str, Any] | None:
+    def nautilus_runtime_state(self, *, for_update: bool = False) -> dict[str, Any] | None:
         """Read only the control columns granted to the execution process."""
 
         row = self.conn.execute(
             "SELECT control, nautilus_heartbeat_at_ms, nautilus_ready, "
             "nautilus_readiness_reason, nautilus_unexpected_exposure, "
             "active_capability_snapshot_sha256, active_capability_included_count, blacklist_revision "
-            "FROM trading_runtime_state WHERE id = 1"
+            "FROM trading_runtime_state WHERE id = 1" + (" FOR UPDATE" if for_update else "")
         ).fetchone()
         return dict(row) if row is not None else None
 

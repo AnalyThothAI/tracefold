@@ -8,7 +8,7 @@ from .config import (
     build_node_config,
     installed_nautilus_wheel_identity,
 )
-from .reconciliation import load_complete_account_reports
+from .reconciliation import load_complete_account_reports, single_execution_client
 
 __all__ = [
     "NAUTILUS_LINUX_WHEELS",
@@ -19,4 +19,5 @@ __all__ = [
     "instrument_matches_capability",
     "load_binance_usdm_demo_capabilities",
     "load_complete_account_reports",
+    "single_execution_client",
 ]

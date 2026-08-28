@@ -167,7 +167,7 @@ class NautilusDatabaseBridge:
         now_ms = self._now_ms()
         command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
-            runtime = repos.trading.nautilus_runtime_state()
+            runtime = repos.trading.nautilus_runtime_state(for_update=True)
             if runtime is None or runtime.get("active_capability_snapshot_sha256") != self._capability_snapshot_sha256:
                 raise RuntimeError("nautilus_capability_snapshot_changed")
             active = repos.trading.active_intent()

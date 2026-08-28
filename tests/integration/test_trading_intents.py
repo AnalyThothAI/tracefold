@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
-from threading import Barrier
+from threading import Barrier, Event
 from typing import Any
 
 import pytest
@@ -524,6 +525,57 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
     _reset_authority(conn)
 
 
+def test_capability_activation_cannot_be_overwritten_by_old_engine_readiness(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "serialized-replacement"})
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    started = Event()
+
+    def activate() -> bool:
+        contender = connect_postgres_test(read_only=False)
+        try:
+            contender_repos = repositories_for_connection(contender)
+            with contender.transaction():
+                started.set()
+                return contender_repos.trading.append_and_activate_execution_capability_snapshot(
+                    replacement,
+                    created_at_ms=NOW,
+                )
+        finally:
+            contender.close()
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        with conn.transaction():
+            runtime = repos.trading.nautilus_runtime_state(for_update=True)
+            assert runtime is not None
+            future = pool.submit(activate)
+            assert started.wait(timeout=5)
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.5)
+            repos.trading.set_nautilus_runtime(
+                heartbeat_at_ms=NOW,
+                ready=True,
+                readiness_reason="ready",
+                unexpected_exposure=False,
+                now_ms=NOW,
+            )
+        assert future.result(timeout=5) is True
+    finally:
+        pool.shutdown(wait=True)
+
+    runtime = repos.trading.runtime_state()
+    assert runtime is not None
+    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
+    assert runtime["nautilus_ready"] is False
+    assert runtime["nautilus_readiness_reason"] == "capability_snapshot_changed"
+    _reset_authority(conn)
+
+
 def test_trade_intent_round_trips_as_one_immutable_material_fact(conn: Any) -> None:
     _case(conn)
     intent = _intent()
@@ -832,7 +884,7 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
         unexpected_exposure=False,
         now_ms=NOW + 1_000,
     )
-    assert repos.trading.nautilus_runtime_state() is not None
+    assert repos.trading.nautilus_runtime_state(for_update=True) is not None
     conn.commit()
 
     with pytest.raises(InsufficientPrivilege):

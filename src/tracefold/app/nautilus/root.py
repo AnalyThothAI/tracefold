@@ -28,8 +28,11 @@ from tracefold.integrations.nautilus import (
     build_node_config,
     installed_nautilus_wheel_identity,
     load_complete_account_reports,
+    single_execution_client,
 )
 from tracefold.integrations.nautilus.messages import (
+    BootstrapAccountZeroConfirmed,
+    BootstrapAccountZeroUnproven,
     StrategyCommand,
     StrategyQueues,
     VenueFlatConfirmed,
@@ -91,6 +94,11 @@ def run_nautilus(settings: Settings) -> None:
                 queues=queues,
                 loop=loop,
                 request=request,
+            ),
+            request_bootstrap_account_zero=(
+                None
+                if capability_snapshot is not None
+                else lambda: _schedule_bootstrap_account_zero_proof(node=node, queues=queues, loop=loop)
             ),
         )
         node.trader.add_strategy(strategy)
@@ -237,15 +245,47 @@ def _schedule_venue_flat_proof(
         _run_venue_flat_proof(node=node, queues=queues, request=request),
         name=f"venue-flat-proof:{request.intent_id[:12]}",
     )
-    task.add_done_callback(_log_venue_flat_task_failure)
+    task.add_done_callback(_log_account_proof_task_failure)
 
 
-def _log_venue_flat_task_failure(task: asyncio.Task[None]) -> None:
+def _schedule_bootstrap_account_zero_proof(
+    *,
+    node: TradingNode,
+    queues: StrategyQueues,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    task = loop.create_task(
+        _run_bootstrap_account_zero_proof(node=node, queues=queues),
+        name="bootstrap-account-zero-proof",
+    )
+    task.add_done_callback(_log_account_proof_task_failure)
+
+
+def _log_account_proof_task_failure(task: asyncio.Task[None]) -> None:
     if task.cancelled():
         return
     error = task.exception()
     if error is not None:
-        logger.error("Nautilus venue-flat proof task failed ({})", type(error).__name__)
+        logger.error("Nautilus account proof task failed ({})", type(error).__name__)
+
+
+async def _run_bootstrap_account_zero_proof(
+    *,
+    node: TradingNode,
+    queues: StrategyQueues,
+) -> None:
+    try:
+        client = single_execution_client(node.kernel.exec_engine)
+        position_reports, order_reports = await load_complete_account_reports(client)
+        command: StrategyCommand = (
+            BootstrapAccountZeroConfirmed()
+            if not position_reports and not order_reports
+            else BootstrapAccountZeroUnproven(unexpected_exposure=True)
+        )
+    except Exception as exc:
+        logger.warning("Nautilus bootstrap account zero was not established ({})", type(exc).__name__)
+        command = BootstrapAccountZeroUnproven(unexpected_exposure=False)
+    await _enqueue_strategy_command(queues, command)
 
 
 async def _run_venue_flat_proof(

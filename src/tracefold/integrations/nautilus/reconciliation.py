@@ -5,6 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 
+def single_execution_client(engine: Any) -> Any:
+    """Return the pinned engine's sole registered client or fail closed."""
+
+    client_ids = list(engine.registered_clients)
+    clients = engine._clients
+    if len(client_ids) != 1 or set(clients) != set(client_ids):
+        raise RuntimeError("nautilus_execution_client_ambiguous")
+    return clients[client_ids[0]]
+
+
 async def load_complete_account_reports(client: Any) -> tuple[list[Any], list[Any]]:
     """Return active positions and every regular/algo open order, or propagate failure.
 
@@ -33,4 +43,4 @@ async def load_complete_account_reports(client: Any) -> tuple[list[Any], list[An
     return list(positions), [*regular_reports, *algo_reports]
 
 
-__all__ = ["load_complete_account_reports"]
+__all__ = ["load_complete_account_reports", "single_execution_client"]

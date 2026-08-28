@@ -176,6 +176,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     assert strategy_args["instrument_ids"] == captured["node_config_args"]["instrument_ids"]
     assert strategy_args["capabilities"] == ({} if bootstrap else frozen_snapshot.included)
     assert callable(strategy_args["request_venue_flat"])
+    assert callable(strategy_args["request_bootstrap_account_zero"]) is bootstrap
     assert captured["readiness"].__self__.__class__ is FakeBridge  # type: ignore[union-attr]
     assert "demo-key" not in str(strategy_args["engine_identity"])
     assert "image-1" in str(strategy_args["engine_identity"])
