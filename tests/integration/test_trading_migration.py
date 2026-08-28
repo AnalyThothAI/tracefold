@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from alembic import command
-from psycopg.errors import CheckViolation
+from psycopg.errors import CheckViolation, RaiseException
 from sqlalchemy.exc import DBAPIError
 
 from tests.postgres_test_utils import connect_postgres_test
@@ -450,6 +450,115 @@ def test_0317_admits_intent_emitted_and_removes_legacy_worker_writes() -> None:
             ).fetchone()["has_column_privilege"]
             is False
         )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+@pytest.mark.parametrize(
+    ("blocker", "error"),
+    (
+        ("control", "trading_v2_cutover_not_paused"),
+        ("intent", "trading_v2_cutover_nonterminal_intent"),
+    ),
+)
+def test_0319_refuses_a_warm_v2_cutover(blocker: str, error: str) -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260828_0318")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            "UPDATE trading_runtime_state SET control = %s WHERE id = 1",
+            ("RUNNING" if blocker == "control" else "PAUSED",),
+        )
+        if blocker == "intent":
+            _seed_pre_hard_cut_intent(conn)
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match=error):
+            _upgrade("20260828_0319")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0319_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260828_0318")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+        _upgrade("20260828_0319")
+
+        conn = connect_postgres_test(read_only=False)
+        tables = {
+            str(row["table_name"])
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' "
+                "AND table_name IN ('trading_execution_capability_snapshots', 'trading_replay_runs')"
+            ).fetchall()
+        }
+        assert tables == {"trading_execution_capability_snapshots", "trading_replay_runs"}
+        assert (
+            conn.execute("SELECT blacklist_revision FROM trading_runtime_state WHERE id = 1").fetchone()[
+                "blacklist_revision"
+            ]
+            == 0
+        )
+
+        _seed_pre_hard_cut_case(conn, case_id="v1-refused", state="INTENT_EMITTED")
+        with pytest.raises(RaiseException, match="new_trade_intent_v1_forbidden"):
+            conn.execute(
+                """
+                INSERT INTO trading_intents (
+                  intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+                  execution_environment, instrument_id, side, created_at_ms, valid_until_ms,
+                  reference_price, target_notional_usd, stop_loss_bps, max_holding_ms,
+                  max_entry_drift_bps, max_spread_bps
+                ) VALUES (%s, 'trade_intent_v1', 'v1-refused', %s, %s,
+                          'BINANCE_USDM_DEMO', 'SOLUSDT-PERP.BINANCE', 'long', %s, %s,
+                          100, 10, 200, 180000, 25, 30)
+                """,
+                ("f" * 64, "3" * 64, "4" * 64, NOW, NOW + 60_000),
+            )
+        conn.rollback()
+
+        privileges = conn.execute(
+            """
+            SELECT
+              has_table_privilege('tracefold_workers', 'trading_execution_capability_snapshots', 'INSERT')
+                AS workers_capability_insert,
+              has_table_privilege('tracefold_nautilus', 'trading_execution_capability_snapshots', 'INSERT')
+                AS nautilus_capability_insert,
+              has_table_privilege('tracefold_serve', 'trading_replay_runs', 'SELECT')
+                AS serve_replay_select,
+              has_table_privilege('tracefold_serve', 'trading_replay_runs', 'INSERT')
+                AS serve_replay_insert,
+              has_table_privilege('tracefold_workers', 'trading_replay_runs', 'INSERT')
+                AS workers_replay_insert,
+              has_table_privilege('tracefold_workers', 'trading_replay_runs', 'UPDATE')
+                AS workers_replay_update,
+              has_table_privilege('tracefold_workers', 'trading_replay_runs', 'DELETE')
+                AS workers_replay_delete,
+              has_column_privilege('tracefold_workers', 'trading_runtime_state', 'nautilus_ready', 'UPDATE')
+                AS workers_can_invalidate_readiness
+            """
+        ).fetchone()
+        assert dict(privileges) == {
+            "workers_capability_insert": True,
+            "nautilus_capability_insert": False,
+            "serve_replay_select": True,
+            "serve_replay_insert": False,
+            "workers_replay_insert": True,
+            "workers_replay_update": False,
+            "workers_replay_delete": False,
+            "workers_can_invalidate_readiness": True,
+        }
     finally:
         if conn is not None:
             conn.close()

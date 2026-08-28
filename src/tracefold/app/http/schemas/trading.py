@@ -19,7 +19,9 @@ class TradingReadinessData(ExactApiSchema):
     control: Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
     execution_authority: Literal["nautilus"] = "nautilus"
     execution_environment: Literal["BINANCE_USDM_DEMO"] = "BINANCE_USDM_DEMO"
-    instrument_id: Literal["SOLUSDT-PERP.BINANCE"] = "SOLUSDT-PERP.BINANCE"
+    active_capability_snapshot_sha256: str | None = None
+    active_capability_included_count: int = Field(ge=0)
+    blacklist_revision: int = Field(ge=0)
     credentials_configured: bool
     engine_ready: bool
     engine_readiness_reason: str | None = None
@@ -176,12 +178,16 @@ class TradingCaseData(ExactApiSchema):
 
 class TradingIntentData(ExactApiSchema):
     intent_id: str
+    intent_version: Literal["trade_intent_v1", "trade_intent_v2"]
     case_id: str
     event_id: str | None = None
     underlying_key: str
     base_symbol: str
     execution_environment: Literal["BINANCE_USDM_DEMO"]
-    instrument_id: Literal["SOLUSDT-PERP.BINANCE"]
+    execution_capability_snapshot_sha256: str | None = None
+    blacklist_revision_at_emission: int | None = None
+    blacklist_snapshot_sha256_at_emission: str | None = None
+    instrument_id: str
     side: Literal["long"]
     target_notional_usd: str
     reference_price: str

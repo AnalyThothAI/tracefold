@@ -2,27 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_config import trading_settings_gate
-from tracefold.app.workers.wiring.news_to_trading import to_oi_candidate_row
-from tracefold.news.oi_signals import METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.config.loader import load_settings
-from tracefold.trading.candidate.blacklist import Blacklist
-from tracefold.trading.candidate.gate import CANDIDATE_GATE_VERSION
+from tracefold.platform.runtime_identity import runtime_identity
+from tracefold.trading.capabilities import build_execution_capability_snapshot
 from tracefold.trading.contracts import canonical_base_symbol
-from tracefold.trading.research.oi_replay import replay_oi_facts
-from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
 _READ_COMMANDS = frozenset({"status", "cases", "show", "replay-oi"})
-# One replay read, not the scanner's. The projection's own 256-row ceiling is sized for a 65-minute
-# scan window; a seven-day replay is about four hundred rows at the measured rate, and a caller that
-# comes back with exactly this many was truncated and says so in `truncated`.
-_REPLAY_ROW_LIMIT = 20_000
 
 
 def _now_ms() -> int:
@@ -33,6 +25,12 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     command = str(getattr(args, "trading_command", "") or "")
     now = _now_ms()
+    if command == "refresh-capabilities":
+        return _refresh_capabilities(settings, now_ms=now)
+    if command == "replay-oi":
+        from .trading_replay import handle_oi_replay
+
+        return handle_oi_replay(settings, args, now_ms=now)
     listing_only = command == "blacklist" and str(getattr(args, "blacklist_action", "list") or "list") == "list"
     role: Literal["serve", "workers"] = "serve" if (command in _READ_COMMANDS or listing_only) else "workers"
 
@@ -54,7 +52,9 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "dspy_calls_today": int(runtime.get("dspy_calls_today") or 0),
                     "execution_authority": "nautilus",
                     "execution_environment": "BINANCE_USDM_DEMO",
-                    "instrument_id": "SOLUSDT-PERP.BINANCE",
+                    "active_capability_snapshot_sha256": runtime.get("active_capability_snapshot_sha256"),
+                    "active_capability_included_count": int(runtime.get("active_capability_included_count") or 0),
+                    "blacklist_revision": int(runtime.get("blacklist_revision") or 0),
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     "nautilus_heartbeat_at_ms": runtime.get("nautilus_heartbeat_at_ms"),
                     "nautilus_ready": bool(runtime.get("nautilus_ready")),
@@ -70,58 +70,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     # part of this report a lane with zero cases and zero intents can still answer from.
                     **trading.candidate_admission_report(now_ms=now),
                     **counts,
-                },
-            }
-
-        if command == "replay-oi":
-            days = int(getattr(args, "days", 7) or 7)
-            since_ms = now - days * 86_400_000
-            candidates = trading_settings_gate(settings)
-            strategy = OiSmartMoneyMomentumStrategy()
-            facts = [
-                to_oi_candidate_row(row)
-                for row in repos.news.trade_candidate_oi_rows(
-                    metric_version=NEWS_OI_METRIC_VERSION,
-                    after_created_at_ms=since_ms,
-                    until_created_at_ms=now,
-                    limit=_REPLAY_ROW_LIMIT,
-                )
-            ]
-            try:
-                blacklist = Blacklist.from_rows(trading.blacklist_rows())
-            except Exception:  # pragma: no cover - a read-only report must not fail on the deny list
-                blacklist = Blacklist.unavailable()
-            report = replay_oi_facts(
-                facts,
-                gate=candidates,
-                strategy=strategy,
-                blacklist=blacklist,
-                now_ms=now,
-            )
-            # One catalogue read per *routable* issuer, not per survivor. A coverage number is only
-            # meaningful for a symbol that was actually looked up, and reporting `0` for the rest would
-            # read as "no native perp listed" for issuers nobody asked about. The set is bounded by the
-            # distinct issuers in the window, and each read is a single indexed lookup.
-            for symbol in sorted(report.routable_symbols):
-                listed = repos.news.trade_candidate_instrument(base_symbol=symbol, venues=("binance.perp", "hl.perp"))
-                report.instrument_coverage[symbol] = len(listed)
-            return 0, {
-                "ok": True,
-                "data": {
-                    "window_days": days,
-                    "since_ms": since_ms,
-                    "until_ms": now,
-                    "truncated": len(facts) >= _REPLAY_ROW_LIMIT,
-                    "gate_version": CANDIDATE_GATE_VERSION,
-                    "gate_config": candidates.snapshot,
-                    "gate_config_digest": candidates.digest,
-                    "strategy_id": strategy.strategy_id,
-                    "strategy_config": strategy.config_snapshot,
-                    "strategy_config_digest": strategy.config_digest,
-                    # Stated, not implied: this report describes what the rules did, and proposes no
-                    # replacement for any of them (#265 §8).
-                    "thresholds_are_not_tuned_from_this_report": True,
-                    **report.as_dict(),
                 },
             }
 
@@ -164,17 +112,17 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             if not symbol:
                 return 2, {"ok": False, "error": "symbol_required"}
             if action == "add":
-                trading.blacklist_upsert(
-                    base_symbol=symbol,
-                    reason=str(getattr(args, "reason", "") or "operator"),
-                    expires_at_ms=None,
-                    now_ms=now,
-                )
-                repos.conn.commit()
+                with repos.transaction():
+                    trading.blacklist_upsert(
+                        base_symbol=symbol,
+                        reason=str(getattr(args, "reason", "") or "operator"),
+                        expires_at_ms=None,
+                        now_ms=now,
+                    )
                 return 0, {"ok": True, "data": {"base_symbol": symbol, "action": "added"}}
             if action == "remove":
-                removed = trading.blacklist_delete(base_symbol=symbol)
-                repos.conn.commit()
+                with repos.transaction():
+                    removed = trading.blacklist_delete(base_symbol=symbol, now_ms=now)
                 return (0 if removed else 1), {
                     "ok": bool(removed),
                     "data": {"base_symbol": symbol, "action": "removed", "rows": removed},
@@ -185,11 +133,56 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             control = _CONTROL.get(str(getattr(args, "state", "") or "").lower())
             if control is None:
                 return 2, {"ok": False, "error": "control_state_invalid"}
-            trading.set_control(control=control, now_ms=now)
-            repos.conn.commit()
+            with repos.transaction():
+                trading.set_control(control=control, now_ms=now)
             return 0, {"ok": True, "data": {"control": control}}
 
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
+
+
+def _refresh_capabilities(settings: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.workers.wiring.news_to_trading import news_execution_instruments
+    from tracefold.integrations.nautilus import (
+        installed_nautilus_wheel_identity,
+        load_binance_usdm_demo_capabilities,
+    )
+
+    with repositories(settings, role="workers") as repos, repos.transaction():
+        repos.trading.set_control(control="PAUSED", now_ms=now_ms)
+        news_rows = news_execution_instruments(repos)
+    try:
+        provider_rows = asyncio.run(load_binance_usdm_demo_capabilities())
+    except Exception:
+        return 1, {"ok": False, "error": "execution_capability_provider_load_failed"}
+    identity = runtime_identity()
+    try:
+        snapshot = build_execution_capability_snapshot(
+            news_rows=news_rows,
+            provider_rows=provider_rows,
+            app_revision=identity.runtime_revision,
+            app_image_digest=identity.image_digest,
+            nautilus_wheel_identity=installed_nautilus_wheel_identity(),
+        )
+    except (RuntimeError, ValueError):
+        return 1, {"ok": False, "error": "execution_capability_snapshot_invalid"}
+    try:
+        with repositories(settings, role="workers") as repos, repos.transaction():
+            activated = repos.trading.append_and_activate_execution_capability_snapshot(
+                snapshot,
+                created_at_ms=now_ms,
+            )
+            if not activated:
+                raise RuntimeError("execution_capability_activation_blocked")
+    except RuntimeError as exc:
+        return 1, {"ok": False, "error": str(exc)}
+    return 0, {
+        "ok": True,
+        "data": {
+            "snapshot_sha256": snapshot.snapshot_sha256,
+            "included_count": len(snapshot.included),
+            "excluded_count": len(snapshot.excluded),
+        },
+    }
 
 
 __all__ = ["handle_trading"]

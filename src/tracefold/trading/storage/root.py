@@ -4,21 +4,25 @@ from __future__ import annotations
 
 from typing import Any
 
+from .capabilities import CapabilityStorage
 from .cases import CaseStorage
 from .control import ControlStorage
 from .evaluations import EvaluationStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
 from .queries import QueryStorage
+from .replay import ReplayStorage
 
 
 class TradingRepository(
     ControlStorage,
+    CapabilityStorage,
     CandidateGateStorage,
     CaseStorage,
     EvaluationStorage,
     IntentStorage,
     QueryStorage,
+    ReplayStorage,
 ):
     """Connection-bound persistence facade; callers continue to own transactions."""
 

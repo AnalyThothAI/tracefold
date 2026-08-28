@@ -30,9 +30,10 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from .models import TriageAsset, TriageVerdict
+from .oi_contracts import OI_METRIC_VERSION
 from .source_contracts import OI_SOURCE_IDENTITY, SOURCE_CONTRACT_CLASSIFIER_VERSION, classify_source_contract
 
-METRIC_VERSION: Final = "oi_signal_v1"
+METRIC_VERSION: Final = OI_METRIC_VERSION
 PARSER_VERSION: Final = "oi_signal_parser_v1"
 # What this module claims to know about the provider's own measurement, as opposed to the four numbers
 # it parses. Bumped when that measurement contract or a field's meaning changes.

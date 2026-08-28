@@ -225,6 +225,10 @@ class NautilusDatabaseBridge:
                 self._dispatched_intent_id = None
                 self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
                 return True
+            if outcome.execution_state == "TERMINAL":
+                self._dispatched_intent_id = None
+                self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
+                return True
             self._queues.commands.put_nowait(EntryFenceGranted(outcome=outcome, quantity=event.quantity))
             return True
 

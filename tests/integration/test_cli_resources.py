@@ -53,7 +53,9 @@ def test_trading_status_reports_capability_without_claiming_runtime_readiness() 
     data = response["data"]
     assert data["execution_authority"] == "nautilus"
     assert data["execution_environment"] == "BINANCE_USDM_DEMO"
-    assert data["instrument_id"] == "SOLUSDT-PERP.BINANCE"
+    assert data["active_capability_snapshot_sha256"] is None or len(data["active_capability_snapshot_sha256"]) == 64
+    assert data["active_capability_included_count"] >= 0
+    assert data["blacklist_revision"] >= 0
     assert data["target_notional_usd"] == "10"
     # #211: the stage report is keyed by stage and by nothing else — no symbol, event or order id can
     # enter it — and every stage says how much evidence it rests on.

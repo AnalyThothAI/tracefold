@@ -19,16 +19,15 @@ from nautilus_trader.adapters.binance import (
     BinanceLiveDataClientFactory,
     BinanceLiveExecClientFactory,
 )
-from nautilus_trader.core.uuid import UUID4
-from nautilus_trader.execution.messages import GeneratePositionStatusReports
 from nautilus_trader.live.node import TradingNode
-from nautilus_trader.model.enums import PositionSide
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
+from tracefold.app.repository_session import repositories
 from tracefold.integrations.nautilus import (
     NAUTILUS_RELEASE,
     build_node_config,
     installed_nautilus_wheel_identity,
+    load_complete_account_reports,
 )
 from tracefold.integrations.nautilus.messages import (
     StrategyCommand,
@@ -38,11 +37,11 @@ from tracefold.integrations.nautilus.messages import (
     VenueFlatUnproven,
     strategy_queues,
 )
-from tracefold.integrations.nautilus.strategy import SOLUSDT_PERP, TracefoldNautilusStrategy
+from tracefold.integrations.nautilus.strategy import TracefoldNautilusStrategy
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import INTENT_POLICY_SHA256
+from tracefold.trading.intent import INTENT_POLICY_SHA256
 
 from .database import NAUTILUS_POLL_SECONDS, NautilusDatabaseBridge
 from .probe import create_nautilus_probe_app
@@ -53,9 +52,14 @@ _COMMAND_ENQUEUE_TIMEOUT_SECONDS = 5.0
 
 
 def run_nautilus(settings: Settings) -> None:
-    """Build and run the one Binance Demo TradingNode until SIGINT/SIGTERM."""
+    """Build and run the capability-governed Binance Demo node until shutdown."""
 
     api_key, api_secret = _read_credentials(settings)
+    with repositories(settings, role="nautilus") as repos:
+        capability_snapshot = repos.trading.active_execution_capability_snapshot()
+    if capability_snapshot is None:
+        raise RuntimeError("nautilus_active_capability_snapshot_missing")
+    instrument_ids = [InstrumentId.from_str(value) for value in sorted(capability_snapshot.included)]
     loop = asyncio.new_event_loop()
     node: TradingNode | None = None
     try:
@@ -63,14 +67,16 @@ def run_nautilus(settings: Settings) -> None:
             config=build_node_config(
                 api_key=api_key,
                 api_secret=api_secret,
-                instrument_id=SOLUSDT_PERP,
+                instrument_ids=instrument_ids,
             ),
             loop=loop,
         )
         queues = strategy_queues()
         bridge = NautilusDatabaseBridge(settings, queues)
         strategy = TracefoldNautilusStrategy(
-            engine_identity=_engine_identity(settings),
+            engine_identity=_engine_identity(settings, capability_snapshot.snapshot_sha256),
+            instrument_ids=instrument_ids,
+            capabilities=capability_snapshot.included,
             queues=queues,
             request_venue_flat=lambda request: _schedule_venue_flat_proof(
                 node=node,
@@ -185,19 +191,19 @@ def _read_credentials(settings: Settings) -> tuple[str, str]:
     return api_key, api_secret
 
 
-def _engine_identity(settings: Settings) -> str:
+def _engine_identity(settings: Settings, capability_snapshot_sha256: str) -> str:
     identity = runtime_identity()
     config_payload = {
         "version": "nautilus_binance_demo_config_v1",
         "release": NAUTILUS_RELEASE.version,
-        "instrument_id": SOLUSDT_PERP.value,
+        "capability_snapshot_sha256": capability_snapshot_sha256,
         "poll_seconds": str(NAUTILUS_POLL_SECONDS),
         "environment": "BINANCE_DEMO_USDT_FUTURES",
         "cache": "memory",
         "reconciliation": True,
         "reconciliation_scope": "dedicated_account",
         "inflight_check_interval_ms": 0,
-        "external_order_claims": [SOLUSDT_PERP.value],
+        "external_order_claims": "capability_snapshot",
     }
     config_sha256 = hashlib.sha256(
         json.dumps(config_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -241,13 +247,14 @@ async def _run_venue_flat_proof(
     request: VenueFlatProofRequested,
 ) -> None:
     try:
-        verified_at_ms = await _targeted_venue_flat_report(node=node, request=request)
+        verified_at_ms, account_wide_zero = await _account_wide_venue_flat_report(node=node, request=request)
         command: StrategyCommand = VenueFlatConfirmed(
             intent_id=request.intent_id,
             instrument_id=request.instrument_id,
             position_id=request.position_id,
             authoritative_quantity=Decimal(0),
             verified_at_ms=verified_at_ms,
+            account_wide_zero=account_wide_zero,
         )
     except Exception as exc:
         logger.warning("Nautilus venue-flat proof was not established ({})", type(exc).__name__)
@@ -259,12 +266,12 @@ async def _run_venue_flat_proof(
     await _enqueue_strategy_command(queues, command)
 
 
-async def _targeted_venue_flat_report(
+async def _account_wide_venue_flat_report(
     *,
     node: TradingNode,
     request: VenueFlatProofRequested,
-) -> int:
-    """Query one public execution client and reconcile its fresh exact-instrument report."""
+) -> tuple[int, bool]:
+    """Query one public client for every position and open order in the Demo account."""
 
     instrument_id = InstrumentId.from_str(request.instrument_id)
     closing_order = node.cache.order(ClientOrderId(request.closing_client_order_id))
@@ -278,29 +285,26 @@ async def _targeted_venue_flat_report(
     if client.account_id.value != request.account_id:
         raise RuntimeError("closing_order_account_mismatch")
 
-    command = GeneratePositionStatusReports(
-        instrument_id=instrument_id,
-        start=None,
-        end=None,
-        command_id=UUID4(),
-        ts_init=node.kernel.clock.timestamp_ns(),
-    )
-    reports = await client.generate_position_status_reports(command)
-    if len(reports) != 1:
-        raise RuntimeError("targeted_position_report_count_invalid")
-    report = reports[0]
-    if report.instrument_id != instrument_id or report.account_id.value != request.account_id:
-        raise RuntimeError("targeted_position_report_scope_invalid")
+    position_reports, order_reports = await load_complete_account_reports(client)
+    for report in position_reports:
+        if report.account_id.value != request.account_id:
+            raise RuntimeError("account_position_report_scope_invalid")
+        if not node.kernel.exec_engine.reconcile_execution_report(report):
+            raise RuntimeError("account_position_report_reconciliation_failed")
+        raise RuntimeError("account_position_report_not_flat")
 
-    verified_at_ms = int(report.ts_last) // 1_000_000
+    allowed_order_ids = set(request.owned_open_order_ids)
+    for report in order_reports:
+        client_order_id = None if report.client_order_id is None else report.client_order_id.value
+        if report.account_id.value != request.account_id or client_order_id not in allowed_order_ids:
+            raise RuntimeError("account_open_order_report_unexpected")
+        if not node.kernel.exec_engine.reconcile_execution_report(report):
+            raise RuntimeError("account_open_order_report_reconciliation_failed")
+
+    verified_at_ms = node.kernel.clock.timestamp_ns() // 1_000_000
     if verified_at_ms < request.observed_at_ms:
-        raise RuntimeError("targeted_position_report_stale")
-    reconciled = node.kernel.exec_engine.reconcile_execution_report(report)
-    if not reconciled:
-        raise RuntimeError("targeted_position_report_reconciliation_failed")
-    if report.position_side != PositionSide.FLAT or report.quantity.as_decimal() != 0:
-        raise RuntimeError("targeted_position_report_not_flat")
-    return verified_at_ms
+        raise RuntimeError("account_venue_report_stale")
+    return verified_at_ms, not order_reports
 
 
 async def _enqueue_strategy_command(queues: StrategyQueues, command: StrategyCommand) -> None:

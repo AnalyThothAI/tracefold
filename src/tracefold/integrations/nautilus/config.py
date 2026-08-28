@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import platform
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import distribution
 from typing import Final
@@ -78,12 +79,15 @@ def build_node_config(
     *,
     api_key: str,
     api_secret: str,
-    instrument_id: InstrumentId,
+    instrument_ids: Sequence[InstrumentId],
 ) -> TradingNodeConfig:
-    """Build the exact public-v1, one-instrument Demo node configuration."""
+    """Build the exact public-v1 Demo node configuration from one frozen snapshot."""
 
+    ids = frozenset(instrument_ids)
+    if not ids:
+        raise ValueError("nautilus_instrument_ids_empty")
     provider = BinanceInstrumentProviderConfig(
-        load_ids=frozenset({instrument_id}),
+        load_ids=ids,
         query_commission_rates=True,
     )
     return TradingNodeConfig(
@@ -115,7 +119,7 @@ def build_node_config(
                 environment=BinanceEnvironment.DEMO,
                 instrument_provider=provider,
                 use_reduce_only=True,
-                futures_leverages={BinanceSymbol("SOLUSDT"): 1},
+                futures_leverages={BinanceSymbol(item.symbol.value.removesuffix("-PERP")): 1 for item in ids},
                 max_retries=None,
             )
         },

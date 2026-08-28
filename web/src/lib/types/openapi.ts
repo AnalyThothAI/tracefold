@@ -2451,6 +2451,10 @@ export interface components {
             avg_exit_price?: string | null;
             /** Base Symbol */
             base_symbol: string;
+            /** Blacklist Revision At Emission */
+            blacklist_revision_at_emission?: number | null;
+            /** Blacklist Snapshot Sha256 At Emission */
+            blacklist_snapshot_sha256_at_emission?: string | null;
             /** Case Id */
             case_id: string;
             /** Case Observed At Ms */
@@ -2467,6 +2471,8 @@ export interface components {
             created_at_ms: number;
             /** Event Id */
             event_id?: string | null;
+            /** Execution Capability Snapshot Sha256 */
+            execution_capability_snapshot_sha256?: string | null;
             /**
              * Execution Environment
              * @constant
@@ -2481,13 +2487,15 @@ export interface components {
             execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
             /** Flat Verified At Ms */
             flat_verified_at_ms?: number | null;
-            /**
-             * Instrument Id
-             * @constant
-             */
-            instrument_id: "SOLUSDT-PERP.BINANCE";
+            /** Instrument Id */
+            instrument_id: string;
             /** Intent Id */
             intent_id: string;
+            /**
+             * Intent Version
+             * @enum {string}
+             */
+            intent_version: "trade_intent_v1" | "trade_intent_v2";
             /** Opened At Ms */
             opened_at_ms?: number | null;
             /** Policy Decision */
@@ -2555,6 +2563,12 @@ export interface components {
         };
         /** TradingReadinessData */
         TradingReadinessData: {
+            /** Active Capability Included Count */
+            active_capability_included_count: number;
+            /** Active Capability Snapshot Sha256 */
+            active_capability_snapshot_sha256?: string | null;
+            /** Blacklist Revision */
+            blacklist_revision: number;
             /**
              * Control
              * @enum {string}
@@ -2582,12 +2596,6 @@ export interface components {
             execution_environment: "BINANCE_USDM_DEMO";
             /** Heartbeat At Ms */
             heartbeat_at_ms?: number | null;
-            /**
-             * Instrument Id
-             * @default SOLUSDT-PERP.BINANCE
-             * @constant
-             */
-            instrument_id: "SOLUSDT-PERP.BINANCE";
             /** Unexpected Exposure */
             unexpected_exposure: boolean;
         };

@@ -8,27 +8,36 @@ from typing import Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .contracts import InstrumentRef, canonical_sha256
+from .candidate.blacklist import BlacklistSnapshotV1
+from .capabilities import ExecutionCapabilitySnapshotV1
+from .contracts import InstrumentRef, canonical_sha256, underlying_key
+from .execution_policy import (
+    ENTRY_TTL_MS,
+    MAX_ENTRY_DRIFT_BPS,
+    MAX_HOLDING_MS,
+    MAX_SPREAD_BPS,
+    STOP_LOSS_BPS,
+    TARGET_NOTIONAL_CEILING_USD,
+    deterministic_client_order_id,
+)
 
-TRADE_INTENT_VERSION: Final[Literal["trade_intent_v1"]] = "trade_intent_v1"
+TRADE_INTENT_VERSION: Final[Literal["trade_intent_v2"]] = "trade_intent_v2"
 BINANCE_USDM_DEMO: Final[Literal["BINANCE_USDM_DEMO"]] = "BINANCE_USDM_DEMO"
-INTENT_POLICY_VERSION = "trade_intent_policy_v1"
+INTENT_POLICY_VERSION = "trade_intent_policy_v2"
 INTENT_POLICY_PAYLOAD: Final = {
     "version": INTENT_POLICY_VERSION,
     "execution_environment": BINANCE_USDM_DEMO,
-    "instrument_id": "SOLUSDT-PERP.BINANCE",
     "side": "long",
-    "target_notional_usd_ceiling": "10",
-    "ttl_ms": 60_000,
-    "stop_loss_bps": 200,
-    "max_holding_ms": 180_000,
-    "max_entry_drift_bps": 25,
-    "max_spread_bps": 30,
+    "target_notional_usd_ceiling": str(TARGET_NOTIONAL_CEILING_USD),
+    "ttl_ms": ENTRY_TTL_MS,
+    "stop_loss_bps": STOP_LOSS_BPS,
+    "max_holding_ms": MAX_HOLDING_MS,
+    "max_entry_drift_bps": MAX_ENTRY_DRIFT_BPS,
+    "max_spread_bps": MAX_SPREAD_BPS,
     "max_entries_per_utc_day": 1,
     "quantity_rule": "floor_to_venue_precision(target_notional_usd/fresh_price)",
 }
 INTENT_POLICY_SHA256 = canonical_sha256(INTENT_POLICY_PAYLOAD)
-IntentLeg = Literal["entry", "stop", "close"]
 IntentExecutionState = Literal["PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW", "TERMINAL"]
 ACTIVE_INTENT_STATES: Final[tuple[IntentExecutionState, ...]] = (
     "PENDING",
@@ -40,6 +49,8 @@ IntentReasonCode = Literal[
     "intent_expired",
     "runtime_not_ready",
     "external_exposure",
+    "blacklisted",
+    "capability_mismatch",
     "market_unacceptable",
     "quantity_unexecutable",
     "risk_denied",
@@ -59,46 +70,37 @@ _DECIMAL_STRING_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
 RejectedReason = Literal[
     "runtime_not_ready",
     "external_exposure",
+    "blacklisted",
+    "capability_mismatch",
     "market_unacceptable",
     "quantity_unexecutable",
     "risk_denied",
 ]
 
 
-def is_executable_instrument(instrument: InstrumentRef) -> bool:
-    """Whether a frozen Case names the one V1 capital instrument exactly."""
+def capability_instrument_id(instrument: InstrumentRef) -> str:
+    """The exact legacy Binance instrument identity for a frozen News projection row."""
 
-    return (
-        instrument.exchange_id == "binance"
-        and instrument.venue == "binance.perp"
-        and instrument.provider_symbol == "SOLUSDT"
-        and instrument.base_symbol == "SOL"
-        and instrument.instrument_class == "crypto"
-        and instrument.quote_asset == "USDT"
+    if (
+        instrument.exchange_id != "binance"
+        or instrument.venue != "binance.perp"
+        or instrument.instrument_class != "crypto"
+        or instrument.quote_asset not in {"USDT", "USDC"}
+    ):
+        return ""
+    return f"{instrument.provider_symbol}-PERP.BINANCE"
+
+
+def is_executable_instrument(instrument: InstrumentRef, snapshot: ExecutionCapabilitySnapshotV1) -> bool:
+    instrument_id = capability_instrument_id(instrument)
+    capability = snapshot.included.get(instrument_id)
+    return bool(
+        capability is not None
+        and capability.native_symbol == instrument.provider_symbol
+        and capability.underlying_key == underlying_key(instrument.base_symbol)
+        and capability.quote_currency == instrument.quote_asset
+        and capability.executable
     )
-
-
-def deterministic_client_order_id(
-    intent_id: str,
-    leg: IntentLeg,
-    *,
-    previous_client_order_id: str | None = None,
-) -> str:
-    """A Binance-safe stable identity for one economic leg."""
-
-    marker = {"entry": "e", "stop": "s", "close": "c"}[leg]
-    if leg == "stop":
-        seed = canonical_sha256(
-            {
-                "intent_id": intent_id,
-                "leg": "stop",
-                "previous_client_order_id": previous_client_order_id,
-            }
-        )
-        return f"tf-{marker}-{seed[:28]}"
-    if previous_client_order_id is not None:
-        raise ValueError("previous_client_order_id_only_valid_for_stop")
-    return f"tf-{marker}-{intent_id[:28]}"
 
 
 class TradeIntent(BaseModel):
@@ -107,17 +109,22 @@ class TradeIntent(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     intent_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    intent_version: Literal["trade_intent_v1"] = TRADE_INTENT_VERSION
+    intent_version: Literal["trade_intent_v1", "trade_intent_v2"] = TRADE_INTENT_VERSION
     case_id: str
     case_manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     intent_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_environment: Literal["BINANCE_USDM_DEMO"] = BINANCE_USDM_DEMO
-    instrument_id: Literal["SOLUSDT-PERP.BINANCE"]
+    execution_capability_snapshot_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blacklist_revision_at_emission: int | None = Field(default=None, ge=0)
+    blacklist_snapshot_sha256_at_emission: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    blacklist_snapshot_payload_at_emission: BlacklistSnapshotV1 | None = None
+    instrument_id: str
+    underlying_key: str | None = None
     side: Literal["long"] = "long"
     created_at_ms: int = Field(gt=0)
     valid_until_ms: int = Field(gt=0)
     reference_price: Decimal = Field(gt=0)
-    target_notional_usd: Decimal = Field(gt=0, le=Decimal("10"))
+    target_notional_usd: Decimal = Field(gt=0, le=TARGET_NOTIONAL_CEILING_USD)
     stop_loss_bps: Literal[200]
     max_holding_ms: Literal[180_000]
     max_entry_drift_bps: Literal[25]
@@ -129,6 +136,10 @@ class TradeIntent(BaseModel):
         *,
         case_id: str,
         case_manifest_sha256: str,
+        execution_capability_snapshot_sha256: str,
+        blacklist_snapshot: BlacklistSnapshotV1,
+        instrument_id: str,
+        underlying_key: str,
         created_at_ms: int,
         reference_price: Decimal,
         target_notional_usd: Decimal,
@@ -139,10 +150,15 @@ class TradeIntent(BaseModel):
             "case_manifest_sha256": case_manifest_sha256,
             "intent_policy_sha256": INTENT_POLICY_SHA256,
             "execution_environment": BINANCE_USDM_DEMO,
-            "instrument_id": INTENT_POLICY_PAYLOAD["instrument_id"],
+            "execution_capability_snapshot_sha256": execution_capability_snapshot_sha256,
+            "blacklist_revision_at_emission": blacklist_snapshot.revision,
+            "blacklist_snapshot_sha256_at_emission": blacklist_snapshot.snapshot_sha256,
+            "blacklist_snapshot_payload_at_emission": blacklist_snapshot.model_dump(mode="json"),
+            "instrument_id": instrument_id,
+            "underlying_key": underlying_key,
             "side": "long",
             "created_at_ms": created_at_ms,
-            "valid_until_ms": created_at_ms + 60_000,
+            "valid_until_ms": created_at_ms + ENTRY_TTL_MS,
             "reference_price": reference_price,
             "target_notional_usd": target_notional_usd,
             "stop_loss_bps": INTENT_POLICY_PAYLOAD["stop_loss_bps"],
@@ -154,10 +170,26 @@ class TradeIntent(BaseModel):
 
     @model_validator(mode="after")
     def validate_identity(self) -> TradeIntent:
-        if self.valid_until_ms != self.created_at_ms + 60_000:
+        if self.valid_until_ms != self.created_at_ms + ENTRY_TTL_MS:
             raise ValueError("trade_intent_ttl_invalid")
-        if self.intent_policy_sha256 != INTENT_POLICY_SHA256:
+        if self.intent_version == "trade_intent_v2" and self.intent_policy_sha256 != INTENT_POLICY_SHA256:
             raise ValueError("trade_intent_policy_identity_invalid")
+        if self.intent_version == "trade_intent_v2":
+            if (
+                self.execution_capability_snapshot_sha256 is None
+                or self.blacklist_revision_at_emission is None
+                or self.blacklist_snapshot_sha256_at_emission is None
+                or self.blacklist_snapshot_payload_at_emission is None
+                or not self.underlying_key
+            ):
+                raise ValueError("trade_intent_v2_identity_incomplete")
+            if self.blacklist_snapshot_payload_at_emission.revision != self.blacklist_revision_at_emission:
+                raise ValueError("trade_intent_blacklist_revision_mismatch")
+            if (
+                self.blacklist_snapshot_payload_at_emission.snapshot_sha256
+                != self.blacklist_snapshot_sha256_at_emission
+            ):
+                raise ValueError("trade_intent_blacklist_snapshot_mismatch")
         if self.intent_id != canonical_sha256(self.immutable_payload):
             raise ValueError("trade_intent_identity_invalid")
         return self
@@ -170,6 +202,21 @@ class TradeIntent(BaseModel):
             "case_manifest_sha256": self.case_manifest_sha256,
             "intent_policy_sha256": self.intent_policy_sha256,
             "execution_environment": self.execution_environment,
+            **(
+                {
+                    "execution_capability_snapshot_sha256": self.execution_capability_snapshot_sha256,
+                    "blacklist_revision_at_emission": self.blacklist_revision_at_emission,
+                    "blacklist_snapshot_sha256_at_emission": self.blacklist_snapshot_sha256_at_emission,
+                    "blacklist_snapshot_payload_at_emission": (
+                        self.blacklist_snapshot_payload_at_emission.model_dump(mode="json")
+                        if self.blacklist_snapshot_payload_at_emission is not None
+                        else None
+                    ),
+                    "underlying_key": self.underlying_key,
+                }
+                if self.intent_version == "trade_intent_v2"
+                else {}
+            ),
             "instrument_id": self.instrument_id,
             "side": self.side,
             "created_at_ms": self.created_at_ms,
@@ -245,6 +292,7 @@ __all__ = [
     "ManualReviewReason",
     "RejectedReason",
     "TradeIntent",
+    "capability_instrument_id",
     "deterministic_client_order_id",
     "is_executable_instrument",
 ]

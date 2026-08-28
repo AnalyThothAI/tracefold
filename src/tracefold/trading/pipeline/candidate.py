@@ -55,7 +55,7 @@ from ..contracts import (
 )
 from ..decision.program import TradingDecisionProgram
 from ..decision.regime import assess, pre_move_bps, select_bar
-from ..intent import TradeIntent, is_executable_instrument
+from ..intent import TradeIntent, capability_instrument_id, is_executable_instrument
 from ..storage.root import TradingRepository
 from ..strategy.root import capital_strategy_id, strategies, strategy_from_manifest
 from ..telemetry import (
@@ -877,7 +877,7 @@ class CandidateRunner:
                 program_output=program_output,
             )
             return "intent_side_not_allowed"
-        if not is_executable_instrument(manifest.instrument):
+        if not capability_instrument_id(manifest.instrument):
             funnel.count("advance_reject:intent_instrument_not_allowed")
             await self._settle(
                 case_id,
@@ -959,15 +959,30 @@ class CandidateRunner:
         program_output: dict[str, Any] | None,
     ) -> bool:
         now = self._clock()
-        intent = TradeIntent.create(
-            case_id=case_id,
-            case_manifest_sha256=manifest.digest(),
-            created_at_ms=now,
-            reference_price=manifest.mark_price,
-            target_notional_usd=self._config.fixed_notional_usd,
-        )
 
         def _insert(repos: Any) -> bool:
+            instrument_id = capability_instrument_id(manifest.instrument)
+            evidence = repos.trading.intent_admission_evidence(
+                instrument_id=instrument_id,
+                underlying_key=manifest.underlying_key,
+                now_ms=now,
+            )
+            if evidence is None:
+                return False
+            snapshot, blacklist = evidence
+            if not is_executable_instrument(manifest.instrument, snapshot):
+                return False
+            intent = TradeIntent.create(
+                case_id=case_id,
+                case_manifest_sha256=manifest.digest(),
+                execution_capability_snapshot_sha256=snapshot.snapshot_sha256,
+                blacklist_snapshot=blacklist,
+                instrument_id=instrument_id,
+                underlying_key=manifest.underlying_key,
+                created_at_ms=now,
+                reference_price=manifest.mark_price,
+                target_notional_usd=self._config.fixed_notional_usd,
+            )
             if not repos.trading.insert_intent(intent):
                 return False
             settled = repos.trading.settle_case(

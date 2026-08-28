@@ -41,7 +41,7 @@ from ..opennews import source_artifact_identity
 # `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
 # measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
 # be proven for this frame and a consumer must refuse it rather than assume five minutes.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v7"
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v8"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -396,6 +396,35 @@ class TradeProjectionStorage:
                       venue_symbol
             """,
             (str(base_symbol or "").strip().upper(), list(venues)),
+        ).fetchall()
+        return [
+            TradeInstrumentProjectionRow(
+                venue=row["venue"],
+                venue_symbol=row["venue_symbol"],
+                base_symbol=row["base_symbol"],
+                instrument_class=row["instrument_class"],
+                quote_asset=row["quote_asset"],
+                status=row["status"],
+                last_seen_ms=row["last_seen_ms"],
+            )
+            for row in rows
+        ]
+
+    def trade_execution_instruments(self) -> list[TradeInstrumentProjectionRow]:
+        """All active Binance USD-M rows for the cold capability-snapshot command.
+
+        Crypto classification deliberately crosses the App seam instead of filtering here: every
+        provider candidate must receive an included row or a named mechanical exclusion.
+        """
+
+        rows = self.conn.execute(
+            """
+            SELECT venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+              FROM news_market_instruments
+             WHERE venue = 'binance.perp'
+               AND status = 'trading'
+             ORDER BY venue_symbol, base_symbol
+            """
         ).fetchall()
         return [
             TradeInstrumentProjectionRow(

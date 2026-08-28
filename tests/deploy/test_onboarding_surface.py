@@ -197,7 +197,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260828_0318|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260828_0319|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -464,7 +464,7 @@ def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tm
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f|f"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
 
@@ -486,7 +486,7 @@ def test_up_refuses_the_pr2_migration_when_the_automatic_preflight_fails(tmp_pat
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f|f"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|0|0|0"
 
@@ -506,7 +506,26 @@ def test_up_refuses_the_pr2_migration_when_the_automatic_preflight_fails(tmp_pat
 
 def test_db_migrate_automatically_enforces_the_pr2_preflight(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading hard-cut preflight passed" in result.stdout
+
+
+def test_db_migrate_enforces_the_v2_preflight_from_the_prompt_epoch(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0318|t|f"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
     env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
 

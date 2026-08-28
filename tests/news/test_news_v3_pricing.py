@@ -13,7 +13,12 @@ from decimal import Decimal
 import httpx
 import pytest
 
-from tracefold.integrations.venues.candles import fetch_binance_candles, fetch_hyperliquid_candles
+from tracefold.integrations.venues.candles import (
+    fetch_binance_bars,
+    fetch_binance_candles,
+    fetch_hyperliquid_bars,
+    fetch_hyperliquid_candles,
+)
 from tracefold.integrations.venues.errors import VenueExpectedError
 from tracefold.integrations.venues.hyperliquid import fetch_hyperliquid_instruments
 from tracefold.integrations.venues.quotes import (
@@ -407,6 +412,51 @@ def test_candle_adapters_normalize_both_providers_to_one_interval_convention() -
     )
     assert bars[0].close == Decimal("64349.0")
     assert bars[0].close_at_ms == bars[0].open_at_ms + CANDLE_INTERVAL_MS
+
+
+def test_replay_bar_adapters_require_and_preserve_source_native_ohlcv() -> None:
+    binance_rows = [[1_787_000_000_000, "1", "2", "0.5", "1.5", "10", 1_787_000_299_999]]
+    binance = asyncio.run(
+        fetch_binance_bars(
+            "BTCUSDT",
+            venue="binance.perp",
+            start_ms=1_787_000_000_000,
+            end_ms=1_787_003_600_000,
+            transport=_json_transport({"/fapi/v1/klines": binance_rows}),
+        )
+    )
+    hyperliquid = asyncio.run(
+        fetch_hyperliquid_bars(
+            "BTC",
+            venue="hl.perp",
+            start_ms=1_787_000_000_000,
+            end_ms=1_787_003_600_000,
+            transport=_json_transport(
+                {
+                    "/info": [
+                        {
+                            "t": 1_787_000_000_000,
+                            "T": 1_787_000_299_999,
+                            "o": "1",
+                            "h": "2",
+                            "l": "0.5",
+                            "c": "1.5",
+                            "v": "10",
+                        }
+                    ]
+                }
+            ),
+        )
+    )
+
+    assert binance == hyperliquid
+    assert (binance[0].open, binance[0].high, binance[0].low, binance[0].close, binance[0].volume) == (
+        Decimal("1"),
+        Decimal("2"),
+        Decimal("0.5"),
+        Decimal("1.5"),
+        Decimal("10"),
+    )
 
 
 def test_hyperliquid_spot_catalogue_stores_queryable_markets_not_token_names() -> None:

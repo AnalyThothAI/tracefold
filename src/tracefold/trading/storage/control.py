@@ -20,12 +20,14 @@ class ControlStorage:
     # ------------------------------------------------------------------ blacklist
     def blacklist_rows(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT base_symbol, reason, expires_at_ms FROM trading_symbol_blacklist ORDER BY base_symbol"
+            "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
+            "FROM trading_symbol_blacklist ORDER BY base_symbol"
         ).fetchall()
         return [dict(row) for row in rows]
 
     def blacklist_upsert(self, *, base_symbol: str, reason: str, expires_at_ms: int | None, now_ms: int) -> None:
-        self.conn.execute(
+        self.conn.execute("SELECT id FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
+        changed = self.conn.execute(
             """
             INSERT INTO trading_symbol_blacklist (base_symbol, reason, expires_at_ms, created_at_ms, updated_at_ms)
             VALUES (%s, %s, %s, %s, %s)
@@ -33,20 +35,38 @@ class ControlStorage:
                SET reason = EXCLUDED.reason,
                    expires_at_ms = EXCLUDED.expires_at_ms,
                    updated_at_ms = EXCLUDED.updated_at_ms
+             WHERE (trading_symbol_blacklist.reason, trading_symbol_blacklist.expires_at_ms)
+                   IS DISTINCT FROM (EXCLUDED.reason, EXCLUDED.expires_at_ms)
+         RETURNING base_symbol
             """,
             (base_symbol, reason, expires_at_ms, int(now_ms), int(now_ms)),
-        )
+        ).fetchone()
+        if changed is not None:
+            self.conn.execute(
+                "UPDATE trading_runtime_state SET blacklist_revision = blacklist_revision + 1, updated_at_ms = %s "
+                "WHERE id = 1",
+                (int(now_ms),),
+            )
 
-    def blacklist_delete(self, *, base_symbol: str) -> int:
+    def blacklist_delete(self, *, base_symbol: str, now_ms: int) -> int:
+        self.conn.execute("SELECT id FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
         cursor = self.conn.execute("DELETE FROM trading_symbol_blacklist WHERE base_symbol = %s", (base_symbol,))
-        return int(getattr(cursor, "rowcount", 0) or 0)
+        removed = int(getattr(cursor, "rowcount", 0) or 0)
+        if removed:
+            self.conn.execute(
+                "UPDATE trading_runtime_state SET blacklist_revision = blacklist_revision + 1, updated_at_ms = %s "
+                "WHERE id = 1",
+                (int(now_ms),),
+            )
+        return removed
 
     # ------------------------------------------------------------------ runtime state
     def runtime_state(self) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT control, day_key, dspy_calls_today, funnel, "
             "nautilus_heartbeat_at_ms, nautilus_ready, nautilus_readiness_reason, "
-            "nautilus_unexpected_exposure, updated_at_ms "
+            "nautilus_unexpected_exposure, active_capability_snapshot_sha256, "
+            "active_capability_included_count, blacklist_revision, updated_at_ms "
             "FROM trading_runtime_state WHERE id = 1"
         ).fetchone()
         return dict(row) if row is not None else None
@@ -56,7 +76,8 @@ class ControlStorage:
 
         row = self.conn.execute(
             "SELECT control, nautilus_heartbeat_at_ms, nautilus_ready, "
-            "nautilus_readiness_reason, nautilus_unexpected_exposure "
+            "nautilus_readiness_reason, nautilus_unexpected_exposure, "
+            "active_capability_snapshot_sha256, active_capability_included_count, blacklist_revision "
             "FROM trading_runtime_state WHERE id = 1"
         ).fetchone()
         return dict(row) if row is not None else None

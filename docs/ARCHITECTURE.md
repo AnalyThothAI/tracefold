@@ -1562,9 +1562,9 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 ## Trading core (#104)
 
 `tracefold.trading` is the disabled-by-default capital capability. It turns
-persisted News/OI evidence into one frozen research decision and, only for the
-single production-shaped Demo contract below, hands one immutable Intent to
-Nautilus. It does not claim Alpha.
+persisted News/OI evidence into one frozen research decision and, only for an
+instrument in the active Binance Demo execution-capability snapshot, hands one
+immutable Intent to Nautilus. It does not claim Alpha.
 
 ```text
 public News projections + public closed bars
@@ -1588,11 +1588,22 @@ or in-memory correctness ledger exists.
 
 ### Frozen execution contract
 
+Execution permission is `active capability snapshot − canonical blacklist`,
+not a target-symbol list. A cold refresh mechanically joins the complete public
+News Binance-perp projection with every instrument returned by the pinned
+Nautilus `1.231.0` Binance USD-M Demo provider. The content-addressed snapshot
+partitions that full union: each instrument is either executable with frozen
+native identity, underlying, quote, exact price/size increments, precision,
+minimums, and stop support, or
+excluded with one closed reason. Provider return order cannot change its hash.
+
 Only a Case whose frozen decision is `long`, whose strategy permission is not
-`shadow`, and whose complete instrument identity is exactly
-`SOLUSDT-PERP.BINANCE` may emit an Intent. The identity check covers Binance
-USD-M native perp venue, `SOLUSDT`, canonical base `SOL`, crypto class, and
-`USDT` quote; there is no reroute or fallback venue.
+`shadow`, and whose complete `InstrumentRef` matches an included capability may
+emit an Intent. There is no reroute or fallback venue. The canonical blacklist
+keys only `crypto:{BASE}` and therefore denies every provider spelling of the
+underlying. Both emission and the last entry fence capture its monotonic
+revision, digest, and immutable payload; an intervening deny is a terminal flat
+`REJECTED/blacklisted` outcome.
 
 `trading.order.fixed_notional_usd` is the only operator execution value and is
 validated as `0 < value <= 10`. The deployed image owns every other execution
@@ -1612,20 +1623,29 @@ A quantity below venue minimum, insufficient balance, unacceptable quote, an
 identity mismatch, or any inability to prove the contract is a refusal. Nothing
 silently changes size, venue, side, leverage, or account.
 
-CandidateRunner owns the handoff transaction. It first inserts the content-
-addressed `trade_intent_v1` row, then guards the already-claimed Case from
+CandidateRunner owns the handoff transaction. It reads the active capability
+and blacklist under the same PostgreSQL transaction, inserts the content-
+addressed `trade_intent_v2` row, then guards the already-claimed Case from
 `RUNNING` to `INTENT_EMITTED` in the same caller-owned transaction. A failed
 insert or failed Case transition rolls both writes back. There is no prepared
 order, provider payload, approval state, backend selector, dual-write, or
 fallback writer.
 
+V1 rows remain readable audit history, but the database rejects every new V1
+insert. Replacing the active capability is a cold operation: Trading must be
+`PAUSED`, the current Nautilus heartbeat must freshly prove account-wide zero
+positions and open orders, and no nonterminal Intent may exist. Activation
+invalidates readiness. The replacement process then loads every included
+instrument and revalidates all frozen provider facts before it can become ready.
+
 ### Nautilus execution authority
 
 The separate `tracefold nautilus run` process is the only execution authority.
-It polls PostgreSQL once per second and claims a fresh `PENDING` Intent only
-when `trading_runtime_state.control = RUNNING`, startup reconciliation has
-proved the exact Demo account/instrument is one-way, 1x, and free of unexpected
-exposure, and its projection writes are healthy. `PAUSED` and `CLOSE_ONLY`
+One process loads the active snapshot but owns at most one Intent lifecycle at
+a time. It polls PostgreSQL once per second and claims a fresh `PENDING` Intent
+only when `trading_runtime_state.control = RUNNING`, startup reconciliation has
+proved the dedicated Demo account is one-way, every included instrument is 1x,
+and the whole account has no unexpected position or open order. `PAUSED` and `CLOSE_ONLY`
 block new entry fences but never stop query, protection, or exit work for an
 already-fenced lifecycle.
 
@@ -1633,9 +1653,30 @@ The one `trading_intents` row is simultaneously the durable inbox, immutable
 instruction, entry fence, restart checkpoint, current execution projection, and
 audit identity. Workers may insert its immutable columns; the Nautilus role may
 read the row and update only the execution projection; Serve is read-only.
-Database constraints enforce exact Demo constants, immutable Intent columns,
+Database constraints enforce the Demo environment, V2 capability/blacklist
+identity, immutable Intent columns,
 Case-to-Intent one-to-one identity, one nonterminal row globally, and one
 fenced entry per UTC day.
+
+### OI BAR replay and attribution
+
+`tracefold trading replay-oi` is App-owned composition over public News and
+Trading interfaces. It reads the exact bounded OI projection plus the active
+capability and blacklist from one database snapshot, then fetches each fact's
+source-native Binance or Hyperliquid OHLCV bars. Every source fact receives
+exactly one terminal replay outcome. Alpha evaluation ignores the current
+blacklist; capital admission is a separate field, so research is not rewritten
+by today's deny policy.
+
+Every directional scenario produces a typed replay intent and runs in a fresh
+Nautilus `BacktestEngine`. Live and replay share the quantity, spread/drift,
+stop, maximum-holding, and economic-leg identity policy. BAR fidelity is
+reported honestly: funding and portfolio drawdown are `null`, never fabricated
+as zero. `ReplaySpecV1` contains only input/policy identities, so equal inputs
+produce the same `run_id`. App atomically publishes the content-addressed
+artifact before Workers append the immutable PostgreSQL success receipt; a
+duplicate validates and reuses the exact artifact, while corruption fails
+closed.
 
 The execution state is deliberately small:
 

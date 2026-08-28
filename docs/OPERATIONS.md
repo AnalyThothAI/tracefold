@@ -16,7 +16,7 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading activation and atomic authority cut (#283)
+### Trading activation and capability cut (#283, #286)
 
 Trading has one production-shaped path and no paper/OpenTrade fallback:
 
@@ -26,11 +26,12 @@ Evidence -> Case -> atomic immutable Intent -> Nautilus
 ```
 
 Before enabling Trading, run `uv run tracefold config` and confirm only
-redacted facts: `config_path=~/.tracefold/config.yaml`, the exact
-`BINANCE_USDM_DEMO` / `SOLUSDT-PERP.BINANCE` contract, target notional at
-most 10 USDT, and `credentials_configured=true`. Never print or copy either
-credential. The dedicated Demo account must be NETTING/one-way, 1x, and contain
-no external SOLUSDT position or order.
+redacted facts: `config_path=~/.tracefold/config.yaml`,
+`execution_environment=BINANCE_USDM_DEMO`,
+`instrument_permission=active_capability_snapshot_minus_blacklist`, target
+notional at most 10 USDT, and `credentials_configured=true`. Never print or
+copy either credential. The dedicated Demo account must be NETTING/one-way, 1x,
+and contain no external position or open order.
 
 On a fresh database, `tracefold init` and `make up` create the Nautilus
 password and role with the other runtime roles. For an existing volume that
@@ -67,9 +68,25 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
+For the V2 capability cut, keep Trading `PAUSED` and Nautilus running. Require a
+fresh green readiness heartbeat with account-wide zero exposure and zero open
+orders, and require zero nonterminal Intents. Deploy/migrate the exact reviewed
+image to `20260828_0319`, then run:
+
+```text
+uv run tracefold trading refresh-capabilities
+uv run tracefold trading status
+```
+
+Record the active snapshot digest/count and blacklist revision. Restart
+Nautilus and require readiness to return green only after it loads and
+revalidates every included instrument. Then set control to `RUNNING`. A later
+refresh follows the same cold sequence; a failed load or activation leaves the
+old active snapshot unchanged and Trading paused.
+
 Do not seed a production Case or Intent to make the console non-empty. A normal
-source must produce the Case, and only the exact frozen long/non-shadow SOL Case
-may emit an Intent.
+source must produce the Case, and only a frozen long/non-shadow Case admitted by
+the active snapshot and current blacklist may emit an Intent.
 
 After the hard cut, `make up` and `make deploy-image` refuse enabled Trading
 without both secure Demo credential files. They start Nautilus only for enabled
@@ -909,6 +926,9 @@ self-owned chat transport composes the request envelope DSPy's JSON adapter used
 to compose. `program_v7` evidence — which closed with zero accepted candidates,
 zero canary activations and two empty advisory instructions — becomes immutable
 audit history. It adds no column and is irreversible.
+`0319` is the #286 TradeIntentV2 hard cut. It adds immutable capability/replay
+ledgers, refuses a warm migration, and never rewrites V1 history. Roll forward;
+there is no downgrade to a second execution permission model.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

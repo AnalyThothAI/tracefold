@@ -19,7 +19,7 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
     config = build_node_config(
         api_key="demo-key",
         api_secret="demo-secret",
-        instrument_id=instrument_id,
+        instrument_ids=[instrument_id, InstrumentId.from_str("BTCUSDT-PERP.BINANCE")],
     )
 
     assert TradingNode.__module__ == "nautilus_trader.live.node"

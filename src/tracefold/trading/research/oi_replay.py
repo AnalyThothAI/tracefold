@@ -89,6 +89,7 @@ class OiReplayReport:
     # report whose job is establishing which rule is binding.
     routable_symbols: set[str] = field(default_factory=set)
     instrument_coverage: dict[str, int] = field(default_factory=dict)
+    outcomes: list[OiReplayOutcome] = field(default_factory=list)
     surviving: list[OiReplayOutcome] = field(default_factory=list)
     target_cohort: list[OiReplayOutcome] = field(default_factory=list)
 
@@ -97,6 +98,7 @@ class OiReplayReport:
 
     def record(self, outcome: OiReplayOutcome) -> None:
         self.facts += 1
+        self.outcomes.append(outcome)
         self._count(self.by_stage, outcome.stage)
         self._count(self.by_reason, f"{outcome.stage}:{outcome.reason}")
         self._count(self.reader_decisions, outcome.source_decision or "unknown")
@@ -111,6 +113,7 @@ class OiReplayReport:
             "reader_decisions": dict(sorted(self.reader_decisions.items())),
             "routable_symbols": sorted(self.routable_symbols),
             "instrument_coverage": dict(sorted(self.instrument_coverage.items())),
+            "outcomes": [row.as_dict() for row in self.outcomes],
             "surviving": [row.as_dict() for row in self.surviving],
             "target_cohort": [row.as_dict() for row in self.target_cohort],
         }
@@ -188,6 +191,10 @@ def replay_oi_facts(
     """
 
     report = OiReplayReport()
+    # Research evaluates Alpha before capital policy. The caller records the supplied blacklist as a
+    # separate capital-admission observation; applying it here would silently remove the very cohort
+    # the replay is meant to measure.
+    alpha_blacklist = Blacklist.from_rows([])
     for row in rows:
         parsed = oi_candidate(row)
         if isinstance(parsed, Rejected):
@@ -220,7 +227,7 @@ def replay_oi_facts(
 
         # Same order as the runner: eligibility, then routing. `now_ms` is the fact's own observation
         # time so the freshness rule is satisfied by construction and cannot mask the rules under test.
-        refused = admit_trigger(parsed, now_ms=parsed.observed_at_ms, config=gate, blacklist=blacklist) or routing
+        refused = admit_trigger(parsed, now_ms=parsed.observed_at_ms, config=gate, blacklist=alpha_blacklist) or routing
         if refused is not None:
             report.record(_outcome(parsed, stage=refused.stage, reason=refused.reason, routable=routable))
             continue

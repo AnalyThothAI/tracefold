@@ -112,7 +112,7 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 "trading": {
                     "enabled": settings.trading.enabled,
                     "execution_environment": "BINANCE_USDM_DEMO",
-                    "instrument_id": "SOLUSDT-PERP.BINANCE",
+                    "instrument_permission": "active_capability_snapshot_minus_blacklist",
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     "nautilus": {
                         "api_key_file": None if nautilus_api_key_file is None else str(nautilus_api_key_file),

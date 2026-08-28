@@ -238,7 +238,10 @@ class CliTests(unittest.TestCase):
         trading = payload["data"]["trading"]
         self.assertFalse(trading["enabled"])
         self.assertEqual(trading["execution_environment"], "BINANCE_USDM_DEMO")
-        self.assertEqual(trading["instrument_id"], "SOLUSDT-PERP.BINANCE")
+        self.assertEqual(
+            trading["instrument_permission"],
+            "active_capability_snapshot_minus_blacklist",
+        )
         self.assertEqual(trading["target_notional_usd"], "10")
         self.assertEqual(
             trading["nautilus"],

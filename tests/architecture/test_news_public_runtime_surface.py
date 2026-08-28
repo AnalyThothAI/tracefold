@@ -17,6 +17,7 @@ PUBLIC_NEWS_INTERFACE = {
     "EditorialEnvelope",
     "EventKind",
     "NEWS_RETRIEVAL_SHA256",
+    "OI_METRIC_VERSION",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",

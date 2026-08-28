@@ -37,18 +37,19 @@ class IntentReleased:
 
 @dataclass(frozen=True, slots=True)
 class VenueFlatConfirmed:
-    """Deliver one targeted, reconciled venue position report with quantity zero."""
+    """Deliver a fresh account-wide position/order reconciliation result."""
 
     intent_id: str
     instrument_id: str
     position_id: str
     authoritative_quantity: Decimal
     verified_at_ms: int
+    account_wide_zero: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class VenueFlatUnproven:
-    """Report that the targeted venue query failed or did not prove zero."""
+    """Report that the account-wide venue query failed or did not prove zero."""
 
     intent_id: str
     position_id: str
@@ -57,7 +58,7 @@ class VenueFlatUnproven:
 
 @dataclass(frozen=True, slots=True)
 class VenueFlatProofRequested:
-    """Ask the root to run the exact owned-exit targeted public report flow."""
+    """Ask the root to prove zero positions and account for every open order."""
 
     intent_id: str
     instrument_id: str
@@ -65,6 +66,7 @@ class VenueFlatProofRequested:
     position_id: str
     closing_client_order_id: str
     observed_at_ms: int
+    owned_open_order_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

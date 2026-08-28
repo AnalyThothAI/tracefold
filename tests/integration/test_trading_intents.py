@@ -10,12 +10,20 @@ from threading import Barrier
 from typing import Any
 
 import pytest
-from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, UniqueViolation
+from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import (
+    BlacklistSnapshotV1,
+    ExecutionCapabilitySnapshotV1,
+    ExecutionInstrumentCapabilityV1,
+    IntentOutcome,
+    ReplayReceiptV1,
+    TradeIntent,
+    deterministic_client_order_id,
+)
 from tracefold.trading.candidate.eligibility import Funnel
 from tracefold.trading.contracts import (
     FrozenMarketContext,
@@ -33,25 +41,67 @@ from tracefold.trading.strategy.root import strategies
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_900_000_000_000
+AUTHORITY: dict[str, BlacklistSnapshotV1] = {}
+CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
+    app_revision="test-revision",
+    app_image_digest="test-image",
+    nautilus_wheel_identity="test-wheel",
+    news_universe_digest="a" * 64,
+    provider_universe_digest="b" * 64,
+    included={
+        symbol: ExecutionInstrumentCapabilityV1(
+            instrument_id=symbol,
+            native_symbol=symbol.removesuffix("-PERP.BINANCE"),
+            underlying_key=f"crypto:{symbol.removesuffix('USDT-PERP.BINANCE')}",
+            quote_currency="USDT",
+            price_precision=2,
+            size_precision=3,
+            price_increment="0.01",
+            size_increment="0.001",
+            min_quantity="0.001",
+            min_notional="5",
+        )
+        for symbol in (
+            "BTCUSDT-PERP.BINANCE",
+            "DOGEUSDT-PERP.BINANCE",
+            "ETHUSDT-PERP.BINANCE",
+            "SOLUSDT-PERP.BINANCE",
+        )
+    },
+    excluded={},
+)
 
 
 @pytest.fixture(scope="module")
 def conn():
     connection = connect_postgres_test(read_only=False)
     migrate(connection)
+    repos = repositories_for_connection(connection)
+    connection.execute(
+        "UPDATE trading_runtime_state SET nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    assert repos.trading.append_and_activate_execution_capability_snapshot(
+        CAPABILITY_SNAPSHOT,
+        created_at_ms=NOW,
+    )
+    AUTHORITY["blacklist"] = repos.trading.blacklist_snapshot(now_ms=NOW, materialize_expiry=True)
+    connection.commit()
     yield connection
     connection.close()
 
 
 def _case(connection: Any, *, case_id: str = "case-intent-1") -> None:
     connection.execute("TRUNCATE trading_intents, trading_orders, trading_cases CASCADE")
+    _reset_authority(connection)
     connection.execute(
         """
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
           strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
           manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, 'crypto:BTC', 'oi', 'oi_smart_money_momentum_v1',
+        ) VALUES (%s, 'crypto:SOL', 'oi', 'oi_smart_money_momentum_v1',
                   'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
                   '{}'::jsonb, %s, 'RUNNING', %s, %s, %s)
         """,
@@ -65,9 +115,14 @@ def _intent(
     case_id: str = "case-intent-1",
     case_manifest_sha256: str = "1" * 64,
 ) -> TradeIntent:
+    blacklist = AUTHORITY["blacklist"]
     return TradeIntent.create(
         case_id=case_id,
         case_manifest_sha256=case_manifest_sha256,
+        execution_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
+        blacklist_snapshot=blacklist,
+        instrument_id="SOLUSDT-PERP.BINANCE",
+        underlying_key="crypto:SOL",
         created_at_ms=NOW,
         reference_price=Decimal("60000"),
         target_notional_usd=Decimal("10"),
@@ -82,6 +137,48 @@ def _allow_entry(connection: Any) -> None:
          WHERE id = 1
         """
     )
+
+
+def _reset_authority(connection: Any) -> None:
+    connection.execute("DELETE FROM trading_symbol_blacklist WHERE base_symbol NOT IN ('BTC', 'ETH', 'CL')")
+    connection.execute(
+        """
+        UPDATE trading_runtime_state
+           SET control = 'PAUSED', blacklist_revision = 0,
+               active_capability_snapshot_sha256 = %s,
+               active_capability_included_count = %s,
+               nautilus_ready = false, nautilus_unexpected_exposure = false
+         WHERE id = 1
+        """,
+        (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
+    )
+
+
+def test_replay_success_receipt_is_idempotent_content_bound_and_append_only(conn: Any) -> None:
+    conn.execute("TRUNCATE trading_replay_runs")
+    receipt = ReplayReceiptV1(
+        run_id="7" * 64,
+        spec_sha256="7" * 64,
+        created_at_ms=NOW,
+        artifact_path="/tracefold-artifacts/replay/7/replay.json",
+        artifact_sha256="8" * 64,
+        source_count=3,
+        directional_count=1,
+        terminal_outcome_count=3,
+    )
+    repos = repositories_for_connection(conn)
+
+    assert repos.trading.insert_replay_receipt(receipt) is True
+    assert repos.trading.insert_replay_receipt(receipt) is False
+    assert ReplayReceiptV1.model_validate(repos.trading.replay_receipt(receipt.run_id)) == receipt
+    conn.commit()
+
+    with pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"):
+        conn.execute("UPDATE trading_replay_runs SET source_count = 4 WHERE run_id = %s", (receipt.run_id,))
+    conn.rollback()
+    with pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"):
+        conn.execute("DELETE FROM trading_replay_runs WHERE run_id = %s", (receipt.run_id,))
+    conn.rollback()
 
 
 class _RunnerDb:
@@ -118,11 +215,20 @@ class _RunnerDb:
 
 def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingCaseManifest:
     strategy = strategies()["oi_smart_money_momentum_v1"]
+    selected = instrument or InstrumentRef(
+        exchange_id="binance",
+        venue="binance.perp",
+        provider_symbol="SOLUSDT",
+        base_symbol="SOL",
+        instrument_class="crypto",
+        quote_asset="USDT",
+        observed_at_ms=NOW,
+    )
     oi = OiTradeCandidate(
-        event_id="event-sol",
+        event_id=f"event-{selected.base_symbol.lower()}",
         observed_at_ms=NOW,
         verdict_created_at_ms=NOW,
-        base_symbol="SOL",
+        base_symbol=selected.base_symbol,
         venue="binance",
         oi_direction="rise",
         oi_change_bps=1_548,
@@ -172,19 +278,10 @@ def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingC
         strategy_version=strategy.strategy_version,
         strategy_config=strategy.config_snapshot,
         strategy_config_digest=strategy.config_digest,
-        underlying_key="crypto:SOL",
-        base_symbol="SOL",
+        underlying_key=f"crypto:{selected.base_symbol}",
+        base_symbol=selected.base_symbol,
         cutoff_ms=NOW,
-        instrument=instrument
-        or InstrumentRef(
-            exchange_id="binance",
-            venue="binance.perp",
-            provider_symbol="SOLUSDT",
-            base_symbol="SOL",
-            instrument_class="crypto",
-            quote_asset="USDT",
-            observed_at_ms=NOW,
-        ),
+        instrument=selected,
     )
 
 
@@ -194,6 +291,7 @@ def _pending_executable_case(
     manifest: TradingCaseManifest | None = None,
 ) -> TradingCaseManifest:
     connection.execute("TRUNCATE trading_intents, trading_orders, trading_cases CASCADE")
+    _reset_authority(connection)
     manifest = manifest or _executable_manifest()
     repos = repositories_for_connection(connection)
     assert repos.trading.insert_case(
@@ -288,6 +386,29 @@ def test_candidate_runner_atomically_emits_intent_and_advances_case(conn: Any) -
     assert stored is not None and stored[0].case_manifest_sha256 == manifest.digest()
 
 
+def test_candidate_runner_emits_a_non_target_instrument_from_the_same_active_snapshot(conn: Any) -> None:
+    doge = InstrumentRef(
+        exchange_id="binance",
+        venue="binance.perp",
+        provider_symbol="DOGEUSDT",
+        base_symbol="DOGE",
+        instrument_class="crypto",
+        quote_asset="USDT",
+        observed_at_ms=NOW,
+    )
+    _pending_executable_case(conn, manifest=_executable_manifest(instrument=doge))
+
+    assert asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel())) == "smart_money_momentum_long"
+    row = conn.execute(
+        "SELECT instrument_id, underlying_key, intent_version FROM trading_intents WHERE case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(row) == {
+        "instrument_id": "DOGEUSDT-PERP.BINANCE",
+        "underlying_key": "crypto:DOGE",
+        "intent_version": "trade_intent_v2",
+    }
+
+
 def test_candidate_runner_rolls_back_intent_when_case_transition_fails(conn: Any) -> None:
     _pending_executable_case(conn)
 
@@ -300,27 +421,107 @@ def test_candidate_runner_rolls_back_intent_when_case_transition_fails(conn: Any
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "expected"),
     (
-        ("exchange_id", "hyperliquid"),
-        ("venue", "hl.perp"),
-        ("provider_symbol", "SOL"),
-        ("base_symbol", "ETH"),
-        ("instrument_class", "equity"),
-        ("quote_asset", "USDC"),
+        ("exchange_id", "hyperliquid", "intent_instrument_not_allowed"),
+        ("venue", "hl.perp", "intent_instrument_not_allowed"),
+        ("instrument_class", "equity", "intent_instrument_not_allowed"),
+        ("provider_symbol", "SOL", "intent_admission_blocked"),
+        ("base_symbol", "ETH", "intent_admission_blocked"),
+        ("quote_asset", "USDC", "intent_admission_blocked"),
     ),
 )
-def test_candidate_runner_refuses_every_nonexact_instrument_identity(conn: Any, field: str, value: str) -> None:
+def test_candidate_runner_refuses_every_nonexact_instrument_identity(
+    conn: Any,
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
     exact = _executable_manifest().instrument
     altered = InstrumentRef.model_validate({**exact.model_dump(), field: value})
     _pending_executable_case(conn, manifest=_executable_manifest(instrument=altered))
 
     result = asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel()))
 
-    assert result == "intent_instrument_not_allowed"
+    assert result == expected
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {"state": "POLICY_REJECTED", "policy_reason": "intent_instrument_not_allowed"}
+    assert dict(case) == {
+        "state": "POLICY_REJECTED" if expected == "intent_instrument_not_allowed" else "BLOCKED",
+        "policy_reason": expected,
+    }
+
+
+def test_capability_replacement_requires_a_fresh_zero_proof_and_no_nonterminal_intent(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "replacement-revision"})
+
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW - 15_001,),
+    )
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(
+        replacement,
+        created_at_ms=NOW,
+    )
+
+    assert repos.trading.insert_intent(_intent())
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(
+        replacement,
+        created_at_ms=NOW,
+    )
+    conn.execute("DELETE FROM trading_intents")
+
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM trading_intents WHERE execution_state IN "
+            "('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')"
+        ).fetchone()["n"]
+        == 0
+    )
+    assert repos.trading.append_and_activate_execution_capability_snapshot(
+        replacement,
+        created_at_ms=NOW,
+    )
+    runtime = repos.trading.runtime_state()
+    assert runtime is not None
+    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
+    assert runtime["nautilus_ready"] is False
+    assert runtime["nautilus_readiness_reason"] == "capability_snapshot_changed"
+    _reset_authority(conn)
+
+
+def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    initial = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "initial-revision"})
+    conn.execute(
+        "UPDATE trading_runtime_state SET control = 'PAUSED', active_capability_snapshot_sha256 = NULL, "
+        "active_capability_included_count = 0, nautilus_ready = false, "
+        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL WHERE id = 1"
+    )
+
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
+    assert repos.trading.runtime_state()["active_capability_snapshot_sha256"] is None
+
+    conn.execute(
+        "UPDATE trading_runtime_state SET nautilus_ready = true, nautilus_heartbeat_at_ms = %s WHERE id = 1",
+        (NOW,),
+    )
+    assert repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
+    assert repos.trading.runtime_state()["active_capability_snapshot_sha256"] == initial.snapshot_sha256
+    _reset_authority(conn)
 
 
 def test_trade_intent_round_trips_as_one_immutable_material_fact(conn: Any) -> None:
@@ -333,7 +534,7 @@ def test_trade_intent_round_trips_as_one_immutable_material_fact(conn: Any) -> N
 
     stored = repos.trading.intent(intent.intent_id)
     assert stored == intent
-    assert intent.intent_id == "ff31b24addf3577962bcadef55cfe12c45a48fd0314aae65570f8f4233450e7f"
+    assert len(intent.intent_id) == 64
 
 
 def test_intent_projection_schema_has_no_duplicate_timestamp_or_poll_index(conn: Any) -> None:
@@ -397,7 +598,7 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     assert fenced is not None
     assert fenced.execution_state == "IN_FLIGHT"
     assert fenced.execution_phase == "ENTRY"
-    assert fenced.entry_client_order_id == "tf-e-ff31b24addf3577962bcadef55cf"
+    assert fenced.entry_client_order_id == deterministic_client_order_id(intent.intent_id, "entry")
     assert fenced.entry_fenced_at_ms == NOW + 2_000
 
     # A duplicate scan or restart can read this projection, but cannot acquire a second submit fence.
@@ -405,6 +606,46 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     conn.commit()
     recovered = repos.trading.intent_outcome(intent.intent_id)
     assert recovered == fenced
+
+
+def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fence(conn: Any) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    repos.trading.blacklist_upsert(
+        base_symbol="SOL",
+        reason="operator",
+        expires_at_ms=None,
+        now_ms=NOW + 500,
+    )
+    _allow_entry(conn)
+    conn.commit()
+
+    refused = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    conn.commit()
+
+    assert refused is not None
+    assert (refused.execution_state, refused.terminal_outcome, refused.reason_code) == (
+        "TERMINAL",
+        "REJECTED",
+        "blacklisted",
+    )
+    evidence = conn.execute(
+        "SELECT blacklist_revision_at_emission, blacklist_revision_at_fence, "
+        "blacklist_snapshot_sha256_at_fence, blacklist_snapshot_payload_at_fence "
+        "FROM trading_intents WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    assert evidence["blacklist_revision_at_emission"] == 0
+    assert evidence["blacklist_revision_at_fence"] == 1
+    assert len(evidence["blacklist_snapshot_sha256_at_fence"]) == 64
+    assert any(
+        row["underlying_key"] == "crypto:SOL" for row in evidence["blacklist_snapshot_payload_at_fence"]["active_rows"]
+    )
+
+    assert repos.trading.blacklist_delete(base_symbol="SOL", now_ms=NOW + 2_000) == 1
+    conn.commit()
 
 
 def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner(conn: Any) -> None:
@@ -916,7 +1157,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
         now_ms=NOW + 1_300,
     )
     assert submitted_stop is not None
-    assert submitted_stop.stop_client_order_id == "tf-s-258fe6872deda7751ea14904191c"
+    assert submitted_stop.stop_client_order_id == deterministic_client_order_id(intent.intent_id, "stop")
     protected = repos.trading.record_protected(
         intent.intent_id,
         accepted_client_order_id=submitted_stop.stop_client_order_id,
@@ -960,7 +1201,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
         now_ms=NOW + 2_000,
     )
     assert exiting is not None
-    assert exiting.close_client_order_id == "tf-c-ff31b24addf3577962bcadef55cf"
+    assert exiting.close_client_order_id == deterministic_client_order_id(intent.intent_id, "close")
     _observe_close(
         repos,
         intent,

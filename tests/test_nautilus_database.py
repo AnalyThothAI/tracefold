@@ -27,7 +27,7 @@ from tracefold.integrations.nautilus.messages import (
     StopSubmitted,
     strategy_queues,
 )
-from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, deterministic_client_order_id
 
 NOW_MS = 1_900_000_000_000
 
@@ -40,6 +40,10 @@ def _intent() -> TradeIntent:
     return TradeIntent.create(
         case_id="case-1",
         case_manifest_sha256="1" * 64,
+        execution_capability_snapshot_sha256="2" * 64,
+        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
+        instrument_id="SOLUSDT-PERP.BINANCE",
+        underlying_key="crypto:SOL",
         created_at_ms=NOW_MS,
         reference_price=Decimal("10000"),
         target_notional_usd=Decimal("10"),

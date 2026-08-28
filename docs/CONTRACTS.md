@@ -163,8 +163,10 @@ The strategy set and its thresholds remain code-owned/frozen into each Case.
 News-bearing Case; without it that Case settles
 `no_trade/program_unconfigured`. The OI arithmetic lane makes no model call.
 
-Execution is one code-owned contract: `SOLUSDT-PERP.BINANCE`, Binance USD-M
-Demo, NETTING/one-way, long-only, 1x, market entry, 60-second Intent TTL,
+Execution permission is the active content-addressed Binance USD-M Demo
+capability snapshot minus the canonical underlying blacklist. It is not an
+operator target-symbol list. The code-owned contract remains NETTING/one-way,
+long-only, 1x, market entry, 60-second Intent TTL,
 200-bps native fixed-quantity reduce-only stop, 180-second maximum holding,
 25-bps entry drift, 30-bps spread, one nonterminal Intent globally, and one
 entry fence per UTC day. Quantity is
@@ -755,6 +757,10 @@ is irreversible. Two byte changes land under that one identity migration —
 the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
 per Predictor, and the Program's self-owned chat transport composing the request
 envelope — deliberately paid once rather than twice.
+`20260828_0319` adds append-only execution-capability snapshots and replay
+receipts, the active capability/blacklist revisions, and TradeIntentV2. It
+requires `PAUSED` with no nonterminal Intent, rejects every new V1 insert, and
+has no downgrade.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -797,15 +803,23 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
-- `tracefold trading replay-oi --days N` is a read-only report, not an endpoint:
-  every parsed OI fact in the window driven through the production source stage,
-  Candidate Gate and strategy, counted by stage and by rule, with the target
-  template's cohort listed separately. It proposes no threshold and evaluates
-  neither the price band nor any outcome, because it fetches no market data.
+- `tracefold trading refresh-capabilities` is a cold command. It loads the full
+  public News/provider candidate union without credentials, appends its stable
+  partition, and moves the active pointer only while `PAUSED`, no nonterminal
+  Intent exists, and current Nautilus readiness is a fresh account-wide zero
+  proof. Initial bootstrap may activate the first snapshot while paused.
+- `tracefold trading replay-oi --days 7 --strategy
+  oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
+  gives every bounded source fact one terminal source-native BAR outcome. It
+  reports decision, independent capital admission, execution/coverage,
+  gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
+  response names an immutable artifact and PostgreSQL receipt by deterministic
+  `run_id`; funding and portfolio drawdown remain `null`.
 - `GET /api/trading/status` returns the exact Demo execution contract and
   current readiness. `budget` exposes only target notional and the code-owned
   one-entry-per-UTC-day ceiling. `readiness` exposes enabled/control,
-  `nautilus`, `BINANCE_USDM_DEMO`, `SOLUSDT-PERP.BINANCE`, redacted
+  `nautilus`, `BINANCE_USDM_DEMO`, active capability digest/count, canonical
+  blacklist revision, redacted
   credential availability, engine readiness/reason, heartbeat, and unexpected
   exposure. `floors`, Gate identity, frozen strategy configs/permissions,
   Case/Intent/Outcome counts, entry/close milestones, admission counts, shadow

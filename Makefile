@@ -209,7 +209,7 @@ _db-provision-nautilus-role-locked:
 		docker compose run --rm --no-deps --user postgres \
 			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
 
-trading-hard-cut-preflight: preflight ## prove the one-time #283 PR 2 cutover prerequisites
+trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutover prerequisites
 	@set -eu; \
 		nautilus_ids=$$(docker compose ps --all -q nautilus); \
 		nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
@@ -265,11 +265,18 @@ _trading-hard-cut-preflight-if-needed:
 			    SELECT 1 FROM pg_constraint \
 			     WHERE conname = 'trading_cases_state_check' \
 			       AND pg_get_constraintdef(oid) LIKE '%INTENT_EMITTED%' \
+			  ), \
+			  EXISTS ( \
+			    SELECT 1 FROM pg_class \
+			     WHERE relnamespace = 'public'::regnamespace \
+			       AND relname = 'trading_execution_capability_snapshots' \
+			       AND relkind = 'r' \
 			  ))"); \
 		case "$$migration_state" in \
-			20260828_0316\|f) make --no-print-directory trading-hard-cut-preflight ;; \
-			*\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
-			*) echo "Database state '$$migration_state' cannot safely enter the PR 2 hard cut." >&2; exit 2 ;; \
+			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f) \
+				make --no-print-directory trading-hard-cut-preflight ;; \
+			*\|t\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
+			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
 
 serve: ## run the read-only public runtime in foreground

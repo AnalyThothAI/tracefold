@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from ..intent import (
     ACTIVE_INTENT_STATES,
@@ -18,7 +18,9 @@ from .sql_values import _dumps
 
 _IMMUTABLE_COLUMNS = """
 intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
-execution_environment, instrument_id, side, created_at_ms, valid_until_ms,
+execution_environment, execution_capability_snapshot_sha256,
+blacklist_revision_at_emission, blacklist_snapshot_sha256_at_emission,
+blacklist_snapshot_payload_at_emission, instrument_id, underlying_key, side, created_at_ms, valid_until_ms,
 reference_price, target_notional_usd, stop_loss_bps, max_holding_ms,
 max_entry_drift_bps, max_spread_bps
 """
@@ -38,12 +40,20 @@ class IntentStorage:
 
     def insert_intent(self, intent: TradeIntent) -> bool:
         values = intent.model_dump()
+        blacklist_snapshot = intent.blacklist_snapshot_payload_at_emission
+        if blacklist_snapshot is None:
+            raise ValueError("new_trade_intent_v1_forbidden")
+        values["blacklist_snapshot_payload_at_emission"] = _dumps(blacklist_snapshot.model_dump(mode="json"))
         row = self.conn.execute(
             f"""
             INSERT INTO trading_intents ({_IMMUTABLE_COLUMNS})
             VALUES (
               %(intent_id)s, %(intent_version)s, %(case_id)s, %(case_manifest_sha256)s,
-              %(intent_policy_sha256)s, %(execution_environment)s, %(instrument_id)s, %(side)s,
+              %(intent_policy_sha256)s, %(execution_environment)s,
+              %(execution_capability_snapshot_sha256)s, %(blacklist_revision_at_emission)s,
+              %(blacklist_snapshot_sha256_at_emission)s,
+              %(blacklist_snapshot_payload_at_emission)s::jsonb,
+              %(instrument_id)s, %(underlying_key)s, %(side)s,
               %(created_at_ms)s, %(valid_until_ms)s, %(reference_price)s, %(target_notional_usd)s,
               %(stop_loss_bps)s, %(max_holding_ms)s, %(max_entry_drift_bps)s, %(max_spread_bps)s
             )
@@ -84,9 +94,8 @@ class IntentStorage:
     def active_intent_underlyings(self) -> list[str]:
         rows = self.conn.execute(
             """
-            SELECT DISTINCT c.underlying_key
-              FROM trading_intents i
-              JOIN trading_cases c ON c.case_id = i.case_id
+            SELECT DISTINCT COALESCE(i.underlying_key, c.underlying_key) AS underlying_key
+              FROM trading_intents i JOIN trading_cases c ON c.case_id = i.case_id
              WHERE i.execution_state = ANY(%s)
             """,
             (list(ACTIVE_INTENT_STATES),),
@@ -140,6 +149,59 @@ class IntentStorage:
         return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
 
     def fence_entry(self, intent_id: str, *, engine_identity: str, now_ms: int) -> IntentOutcome | None:
+        blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=False)
+        observation = blacklist.model_dump(mode="json")
+        permission = self.conn.execute(
+            """
+            SELECT intent.underlying_key,
+                   intent.execution_capability_snapshot_sha256,
+                   runtime.active_capability_snapshot_sha256,
+                   (snapshot.payload -> 'included' ? intent.instrument_id) AS instrument_in_snapshot
+              FROM trading_intents intent
+              JOIN trading_runtime_state runtime ON runtime.id = 1
+              LEFT JOIN trading_execution_capability_snapshots snapshot
+                ON snapshot.snapshot_sha256 = intent.execution_capability_snapshot_sha256
+             WHERE intent.intent_id = %s
+               AND intent.execution_state = 'PENDING'
+               AND intent.entry_fenced_at_ms IS NULL
+            """,
+            (intent_id,),
+        ).fetchone()
+        if permission is None:
+            return None
+        reason: str | None = None
+        if (
+            permission["execution_capability_snapshot_sha256"] != permission["active_capability_snapshot_sha256"]
+            or not permission["instrument_in_snapshot"]
+        ):
+            reason = "capability_mismatch"
+        elif any(row.underlying_key == permission["underlying_key"] for row in blacklist.active_rows):
+            reason = "blacklisted"
+        if reason is not None:
+            row = self.conn.execute(
+                f"""
+                UPDATE trading_intents
+                   SET execution_state = 'TERMINAL', terminal_outcome = 'REJECTED',
+                       reason_code = %(reason)s,
+                       blacklist_revision_at_fence = %(blacklist_revision)s,
+                       blacklist_snapshot_sha256_at_fence = %(blacklist_sha)s,
+                       blacklist_snapshot_payload_at_fence = %(blacklist_payload)s::jsonb,
+                       updated_at_ms = %(now)s
+                 WHERE intent_id = %(intent_id)s
+                   AND execution_state = 'PENDING'
+                   AND entry_fenced_at_ms IS NULL
+             RETURNING {_OUTCOME_COLUMNS}
+                """,
+                {
+                    "intent_id": intent_id,
+                    "reason": reason,
+                    "blacklist_revision": blacklist.revision,
+                    "blacklist_sha": blacklist.snapshot_sha256,
+                    "blacklist_payload": _dumps(observation),
+                    "now": int(now_ms),
+                },
+            ).fetchone()
+            return None if row is None else IntentOutcome.model_validate(dict(row))
         row = self.conn.execute(
             f"""
             UPDATE trading_intents intent
@@ -148,9 +210,13 @@ class IntentStorage:
                    execution_phase = 'ENTRY',
                    entry_client_order_id = %(client_id)s,
                    entry_fenced_at_ms = %(now)s,
+                   blacklist_revision_at_fence = %(blacklist_revision)s,
+                   blacklist_snapshot_sha256_at_fence = %(blacklist_sha)s,
+                   blacklist_snapshot_payload_at_fence = %(blacklist_payload)s::jsonb,
                    updated_at_ms = %(now)s
               FROM (
-                    SELECT id, control, nautilus_ready, nautilus_unexpected_exposure
+                    SELECT id, control, nautilus_ready, nautilus_unexpected_exposure,
+                           active_capability_snapshot_sha256
                       FROM trading_runtime_state
                      WHERE id = 1
                        FOR UPDATE
@@ -163,6 +229,12 @@ class IntentStorage:
                AND runtime.control = 'RUNNING'
                AND runtime.nautilus_ready
                AND NOT runtime.nautilus_unexpected_exposure
+               AND intent.execution_capability_snapshot_sha256 = runtime.active_capability_snapshot_sha256
+               AND NOT EXISTS (
+                     SELECT 1 FROM trading_symbol_blacklist denied
+                      WHERE ('crypto:' || denied.base_symbol) = intent.underlying_key
+                        AND (denied.expires_at_ms IS NULL OR denied.expires_at_ms > %(now)s)
+                   )
                AND NOT EXISTS (
                      SELECT 1
                        FROM trading_intents prior
@@ -176,6 +248,9 @@ class IntentStorage:
                 "engine": engine_identity,
                 "client_id": deterministic_client_order_id(intent_id, "entry"),
                 "now": int(now_ms),
+                "blacklist_revision": blacklist.revision,
+                "blacklist_sha": blacklist.snapshot_sha256,
+                "blacklist_payload": _dumps(observation),
                 "day_start": int(now_ms) // 86_400_000 * 86_400_000,
                 "day_end": (int(now_ms) // 86_400_000 + 1) * 86_400_000,
             },
