@@ -335,7 +335,7 @@ tracefold.news
   similarity.py       Program-bound reader-card similarity; relocation waits for an approved identity migration
   market_review/
     instruments.py / pricing.py  instrument and quote/reaction domain contracts
-    loops.py           the two cold polling loops and their one-slot DB lane
+    loops.py           current Quotes on ordinary DB admission; Event Reactions on one-slot heavy admission
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review/
     desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
@@ -518,15 +518,17 @@ per-message ack are their fences.
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
 health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
-`news-deliverer`, `news-janitor`), the bounded cold loops
+`news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
 `news-reactions`), the one Trading loop when Trading is enabled
 (`trading-candidate`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
-sync task. The four cold loops poll public catalogues, prices and their own
-PostgreSQL work on code-owned cadences and admit their database work through a
-separate one-slot lane, never the four News hot-path slots.
+sync task. The polling loops read public catalogues and prices on code-owned
+cadences. Their database admission is explicit per capability: instrument
+snapshots use the four-slot News lane; current Quotes use ordinary business
+admission; Janitor, Event Reactions and Trading share the one-slot heavy
+admission. None creates another pool or worker.
 
 ## Product flows
 
