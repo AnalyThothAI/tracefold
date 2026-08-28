@@ -161,7 +161,17 @@ class MetricJudgeEndpoint:
         transport: Any = None,
     ) -> None:
         extras = dict(model_kwargs or {})
-        owned = {"api_key", "api_base", "base_url", "model", "messages", "temperature", "max_tokens"}
+        owned = {
+            "api_key",
+            "api_base",
+            "base_url",
+            "max_tokens",
+            "messages",
+            "model",
+            "response_format",
+            "stream",
+            "temperature",
+        }
         overlap = owned.intersection(extras)
         if overlap:
             raise ValueError(f"news_program_compile_metric_judge_kwargs_owned:{','.join(sorted(overlap))}")

@@ -301,7 +301,9 @@ def _instruction_rejection(text: str) -> str | None:
 
 # --- the bounded GEPA run (was `compiler/gepa.py`) ------------------------------------------------
 
-_OWNED_LM_KWARGS = frozenset({"api_key", "api_base", "base_url", "model", "messages", "temperature", "max_tokens"})
+_OWNED_LM_KWARGS = frozenset(
+    {"api_key", "api_base", "base_url", "max_tokens", "messages", "model", "stream", "temperature"}
+)
 # The task route answers the Program's own schemas, so it keeps production's determinism: temperature 0 and
 # the route's own token ceiling. The reflection role does something else entirely — it reads a minibatch of
 # failures and writes a whole new instruction — and the guidance for it is the opposite on every axis. Until

@@ -355,7 +355,21 @@ class ChatCompletionsPredictorAdapter:
         transport: Any = None,
     ) -> None:
         extras = dict(model_kwargs or {})
-        owned = {"api_key", "api_base", "base_url", "model", "messages", "temperature", "max_tokens", "stream"}
+        # Every field this class composes. `response_format` is on the list because a caller that set it
+        # through `model_kwargs` would silently drop the JSON-schema constraint the output contract depends
+        # on — the answer would still fail validation in `graph.py`, but as a parse error rather than as
+        # the configuration mistake it is.
+        owned = {
+            "api_key",
+            "api_base",
+            "base_url",
+            "max_tokens",
+            "messages",
+            "model",
+            "response_format",
+            "stream",
+            "temperature",
+        }
         overlap = owned.intersection(extras)
         if overlap:
             raise ValueError(f"news_program_runtime_model_kwargs_owned:{','.join(sorted(overlap))}")
