@@ -242,6 +242,25 @@ def test_online_worker_process_does_not_load_offline_learning_or_release_authori
     assert _forbidden_worker_authorities(loaded) == []
 
 
+def test_importing_worker_wiring_does_not_start_the_worker_runtime() -> None:
+    """Cold composition commands must not inherit the online Worker's heavy import graph."""
+
+    probe = (
+        "import json, sys\n"
+        "from tracefold.app.workers import run_workers\n"
+        "import tracefold.app.workers.wiring.news_to_trading\n"
+        "print(json.dumps({'callable': callable(run_workers), **{name: name in sys.modules for name in "
+        "('dspy', 'tracefold.app.workers.root')}}))\n"
+    )
+    completed = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, cwd=ROOT, check=False)
+    assert completed.returncode == 0, completed.stderr[-2000:]
+    assert json.loads(completed.stdout.strip().splitlines()[-1]) == {
+        "callable": True,
+        "dspy": False,
+        "tracefold.app.workers.root": False,
+    }
+
+
 BUSINESS_WRITE_SQL_RE = re.compile(
     r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>(?:news|trading)_[a-z0-9_]*)",
     re.IGNORECASE,
