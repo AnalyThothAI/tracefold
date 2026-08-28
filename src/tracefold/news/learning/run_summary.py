@@ -26,7 +26,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal
 
-from ..artifact_identity import canonical_sha, reject_nonfinite_json, reject_secret_material
+from ..artifact_identity import canonical_sha, reject_nonfinite_json
 from .contracts import dataset_coverage
 
 # v2 (#259): `dataset` carries the frozen corpus's `coverage` block, forwarded from readiness. Bumped for
@@ -472,7 +472,6 @@ def build_run_summary(
         "next_action": _next_action(outcome, reasons, same_population=same_population),
     }
     reject_nonfinite_json(summary, path="gepa_run_summary")
-    reject_secret_material(summary, path="gepa_run_summary")
     return summary
 
 

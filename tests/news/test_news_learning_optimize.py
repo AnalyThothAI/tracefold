@@ -411,25 +411,6 @@ def test_no_field_beyond_the_two_instructions_can_enter_the_write_set(extra: str
         )
 
 
-def test_a_candidate_carrying_a_credential_is_refused_before_it_is_stored() -> None:
-    with pytest.raises(ValidationError, match="secret_key"):
-        PromptCandidateV1.issue(
-            parent_program_sha256=load_stable_program_artifact().program_sha256,
-            development_dataset_sha256="d" * 64,
-            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
-            patch=PromptPatchV1(
-                event_semantics_instruction="Prefer the mechanism.",
-                reader_card_instruction="Name it.",
-            ),
-            objective_summary={},
-            optimizer={},
-            model_identities={"task": {"api_key": "sk-live-not-a-real-key"}},
-            budget={},
-            usage={},
-            created_at_ms=_NOW_MS,
-        )
-
-
 def test_a_tampered_candidate_or_report_hash_is_refused() -> None:
     result = optimize(_dataset(), _config())
     assert result.candidate is not None

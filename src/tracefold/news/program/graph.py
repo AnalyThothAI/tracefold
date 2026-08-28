@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any, Literal, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -98,6 +99,24 @@ from .transport import (
     ScriptedPredictorAdapter,
     _is_retryable_exception,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _RouteResult:
+    """What one completed route hands back.
+
+    A seven-positional tuple before (#319 cleanup): every caller unpacked it in one line, and the two
+    booleans at the end were distinguishable only by position. Behaviour is unchanged and the recording
+    replay suite is the guardrail that says so.
+    """
+
+    semantics: EventSemantics
+    card: ReaderCard
+    verdict: TriageVerdict
+    editorial: EditorialEnvelope
+    route: Literal["primary", "fallback"]
+    answering_model: str | None
+    novelty_defaulted: bool
 
 
 def predictor_spec(state: PredictorState) -> PredictorSpec:
@@ -345,7 +364,8 @@ class NewsSemanticProgram:
                     context_sha=context_sha,
                     primary_failure=primary_failure,
                 ) from fallback_exc
-        semantics, card, verdict, editorial, route, answering_model, novelty_defaulted = result
+        semantics, card, verdict, editorial = result.semantics, result.card, result.verdict, result.editorial
+        route, answering_model, novelty_defaulted = result.route, result.answering_model, result.novelty_defaulted
         semantics_sha = canonical_sha(semantics.model_dump(mode="json"))
         card_sha = canonical_sha(card.model_dump(mode="json"))
         verdict_sha = canonical_sha(verdict.model_dump(mode="json"))
@@ -414,15 +434,7 @@ class NewsSemanticProgram:
         semantics_evidence_json: str,
         card_evidence_json: str,
         calls: list[ProgramCallTrace],
-    ) -> tuple[
-        EventSemantics,
-        ReaderCard,
-        TriageVerdict,
-        EditorialEnvelope,
-        Literal["primary", "fallback"],
-        str | None,
-        bool,
-    ]:
+    ) -> _RouteResult:
         route_call_start = len(calls)
         try:
             async with asyncio.timeout(PROGRAM_ROUTE_DEADLINE_SECONDS):
@@ -484,15 +496,7 @@ class NewsSemanticProgram:
         semantics_evidence_json: str,
         card_evidence_json: str,
         calls: list[ProgramCallTrace],
-    ) -> tuple[
-        EventSemantics,
-        ReaderCard,
-        TriageVerdict,
-        EditorialEnvelope,
-        Literal["primary", "fallback"],
-        str | None,
-        bool,
-    ]:
+    ) -> _RouteResult:
         retry_available = True
         novelty_defaulted = False
         semantics: EventSemantics | None = None
@@ -609,7 +613,36 @@ class NewsSemanticProgram:
             (call.model for call in reversed(calls) if call.route == route and call.predictor == "reader_card"),
             None,
         )
-        return semantics, card, verdict, editorial, route, answering_model, novelty_defaulted
+        return _RouteResult(
+            semantics=semantics,
+            card=card,
+            verdict=verdict,
+            editorial=editorial,
+            route=route,
+            answering_model=answering_model,
+            novelty_defaulted=novelty_defaulted,
+        )
+
+    @staticmethod
+    def _request_call_trace(request: PredictorRequest, *, input_sha: str, **outcome: Any) -> ProgramCallTrace:
+        """One call's trace, with the seven identity fields read off the request that produced it.
+
+        Four sites — cancelled, adapter error, provider refusal and success — repeated that block verbatim,
+        so a field added to the request had to be threaded into each by hand. The outcome half stays
+        per-site because that is what actually differs between them (#319 cleanup, behaviour unchanged;
+        the recording replay suite is the guardrail).
+        """
+
+        return ProgramCallTrace(
+            predictor=request.predictor,
+            route=request.route,
+            attempt=request.attempt,
+            request_sha256=request.request_sha256,
+            input_sha256=input_sha,
+            model_binding=request.model_binding,
+            upstream_sha256=request.upstream_sha256,
+            **outcome,
+        )
 
     async def _call_predictor(
         self,
@@ -684,19 +717,14 @@ class NewsSemanticProgram:
             response = await adapter.invoke(request, spec)
         except asyncio.CancelledError:
             elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
-            call = ProgramCallTrace(
-                predictor=state.name,
-                route=route,
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                input_sha256=input_sha,
-                model_binding=request.model_binding,
+            call = self._request_call_trace(
+                request,
+                input_sha=input_sha,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
                 runtime_model=request.runtime_model,
                 runtime_model_sha256=request.runtime_model_sha256,
                 runtime_binding_sha256=request.runtime_binding_sha256,
-                upstream_sha256=upstream_sha,
                 latency_ms=elapsed,
                 error_code="news_program_route_deadline",
             )
@@ -710,19 +738,14 @@ class NewsSemanticProgram:
                 or observation.provider != request.runtime_provider
             ):
                 observation = None
-            call = ProgramCallTrace(
-                predictor=state.name,
-                route=route,
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                input_sha256=input_sha,
-                model_binding=request.model_binding,
+            call = self._request_call_trace(
+                request,
+                input_sha=input_sha,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
                 runtime_model=request.runtime_model,
                 runtime_model_sha256=request.runtime_model_sha256,
                 runtime_binding_sha256=request.runtime_binding_sha256,
-                upstream_sha256=upstream_sha,
                 provider=observation.provider if observation is not None else None,
                 model=observation.model if observation is not None else None,
                 model_sha256=observation.model_sha256 if observation is not None else None,
@@ -750,19 +773,14 @@ class NewsSemanticProgram:
         except Exception as exc:
             elapsed = max(0, round((time.perf_counter() - adapter_started) * 1000))
             code = f"news_program_transport_{type(exc).__name__.casefold()}"
-            call = ProgramCallTrace(
-                predictor=state.name,
-                route=route,
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                input_sha256=input_sha,
-                model_binding=request.model_binding,
+            call = self._request_call_trace(
+                request,
+                input_sha=input_sha,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
                 runtime_model=request.runtime_model,
                 runtime_model_sha256=request.runtime_model_sha256,
                 runtime_binding_sha256=request.runtime_binding_sha256,
-                upstream_sha256=upstream_sha,
                 latency_ms=elapsed,
                 error_code=code,
             )
@@ -776,19 +794,14 @@ class NewsSemanticProgram:
             ) from exc
         if response.runtime_binding_sha256 != request.runtime_binding_sha256:
             code = "news_program_runtime_binding_mismatch"
-            call = ProgramCallTrace(
-                predictor=state.name,
-                route=route,
-                attempt=attempt,
-                request_sha256=request.request_sha256,
-                input_sha256=input_sha,
-                model_binding=request.model_binding,
+            call = self._request_call_trace(
+                request,
+                input_sha=input_sha,
                 physical_provider_call=True,
                 runtime_provider=request.runtime_provider,
                 runtime_model=request.runtime_model,
                 runtime_model_sha256=request.runtime_model_sha256,
                 runtime_binding_sha256=request.runtime_binding_sha256,
-                upstream_sha256=upstream_sha,
                 provider=response.provider,
                 model=response.model,
                 model_sha256=response.model_sha256,
@@ -812,19 +825,14 @@ class NewsSemanticProgram:
         raw_output: Mapping[str, Any] | None = None
         output_sha = canonical_sha(response.output)
         finish_reason = response.finish_reason.casefold() if response.finish_reason else None
-        call = ProgramCallTrace(
-            predictor=state.name,
-            route=route,
-            attempt=attempt,
-            request_sha256=request.request_sha256,
-            input_sha256=input_sha,
-            model_binding=request.model_binding,
+        call = self._request_call_trace(
+            request,
+            input_sha=input_sha,
             physical_provider_call=True,
             runtime_provider=request.runtime_provider,
             runtime_model=request.runtime_model,
             runtime_model_sha256=request.runtime_model_sha256,
             runtime_binding_sha256=request.runtime_binding_sha256,
-            upstream_sha256=upstream_sha,
             output_sha256=output_sha,
             provider=response.provider,
             model=response.model,

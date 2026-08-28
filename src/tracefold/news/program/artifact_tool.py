@@ -61,8 +61,6 @@ def _write_image(root: Path, artifact: ProgramStrategyArtifactV1) -> Path:
     return image
 
 
-
-
 def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> str:
     """Atomically replace the one-entry registry with the reviewed root."""
 
