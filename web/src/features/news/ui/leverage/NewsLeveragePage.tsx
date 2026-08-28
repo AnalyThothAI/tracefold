@@ -25,6 +25,7 @@ import {
   type LeverageTab,
 } from "../../model/leverageCases";
 import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
+import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsLeverageCard } from "./NewsLeverageCard";
 import { NewsLeverageDetail } from "./NewsLeverageDetail";
@@ -263,15 +264,17 @@ export function NewsLeveragePage({ token }: { token: string }) {
             )}
           </section>
           {selected ? (
-            <NewsLeverageDetail
-              /* This case's own forced-close window when the ledger froze one, and the mandate's — named
-                 as such — when it did not. The permission beside it is not passed at all: that is the
-                 case's frozen `mode`, read from the item. */
-              horizon={leverageHorizon(selected)}
-              item={selected}
-              quote={quote?.requested_symbol === selected.base ? quote : undefined}
-              symbolHref={newsSymbolPath(selected.base)}
-            />
+            <NewsQuoteReadState query={quotesQuery}>
+              <NewsLeverageDetail
+                /* This case's own forced-close window when the ledger froze one, and the mandate's — named
+                   as such — when it did not. The permission beside it is not passed at all: that is the
+                   case's frozen `mode`, read from the item. */
+                horizon={leverageHorizon(selected)}
+                item={selected}
+                quote={quote?.requested_symbol === selected.base ? quote : undefined}
+                symbolHref={newsSymbolPath(selected.base)}
+              />
+            </NewsQuoteReadState>
           ) : null}
         </PageState.Stale>
       ) : null}

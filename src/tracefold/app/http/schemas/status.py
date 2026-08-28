@@ -11,8 +11,11 @@ class NewsQuoteVenueData(ExactApiSchema):
     source_key: str
     target_count: int
     quote_count: int
-    age_ms: int
-    state: str
+    received_age_ms: int | None
+    source_age_ms: int | None
+    effective_age_ms: int | None
+    freshness_basis: Literal["source_and_received", "received_only"] | None
+    state: Literal["fresh", "stale", "unavailable"]
     source_at_ms: int | None = None
     received_at_ms: int
 

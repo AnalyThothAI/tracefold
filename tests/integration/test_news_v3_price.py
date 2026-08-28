@@ -14,6 +14,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.delivery import _quote_line
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
     HORIZON_MS,
@@ -298,6 +299,7 @@ def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) ->
                     change_pct=1.5,
                     change_basis="rolling_24h",
                     source_at_ms=NOW,
+                    reference_at_ms=NOW,
                 )
             ],
             target_count=1,
@@ -312,13 +314,127 @@ def test_quote_results_name_their_own_state_and_never_fabricate_a_price(conn) ->
     }
     assert fresh["BTC"]["state"] == "fresh" and fresh["BTC"]["price"] == "68000"
     assert fresh["BTC"]["change_basis"] == "rolling_24h"
+    assert fresh["BTC"]["received_age_ms"] == 1_000
+    assert fresh["BTC"]["source_age_ms"] == 1_000
+    assert fresh["BTC"]["effective_age_ms"] == 1_000
+    assert fresh["BTC"]["freshness_basis"] == "source_and_received"
+    assert fresh["BTC"]["reference_at_ms"] == NOW
+    assert fresh["BTC"]["reference_age_ms"] == 1_000
+    assert "age_ms" not in fresh["BTC"]
     # Quoted by a source that has not answered yet is not the same as naming nothing.
     assert fresh["HYPE"]["state"] == "unavailable" and fresh["HYPE"]["price"] is None
     assert fresh["NOPE"]["state"] == "unlisted" and fresh["NOPE"]["venue"] is None
+    for absent in (fresh["HYPE"], fresh["NOPE"]):
+        assert absent["received_age_ms"] is None
+        assert absent["source_age_ms"] is None
+        assert absent["effective_age_ms"] is None
+        assert absent["freshness_basis"] is None
+        assert absent["reference_at_ms"] is None
+        assert absent["reference_age_ms"] is None
 
     aged = NOW + QUOTE_FRESH_MAX_AGE_MS + 1_000
     stale = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC"], now_ms=aged)}
     assert stale["BTC"]["state"] == "stale" and stale["BTC"]["price"] == "68000"  # stale keeps its number
+
+
+def test_quote_freshness_preserves_future_timestamps_and_expires_only_the_reference_change(conn) -> None:
+    _universe(
+        conn,
+        _instrument("binance.perp", "BTCUSDT", "BTC"),
+        _instrument("hl.perp", "HYPE", "HYPE", None),
+    )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.price.replace_source_snapshot(
+            source_key="binance.perp",
+            quotes=[
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol="BTCUSDT",
+                    base_symbol="BTC",
+                    price=Decimal("68000"),
+                    price_kind="last",
+                    change_pct=1.5,
+                    change_basis="rolling_24h",
+                    source_at_ms=NOW + 5_001,
+                    reference_at_ms=NOW - 360_001,
+                )
+            ],
+            target_count=1,
+            source_at_ms=NOW + 5_001,
+            received_at_ms=NOW,
+            now_ms=NOW,
+        )
+        repos.price.replace_source_snapshot(
+            source_key="hl.perp",
+            quotes=[
+                Quote(
+                    venue="hl.perp",
+                    venue_symbol="HYPE",
+                    base_symbol="HYPE",
+                    price=Decimal("40"),
+                    price_kind="mid",
+                    source_at_ms=None,
+                )
+            ],
+            target_count=1,
+            source_at_ms=None,
+            received_at_ms=NOW - 45_000,
+            now_ms=NOW,
+        )
+
+    rows = {row["requested_symbol"]: row for row in repos.price.quotes_for_symbols(["BTC", "HYPE"], now_ms=NOW)}
+    assert rows["BTC"]["state"] == "stale"
+    assert rows["BTC"]["source_at_ms"] == NOW + 5_001
+    assert rows["BTC"]["source_age_ms"] == 0
+    assert rows["BTC"]["change_pct"] is None
+    assert rows["BTC"]["reference_at_ms"] == NOW - 360_001
+    assert rows["BTC"]["reference_age_ms"] == 360_001
+    assert rows["HYPE"]["state"] == "fresh"
+    assert rows["HYPE"]["freshness_basis"] == "received_only"
+    assert rows["HYPE"]["source_age_ms"] is None
+
+
+def test_quote_api_status_and_delivery_render_share_one_snapshot_freshness(conn) -> None:
+    """#304: one durable snapshot has one state; readers do not reimplement receipt-only freshness."""
+
+    _universe(conn, _instrument("binance.perp", "BTCUSDT", "BTC"))
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.price.replace_source_snapshot(
+            source_key="binance.perp",
+            quotes=[
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol="BTCUSDT",
+                    base_symbol="BTC",
+                    price=Decimal("68000"),
+                    price_kind="last",
+                    change_pct=1.5,
+                    change_basis="rolling_24h",
+                    source_at_ms=NOW,
+                    reference_at_ms=NOW - 360_001,
+                )
+            ],
+            target_count=1,
+            source_at_ms=NOW,
+            received_at_ms=NOW,
+            now_ms=NOW,
+        )
+
+    current = repos.price.quotes_for_symbols(["BTC"], now_ms=NOW)[0]
+    current_status = repos.price.price_status(now_ms=NOW)["sources"][0]
+    assert current["state"] == current_status["state"] == "fresh"
+    assert current["effective_age_ms"] == current_status["effective_age_ms"] == 0
+    assert current["change_pct"] is None
+    assert _quote_line([current]).startswith("行情 BTC $68,000")
+    assert "24h" not in _quote_line([current])
+
+    stale = repos.price.quotes_for_symbols(["BTC"], now_ms=NOW + 45_001)[0]
+    stale_status = repos.price.price_status(now_ms=NOW + 45_001)["sources"][0]
+    assert stale["state"] == stale_status["state"] == "stale"
+    assert stale["effective_age_ms"] == stale_status["effective_age_ms"] == 45_001
+    assert _quote_line([stale]) == ""
 
 
 def test_duplicate_request_symbols_cannot_multiply_repository_work(conn) -> None:
@@ -688,8 +804,52 @@ def test_price_status_reports_source_freshness_and_backlog(conn) -> None:
     assert "oldest_due_age_ms" in status  # the backlog SLO, reported rather than merely computable
     assert status["sources"][0]["source_key"] == "hl.perp"
     assert status["sources"][0]["state"] == "fresh"
+    assert status["sources"][0]["freshness_basis"] == "received_only"
+    assert status["sources"][0]["received_age_ms"] == 1_000
+    assert status["sources"][0]["source_age_ms"] is None
+    assert status["sources"][0]["effective_age_ms"] == 1_000
+    assert "age_ms" not in status["sources"][0]
     assert status["quotes"] == 1
     assert status["metric_version"] == REACTION_METRIC_VERSION
+
+
+def test_price_status_aggregates_the_oldest_and_worst_applicable_quote(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.price.replace_source_snapshot(
+            source_key="binance.perp",
+            quotes=[
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol="BTCUSDT",
+                    base_symbol="BTC",
+                    price=Decimal("68000"),
+                    price_kind="last",
+                    source_at_ms=NOW - 1_000,
+                ),
+                Quote(
+                    venue="binance.perp",
+                    venue_symbol="ETHUSDT",
+                    base_symbol="ETH",
+                    price=Decimal("4000"),
+                    price_kind="last",
+                    source_at_ms=NOW - 45_001,
+                ),
+            ],
+            target_count=2,
+            source_at_ms=NOW - 1_000,
+            received_at_ms=NOW,
+            now_ms=NOW,
+        )
+
+    status = repos.price.price_status(now_ms=NOW)
+    source = status["sources"][0]
+    assert source["state"] == "stale"
+    assert source["source_at_ms"] == NOW - 45_001
+    assert source["source_age_ms"] == source["effective_age_ms"] == 45_001
+    assert source["received_age_ms"] == 0
+    assert source["freshness_basis"] == "source_and_received"
+    assert status["fresh_sources"] == 0
 
 
 def test_the_review_window_is_bounded_by_the_requested_hours(conn) -> None:

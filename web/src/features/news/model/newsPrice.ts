@@ -44,11 +44,17 @@ export function priceTone(value: number | null | undefined): PriceTone {
 
 /** A stale quote keeps its number and says so; it never disappears and never becomes zero. */
 export function quoteAgeLabel(quote: NewsQuote): string {
-  if (quote.age_ms == null) return quote.state_zh;
-  const seconds = Math.round(quote.age_ms / 1000);
+  if (quote.effective_age_ms == null) return quote.state_zh;
+  const seconds = Math.round(quote.effective_age_ms / 1000);
   if (seconds < 60) return `${seconds} 秒前`;
   const minutes = Math.round(seconds / 60);
   return minutes < 60 ? `${minutes} 分钟前` : `${Math.round(minutes / 60)} 小时前`;
+}
+
+export function quoteStaleLabel(quote: NewsQuote): string {
+  if (quote.state !== "stale") return "";
+  const minutes = Math.max(1, Math.round((quote.effective_age_ms ?? 0) / 60_000));
+  return `陈旧 ${minutes}m`;
 }
 
 export function quoteVenueLabel(quote: NewsQuote): string {

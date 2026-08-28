@@ -5,6 +5,7 @@ import {
   formatPrice,
   priceTone,
   quoteAgeLabel,
+  quoteStaleLabel,
   quoteVenueLabel,
   reactionPlaceholder,
   reactionValue,
@@ -27,18 +28,27 @@ import "./newsQuote.css";
  */
 
 /** The compact half of a quote: what it did, for a meta line where a full price would not fit. */
-export function NewsQuoteChange({ quote }: { quote: NewsQuote | undefined }) {
+export function NewsQuoteChange({
+  quote,
+  showStale = true,
+}: {
+  quote: NewsQuote | undefined;
+  showStale?: boolean;
+}) {
   if (!quote || quote.state === "unlisted" || quote.state === "unavailable") return null;
   if (quote.change_pct == null) return null;
   return (
-    <span
-      className="news-quote-change"
-      data-state={quote.state}
-      data-tone={priceTone(quote.change_pct)}
-      title={quoteTitle(quote)}
-    >
-      {formatChangePct(quote.change_pct)}
-    </span>
+    <>
+      <span
+        className="news-quote-change"
+        data-state={quote.state}
+        data-tone={priceTone(quote.change_pct)}
+        title={quoteTitle(quote)}
+      >
+        {formatChangePct(quote.change_pct)}
+      </span>
+      {showStale ? <QuoteStaleMark quote={quote} /> : null}
+    </>
   );
 }
 
@@ -60,8 +70,11 @@ export function NewsQuotePrice({ quote }: { quote: NewsQuote | undefined }) {
     );
   }
   return (
-    <span className="news-quote-price" data-state={quote.state} title={quoteTitle(quote)}>
-      {formatPrice(quote.price)}
+    <span className="news-quote-value" data-state={quote.state}>
+      <span className="news-quote-price" data-state={quote.state} title={quoteTitle(quote)}>
+        {formatPrice(quote.price)}
+      </span>
+      <QuoteStaleMark quote={quote} />
     </span>
   );
 }
@@ -80,7 +93,7 @@ export function NewsQuoteCompact({ quote }: { quote: NewsQuote | undefined }) {
           <span aria-hidden className="news-quote-separator">
             ·
           </span>
-          <NewsQuoteChange quote={quote} />
+          <NewsQuoteChange quote={quote} showStale={false} />
         </>
       )}
     </span>
@@ -121,10 +134,33 @@ function quoteTitle(quote: NewsQuote): string {
   return [
     quoteVenueLabel(quote),
     quote.price_kind_zh,
+    quote.state_zh,
     quoteAgeLabel(quote),
     quote.change_basis_zh && quote.change_pct != null ? `${quote.change_basis_zh}变动` : "",
-    quote.state === "stale" ? "报价陈旧" : "",
+    clockTitle("提供方时间", quote.source_at_ms, quote.source_age_ms),
+    clockTitle("Tracefold 接收", quote.received_at_ms, quote.received_age_ms),
+    clockTitle("24H 参考", quote.reference_at_ms, quote.reference_age_ms),
+    quote.effective_age_ms == null ? "" : `有效时效 ${durationTitle(quote.effective_age_ms)}`,
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+function QuoteStaleMark({ quote }: { quote: NewsQuote }) {
+  const label = quoteStaleLabel(quote);
+  return label ? <small className="news-quote-stale">{label}</small> : null;
+}
+
+function clockTitle(
+  label: string,
+  atMs: number | null | undefined,
+  ageMs: number | null | undefined,
+) {
+  if (atMs == null) return `${label} 未提供`;
+  return `${label} ${new Date(atMs).toLocaleString("zh-CN", { hour12: false })} (${durationTitle(ageMs)})`;
+}
+
+function durationTitle(ageMs: number | null | undefined) {
+  if (ageMs == null) return "时效未知";
+  return ageMs < 60_000 ? `${Math.round(ageMs / 1_000)}s` : `${Math.round(ageMs / 60_000)}m`;
 }

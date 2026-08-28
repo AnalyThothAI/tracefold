@@ -27,6 +27,7 @@ from tracefold.news.market_review.pricing import (
     CANDLE_INTERVAL_MS,
     HORIZON_MS,
     QUOTE_FRESH_MAX_AGE_MS,
+    QUOTE_MAX_FUTURE_SKEW_MS,
     QUOTE_PERIOD_SECONDS,
     REACTION_METRIC_VERSION,
     Candle,
@@ -39,7 +40,8 @@ from tracefold.news.market_review.pricing import (
     price_kind_for,
     quote_asset_rank,
     quote_asset_rank_sql,
-    quote_state,
+    quote_freshness,
+    reference_freshness,
     return_bps,
     select_candle,
     source_rank,
@@ -106,17 +108,61 @@ def test_day_change_is_derived_from_the_providers_own_previous_close() -> None:
     assert parse_change_pct(None, "100") is None
 
 
-def test_quote_freshness_is_derived_at_read_time() -> None:
-    assert quote_state(0) == "fresh"
-    assert quote_state(QUOTE_FRESH_MAX_AGE_MS) == "fresh"
-    assert quote_state(QUOTE_FRESH_MAX_AGE_MS + 1) == "stale"
-    assert quote_state(None) == "unavailable"
+def test_quote_freshness_uses_the_oldest_applicable_clock_at_read_time() -> None:
+    measured = 100_000
+    fresh = quote_freshness(measured_at_ms=measured, received_at_ms=60_000, source_at_ms=70_000)
+    assert fresh.received_age_ms == 40_000
+    assert fresh.source_age_ms == 30_000
+    assert fresh.effective_age_ms == 40_000
+    assert fresh.freshness_basis == "source_and_received"
+    assert fresh.state == "fresh"
+
+    source_stale = quote_freshness(measured_at_ms=measured, received_at_ms=99_000, source_at_ms=54_999)
+    assert source_stale.state == "stale"
+    assert source_stale.effective_age_ms == QUOTE_FRESH_MAX_AGE_MS + 1
+
+    receipt_stale = quote_freshness(measured_at_ms=measured, received_at_ms=54_999, source_at_ms=99_000)
+    assert receipt_stale.state == "stale"
 
 
-def test_freshness_leaves_room_for_three_turns() -> None:
-    """`stale` must mean the collector stopped, not that one turn ran long (#88 follow-up)."""
+def test_quote_freshness_missing_source_and_future_skew_boundaries_are_explicit() -> None:
+    measured = 100_000
+    received_only = quote_freshness(measured_at_ms=measured, received_at_ms=60_000, source_at_ms=None)
+    assert received_only.freshness_basis == "received_only"
+    assert received_only.source_age_ms is None
+    assert received_only.state == "fresh"
 
-    assert QUOTE_FRESH_MAX_AGE_MS >= 3 * QUOTE_PERIOD_SECONDS * 1000
+    future_boundary = quote_freshness(
+        measured_at_ms=measured,
+        received_at_ms=measured + QUOTE_MAX_FUTURE_SKEW_MS,
+        source_at_ms=measured + QUOTE_MAX_FUTURE_SKEW_MS,
+    )
+    assert future_boundary.state == "fresh"
+    assert future_boundary.effective_age_ms == 0
+
+    invalid_future = quote_freshness(
+        measured_at_ms=measured,
+        received_at_ms=measured,
+        source_at_ms=measured + QUOTE_MAX_FUTURE_SKEW_MS + 1,
+    )
+    assert invalid_future.state == "stale"
+    assert invalid_future.source_age_ms == 0  # exposed age is clamped; validity used the raw age
+
+
+def test_current_and_reference_freshness_ceilings_are_the_frozen_304_contract() -> None:
+    assert QUOTE_FRESH_MAX_AGE_MS == 45_000
+    assert QUOTE_PERIOD_SECONDS == 20.0
+    assert reference_freshness(measured_at_ms=360_000, reference_at_ms=0) == (360_000, True)
+    assert reference_freshness(measured_at_ms=360_001, reference_at_ms=0) == (360_001, False)
+    assert reference_freshness(
+        measured_at_ms=0,
+        reference_at_ms=QUOTE_MAX_FUTURE_SKEW_MS,
+    ) == (0, True)
+    assert reference_freshness(
+        measured_at_ms=0,
+        reference_at_ms=QUOTE_MAX_FUTURE_SKEW_MS + 1,
+    ) == (0, False)
+    assert reference_freshness(measured_at_ms=0, reference_at_ms=None) == (None, False)
 
 
 # ---------------------------------------------------------------------------- candle alignment
@@ -228,7 +274,6 @@ def test_binance_price_read_uses_the_narrow_endpoint_and_filters_to_the_target_s
     assert quotes[0].source_at_ms == 10
     # The window is named; the number is not guessed. The loop derives it from the cached reference.
     assert quotes[0].change_basis == "rolling_24h"
-    assert quotes[0].change_pct is None
     assert quotes[0].reference_price is None
 
 
@@ -256,8 +301,6 @@ def test_binance_day_read_carries_the_window_open_the_change_is_measured_against
     assert quotes[0].price == Decimal("68123.4")
     assert quotes[0].reference_price == Decimal("67000.0")
     assert quotes[0].source_at_ms == 99
-    # Derived from lastPrice/openPrice, which is exactly what the venue's own priceChangePercent reports.
-    assert quotes[0].change_pct == pytest.approx(1.676, abs=1e-3)
 
 
 def test_binance_spot_asks_by_name_on_the_price_endpoint_at_any_list_length() -> None:
@@ -308,7 +351,7 @@ def test_a_day_read_missing_its_open_still_publishes_the_price_without_a_percent
         fetch_binance_futures_day_quotes(["BTCUSDT"], transport=_json_transport({"/fapi/v1/ticker/24hr": payload}))
     )
     assert quotes[0].price == Decimal("68123.4")
-    assert quotes[0].change_pct is None and quotes[0].reference_price is None
+    assert quotes[0].reference_price is None
 
 
 def test_a_json_string_body_is_an_invalid_payload_not_an_empty_one() -> None:
@@ -340,7 +383,7 @@ def test_hyperliquid_perp_quotes_are_index_aligned_with_the_universe() -> None:
     )
     assert [quote.venue_symbol for quote in quotes] == ["HYPE"]
     assert quotes[0].change_basis == "provider_day"
-    assert quotes[0].change_pct == pytest.approx(-10.0)
+    assert quotes[0].reference_price == Decimal("45.0")
 
 
 def test_hyperliquid_spot_quotes_key_on_the_market_coin_not_the_row_index() -> None:
@@ -358,6 +401,7 @@ def test_hyperliquid_spot_quotes_key_on_the_market_coin_not_the_row_index() -> N
     )
     assert [quote.venue_symbol for quote in quotes] == ["PURR/USDC"]
     assert quotes[0].price == Decimal("0.0915")
+    assert quotes[0].reference_price == Decimal("0.0771")
 
 
 def test_quote_adapters_classify_every_anticipated_failure() -> None:

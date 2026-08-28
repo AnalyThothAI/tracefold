@@ -1,10 +1,11 @@
-"""Current-quote adapters (#88 §4): one bounded batch request per provider source, normalized on the way in.
+"""Current-quote adapters (#304): one bounded batch request per provider source, normalized on the way in.
 
 Each venue speaks its own dialect and this is where it stops. Both publish a price and a reference the day
 change is measured against — Hyperliquid's `prevDayPx` in the same request, Binance's rolling-window
-`openPrice` only from the wider `ticker/24hr`, which is why a Binance source alternates between two
-endpoints on two cadences (#109). Both arrive as `ProviderQuote`, which declares the price kind's basis
-rather than letting a derivative mid pass for a cash last price downstream.
+`openPrice` only from the wider `ticker/24hr`. Every turn fetches Binance's narrow current endpoint first;
+a due wider day read runs only after the current snapshot is committed and enriches the next natural turn.
+Both arrive as `ProviderQuote`, which declares the price kind's basis rather than letting a derivative mid
+pass for a cash last price downstream.
 
 Unauthenticated public REST, never a market socket. That is a recorded decision with a measurement and a
 promotion criterion behind it (#109, `docs/ARCHITECTURE.md`), not an unexamined default.
@@ -18,7 +19,7 @@ from typing import Any, Final
 
 import httpx
 
-from tracefold.news.market_review.pricing import ProviderQuote, parse_change_pct, parse_price
+from tracefold.news.market_review.pricing import ProviderQuote, parse_price
 
 from .errors import VenueExpectedError
 from .http import get_json, post_json, price_client
@@ -43,7 +44,7 @@ async def fetch_binance_spot_quotes(
     transport: httpx.AsyncBaseTransport | None = None,
     base_url: str = BINANCE_SPOT_BASE_URL,
 ) -> tuple[ProviderQuote, ...]:
-    """Prices only, for the turns between day reads. Weight 4 whatever the list length, so always ask by name."""
+    """Mandatory current prices. Weight 4 whatever the list length, so always ask by name."""
 
     wanted = _wanted(symbols)
     if not wanted:
@@ -224,7 +225,6 @@ def _parse_binance_day(payload: Any, *, venue: str, wanted: set[str]) -> tuple[P
             ProviderQuote(
                 venue_symbol=venue_symbol,
                 price=price,
-                change_pct=parse_change_pct(price, reference),
                 change_basis=_ROLLING_24H,
                 reference_price=reference,
                 source_at_ms=_optional_int(entry.get("closeTime")),
@@ -249,12 +249,13 @@ def _parse_hyperliquid_perp(
         price = parse_price(context.get("midPx"))
         if price is None:
             continue
+        reference = parse_price(context.get("prevDayPx"))
         out.append(
             ProviderQuote(
                 venue_symbol=venue_symbol,
                 price=price,
-                change_pct=parse_change_pct(price, context.get("prevDayPx")),
                 change_basis=_PROVIDER_DAY,
+                reference_price=reference,
             )
         )
     return tuple(out)
@@ -271,12 +272,13 @@ def _parse_hyperliquid_spot(contexts: Sequence[Any], *, wanted: set[str], venue:
         price = parse_price(context.get("midPx")) or parse_price(context.get("markPx"))
         if price is None:
             continue
+        reference = parse_price(context.get("prevDayPx"))
         out.append(
             ProviderQuote(
                 venue_symbol=venue_symbol,
                 price=price,
-                change_pct=parse_change_pct(price, context.get("prevDayPx")),
                 change_basis=_PROVIDER_DAY,
+                reference_price=reference,
             )
         )
     return tuple(out)
