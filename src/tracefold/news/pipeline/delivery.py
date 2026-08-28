@@ -1,17 +1,19 @@
-"""At-most-once reader-card delivery stage."""
+"""At-most-once reader-card delivery with best-effort in-place enrichment."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from typing import Any, ClassVar, Protocol
+from dataclasses import dataclass
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
 from ..market_review.pricing import Candle, PriceInstrument, PricePoint, select_candle
-from ..models import ReaderDeliveryPresentation
+from ..models import ReaderDeliveryPresentation, TelegramDeliveryReceipt
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -26,6 +28,10 @@ _DELIVERY_CANDLE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_PRICE_SOURCE_TIMEOUT_SECONDS = 2.0
 _DELIVERY_CANDLE_GAP_MS = 90_000
 _ONE_HOUR_MS = 3_600_000
+_DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
+_DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
+
+logger = logging.getLogger(__name__)
 
 DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
 DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
@@ -48,8 +54,37 @@ class NewsPushSender(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class EditableNewsPushSender(Protocol):
+    """Provider capability for replacing one already-receipted reader message in place."""
+
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> Mapping[str, Any]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _EnrichmentEditContext:
+    sender: EditableNewsPushSender
+    event_id: str
+    kind: str
+    event: Mapping[str, Any]
+    verdict: Mapping[str, Any]
+    decision: str
+    grounded_assets: tuple[str, ...]
+    shown: tuple[str, ...]
+    degraded: bool
+    receipt: TelegramDeliveryReceipt
+    news_at_ms: int | None
+    observed_at_ms: int | None
+
+
 class DelivererConsumer:
-    """SAC consumer: one provider attempt per (event, kind); crash between send and ack never resends."""
+    """SAC consumer: one initial send per identity; editable providers enrich that same receipt."""
 
     work_semantics: ClassVar[tuple[NewsWorkSemantics, ...]] = ("durable_event",)
 
@@ -74,13 +109,54 @@ class DelivererConsumer:
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
         self._last_send_at = 0.0
+        self._last_edit_at = 0.0
+        self._edit_lock = asyncio.Lock()
+        self._edit_tasks: set[asyncio.Task[None]] = set()
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         with contextlib.suppress(TransientError, DeferError):
             await self.db.tx(
                 "news_delivery_reconcile", lambda repos: repos.news.terminalize_interrupted_deliveries(now_ms=now_ms())
             )
-        await self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event)
+        # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
+        # this process owns no edit task yet. Refuse to consume until PostgreSQL records that truth.
+        await self.db.tx(
+            "news_delivery_edit_reconcile",
+            lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
+        )
+        consume_task = asyncio.create_task(
+            self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event),
+            name="news-delivery-consume",
+        )
+        reconcile_task = asyncio.create_task(
+            self._edit_reconcile_loop(stop_event=stop_event),
+            name="news-delivery-edit-reconcile",
+        )
+        tasks = {consume_task, reconcile_task}
+        try:
+            done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _edit_reconcile_loop(self, *, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=_DELIVERY_EDIT_RECONCILE_SECONDS)
+            if stop_event.is_set():
+                return
+            with contextlib.suppress(TransientError, DeferError):
+                await self._reconcile_stale_delivery_edits()
+
+    async def _reconcile_stale_delivery_edits(self) -> None:
+        await self.db.tx(
+            "news_delivery_edit_stale_reconcile",
+            lambda repos: repos.news.terminalize_stale_delivery_edits(now_ms=now_ms()),
+        )
 
     async def handle(self, message: BusMessage) -> None:
         event_id = str(message.payload.get("event_id") or "")
@@ -129,8 +205,10 @@ class DelivererConsumer:
         wait = self.min_interval - (time.monotonic() - self._last_send_at)
         if wait > 0:
             await asyncio.sleep(wait)
-        price_at_ms = now_ms()
-        quotes = await self._market_data(shown, price_at_ms, news_at_ms=news_at_ms)
+        progressive_sender = self.sender if isinstance(self.sender, EditableNewsPushSender) else None
+        quotes = (
+            [] if progressive_sender is not None else await self._market_data(shown, now_ms(), news_at_ms=news_at_ms)
+        )
         card_payload = render_first_card(
             event=card,
             verdict=tv,
@@ -140,11 +218,19 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
-        presentation = ReaderDeliveryPresentation(
-            trade_targets=reader_trade_targets(quotes),
-            market_movements=reader_market_movements(shown, quotes),
-            news_at_ms=news_at_ms,
-            observed_at_ms=observed_at_ms,
+        presentation = (
+            ReaderDeliveryPresentation(
+                news_at_ms=news_at_ms,
+                observed_at_ms=observed_at_ms,
+                market_data_state="pending",
+            )
+            if progressive_sender is not None
+            else ReaderDeliveryPresentation(
+                trade_targets=reader_trade_targets(quotes),
+                market_movements=reader_market_movements(shown, quotes),
+                news_at_ms=news_at_ms,
+                observed_at_ms=observed_at_ms,
+            )
         )
         state = await self.db.tx(
             "news_delivery_begin",
@@ -181,7 +267,7 @@ class DelivererConsumer:
             self._last_send_at = time.monotonic()
         settled_state = "sent" if error_code is None else "terminal"
         try:
-            await self.db.tx(
+            settlement_recorded = await self.db.tx(
                 "news_delivery_settle",
                 lambda repos: repos.news.settle_delivery(
                     event_id=event_id,
@@ -194,6 +280,139 @@ class DelivererConsumer:
             )
         except (TransientError, DeferError) as exc:
             raise RuntimeError("news_delivery_settlement_unavailable") from exc
+        if not settlement_recorded:
+            logger.warning("News delivery settlement failed: news_delivery_settlement_conflict")
+            return
+        if progressive_sender is None or settled_state != "sent" or receipt is None or not shown:
+            return
+        try:
+            parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
+        except ValueError:
+            logger.warning("News delivery enrichment edit failed: news_delivery_edit_receipt_invalid")
+            return
+        self._start_enrichment_edit(
+            _EnrichmentEditContext(
+                sender=progressive_sender,
+                event_id=event_id,
+                kind=kind,
+                event=dict(card),
+                verdict=dict(tv),
+                decision=str(triage_row["final_decision"]),
+                grounded_assets=tuple(card.get("grounded_assets") or ()),
+                shown=tuple(shown),
+                degraded=bool(triage_row.get("degraded")),
+                receipt=parsed_receipt,
+                news_at_ms=news_at_ms,
+                observed_at_ms=observed_at_ms,
+            )
+        )
+
+    def _start_enrichment_edit(self, context: _EnrichmentEditContext) -> None:
+        task = asyncio.create_task(
+            self._enrich_and_edit(context),
+            name=f"news-delivery-edit-{context.event_id[:12]}",
+        )
+        self._edit_tasks.add(task)
+        task.add_done_callback(self._edit_tasks.discard)
+
+    async def _enrich_and_edit(self, context: _EnrichmentEditContext) -> None:
+        intent_started = False
+        try:
+            quotes = await self._market_data(
+                context.shown,
+                context.receipt.pushed_at_ms,
+                news_at_ms=context.news_at_ms,
+            )
+            card_payload = render_first_card(
+                event=context.event,
+                verdict=context.verdict,
+                decision=context.decision,
+                grounded_assets=list(context.grounded_assets),
+                assets=context.shown,
+                degraded=context.degraded,
+                quotes=quotes,
+            )
+            presentation = ReaderDeliveryPresentation(
+                trade_targets=reader_trade_targets(quotes),
+                market_movements=reader_market_movements(context.shown, quotes),
+                news_at_ms=context.news_at_ms,
+                observed_at_ms=context.observed_at_ms,
+            )
+            async with self._edit_lock:
+                wait = self.min_interval - (time.monotonic() - self._last_edit_at)
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                intent_started = bool(
+                    await self.db.tx(
+                        "news_delivery_begin_edit",
+                        lambda repos: repos.news.begin_delivery_edit(
+                            event_id=context.event_id,
+                            kind=context.kind,
+                            card=card_payload,
+                            receipt=context.receipt.canonical(),
+                            now_ms=now_ms(),
+                        ),
+                    )
+                )
+                if not intent_started:
+                    logger.warning("News delivery enrichment edit failed: news_delivery_edit_intent_conflict")
+                    return
+                try:
+                    result = await self.finite.run(
+                        "news_delivery_edit",
+                        context.sender.edit_card,
+                        context.receipt.canonical(),
+                        card_payload,
+                        presentation=presentation,
+                        timeout_seconds=_DELIVERY_EDIT_TIMEOUT_SECONDS,
+                        allow_shutdown=True,
+                    )
+                finally:
+                    self._last_edit_at = time.monotonic()
+            try:
+                updated_receipt = TelegramDeliveryReceipt.model_validate(result)
+            except ValueError as exc:
+                raise RuntimeError("news_delivery_edit_receipt_invalid") from exc
+            if updated_receipt.edited_at_ms is None:
+                raise RuntimeError("news_delivery_edit_receipt_unsettled")
+            recorded = bool(
+                await self.db.tx(
+                    "news_delivery_settle_edit",
+                    lambda repos: repos.news.settle_delivery_edit(
+                        event_id=context.event_id,
+                        kind=context.kind,
+                        receipt=updated_receipt.canonical(),
+                        now_ms=now_ms(),
+                    ),
+                )
+            )
+            if not recorded:
+                await self._mark_edit_ambiguous(context, "news_delivery_edit_receipt_conflict")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            error_code = getattr(exc, "code", None) or f"{type(exc).__module__}.{type(exc).__name__}"
+            if intent_started:
+                await self._mark_edit_ambiguous(context, str(error_code))
+            logger.warning("News delivery enrichment edit failed: %s", error_code)
+
+    async def _mark_edit_ambiguous(self, context: _EnrichmentEditContext, error_code: str) -> None:
+        try:
+            recorded = await self.db.tx(
+                "news_delivery_ambiguous_edit",
+                lambda repos: repos.news.mark_delivery_edit_ambiguous(
+                    event_id=context.event_id,
+                    kind=context.kind,
+                    receipt=context.receipt.canonical(),
+                    error_code=error_code[:160],
+                    now_ms=now_ms(),
+                ),
+            )
+            if not recorded:
+                logger.warning("News delivery enrichment edit failed: news_delivery_edit_ambiguous_conflict")
+        except Exception as exc:
+            bounded = getattr(exc, "code", None) or f"{type(exc).__module__}.{type(exc).__name__}"
+            logger.warning("News delivery enrichment edit failed: %s", bounded)
 
     async def _settle_direct(self, event_id: str, kind: str, error_code: str, stamp: int) -> None:
         def _fn(repos: Any) -> None:
@@ -481,9 +700,18 @@ class DelivererConsumer:
             oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
         return card, triage, oi_signal, admission, event_kind, timing
 
-    async def close(self) -> None:
+    async def drain(self) -> None:
+        tasks = tuple(self._edit_tasks)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def close_sender(self) -> None:
         if self.sender is not None:
             with contextlib.suppress(Exception):
                 await self.finite.run(
                     "news_delivery_sender_close", self.sender.close, timeout_seconds=5.0, allow_shutdown=True
                 )
+
+    async def close(self) -> None:
+        await self.drain()
+        await self.close_sender()

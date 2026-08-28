@@ -953,6 +953,8 @@ prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
 `0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
 projection; on an existing volume, provision the Nautilus role before applying
 it as described above.
+`0317` adds the durable News delivery edit-intent lifecycle and its stale-edit
+index; it performs no provider call and requires no new credential or runtime role.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

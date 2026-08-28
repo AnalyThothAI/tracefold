@@ -339,7 +339,15 @@ channel type, bot identity, administrator status, and post permission; a public
 channel, group, supergroup, or mismatched target fails closed. Preflight and
 `sendMessage` are separate finite operations: preflight completes before the
 durable `sending` row exists, and the operation behind that row contains only
-`sendMessage`. Each operation uses a seven-second application budget; every HTTP
+`sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutation is
+`editMessageText` for the exact same configured channel and positive message ID from the canonical receipt. The
+Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
+timestamp. It independently verifies the edit response still names the configured channel and same message ID.
+The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
+`edited_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds `pushed_at_ms` as well as
+message and target identity before accepting either edit intent or settlement.
+The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`, and
+`editMessageText`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
 phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
@@ -356,13 +364,18 @@ HTTPS-only with no redirects followed by Tracefold. Provider text never supplies
 normalized source label and every other card character before inserting the validated URL into one anchor. It
 recognizes a publisher brand from a hostname only on the exact domain or a dot-delimited subdomain, so a name
 such as `jin10.com.evil.test` cannot inherit the trusted reader label. It does not create an inline keyboard or
-a second destination. Ephemeral market/timing presentation values contain
-no credential and are neither added to the persisted card nor written to the provider receipt.
+a second destination. Ephemeral typed market/timing presentation values contain no credential. A successful edit
+may persist the final rendered card plus only provider lifecycle timestamps in the canonical receipt; it never
+persists price-provider requests, arbitrary URLs, channel IDs, or credentials.
 Persisted delivery rows store the
 rendered card (code facts plus sanitized AI copy) for audit but never provider
-credentials, timestamps, or signatures. There is exactly one provider attempt
+credentials or signatures. There is exactly one initial provider-send attempt
 after the durable `sending` row and no retry; a crash between send and ack
-terminalizes as `ambiguous_after_crash`.
+terminalizes as `ambiguous_after_crash`. An enrichment or edit failure cannot retract, retry, or terminalize that
+initial send. The desired replacement is durable before `editMessageText`; a provider/settlement uncertainty is
+recorded as edit ambiguity. Startup must reconcile inherited intents before consuming, and a bounded runtime sweep
+retries stale reconciliation after transient database failures. Error logs contain only a sanitized exception class
+or bounded adapter code.
 
 News Triage receives the Event title/content excerpt (wrapped as untrusted
 material), Gate facts, the storyline status bar, and the watchlist symbols. It

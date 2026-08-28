@@ -151,7 +151,20 @@ perpetuals open the matching Futures contract and spot instruments open the matc
 Other venues, aliases, and inconsistent or incomplete instrument metadata remain plain ticker text. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
-line between them. Current-vs-anchor and fixed 1 h returns come only from the
+line between them. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a
+send, the first `sendMessage` contains the complete news facts immediately and labels all three market values
+`计算中`; it performs no public price read first. The returned message ID and original send timestamp are settled
+as `sent` before a background enrichment reads prices. That enrichment replaces the same Telegram message with
+`editMessageText`; it never sends a second card. Before that provider mutation, PostgreSQL stores the desired card
+as `pending_card` with `edit_state=editing`, bound to the same provider, message ID, original push timestamp, and
+target digest. A confirmed edit promotes that card and canonical receipt under `edit_state=edited`. A crash,
+timeout, invalid receipt, or settlement conflict after intent is recorded becomes `edit_state=ambiguous`; the
+original `sent` outcome is never retracted or retried, and the ledger does not pretend to know which version TG
+currently shows. Startup converts every inherited `editing` intent to the same explicit ambiguity. Feishu has no editable
+capability and retains its single enriched send. Startup reconciliation must succeed before the delivery consumer
+starts; while running, a 30-second sweep converts any edit still unsettled after 60 seconds to ambiguity and retries
+after transient database failures.
+Current-vs-anchor and fixed 1 h returns come only from the
 same request-time venue and contract: Binance is tried first, Hyperliquid second and OKX third. At each news,
 push-minus-1H and push anchor, the latest trade no later than the millisecond timestamp is used only when it is
 at most 60 seconds old; otherwise the adapter falls back to the last closed one-minute candle within 90 seconds.
@@ -451,7 +464,8 @@ title alone selects a deterministic route.
   every Triage verdict (model decision, rule baseline, final decision,
   override rule, throttle reason, verdict payload, runtime model, Program
   version/SHA, degraded flag and trace; nullable `prompt_version` is Prompt-era
-  audit history only), deliveries, and `normalization[]` — the alias
+  audit history only), deliveries (including confirmed `card`, nullable `pending_card`, canonical receipt,
+  `edit_state`, bounded edit error, and edit attempt/settlement timestamps), and `normalization[]` — the alias
   groups this Event's assets fall into (`base_symbol`, every `alias` that
   resolves into it including the base itself, and the alias `sources`). Only
   the code-owned seed aliases count (`source = 'seed'`, reconciled from
@@ -720,7 +734,9 @@ Delivery identity is `(event_id, kind)`; `first` is the only kind written —
 one Event gets one card — and the retired lane's `followup` rows survive as
 history. States are `sending`, `sent`, `terminal`. Telegram target/permission
 preflight completes before `sending`; after that row there is exactly one
-delivery HTTP attempt. A delivery without a configured sender or whose
+initial delivery HTTP attempt. A successful Telegram initial attempt may be followed by a durable-intent in-place
+edit of that same receipt-bound message; an edit is neither a second delivery nor permission to retry the
+initial send. A delivery without a configured sender or whose
 preflight fails settles `terminal` immediately instead of holding the message.
 
 Broker contract (code-owned): topic exchange `news`, dead-letter exchange
@@ -805,6 +821,8 @@ eligibility makes prior-factory judgments audit-only and starts the factory-v7
 cohort at zero.
 `20260828_0316` then adds the #283 immutable `trading_intents` handoff and its
 least-privilege Workers, Serve, and Nautilus grants.
+`20260828_0317` adds the News delivery edit-intent columns and stale-intent index used to distinguish a desired,
+confirmed, or ambiguous in-place Telegram update without changing the initial `sent` state.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact

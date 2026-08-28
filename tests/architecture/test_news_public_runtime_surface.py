@@ -30,6 +30,7 @@ PUBLIC_NEWS_INTERFACE = {
     "ReaderMarketState",
     "ReaderReceipt",
     "ReaderTradeTarget",
+    "TelegramDeliveryReceipt",
     "ScoredJudgment",
     "SemanticJudge",
     "SemanticJudgeError",
@@ -52,6 +53,9 @@ WRITE_REPOSITORY_METHODS = (
     "add_member",
     "begin_delivery",
     "settle_delivery",
+    "begin_delivery_edit",
+    "settle_delivery_edit",
+    "mark_delivery_edit_ambiguous",
     "open_incident",
     "close_open_incidents",
     "complete_recovery",
@@ -63,6 +67,8 @@ WRITE_REPOSITORY_METHODS = (
     "expire_bands",
     "purge_before",
     "terminalize_interrupted_deliveries",
+    "terminalize_interrupted_delivery_edits",
+    "terminalize_stale_delivery_edits",
 )
 
 

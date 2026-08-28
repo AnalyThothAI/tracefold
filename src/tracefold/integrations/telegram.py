@@ -18,7 +18,12 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
+from tracefold.news import (
+    ReaderDeliveryPresentation,
+    ReaderMarketMovement,
+    ReaderTradeTarget,
+    TelegramDeliveryReceipt,
+)
 
 _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
 _TELEGRAM_TIMEOUT_SECONDS = 6.5
@@ -36,7 +41,7 @@ _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong)>|<a href="[^"]+">|</a>')
-_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage"})
+_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText"})
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
 _MAGNITUDE_LABELS = {
@@ -186,34 +191,105 @@ class TelegramNewsPushSender:
             market_movements=view.market_movements,
             news_at_ms=view.news_at_ms,
             pushed_at_ms=pushed_at_ms,
+            market_data_pending=view.market_data_state == "pending",
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
+        try:
+            result = self._call_api(
+                "sendMessage",
+                self._message_payload(text),
+                error_prefix="news_delivery_telegram",
+                deadline_at=deadline_at,
+            )
+            message_id = self._validated_message_id(result, error_prefix="news_delivery_telegram")
+        except TelegramDeliveryError:
+            self._target_validated = False
+            raise
+        return TelegramDeliveryReceipt(
+            provider="telegram",
+            message_id=message_id,
+            pushed_at_ms=pushed_at_ms,
+            target_sha256=self._target_sha256,
+        ).canonical()
+
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        """Replace one previously sent channel message while preserving its original push timestamp."""
+
+        if not self._target_validated:
+            raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
+        try:
+            parsed_receipt = TelegramDeliveryReceipt.model_validate(receipt)
+        except ValueError:
+            raise TelegramDeliveryError("news_delivery_telegram_edit_receipt_invalid") from None
+        if parsed_receipt.target_sha256 != self._target_sha256:
+            raise TelegramDeliveryError("news_delivery_telegram_edit_receipt_invalid")
+        message_id = parsed_receipt.message_id
+        pushed_at_ms = parsed_receipt.pushed_at_ms
+        view = presentation or ReaderDeliveryPresentation()
+        text = _telegram_message(
+            card,
+            trade_targets=view.trade_targets,
+            market_movements=view.market_movements,
+            news_at_ms=view.news_at_ms,
+            pushed_at_ms=pushed_at_ms,
+            market_data_pending=view.market_data_state == "pending",
+        )
+        deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
+        result = self._call_api(
+            "editMessageText",
+            self._message_payload(text, message_id=message_id),
+            error_prefix="news_delivery_telegram_edit",
+            deadline_at=deadline_at,
+        )
+        self._validated_message_id(
+            result,
+            error_prefix="news_delivery_telegram_edit",
+            expected_message_id=message_id,
+        )
+        return TelegramDeliveryReceipt(
+            provider="telegram",
+            message_id=message_id,
+            pushed_at_ms=pushed_at_ms,
+            edited_at_ms=int(self._wall_clock_ms()),
+            target_sha256=self._target_sha256,
+        ).canonical()
+
+    def _message_payload(self, text: str, *, message_id: int | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "chat_id": self._chat_id,
             "text": text,
             "parse_mode": "HTML",
             "link_preview_options": {"is_disabled": True},
         }
-        try:
-            result = self._call_api(
-                "sendMessage",
-                payload,
-                error_prefix="news_delivery_telegram",
-                deadline_at=deadline_at,
-            )
-            chat = result.get("chat")
-            message_id = result.get("message_id")
-            if not isinstance(chat, Mapping) or isinstance(message_id, bool) or not isinstance(message_id, int):
-                raise TelegramDeliveryError("news_delivery_telegram_response_invalid")
-            response_chat_id = chat.get("id")
-            if isinstance(response_chat_id, bool) or not isinstance(response_chat_id, int):
-                raise TelegramDeliveryError("news_delivery_telegram_response_invalid")
-            if response_chat_id != self._chat_id:
-                raise TelegramDeliveryError("news_delivery_telegram_response_chat_mismatch")
-        except TelegramDeliveryError:
-            self._target_validated = False
-            raise
-        return {"provider": "telegram", "message_id": message_id, "target_sha256": self._target_sha256}
+        if message_id is not None:
+            payload["message_id"] = message_id
+        return payload
+
+    def _validated_message_id(
+        self,
+        result: Mapping[str, Any],
+        *,
+        error_prefix: str,
+        expected_message_id: int | None = None,
+    ) -> int:
+        chat = result.get("chat")
+        message_id = result.get("message_id")
+        if not isinstance(chat, Mapping) or isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        response_chat_id = chat.get("id")
+        if isinstance(response_chat_id, bool) or not isinstance(response_chat_id, int):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        if response_chat_id != self._chat_id:
+            raise TelegramDeliveryError(f"{error_prefix}_response_chat_mismatch")
+        if expected_message_id is not None and message_id != expected_message_id:
+            raise TelegramDeliveryError(f"{error_prefix}_response_message_mismatch")
+        return message_id
 
     def _validate_target(self, *, deadline_at: float) -> None:
         chat = self._call_api(
@@ -306,6 +382,7 @@ def _telegram_message(
     market_movements: Sequence[ReaderMarketMovement] = (),
     news_at_ms: int | None = None,
     pushed_at_ms: int | None = None,
+    market_data_pending: bool = False,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
@@ -350,6 +427,7 @@ def _telegram_message(
                 market_line=market_line,
                 ticker_links=ticker_links,
                 market_movements=market_movements,
+                market_data_pending=market_data_pending,
             )
         )
     if facts.direction or facts.magnitude:
@@ -413,6 +491,7 @@ def _telegram_asset_blocks(
     market_line: str,
     ticker_links: Mapping[str, str],
     market_movements: Sequence[ReaderMarketMovement],
+    market_data_pending: bool,
 ) -> list[str]:
     movements = {
         movement.ticker: movement for movement in market_movements if isinstance(movement, ReaderMarketMovement)
@@ -421,7 +500,11 @@ def _telegram_asset_blocks(
     for asset in assets:
         ticker = _telegram_ticker_html(asset, ticker_links)
         movement = movements.get(asset)
-        if movement is not None:
+        if market_data_pending:
+            after_news = "计算中"
+            one_hour = "计算中"
+            day_change = "计算中"
+        elif movement is not None:
             after_news = _format_bps(movement.after_news_bps) if movement.after_news_bps is not None else "暂无"
             one_hour = (
                 _format_bps(movement.return_1h_bps)

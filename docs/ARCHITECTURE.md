@@ -1231,7 +1231,17 @@ receives the card unchanged.
 The same ephemeral `ReaderDeliveryPresentation` carries one ordered market row
 per displayed asset. `新闻后` is the delivery-time point versus the provider
 publication-time point; `1h` is that same delivery-time point versus the point
-exactly one hour before delivery. These are request-time presentation returns,
+exactly one hour before delivery. For Telegram, “delivery time” is the timestamp returned in the receipt of the
+initial `sendMessage`, not the later edit time. The Deliverer intentionally renders a pending presentation first,
+settles that receipt as `sent`, and starts price enrichment only afterward in a background task. The pending
+message shows `计算中` for `新闻后`, `1h`, and `24h`; the ready presentation is applied to the same provider
+message with `editMessageText`. Immediately before the provider mutation, the desired ready card is durably
+recorded as `pending_card/editing`. Provider confirmation atomically promotes it to the canonical card and
+`edited`; an uncertain failure retains the previous confirmed card plus the desired card under `ambiguous`.
+This keeps public price latency outside the reader's initial-news path and gives
+later enrichers one receipt-bound in-place update capability without creating a follow-up card. Edit work is
+serialized independently of initial sends, so a slow update cannot delay the next accepted news message.
+These are request-time presentation returns,
 not `reaction_v1`: they do not wait for a future horizon and are never persisted
 as review evidence. For every anchor the adapter first selects the latest trade
 at or before the millisecond timestamp when it is at most 60 seconds old, then
@@ -1248,7 +1258,13 @@ text itself into the original-source HTTPS link (X/Twitter handles become `<hand
 use their reader names), so it has no separate source button. The footer has no time heading and lists the
 original artifact or provider publication time, send-start time, and normalized linked source in that order.
 Times use the reader's UTC+8 zone at whole-second precision. A missing input is shown as `暂无` while known fields
-remain visible. This presentation context is not persisted and Feishu still receives the stable card unchanged.
+remain visible. Typed trade targets, movements, and timing context are not persisted; only the rendered desired
+card and edit lifecycle are. The edit ledger CAS identifies the original provider, message ID, push timestamp,
+and keyed target digest, and a canonical receipt admits no extra provider fields. Every `editing` row inherited by
+a new process is changed to `ambiguous` at startup rather than guessed successful or retried. The consumer does not
+start until that reconciliation commits. A 30-second runtime sweep also terminalizes an `editing` intent older than
+60 seconds, so a temporary failure of both edit settlement and ambiguity recording cannot strand it forever.
+Feishu still receives the stable card unchanged.
 The stable Feishu card then has a 打开来源 button and a small `Tracefold · <event_id[:8]>`
 note. There is no original headline line, no translated title, no event type or
 scope enum, no provider score, and no line labelled as AI: those internals stay
@@ -1261,9 +1277,11 @@ and no "模型不可用" copy; the degraded verdict's `headline_zh` is the wire 
 too, so the console feed and the context line name the Event (issue #65). The
 行情 line still renders there: the price is our own fact, not the model's.
 AI copy is sanitized (URLs fall back to the code-owned title). There is no
-retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
+initial-send retry: `news_deliveries(event_id, kind)` (`kind` is always `first`) is
 inserted as `sending` after provider prepare/preflight and before the single
-delivery HTTP call, then settled `sent`/`terminal`;
+initial delivery HTTP call, then settled `sent`/`terminal`. Telegram enrichment begins only after a successful
+settlement. It records edit intent before provider I/O; update success confirms the ready card/receipt, while an
+uncertain update or post-provider persistence failure keeps the initial `sent` state and records edit ambiguity;
 interrupted rows are terminalized at startup. Recovery items, suppressed
 events never deliver. There is no operator pause or mute: `news_control_state`
 was removed after never withholding a single card in the whole retained history,
@@ -1570,6 +1588,7 @@ factory evidence is audit-only and the factory-v7 cohort starts with zero
 eligible evidence.
 `20260828_0316` adds the one-table Trading Intent handoff, its Nautilus
 execution projection, and the least-privilege grants for that separate runtime.
+`20260828_0317` adds the durable desired/edited/ambiguous lifecycle for in-place News delivery edits.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

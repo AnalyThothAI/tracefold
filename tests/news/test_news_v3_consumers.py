@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from decimal import Decimal
@@ -14,6 +15,7 @@ from typing import Any, Literal
 import pytest
 
 from tests.support.news_judgment import trade_relevance
+from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerNewsDatabase
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
@@ -73,6 +75,21 @@ class FakeBus:
 
     def routing_keys(self) -> list[str]:
         return [message.routing_key for message in self.published]
+
+
+class WaitingBus(FakeBus):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancelled = False
+
+    async def consume(self, queue: str, handler: Any, *, prefetch: int, stop_event: asyncio.Event) -> None:
+        del handler, prefetch
+        self.consumed.append(queue)
+        try:
+            await stop_event.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
 
 
 class RecordingNews:
@@ -1052,6 +1069,80 @@ class RecordingSender:
         return None
 
 
+class RecordingEditableSender(RecordingSender):
+    def __init__(self, order: list[str]) -> None:
+        super().__init__(order)
+        self.edited_cards: list[dict[str, Any]] = []
+        self.edited_presentations: list[ReaderDeliveryPresentation] = []
+        self._message_id = 41
+
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        super().send_card(card, presentation=presentation)
+        self._message_id += 1
+        return {
+            "provider": "telegram",
+            "message_id": self._message_id,
+            "pushed_at_ms": NOW_MS,
+            "target_sha256": "a" * 64,
+        }
+
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        assert isinstance(receipt["message_id"], int) and receipt["message_id"] >= 42
+        self.order.append("edit")
+        self.edited_cards.append(dict(card))
+        self.edited_presentations.append(presentation or ReaderDeliveryPresentation())
+        return {**dict(receipt), "edited_at_ms": NOW_MS + 1_000}
+
+
+class FailingEditSender(RecordingEditableSender):
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        del receipt, card, presentation
+        self.order.append("edit")
+        raise RuntimeError("telegram edit unavailable")
+
+
+class BlockingEditSender(RecordingEditableSender):
+    def __init__(self, order: list[str]) -> None:
+        super().__init__(order)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.closed = False
+
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        self.started.set()
+        if not self.release.wait(timeout=5.0):
+            raise RuntimeError("blocking edit test timed out")
+        return super().edit_card(receipt, card, presentation=presentation)
+
+    def close(self) -> None:
+        assert self.release.is_set()
+        self.closed = True
+        self.order.append("close")
+
+
 def _deliverer(
     news: RecordingNews,
     bus: FakeBus,
@@ -1086,6 +1177,9 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
         ),
         "begin_delivery": lambda **_k: next(states),
         "settle_delivery": True,
+        "begin_delivery_edit": True,
+        "settle_delivery_edit": True,
+        "mark_delivery_edit_ambiguous": True,
     }
     responses.update(overrides)
     return RecordingNews(**responses)
@@ -1435,6 +1529,509 @@ def test_delivery_price_points_try_binance_first_and_fail_over_the_whole_calcula
     assert calls == [("binance.perp", "MSFTUSDT"), ("hl.xyz", "xyz:MSFT")]
     assert sender.presentations[0].market_movements == (ReaderMarketMovement("MSFT", 202, 100, None, "available"),)
     assert sender.presentations[0].trade_targets == ()
+
+
+def test_telegram_delivery_sends_before_market_enrichment_then_edits_the_same_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.delivery.now_ms", lambda: NOW_MS)
+
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
+        allow_prices = asyncio.Event()
+        price_started = asyncio.Event()
+        order: list[str] = []
+        price = RecordingPrice(
+            quotes=[
+                {
+                    "requested_symbol": "MSFT",
+                    "symbol": "MSFT",
+                    "base_symbol": "MSFT",
+                    "venue": "binance.perp",
+                    "venue_symbol": "MSFTUSDT",
+                    "quote_asset": "USDT",
+                    "instrument_class": "equity",
+                    "price": "500",
+                    "state": "fresh",
+                }
+            ],
+            instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
+        )
+        news_at = NOW_MS - 20_000
+        news = _delivery_news(
+            event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
+            event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+
+        def price_fetcher_for(_venue: str) -> Any:
+            async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
+                order.append("price")
+                price_started.set()
+                await allow_prices.wait()
+                current, hour, event = targets
+                return {
+                    current: PricePoint(current, Decimal("101"), "trade"),
+                    hour: PricePoint(hour, Decimal("100"), "trade"),
+                    event: PricePoint(event, Decimal("99"), "trade"),
+                }
+
+            return fetch
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            price=price,
+            sender=sender,
+            price_fetcher_for=price_fetcher_for,
+        )
+        await asyncio.wait_for(
+            consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})),
+            timeout=0.2,
+        )
+        assert order[:2] == ["prepare", "send"]
+        assert "edit" not in order
+        assert sender.presentations[0].market_data_state == "pending"
+        assert news.kwargs_of("settle_delivery")["state"] == "sent"
+
+        await asyncio.wait_for(price_started.wait(), timeout=0.2)
+        assert order == ["prepare", "send", "price"]
+        allow_prices.set()
+        await consumer.close()
+        return news, sender, order
+
+    news, sender, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "price", "edit"]
+    assert sender.edited_presentations[0].market_data_state == "ready"
+    assert sender.edited_presentations[0].market_movements == (
+        ReaderMarketMovement("MSFT", 202, 100, None, "available"),
+    )
+    assert sender.edited_cards[0]["elements"][0]["content"].splitlines()[-1].startswith("行情 MSFT $101")
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+    assert news.kwargs_of("settle_delivery_edit")["receipt"]["edited_at_ms"] == NOW_MS + 1_000
+
+
+def test_telegram_delivery_keeps_the_initial_message_when_enrichment_edit_fails() -> None:
+    async def scenario() -> tuple[RecordingNews, FailingEditSender, list[str]]:
+        order: list[str] = []
+        news_at = NOW_MS - 20_000
+        news = _delivery_news(
+            event_card=_card(grounded_assets=["MSFT"], leader_published_at_ms=news_at),
+            event_delivery_timing={"news_at_ms": news_at, "observed_at_ms": news_at + 1_000},
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+        sender = FailingEditSender(order)
+
+        def price_fetcher_for(_venue: str) -> Any:
+            async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
+                order.append("price")
+                current, hour, event = targets
+                return {
+                    current: PricePoint(current, Decimal("101"), "trade"),
+                    hour: PricePoint(hour, Decimal("100"), "trade"),
+                    event: PricePoint(event, Decimal("99"), "trade"),
+                }
+
+            return fetch
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            price=RecordingPrice(
+                quotes=[
+                    {
+                        "requested_symbol": "MSFT",
+                        "symbol": "MSFT",
+                        "base_symbol": "MSFT",
+                        "venue": "binance.perp",
+                        "venue_symbol": "MSFTUSDT",
+                        "quote_asset": "USDT",
+                        "instrument_class": "equity",
+                        "price": "500",
+                        "state": "fresh",
+                    }
+                ],
+                instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
+            ),
+            sender=sender,
+            price_fetcher_for=price_fetcher_for,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender, order
+
+    news, sender, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "price", "edit"]
+    assert sender.presentations[0].market_data_state == "pending"
+    assert news.kwargs_of("settle_delivery")["state"] == "sent"
+    assert "begin_delivery_edit" in news.names()
+    assert "settle_delivery_edit" not in news.names()
+    assert news.kwargs_of("mark_delivery_edit_ambiguous")["error_code"] == "builtins.RuntimeError"
+
+
+def test_telegram_delivery_does_not_edit_when_initial_sent_settlement_loses_its_cas() -> None:
+    order: list[str] = []
+    news = _delivery_news(
+        settle_delivery=False,
+        event_card=_card(grounded_assets=["MSFT"]),
+        latest_verdict=lambda **_kwargs: {
+            "final_decision": "push",
+            "verdict": {
+                "direction": "bullish",
+                "magnitude": 2,
+                "headline_zh": "微软事件",
+                "assets": [{"symbol": "MSFT", "role": "primary"}],
+            },
+        },
+    )
+    consumer = _deliverer(news, FakeBus(), sender=RecordingEditableSender(order))
+
+    asyncio.run(consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"})))
+
+    assert order == ["prepare", "send"]
+    assert "begin_delivery_edit" not in news.names()
+
+
+def test_delivery_refuses_to_consume_when_startup_edit_reconciliation_is_unavailable() -> None:
+    def unavailable(**_kwargs: Any) -> int:
+        raise TransientError("edit reconciliation unavailable")
+
+    news = _delivery_news(terminalize_interrupted_delivery_edits=unavailable)
+    bus = FakeBus()
+    consumer = _deliverer(news, bus, sender=RecordingSender())
+
+    with pytest.raises(TransientError, match="edit reconciliation unavailable"):
+        asyncio.run(consumer.run(stop_event=asyncio.Event()))
+
+    assert bus.consumed == []
+
+
+def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_EDIT_RECONCILE_SECONDS", 0.01)
+    stop_event = asyncio.Event()
+    attempts = 0
+
+    def stale_reconcile(**_kwargs: Any) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TransientError("temporary edit reconciliation outage")
+        stop_event.set()
+        return 1
+
+    news = _delivery_news(
+        terminalize_interrupted_delivery_edits=0,
+        terminalize_stale_delivery_edits=stale_reconcile,
+    )
+    bus = WaitingBus()
+    consumer = _deliverer(news, bus, sender=RecordingSender())
+
+    asyncio.run(consumer.run(stop_event=stop_event))
+
+    assert attempts == 2
+    assert bus.consumed == ["news.deliver"]
+
+
+def test_delivery_fails_closed_when_periodic_edit_reconciliation_crashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_EDIT_RECONCILE_SECONDS", 0.01)
+
+    def invariant_failure(**_kwargs: Any) -> int:
+        raise RuntimeError("edit reconciliation invariant failure")
+
+    news = _delivery_news(
+        terminalize_interrupted_delivery_edits=0,
+        terminalize_stale_delivery_edits=invariant_failure,
+    )
+    bus = WaitingBus()
+    consumer = _deliverer(news, bus, sender=RecordingSender())
+
+    with pytest.raises(RuntimeError, match="edit reconciliation invariant failure"):
+        asyncio.run(consumer.run(stop_event=asyncio.Event()))
+
+    assert bus.consumed == ["news.deliver"]
+    assert bus.cancelled is True
+
+
+def test_pending_enrichment_does_not_block_the_next_telegram_initial_send() -> None:
+    async def scenario() -> list[str]:
+        allow_prices = asyncio.Event()
+        first_price_started = asyncio.Event()
+        order: list[str] = []
+        news = _delivery_news(
+            begin_states=["new", "new"],
+            event_card=_card(grounded_assets=["MSFT"]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+
+        def price_fetcher_for(_venue: str) -> Any:
+            async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
+                order.append("price")
+                first_price_started.set()
+                await allow_prices.wait()
+                current, hour = targets[:2]
+                return {
+                    current: PricePoint(current, Decimal("101"), "trade"),
+                    hour: PricePoint(hour, Decimal("100"), "trade"),
+                }
+
+            return fetch
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            price=RecordingPrice(
+                quotes=[
+                    {
+                        "requested_symbol": "MSFT",
+                        "symbol": "MSFT",
+                        "base_symbol": "MSFT",
+                        "venue": "binance.perp",
+                        "venue_symbol": "MSFTUSDT",
+                        "quote_asset": "USDT",
+                        "instrument_class": "equity",
+                        "price": "500",
+                        "state": "fresh",
+                    }
+                ],
+                instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
+            ),
+            sender=RecordingEditableSender(order),
+            price_fetcher_for=price_fetcher_for,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-first", "kind": "first"}))
+        await asyncio.wait_for(first_price_started.wait(), timeout=0.2)
+        await asyncio.wait_for(
+            consumer.handle(_message("verdict", {"event_id": "ev-second", "kind": "first"})),
+            timeout=0.2,
+        )
+        assert order.count("send") == 2
+        assert "edit" not in order
+        allow_prices.set()
+        await consumer.close()
+        return order
+
+    order = asyncio.run(scenario())
+
+    assert order.count("send") == 2
+    assert order.count("edit") == 2
+    assert order.index("send") < order.index("price")
+
+
+def test_delivery_drain_waits_for_native_edit_before_closing_the_sender() -> None:
+    async def scenario() -> tuple[list[str], BlockingEditSender]:
+        order: list[str] = []
+        sender = BlockingEditSender(order)
+        finite = FiniteOperations()
+        news = _delivery_news(
+            event_card=_card(grounded_assets=["MSFT"]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+        consumer = DelivererConsumer(
+            bus=FakeBus(),
+            db=FakeWorkerDatabase(
+                news,
+                price=RecordingPrice(
+                    quotes=[
+                        {
+                            "requested_symbol": "MSFT",
+                            "symbol": "MSFT",
+                            "base_symbol": "MSFT",
+                            "venue": "binance.perp",
+                            "venue_symbol": "MSFTUSDT",
+                            "quote_asset": "USDT",
+                            "instrument_class": "equity",
+                            "price": "500",
+                            "state": "fresh",
+                        }
+                    ]
+                ),
+            ),
+            sender=sender,
+            finite_operations=finite,
+            min_interval_seconds=0.0,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        assert await asyncio.to_thread(sender.started.wait, 1.0)
+        finite.close_admission()
+        drain_task = asyncio.create_task(consumer.drain())
+        await asyncio.sleep(0.02)
+        assert not drain_task.done()
+        assert sender.closed is False
+        sender.release.set()
+        await asyncio.wait_for(drain_task, timeout=1.0)
+        assert await finite.drain(timeout_seconds=1.0)
+        await consumer.close_sender()
+        finite.close()
+        return order, sender
+
+    order, sender = asyncio.run(scenario())
+
+    assert order[-2:] == ["edit", "close"]
+    assert sender.closed is True
+
+
+def test_delivery_drain_allows_an_accepted_edit_to_submit_after_shutdown_admission_closes() -> None:
+    async def scenario() -> list[str]:
+        order: list[str] = []
+        price_started = asyncio.Event()
+        allow_price = asyncio.Event()
+        sender = RecordingEditableSender(order)
+        finite = FiniteOperations()
+        news = _delivery_news(
+            event_card=_card(grounded_assets=["MSFT"]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+
+        def price_fetcher_for(_venue: str) -> Any:
+            async def fetch(_venue_symbol: str, targets: Any) -> dict[int, PricePoint]:
+                order.append("price")
+                price_started.set()
+                await allow_price.wait()
+                current, hour = targets[:2]
+                return {
+                    current: PricePoint(current, Decimal("101"), "trade"),
+                    hour: PricePoint(hour, Decimal("100"), "trade"),
+                }
+
+            return fetch
+
+        consumer = DelivererConsumer(
+            bus=FakeBus(),
+            db=FakeWorkerDatabase(
+                news,
+                price=RecordingPrice(
+                    quotes=[
+                        {
+                            "requested_symbol": "MSFT",
+                            "symbol": "MSFT",
+                            "base_symbol": "MSFT",
+                            "venue": "binance.perp",
+                            "venue_symbol": "MSFTUSDT",
+                            "quote_asset": "USDT",
+                            "instrument_class": "equity",
+                            "price": "500",
+                            "state": "fresh",
+                        }
+                    ],
+                    instruments={"MSFT": (PriceInstrument("binance.perp", "MSFTUSDT", "MSFT", "equity", "USDT"),)},
+                ),
+            ),
+            sender=sender,
+            finite_operations=finite,
+            min_interval_seconds=0.0,
+            price_fetcher_for=price_fetcher_for,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await asyncio.wait_for(price_started.wait(), timeout=0.2)
+        finite.close_admission()
+        drain_task = asyncio.create_task(consumer.drain())
+        allow_price.set()
+        await asyncio.wait_for(drain_task, timeout=1.0)
+        assert await finite.drain(timeout_seconds=1.0)
+        await consumer.close_sender()
+        finite.close()
+        return order
+
+    order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "price", "edit"]
+
+
+def test_stale_sweep_recovers_after_edit_settlement_and_ambiguity_writes_both_fail() -> None:
+    async def scenario() -> RecordingNews:
+        def unavailable(**_kwargs: Any) -> bool:
+            raise TransientError("database temporarily unavailable")
+
+        order: list[str] = []
+        news = _delivery_news(
+            settle_delivery_edit=unavailable,
+            mark_delivery_edit_ambiguous=unavailable,
+            terminalize_stale_delivery_edits=1,
+            event_card=_card(grounded_assets=["MSFT"]),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "headline_zh": "微软事件",
+                    "assets": [{"symbol": "MSFT", "role": "primary"}],
+                },
+            },
+        )
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            price=RecordingPrice(
+                quotes=[
+                    {
+                        "requested_symbol": "MSFT",
+                        "symbol": "MSFT",
+                        "base_symbol": "MSFT",
+                        "venue": "binance.perp",
+                        "venue_symbol": "MSFTUSDT",
+                        "quote_asset": "USDT",
+                        "instrument_class": "equity",
+                        "price": "500",
+                        "state": "fresh",
+                    }
+                ]
+            ),
+            sender=RecordingEditableSender(order),
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.drain()
+        await consumer._reconcile_stale_delivery_edits()
+        return news
+
+    news = asyncio.run(scenario())
+
+    assert "settle_delivery_edit" in news.names()
+    assert "mark_delivery_edit_ambiguous" in news.names()
+    assert "terminalize_stale_delivery_edits" in news.names()
 
 
 def _oi_delivery_news() -> RecordingNews:

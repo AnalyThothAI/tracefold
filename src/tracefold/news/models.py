@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
 EVENT_IDENTITY_VERSION = "news_event_identity_v5"
@@ -63,6 +63,7 @@ class ReaderTradeTarget:
 
 
 ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
+ReaderMarketDataState = Literal["pending", "ready"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,10 +85,30 @@ class ReaderDeliveryPresentation:
     market_movements: tuple[ReaderMarketMovement, ...] = ()
     news_at_ms: int | None = None
     observed_at_ms: int | None = None
+    market_data_state: ReaderMarketDataState = "ready"
 
 
 class ExactNewsModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class TelegramDeliveryReceipt(ExactNewsModel):
+    """Credential-free identity and lifecycle timestamps for one Telegram channel message."""
+
+    provider: Literal["telegram"]
+    message_id: int = Field(gt=0, strict=True)
+    pushed_at_ms: int = Field(gt=0, strict=True)
+    target_sha256: str = Field(pattern=r"^[0-9a-f]{64}$", strict=True)
+    edited_at_ms: int | None = Field(default=None, gt=0, strict=True)
+
+    @model_validator(mode="after")
+    def validate_lifecycle_order(self) -> TelegramDeliveryReceipt:
+        if self.edited_at_ms is not None and self.edited_at_ms < self.pushed_at_ms:
+            raise ValueError("telegram_delivery_receipt_edit_before_push")
+        return self
+
+    def canonical(self) -> dict[str, Any]:
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class NewsFeedEntry(ExactNewsModel):

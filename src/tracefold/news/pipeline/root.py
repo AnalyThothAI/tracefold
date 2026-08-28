@@ -62,5 +62,12 @@ class NewsPipeline:
             out.append(("news-reactions", lambda stop: reactions.run(stop_event=stop)))
         return out
 
+    async def drain(self) -> None:
+        """Finish receipt-bound enrichment before shared native capabilities close."""
+
+        await self.deliverer.drain()
+
     async def close(self) -> None:
-        await self.deliverer.close()
+        """Close the provider after the Workers root has drained native operations."""
+
+        await self.deliverer.close_sender()

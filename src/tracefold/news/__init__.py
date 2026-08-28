@@ -13,6 +13,7 @@ from .models import (
     ReaderMarketState,
     ReaderReceipt,
     ReaderTradeTarget,
+    TelegramDeliveryReceipt,
     TriageVerdict,
 )
 from .opennews import (
@@ -59,6 +60,7 @@ __all__ = [
     "SemanticJudgeError",
     "SemanticJudgment",
     "SourceContractReason",
+    "TelegramDeliveryReceipt",
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",

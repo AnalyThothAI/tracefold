@@ -205,6 +205,119 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     )
 
 
+def test_sender_sends_pending_market_data_then_edits_the_same_message() -> None:
+    observed: list[tuple[str, dict[str, object]]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        payload = json.loads(request.content)
+        observed.append((method, payload))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    clock = iter((1_787_885_313_000, 1_787_885_315_000))
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+        wall_clock_ms=lambda: next(clock),
+    )
+    sender.prepare()
+    initial = sender.send_card(
+        _card(),
+        presentation=ReaderDeliveryPresentation(
+            news_at_ms=1_787_885_301_000,
+            market_data_state="pending",
+        ),
+    )
+    updated = sender.edit_card(
+        initial,
+        _card(),
+        presentation=ReaderDeliveryPresentation(
+            market_movements=(ReaderMarketMovement("BTC", 0, -25, -511, "available"),),
+            news_at_ms=1_787_885_301_000,
+        ),
+    )
+
+    assert [method for method, _payload in observed] == ["sendMessage", "editMessageText"]
+    assert "新闻后 计算中\n1h 计算中，\n24h 计算中" in str(observed[0][1]["text"])
+    assert observed[1][1]["chat_id"] == CHANNEL_ID
+    assert observed[1][1]["message_id"] == 42
+    assert "新闻后 0.00%\n1h -0.25%，\n24h -5.11%" in str(observed[1][1]["text"])
+    assert "推送时间  10:48:33" in str(observed[1][1]["text"])
+    assert initial["pushed_at_ms"] == 1_787_885_313_000
+    assert updated["pushed_at_ms"] == initial["pushed_at_ms"]
+    assert updated["edited_at_ms"] == 1_787_885_315_000
+
+
+def test_edit_failure_does_not_invalidate_the_preflight_for_the_next_initial_send() -> None:
+    methods: list[str] = []
+    message_id = 40
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        nonlocal message_id
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        methods.append(method)
+        if method == "editMessageText":
+            return httpx.Response(400, json={"ok": False, "error_code": 400, "description": "Bad Request"})
+        message_id += 1
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": message_id, "chat": {"id": CHANNEL_ID}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    initial = sender.send_card(_card(), presentation=ReaderDeliveryPresentation(market_data_state="pending"))
+    with pytest.raises(TelegramDeliveryError, match="news_delivery_telegram_edit_http_rejected"):
+        sender.edit_card(initial, _card())
+
+    following = sender.send_card(_card(), presentation=ReaderDeliveryPresentation(market_data_state="pending"))
+
+    assert methods == ["sendMessage", "editMessageText", "sendMessage"]
+    assert following["message_id"] == 42
+
+
+def test_edit_rejects_noncanonical_receipt_fields_before_calling_telegram() -> None:
+    methods: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        methods.append(method)
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    initial = sender.send_card(_card(), presentation=ReaderDeliveryPresentation(market_data_state="pending"))
+
+    with pytest.raises(TelegramDeliveryError, match="news_delivery_telegram_edit_receipt_invalid"):
+        sender.edit_card({**initial, "provider_response": "untrusted"}, _card())
+
+    assert methods == ["sendMessage"]
+
+
 def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
     observed: dict[str, object] = {}
     card = _card()
