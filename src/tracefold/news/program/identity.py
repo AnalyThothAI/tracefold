@@ -7,10 +7,19 @@ hole — what the code decides once an answer arrives: the `reader_value` to del
 `actionable` conjunction, and the restatement index rule. Together they are the whole of Program behavior
 identity, and neither is a claim anybody has to remember to update.
 
-What it does not cover, deliberately: operator policy (`policy_sha256`), the retrieval and told-selection
-contract (`retrieval_sha256`), and the model slots (`runtime_model_bindings_sha256`). Those are separate
-members of the same bundle, so a change to any of them still opens a new epoch — the bundle is the
-compatibility unit, and this hash is one of its four parts.
+What it does not cover, and the distinction is worth keeping sharp. Three things are covered by *siblings*
+in the same bundle rather than by gaps here: operator policy (`policy_sha256`), the retrieval and
+told-selection contract (`retrieval_sha256`), and the model slots (`runtime_model_bindings_sha256`). A
+change to any of them still opens a new epoch, because the bundle is the compatibility unit and this hash
+is one of its four parts.
+
+One thing is a genuine residue: the *sequencing* of `graph._judge` — which route is attempted in what
+order, and how the degraded path is chosen. Its decision points are rendered (`fast_retry`,
+`normalize_restates`, and the assembly surface), but the order in which they are consulted is imperative
+flow that this document does not reproduce. Re-ordering the primary and fallback attempts would change
+which model answers without moving any hash. Naming it here rather than letting the docstring imply
+otherwise: the first draft of this module claimed total coverage, review found `_assemble` outside it, and
+the honest lesson is that a claim of completeness needs a list, not an adjective.
 
 It replaced a declared `factory_id` literal (#314). A hand-written version has one failure mode, and it
 is not that somebody picks the wrong string — it is that a change lands and nobody bumps anything. Three
@@ -29,7 +38,13 @@ from __future__ import annotations
 from typing import Any, Final
 
 from ..artifact_identity import canonical_sha
-from .assembly import READER_VALUE_DECISION, is_actionable, restatement_index_error
+from .assembly import (
+    READER_VALUE_DECISION,
+    is_actionable,
+    is_fast_retryable,
+    normalize_restates,
+    restatement_index_error,
+)
 from .contracts import TRADE_CHANNEL_ORDER
 from .runtime import (
     _MODEL_BINDING_SLOTS,
@@ -112,6 +127,20 @@ def _assembly_surface() -> dict[str, Any]:
             for novelty in _NOVELTIES
             for restates in (-1, 0, 1)
             for told in (0, 1, 2)
+        },
+        "normalize_restates": {
+            f"{novelty}|restates={restates}": normalize_restates(novelty=novelty, restates=restates)
+            for novelty in _NOVELTIES
+            for restates in (-1, 0, 1)
+        },
+        # Which model answers an Event depends on this, so it decides behavior rather than describing it.
+        "fast_retry": {
+            f"retryable={int(r)}|output_failure={int(o)}|truncated={int(t)}": is_fast_retryable(
+                retryable=r, output_failure=o, truncated_finish=t
+            )
+            for r in (False, True)
+            for o in (False, True)
+            for t in (False, True)
         },
         # The code-owned enum the model chooses from; adding or reordering a channel changes what a
         # judgment can say, and the canonical order decides how a set is hashed for gold and replay.

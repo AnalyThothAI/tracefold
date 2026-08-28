@@ -378,19 +378,21 @@ def liquidation_candidate(
     return candidate
 
 
-def _uses_current_news_generation(raw: object) -> bool:
-    """Whether an untrusted persisted manifest names the two News contracts Trading reasons about.
+def _uses_current_news_generation(raw: object, *, news_generation: str) -> bool:
+    """Whether an untrusted persisted manifest names the News generation Trading may still act on.
 
-    Not the News *epoch* (#314). Trading used to compare a `program_vN` literal here, which it had to edit
-    on every News identity move to restate what the two version pins beside it already said. Since #314 the
-    epoch label is derived per deployment and belongs to News; a copy of it here would be a second
-    declaration of a fact this package does not own.
+    The generation is *passed in*, not compared against a literal (#314). Trading used to hold a
+    `program_vN` string it had to edit on every News identity move; since #314 the label is derived per
+    deployment and belongs to News, so a copy here would be a second declaration of a fact this package
+    does not own. `tracefold.app` knows both capabilities and is the only place that may hand one to the
+    other.
 
-    What that leaves is narrower than the old check *looked*, so say it plainly: a manifest frozen under a
-    superseded News bundle whose `program_version` and `policy_version` are unchanged passes here. It is
-    refused upstream instead — `trade_candidate_*_rows` join the running bundle's epoch, so a stale row
-    never reaches this function on the live path. This check exists for an untrusted persisted document,
-    and its job is the contract shape, not the generation.
+    Deleting the comparison outright — which is what #314 first did — was wrong, and the review caught it.
+    The upstream projection does join the running bundle's epoch, so a stale row cannot become a *new*
+    Case; but this function's caller is `CandidateRunner._advance`, which claims Cases already persisted.
+    A Case frozen under one bundle and left undecided across a deployment would otherwise advance to an
+    Intent under a generation it was never reasoned under, because `program_version` and `policy_version`
+    do not move when a prompt or a model slot does.
     """
 
     if not isinstance(raw, Mapping) or raw.get("manifest_version") != TRADING_MANIFEST_VERSION:
@@ -407,6 +409,7 @@ def _uses_current_news_generation(raw: object) -> bool:
         found = True
         if (
             not isinstance(source, Mapping)
+            or str(source.get("learning_epoch") or "") != news_generation
             or source.get("policy_version") != "news_triage_policy_v10"
             or source.get("program_version") != expected_program
         ):

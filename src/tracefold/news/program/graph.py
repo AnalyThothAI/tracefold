@@ -44,7 +44,13 @@ from .artifact import (
     render_model_evidence_json,
     validate_program_instruction,
 )
-from .assembly import decision_for, is_actionable, restatement_index_error
+from .assembly import (
+    decision_for,
+    is_actionable,
+    is_fast_retryable,
+    normalize_restates,
+    restatement_index_error,
+)
 from .contracts import (
     EditorialEnvelope,
     FrozenEventEvidence,
@@ -176,13 +182,14 @@ def _validate_semantic_context(semantics: EventSemantics, *, told_count: int) ->
 def _normalize_semantics(
     semantics: EventSemantics,
 ) -> tuple[EventSemantics, tuple[ProgramNormalizationTrace, ...]]:
-    if semantics.novelty == "restatement" or semantics.restates == -1:
+    normalized_restates = normalize_restates(novelty=semantics.novelty, restates=semantics.restates)
+    if normalized_restates == semantics.restates:
         return semantics, ()
     normalization = ProgramNormalizationTrace(
         field="restates",
         reason="non_restatement_index_ignored",
         input_value=semantics.restates,
-        output_value=-1,
+        output_value=normalized_restates,
     )
     normalized = semantics.model_copy(update={"restates": normalization.output_value})
     return normalized, (normalization,)
@@ -235,9 +242,11 @@ class _CallFailure(Exception):
 
     @property
     def fast_retryable(self) -> bool:
-        return (self.retryable or self.output_failure) and (
-            self.finish_reason or ""
-        ).casefold() not in _TRUNCATED_FINISH_REASONS
+        return is_fast_retryable(
+            retryable=self.retryable,
+            output_failure=self.output_failure,
+            truncated_finish=(self.finish_reason or "").casefold() in _TRUNCATED_FINISH_REASONS,
+        )
 
 
 T = TypeVar("T", bound=BaseModel)

@@ -1107,13 +1107,16 @@ class ReviewDesk:
 
     def _coverage(self, query: DeskQuery) -> dict[str, Any]:
         lower = self._now_ms - int(query.hours) * 3_600_000
-        # Between a migration and the first Workers start there is no appointed Agent and therefore no
-        # current epoch (#314). That is a real, expected, seconds-long state during a deploy, and the
-        # honest answer to "how is coverage" is that there is no evidence yet — not a 500. A database
-        # that has an Agent but no epoch row for it is a different thing, and still raises below.
-        if self._active_agent_cohort_sha() is None:
+        # No current epoch is a real, expected, transient state — not a 500 (#314, sharpened by review).
+        # The first draft keyed this on "no appointed Agent", which was the wrong case: the *guaranteed*
+        # state of every existing database immediately after migration `0321` is an Agent appointed by the
+        # previous deployment whose bundle has no epoch row, because the migration back-fills nothing and
+        # only the Workers startup barrier opens one. Serve can be up before Workers, so that window is
+        # the normal deploy sequence for this release rather than an anomaly. Ask the question the view
+        # actually depends on — is there a current epoch — and answer honestly when there is not.
+        if self._current_epoch_starts_at_ms() is None:
             return _empty_coverage(
-                message_zh="尚未任命运行中的 Agent：本次部署还没有开纪元",
+                message_zh="本次部署尚未开纪元：等 Workers 启动屏障任命运行中的 Agent",
                 from_ms=lower,
                 to_ms=self._now_ms,
                 hours=query.hours,
@@ -1751,9 +1754,15 @@ class ReviewDesk:
             row["stable_sha"]
         )
 
-    def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
+    def _current_epoch_starts_at_ms(self) -> int | None:
+        """When the running bundle's epoch opened, or None while no deployment has opened one."""
+
         row = self._conn.execute(f"WITH {_CURRENT_EPOCH_CTE} SELECT starts_at_ms FROM current_epoch").fetchone()
-        return row is not None and int(at_ms) >= int(row["starts_at_ms"])
+        return None if row is None else int(row["starts_at_ms"])
+
+    def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
+        starts_at_ms = self._current_epoch_starts_at_ms()
+        return starts_at_ms is not None and int(at_ms) >= starts_at_ms
 
     def _active_agent_cohort_sha(self) -> str | None:
         statement = _active_agent_statement()

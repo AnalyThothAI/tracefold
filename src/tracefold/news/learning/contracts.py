@@ -359,11 +359,7 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    # `bundle_<sha8>` for anything sealed since #314, `program_vN` for the nine declared epochs that came
-    # before. A ref may name a historical corpus — that is what `migrate-corpus` opens — so the pattern
-    # admits both shapes and the *self-agreement* check (`DevelopmentDatasetStore._validate_dataset_payload`)
-    # is what distinguishes a derived label from a legacy one.
-    learning_epoch: str = Field(pattern=r"^(bundle_[0-9a-f]{8}|program_v\d+)$")
+    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
 

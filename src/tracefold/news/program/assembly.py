@@ -64,9 +64,33 @@ def restatement_index_error(*, novelty: str, restates: int, told_count: int) -> 
     return None
 
 
+def normalize_restates(*, novelty: str, restates: int) -> int:
+    """The index a non-restatement judgment is stored with, whatever the model emitted.
+
+    A model that answers `progression` with a leftover index is not wrong about the *judgment*, so the code
+    silently rewrites the field rather than refusing the call — which means this quietly decides what lands
+    in the verdict, and belongs in the identity for the same reason the decision map does (#314 review).
+    """
+
+    return restates if novelty == "restatement" or restates == -1 else -1
+
+
+def is_fast_retryable(*, retryable: bool, output_failure: bool, truncated_finish: bool) -> bool:
+    """Whether one failed attempt earns an immediate second attempt on the same route.
+
+    Truncation is excluded deliberately: a reply cut off at `max_tokens` will be cut off again, so retrying
+    it spends a call to reach the same place. Which model answers an Event depends on this, so it is
+    behavior-deciding rather than an implementation detail.
+    """
+
+    return (retryable or output_failure) and not truncated_finish
+
+
 __all__ = [
     "READER_VALUE_DECISION",
     "decision_for",
     "is_actionable",
+    "is_fast_retryable",
+    "normalize_restates",
     "restatement_index_error",
 ]

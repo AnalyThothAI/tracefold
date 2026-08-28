@@ -122,12 +122,16 @@ class CandidateRunner:
         bars: BarFetcherFactory,
         candidate_projection: _CandidateProjectionReader,
         instrument_projection: _InstrumentProjectionReader,
+        news_generation: str,
         program: TradingDecisionProgram | None = None,
         clock: Callable[[], int] = _now_ms,
         telemetry: TradingExternalDataTelemetryPort | None = None,
     ) -> None:
         self._db = db
         self._config = config
+        # The News generation this process may advance a persisted Case under. Supplied by the app seam,
+        # which is the only thing that knows both capabilities; Trading never reads a News table.
+        self._news_generation = news_generation
         self._bars = bars
         self._candidate_projection = candidate_projection
         self._instrument_projection = instrument_projection
@@ -759,7 +763,7 @@ class CandidateRunner:
         # manifest cannot satisfy v2's required upstream identities; letting validation raise would
         # strand the claimed row in RUNNING until every lease expired. Only undecided Cases reach
         # this path; emitted Intents are already outside CandidateRunner's ownership.
-        if not _uses_current_news_generation(raw_manifest):
+        if not _uses_current_news_generation(raw_manifest, news_generation=self._news_generation):
             funnel.count("advance_reject:news_generation_retired")
             await self._settle(
                 case_id,

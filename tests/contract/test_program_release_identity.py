@@ -15,7 +15,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "3215def169c3809cc6efbe3a19eca4d45983c6385b512ce20075fc88b06b513c"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "2fd69b9ffcc9e182cadb772a248eaa54a7fec0f9e8c1f295e94c4178e90e2588"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -111,6 +111,8 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "reader_value_decision",
         "actionable",
         "restatement_index",
+        "normalize_restates",
+        "fast_retry",
         "trade_channel_order",
     }
     assert set(envelope["route"]) == {
@@ -173,6 +175,16 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
             id="restatement_index_rule",
         ),
         pytest.param(lambda e: e["assembly"]["trade_channel_order"].reverse(), id="trade_channel_order"),
+        # Found one level up from `_assemble` by the same review: these decide what is stored and which
+        # model answers, and nothing else in the bundle moves when they change.
+        pytest.param(
+            lambda e: e["assembly"]["normalize_restates"].__setitem__("progression|restates=0", 0),
+            id="normalize_restates_rule",
+        ),
+        pytest.param(
+            lambda e: e["assembly"]["fast_retry"].__setitem__("retryable=1|output_failure=0|truncated=1", True),
+            id="fast_retry_rule",
+        ),
     ],
 )
 def test_every_material_surface_actually_moves_the_identity(mutate: Any) -> None:

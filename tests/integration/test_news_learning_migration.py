@@ -283,7 +283,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
               has_table_privilege('tracefold_workers', 'news_learning_epochs', 'DELETE') AS workers_delete
             """
         ).fetchone()
-        # #314's 0320 grants Workers the INSERT it needs to open its own epoch, and nothing more: the
+        # #314's 0321 grants Workers the INSERT it needs to open its own epoch, and nothing more: the
         # deployment may add history and still cannot rewrite it. Serve stays read-only.
         assert privileges == {
             "serve_select": True,

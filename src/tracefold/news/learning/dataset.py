@@ -13,7 +13,6 @@ release validation re-derives the Objective Plan from `development_compile_expor
 from __future__ import annotations
 
 import hashlib
-import re
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -49,10 +48,6 @@ DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1
 # after an Event opens, so freezing to "now" seals cases whose scores change after the file is written.
 SETTLEMENT_GRACE_MS = 10 * 60_000
 
-# The nine hand-declared epochs that predate derived labels (#314). Sealed corpora naming one are history
-# a migration reader may open; nothing new may claim one.
-_LEGACY_EPOCH_LABEL = re.compile(r"^program_v\d+$")
-
 
 class DatasetSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -74,7 +69,7 @@ class DatasetManifest(BaseModel):
     dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
-    learning_epoch: str = Field(pattern=r"^(bundle_[0-9a-f]{8}|program_v\d+)$")
+    learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
     learning_epoch_started_at_ms: int = Field(ge=0)
     window: ClosedWindow
     freeze_as_of_ms: int
@@ -896,17 +891,19 @@ class DevelopmentDatasetStore:
         # mismatch before `news_learning_dataset_agent_cohort_mismatch` could name the real problem, which
         # is the mistake this docstring already records once.
         #
-        # A `program_vN` label predates derivation and has nothing to agree with, so it is accepted as
-        # opaque history. That matters for exactly one reader: `development_migration_export`, whose whole
-        # job is to open a stale corpus and carry the cases a replay proves equivalent (#300). Demanding a
-        # derived label of every seal would have closed that door precisely at the identity cut that opens
-        # it — the #314 review caught this.
+        # Pre-#314 seals cannot pass this validator at all, and no branch here changes that. Removing the
+        # declared epoch from `_PROFILE` moved `TRUSTED_ROOT_SHA`, which every seal carries and this
+        # function compares below — so a `program_vN` corpus fails as a contract-hash mismatch before any
+        # epoch branch could speak. An earlier draft accepted legacy labels here to keep
+        # `development_migration_export` (#300) able to open a stale corpus; review showed that reader can
+        # never reach the branch, and dead code claiming to enable something is worse than its absence.
+        #
+        # No live evidence is lost by saying so: the seven datasets in production carry `program_v7`, and
+        # the predecessor of this check already refused them for naming an epoch that was not the current
+        # one. Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
         sealed_epoch = str(exact_payload.get("learning_epoch") or "")
         sealed_bundle = (dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha")
-        if sealed_epoch.startswith("bundle_"):
-            if not is_bundle_sha(sealed_bundle) or sealed_epoch != epoch_id_for_bundle(str(sealed_bundle)):
-                raise ValueError("news_learning_epoch_mismatch")
-        elif not _LEGACY_EPOCH_LABEL.fullmatch(sealed_epoch):
+        if not is_bundle_sha(sealed_bundle) or sealed_epoch != epoch_id_for_bundle(str(sealed_bundle)):
             raise ValueError("news_learning_epoch_mismatch")
         hashes = dict(exact_payload.get("hashes") or {})
         expected_epoch_sha = _sha(
