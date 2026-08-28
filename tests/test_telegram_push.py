@@ -189,6 +189,7 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
             progression_review_state="confirmed",
             progression_review_reason="同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。",
             progression_review_parent_age_minutes=61,
+            progression_review_parent_message_id=41,
         ),
     )
 
@@ -196,8 +197,9 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     assert observed["text"] == (
         "🔴 <b>美光台湾工厂初步投票支持罢工比例达 80%，工会要求改为利润分红制</b>\n\n"
         "🔄 <b>新进展</b>\n"
-        "<blockquote>✅ <b>已确认关联:</b> 同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
-        "(1h 1mins 前)</blockquote>\n\n"
+        "<blockquote>✅ <b>已确认关联</b>\n"
+        '↳ <a href="https://t.me/c/1234567890/41">此前：美光工会此前启动劳资协商</a> · 1h 1mins 前\n'
+        "现进展：同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。</blockquote>\n\n"
         "美光约 60% 全球产能集中在台湾，是 HBM 先进制程的主力基地，工会参照三星 10.5%、"
         "SK 海力士 10% 的利润分红水平施压，9 月中旬前进入强制调解，若调解破裂将进入罢工投票，"
         "压低美光产能利用率与现金流。\n\n"

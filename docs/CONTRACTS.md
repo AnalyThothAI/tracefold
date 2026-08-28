@@ -169,7 +169,9 @@ line between them. The novelty badge sits directly below the title: `🆕 新事
 headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
 title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
 an indented one-line `关联确认中` child block and never waits for another model call. The same message is later
-edited to a compact child block: `✅ 已确认关联: <reason> (<parent age> 前)`, `↩️ 未确认关联: <reason>`, or an
+edited to a compact child block: `✅ 已确认关联`, a clickable `此前：<parent headline>` quote bound to the
+previous sent Telegram receipt, its receipt-to-receipt age, and `现进展：<reason>`; rejection uses
+`↩️ 未确认关联: <reason>`, while failures use an
 explicit unavailable state. Confirmed display reasons are clipped to one line; the model is instructed to avoid
 repeating the headline. The verifier considers at most eight already-delivered told-ledger candidates and its
 structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector

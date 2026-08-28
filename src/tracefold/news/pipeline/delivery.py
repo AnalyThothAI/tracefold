@@ -133,7 +133,16 @@ def _progression_review_candidates(
                 "headline_zh": headline[:120],
                 "tier": str(entry.get("tier") or "recency")[:32],
                 "similarity": similarity,
-                "ago_min": max(0, int(entry.get("ago_min") or 0)),
+                "ago_min": (
+                    max(0, int(entry["ago_min"]))
+                    if isinstance(entry.get("ago_min"), int) and not isinstance(entry.get("ago_min"), bool)
+                    else None
+                ),
+                "at_ms": (
+                    int(entry["at_ms"])
+                    if isinstance(entry.get("at_ms"), int) and not isinstance(entry.get("at_ms"), bool)
+                    else None
+                ),
                 "event_type": str(entry.get("event_type") or entry.get("type") or "")[:32],
                 "symbols": [str(value)[:32] for value in entry.get("symbols") or entry.get("sym") or ()][:6],
                 "magnitude": max(0, min(3, int(entry.get("magnitude") or entry.get("m") or 0))),
@@ -145,17 +154,20 @@ def _progression_review_candidates(
     return tuple(candidates)
 
 
-def _progression_parent_age_minutes(
-    candidates: Sequence[Mapping[str, Any]],
-    review: ProgressionReview | None,
-) -> int | None:
-    if review is None or review.state != "confirmed" or review.candidate_i is None:
-        return None
-    candidate = next((item for item in candidates if item.get("i") == review.candidate_i), None)
-    if candidate is None:
-        return None
-    value = candidate.get("ago_min")
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+def _progression_candidate_age_minutes(candidate: Mapping[str, Any], *, current_pushed_at_ms: int) -> int | None:
+    at_ms = candidate.get("at_ms")
+    if isinstance(at_ms, int) and not isinstance(at_ms, bool) and 0 < at_ms <= current_pushed_at_ms:
+        return (current_pushed_at_ms - at_ms) // 60_000
+    ago_min = candidate.get("ago_min")
+    if isinstance(ago_min, int) and not isinstance(ago_min, bool) and ago_min >= 0:
+        return ago_min
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class _ProgressionParentReference:
+    message_id: int | None = None
+    age_minutes: int | None = None
 
 
 class NewsPushSender(Protocol):
@@ -486,6 +498,7 @@ class DelivererConsumer:
             quotes, progression_review, tradability_review = await asyncio.gather(
                 quotes_task, review_task, tradability_task
             )
+            parent_reference = await self._progression_parent_reference(context, progression_review)
             resolved_shown = tuple(context.shown)
             if (
                 tradability_review is not None
@@ -544,10 +557,8 @@ class DelivererConsumer:
                     if progression_review is not None
                     else context.presentation.progression_review_reason
                 ),
-                progression_review_parent_age_minutes=_progression_parent_age_minutes(
-                    context.progression_candidates,
-                    progression_review,
-                ),
+                progression_review_parent_age_minutes=parent_reference.age_minutes,
+                progression_review_parent_message_id=parent_reference.message_id,
             )
             async with self._edit_lock:
                 wait = self.min_interval - (time.monotonic() - self._last_edit_at)
@@ -704,11 +715,21 @@ class DelivererConsumer:
         if verifier is None or not context.progression_candidates:
             return None
         try:
+            candidates = tuple(
+                {
+                    **candidate,
+                    "ago_min": _progression_candidate_age_minutes(
+                        candidate,
+                        current_pushed_at_ms=context.receipt.pushed_at_ms,
+                    ),
+                }
+                for candidate in context.progression_candidates
+            )
             async with asyncio.timeout(PROGRESSION_REVIEW_TIMEOUT_SECONDS):
                 raw = await verifier.review(
                     event=context.event,
                     verdict=context.verdict,
-                    candidates=context.progression_candidates,
+                    candidates=candidates,
                 )
             review = raw if isinstance(raw, ProgressionReview) else ProgressionReview.model_validate(raw)
             if review.state != "confirmed":
@@ -728,6 +749,55 @@ class DelivererConsumer:
                 reason_zh="模型未返回可验证的关联结论。",
                 verifier_id=str(getattr(verifier, "verifier_id", type(verifier).__name__))[:120],
             )
+
+    async def _progression_parent_reference(
+        self,
+        context: _EnrichmentEditContext,
+        review: ProgressionReview | None,
+    ) -> _ProgressionParentReference:
+        if review is None or review.state != "confirmed" or review.candidate_i is None:
+            return _ProgressionParentReference()
+        candidate = next(
+            (item for item in context.progression_candidates if item.get("i") == review.candidate_i),
+            None,
+        )
+        if candidate is None:
+            return _ProgressionParentReference()
+        fallback_age = _progression_candidate_age_minutes(
+            candidate,
+            current_pushed_at_ms=context.receipt.pushed_at_ms,
+        )
+        parent_event_id = str(candidate.get("event_id") or "").strip()
+        if not parent_event_id:
+            return _ProgressionParentReference(age_minutes=fallback_age)
+        try:
+            row = await self.db.read(
+                "news_delivery_progression_parent",
+                lambda repos: repos.news.delivery(event_id=parent_event_id, kind="first"),
+                timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
+            )
+            if (
+                not isinstance(row, Mapping)
+                or row.get("state") != "sent"
+                or row.get("delete_state") is not None
+                or not isinstance(row.get("receipt"), Mapping)
+            ):
+                return _ProgressionParentReference(age_minutes=fallback_age)
+            parent_receipt = TelegramDeliveryReceipt.model_validate(row["receipt"])
+            if (
+                parent_receipt.target_sha256 != context.receipt.target_sha256
+                or parent_receipt.deleted_at_ms is not None
+                or parent_receipt.pushed_at_ms > context.receipt.pushed_at_ms
+            ):
+                return _ProgressionParentReference(age_minutes=fallback_age)
+            return _ProgressionParentReference(
+                message_id=parent_receipt.message_id,
+                age_minutes=(context.receipt.pushed_at_ms - parent_receipt.pushed_at_ms) // 60_000,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return _ProgressionParentReference(age_minutes=fallback_age)
 
     async def _mark_edit_ambiguous(self, context: _EnrichmentEditContext, error_code: str) -> None:
         try:

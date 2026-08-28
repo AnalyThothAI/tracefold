@@ -1465,16 +1465,33 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
                     "told": [
                         {
                             "i": 0,
+                            "event_id": "ev-parent",
                             "tier": "storyline",
                             "similarity": 0.31,
                             "headline_zh": "美光工会此前启动劳资协商",
                             "event_type": "product",
                             "symbols": ["MU"],
-                            "ago_min": 90,
+                            "at_ms": NOW_MS - 150_000,
                         }
                     ]
                 },
             },
+            delivery=lambda *, event_id, kind: (
+                {
+                    "event_id": event_id,
+                    "kind": kind,
+                    "state": "sent",
+                    "delete_state": None,
+                    "receipt": {
+                        "provider": "telegram",
+                        "message_id": 41,
+                        "pushed_at_ms": NOW_MS - 150_000,
+                        "target_sha256": "a" * 64,
+                    },
+                }
+                if event_id == "ev-parent" and kind == "first"
+                else None
+            ),
         )
         sender = RecordingEditableSender(order)
         verifier = BlockingProgressionVerifier(order)
@@ -1509,7 +1526,8 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
     assert updated.progression_from_headline == "美光工会此前启动劳资协商"
     assert updated.progression_review_state == "confirmed"
     assert updated.progression_review_reason == "同一工会行动进入罢工投票阶段，新增了明确比例和下一步程序。"
-    assert updated.progression_review_parent_age_minutes == 90
+    assert updated.progression_review_parent_age_minutes == 2
+    assert updated.progression_review_parent_message_id == 41
     assert sender.edited_cards[0]["progression_review"]["state"] == "confirmed"
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 

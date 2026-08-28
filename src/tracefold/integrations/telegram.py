@@ -199,6 +199,10 @@ class TelegramNewsPushSender:
             progression_review_state=view.progression_review_state,
             progression_review_reason=view.progression_review_reason,
             progression_review_parent_age_minutes=view.progression_review_parent_age_minutes,
+            progression_review_parent_url=_telegram_private_message_url(
+                self._chat_id,
+                view.progression_review_parent_message_id,
+            ),
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         try:
@@ -252,6 +256,10 @@ class TelegramNewsPushSender:
             progression_review_state=view.progression_review_state,
             progression_review_reason=view.progression_review_reason,
             progression_review_parent_age_minutes=view.progression_review_parent_age_minutes,
+            progression_review_parent_url=_telegram_private_message_url(
+                self._chat_id,
+                view.progression_review_parent_message_id,
+            ),
         )
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         result = self._call_api(
@@ -446,6 +454,7 @@ def _telegram_message(
     progression_review_state: str | None = None,
     progression_review_reason: str | None = None,
     progression_review_parent_age_minutes: int | None = None,
+    progression_review_parent_url: str | None = None,
 ) -> str:
     title = _nested_text(card.get("header"), "title") or "Tracefold 新闻事件"
     header = card.get("header")
@@ -485,8 +494,10 @@ def _telegram_message(
     )
     progression_review_line = _telegram_progression_review_html(
         progression_review_state,
+        parent_headline=progression_from_headline,
         reason=progression_review_reason,
         parent_age_minutes=progression_review_parent_age_minutes,
+        parent_url=progression_review_parent_url,
     )
     if novelty_line and progression_review_line:
         sections.append(f"{novelty_line}\n{progression_review_line}")
@@ -550,17 +561,21 @@ def _telegram_novelty_html(value: str, *, progression_from_headline: str | None)
 def _telegram_progression_review_html(
     value: str | None,
     *,
+    parent_headline: str | None,
     reason: str | None,
     parent_age_minutes: int | None,
+    parent_url: str | None,
 ) -> str:
     bounded_reason = _escape_html(_telegram_compact_progression_reason(reason))
     if value == "pending":
         return "<blockquote>⏳ <b>关联确认中</b></blockquote>"
     if value == "confirmed":
         age = _telegram_parent_age(parent_age_minutes)
-        suffix = f"({age} 前)" if age else ""
+        age_suffix = f" · {age} 前" if age else ""
+        headline = _escape_html(_clip(str(parent_headline or "").strip(), 72)) or "上一条消息"
+        parent = f'<a href="{parent_url}">此前：{headline}</a>' if parent_url else f"此前：{headline}"
         detail = bounded_reason or "同一事件链出现了新的状态变化。"
-        return f"<blockquote>✅ <b>已确认关联:</b> {detail}{suffix}</blockquote>"
+        return f"<blockquote>✅ <b>已确认关联</b>\n↳ {parent}{age_suffix}\n现进展：{detail}</blockquote>"
     if value == "rejected":
         detail = bounded_reason or "未找到同一事件链的充分证据。"
         return f"<blockquote>↩️ <b>未确认关联:</b> {detail}</blockquote>"
@@ -586,12 +601,23 @@ def _telegram_compact_progression_reason(value: object) -> str:
 def _telegram_parent_age(value: int | None) -> str:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         return ""
+    if value == 0:
+        return "&lt;1min"
     hours, minutes = divmod(value, 60)
     if hours and minutes:
         return f"{hours}h {minutes}mins"
     if hours:
         return f"{hours}h"
     return f"{minutes}mins"
+
+
+def _telegram_private_message_url(chat_id: int, message_id: int | None) -> str | None:
+    if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
+        return None
+    channel_id = str(chat_id)
+    if _PRIVATE_CHANNEL_ID_RE.fullmatch(channel_id) is None:
+        return None
+    return f"https://t.me/c/{channel_id.removeprefix('-100')}/{message_id}"
 
 
 def _telegram_scope_html(value: str) -> str:

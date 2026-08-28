@@ -1335,7 +1335,9 @@ call compares the current Event with at most eight selected told-ledger candidat
 concrete subject and event chain with a material new action, result, number, confirmation, reversal, or state
 change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
 run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
-pending child block with `✅ 已确认关联: <concise reason> (<parent age> 前)`; a rejection shows
+pending child block with a nested `✅ 已确认关联` block that links the stored prior Telegram receipt as
+`此前：<parent headline>`, shows the age calculated from the two actual push timestamps, and gives one concise
+`现进展：<reason>` line; a rejection shows
 `↩️ 未确认关联: <concise reason>`; timeout or invalid output shows an explicit unavailable child block. The exact
 verifier result and its content-addressed verifier identity are stored inside the desired durable card before the
 edit intent. Broad zero-similarity storyline buckets therefore never become an unaudited “上一条”. If a macro or sector verdict has no
