@@ -229,7 +229,7 @@ tracefold workers
   -> finite external-operation executor 3
   -> tasks: workers-probe; when News is enabled, one RabbitMQ robust connection
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
-     news-triage, news-deliverer, news-janitor); the cold loops
+     news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
      when Trading is enabled, trading-candidate;
      workers-control
@@ -649,7 +649,7 @@ fine-tuning without widening the consumer's `SemanticJudge.judge()` Interface.
 Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
 the Janitor; judged evidence is retained under the configured 365-day tier and
 bands expire with their family window. The same turn uses the existing
-one-slot cold/heavy DB admission for learning evidence: unreferenced model
+one-slot heavy DB admission for learning evidence: unreferenced model
 recordings/cases become eligible after 90 days, report-referenced rows and
 ordinary artifacts after 365 days, while current and previous distinct stable
 release chains and an active canary remain pinned. Each table deletes at most
@@ -970,8 +970,9 @@ Capacity assumption for V1: request and response JSON are each capped at
 150 MiB of payload before PostgreSQL/index overhead; typical one-trial runs
 are much smaller. Operators should alert on a non-zero eligible count that
 does not fall across Janitor turns, any `last_error_code`, or persistent table
-growth outside the 90/365-day envelope. The purge shares the one-slot cold
-admission with Price Review, never the four-slot News hot lane.
+growth outside the 90/365-day envelope. The purge shares the one-slot heavy
+admission with Event Reaction and Trading, never ordinary Quote admission or
+the four-slot News hot lane.
 
 Restore/audit procedure:
 

@@ -575,14 +575,14 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
      DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
   -> Janitor: outbox catch-up, band expiry, 30/365-day Item retention,
-              bounded learning-evidence retention on the one-slot cold lane,
+              bounded learning-evidence retention on the one-slot heavy gate,
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
 #### Price Review plane (#88, #304)
 
-Two cold loops beside the hot path, sharing one instrument-resolution strategy
+Two bounded loops beside the hot path, sharing one instrument-resolution strategy
 and no state with it:
 
 ```text

@@ -584,8 +584,8 @@ def test_price_loops_are_wired_per_source_and_follow_the_existing_venue_switches
     from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
 
     settings = _settings()
-    quotes = _quote_snapshot_loop(settings, db=_FakeHeavyDb(), watchlist=["BTC"])
-    reactions = _event_reaction_loop(settings, db=_FakeHeavyDb())
+    quotes = _quote_snapshot_loop(settings, db=_UncalledDatabasePort(), watchlist=["BTC"])
+    reactions = _event_reaction_loop(settings, db=_UncalledDatabasePort())
     assert quotes is not None and reactions is not None
 
     # One adapter per provider source, including a HIP-3 dex nobody wired by hand.
@@ -611,23 +611,20 @@ def test_a_disabled_venue_removes_its_adapter_rather_than_failing_the_turn() -> 
     from tracefold.app.workers.wiring.market_review import _event_reaction_loop, _quote_snapshot_loop
 
     binance_only = _settings(binance=True, hyperliquid=False)
-    quotes = _quote_snapshot_loop(binance_only, db=_FakeHeavyDb(), watchlist=[])
+    quotes = _quote_snapshot_loop(binance_only, db=_UncalledDatabasePort(), watchlist=[])
     assert quotes is not None
     assert quotes.fetcher_for("binance.perp") is not None
     assert quotes.fetcher_for("hl.perp") is None
 
     hyperliquid_only = _settings(binance=False, hyperliquid=True)
-    partial = _quote_snapshot_loop(hyperliquid_only, db=_FakeHeavyDb(), watchlist=[])
+    partial = _quote_snapshot_loop(hyperliquid_only, db=_UncalledDatabasePort(), watchlist=[])
     assert partial is not None
     assert partial.day_fetcher_for("binance.perp") is None  # the venue switch reaches both factories
 
     off = _settings(enabled=False)
-    assert _quote_snapshot_loop(off, db=_FakeHeavyDb(), watchlist=[]) is None
-    assert _event_reaction_loop(off, db=_FakeHeavyDb()) is None
+    assert _quote_snapshot_loop(off, db=_UncalledDatabasePort(), watchlist=[]) is None
+    assert _event_reaction_loop(off, db=_UncalledDatabasePort()) is None
 
 
-class _FakeHeavyDb:
-    """Only the cold lane: a price loop that reaches for the News lane would fail to construct here."""
-
-    def heavy_business(self) -> Any:
-        return self
+class _UncalledDatabasePort:
+    """Sentinel: these adapter-selection tests never execute database work."""
