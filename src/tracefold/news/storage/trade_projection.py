@@ -409,26 +409,41 @@ class TradeProjectionStorage:
         else:
             rows = self.conn.execute(
                 """
+                WITH candidate_symbols AS (
+                  SELECT DISTINCT venue, venue_symbol
+                    FROM news_market_instrument_listing_events
+                   WHERE venue = ANY(%s)
+                     AND base_symbol = %s
+                     AND observed_at_ms <= %s
+                ), historical AS (
+                  SELECT DISTINCT ON (event.venue, event.venue_symbol)
+                         event.venue, event.venue_symbol, event.observed_at_ms,
+                         event.base_symbol, event.instrument_class, event.quote_asset, event.status
+                    FROM news_market_instrument_listing_events AS event
+                    JOIN candidate_symbols AS candidate
+                      ON candidate.venue = event.venue
+                     AND candidate.venue_symbol = event.venue_symbol
+                   WHERE event.observed_at_ms <= %s
+                   ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
+                )
                 SELECT venue, venue_symbol, base_symbol, instrument_class,
                        quote_asset, status, observed_at_ms AS last_seen_ms
-                  FROM (
-                    SELECT DISTINCT ON (venue, venue_symbol)
-                           venue, venue_symbol, observed_at_ms, base_symbol,
-                           instrument_class, quote_asset, status
-                     FROM news_market_instrument_listing_events
-                     WHERE venue = ANY(%s)
-                       AND observed_at_ms <= %s
-                       AND base_symbol = %s
-                     ORDER BY venue, venue_symbol, observed_at_ms DESC
-                  ) AS historical
-                 WHERE status = 'trading'
+                  FROM historical
+                 WHERE base_symbol = %s
+                   AND status = 'trading'
                    AND instrument_class = 'crypto'
                  ORDER BY venue,
                           CASE quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
                           length(venue_symbol),
                           venue_symbol
                 """,
-                (list(venues), int(observed_at_ms), normalized_base),
+                (
+                    list(venues),
+                    normalized_base,
+                    int(observed_at_ms),
+                    int(observed_at_ms),
+                    normalized_base,
+                ),
             ).fetchall()
         return [
             TradeInstrumentProjectionRow(

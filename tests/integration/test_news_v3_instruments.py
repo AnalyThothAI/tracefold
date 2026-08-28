@@ -157,6 +157,27 @@ def test_trade_projection_uses_source_time_listing_intervals_across_relisting(co
     )
     assert [(row["venue_symbol"], row["status"]) for row in relisted] == [("OLDUSDT", "trading")]
 
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "OLDUSDT", "NEW", "USDT")],
+            now_ms=NOW + 10_800_000,
+        )
+
+    assert (
+        repos.news.trade_candidate_instrument(
+            base_symbol="OLD",
+            venues=("binance.perp",),
+            observed_at_ms=NOW + 10_800_000,
+        )
+        == []
+    )
+    changed = repos.news.trade_candidate_instrument(
+        base_symbol="NEW",
+        venues=("binance.perp",),
+        observed_at_ms=NOW + 10_800_000,
+    )
+    assert [(row["venue_symbol"], row["base_symbol"]) for row in changed] == [("OLDUSDT", "NEW")]
+
 
 def test_a_venue_that_did_not_answer_is_never_read_as_a_mass_delisting(conn) -> None:
     """The failure mode that would matter most: Binance times out and every Binance symbol reads as delisted."""
