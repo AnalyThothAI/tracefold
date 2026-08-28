@@ -145,6 +145,35 @@ trading:
   nautilus:
     api_key_file: "binance_demo_api_key"
     api_secret_file: "binance_demo_api_secret"
+  manual:
+    enabled: false
+    venue: "binance_usdm_demo"
+    account_ref: "binance-manual-demo-1"
+    authorized_user_ids: []
+    api_key_file: "binance_manual_demo_api_key"
+    api_secret_file: "binance_manual_demo_api_secret"
+    risk:
+      notional_deviation_limit_bps: 5000
+      tight_stop_deviation_limit_bps: 5000
+      wide_stop_deviation_limit_bps: 10000
+      max_account_risk_bps: 1000
+      high_risk_loss_multiple_bps: 15000
+      min_leverage: 1
+      max_leverage: 20
+    tight_stop:
+      leverage: 10
+      stop_loss_bps: 100
+      take_profit_bps: 200
+      account_risk_bps: 200
+      min_notional_usd: 5
+      max_notional_usd: 10
+    wide_stop:
+      leverage: 2
+      stop_loss_bps: 2000
+      take_profit_bps: 10000
+      account_risk_bps: 100
+      min_notional_usd: 5
+      max_notional_usd: 10
 """
 
 

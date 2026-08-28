@@ -209,9 +209,11 @@ unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
-`trading.*` is the whole Trading surface (#104) and is `enabled: false` by
-default. A disabled Trading context constructs no Program and no CandidateRunner,
-and Compose does not start Nautilus. The accepted keys are only:
+`trading.*` is the whole Trading surface (#104) and both automatic and manual
+capital lanes are disabled by default. `trading.enabled: false` constructs no
+automatic Program/CandidateRunner and starts no Nautilus process;
+`trading.manual.enabled: false` adds no Telegram buttons/callback loop and
+starts no manual executor. The accepted keys are only:
 
 - `enabled`;
 - `candidates.*`: source age, counterpart lookbacks, cooldown, OI rank/value,
@@ -221,11 +223,31 @@ and Compose does not start Nautilus. The accepted keys are only:
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
 - `nautilus.api_key_file` and `nautilus.api_secret_file`, resolved relative
-  to the operator config directory unless absolute.
+  to the operator config directory unless absolute;
+- `manual.enabled`, fixed `manual.venue: binance_usdm_demo`, `account_ref`, one
+  to eight positive `authorized_user_ids`, separate `api_key_file` /
+  `api_secret_file`; callback and executor cadence remain code-owned;
+- `manual.risk.*`: notional/tight-stop/wide-stop deviation bounds, combined
+  account-risk and high-risk-loss bounds, and the leverage range;
+- `manual.tight_stop.*` and `manual.wide_stop.*`: leverage, SL/TP basis points,
+  account-risk basis points, and minimum/maximum notional.
 
 There is no mode, live symbol, account, venue, OpenTrade, approval, backend
 selector, or Intent-acceptance configuration. Unknown retired keys fail strict
-settings validation. CandidateRunner and Nautilus polling cadence are code-owned.
+settings validation. CandidateRunner, Nautilus, Telegram, and manual-executor
+polling cadence are code-owned.
+
+The manual lane is available only when Telegram News push is itself available,
+the callback allowlist is nonempty, and both manual Demo secret files pass the
+secure-file contract. `tracefold config` reports `requested`,
+`interaction_available`, a sanitized reason, fixed venue, account reference,
+allowlist count, resolved file paths, redacted credential status, risk/preset
+values, and cadence. It never reports a token, API key, or secret. Manual and
+automatic API key/secret paths may not be the same; when both secure pairs are
+readable, equal credential contents also fail availability. The database makes
+that identity check durable across processes by rejecting either a duplicate
+credential fingerprint or a duplicate one-way fingerprint of Binance's signed
+account alias across both account lanes. The provider alias itself is not stored.
 
 The strategy set and its thresholds remain code-owned/frozen into each Case.
 `llm.trading_decision_model` selects the one bounded Trading Program used by a
@@ -255,6 +277,32 @@ Nautilus can read Intent columns and update only its execution projection;
 Serve is read-only. Legacy `trading_orders` and
 `trading_order_observations` are retained read-only for audit and have no
 product or writer surface.
+
+Manual callbacks use only these bounded Bot API payloads:
+
+- news buttons: `tf:detail:v1` and `tf:trade:v1`; the dedicated interaction
+  message exposes `tf:mine:v1` after confirm, cancel, or execution settlement;
+- session actions carry one canonical UUID and remain within Telegram's
+  64-byte callback limit: preset, modify/back, parameter adjustment, normal or
+  high-risk confirm, and cancel;
+- a callback must come from the configured private channel and an allowlisted
+  non-bot user. The `(update_id, callback_query_id)` claim is durable; the
+  offset advances only when the action settles.
+
+One manual session permanently stores the sent News receipt identity, original
+recommendation, operator selection, preview, guard and immutable Intent. Entry,
+TP and SL each store deterministic client ID, fence time, attempt time and
+confirmed receipt. The executor queries first, atomically marks the first
+attempt, and never sends that economic leg again. Explicit provider rejections
+settle a typed terminal `REJECTED` outcome; uncertain writes remain `AMBIGUOUS`
+and only provider reads may reconcile them, while transient read failures simply
+defer. A protection rejection after a filled entry becomes `EXPOSED`, retains
+the active account-symbol fence, and requires immediate manual handling; stop
+loss is attempted before take profit. Material notifications follow event-index
+order, and their interaction edit and original-News reply are independently
+fenced and settled. This V1 confirms protected
+open state but does not yet monitor a later TP/SL trigger, close a position, or
+resize protection after a partial close.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, News broker topology and consumer set, and all resource
@@ -859,6 +907,10 @@ reason, settlement timestamps, and stale-intent index used only after
 authoritative single-name tradeability absence.
 `20260828_0324` makes the edit and delete lifecycle shape checks two-valued and
 refuses to advance if any existing delivery row has a partial lifecycle shape.
+`20260829_0325` adds the separate manual account binding/snapshot, Telegram
+cursor/update claim, session/event/notification ledgers and per-leg-fenced
+manual Intent. Manual source/Intent identity and event/account-binding history
+are database-immutable, and runtime roles receive only the columns they own.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -983,7 +1035,8 @@ reader/writer.
 
 `uv run tracefold --help` is the exact CLI source of truth. Stable top-level families are:
 
-- service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
+- service/config: `serve`, `workers`, `nautilus run`, `manual-executor run`,
+  `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
 - Trading: `trading status|cases|show|replay-oi|blacklist|control`;
@@ -994,9 +1047,10 @@ maintenance command. Mutating maintenance commands require an explicit
 execution flag where the parser offers a dry-run mode. They operate from
 persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
-There is no CLI command that creates, approves, rejects, resolves, submits,
-amends, or cancels an execution. Nautilus owns execution from the durable
-Intent contract.
+There is no one-shot CLI command that creates, approves, rejects, resolves,
+submits, amends, or cancels an execution. Nautilus owns automatic execution
+from its durable Intent; `manual-executor run` is the long-lived, credential-
+owning consumer of an already confirmed manual Intent.
 
 `validate-projections` is a strict Serve-role read. It does not acquire the
 maintenance lock, so operators can inspect the running singleton without
@@ -1005,7 +1059,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260828_0324`). Since
+append without rewrite access (current at migration `20260829_0325`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

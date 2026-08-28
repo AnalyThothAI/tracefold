@@ -6,6 +6,7 @@ configuration constants remain under their owning modules instead of becoming an
 
 from __future__ import annotations
 
+from .manual_trade_projection import TelegramManualTradeProjectionV1
 from .models import (
     NewsFeedEntry,
     ReaderDeliveryPresentation,
@@ -80,6 +81,7 @@ __all__ = [
     "SemanticJudgment",
     "SourceContractReason",
     "TelegramDeliveryReceipt",
+    "TelegramManualTradeProjectionV1",
     "TradabilityMatch",
     "TradabilityReview",
     "TradabilityVerifier",

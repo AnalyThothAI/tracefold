@@ -7,6 +7,7 @@ from typing import Any, Literal, cast
 
 from tracefold.platform.config.loader import load_settings, write_default_config
 from tracefold.platform.config.models import (
+    manual_trading_availability,
     news_model_availability,
     news_push_availability,
 )
@@ -50,6 +51,9 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     model_availability = news_model_availability(settings)
     nautilus_api_key_file = settings.trading_nautilus_api_key_file()
     nautilus_api_secret_file = settings.trading_nautilus_api_secret_file()
+    manual_availability = manual_trading_availability(settings)
+    manual_api_key_file = settings.trading_manual_api_key_file()
+    manual_api_secret_file = settings.trading_manual_api_secret_file()
     return (
         0,
         {
@@ -126,6 +130,20 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                         ),
                         "credentials_configured": secret_file_configured(nautilus_api_key_file)
                         and secret_file_configured(nautilus_api_secret_file),
+                    },
+                    "manual": {
+                        "requested": manual_availability.requested,
+                        "interaction_available": manual_availability.interaction_available,
+                        "reason": manual_availability.reason,
+                        "venue": manual_availability.venue,
+                        "account_ref": settings.trading.manual.account_ref,
+                        "authorized_user_count": manual_availability.authorized_user_count,
+                        "api_key_file": None if manual_api_key_file is None else str(manual_api_key_file),
+                        "api_secret_file": (None if manual_api_secret_file is None else str(manual_api_secret_file)),
+                        "credentials_configured": manual_availability.credentials_configured,
+                        "risk": settings.trading.manual.risk.model_dump(),
+                        "tight_stop": settings.trading.manual.tight_stop.model_dump(mode="json"),
+                        "wide_stop": settings.trading.manual.wide_stop.model_dump(mode="json"),
                     },
                 },
             },

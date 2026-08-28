@@ -37,6 +37,7 @@ PUBLIC_NEWS_INTERFACE = {
     "ReaderReceipt",
     "ReaderTradeTarget",
     "TelegramDeliveryReceipt",
+    "TelegramManualTradeProjectionV1",
     "ScoredJudgment",
     "SemanticJudge",
     "SemanticJudgeError",

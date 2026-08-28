@@ -56,7 +56,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260828_0324`
+5. Deploy the exact reviewed image at the current Alembic head (`20260829_0325`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
@@ -127,6 +127,60 @@ database/config/container contract and exact committed image. Its terminal is
 `DEMO_CLOSED_FLAT`, otherwise the run must preserve the recoverable state and
 report failure or `MANUAL_REVIEW`.
 
+### Telegram manual Trading (#327)
+
+This is a separate disabled-by-default Binance USD-M Demo lane. It does not
+reuse automatic Cases, Intents, credentials, account, or Nautilus process. To
+activate it:
+
+1. Configure Telegram News push and confirm its private-channel target is
+   valid. Remove any Telegram webhook for this bot; the Workers lane owns
+   `getUpdates` and there must be no second poller.
+2. Create a dedicated manual Demo account/key pair and write it to the two
+   mode-`0600`, regular, non-symlink files named by `trading.manual`. Do not
+   reuse either automatic credential file or account.
+3. Set `trading.manual.enabled: true`, one to eight operator user IDs, account
+   reference and risk presets. `trading.enabled` remains independent.
+4. Run `uv run tracefold config` and require only the redacted facts
+   `requested=true`, `interaction_available=true`, fixed venue
+   `binance_usdm_demo`, the expected account reference and credential status.
+5. Run `make up` from the clean primary checkout. It migrates the manual
+   ledgers, recreates Workers, starts exactly one `manual-executor`, and final
+   `make status` requires that process to be running.
+
+The executor must refresh `trading_manual_account_snapshots`; a preview refuses
+an equity observation older than 30 seconds or a public quote older than 15
+seconds. A dedicated PostgreSQL advisory lock prevents a second executor in the
+same database. The account must permit Futures trading and use one-way mode;
+an existing position in the requested symbol blocks a new entry.
+At startup both execution roots read Binance's signed account alias, persist
+only its one-way fingerprint, and fail closed if Manual and Auto resolve to the
+same provider account even when their API keys differ.
+
+For each entry, TP or SL, the database sequence is client-ID fence -> attempt
+marker -> provider call -> receipt. The process always queries the deterministic
+client ID first. After the attempt marker exists it never resends that leg,
+including after restart. An explicit provider 4xx reject settles the Intent and
+session as `REJECTED`. A timeout, rate limit, server-side write uncertainty, or
+crash window moves them to `AMBIGUOUS`; transient read failures leave state
+unchanged and retry later. Workers replies to the original
+News message, and the executor continues read-only reconciliation. Do not
+place a replacement order or rewrite the row. Inspect the dedicated Binance
+Demo account and retain the process so it can observe a late provider result.
+
+The executor submits stop loss before take profit. If a protection write is
+explicitly rejected after entry, the session becomes `EXPOSED`; its symbol
+fence remains active and automation stops. Telegram emits a red high-priority
+warning naming the failed leg. Immediately inspect and manually resolve the
+Demo position. Do not assume `REJECTED` means there is no exposure.
+
+`OPEN` currently proves a filled entry plus accepted close-position TP and SL;
+it does not yet prove later trigger/close reconciliation. Until that follow-up
+lands, inspect closure in Binance Demo rather than treating the database's
+`OPEN` state as a current-position assertion. Partial/manual close and
+protection resize are intentionally unavailable, so operators must not use this
+Demo-only slice as a live/mainnet position manager.
+
 ## Operator lifecycle
 
 The canonical complete-product lifecycle is:
@@ -142,7 +196,8 @@ make down
 CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
-Serve and Workers, and then runs the same fail-closed status gate. Rerunning it
+Serve and Workers, starts the manual executor only when its own flag is enabled,
+and then runs the same fail-closed status gate. Rerunning it
 also recreates exactly one Nautilus process when Trading is enabled; enabled
 Trading without both Demo credential files fails before services are stopped. It
 does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
@@ -158,8 +213,9 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. When Trading is enabled, exactly one Nautilus container,
+HTML console all pass. When automatic Trading is enabled, exactly one Nautilus container,
 its health, and its readiness must also pass; disabled Trading does not require it.
+When manual Trading is enabled, exactly one running manual executor is required.
 It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 

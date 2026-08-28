@@ -31,6 +31,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="prove a paused Demo account is empty before rotating the capability snapshot",
     )
+    manual_executor = subcommands.add_parser(
+        "manual-executor",
+        help="run the Telegram manual Binance USD-M Demo execution authority",
+    )
+    manual_executor_subcommands = manual_executor.add_subparsers(
+        dest="manual_executor_command",
+        required=True,
+    )
+    manual_executor_subcommands.add_parser("run", help="run the isolated manual execution process")
 
     init = subcommands.add_parser("init", help="create ~/.tracefold/config.yaml")
     init.add_argument("--force", action="store_true", help="overwrite existing config.yaml")

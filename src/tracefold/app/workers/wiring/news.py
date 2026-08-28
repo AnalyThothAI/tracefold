@@ -53,7 +53,7 @@ from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DecidePolicy
-from tracefold.platform.config.models import Settings, news_push_availability
+from tracefold.platform.config.models import Settings, manual_trading_availability, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
@@ -270,6 +270,9 @@ def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNews
     if not push.delivery_available:
         raise RuntimeError(f"news_push_unavailable:{push.reason or 'news_item_push_configuration_invalid'}")
     if push.provider == "telegram":
+        manual = manual_trading_availability(settings, inspect_secret_files=False)
+        if manual.requested and not manual.interaction_available:
+            raise RuntimeError(f"manual_trading_unavailable:{manual.reason or 'configuration_invalid'}")
         token_file = settings.news_telegram_bot_token_file()
         chat_id = settings.news.push.telegram_chat_id
         if token_file is None or chat_id is None:
@@ -279,6 +282,12 @@ def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNews
         except SecretFileError:
             raise RuntimeError("news_push_unavailable:news_item_push_telegram_bot_token_unavailable") from None
         try:
+            if manual.interaction_available:
+                return TelegramNewsPushSender(
+                    bot_token=bot_token,
+                    chat_id=chat_id,
+                    trading_actions_enabled=True,
+                )
             return TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id)
         except ValueError:
             raise RuntimeError("news_push_unavailable:news_item_push_telegram_sender_invalid") from None

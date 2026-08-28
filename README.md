@@ -1,14 +1,16 @@
 # Tracefold
 
-Tracefold is an evidence-first market research system with exactly one
-business capability. News V3 turns the operator's OpenNews Strategy pushes
+Tracefold is an evidence-first market research and bounded trading system with
+two sibling business capabilities. News V3 turns the operator's OpenNews Strategy pushes
 into deduplicated Events, triages them with bounded structured model calls
 under deterministic rules, and delivers reader cards through Feishu or one bound Telegram channel. One Python service
 persists material facts in PostgreSQL, builds a deterministic read model, and
 serves a React operator console plus stable HTTP and CLI contracts.
 
-Tracefold is not a trading bot or a chat product. Provider frames are inputs,
-not business truth.
+Trading consumes only persisted public News projections or an explicit
+Telegram operator confirmation and is disabled by default. Provider frames,
+Telegram callbacks and venue responses are inputs, not alternate business
+truth.
 
 ## Architecture
 
@@ -36,13 +38,14 @@ The Python package is deliberately shallow:
 ```text
 src/tracefold/
   news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
+  trading/        automatic and Telegram-manual capital contracts and ledgers
   integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, Telegram)
   platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives
   app/            composition (`tracefold.app.workers` root), HTTP, and CLI adapters
 ```
 
-Other packages import the business capability from `tracefold.news`, not from
-its internal modules. See
+Other packages import business contracts from `tracefold.news` or
+`tracefold.trading`, not from their internal modules. See
 [Architecture](docs/ARCHITECTURE.md).
 
 ## Start the complete product
@@ -72,8 +75,8 @@ make logs    # follow service logs; Ctrl-C leaves the services running
 make down    # stop containers without deleting PostgreSQL data
 ```
 
-A second `make up` rebuilds that application image and recreates only the
-migration, Serve, and Workers containers so configuration changes take effect.
+A second `make up` rebuilds that application image and recreates migration,
+Serve, Workers, and each explicitly enabled execution process so configuration changes take effect.
 An already running PostgreSQL container is not recreated, and its named volume,
 operator configuration, and role passwords are preserved. The generated
 defaults contain no live OpenNews, model, webhook, or bot credential (the
@@ -91,10 +94,15 @@ The operator-owned runtime directory is:
 ```text
 ~/.tracefold/config.yaml                 # 0600
 ~/.tracefold/telegram_bot_token          # optional Telegram secret; 0600
+~/.tracefold/binance_manual_demo_api_key # optional manual USD-M Demo key; 0600
+~/.tracefold/binance_manual_demo_api_secret # optional manual USD-M Demo secret; 0600
+~/.tracefold/binance_demo_api_key          # optional automatic USD-M Demo key; 0600
+~/.tracefold/binance_demo_api_secret       # optional automatic USD-M Demo secret; 0600
 ~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
 ~/.tracefold/postgres_serve_password     # read-only runtime; 0600
 ~/.tracefold/postgres_workers_password   # writer runtime; 0600
 ~/.tracefold/postgres_migrate_password   # migration runtime; 0600
+~/.tracefold/postgres_nautilus_password  # execution runtime; 0600
 ~/.tracefold/logs/
 ~/.tracefold/cache/
 ```

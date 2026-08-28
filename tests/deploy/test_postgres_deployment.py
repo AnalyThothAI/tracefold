@@ -17,6 +17,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     services = compose["services"]
 
     assert set(services) == {
+        "manual-executor",
         "migrate",
         "nautilus",
         "postgres",
@@ -69,11 +70,11 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         },
         "secrets": ["github_token"],
     }
-    for role in ("migrate", "serve", "workers", "nautilus"):
+    for role in ("migrate", "serve", "workers", "nautilus", "manual-executor"):
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
 
-    for role in ("serve", "workers", "nautilus"):
+    for role in ("serve", "workers", "nautilus", "manual-executor"):
         depends = services[role]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"
         assert depends["migrate"]["condition"] == "service_completed_successfully"
@@ -82,6 +83,8 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
+    assert services["manual-executor"]["command"] == ["tracefold", "manual-executor", "run"]
+    assert services["manual-executor"]["profiles"] == ["manual-trading"]
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
@@ -292,6 +295,7 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     serve_volumes = compose["services"]["serve"].get("volumes", [])
     worker_volumes = compose["services"]["workers"].get("volumes", [])
     nautilus_volumes = compose["services"]["nautilus"].get("volumes", [])
+    manual_volumes = compose["services"]["manual-executor"].get("volumes", [])
 
     assert any("postgres_serve_password" in volume for volume in serve_volumes)
     assert not any(
@@ -311,11 +315,22 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
         for volume in nautilus_volumes
         for role_password in ("postgres_serve_password", "postgres_workers_password", "postgres_migrate_password")
     )
+    assert any("postgres_nautilus_password" in volume for volume in manual_volumes)
+    assert any("binance_manual_demo_api_key" in volume for volume in manual_volumes)
+    assert any("binance_manual_demo_api_secret" in volume for volume in manual_volumes)
+    assert all("telegram_bot_token" not in volume for volume in manual_volumes)
+    assert all("binance_demo_api_key" not in volume for volume in manual_volumes)
+    assert all("binance_demo_api_secret" not in volume for volume in manual_volumes)
     for service_name, service in compose["services"].items():
         if service_name != "nautilus":
             assert not any(
                 "binance_demo_api_key" in volume or "binance_demo_api_secret" in volume
                 for volume in service.get("volumes", [])
             )
-    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
+        if service_name != "manual-executor":
+            assert not any("binance_manual_demo_" in volume for volume in service.get("volumes", []))
+    assert all(
+        "/root/.tracefold/data" not in volume
+        for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes, *manual_volumes]
+    )
     assert "tracefold-postgres" in compose["volumes"]

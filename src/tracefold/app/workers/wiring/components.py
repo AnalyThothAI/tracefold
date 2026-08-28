@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
+from tracefold.app.workers.wiring.manual_trading import ManualTradingRunner, _wire_manual_trading
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import _wire_trading_pipeline
 from tracefold.news.pipeline.root import NewsPipeline
@@ -21,6 +22,7 @@ class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: RabbitMQBus | None
     trading_pipeline: TradingPipeline | None = None
+    manual_trading_runner: ManualTradingRunner | None = None
 
 
 async def _wire_components(
@@ -43,4 +45,10 @@ async def _wire_components(
         )
         await news_pipeline.register_runtime_manifest()
     trading_pipeline = _wire_trading_pipeline(settings=settings, db=db, telemetry=telemetry)
-    return _Components(news_pipeline=news_pipeline, news_bus=news_bus, trading_pipeline=trading_pipeline)
+    manual_trading_runner = _wire_manual_trading(settings=settings, db=db, finite=finite)
+    return _Components(
+        news_pipeline=news_pipeline,
+        news_bus=news_bus,
+        trading_pipeline=trading_pipeline,
+        manual_trading_runner=manual_trading_runner,
+    )

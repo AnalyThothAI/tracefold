@@ -162,7 +162,7 @@ def test_the_backfill_gives_already_judged_telemetry_events_the_assets_their_gat
         _upgrade("head")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260828_0324"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0325"
         assert _assets(conn) == [
             ("liq-fact", "ETH", "perp", NOW - 2 * HOUR),
             ("oi-parsed", "TRUMP", "perp", NOW - 2 * HOUR),

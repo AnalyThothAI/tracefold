@@ -33,6 +33,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
         from .commands import nautilus
 
         return _finish(nautilus.handle_nautilus(args), stdout)
+    if command == "manual-executor":
+        from .commands import manual_executor
+
+        return _finish(manual_executor.handle_manual_executor(args), stdout)
     if command == "config":
         from .commands import config
 

@@ -1,7 +1,8 @@
 # Architecture
 
-Tracefold is one Python codebase/image with two mutually exclusive runtime
-composition roots, one CLI, one React console, and one PostgreSQL database.
+Tracefold is one Python codebase/image with separate Serve, Workers, automatic
+Nautilus, and manual-execution composition roots, one CLI, one React console,
+and one PostgreSQL database.
 It has two business capabilities: News V3, and — since #104 — the Trading
 core, a bounded context that turns persisted News and open-interest verdicts
 into at most one small, deterministic, recoverable order. They are siblings,
@@ -42,11 +43,22 @@ admission rather than the four News lane slots; Quote plan/store uses an
 existing ordinary business permit so a Reaction backlog cannot age display
 quotes.
 
-One separate Nautilus process is the sole execution authority. It polls
+One separate Nautilus process is the sole automatic execution authority. It polls
 `trading_intents`, fences each economic entry before a provider write, owns
 native protection/full close and venue reconciliation, and writes the Outcome
 onto the same row. PostgreSQL is the handoff, restart checkpoint, current
 projection, and audit truth; RabbitMQ remains News-only.
+
+The disabled-by-default Telegram manual lane is parallel, not a bypass into
+that automatic lifecycle. Workers owns the Telegram callback cursor, operator
+allowlist, interaction session, preview/guard, and immutable confirmed manual
+Intent, but receives no venue credential. A separate `manual-executor` process
+mounts only the manual Binance USD-M Demo credential, publishes a fresh account
+equity snapshot, and reconciles each entry/TP/SL leg by deterministic client ID.
+Both execution roots also hash Binance's account alias from the signed account
+projection; the database rejects either exact credential reuse or two different
+keys that resolve to the same provider account between the manual and automatic
+lanes. The alias itself is never persisted.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -59,7 +71,8 @@ as material facts.
 
 The deployment composition has four required boundaries: PostgreSQL, one
 successful migration job, Serve, and Workers, plus exactly one Nautilus process
-when Trading is enabled. `make up` is only their
+when automatic Trading is enabled and exactly one manual executor when manual
+Trading is enabled. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the
 non-login owner plus least-privilege Serve, Workers, Nautilus, and migrate roles from
@@ -155,6 +168,8 @@ evidence rather than executable configuration.
 | Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
 | Trading Intent handoff | Trading | `capital_truth` | accepted frozen Case | one PostgreSQL transaction | `trading-candidate`; after an accepted decision | immutable Intent plus guarded `INTENT_EMITTED` Case; Trading/operator |
 | Nautilus Binance Demo execution | Trading | `capital_truth` | one immutable `trading_intents` row plus Binance Demo truth | PostgreSQL poll + Nautilus adapter | `tracefold nautilus run`; 1 s while Trading is enabled | entry fence and execution Outcome on the same Intent row; operator |
+| Telegram manual intent | Trading via App seam | `capital_truth` | one delivered News receipt plus an allowlisted callback | Telegram polling + short PostgreSQL transactions | `trading-telegram`; code-owned 1 s poll while manual Trading is enabled | callback cursor, callback-effect checkpoint, current session, append-only event ledger, immutable manual Intent |
+| Manual Binance Demo execution | Trading | `capital_truth` | one immutable `trading_manual_intents` row plus Binance Demo truth | PostgreSQL poll + signed REST adapter | `tracefold manual-executor run`; code-owned 1 s poll | per-leg client ID, fence, provider-write attempt marker, receipt/outcome, material Telegram notification |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -186,6 +201,8 @@ does not apply.
 | Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
 | Trading Intent handoff | accepted decision | immediate within 60 s Intent TTL | Case / global active fence | one nonterminal Intent globally | no provider call in the transaction | one | PostgreSQL deadline | bounded rescan / content identity / no | Intent insert and Case transition commit or roll back together |
 | Nautilus Binance Demo execution | 1 s PostgreSQL poll | 60 s Intent TTL | globally single active Intent | one active row | one entry, stop, or close operation at a time | one TradingNode | adapter-owned | restart reconciliation / database uniqueness / no | entry is fenced before send; exposure is protected or closing; terminal flat requires targeted venue-zero proof |
+| Telegram manual intent | code-owned 1 s poll | current callback stream | Telegram update ID / callback ID | 20 updates | one Bot API poll plus bounded callback operations | one | 8 s per operation | durable cursor / callback-effect identity / no | an effect checkpoint commits with each mutation; cursor advances only after settlement; target/user/session binding fails closed |
+| Manual Binance Demo execution | code-owned 1 s poll | account snapshot <=30 s for preview | account + symbol / economic leg | one intent | one signed query and at most one fenced write per leg | one process under advisory lock | adapter-owned | query by deterministic client ID / active account-symbol uniqueness / no | an attempt marker commits before every provider write, including leverage; unknown outcome remains ambiguous and is never resent |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -389,6 +406,10 @@ tracefold.news
 tracefold.trading
   contracts.py        App-facing values/ports plus Case/Manifest vocabulary
   intent.py           immutable TradeIntent and current Outcome contract
+  manual.py           manual session, preset, preview, guard and immutable Intent contracts
+  manual_ledger.py    append-only manual session/execution event contract
+  manual_execution.py deterministic venue-neutral entry/TP/SL execution plan
+  manual_executor.py  venue-neutral execution reconciliation and typed outcome
   candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
   decision/           measured OI/price regime, one-call DSPy Program (#306 follow-on), pure trade policy
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
@@ -396,7 +417,8 @@ tracefold.trading
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
-  public market data, and the pinned Nautilus/Binance Demo strategy adapter
+  public market data, the pinned Nautilus/Binance Demo strategy adapter, and
+  the manual Binance USD-M Demo REST adapter and shared read-only account-identity adapter
 
 tracefold.platform
   config models/loader, PostgreSQL/Alembic (`postgres/client.py`, `audit.py`, `migrations.py`), telemetry, paths,
@@ -406,6 +428,8 @@ tracefold.app
   Serve/Workers database composition, `repository_session.py`, HTTP, CLI,
   the Workers lifecycle root plus capability wiring (`app/workers/`), and the
   thin Nautilus process/database/probe composition root (`app/nautilus/`).
+  `manual_trading.py` and `manual_executor_root.py` compose the Telegram and
+  credential-owning manual halves without crossing their secret boundary.
   `workers/wiring/database.py` satisfies each capability's own database port;
   `workers/wiring/news_to_trading.py` is the single News -> Trading mapper.
   News CLI commands are owned by their bus/instrument/review/learning/diagnostic
@@ -439,7 +463,8 @@ platform -> Python / third-party libraries only
 ```
 
 `tracefold.app` is the only seam that knows both capabilities. It is where a
-public News projection row becomes a Trading candidate, and it is the reason
+public News projection row or an exact sent Telegram receipt becomes a Trading
+candidate/source, and it is the reason
 Trading can consume News truth without a cross-domain import or a reach-through
 read.
 
@@ -475,7 +500,7 @@ into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
 (`aio-pika`), Feishu (the custom-bot webhook), Telegram (one operator-bound
 channel via the Bot API; fixed origin and configured target), and the isolated
-Nautilus Binance Demo boundary. No provider owns a durable queue. Expected
+automatic and manual Binance Demo boundaries. No provider owns a durable queue. Expected
 provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -1731,7 +1756,7 @@ factory evidence is audit-only and the factory-v7 cohort starts with zero
 eligible evidence.
 `20260828_0316` adds the one-table Trading Intent handoff, its Nautilus
 execution projection, and the least-privilege grants for that separate runtime.
-`20260828_0317` makes Nautilus the sole execution authority.
+`20260828_0317` makes Nautilus the sole automatic execution authority.
 `20260828_0318` starts the single-instruction Program-v8 evidence epoch.
 `20260828_0319` starts the endpoint-capable-envelope Program-v9 evidence epoch.
 `20260828_0320` adds capability-governed TradeIntentV2 and immutable replay receipts.
@@ -1742,6 +1767,9 @@ untradeable single-name Telegram messages.
 `20260828_0324` closes the PostgreSQL `NULL`-truth gap in both delivery lifecycle shape constraints and rejects
 any preexisting partial edit or delete intent before replacing those constraints; #325 owns its evidence-preserving
 repair and roll-forward plan.
+`20260829_0325` adds the Telegram manual-trading cursor, account binding and
+snapshot, session/event/notification ledgers, immutable Intent, per-leg
+write-attempt fences, and least-privilege runtime grants.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -1778,6 +1806,64 @@ projections supplied by the app composition root; neither package imports the
 other or reads the other's tables directly. RabbitMQ remains News-only. No
 Trading exchange, queue, outbox, LISTEN/NOTIFY channel, Redis, second database,
 or in-memory correctness ledger exists.
+
+### Telegram-first manual lane (#327)
+
+Manual Trading starts only from the exact receipt of a sent, non-degraded,
+directional News card with exactly one grounded primary asset. App resolves
+that receipt through the public News repository and freezes a
+`ManualTradeSource`; Trading never imports News or reads a `news_*` table. The
+Telegram channel and operator user are independently bound before a callback
+can mutate a session.
+
+```text
+sent News receipt -> [详细数据] [交易]
+  -> tight-stop or wide-stop preset
+  -> current Demo equity + public quote -> complete preview
+  -> optional parameter edits -> combined Modification Guard
+  -> normal confirm or distinct high-risk confirm
+  -> immutable manual Intent
+  -> independent manual executor
+  -> market entry -> close-position TP + SL
+```
+
+The interaction edits one reply while material lifecycle events reply to the
+source News message through a durable notification fence. Recommendation and
+selected parameters are both retained. Preview includes notional, leverage,
+margin, reference entry, TP/SL prices, expected PnL, account risk/return, and an
+authoritative liquidation distance when one exists. The guard evaluates both
+individual deviation and combined maximum loss; a rejected modification cannot
+be confirmed.
+
+Only `binance_usdm_demo` is executable in this slice. The venue-neutral plan
+and adapter boundary are the insertion seam for a later OKX DEX/on-chain
+adapter, but there is no wallet, signer, broadcast, live/mainnet route, partial
+close, or simulated on-chain protection. The manual account credential is a
+different file pair and database lane from the automatic account. Both runtime
+roots record one-way credential and provider-account fingerprints; a duplicate
+credential or shared provider account fails the binding transaction.
+
+Every economic leg has three distinct durable moments: client-ID fence,
+attempt marker, and confirmed receipt. The executor queries by client ID before
+the first attempt. It commits the attempt marker before the signed write and
+never writes that leg again. An explicit provider 4xx rejection is a terminal
+`REJECTED` outcome; a timeout, rate limit, server-side write uncertainty, or
+crash window is `AMBIGUOUS` until a read observes provider truth. Transient read
+failures defer without changing durable intent state. Entry uses a market order;
+TP and SL use Binance conditional algo orders with mark-price triggers and
+`closePosition=true`, preventing stale protection from opening reverse
+exposure. Stop loss is submitted before take profit. If either protection leg
+is explicitly rejected after entry, the capital state becomes `EXPOSED`, keeps
+the account-symbol lock, stops automation, and emits a high-priority Telegram
+instruction for immediate manual handling. An `OPEN` snapshot means only that entry and both protection orders
+were confirmed; trigger/close monitoring and partial-close protection resize
+remain follow-up lifecycle work.
+
+Material Telegram notifications are claimed in `(created_at, session,
+event_index)` order. Interaction-message edit and original-News reply have
+independent durable attempt/outcome fields; a failed or unknown edit cannot
+suppress the required reply, and a crash never causes either attempted effect
+to be replayed blindly.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

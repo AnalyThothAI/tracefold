@@ -6,13 +6,15 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,nautilus,init,config,db,news,trading,ops} ...
+                 {serve,workers,nautilus,manual-executor,init,config,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,nautilus,init,config,db,news,trading,ops}
+  {serve,workers,nautilus,manual-executor,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     nautilus            run the Binance USD-M Demo execution authority
+    manual-executor     run the Telegram manual Binance USD-M Demo execution
+                        authority
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
@@ -69,6 +71,30 @@ options:
   --bootstrap-zero-claims
                         prove a paused Demo account is empty before rotating
                         the capability snapshot
+
+```
+
+## `manual-executor`
+
+```
+usage: tracefold manual-executor [-h] {run} ...
+
+positional arguments:
+  {run}
+    run       run the isolated manual execution process
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `manual-executor run`
+
+```
+usage: tracefold manual-executor run [-h]
+
+options:
+  -h, --help  show this help message and exit
 
 ```
 

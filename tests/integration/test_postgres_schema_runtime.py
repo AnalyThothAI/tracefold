@@ -62,7 +62,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "alembic_version",
         "workers_runtime",
         *NEWS_TABLES,
-        # #104: the Trading bounded context's own five tables. Registered separately from
+        # #104: the Trading bounded context's own tables. Registered separately from
         # `NEWS_TABLES` so "exactly these tables" stays a per-capability claim.
         *TRADING_TABLES,
     }
@@ -167,7 +167,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260828_0324"
+    assert version == latest_migration_version() == "20260829_0325"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -192,4 +192,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260828_0324"
+    assert version == latest_migration_version() == "20260829_0325"

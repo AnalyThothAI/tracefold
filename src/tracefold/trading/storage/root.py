@@ -10,6 +10,7 @@ from .control import ControlStorage
 from .evaluations import EvaluationStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
+from .manual import ManualStorage
 from .queries import QueryStorage
 from .replay import ReplayStorage
 
@@ -21,6 +22,7 @@ class TradingRepository(
     CaseStorage,
     EvaluationStorage,
     IntentStorage,
+    ManualStorage,
     QueryStorage,
     ReplayStorage,
 ):

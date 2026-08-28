@@ -218,6 +218,30 @@ services:
       retries: 3
       start_period: 30s
 
+  manual-executor:
+    <<: *tracefold-app
+    profiles: ["manual-trading"]
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/postgres_nautilus_password:/root/.tracefold/postgres_nautilus_password:ro
+      - ${HOME}/.tracefold/binance_manual_demo_api_key:/root/.tracefold/binance_manual_demo_api_key:ro
+      - ${HOME}/.tracefold/binance_manual_demo_api_secret:/root/.tracefold/binance_manual_demo_api_secret:ro
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "manual-executor", "run"]
+    stop_grace_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+
 volumes:
   tracefold-postgres:
   tracefold-rabbitmq:

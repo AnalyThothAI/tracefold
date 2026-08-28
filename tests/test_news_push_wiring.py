@@ -82,6 +82,35 @@ def test_worker_leaves_delivery_off_when_push_is_not_requested(tmp_path: Path) -
     assert news_wiring._news_push_sender(settings) is None
 
 
+def test_manual_trading_enables_news_card_actions_without_reading_venue_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token_file = tmp_path / "telegram_bot_token"
+    token_file.write_text(BOT_TOKEN, encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = _settings(tmp_path)
+    settings.trading.manual.enabled = True
+    settings.trading.manual.authorized_user_ids = (123456789,)
+    captured: dict[str, Any] = {}
+
+    def build_sender(*, bot_token: str, chat_id: int, trading_actions_enabled: bool) -> object:
+        captured.update(
+            bot_token=bot_token,
+            chat_id=chat_id,
+            trading_actions_enabled=trading_actions_enabled,
+        )
+        return object()
+
+    monkeypatch.setattr(news_wiring, "TelegramNewsPushSender", build_sender)
+
+    assert news_wiring._news_push_sender(settings) is not None
+    assert captured == {
+        "bot_token": BOT_TOKEN,
+        "chat_id": CHANNEL_ID,
+        "trading_actions_enabled": True,
+    }
+
+
 def test_worker_startup_rejects_requested_push_when_news_is_disabled() -> None:
     settings = Settings.model_validate(
         {

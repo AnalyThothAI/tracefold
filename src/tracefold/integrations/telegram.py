@@ -42,7 +42,18 @@ _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
-_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
+_BOT_API_METHODS = frozenset(
+    {
+        "answerCallbackQuery",
+        "deleteMessage",
+        "editMessageText",
+        "getChat",
+        "getChatMember",
+        "getMe",
+        "getUpdates",
+        "sendMessage",
+    }
+)
 _DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
 _MAGNITUDE_LABELS = {
@@ -67,6 +78,17 @@ class _TelegramFacts:
     report_count: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TelegramTradingUpdate:
+    update_id: int
+    callback_query_id: str
+    actor_user_id: int
+    chat_id: int
+    message_id: int
+    data: str
+    authorized: bool
+
+
 class TelegramDeliveryError(RuntimeError):
     """A sanitized expected Telegram delivery failure."""
 
@@ -74,6 +96,46 @@ class TelegramDeliveryError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+
+
+def _telegram_call_result(
+    *,
+    client: httpx.Client,
+    monotonic: Callable[[], float],
+    method: str,
+    payload: Mapping[str, Any],
+    error_prefix: str,
+    deadline_at: float,
+) -> Any:
+    remaining = deadline_at - monotonic()
+    if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
+        raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
+    phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
+    try:
+        response = client.post(
+            method,
+            json=dict(payload),
+            timeout=httpx.Timeout(
+                connect=phase_timeout,
+                read=phase_timeout,
+                write=phase_timeout,
+                pool=phase_timeout,
+            ),
+        )
+    except (httpx.TimeoutException, httpx.TransportError):
+        raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
+    status_code = int(response.status_code)
+    if status_code == 429 or status_code >= 500:
+        raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
+    if status_code < 200 or status_code >= 300:
+        raise TelegramDeliveryError(f"{error_prefix}_http_rejected", status_code=status_code)
+    try:
+        body = response.json()
+    except ValueError:
+        raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
+    if not isinstance(body, Mapping) or body.get("ok") is not True:
+        raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
+    return body.get("result")
 
 
 class _TelegramHTTPSBotTransport(httpx.BaseTransport):
@@ -139,6 +201,7 @@ class TelegramNewsPushSender:
         transport: httpx.BaseTransport | None = None,
         monotonic: Callable[[], float] | None = None,
         wall_clock_ms: Callable[[], int] | None = None,
+        trading_actions_enabled: bool = False,
     ) -> None:
         normalized_token = str(bot_token or "").strip()
         if not _BOT_TOKEN_RE.fullmatch(normalized_token):
@@ -156,6 +219,7 @@ class TelegramNewsPushSender:
             hashlib.sha256,
         ).hexdigest()
         self._target_validated = False
+        self._trading_actions_enabled = bool(trading_actions_enabled)
         self._monotonic = monotonic or time.monotonic
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
@@ -319,6 +383,15 @@ class TelegramNewsPushSender:
         }
         if message_id is not None:
             payload["message_id"] = message_id
+        if self._trading_actions_enabled:
+            payload["reply_markup"] = {
+                "inline_keyboard": [
+                    [
+                        {"text": "详细数据", "callback_data": "tf:detail:v1"},
+                        {"text": "交易", "callback_data": "tf:trade:v1"},
+                    ]
+                ]
+            }
         return payload
 
     def _validated_message_id(
@@ -405,36 +478,253 @@ class TelegramNewsPushSender:
         error_prefix: str,
         deadline_at: float,
     ) -> Any:
-        remaining = deadline_at - self._monotonic()
-        if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
-            raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
-        phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
-        try:
-            response = self._client.post(
-                method,
-                json=dict(payload),
-                timeout=httpx.Timeout(
-                    connect=phase_timeout,
-                    read=phase_timeout,
-                    write=phase_timeout,
-                    pool=phase_timeout,
-                ),
-            )
-        except (httpx.TimeoutException, httpx.TransportError):
-            raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
+        return _telegram_call_result(
+            client=self._client,
+            monotonic=self._monotonic,
+            method=method,
+            payload=payload,
+            error_prefix=error_prefix,
+            deadline_at=deadline_at,
+        )
 
-        status_code = int(response.status_code)
-        if status_code == 429 or status_code >= 500:
-            raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
-        if status_code < 200 or status_code >= 300:
-            raise TelegramDeliveryError(f"{error_prefix}_http_rejected", status_code=status_code)
-        try:
-            response_payload = response.json()
-        except ValueError:
-            raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
-        if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
-            raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
-        return response_payload.get("result")
+    def close(self) -> None:
+        self._client.close()
+
+
+class TelegramTradingClient:
+    """Receive and render manual-trading interactions for one configured News channel."""
+
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        chat_id: int,
+        authorized_user_ids: Sequence[int],
+        transport: httpx.BaseTransport | None = None,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        normalized_token = str(bot_token or "").strip()
+        if not _BOT_TOKEN_RE.fullmatch(normalized_token):
+            raise ValueError("manual_trading_telegram_bot_token_invalid")
+        if (
+            isinstance(chat_id, bool)
+            or not isinstance(chat_id, int)
+            or _PRIVATE_CHANNEL_ID_RE.fullmatch(str(chat_id)) is None
+        ):
+            raise ValueError("manual_trading_telegram_chat_id_invalid")
+        users = tuple(authorized_user_ids)
+        if (
+            not users
+            or len(users) > 8
+            or len(set(users)) != len(users)
+            or any(isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0 for user_id in users)
+        ):
+            raise ValueError("manual_trading_telegram_authorized_users_invalid")
+        self._chat_id = chat_id
+        self._authorized_user_ids = frozenset(users)
+        self._target_sha256 = hmac.new(
+            normalized_token.encode(),
+            f"telegram-private-channel-v1:{chat_id}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        self._monotonic = monotonic or time.monotonic
+        selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
+        self._client = httpx.Client(
+            base_url=f"{_TELEGRAM_API_ORIGIN}/",
+            timeout=httpx.Timeout(_TELEGRAM_TIMEOUT_SECONDS),
+            headers={"Accept-Encoding": "identity", "Content-Type": "application/json"},
+            follow_redirects=False,
+            transport=selected_transport,
+        )
+
+    @property
+    def target_sha256(self) -> str:
+        """Credential-free identity shared with durable News delivery receipts."""
+
+        return self._target_sha256
+
+    def poll_updates(self, *, next_update_id: int) -> tuple[TelegramTradingUpdate, ...]:
+        if isinstance(next_update_id, bool) or not isinstance(next_update_id, int) or next_update_id < 0:
+            raise ValueError("manual_trading_telegram_update_cursor_invalid")
+        result = self._call_result(
+            "getUpdates",
+            {
+                "offset": next_update_id,
+                "limit": 20,
+                "timeout": 0,
+                "allowed_updates": ["callback_query"],
+            },
+            error_prefix="manual_trading_telegram_poll",
+        )
+        if not isinstance(result, list) or len(result) > 20:
+            raise TelegramDeliveryError("manual_trading_telegram_poll_response_invalid")
+        updates = tuple(self._parse_update(item) for item in result)
+        update_ids = [update.update_id for update in updates]
+        if update_ids != sorted(set(update_ids)) or any(update_id < next_update_id for update_id in update_ids):
+            raise TelegramDeliveryError("manual_trading_telegram_poll_order_invalid")
+        return updates
+
+    def answer_callback(self, callback_query_id: str, *, text: str, show_alert: bool = False) -> None:
+        callback_id = str(callback_query_id or "").strip()
+        message = str(text or "").strip()
+        if not callback_id or len(callback_id) > 128 or not message or len(message) > 200:
+            raise ValueError("manual_trading_telegram_callback_answer_invalid")
+        result = self._call_result(
+            "answerCallbackQuery",
+            {"callback_query_id": callback_id, "text": message, "show_alert": bool(show_alert)},
+            error_prefix="manual_trading_telegram_callback_answer",
+        )
+        if result is not True:
+            raise TelegramDeliveryError("manual_trading_telegram_callback_answer_response_invalid")
+
+    def send_interaction_reply(
+        self,
+        *,
+        source_message_id: int,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+    ) -> int:
+        if isinstance(source_message_id, bool) or not isinstance(source_message_id, int) or source_message_id <= 0:
+            raise ValueError("manual_trading_telegram_source_message_invalid")
+        payload = self._interaction_payload(text=text, keyboard=keyboard)
+        payload["reply_parameters"] = {
+            "message_id": source_message_id,
+            "allow_sending_without_reply": False,
+        }
+        result = self._call_result(
+            "sendMessage",
+            payload,
+            error_prefix="manual_trading_telegram_reply",
+        )
+        return self._interaction_message_id(result, error_prefix="manual_trading_telegram_reply")
+
+    def edit_interaction(
+        self,
+        *,
+        message_id: int,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+    ) -> None:
+        if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+            raise ValueError("manual_trading_telegram_interaction_message_invalid")
+        payload = self._interaction_payload(text=text, keyboard=keyboard)
+        payload["message_id"] = message_id
+        result = self._call_result(
+            "editMessageText",
+            payload,
+            error_prefix="manual_trading_telegram_edit",
+        )
+        observed = self._interaction_message_id(result, error_prefix="manual_trading_telegram_edit")
+        if observed != message_id:
+            raise TelegramDeliveryError("manual_trading_telegram_edit_message_mismatch")
+
+    def _parse_update(self, value: object) -> TelegramTradingUpdate:
+        if not isinstance(value, Mapping):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        update_id = value.get("update_id")
+        query = value.get("callback_query")
+        if (
+            isinstance(update_id, bool)
+            or not isinstance(update_id, int)
+            or update_id < 0
+            or not isinstance(query, Mapping)
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        callback_id = query.get("id")
+        actor = query.get("from")
+        message = query.get("message")
+        data = query.get("data")
+        if (
+            not isinstance(callback_id, str)
+            or not callback_id
+            or len(callback_id) > 128
+            or not isinstance(actor, Mapping)
+            or not isinstance(message, Mapping)
+            or not isinstance(data, str)
+            or not 1 <= len(data.encode("utf-8")) <= 64
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        actor_id = actor.get("id")
+        message_id = message.get("message_id")
+        chat = message.get("chat")
+        if (
+            isinstance(actor_id, bool)
+            or not isinstance(actor_id, int)
+            or actor_id <= 0
+            or actor.get("is_bot") is not False
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(chat, Mapping)
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        update_chat_id = chat.get("id")
+        if isinstance(update_chat_id, bool) or not isinstance(update_chat_id, int):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        return TelegramTradingUpdate(
+            update_id=update_id,
+            callback_query_id=callback_id,
+            actor_user_id=actor_id,
+            chat_id=update_chat_id,
+            message_id=message_id,
+            data=data,
+            authorized=update_chat_id == self._chat_id and actor_id in self._authorized_user_ids,
+        )
+
+    def _interaction_payload(
+        self,
+        *,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+    ) -> dict[str, Any]:
+        message = str(text or "").strip()
+        if not message or len(message) > _TELEGRAM_TEXT_MAX:
+            raise ValueError("manual_trading_telegram_interaction_text_invalid")
+        buttons: list[dict[str, str]] = []
+        for label, callback_data in keyboard:
+            normalized_label = str(label or "").strip()
+            normalized_data = str(callback_data or "").strip()
+            if (
+                not normalized_label
+                or len(normalized_label) > 64
+                or not 1 <= len(normalized_data.encode("utf-8")) <= 64
+            ):
+                raise ValueError("manual_trading_telegram_keyboard_invalid")
+            buttons.append({"text": normalized_label, "callback_data": normalized_data})
+        if not buttons or len(buttons) > 8:
+            raise ValueError("manual_trading_telegram_keyboard_invalid")
+        return {
+            "chat_id": self._chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+            "reply_markup": {"inline_keyboard": [buttons]},
+        }
+
+    def _interaction_message_id(self, value: object, *, error_prefix: str) -> int:
+        if not isinstance(value, Mapping):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        message_id = value.get("message_id")
+        chat = value.get("chat")
+        if (
+            isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(chat, Mapping)
+            or chat.get("id") != self._chat_id
+        ):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        return message_id
+
+    def _call_result(self, method: str, payload: Mapping[str, Any], *, error_prefix: str) -> Any:
+        return _telegram_call_result(
+            client=self._client,
+            monotonic=self._monotonic,
+            method=method,
+            payload=payload,
+            error_prefix=error_prefix,
+            deadline_at=self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -964,4 +1254,9 @@ def _safe_trade_url(value: str) -> bool:
     )
 
 
-__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]
+__all__ = [
+    "TelegramDeliveryError",
+    "TelegramNewsPushSender",
+    "TelegramTradingClient",
+    "TelegramTradingUpdate",
+]

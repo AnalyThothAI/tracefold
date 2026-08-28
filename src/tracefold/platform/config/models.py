@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text, secret_file_configured
 from tracefold.platform.paths import app_home, app_log_path
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
@@ -552,6 +552,112 @@ class TradingNautilusSettings(BaseModel):
         return normalized or None
 
 
+class TradingManualRiskSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notional_deviation_limit_bps: int = Field(default=5_000, ge=0, le=50_000)
+    tight_stop_deviation_limit_bps: int = Field(default=5_000, ge=0, le=50_000)
+    wide_stop_deviation_limit_bps: int = Field(default=10_000, ge=0, le=50_000)
+    max_account_risk_bps: int = Field(default=1_000, gt=0, le=10_000)
+    high_risk_loss_multiple_bps: int = Field(default=15_000, ge=10_000, le=100_000)
+    min_leverage: int = Field(default=1, ge=1, le=125)
+    max_leverage: int = Field(default=20, ge=1, le=125)
+
+    @model_validator(mode="after")
+    def validate_leverage_range(self) -> TradingManualRiskSettings:
+        if self.max_leverage < self.min_leverage:
+            raise ValueError("manual_trading_leverage_range_invalid")
+        return self
+
+
+class TradingManualPresetSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    leverage: int = Field(ge=1, le=125)
+    stop_loss_bps: int = Field(gt=0, lt=10_000)
+    take_profit_bps: int = Field(gt=0, le=100_000)
+    account_risk_bps: int = Field(gt=0, le=10_000)
+    min_notional_usd: Decimal = Decimal("5")
+    max_notional_usd: Decimal = Decimal("10")
+
+    @field_validator("min_notional_usd", "max_notional_usd", mode="before")
+    @classmethod
+    def parse_notional_bound(cls, value: object) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, ValueError) as exc:
+            raise ValueError("manual_trading_notional_bound_invalid") from exc
+        if not parsed.is_finite() or parsed <= 0:
+            raise ValueError("manual_trading_notional_bound_invalid")
+        return parsed
+
+    @model_validator(mode="after")
+    def validate_notional_range(self) -> TradingManualPresetSettings:
+        if self.max_notional_usd < self.min_notional_usd:
+            raise ValueError("manual_trading_notional_range_invalid")
+        return self
+
+
+class TradingManualSettings(BaseModel):
+    """One operator-bound Binance Demo manual account controlled from the News Telegram bot."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    venue: Literal["binance_usdm_demo"] = "binance_usdm_demo"
+    account_ref: str = Field(default="binance-manual-demo-1", pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
+    authorized_user_ids: tuple[int, ...] = ()
+    api_key_file: str | None = "binance_manual_demo_api_key"
+    api_secret_file: str | None = "binance_manual_demo_api_secret"
+    risk: TradingManualRiskSettings = Field(default_factory=TradingManualRiskSettings)
+    tight_stop: TradingManualPresetSettings = Field(
+        default_factory=lambda: TradingManualPresetSettings(
+            leverage=10,
+            stop_loss_bps=100,
+            take_profit_bps=200,
+            account_risk_bps=200,
+        )
+    )
+    wide_stop: TradingManualPresetSettings = Field(
+        default_factory=lambda: TradingManualPresetSettings(
+            leverage=2,
+            stop_loss_bps=2_000,
+            take_profit_bps=10_000,
+            account_risk_bps=100,
+        )
+    )
+
+    @field_validator("api_key_file", "api_secret_file", mode="before")
+    @classmethod
+    def parse_optional_secret_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+    @field_validator("authorized_user_ids", mode="before")
+    @classmethod
+    def parse_authorized_users(cls, value: object) -> tuple[int, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("manual_trading_authorized_users_invalid")
+        users: list[int] = []
+        for item in value:
+            if isinstance(item, bool):
+                raise ValueError("manual_trading_authorized_users_invalid")
+            try:
+                user_id = int(str(item))
+            except ValueError as exc:
+                raise ValueError("manual_trading_authorized_users_invalid") from exc
+            if user_id <= 0:
+                raise ValueError("manual_trading_authorized_users_invalid")
+            users.append(user_id)
+        if len(users) > 8 or len(set(users)) != len(users):
+            raise ValueError("manual_trading_authorized_users_invalid")
+        return tuple(users)
+
+
 class TradingSettings(BaseModel):
     """`tracefold.trading`: decision plane plus one Binance USD-M Demo Intent sink."""
 
@@ -563,6 +669,7 @@ class TradingSettings(BaseModel):
     policy: TradingPolicySettings = Field(default_factory=TradingPolicySettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
     nautilus: TradingNautilusSettings = Field(default_factory=TradingNautilusSettings)
+    manual: TradingManualSettings = Field(default_factory=TradingManualSettings)
 
 
 class Settings(BaseModel):
@@ -608,6 +715,12 @@ class Settings(BaseModel):
     def trading_nautilus_api_secret_file(self) -> Path | None:
         return self._configured_path(self.trading.nautilus.api_secret_file)
 
+    def trading_manual_api_key_file(self) -> Path | None:
+        return self._configured_path(self.trading.manual.api_key_file)
+
+    def trading_manual_api_secret_file(self) -> Path | None:
+        return self._configured_path(self.trading.manual.api_secret_file)
+
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:
             return None
@@ -639,6 +752,16 @@ class NewsPushAvailability:
     feishu_signing_secret_configured: bool
     telegram_bot_token_file_configured: bool
     telegram_chat_id_configured: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ManualTradingAvailability:
+    requested: bool
+    interaction_available: bool
+    reason: str | None
+    venue: Literal["binance_usdm_demo"]
+    authorized_user_count: int
+    credentials_configured: bool
 
 
 def news_push_availability(settings: Settings, *, inspect_secret_file: bool = True) -> NewsPushAvailability:
@@ -678,6 +801,66 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         telegram_bot_token_file_configured=token_file_configured,
         telegram_chat_id_configured=push.telegram_chat_id is not None,
     )
+
+
+def manual_trading_availability(
+    settings: Settings,
+    *,
+    inspect_secret_files: bool = True,
+) -> ManualTradingAvailability:
+    """Resolve the complete operator, Telegram, and account authority without exposing any secret."""
+
+    manual = settings.trading.manual
+    requested = manual.enabled
+    manual_key_path = settings.trading_manual_api_key_file()
+    manual_secret_path = settings.trading_manual_api_secret_file()
+    if inspect_secret_files:
+        credentials_configured = secret_file_configured(manual_key_path) and secret_file_configured(manual_secret_path)
+    else:
+        credentials_configured = bool(manual.api_key_file and manual.api_secret_file)
+    push = news_push_availability(settings, inspect_secret_file=inspect_secret_files)
+    reason: str | None = None
+    if requested and (push.provider != "telegram" or not push.delivery_available):
+        reason = "manual_trading_telegram_delivery_unavailable"
+    elif requested and not manual.authorized_user_ids:
+        reason = "manual_trading_authorized_users_missing"
+    elif requested and not credentials_configured:
+        reason = "manual_trading_credentials_unavailable"
+    elif (
+        requested
+        and settings.trading.enabled
+        and _manual_reuses_auto_credentials(
+            settings,
+            inspect_secret_files=inspect_secret_files,
+        )
+    ):
+        reason = "manual_trading_account_credential_reuse"
+    return ManualTradingAvailability(
+        requested=requested,
+        interaction_available=bool(requested and reason is None),
+        reason=reason,
+        venue=manual.venue,
+        authorized_user_count=len(manual.authorized_user_ids),
+        credentials_configured=credentials_configured,
+    )
+
+
+def _manual_reuses_auto_credentials(settings: Settings, *, inspect_secret_files: bool) -> bool:
+    manual_paths = (settings.trading_manual_api_key_file(), settings.trading_manual_api_secret_file())
+    auto_paths = (settings.trading_nautilus_api_key_file(), settings.trading_nautilus_api_secret_file())
+    if any(manual is not None and manual == auto for manual, auto in zip(manual_paths, auto_paths, strict=True)):
+        return True
+    if not inspect_secret_files:
+        return False
+    for manual, auto in zip(manual_paths, auto_paths, strict=True):
+        if manual is None or auto is None:
+            continue
+        try:
+            if read_secure_secret_text(manual) == read_secure_secret_text(auto):
+                return True
+        except SecretFileError:
+            continue
+    return False
 
 
 @dataclass(frozen=True, slots=True)

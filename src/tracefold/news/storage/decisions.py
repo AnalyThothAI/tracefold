@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ..manual_trade_projection import TelegramManualTradeProjectionV1
 from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
@@ -57,6 +58,64 @@ _READER_HISTORY_PROJECTION = """
 
 class DecisionStorage:
     conn: Any
+
+    def telegram_manual_trade_projection(
+        self,
+        *,
+        message_id: int,
+        target_sha256: str,
+    ) -> TelegramManualTradeProjectionV1 | None:
+        """Freeze the News side of one still-live Telegram receipt for App composition."""
+
+        rows = self.conn.execute(
+            """
+            SELECT event_id
+              FROM news_deliveries
+             WHERE kind = 'first' AND state = 'sent'
+               AND receipt ->> 'provider' = 'telegram'
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'target_sha256' = %s
+               AND receipt ->> 'deleted_at_ms' IS NULL
+               AND delete_state IS DISTINCT FROM 'deleted'
+             ORDER BY settled_at_ms DESC
+             LIMIT 2
+            """,
+            (str(int(message_id)), str(target_sha256)),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        event_id = str(rows[0]["event_id"])
+        detail = self.event_detail(event_id)  # type: ignore[attr-defined]
+        if not isinstance(detail, dict):
+            return None
+        event = detail.get("event")
+        triage = detail.get("triage")
+        if not isinstance(event, dict) or not isinstance(triage, dict):
+            return None
+        assets = triage.get("assets")
+        grounded = event.get("grounded_assets")
+        if not isinstance(assets, list) or not isinstance(grounded, list):
+            return None
+        primary_assets = tuple(
+            str(asset.get("symbol") or "").strip().upper()
+            for asset in assets
+            if isinstance(asset, dict) and asset.get("role") == "primary" and str(asset.get("symbol") or "").strip()
+        )
+        grounded_assets = tuple(str(symbol).strip().upper() for symbol in grounded if str(symbol).strip())
+        try:
+            return TelegramManualTradeProjectionV1(
+                projection_version="telegram_manual_trade_projection_v1",
+                event_id=str(event.get("event_id") or ""),
+                opened_at_ms=int(event.get("opened_at_ms") or 0),
+                final_decision=str(triage.get("final_decision") or ""),
+                degraded=bool(triage.get("degraded")),
+                direction=str(triage.get("direction") or ""),
+                title_zh=str(triage.get("title_zh") or triage.get("headline_zh") or "").strip(),
+                primary_assets=primary_assets,
+                grounded_assets=grounded_assets,
+            )
+        except (TypeError, ValueError):
+            return None
 
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
         """Reader receipt truth split into the 4 h policy ledger and bounded 48 h semantic candidates."""

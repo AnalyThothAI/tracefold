@@ -138,6 +138,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         lambda: "cp313-cp313-manylinux_2_35_aarch64@sha256:e536",
     )
     monkeypatch.setattr(root, "_install_signal_handlers", install_signal_handlers)
+    monkeypatch.setattr(root, "_provider_account_fingerprint", lambda **_kwargs: "d" * 64)
     frozen_snapshot = SimpleNamespace(
         included={"SOLUSDT-PERP.BINANCE": object(), "BTCUSDT-PERP.BINANCE": object()},
         snapshot_sha256="c" * 64,
@@ -145,13 +146,23 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     capability_snapshot = None if snapshot_missing else frozen_snapshot
 
     @contextmanager
+    def fake_transaction():
+        calls.append("transaction")
+        yield
+
+    def record_account_binding(**kwargs: object) -> None:
+        captured["account_binding"] = kwargs
+
+    @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
+            transaction=fake_transaction,
             trading=SimpleNamespace(
+                register_trading_account_binding=record_account_binding,
                 active_execution_capability_snapshot=lambda: capability_snapshot,
                 nautilus_runtime_state=lambda: {"control": "PAUSED"},
                 active_intent=lambda: None,
-            )
+            ),
         )
 
     monkeypatch.setattr(root, "repositories", fake_repositories)
@@ -178,6 +189,21 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     }
     assert captured["bridge_settings"] is settings
     assert captured["bridge_capability_snapshot_sha256"] == (None if snapshot_missing else "c" * 64)
+    account_binding = captured["account_binding"]
+    assert isinstance(account_binding, dict)
+    assert account_binding == {
+        "account_ref": "binance-auto-demo-1",
+        "account_lane": "auto",
+        "venue": "binance_usdm_demo",
+        "credential_fingerprint": root.trading_credential_fingerprint(
+            venue="binance_usdm_demo",
+            api_key="demo-key",
+            api_secret="demo-secret",
+        ),
+        "provider_account_fingerprint": "d" * 64,
+        "now_ms": account_binding["now_ms"],
+    }
+    assert isinstance(account_binding["now_ms"], int)
     assert captured["data_factory"] == (root.BINANCE, root.BinanceLiveDataClientFactory)
     assert captured["exec_factory"] == (root.BINANCE, root.BinanceLiveExecClientFactory)
     strategy_args = captured["strategy_args"]
@@ -244,17 +270,24 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
     _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
 
     @contextmanager
+    def fake_transaction():
+        yield
+
+    @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
+            transaction=fake_transaction,
             trading=SimpleNamespace(
+                register_trading_account_binding=lambda **_kwargs: None,
                 active_execution_capability_snapshot=lambda: SimpleNamespace(snapshot_sha256="c" * 64),
                 nautilus_runtime_state=lambda: runtime,
                 active_intent=lambda: active_intent,
-            )
+            ),
         )
 
     monkeypatch.setattr(root, "repositories", fake_repositories)
     monkeypatch.setattr(root, "TradingNode", lambda *args, **kwargs: pytest.fail("node constructed"))
+    monkeypatch.setattr(root, "_provider_account_fingerprint", lambda **_kwargs: "d" * 64)
 
     with pytest.raises(RuntimeError, match=rf"^{error}$"):
         root.run_nautilus(settings, bootstrap_zero_claims=True)

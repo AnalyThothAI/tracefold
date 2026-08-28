@@ -61,6 +61,10 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
       printf '%s' ',"nautilus":{"credentials_configured":'
       printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+      printf '%s' '},"manual":{"requested":'
+      printf '%s' "$TRACEFOLD_TEST_MANUAL_REQUESTED"
+      printf '%s' ',"interaction_available":'
+      printf '%s' "$TRACEFOLD_TEST_MANUAL_AVAILABLE"
       printf '}}}}\\n'
       ;;
   esac
@@ -88,6 +92,7 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
   case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;; esac
+  case " $* " in *" manual-executor "*) : > "$TRACEFOLD_TEST_MANUAL_RECREATED" ;; esac
   exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
@@ -108,6 +113,9 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
           *) if [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then printf '%s\\n' nautilus-id; fi ;;
         esac
       fi
+      ;;
+    manual-executor)
+      if [ -e "$TRACEFOLD_TEST_MANUAL_RECREATED" ]; then printf '%s\\n' manual-executor-id; fi
       ;;
   esac
   exit 0
@@ -133,6 +141,7 @@ if [ "$1" = "inspect" ]; then
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
         nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
+        manual-executor-id) printf '%s\\n' "$TRACEFOLD_TEST_MANUAL_IMAGE" ;;
       esac
       ;;
   esac
@@ -157,12 +166,16 @@ if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
   printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
   printf '%s' ',"nautilus":{"credentials_configured":'
   printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+  printf '%s' '},"manual":{"requested":'
+  printf '%s' "$TRACEFOLD_TEST_MANUAL_REQUESTED"
+  printf '%s' ',"interaction_available":'
+  printf '%s' "$TRACEFOLD_TEST_MANUAL_AVAILABLE"
   printf '}}}}\\n'
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*|*trading*enabled*) shift 2; exec python3 "$@" ;;
+    *credentials_configured*|*trading*enabled*|*manual*) shift 2; exec python3 "$@" ;;
   esac
 fi
 case "$*" in
@@ -203,7 +216,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260828_0324|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260829_0325|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -211,9 +224,13 @@ esac
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_MANUAL_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
+        "TRACEFOLD_TEST_MANUAL_REQUESTED": "false",
+        "TRACEFOLD_TEST_MANUAL_AVAILABLE": "false",
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_MANUAL_RECREATED": str(tmp_path / "manual-recreated"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
@@ -532,6 +549,43 @@ def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path)
     assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
+def test_up_starts_one_manual_executor_when_telegram_manual_trading_is_available(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MANUAL_REQUESTED"] = "true"
+    env["TRACEFOLD_TEST_MANUAL_AVAILABLE"] = "true"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "manual-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ("up", "deploy-image"))
+def test_deploy_refuses_unavailable_manual_trading_before_stopping_services(
+    tmp_path: Path,
+    target: str,
+) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MANUAL_REQUESTED"] = "true"
+    env["TRACEFOLD_TEST_MANUAL_AVAILABLE"] = "false"
+    command = ["make", target]
+    if target == "deploy-image":
+        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
+
+    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode != 0
+    assert "Manual Trading is enabled but its Telegram/account boundary is unavailable" in result.stderr
+    assert not services_stopped.exists()
+
+
 def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tmp_path: Path) -> None:
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
@@ -714,6 +768,26 @@ def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(
 
     assert result.returncode == 0, result.stderr
     assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+def test_exact_image_deploy_starts_manual_executor_without_mounting_both_secret_lanes_into_migrate(
+    tmp_path: Path,
+) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MANUAL_REQUESTED"] = "true"
+    env["TRACEFOLD_TEST_MANUAL_AVAILABLE"] = "true"
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "manual-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
 def test_nautilus_role_provisioning_refuses_a_running_compose_stack(tmp_path: Path) -> None:

@@ -39,7 +39,9 @@ The only Tracefold application configuration file is the operator-owned
 and password-file references, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
 provider/name. The two `trading.nautilus` file references point only to the
-dedicated Binance Demo API key and secret consumed by the Nautilus process.
+dedicated automatic Binance Demo API key and secret consumed by the Nautilus
+process. The two `trading.manual` references point to a different manual Demo
+key and secret consumed only by `manual-executor`.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
@@ -52,7 +54,9 @@ fallback endpoint),
 `news.push.telegram_bot_token_file`, the five PostgreSQL password files
 (bootstrap, Serve, Workers, migrate, Nautilus), and the Binance Demo files named
 by `trading.nautilus.api_key_file` and `api_secret_file`.
-There is no other provider key or credential.
+The manual Binance Demo files named by `trading.manual.api_key_file` and
+`api_secret_file` are a separate credential pair. There is no wallet/private
+key, on-chain signer, live/mainnet route, or other provider credential.
 
 `tracefold init` is the sole default-config generator. It creates
 `~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
@@ -76,12 +80,40 @@ explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
 
-Only the Nautilus container mounts the Binance Demo key and secret. During each
+Only the Nautilus container mounts the automatic Binance Demo key and secret. During each
 TradingNode connection, the pinned Binance adapter queries the signed account
 position-mode endpoint; its configured `use_reduce_only=true` rejects Hedge
 Mode before reconciliation, strategy readiness, or an entry fence. The
 credential stays inside that adapter. No Binance credential is exposed to
 Serve, Workers, News, RabbitMQ, or public HTTP.
+
+Only `manual-executor` mounts the manual Binance Demo pair. It does not mount
+the automatic pair or Telegram bot token; Workers mounts the Telegram token but
+neither Binance pair. Both execution roots hash their fixed venue plus key and
+secret into a one-way credential fingerprint, and separately hash the unique
+account alias returned by Binance's signed balance projection. Append-only
+account bindings make both fingerprints unique, so exact credential reuse and
+different keys for the same provider account fail regardless of process start
+order; the raw alias is never persisted. Config additionally
+rejects equal paths and, when readable, equal secret contents before startup.
+The operator must provision the two API keys on separate Binance Demo accounts
+and grant Read + Futures Trade only; the system neither needs nor exercises
+withdrawal permission.
+
+Telegram trading accepts callback queries only from the already validated
+private-channel ID and one of at most eight configured user IDs. Callback data
+is byte-bounded and parsed through a closed action schema. The bot token is
+used to derive a credential-free target fingerprint; it is never stored in the
+manual ledger. A sent News receipt must carry that exact fingerprint before App
+can freeze the News-to-Trade source.
+
+Manual Intent source, payload and account identity are protected by database
+triggers as well as column-level grants. Workers may create the immutable
+Intent but cannot update its execution columns. The manual executor may update
+only state, deterministic order IDs, per-leg fence/attempt/receipt fields and
+outcome; it cannot rewrite the News source or selected parameters. A durable
+attempt marker is committed before each signed provider write, and an unknown
+result is read-only reconciliation thereafter.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model

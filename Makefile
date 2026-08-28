@@ -4,6 +4,8 @@ export UV_CACHE_DIR
 TRACEFOLD := uv run tracefold
 READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
+READ_MANUAL_TRADING_REQUESTED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["manual"]["requested"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid manual trading requested")'
+READ_MANUAL_TRADING_AVAILABLE := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["manual"]["interaction_available"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid manual trading availability")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -341,8 +343,14 @@ _up-locked:
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
 		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
+		manual_requested=$$(printf '%s\n' "$$runtime_config" | $(READ_MANUAL_TRADING_REQUESTED)); \
+		manual_available=$$(printf '%s\n' "$$runtime_config" | $(READ_MANUAL_TRADING_AVAILABLE)); \
 		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
 			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured." >&2; \
+			exit 1; \
+		fi; \
+		if [ "$$manual_requested" = true ] && [ "$$manual_available" != true ]; then \
+			echo "Manual Trading is enabled but its Telegram/account boundary is unavailable." >&2; \
 			exit 1; \
 		fi; \
 		docker compose build migrate || fail; \
@@ -358,7 +366,8 @@ _up-locked:
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate serve workers"; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		if [ "$$manual_requested" = true ]; then runtime_services="$$runtime_services manual-executor"; fi; \
+		docker compose stop -t 40 workers serve nautilus manual-executor || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		if [ "$$trading_enabled" = true ]; then \
@@ -503,8 +512,24 @@ _deploy-image-locked:
 			echo "Target image did not report whether Trading is enabled; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
+		if ! manual_requested=$$(printf '%s\n' "$$runtime_config" | $(READ_MANUAL_TRADING_REQUESTED)); then \
+			echo "Target image did not report whether Manual Trading is enabled; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if ! host_runtime_config=$$($(TRACEFOLD) config); then \
+			echo "Current source could not validate the active operator config; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if ! manual_available=$$(printf '%s\n' "$$host_runtime_config" | $(READ_MANUAL_TRADING_AVAILABLE)); then \
+			echo "Current source did not report Manual Trading availability; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
 		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
 			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$manual_requested" = true ] && [ "$$manual_available" != true ]; then \
+			echo "Manual Trading is enabled but its Telegram/account boundary is unavailable; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
 		fail() { \
@@ -513,9 +538,10 @@ _deploy-image-locked:
 			exit 1; \
 		}; \
 		runtime_services="migrate serve workers"; \
+		if [ "$$manual_requested" = true ]; then runtime_services="$$runtime_services manual-executor"; fi; \
 		base_services="$$runtime_services"; \
 		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		docker compose stop -t 40 workers serve nautilus manual-executor || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
 		if [ "$$trading_enabled" = true ]; then \
@@ -593,6 +619,8 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
 		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
+		manual_requested=$$(printf '%s\n' "$$runtime_config" | $(READ_MANUAL_TRADING_REQUESTED)); \
+		manual_available=$$(printf '%s\n' "$$runtime_config" | $(READ_MANUAL_TRADING_AVAILABLE)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -632,6 +660,27 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		else \
 			echo "nautilus: not required (Trading disabled)"; \
 		fi; \
+		if [ "$$manual_requested" = true ]; then \
+			if [ "$$manual_available" != true ]; then \
+				echo "manual-executor: requested but Telegram/account boundary is unavailable" >&2; \
+				failed=1; \
+			else \
+				manual_ids=$$(docker compose ps --all -q manual-executor); \
+				manual_count=$$(printf '%s\n' "$$manual_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
+				if [ "$$manual_count" -ne 1 ]; then \
+					echo "manual-executor: expected exactly one replica, found $$manual_count" >&2; \
+					failed=1; \
+				else \
+					manual_state=$$(docker inspect --format '{{.State.Status}}' "$$manual_ids"); \
+					if [ "$$manual_state" != "running" ]; then \
+						echo "manual-executor: state=$$manual_state" >&2; \
+						failed=1; \
+					fi; \
+				fi; \
+			fi; \
+		else \
+			echo "manual-executor: not required (Manual Trading disabled)"; \
+		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
 			echo "migrate: missing" >&2; \
@@ -659,7 +708,7 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		fi
 
 logs: preflight ## tail all product runtime and dependency logs
-	@docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
+	@docker compose logs -f --tail=100 serve workers nautilus manual-executor migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down

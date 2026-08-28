@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import signal
+import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext, suppress
 from decimal import Decimal
@@ -23,6 +24,7 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
 from tracefold.app.repository_session import repositories
+from tracefold.integrations.binance_usdm_account import BinanceUsdmAccountIdentityClient
 from tracefold.integrations.nautilus import (
     NAUTILUS_RELEASE,
     build_node_config,
@@ -44,6 +46,7 @@ from tracefold.integrations.nautilus.strategy import TracefoldNautilusStrategy
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
+from tracefold.trading import trading_credential_fingerprint
 from tracefold.trading.intent import INTENT_POLICY_SHA256
 
 from .database import NAUTILUS_POLL_SECONDS, NautilusDatabaseBridge
@@ -59,7 +62,21 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
     """Build and run the capability-governed Binance Demo node until shutdown."""
 
     api_key, api_secret = _read_credentials(settings)
+    provider_account_fingerprint = _provider_account_fingerprint(api_key=api_key, api_secret=api_secret)
     with repositories(settings, role="nautilus") as repos:
+        with repos.transaction():
+            repos.trading.register_trading_account_binding(
+                account_ref="binance-auto-demo-1",
+                account_lane="auto",
+                venue="binance_usdm_demo",
+                credential_fingerprint=trading_credential_fingerprint(
+                    venue="binance_usdm_demo",
+                    api_key=api_key,
+                    api_secret=api_secret,
+                ),
+                provider_account_fingerprint=provider_account_fingerprint,
+                now_ms=time.time_ns() // 1_000_000,
+            )
         capability_snapshot = repos.trading.active_execution_capability_snapshot()
         if bootstrap_zero_claims:
             runtime = repos.trading.nautilus_runtime_state()
@@ -427,6 +444,16 @@ def _remove_signal_handlers(
 ) -> None:
     for signum in installed:
         loop.remove_signal_handler(signum)
+
+
+def _provider_account_fingerprint(*, api_key: str, api_secret: str) -> str:
+    """Probe the provider identity with Auto credentials without sharing account state."""
+
+    client = BinanceUsdmAccountIdentityClient(api_key=api_key, api_secret=api_secret)
+    try:
+        return client.provider_account_fingerprint()
+    finally:
+        client.close()
 
 
 __all__ = ["run_nautilus"]
