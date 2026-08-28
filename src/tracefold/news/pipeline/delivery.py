@@ -154,16 +154,6 @@ def _progression_review_candidates(
     return tuple(candidates)
 
 
-def _progression_candidate_age_minutes(candidate: Mapping[str, Any], *, current_pushed_at_ms: int) -> int | None:
-    at_ms = candidate.get("at_ms")
-    if isinstance(at_ms, int) and not isinstance(at_ms, bool) and 0 < at_ms <= current_pushed_at_ms:
-        return (current_pushed_at_ms - at_ms) // 60_000
-    ago_min = candidate.get("ago_min")
-    if isinstance(ago_min, int) and not isinstance(ago_min, bool) and ago_min >= 0:
-        return ago_min
-    return None
-
-
 @dataclass(frozen=True, slots=True)
 class _ProgressionParentReference:
     message_id: int | None = None
@@ -733,21 +723,11 @@ class DelivererConsumer:
         if verifier is None or not context.progression_candidates:
             return None
         try:
-            candidates = tuple(
-                {
-                    **candidate,
-                    "ago_min": _progression_candidate_age_minutes(
-                        candidate,
-                        current_pushed_at_ms=context.receipt.pushed_at_ms,
-                    ),
-                }
-                for candidate in context.progression_candidates
-            )
             async with asyncio.timeout(PROGRESSION_REVIEW_TIMEOUT_SECONDS):
                 raw = await verifier.review(
                     event=context.event,
                     verdict=context.verdict,
-                    candidates=candidates,
+                    candidates=context.progression_candidates,
                 )
             review = raw if isinstance(raw, ProgressionReview) else ProgressionReview.model_validate(raw)
             if review.state != "confirmed":

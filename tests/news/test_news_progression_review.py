@@ -52,6 +52,7 @@ def test_progression_verifier_confirms_only_a_named_candidate_and_uses_its_store
     visible = json.loads(request.inputs["evidence_json"])
     assert visible["current"]["headline_zh"] == "美光台湾工会初步罢工投票支持率达 80%"
     assert visible["candidates"][0]["headline_zh"] == "美光工会此前启动劳资协商"
+    assert visible["candidates"][0]["ago_min"] is None
 
 
 def test_progression_verifier_compacts_a_long_multiline_reason_before_it_reaches_delivery() -> None:

@@ -171,9 +171,11 @@ title-similarity score of at least `0.50` supports it. With the verifier configu
 an indented one-line `关联确认中` child block and never waits for another model call. The same message is later
 edited to a compact child block: `✅ 已确认关联`, a clickable `此前：<parent headline>` quote bound to the
 previous sent Telegram receipt, its receipt-to-receipt age, and `现进展：<reason>`; rejection uses
-`↩️ 未确认关联: <reason>`, while failures use an
-explicit unavailable state. Confirmed display reasons are clipped to one line; the model is instructed to avoid
-repeating the headline. The verifier considers at most eight already-delivered told-ledger candidates and its
+`↩️ 未确认关联: <reason>`, while failures use an explicit unavailable state. Either final non-confirmed result
+changes the same message's novelty badge to `🆕 新事实`. A model confirmation without a sent, undeleted,
+same-target parent receipt also becomes `🆕 新事实` plus unavailable evidence; it never renders an unlinked
+parent or candidate/event-time age. Confirmed display reasons are clipped to one line; the model is instructed to
+avoid repeating the headline. The verifier considers at most eight already-delivered told-ledger candidates and its
 structured result plus content-addressed verifier identity enters the durable desired card. A broad macro or sector
 verdict with no code-verified ticker shows its scope and `暂无直接标的` instead of silently removing the target area
 or inventing a trade. Telegram delivery is progressive: once the code-owned decision and provider pacing allow a

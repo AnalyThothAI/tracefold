@@ -163,13 +163,13 @@ class ProgressionReviewProgram:
             if isinstance(raw_similarity, int | float) and not isinstance(raw_similarity, bool)
             else 0.0
         )
-        raw_age = candidate.get("ago_min")
         return {
             "i": raw_i,
             "headline_zh": str(candidate.get("headline_zh") or "")[:120],
             "tier": str(candidate.get("tier") or "recency")[:32],
             "similarity": similarity,
-            "ago_min": (max(0, raw_age) if isinstance(raw_age, int) and not isinstance(raw_age, bool) else None),
+            # Time becomes association evidence only after two same-target Telegram receipts resolve.
+            "ago_min": None,
             "event_type": str(candidate.get("event_type") or "")[:32],
             "symbols": [str(value)[:32] for value in candidate.get("symbols") or ()][:6],
         }
