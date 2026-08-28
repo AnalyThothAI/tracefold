@@ -102,6 +102,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._startup_unexpected_exposure = False
         self._startup_request_pending = False
         self._startup_retry_at_ms: int | None = None
+        self._pending_startup_adopt: AdoptIntent | None = None
         # One active lifecycle is retained losslessly behind the bounded thread queue.
         self._pending_events: deque[StrategyEvent] = deque()
         self._projection_overflow = False
@@ -216,7 +217,13 @@ class TracefoldNautilusStrategy(Strategy):
 
     def _handle_command(self, command: StrategyCommand) -> None:
         if isinstance(command, AdoptIntent):
-            self._adopt_intent(command)
+            if not self._startup_account_reconciled:
+                pending = self._pending_startup_adopt
+                if pending is not None and pending.intent.intent_id != command.intent.intent_id:
+                    raise ValueError("nautilus_second_startup_intent")
+                self._pending_startup_adopt = command
+            else:
+                self._adopt_intent(command)
         elif isinstance(command, StartupAccountReconciliationConfirmed):
             if command.bootstrap_account_zero != self._bootstrap_mode:
                 raise RuntimeError("nautilus_startup_reconciliation_mode_mismatch")
@@ -233,6 +240,10 @@ class TracefoldNautilusStrategy(Strategy):
                         observed_at_ms=command.verified_at_ms,
                     )
                 )
+            pending = self._pending_startup_adopt
+            self._pending_startup_adopt = None
+            if pending is not None:
+                self._adopt_intent(pending)
         elif isinstance(command, StartupAccountReconciliationUnproven):
             self._startup_account_reconciled = False
             self._startup_unexpected_exposure = command.unexpected_exposure
@@ -248,7 +259,11 @@ class TracefoldNautilusStrategy(Strategy):
         elif isinstance(command, EntryFenceGranted):
             self._submit_fenced_entry(command)
         elif isinstance(command, IntentReleased):
-            self._release_pending_intent(command.intent_id)
+            pending = self._pending_startup_adopt
+            if pending is not None and pending.intent.intent_id == command.intent_id:
+                self._pending_startup_adopt = None
+            else:
+                self._release_pending_intent(command.intent_id)
         elif isinstance(command, VenueFlatConfirmed):
             self._confirm_venue_flat(command)
         elif isinstance(command, VenueFlatUnproven):

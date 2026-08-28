@@ -161,6 +161,7 @@ def _registered_strategy(
     instrument: CryptoPerpetual | None = None,
     queue_maxsize: int = 64,
     with_quote: bool = True,
+    startup_reconciled: bool = True,
 ) -> tuple[RecordingStrategy, StrategyQueues]:
     queues = strategy_queues(maxsize=queue_maxsize)
     clock = TestClock()
@@ -185,13 +186,14 @@ def _registered_strategy(
     portfolio = Portfolio(msgbus, cache, clock)
     strategy = RecordingStrategy(queues=queues, capability=_capability(instrument))
     strategy.register(TraderId("TRACEFOLD-001"), portfolio, msgbus, cache, clock)
-    queues.commands.put_nowait(
-        StartupAccountReconciliationConfirmed(
-            verified_at_ms=NOW_MS,
-            bootstrap_account_zero=False,
+    if startup_reconciled:
+        queues.commands.put_nowait(
+            StartupAccountReconciliationConfirmed(
+                verified_at_ms=NOW_MS,
+                bootstrap_account_zero=False,
+            )
         )
-    )
-    strategy.on_timer(None)
+        strategy.on_timer(None)
     return strategy, queues
 
 
@@ -1340,8 +1342,8 @@ def test_fresh_position_max_holding_closes_without_a_database_command() -> None:
     )
 
 
-def test_fenced_intent_recovery_queries_the_reconciled_order_and_never_resubmits() -> None:
-    strategy, queues = _registered_strategy()
+def test_fenced_intent_recovery_waits_for_startup_reconciliation_then_queries_without_resubmit() -> None:
+    strategy, queues = _registered_strategy(startup_reconciled=False)
     intent = _intent()
     entry_id = deterministic_client_order_id(intent.intent_id, "entry")
     instrument = _solusdt_perp_binance()
@@ -1372,6 +1374,18 @@ def test_fenced_intent_recovery_queries_the_reconciled_order_and_never_resubmits
     )
 
     queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=fenced))
+    strategy.on_timer(None)
+
+    assert strategy.queried == []
+    assert strategy.submitted == []
+    assert queues.events.empty()
+
+    queues.commands.put_nowait(
+        StartupAccountReconciliationConfirmed(
+            verified_at_ms=NOW_MS,
+            bootstrap_account_zero=False,
+        )
+    )
     strategy.on_timer(None)
 
     assert strategy.queried == [entry]

@@ -1650,7 +1650,10 @@ only when `trading_runtime_state.control = RUNNING`, startup reconciliation has
 proved the dedicated Demo account is one-way, every included instrument is 1x,
 and the whole account has no unexpected position or open order. `PAUSED` and `CLOSE_ONLY`
 block new entry fences but never stop query, protection, or exit work for an
-already-fenced lifecycle.
+already-fenced lifecycle. After restart, an already-fenced lifecycle remains in
+the bounded command slot until the complete provider account report has been
+reconciled; only then may recovery query protection, close exposure, or report
+an unknown outcome.
 
 The one `trading_intents` row is simultaneously the durable inbox, immutable
 instruction, entry fence, restart checkpoint, current execution projection, and
