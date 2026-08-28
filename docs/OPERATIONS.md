@@ -41,22 +41,30 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 
 1. Set Trading control to `PAUSED`. Do not stop Nautilus; it must retain
    authority over any already-fenced lifecycle.
-2. Confirm the current Nautilus `/readyz` is green. Its startup reconciliation
+2. Update `~/.tracefold/config.yaml` to the PR 2 contract before running the new
+   CLI or image: remove the retired `mode`, `live_symbol`, `account_ref`,
+   `venues`, `opentrade`, and `nautilus.accept_intents` keys. Preserve the
+   strategy/gate values, `trading.enabled`, `trading.order.fixed_notional_usd`
+   (`0 < value <= 10`), and the two Nautilus Demo secret-file paths. Run
+   `uv run tracefold config`; unknown retired keys fail closed.
+3. Confirm the current Nautilus `/readyz` is green. Its startup reconciliation
    must have proved the exact Demo account/instrument configuration,
    authoritative venue flat, and no unexpected exposure.
-3. Run `make trading-hard-cut-preflight` from the clean primary checkout. It
+4. Run `make trading-hard-cut-preflight` from the clean primary checkout. It
    fails unless control is `PAUSED`, exactly one Nautilus Compose replica
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-4. Deploy the exact reviewed image at Alembic head `20260828_0317`. The
-   migration repeats the three database drain predicates in its transaction
-   before revoking the legacy writer.
-5. Run `make status`, then `uv run tracefold trading status`. Require one
+5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
+   `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
+   the full preflight before migration or service shutdown; the migration then
+   repeats the three database drain predicates in its transaction before
+   revoking the legacy writer.
+6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
    `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current
    heartbeat, `engine_ready=true`, and `unexpected_exposure=false`.
-6. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
+7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
 Do not seed a production Case or Intent to make the console non-empty. A normal

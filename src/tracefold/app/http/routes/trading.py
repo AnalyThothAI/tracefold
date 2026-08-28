@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from tracefold.app.trading_config import CANDIDATE_GATE_VERSION, trading_settings_gate, trading_settings_strategies
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.platform.config.secret_file import secret_file_configured
+from tracefold.trading import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -32,7 +33,6 @@ _GATE_LIMIT: Final = 400
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 _BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
 _DAY_KEY: Final = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_ACTIVE_STATES: Final[tuple[str, ...]] = ("PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW")
 _STATE_FILTERS: Final[frozenset[str]] = frozenset({"active", "closed", "all"})
 
 
@@ -115,7 +115,7 @@ def get_trading_intents(
     now_ms = int(time.time() * 1000)
     states: tuple[str, ...] = ()
     if state == "active":
-        states = _ACTIVE_STATES
+        states = ACTIVE_INTENT_STATES
     elif state == "closed":
         states = ("TERMINAL",)
     with runtime.repositories() as repos:

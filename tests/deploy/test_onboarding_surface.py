@@ -65,6 +65,8 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
+    *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
+    *alembic_version*trading_cases_state_check*) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATION_STATE" ;;
     *) printf '%s\\n' "$TRACEFOLD_TEST_DB_HEAD" ;;
   esac
   exit 0
@@ -194,6 +196,8 @@ esac
         "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
+        "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260828_0317|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -454,6 +458,86 @@ def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr
     assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading hard-cut preflight passed" in result.stdout
+    assert services_stopped.exists()
+
+
+def test_up_refuses_the_pr2_migration_when_the_automatic_preflight_fails(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|0|0|0"
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "observed RUNNING|0|0|0" in result.stderr
+    assert not services_stopped.exists()
+
+
+def test_db_migrate_automatically_enforces_the_pr2_preflight(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f"
+    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading hard-cut preflight passed" in result.stdout
+
+
+def test_db_migrate_does_not_invent_a_cutover_for_a_fresh_database(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_SCHEMA_STATE"] = "fresh"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Fresh database: no PR 1 execution authority exists to cut over" in result.stdout
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"))

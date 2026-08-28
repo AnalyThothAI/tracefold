@@ -19,7 +19,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -188,7 +188,8 @@ init: ## create ~/.tracefold/config.yaml + PostgreSQL role password files
 config: ## print effective runtime config
 	@$(TRACEFOLD) config
 
-db-migrate: ## apply PostgreSQL migrations
+db-migrate: preflight ## apply PostgreSQL migrations
+	@$(MAKE) --no-print-directory _trading-hard-cut-preflight-if-needed
 	@$(TRACEFOLD) db migrate
 
 db-health: ## check PostgreSQL liveness and migration version
@@ -235,6 +236,41 @@ trading-hard-cut-preflight: preflight ## prove the one-time #283 PR 2 cutover pr
 			exit 1; \
 		fi; \
 		echo "Trading hard-cut preflight passed: venue flat, PAUSED, ledgers drained, one Nautilus replica."
+
+_trading-hard-cut-preflight-if-needed:
+	@set -eu; \
+		postgres_id=$$(docker compose ps -q postgres); \
+		if [ -z "$$postgres_id" ]; then \
+			echo "Cannot inspect the database before migration; start the PostgreSQL service first." >&2; \
+			exit 2; \
+		fi; \
+		schema_state=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			PGOPTIONS="-c default_transaction_read_only=on"; \
+			export PGPASSWORD PGOPTIONS; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+			-c "SELECT CASE WHEN to_regclass('"'"'public.alembic_version'"'"') IS NULL THEN '"'"'fresh'"'"' ELSE '"'"'existing'"'"' END"'); \
+		if [ "$$schema_state" = fresh ]; then \
+			echo "Fresh database: no PR 1 execution authority exists to cut over."; \
+			exit 0; \
+		fi; \
+		migration_state=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			PGOPTIONS="-c default_transaction_read_only=on"; \
+			export PGPASSWORD PGOPTIONS; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
+			"SELECT concat_ws('|', \
+			  (SELECT version_num FROM alembic_version LIMIT 1), \
+			  EXISTS ( \
+			    SELECT 1 FROM pg_constraint \
+			     WHERE conname = 'trading_cases_state_check' \
+			       AND pg_get_constraintdef(oid) LIKE '%INTENT_EMITTED%' \
+			  ))"); \
+		case "$$migration_state" in \
+			20260828_0316\|f) $(MAKE) --no-print-directory trading-hard-cut-preflight ;; \
+			*\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
+			*) echo "Database state '$$migration_state' cannot safely enter the PR 2 hard cut." >&2; exit 2 ;; \
+		esac
 
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
@@ -302,6 +338,8 @@ _up-locked:
 			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured." >&2; \
 			exit 1; \
 		fi; \
+		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
+		$(MAKE) --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \

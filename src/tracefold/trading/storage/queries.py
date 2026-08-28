@@ -5,14 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from ..intent import ACTIVE_INTENT_STATES
 from ..research.event_study import summarize_evaluation_rows
 
-_ACTIVE_INTENT_STATES: Final[tuple[str, ...]] = (
-    "PENDING",
-    "IN_FLIGHT",
-    "OPEN_PROTECTED",
-    "MANUAL_REVIEW",
-)
 _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("source_observed_to_verdict_persisted", "c.trigger_persisted_at_ms - c.source_observed_at_ms"),
     ("verdict_persisted_to_case_created", "c.created_at_ms - c.trigger_persisted_at_ms"),
@@ -20,7 +15,7 @@ _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("case_created_to_intent_emitted", "i.created_at_ms - c.created_at_ms"),
     ("intent_emitted_to_entry_fenced", "i.entry_fenced_at_ms - i.created_at_ms"),
     ("entry_fenced_to_position_opened", "i.opened_at_ms - i.entry_fenced_at_ms"),
-    ("position_opened_to_closed_flat", "i.closed_at_ms - i.opened_at_ms"),
+    ("position_opened_to_closed_flat", "i.flat_verified_at_ms - i.opened_at_ms"),
 )
 
 
@@ -102,7 +97,7 @@ class QueryStorage:
         ).fetchone()
         active = self.conn.execute(
             "SELECT count(*) AS n FROM trading_intents WHERE execution_state = ANY(%s)",
-            (list(_ACTIVE_INTENT_STATES),),
+            (list(ACTIVE_INTENT_STATES),),
         ).fetchone()
         return {
             **self.latest_lifecycle_milestones(),
@@ -183,13 +178,13 @@ class QueryStorage:
                 "(i.execution_state = ANY(%s) OR "
                 "(i.execution_state = 'TERMINAL' AND i.closed_at_ms >= %s AND i.closed_at_ms < %s))"
             )
-            params: list[Any] = [list(_ACTIVE_INTENT_STATES), int(closed_from_ms), int(closed_until_ms)]
+            params: list[Any] = [list(ACTIVE_INTENT_STATES), int(closed_from_ms), int(closed_until_ms)]
         else:
             recency = (
                 "(i.execution_state = ANY(%s) OR "
                 "coalesce(i.closed_at_ms, i.flat_verified_at_ms, i.updated_at_ms, i.created_at_ms) >= %s)"
             )
-            params = [list(_ACTIVE_INTENT_STATES), int(since_ms)]
+            params = [list(ACTIVE_INTENT_STATES), int(since_ms)]
         where = [recency]
         if underlying_key:
             where.append("c.underlying_key = %s")

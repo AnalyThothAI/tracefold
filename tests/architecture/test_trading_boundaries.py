@@ -179,6 +179,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
     assert trading.__all__ == [
+        "ACTIVE_INTENT_STATES",
         "INTENT_POLICY_SHA256",
         "Bar",
         "CaseState",

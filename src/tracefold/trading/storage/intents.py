@@ -6,7 +6,14 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from ..intent import IntentOutcome, ManualReviewReason, RejectedReason, TradeIntent, deterministic_client_order_id
+from ..intent import (
+    ACTIVE_INTENT_STATES,
+    IntentOutcome,
+    ManualReviewReason,
+    RejectedReason,
+    TradeIntent,
+    deterministic_client_order_id,
+)
 from .sql_values import _dumps
 
 _IMMUTABLE_COLUMNS = """
@@ -80,8 +87,9 @@ class IntentStorage:
             SELECT DISTINCT c.underlying_key
               FROM trading_intents i
               JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE i.execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
-            """
+             WHERE i.execution_state = ANY(%s)
+            """,
+            (list(ACTIVE_INTENT_STATES),),
         ).fetchall()
         return [str(row["underlying_key"]) for row in rows]
 
@@ -117,11 +125,12 @@ class IntentStorage:
             f"""
             SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS}
              FROM trading_intents
-             WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+             WHERE execution_state = ANY(%s)
              ORDER BY created_at_ms, intent_id
              LIMIT 1
                FOR UPDATE SKIP LOCKED
-            """
+            """,
+            (list(ACTIVE_INTENT_STATES),),
         ).fetchone()
         if row is None:
             return None

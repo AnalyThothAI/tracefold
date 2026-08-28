@@ -971,6 +971,8 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     )
     assert recovered_unknown is not None
     assert recovered_unknown.commissions_by_currency == {"USDT": "0.02"}
+    unverified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
+    assert unverified_latency["position_opened_to_closed_flat"] == {"n": 0}
     assert (
         repos.trading.record_closed_flat(
             intent.intent_id,
@@ -1008,6 +1010,8 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     )
     assert closed.flat_verified_at_ms == NOW + 2_200
     assert closed.commissions_by_currency == {"USDT": "0.02"}
+    verified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
+    assert verified_latency["position_opened_to_closed_flat"] == {"n": 1, "p50": 1_100, "p95": 1_100}
     assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000) is None
 
 

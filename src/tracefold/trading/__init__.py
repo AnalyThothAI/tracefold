@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 from .contracts import Bar, CaseState, InstrumentRef, TradingCaseManifest
-from .intent import INTENT_POLICY_SHA256, IntentOutcome, IntentReasonCode, TradeIntent, deterministic_client_order_id
+from .intent import (
+    ACTIVE_INTENT_STATES,
+    INTENT_POLICY_SHA256,
+    IntentOutcome,
+    IntentReasonCode,
+    TradeIntent,
+    deterministic_client_order_id,
+)
 
 __all__ = [
+    "ACTIVE_INTENT_STATES",
     "INTENT_POLICY_SHA256",
     "Bar",
     "CaseState",

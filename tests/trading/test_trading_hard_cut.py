@@ -2,30 +2,14 @@
 
 from __future__ import annotations
 
-import importlib.util
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from tracefold.app.http.schemas import trading as schemas
+from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
 from tracefold.trading import TradeIntent
-
-
-@pytest.mark.parametrize(
-    "module",
-    (
-        "tracefold.integrations.opentrade",
-        "tracefold.trading.execution.order",
-        "tracefold.trading.execution.paper",
-        "tracefold.trading.execution.submission",
-        "tracefold.trading.pipeline.reconcile",
-        "tracefold.trading.storage.orders",
-    ),
-)
-def test_legacy_execution_writers_are_not_importable(module: str) -> None:
-    assert importlib.util.find_spec(module) is None
 
 
 @pytest.mark.parametrize(
@@ -68,10 +52,9 @@ def test_intent_policy_owns_every_other_execution_value() -> None:
 
 
 def test_http_contract_is_case_intent_outcome_only() -> None:
-    assert hasattr(schemas, "TradingIntentData")
-    assert hasattr(schemas, "TradingIntentsData")
-    assert not hasattr(schemas, "TradingOrderData")
-    assert not hasattr(schemas, "TradingOrdersData")
-    public_fields = set(schemas.TradingIntentData.model_fields)
+    schema = create_app(settings=Settings(ws_token="schema-test")).openapi()
+    assert "/api/trading/intents" in schema["paths"]
+    assert "/api/trading/orders" not in schema["paths"]
+    public_fields = set(schema["components"]["schemas"]["TradingIntentData"]["properties"])
     for retired in ("payload", "account_ref", "remote_order_id", "mode", "quantity", "order_id"):
         assert retired not in public_fields

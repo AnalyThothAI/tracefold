@@ -50,7 +50,8 @@
   }
 
   .trading-mandate {
-    overflow: hidden;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
     border-radius: var(--radius-lg);
     box-shadow: var(--ring-panel);
   }

@@ -55,7 +55,7 @@ from ..contracts import (
 )
 from ..decision.program import TradingDecisionProgram
 from ..decision.regime import assess, pre_move_bps, select_bar
-from ..intent import TradeIntent
+from ..intent import TradeIntent, is_executable_instrument
 from ..storage.root import TradingRepository
 from ..strategy.root import capital_strategy_id, strategies, strategy_from_manifest
 from ..telemetry import (
@@ -877,16 +877,7 @@ class CandidateRunner:
                 program_output=program_output,
             )
             return "intent_side_not_allowed"
-        if manifest.instrument.model_dump(
-            include={"exchange_id", "venue", "provider_symbol", "base_symbol", "instrument_class", "quote_asset"}
-        ) != {
-            "exchange_id": "binance",
-            "venue": "binance.perp",
-            "provider_symbol": "SOLUSDT",
-            "base_symbol": "SOL",
-            "instrument_class": "crypto",
-            "quote_asset": "USDT",
-        }:
+        if not is_executable_instrument(manifest.instrument):
             funnel.count("advance_reject:intent_instrument_not_allowed")
             await self._settle(
                 case_id,
