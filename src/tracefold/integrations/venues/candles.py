@@ -26,6 +26,7 @@ HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
 # Binance caps a klines page at 1000 (spot) / 1500 (USD-M); one merged 4 h window is 49 five-minute bars, so
 # the cap is only reached by a backfill range and the request is truncated rather than paged.
 _BINANCE_LIMIT_MAX: Final = 1000
+_INTERVAL_MS: Final = {"1m": 60_000, CANDLE_INTERVAL: CANDLE_INTERVAL_MS}
 
 
 async def fetch_binance_candles(
@@ -34,19 +35,21 @@ async def fetch_binance_candles(
     venue: str,
     start_ms: int,
     end_ms: int,
+    interval: str = CANDLE_INTERVAL,
     transport: httpx.AsyncBaseTransport | None = None,
     spot_base_url: str = BINANCE_SPOT_BASE_URL,
     futures_base_url: str = BINANCE_FUTURES_BASE_URL,
 ) -> tuple[Candle, ...]:
+    interval_ms = _interval_ms(interval)
     spot = venue == "binance.spot"
     base = (spot_base_url if spot else futures_base_url).rstrip("/")
     path = "/api/v3/klines" if spot else "/fapi/v1/klines"
     params = {
         "symbol": str(venue_symbol).upper(),
-        "interval": CANDLE_INTERVAL,
+        "interval": interval,
         "startTime": int(start_ms),
         "endTime": int(end_ms),
-        "limit": _limit_for(start_ms, end_ms),
+        "limit": _limit_for(start_ms, end_ms, interval_ms=interval_ms),
     }
     async with price_client(transport) as client:
         payload = await get_json(client, f"{base}{path}", venue=venue, params=params)
@@ -59,7 +62,7 @@ async def fetch_binance_candles(
         open_at_ms, close = _optional_int(entry[0]), parse_price(entry[4])
         if open_at_ms is None or close is None:
             continue
-        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + CANDLE_INTERVAL_MS, close=close))
+        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
     return tuple(out)
 
 
@@ -69,16 +72,18 @@ async def fetch_hyperliquid_candles(
     venue: str,
     start_ms: int,
     end_ms: int,
+    interval: str = CANDLE_INTERVAL,
     transport: httpx.AsyncBaseTransport | None = None,
     base_url: str = HYPERLIQUID_BASE_URL,
 ) -> tuple[Candle, ...]:
     """`coin` is the market key: `BTC` on the main perp, `@107` on spot, `xyz:AAPL` on a builder DEX."""
 
+    interval_ms = _interval_ms(interval)
     body = {
         "type": "candleSnapshot",
         "req": {
             "coin": str(venue_symbol),
-            "interval": CANDLE_INTERVAL,
+            "interval": interval,
             "startTime": int(start_ms),
             "endTime": int(end_ms),
         },
@@ -94,13 +99,20 @@ async def fetch_hyperliquid_candles(
         open_at_ms, close = _optional_int(entry.get("t")), parse_price(entry.get("c"))
         if open_at_ms is None or close is None:
             continue
-        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + CANDLE_INTERVAL_MS, close=close))
+        out.append(Candle(open_at_ms=open_at_ms, close_at_ms=open_at_ms + interval_ms, close=close))
     return tuple(out)
 
 
-def _limit_for(start_ms: int, end_ms: int) -> int:
+def _limit_for(start_ms: int, end_ms: int, *, interval_ms: int) -> int:
     span = max(0, int(end_ms) - int(start_ms))
-    return max(1, min(_BINANCE_LIMIT_MAX, span // CANDLE_INTERVAL_MS + 2))
+    return max(1, min(_BINANCE_LIMIT_MAX, span // int(interval_ms) + 2))
+
+
+def _interval_ms(interval: str) -> int:
+    try:
+        return _INTERVAL_MS[str(interval)]
+    except KeyError as exc:
+        raise ValueError("candle_interval_unsupported") from exc
 
 
 def _optional_int(value: Any) -> int | None:

@@ -247,7 +247,12 @@ class Candle:
     close: Decimal
 
 
-def select_candle(candles: Sequence[Candle], *, target_ms: int) -> Candle | None:
+def select_candle(
+    candles: Sequence[Candle],
+    *,
+    target_ms: int,
+    max_gap_ms: int = CANDLE_GAP_TOLERANCE_MS,
+) -> Candle | None:
     """The last candle closed at or before `target_ms`, or None when the nearest one is too far back.
 
     No forward fill: a halted session, a delisted contract or an illiquid gap must read as missing data, not
@@ -259,7 +264,7 @@ def select_candle(candles: Sequence[Candle], *, target_ms: int) -> Candle | None
     for candle in candles:
         if candle.close_at_ms <= int(target_ms) and (best is None or candle.close_at_ms > best.close_at_ms):
             best = candle
-    if best is None or int(target_ms) - best.close_at_ms > CANDLE_GAP_TOLERANCE_MS:
+    if best is None or int(target_ms) - best.close_at_ms > int(max_gap_ms):
         return None
     return best
 

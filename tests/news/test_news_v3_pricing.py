@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 from decimal import Decimal
+from typing import Any
 
 import httpx
 import pytest
@@ -394,6 +395,46 @@ def test_candle_adapters_normalize_both_providers_to_one_interval_convention() -
     assert bars[0].close == Decimal("1.5")
     # Exclusive end, so "closed at or before" never has to know whose off-by-one it is reading.
     assert bars[0].close_at_ms == bars[0].open_at_ms + CANDLE_INTERVAL_MS
+
+
+def test_delivery_candle_reads_support_one_minute_price_anchors() -> None:
+    binance_request: dict[str, str] = {}
+
+    def binance(request: httpx.Request) -> httpx.Response:
+        binance_request.update(request.url.params)
+        return httpx.Response(200, json=[[1_787_000_000_000, "1", "2", "0.5", "1.5"]])
+
+    bars = asyncio.run(
+        fetch_binance_candles(
+            "BTCUSDT",
+            venue="binance.perp",
+            start_ms=1_787_000_000_000,
+            end_ms=1_787_000_180_000,
+            interval="1m",
+            transport=httpx.MockTransport(binance),
+        )
+    )
+    assert binance_request["interval"] == "1m"
+    assert bars[0].close_at_ms == bars[0].open_at_ms + 60_000
+
+    hyperliquid_request: dict[str, Any] = {}
+
+    def hyperliquid(request: httpx.Request) -> httpx.Response:
+        hyperliquid_request.update(json.loads(request.content))
+        return httpx.Response(200, json=[{"t": 1_787_000_000_000, "c": "64349.0"}])
+
+    bars = asyncio.run(
+        fetch_hyperliquid_candles(
+            "xyz:MSFT",
+            venue="hl.xyz",
+            start_ms=1_787_000_000_000,
+            end_ms=1_787_000_180_000,
+            interval="1m",
+            transport=httpx.MockTransport(hyperliquid),
+        )
+    )
+    assert hyperliquid_request["req"]["interval"] == "1m"
+    assert bars[0].close_at_ms == bars[0].open_at_ms + 60_000
 
     hl_rows = [{"t": 1_787_000_000_000, "T": 1_787_000_299_999, "c": "64349.0"}]
     bars = asyncio.run(

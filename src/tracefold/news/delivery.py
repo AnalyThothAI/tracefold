@@ -32,7 +32,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
 from typing import Any, Literal
 
-from .market_review.pricing import REACTION_METRIC_VERSION, parse_price, return_bps
+from .market_review.pricing import parse_price, return_bps
 from .models import ReaderMarketMovement, ReaderTradeTarget
 from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
@@ -183,66 +183,30 @@ def reader_trade_targets(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderTra
 def reader_market_movements(
     assets: Sequence[str],
     quotes: Sequence[Mapping[str, Any]],
-    reactions: Sequence[Mapping[str, Any]],
-    *,
-    news_at_ms: int | None,
-    now_ms: int,
-    reaction_anchor_at_ms: int | None = None,
 ) -> tuple[ReaderMarketMovement, ...]:
-    """Honest per-asset reader returns bound to one versioned venue contract.
+    """Reader returns measured against the prices selected for this exact push.
 
-    ``news_at_ms`` is source-display evidence and deliberately does not decide Reaction maturity. The fixed
-    horizon is due from the persisted Reaction anchor. Before a due row exists, ``reaction_anchor_at_ms`` is
-    the Event-asset anchor contract; it can be later than an original X post.
+    The fresh quote sampled immediately before send is the common endpoint. ``price_at_news`` anchors
+    “新闻后”; ``price_one_hour_before_push`` anchors the trailing “1h”. Historical Event-Reaction horizons
+    remain review data and never leak into these reader labels.
     """
-
-    del news_at_ms
 
     quote_by_ticker = {
         str(quote.get("requested_symbol") or "").strip(): quote
         for quote in quotes[:_MAX_ASSETS]
         if isinstance(quote, Mapping) and str(quote.get("requested_symbol") or "").strip()
     }
-    reaction_by_contract: dict[tuple[str, str, str], Mapping[str, Any]] = {}
-    for reaction in reactions:
-        if not isinstance(reaction, Mapping) or reaction.get("metric_version") != REACTION_METRIC_VERSION:
-            continue
-        identity = (
-            str(reaction.get("symbol") or "").strip(),
-            str(reaction.get("venue") or "").strip(),
-            str(reaction.get("venue_symbol") or "").strip(),
-        )
-        if all(identity):
-            reaction_by_contract.setdefault(identity, reaction)
     movements: list[ReaderMarketMovement] = []
     for ticker in [str(asset).strip() for asset in assets[:_MAX_ASSETS] if str(asset).strip()]:
         quote = quote_by_ticker.get(ticker, {})
-        quote_identity = (
-            ticker,
-            str(quote.get("venue") or "").strip(),
-            str(quote.get("venue_symbol") or "").strip(),
-        )
-        reaction = reaction_by_contract.get(quote_identity, {}) if all(quote_identity) else {}
         current = parse_price(quote.get("price")) if quote.get("state") == "fresh" else None
-        anchor = parse_price(reaction.get("p0"))
-        after_news_bps = return_bps(anchor, current) if current is not None and anchor is not None else None
-        return_1h = reaction.get("return_1h_bps")
-        return_1h_bps = int(return_1h) if isinstance(return_1h, int) and not isinstance(return_1h, bool) else None
-        anchor_at_ms = reaction.get("anchor_at_ms")
-        readiness_anchor_at_ms = anchor_at_ms if anchor_at_ms is not None else reaction_anchor_at_ms
-        if return_1h_bps is not None:
-            one_hour_state: Literal["not_due", "pending", "available", "unavailable"] = "available"
-        elif reaction.get("state") == "unavailable":
-            one_hour_state = "unavailable"
-        elif (
-            isinstance(readiness_anchor_at_ms, int)
-            and not isinstance(readiness_anchor_at_ms, bool)
-            and readiness_anchor_at_ms > 0
-            and now_ms < readiness_anchor_at_ms + 3_600_000
-        ):
-            one_hour_state = "not_due"
-        else:
-            one_hour_state = "pending"
+        news_anchor = parse_price(quote.get("price_at_news"))
+        hour_anchor = parse_price(quote.get("price_one_hour_before_push"))
+        after_news_bps = return_bps(news_anchor, current) if current is not None and news_anchor is not None else None
+        return_1h_bps = return_bps(hour_anchor, current) if current is not None and hour_anchor is not None else None
+        one_hour_state: Literal["available", "unavailable"] = (
+            "available" if return_1h_bps is not None else "unavailable"
+        )
         change_24h_bps: int | None = None
         change_pct = quote.get("change_pct")
         if (

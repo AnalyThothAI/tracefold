@@ -24,6 +24,7 @@ from tracefold.news.bus import (
     PermanentError,
     TransientError,
 )
+from tracefold.news.market_review.pricing import Candle
 from tracefold.news.models import (
     OUTBOX_MAX_AGE_MS,
     TRIAGE_POLICY_VERSION,
@@ -1052,6 +1053,7 @@ def _deliverer(
     *,
     price: RecordingPrice | None = None,
     sender: RecordingSender | None = None,
+    candle_fetcher_for: Any | None = None,
 ) -> DelivererConsumer:
     return DelivererConsumer(
         bus=bus,
@@ -1059,6 +1061,7 @@ def _deliverer(
         sender=sender,
         finite_operations=InlineFinite(),
         min_interval_seconds=0.0,
+        candle_fetcher_for=candle_fetcher_for,
     )
 
 
@@ -1272,17 +1275,6 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
                 "state": "fresh",
             },
         ],
-        reactions=[
-            {
-                "symbol": "BTC",
-                "metric_version": "reaction_v1",
-                "venue": "binance.perp",
-                "venue_symbol": "BTCUSDT",
-                "p0": "100.00",
-                "return_1h_bps": 80,
-                "state": "partial",
-            }
-        ],
     )
     news = _delivery_news(
         event_card=_card(
@@ -1309,11 +1301,32 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
         },
     )
     sender = RecordingSender()
+    candle_calls: list[tuple[str, str, int, int]] = []
+
+    def candle_fetcher_for(venue: str) -> Any:
+        async def fetch(venue_symbol: str, start_ms: int, end_ms: int) -> tuple[Candle, ...]:
+            candle_calls.append((venue, venue_symbol, start_ms, end_ms))
+            hour_price, news_price = {
+                "BTCUSDT": ("99.00", "100.00"),
+                "ETHUSDT": ("200.00", "199.00"),
+            }[venue_symbol]
+            hour_at = NOW_MS - 3_600_000
+            news_at = NOW_MS - 20_000
+            return (
+                Candle(hour_at - 60_000, hour_at, Decimal(hour_price)),
+                Candle(news_at - 60_000, news_at, Decimal(news_price)),
+            )
+
+        return fetch
 
     asyncio.run(
-        _deliverer(news, FakeBus(), price=price, sender=sender).handle(
-            _message("verdict", {"event_id": "ev-strong", "kind": "first"})
-        )
+        _deliverer(
+            news,
+            FakeBus(),
+            price=price,
+            sender=sender,
+            candle_fetcher_for=candle_fetcher_for,
+        ).handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
     )
 
     assert sender.presentations == [
@@ -1323,14 +1336,18 @@ def test_deliverer_passes_multi_asset_returns_and_timing_as_ephemeral_presentati
                 ReaderTradeTarget("ETH", "binance.spot", "ETHUSDT", "ETH", "USDT"),
             ),
             market_movements=(
-                ReaderMarketMovement("BTC", 110, 80, 320, "available"),
-                ReaderMarketMovement("ETH", None, None, 170, "not_due"),
+                ReaderMarketMovement("BTC", 110, 212, 320, "available"),
+                ReaderMarketMovement("ETH", 101, 50, 170, "available"),
             ),
             news_at_ms=NOW_MS - 20_000,
             observed_at_ms=NOW_MS - 8_000,
         )
     ]
-    assert price.requested_reaction_versions == ["reaction_v1"]
+    assert price.requested_reaction_versions == []
+    assert candle_calls == [
+        ("binance.perp", "BTCUSDT", NOW_MS - 3_690_000, NOW_MS),
+        ("binance.spot", "ETHUSDT", NOW_MS - 3_690_000, NOW_MS),
+    ]
 
 
 def _oi_delivery_news() -> RecordingNews:

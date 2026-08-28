@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -22,6 +23,7 @@ from tracefold.app.workers.wiring.database import (
     WorkerNewsDatabase,
 )
 from tracefold.app.workers.wiring.market_review import (
+    _candle_fetcher_for,
     _event_reaction_loop,
     _instrument_snapshot_loop,
     _quote_snapshot_loop,
@@ -320,6 +322,7 @@ def _compose_news_pipeline(
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
             oi_policy=oi_policy,
+            candle_fetcher_for=functools.partial(_candle_fetcher_for, settings, interval="1m"),
         ),
         janitor=JanitorLoop(
             db=news_db,

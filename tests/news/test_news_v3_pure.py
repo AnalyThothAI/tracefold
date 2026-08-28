@@ -1292,7 +1292,7 @@ def test_card_market_line_is_display_only() -> None:
     assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
 
 
-def test_reader_market_movements_require_current_metric_and_exact_contract_identity() -> None:
+def test_reader_market_movements_require_fresh_push_price_and_selected_anchors() -> None:
     quote = _quote(
         "BTC",
         "101.10",
@@ -1302,43 +1302,16 @@ def test_reader_market_movements_require_current_metric_and_exact_contract_ident
         venue="binance.perp",
         venue_symbol="BTCUSDT",
         quote_asset="USDT",
+        price_at_news="100.00",
+        price_one_hour_before_push="99.00",
     )
-    valid = {
-        "symbol": "BTC",
-        "metric_version": "reaction_v1",
-        "venue": "binance.perp",
-        "venue_symbol": "BTCUSDT",
-        "anchor_at_ms": 1_799_999_400_000,
-        "p0": "100.00",
-        "return_1h_bps": 80,
-        "state": "partial",
-    }
-    bogus = [
-        {**valid, "metric_version": "reaction_v0", "p0": "1", "return_1h_bps": 9_999},
-        {**valid, "venue": "binance.spot", "p0": "1", "return_1h_bps": 9_999},
-        {**valid, "venue_symbol": "ETHUSDT", "p0": "1", "return_1h_bps": 9_999},
-    ]
-
-    assert reader_market_movements(
-        ["BTC"],
-        [quote],
-        [*bogus, valid],
-        news_at_ms=1_799_990_000_000,
-        now_ms=1_800_000_000_000,
-    ) == (ReaderMarketMovement("BTC", 110, 80, 320, "available"),)
-
-    # An old source timestamp is display evidence only. Readiness follows the Event Reaction anchor.
-    pending = {**valid, "return_1h_bps": None, "state": "pending"}
-    assert reader_market_movements(
-        ["BTC"],
-        [quote],
-        [pending],
-        news_at_ms=1_799_990_000_000,
-        now_ms=1_800_000_000_000,
-    ) == (ReaderMarketMovement("BTC", 110, None, 320, "not_due"),)
+    assert reader_market_movements(["BTC"], [quote]) == (ReaderMarketMovement("BTC", 110, 212, 320, "available"),)
+    assert reader_market_movements(["BTC"], [{**quote, "state": "stale"}]) == (
+        ReaderMarketMovement("BTC", None, None, None, "unavailable"),
+    )
 
 
-def test_reader_market_movements_ignore_unmatched_reaction_rows() -> None:
+def test_reader_market_movements_never_fabricate_missing_anchor_prices() -> None:
     quote = _quote(
         "BTC",
         "101.10",
@@ -1348,57 +1321,25 @@ def test_reader_market_movements_ignore_unmatched_reaction_rows() -> None:
         venue="binance.perp",
         venue_symbol="BTCUSDT",
         quote_asset="USDT",
+        price_at_news="not-a-price",
     )
-    wrong_contract = {
-        "symbol": "BTC",
-        "metric_version": "reaction_v1",
-        "venue": "binance.spot",
-        "venue_symbol": "BTCUSDT",
-        "anchor_at_ms": 1_799_999_400_000,
-        "p0": "1",
-        "return_1h_bps": 9_999,
-        "state": "complete",
-    }
-
-    assert reader_market_movements(
-        ["BTC"],
-        [quote],
-        [wrong_contract],
-        news_at_ms=1_799_990_000_000,
-        now_ms=1_800_000_000_000,
-    ) == (ReaderMarketMovement("BTC", None, None, 320, "pending"),)
+    assert reader_market_movements(["BTC"], [quote]) == (ReaderMarketMovement("BTC", None, None, 320, "unavailable"),)
 
 
-def test_reader_market_movements_use_event_anchor_before_the_first_reaction_row_exists() -> None:
+def test_delivery_returns_use_news_and_push_centered_price_windows() -> None:
     quote = _quote(
-        "CL",
-        "83.34",
-        1.81,
-        requested_symbol="CL",
-        base_symbol="CL",
-        venue="binance.perp",
-        venue_symbol="CLUSDT",
-        quote_asset="USDT",
+        "MSFT",
+        "102.00",
+        2.27,
+        requested_symbol="MSFT",
+        base_symbol="MSFT",
+        venue="hl.xyz",
+        venue_symbol="xyz:MSFT",
+        price_at_news="100.00",
+        price_one_hour_before_push="101.00",
     )
-    anchor_at_ms = 1_800_000_000_000
 
-    assert reader_market_movements(
-        ["CL"],
-        [quote],
-        [],
-        news_at_ms=anchor_at_ms,
-        now_ms=anchor_at_ms + 11_000,
-        reaction_anchor_at_ms=anchor_at_ms,
-    ) == (ReaderMarketMovement("CL", None, None, 181, "not_due"),)
-
-    assert reader_market_movements(
-        ["CL"],
-        [quote],
-        [],
-        news_at_ms=anchor_at_ms,
-        now_ms=anchor_at_ms + 3_600_001,
-        reaction_anchor_at_ms=anchor_at_ms,
-    ) == (ReaderMarketMovement("CL", None, None, 181, "pending"),)
+    assert reader_market_movements(["MSFT"], [quote]) == (ReaderMarketMovement("MSFT", 200, 99, 227, "available"),)
 
 
 def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_changing_the_card() -> None:

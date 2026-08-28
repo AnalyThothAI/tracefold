@@ -422,11 +422,7 @@ def _telegram_asset_lines(
         ticker = _telegram_ticker_html(asset, ticker_links)
         movement = movements.get(asset)
         if movement is not None:
-            after_news = (
-                _format_bps(movement.after_news_bps)
-                if movement.after_news_bps is not None
-                else ("待计算" if movement.one_hour_state in {"not_due", "pending"} else "暂无")
-            )
+            after_news = _format_bps(movement.after_news_bps) if movement.after_news_bps is not None else "暂无"
             one_hour = (
                 _format_bps(movement.return_1h_bps)
                 if movement.return_1h_bps is not None
@@ -445,7 +441,7 @@ def _telegram_asset_lines(
             market_line,
         )
         day_change = _escape_html(change_match.group("pct")) if change_match is not None else "暂无"
-        lines.append(f"{ticker} 新闻后 待计算，1h 待到期，24h {day_change}")
+        lines.append(f"{ticker} 新闻后 暂无，1h 暂无，24h {day_change}")
     return lines
 
 

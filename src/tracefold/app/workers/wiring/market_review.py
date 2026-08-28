@@ -88,27 +88,44 @@ def _event_reaction_loop(
     db: MarketReviewDatabasePort,
     telemetry: TelemetryRegistry | None = None,
 ) -> EventReactionLoop | None:
-    def fetcher_for(venue: str) -> Any | None:
-        if not _price_venue_enabled(settings, venue):
-            return None
-        if venue.startswith("binance."):
-
-            async def binance(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-                return await fetch_binance_candles(venue_symbol, venue=venue, start_ms=start_ms, end_ms=end_ms)
-
-            return binance
-        if venue.startswith("hl."):
-
-            async def hyperliquid(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
-                return await fetch_hyperliquid_candles(venue_symbol, venue=venue, start_ms=start_ms, end_ms=end_ms)
-
-            return hyperliquid
-        return None
-
     venues = settings.news.venues
     if not venues.enabled or not (venues.binance or venues.hyperliquid):
         return None
-    return EventReactionLoop(db=db, fetcher_for=fetcher_for, telemetry=telemetry)
+    return EventReactionLoop(
+        db=db,
+        fetcher_for=functools.partial(_candle_fetcher_for, settings, interval="5m"),
+        telemetry=telemetry,
+    )
+
+
+def _candle_fetcher_for(settings: Any, venue: str, *, interval: str) -> Any | None:
+    if not _price_venue_enabled(settings, venue):
+        return None
+    if venue.startswith("binance."):
+
+        async def binance(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
+            return await fetch_binance_candles(
+                venue_symbol,
+                venue=venue,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                interval=interval,
+            )
+
+        return binance
+    if venue.startswith("hl."):
+
+        async def hyperliquid(venue_symbol: str, start_ms: int, end_ms: int) -> Any:
+            return await fetch_hyperliquid_candles(
+                venue_symbol,
+                venue=venue,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                interval=interval,
+            )
+
+        return hyperliquid
+    return None
 
 
 def _instrument_snapshot_loop(

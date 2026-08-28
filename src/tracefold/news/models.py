@@ -67,7 +67,7 @@ ReaderMarketState = Literal["not_due", "pending", "available", "unavailable"]
 
 @dataclass(frozen=True, slots=True)
 class ReaderMarketMovement:
-    """Reader-facing returns for one displayed ticker, with an explicit 1 h readiness state."""
+    """Reader-facing news-to-push and trailing-one-hour returns for one displayed ticker."""
 
     ticker: str
     after_news_bps: int | None

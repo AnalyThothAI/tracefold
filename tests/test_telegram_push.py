@@ -106,7 +106,7 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>\n"
-        "BTC 新闻后 待计算，1h 待到期，24h +7.91%\n\n"
+        "BTC 新闻后 暂无，1h 暂无，24h +7.91%\n\n"
         "🧭 <b>方向</b>  利多\n"
         "📊 <b>影响程度</b>  明显\n"
         "🆕 <b>进展</b>  新进展\n\n"
@@ -169,8 +169,8 @@ def test_sender_renders_exact_binance_tickers_as_html_links() -> None:
         "🟢 <b>BTC ETF 净流入</b>\n\n"
         "连续第三日净流入\n\n"
         "🎯 <b>标的</b>\n"
-        "BTC-USDT 新闻后 待计算，1h 待到期，24h 暂无\n"
-        f"{ticker} 新闻后 待计算，1h 待到期，24h +7.91%\n\n"
+        "BTC-USDT 新闻后 暂无，1h 暂无，24h 暂无\n"
+        f"{ticker} 新闻后 暂无，1h 暂无，24h +7.91%\n\n"
         "🧭 <b>方向</b>  利多\n"
         "📊 <b>影响程度</b>  明显\n"
         "🆕 <b>进展</b>  新进展\n\n"
@@ -236,7 +236,7 @@ def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
                     after_news_bps=-40,
                     return_1h_bps=None,
                     change_24h_bps=170,
-                    one_hour_state="not_due",
+                    one_hour_state="unavailable",
                 ),
             ),
         ),
@@ -249,7 +249,7 @@ def test_sender_renders_each_asset_on_its_own_complete_market_row() -> None:
         "资金从 BTC 轮动至 ETH\n\n"
         "🎯 <b>标的</b>\n"
         f"{btc} 新闻后 +1.10%，1h +0.80%，24h +3.20%\n"
-        f"{eth} 新闻后 -0.40%，1h 待到期，24h +1.70%\n\n"
+        f"{eth} 新闻后 -0.40%，1h 暂无，24h +1.70%\n\n"
         "🧭 <b>方向</b>  利空\n"
         "📊 <b>影响程度</b>  重大\n\n"
         '🔗 <b>来源</b>  <a href="https://x.com/serenity/status/1234567890123456789">serenity 的推特</a>'
@@ -500,7 +500,7 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
         "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
         "🎯 <b>标的</b>\n"
-        "A&amp;B 新闻后 待计算，1h 待到期，24h 暂无\n\n"
+        "A&amp;B 新闻后 暂无，1h 暂无，24h 暂无\n\n"
         "🧭 <b>方向</b>  利空\n"
         "📊 <b>影响程度</b>  明显\n\n"
         "🔗 <b>来源</b>  路透社"
@@ -536,8 +536,8 @@ def test_degraded_card_uses_asset_label_instead_of_claiming_a_model_judgment() -
     assert _without_timing(observed["text"]) == (
         "⚪ <b>交易所恢复提现</b>\n\n"
         "🎯 <b>标的</b>\n"
-        "BTC 新闻后 待计算，1h 待到期，24h 暂无\n"
-        "ETH 新闻后 待计算，1h 待到期，24h 暂无\n\n"
+        "BTC 新闻后 暂无，1h 暂无，24h 暂无\n"
+        "ETH 新闻后 暂无，1h 暂无，24h 暂无\n\n"
         "🔗 <b>来源</b>  opennews"
     )
 

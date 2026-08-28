@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, ClassVar, Protocol
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
 from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
-from ..market_review.pricing import REACTION_METRIC_VERSION
+from ..market_review.pricing import Candle, select_candle
 from ..models import ReaderDeliveryPresentation
 from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
@@ -22,6 +22,12 @@ from .runtime import NewsDatabasePort
 # never delay, retry, or suppress a delivery; every failure degrades to no
 # market line while the card proceeds normally (#113).
 _QUOTE_READ_TIMEOUT_SECONDS = 1.5
+_DELIVERY_CANDLE_TIMEOUT_SECONDS = 2.0
+_DELIVERY_CANDLE_GAP_MS = 90_000
+_ONE_HOUR_MS = 3_600_000
+
+DeliveryCandleFetcher = Callable[[str, int, int], Awaitable[Sequence[Candle]]]
+DeliveryCandleFetcherFor = Callable[[str], DeliveryCandleFetcher | None]
 
 
 class NewsPushSender(Protocol):
@@ -53,6 +59,7 @@ class DelivererConsumer:
         finite_operations: Any,
         min_interval_seconds: float,
         oi_policy: OiPolicy = DEFAULT_OI_POLICY,
+        candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
     ) -> None:
         self.bus = bus
         self.db = db
@@ -60,6 +67,7 @@ class DelivererConsumer:
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)
         self._oi_program_sha256 = program_sha256(oi_policy)
+        self._candle_fetcher_for = candle_fetcher_for
         self._last_send_at = 0.0
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
@@ -111,7 +119,13 @@ class DelivererConsumer:
             expected_program_sha256=self._oi_program_sha256,
             oi_signal=oi_signal,
         )
-        quotes, reactions = await self._market_data(event_id, shown, stamp)
+        news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
+        observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
+        wait = self.min_interval - (time.monotonic() - self._last_send_at)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        price_at_ms = now_ms()
+        quotes = await self._market_data(shown, price_at_ms, news_at_ms=news_at_ms)
         card_payload = render_first_card(
             event=card,
             verdict=tv,
@@ -121,21 +135,9 @@ class DelivererConsumer:
             degraded=bool(triage_row.get("degraded")),
             quotes=quotes,
         )
-        news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
-        reaction_anchor_at_ms = (
-            int(timing["reaction_anchor_at_ms"]) if timing and timing.get("reaction_anchor_at_ms") is not None else None
-        )
-        observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         presentation = ReaderDeliveryPresentation(
             trade_targets=reader_trade_targets(quotes),
-            market_movements=reader_market_movements(
-                shown,
-                quotes,
-                reactions,
-                news_at_ms=news_at_ms,
-                now_ms=stamp,
-                reaction_anchor_at_ms=reaction_anchor_at_ms,
-            ),
+            market_movements=reader_market_movements(shown, quotes),
             news_at_ms=news_at_ms,
             observed_at_ms=observed_at_ms,
         )
@@ -157,9 +159,6 @@ class DelivererConsumer:
                     ),
                 )
             return
-        wait = self.min_interval - (time.monotonic() - self._last_send_at)
-        if wait > 0:
-            await asyncio.sleep(wait)
         error_code: str | None = None
         receipt: dict[str, Any] | None = None
         try:
@@ -201,8 +200,14 @@ class DelivererConsumer:
 
         await self.db.tx("news_delivery_settle_direct", _fn)
 
-    async def _market_data(self, event_id: str, shown: Sequence[str], stamp: int) -> tuple[list[Any], list[Any]]:
-        """Fresh prices for exactly the assets rendered on the card.
+    async def _market_data(
+        self,
+        shown: Sequence[str],
+        stamp: int,
+        *,
+        news_at_ms: int | None,
+    ) -> list[dict[str, Any]]:
+        """Fresh push prices plus the two historical anchors rendered on the card.
 
         The caller passes the same code-verified asset list to the renderer, so
         the facts and quote lines cannot describe different symbols. Resolution
@@ -211,20 +216,69 @@ class DelivererConsumer:
         """
 
         if not shown:
-            return [], []
+            return []
         try:
             rows = await self.db.read(
                 "news_delivery_quotes",
-                lambda repos: (
-                    repos.price.quotes_for_symbols(shown, now_ms=stamp),
-                    repos.price.event_reactions(event_id, metric_version=REACTION_METRIC_VERSION),
-                ),
+                lambda repos: repos.price.quotes_for_symbols(shown, now_ms=stamp),
                 timeout_seconds=_QUOTE_READ_TIMEOUT_SECONDS,
             )
         except Exception:  # price is display-only; all failures degrade to no line
-            return [], []
-        quotes, reactions = rows
-        return list(quotes or []), list(reactions or [])
+            return []
+        quotes = [dict(row) for row in rows or [] if isinstance(row, Mapping)]
+        if self._candle_fetcher_for is None:
+            return quotes
+        news_target_ms = (
+            news_at_ms
+            if isinstance(news_at_ms, int) and not isinstance(news_at_ms, bool) and 0 < news_at_ms <= stamp
+            else None
+        )
+        tasks: list[Awaitable[tuple[int, Sequence[Candle]] | None]] = []
+        for index, quote in enumerate(quotes):
+            if quote.get("state") != "fresh":
+                continue
+            venue = str(quote.get("venue") or "").strip()
+            venue_symbol = str(quote.get("venue_symbol") or "").strip()
+            fetcher = self._candle_fetcher_for(venue) if venue and venue_symbol else None
+            if fetcher is None:
+                continue
+            targets = [stamp - _ONE_HOUR_MS]
+            if news_target_ms is not None:
+                targets.append(news_target_ms)
+            start_ms = min(targets) - _DELIVERY_CANDLE_GAP_MS
+            tasks.append(self._delivery_candles(index, fetcher, venue_symbol, start_ms, stamp))
+        if not tasks:
+            return quotes
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) or result is None:
+                continue
+            index, candles = result
+            hour = select_candle(candles, target_ms=stamp - _ONE_HOUR_MS, max_gap_ms=_DELIVERY_CANDLE_GAP_MS)
+            if hour is not None:
+                quotes[index]["price_one_hour_before_push"] = str(hour.close)
+            if news_target_ms is not None:
+                news = select_candle(candles, target_ms=news_target_ms, max_gap_ms=_DELIVERY_CANDLE_GAP_MS)
+                if news is not None:
+                    quotes[index]["price_at_news"] = str(news.close)
+        return quotes
+
+    async def _delivery_candles(
+        self,
+        index: int,
+        fetcher: DeliveryCandleFetcher,
+        venue_symbol: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> tuple[int, Sequence[Candle]] | None:
+        try:
+            candles = await asyncio.wait_for(
+                fetcher(venue_symbol, start_ms, end_ms),
+                timeout=_DELIVERY_CANDLE_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            return None
+        return index, candles
 
     def _load(self, repos: Any, event_id: str, stamp: int) -> tuple[Any, ...] | None:
         del stamp
