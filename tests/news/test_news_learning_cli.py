@@ -613,7 +613,7 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
 
     built: dict[str, Any] = {}
 
-    def record_lm(**kwargs: Any) -> object:
+    def record_adapter(**kwargs: Any) -> object:
         built.update(kwargs)
         return object()
 
@@ -631,15 +631,18 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
             event_semantics_primary=endpoint,
         ),
     )
-    monkeypatch.setattr("tracefold.news.learning.baseline.build_runtime_lm", record_lm)
+    monkeypatch.setattr("tracefold.news.learning.baseline.build_compile_adapter", record_adapter)
+    monkeypatch.setattr(
+        "tracefold.news.learning.baseline.build_compile_program", lambda artifact, adapter: (artifact, adapter)
+    )
 
-    lm, judge, identity = _baseline_model_route(
+    program, identity = _baseline_model_route(
         "compile_live",
         settings=object(),
         artifact=load_stable_program_artifact(),
     )
 
-    assert lm is not None and judge is None
+    assert program is not None
     assert built["timeout"] == float(PROGRAM_ROUTE_DEADLINE_SECONDS)
     assert built["max_tokens"] == max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS)
     assert identity["compile_task_model"] == "local/qwen-test"

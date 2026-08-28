@@ -56,7 +56,7 @@ def _oi(**kwargs: Any) -> OiTradeCandidate:
         "source_strategy_id": "1019",
         "source_contract_version": "opennews_oi_source_v1",
         "measurement_window_ms": 300_000,
-        "learning_epoch": "program_v7",
+        "learning_epoch": "program_v8",
         "program_version": "news_oi_signal_v1",
         "program_sha256": "a" * 64,
         "policy_version": "news_triage_policy_v10",

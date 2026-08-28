@@ -41,7 +41,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
-        "tracefold.news.program.dspy_adapter",
+        "tracefold.news.program.transport",
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
@@ -68,7 +68,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # where they were optimizer-shaped state they never were, and into the factory that versions them.
         "tracefold.news.program.runtime",
         "tracefold.news.program.artifact",
-        "tracefold.news.program.dspy_adapter",
+        "tracefold.news.program.transport",
         "tracefold.news.program.graph",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",

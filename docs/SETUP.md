@@ -227,8 +227,8 @@ record accepted cases with `tracefold news review`, freeze development and
 future validation windows with `tracefold news learning freeze`, then run the
 offline, holdout, shadow and canary gates under `tracefold news learning`.
 The optional GEPA workflow reads the frozen development corpus once, runs
-bounded DSPy GEPA with no database write, broker, delivery, canary or promotion
-credential, and emits at most a typed patch carrying the two advisory
+bounded GEPA with no database write, broker, delivery, canary or promotion
+credential, and emits at most a typed patch carrying the two Predictor
 instructions. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
 accept, deploy or promote. `tracefold news learning run` is the recommended

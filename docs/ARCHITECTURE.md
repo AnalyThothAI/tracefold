@@ -33,7 +33,7 @@ depend on it.
 Beside both runs the Trading core (#104), disabled by default. One cold
 CandidateRunner in Workers reads persisted Triage/OI facts through two
 **public News projections**, freezes one content-addressed Case, decides it —
-arithmetic for an OI case, one `dspy.Predict` call for a News one — and, only
+arithmetic for an OI case, one Predictor call for a News one — and, only
 for the exact frozen Demo contract, atomically inserts one TradeIntent while
 advancing the Case. It shares the price plane's one-slot cold database
 admission rather than the four News lane slots.
@@ -295,13 +295,13 @@ deployments and rollback receipts live in `news_learning_artifacts` and
 Workers registers the runtime manifest and its linked active/deployment receipt
 as a synchronous startup barrier before its probe can become ready.
 `news_learning_epochs` records immutable deployment-time evidence epochs. The
-current `program_v7` epoch was opened for `news_semantic_program_v5`, and its
+current `program_v8` epoch was opened for `news_semantic_program_v5`, and its
 row keeps naming the factory, artifact schema and baseline root it was *opened*
-with; the running image is `tracefold.news.program.factory_v7` on the
+with; the running image is `tracefold.news.program.factory_v8` on the
 `news_program_strategy_artifact_v1` document. Every earlier Prompt/Program row
 remains append-only audit history. Only accepted `news_review_v4` evidence
-created in the v7 epoch and bound to the exact current factory/Program bundle
-is eligible for metric v4, compiler, replay or release gates.
+created in the v8 epoch and bound to the exact current factory/Program bundle
+is eligible for metric v5, compiler, replay or release gates.
 Beside that plane, and deliberately not in it, sits the operator's fast loop
 (`tracefold.news.learning.experiment`, #193). It freezes one closed window into
 a run directory on disk, compares arms on the frozen cases, and runs the same
@@ -350,7 +350,7 @@ tracefold.news
     canary.py         deterministic one-arm assignment and durable trip/close control
   recording_replay.py sealed-corpus verification composition for exact Program re-execution
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
-  program/            SemanticJudge, DSPy Program artifacts/adapters, code-owned quality baseline, artifact_tool
+  program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
   delivery.py / control.py  cards, control commands
   pipeline/
     admission.py      the atomic Deduper transaction and raw-queue consumer
@@ -372,7 +372,7 @@ tracefold.trading
   contracts.py        App-facing values/ports plus Case/Manifest vocabulary
   intent.py           immutable TradeIntent and current Outcome contract
   candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
-  decision/           measured OI/price regime, one-call DSPy Program, pure trade policy
+  decision/           measured OI/price regime, one-call DSPy Program (#306 follow-on), pure trade policy
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
   pipeline/           CandidateRunner and its one-runner composition root
 
@@ -551,7 +551,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
           listing, OI or liquidation Event; unsupported_market is a named held
           Event and never reaches Triage; the suffix affects broker scheduling only
   -> q:news.triage [prefetch = news.triage.concurrency, handled concurrently] Triage:
-       SemanticJudge.judge(TriageContext) -> DSPy EventSemantics.v2 with nested
+       SemanticJudge.judge(TriageContext) -> EventSemantics.v2 with nested
           TradeRelevanceV1
        -> deterministic SemanticNormalizer -> ReaderCard.v2
        -> deterministic VerdictAssembler -> one atomic SemanticJudgment
@@ -839,20 +839,20 @@ used by duplicate comparison, operator grouping, and advisory locking.
 
 Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
-consumer does not know DSPy signatures, instructions, demonstrations, model
+consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**, and `DspyNewsSemanticProgram` is the production
+semantic-judgment **Seam**, and `NewsSemanticProgram` is the production
 **Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
 verification composition seam, not a second production generation Interface:
 it scopes one persisted run's physical calls to the requested arm/case/trial,
-then re-executes the real arm-scoped `DspyNewsSemanticProgram` graph. The graph
+then re-executes the real arm-scoped `NewsSemanticProgram` graph. The graph
 still enters through `judge(TriageContext)`. A missing corpus or recording makes
 the verification evaluation `incomplete`/`UNKNOWN` without falling through to a
 live provider; an identity or tamper mismatch fails closed. This shape gives
 the hot-path caller **Leverage** (one call owns graph execution, validation,
 fallback and audit) while keeping replay authority outside production
 generation. Its **Depth** is the amount of behavior hidden behind the single
-hot-path `judge()` method, not the number of internal DSPy nodes.
+hot-path `judge()` method, not the number of internal Predictor calls.
 
 Inside the Module, the fixed Program graph is
 `EventSemantics.v2 -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
@@ -880,17 +880,15 @@ per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
 The only executable generation is `news_semantic_program_v5` from
-`tracefold.news.program.factory_v7` in learning epoch `program_v7`.
+`tracefold.news.program.factory_v8` in learning epoch `program_v8`.
 Issue #193 hard-cuts the artifact to one canonical JSON document holding
-`schema_version` `news_program_strategy_artifact_v1`, one `factory_id`, and the
-two advisory instructions an optimizer may write, one per Predictor.
-Issue #288 keeps that shape but bumps the factory for the code-owned exact
-source route; the current document carries
-`factory_id=tracefold.news.program.factory_v7`. `program_sha256` is the
+`schema_version` `news_program_strategy_artifact_v1`, one `factory_id`, and one
+instruction per Predictor. Issue #306 keeps that shape and changes what the two
+instructions *are*: each is now the complete prompt for its Predictor rather
+than a bounded advisory appended to a rendered stack, and the code-owned seed
+text lives in `tracefold/news/program/seed.py`. `program_sha256` is the
 canonical hash of exactly those four values, and the stable root is
-`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`.
-Like #175 and #190 this re-issues the sole v7 root rather than opening a
-generation; the old root is not a second runtime option.
+`c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
 
 `program_sha256` is behavior identity and nothing else. It no longer contains
 parent lineage, optimization cost, trajectory or teacher endpoint, so two runs
@@ -901,31 +899,52 @@ since #202 it is *derived* at registration by re-applying the patch rather than
 declared. Folding any of it into the runtime root let "who produced this" change
 what "this Program" meant.
 
-Everything else the Program needs — the two-Predictor graph, the typed
-schemas, the ordered code-owned RulePacks, the renderer, the normalizer, the
-assembler, the model route and the execution budget — is code, versioned by
-`factory_id`. A semantic change to any of them bumps the factory explicitly
-instead of cascading twenty-odd component hashes that the same package
-generated and verified in the same process; that is a self-proof, not an
-attestation, and it never replaced exact image/CI evidence. The code-owned pack
-set is capped at nine and the active reader-memory wording is
-`novelty_told_ledger` revision 3.
+Everything else the Program needs — the two-Predictor graph, the typed schemas,
+the normalizer, the assembler, the model route and the execution budget — is
+code, versioned by `factory_id`. A semantic change to any of them bumps the
+factory explicitly instead of cascading twenty-odd component hashes that the
+same package generated and verified in the same process; that is a self-proof,
+not an attestation, and it never replaced exact image/CI evidence.
 
-Rendered instructions are derived bytes, never a second editable truth, and
-they now carry no identity hash: a RulePack digest cannot help a model judge
-news, it was billed on every call, and carrying one meant a pure identity
-change rewrote the prompt. There is no demo section either. The DemoBank family
-is deleted rather than left empty — the contract already forbade demos, so the
-unreachable state space went with it instead of surviving as a YAGNI frame. The
-runtime Predictors hold no demos, and the optimizer-owned Predictor refuses one
-rather than restating the ban through a bank that has nothing in it.
+There is one prompt text per Predictor and no renderer (#306 Phase 2). Until
+then the prompt was a layering — a sealed QualityKernel, nine ordered code-owned
+RulePacks, one bounded advisory slot the optimizer could write, and a final
+authority seal telling the model to resolve conflicts in that order — assembled
+on every call, guarded by 55 reviewed coverage anchors and by authority patterns
+that refused any advisory claiming to outrank the packs. What that bought was
+the ability to say "the learned part cannot override the reviewed part" *inside
+the prompt*. What it cost was that the learned part could only ever be an
+addendum, blind to the text it was appended to and structurally unable to repair
+a sentence in it — and the measured result was a shipped stable artifact whose
+two advisories were both the empty string, i.e. a learning plane that had never
+contributed a byte to a reader-visible prompt.
+
+So the governance moved to where it already lived: a human edits `seed.py` and
+GEPA proposes a replacement for the same string, both produce a new
+`program_sha256`, and both travel the same candidate -> canary -> reviewed diff
+-> promote pipeline. `RulePackSpec`, `CoverageAnchor`,
+`validate_expert_baseline_coverage`, the advisory authority patterns, the
+optimizer-owned Predictor's mutable-surface check, the proposer's read-only
+brief and the four-part renderer are all retired. What survived, because none of
+it was ever about authority, is `validate_program_instruction`: NFC canonicality,
+the byte and estimated-token budget, credential shapes, and the injection
+markers (template braces, a script tag, a URL, a credential header, a
+prompt-injection opener). It applies identically to a human's edit and to an
+optimizer's proposal, which is the point — there is one author role now.
+
+An instruction carries no identity hash: a digest cannot help a model judge
+news, it was billed on every call, and carrying one meant a pure identity change
+rewrote the prompt. There is no demo section either. The DemoBank family is
+deleted rather than left empty, and the transport composes one system message
+and one user message from the instruction and the bounded fields, so there is no
+path by which a demo could reach a provider at all.
 
 The production registry resolves an image-carried SHA, never arbitrary database
 instructions, and the document is one `<program_sha256>.json` file. Loading
 fails closed on an unknown version, hash or factory, non-canonical or
 duplicate-keyed JSON, a non-finite number, an unsafe or secret-bearing key, a
 symlink or traversal path, or a file whose name is not its own root. Pickle,
-cloudpickle, DSPy Flex, dynamic code/classes, endpoints and credentials are not
+cloudpickle, dynamic code/classes, endpoints and credentials are not
 supported formats. This is the executable-state Seam: Program evolution can
 change reviewed state without allowing a data row to become Python control
 flow. There is no LangChain Prompt executor, dual-run mode, legacy Adapter, or
@@ -1058,7 +1077,7 @@ A retryable transport failure or a non-truncated unusable answer can spend that
 retry; `max_tokens` truncation cannot. The code-owned 20-second deadline
 applies to the whole route, not to each call. If primary still fails, fallback
 restarts the full graph with its own shared retry and route deadline; the
-complete chain therefore makes at most six visible provider attempts. DSPy
+complete chain therefore makes at most six visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. A verdict complete except for `novelty` can still be accepted as
 `new_fact` (`novelty_defaulted`) after the retry. A Program failure is
@@ -1070,7 +1089,7 @@ consecutive retryable whole-chain failures open the default 60-second consumer
 circuit that also opens a
 `triage_circuit_open` incident (closed by the next success); an output failure
 (`news_program_output_truncated` when a Predictor hit `max_tokens`, or a
-typed Program/DSPy output error on schema mismatch) is degraded but never
+typed Program output error on schema mismatch) is degraded but never
 counts toward the circuit and records the failing Predictor, finish reason,
 tokens and error code. After the Program returns the consumer decides and
 persists in one transaction under a per-storyline advisory lock on the final
@@ -1239,7 +1258,7 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-`program_v7` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
+`program_v8` / `news_review_v4` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -1256,14 +1275,18 @@ arm output is inspected, permits at most 100 human judgments, and returns
 or injection obedience) is a release failure. Mean and peak delivery load are
 reported for operator impact analysis but are not candidate-release quotas;
 correctly recognizing many distinct facts cannot fail a release by count alone.
-The optional DSPy GEPA optimization is a cold, manual development tool, never a
+The optional GEPA optimization is a cold, manual development tool, never a
 Workers loop. `news learning optimize` reads a frozen development corpus once
 and then holds three model endpoints and a typed budget — no DB write, broker,
 delivery, canary or promotion credential — and can emit only a bounded
-`PromptPatchV1`. That patch carries the two advisory instructions and nothing
-else: RulePacks, the graph, the Signatures, the execution budget, the model
-slots and the policy are code under `factory_id` and are outside the write set,
-and a demo is refused rather than banked. GEPA cannot accept a review,
+`PromptPatchV1`. That patch carries the two Predictor instructions and nothing
+else: the graph, the output schemas, the execution budget, the model slots and
+the policy are code under `factory_id` and are outside the write set. Since #306
+Phase 3 the optimizer calls `gepa.optimize` directly through a `GEPAAdapter`
+this repository owns, and evaluates a candidate by running the production
+Program over the frozen corpus — so "the optimized bytes are the production
+bytes" is structural rather than something a refactor-baseline test has to keep
+proving. GEPA cannot accept a review,
 register/deploy its output, move a stable pointer, or promote a candidate.
 #202 deleted the container platform that used to surround it — image, launcher,
 metered proxy sidecar, sandbox policy, tariff, build attestation — because it
@@ -1279,10 +1302,10 @@ budget and shipped nothing is still readable. Issue #193 had already collapsed
 the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
-*where* two advisory instructions were produced. Nothing downstream ever needed
-that: `dspy.GEPA` only assigns `predictor.signature.with_instructions(...)`, so
-the write-set is two bounded strings and `extract_optimizer_patch` refuses
-anything else. Rows written under the old chain stay in `news_learning_artifacts`
+*where* two instructions were produced. Nothing downstream ever needed that:
+`gepa.optimize` returns a `dict[str, str]` of named component texts, so the
+write-set is two strings and `run_gepa` refuses a winner that is not exactly the
+two. Rows written under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
 
 What replaced provenance is binding, checked at registration by a party that did
@@ -1388,13 +1411,45 @@ release plane's holdout stage can produce one. The summary publishes the first
 two with their difference and refuses to imply a comparison when dataset,
 representative set, split, metric, Program or model binding disagree.
 
-Metric v4 (`tracefold.news.production_action_trade_relevance_v4`) uses the one
+Metric v5 (`tracefold.news.production_action_trade_relevance_v5`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
-selection and CandidateEvaluator. Its candidate scalar is 45% final production
-action, 35% exact TradeRelevance dimensions, 10% semantics/novelty and 10%
-ReaderCard, with component denominators/effective weight mass/gold coverage
-published. Listing/telemetry are outside the relevance denominator; watchlist
-guard cases are policy evidence and do not send action feedback to GEPA.
+selection and CandidateEvaluator. Its candidate scalar weights 45% final
+production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,
+10% ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint,
+normalized over the components a case actually carries, with component
+denominators/effective weight mass/gold coverage published. Listing/telemetry
+are outside the relevance denominator; watchlist guard cases are policy evidence
+and do not send action feedback to GEPA.
+
+The copy lint (`tracefold.news.reader_card_lint_v1`, #306 Phase 1) is what makes
+the ReaderCard side scorable at all without a reviewer label. Before it, the
+only card dimension the ruler could measure was `factual_fidelity`, through the
+sealed equivalence judge; the rest of the card contract — banned evaluative
+filler, meta openings, self-description, emoji, URLs, the Chinese language
+boundary, the 15-60 character headline band, the count of decision-relevant
+numbers the original headline stated, a single-sentence `why_zh` — lived only as
+prose inside a RulePack, and prose cannot score a candidate. The lint is pure, framework-neutral code with no
+model call and no Gold dependency, so the metric, the Objective Plan's mirrored
+gate ladder and any offline report read the same answer, and its tables are
+hashed into the metric receipt like the rest of the ruler.
+
+Two severities, and the split is published in the receipt rather than implied.
+**Hard gates** are `card_lint_url` and `card_lint_self_description` only: a card
+carrying a URL or describing its writer as a model is not a worse card, it is
+not a reader card, so it zeroes the case the way `must_hold_send` does and never
+sends a repair instruction to EventSemantics, which cannot cause it. Everything
+else is **scored** — one point per applicable check in the `reader_card_lint`
+component — including the language boundary, which is a real rule but leaves the
+rest of the card measurable and is the check most likely to fire on copy that is
+otherwise fine. Number retention reads only standalone numeric literals: a digit
+that continues a word (an identifier, a build hash, `COVID19`) is not a number
+the headline promised to keep, and treating one as such would fail faithful
+cards, and the number check counts figures rather than matching them, because a
+faithful rendering converts the unit (`$1.5B` -> `15亿美元`) and a
+literal-identity test would fail the conversions the contract asks for — and
+feed that failure back to the optimizer as a repair instruction. A gated card
+publishes its gate and no per-check outcomes, so the component denominator never
+disagrees with the zero.
 
 Promotion is monotonic: development screen -> future temporal validation ->
 blind pairwise review -> 24 h shadow -> deterministic 10% canary -> stable.

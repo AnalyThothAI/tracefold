@@ -27,8 +27,8 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 
 _EXPECTED_N = 4
-_EXPECTED_CASE_MACRO = 0.6625
-_EXPECTED_CLUSTER_MACRO = 0.716667
+_EXPECTED_CASE_MACRO = 0.660714
+_EXPECTED_CLUSTER_MACRO = 0.71645
 _EXPECTED_CLUSTER_N = 3
 _HISTORICAL_N = 242
 _HISTORICAL_RAW_SHA256 = "dac040e4f48de7aea94469ed295fe736c32ce047c10eabe6f53ef3dd31d82460"
@@ -61,7 +61,7 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # result and dimension outcome below is byte-identical, which is the whole claim this pin exists to check.
 # #288 rebinds the same report to factory v7 for the exact source-contract route. The corpus and every
 # score remain unchanged; only the release-identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "5304c5588019ca2761b28682d369ec4e12c343afeec1198d1c578edbd1319c9e"
+_EXPECTED_REPORT_SHA256 = "7f2f24572b59cd5d7b13f099e59269555c338c3ab49bd7261b105a2f05553213"
 
 
 @pytest.fixture(scope="module")
@@ -158,7 +158,15 @@ def test_the_redactor_defaults_to_redacting_a_key_nobody_listed() -> None:
 # is deliberately NOT re-stamped with the new sha: it was not produced by the new Program, and a fixture
 # that claims otherwise is a forged record. Its job here is unaffected, because that job is to prove the
 # *metric wiring* is unchanged, and `recorded` mode scores persisted verdicts without executing the
-# Program at all. Re-record it against `program_v7` once that epoch has accepted reviews.
+# Program at all. Re-record it against `program_v8` once that epoch has accepted reviews.
+#
+# #306 Phase 1 is the first move that changes a score, and the pins above moved with it. The metric gained
+# the deterministic `reader_card_lint` component, and this fixture's cards are redaction markers rather
+# than reader copy: they pass every check that reads structure (length, filler, meta opening, one
+# sentence, no emoji) and fail the one that reads language, identically, on all four cases. So the corpus
+# still measures exactly what it exists to measure — that the wiring is deterministic and reproducible —
+# while carrying no evidence at all about the lint itself. `tests/news/test_news_card_lint.py` is where
+# that evidence lives, because a redacted corpus can never be where it lives.
 _V6_AUDIT_CORPUS_PROGRAM_SHA256 = "9334eae481e2d0cdcc3b982d25aa8def22538cadb1a57549074b56fb2a96d1ba"
 
 
@@ -168,8 +176,8 @@ def test_audit_corpus_keeps_its_original_program_identity_and_recorded_mode_uses
     # The report names the Program it ran under; the corpus names the one that produced it.
     assert report.identity["program_sha256"] == shipped
     assert corpus["program_sha256"] == _V6_AUDIT_CORPUS_PROGRAM_SHA256
-    assert shipped != corpus["program_sha256"], "re-point this test once a program_v7 corpus is recorded"
-    assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v4"
+    assert shipped != corpus["program_sha256"], "re-point this test once a program_v8 corpus is recorded"
+    assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v5"
     # Recorded mode uses the persisted complete DecisionResult and never replays today's policy.
     assert report.identity["policy_sha256"] is None
     assert report.identity["policy_values"] is None

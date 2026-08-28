@@ -1,8 +1,12 @@
-"""#143: exercise the real `dspy.GEPA`, not a stand-in.
+"""#143/#306: exercise the real optimizer and the real transport, not a stand-in.
 
-Every existing compiler test drives `_FakeGEPA`, so the governance assertions were proven while the claim that
-matters — that this Program, this metric and this proposer actually compile under the optimizer we ship — was
-only assumed. These tests run the genuine optimizer against a scripted LM.
+Every other optimizer test drives a fake `optimize`, so the governance assertions were proven while the
+claim that matters — that this Program, this metric and this proposer actually compile under the optimizer
+we ship — was only assumed. These tests run the genuine `gepa.optimize` over the genuine
+`ChatCompletionsPredictorAdapter`, `ReflectionLM` and `MetricJudgeEndpoint`, against scripted HTTP.
+
+Since #306 Phase 3 that is a stronger claim than it was: the thing GEPA evaluates is the production
+`NewsSemanticProgram`, and the bytes it sends are the bytes production sends.
 """
 
 from __future__ import annotations
@@ -10,25 +14,23 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
+import httpx
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.learning.contracts import (
-    METRIC_JUDGE_MAX_TOKENS,
-    METRIC_JUDGE_TIMEOUT_SECONDS,
     REFLECTION_MAX_TOKENS,
-    REFLECTION_TIMEOUT_SECONDS,
     DevelopmentDatasetRef,
-    ModelExecutionIdentity,
     OptimizationBudget,
 )
-from tracefold.news.learning.judge import CardEquivalenceJudge
 from tracefold.news.learning.objective import DevelopmentEpisode
-from tracefold.news.learning.optimizer import RulePackAwareProposer, _FeedbackCompileProgram, build_optimizer_lm
+from tracefold.news.learning.optimizer import (
+    InstructionProposer,
+    build_reflection_lm,
+    build_task_adapter,
+)
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import (
-    code_owned_rule_packs,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import TriageContext
@@ -69,109 +71,57 @@ _ADVISORY = "Prefer the stated accepted magnitude when the evidence names a conc
 _CARD = {"headline_zh": "特斯拉发布 Cybercab", "why_zh": "新车型进入量产排程，改变该名字的交付预期"}
 
 
-class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
-    """Answers both Predictors and the reflection call without a provider.
+_TASK_BASE = "https://scripted-task.invalid/v1"
+_REFLECTION_BASE = "https://scripted-reflection.invalid/v1"
+_JUDGE_BASE = "https://scripted-judge.invalid/v1"
 
-    It carries the same `tracefold_compiler_endpoint_identity` stamp `build_compile_lm` puts on a real
-    route: `ProgramCompiler` refuses an unstamped LM at construction, because the role contract this
-    fixture claims to run under is precisely what an identity attests.
+
+class _ScriptedEndpoints:
+    """One HTTP handler standing in for all three roles, routed by the URL each builder was given.
+
+    Deliberately not three fake objects: what #306 Phase 3 has to prove is that the real adapter, the real
+    reflection callable and the real judge endpoint compose requests a provider can answer, so the seam
+    under test is the socket and nothing above it.
     """
 
-    def __init__(self, model: str, *, reflection: bool = False) -> None:
-        super().__init__(model=model)
-        self.cache = False
-        self.num_retries = 0
-        api_base = "http://scripted.invalid/v1"
-        self.kwargs = {
-            "temperature": 1.0 if reflection else 0,
-            "max_tokens": REFLECTION_MAX_TOKENS,
-            "api_base": api_base,
-        }
-        self.calls: list[str] = []
-        self._reflection = reflection
-        self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
-            role="reflection" if reflection else "task",
-            model=model,
-            api_base=api_base,
-            max_output_tokens=REFLECTION_MAX_TOKENS if reflection else 1_200,
-            timeout_seconds=REFLECTION_TIMEOUT_SECONDS if reflection else 20.0,
-            temperature=1.0 if reflection else 0.0,
-            model_kwargs={},
+    def __init__(self) -> None:
+        self.task_calls: list[dict[str, Any]] = []
+        self.reflection_calls: list[dict[str, Any]] = []
+        self.judge_calls = 0
+
+    def _reply(self, content: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "scripted-model",
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+            },
         )
 
-    def observe_exact_call(self):  # mirrors ExactMetadataDspyLM's seam
-        from contextlib import contextmanager
-
-        from tracefold.news.program.dspy_adapter import (
-            ExactProviderCallCapture,
-            ExactProviderMetadata,
-        )
-
-        @contextmanager
-        def _cm():
-            capture = ExactProviderCallCapture()
-            yield capture
-            capture.record_metadata(
-                ExactProviderMetadata(
-                    response_model=self.model,
-                    input_tokens=10,
-                    output_tokens=10,
-                    cached_tokens=0,
-                    total_tokens=20,
-                    provider_cost_microusd=None,
-                    finish_reason="stop",
-                )
-            )
-
-        return _cm()
-
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
-        text = json.dumps(prompt if isinstance(prompt, str) else messages)
-        self.calls.append(text)
-        if self._reflection:
-            return [f"```\n{_ADVISORY}\n```"]
-        field = "card" if "semantics_json" in text else "semantics"
-        if field == "card":
-            return [json.dumps({"card": _CARD})]
-        # The advisory has to actually change the answer, or GEPA correctly keeps the seed and the compile
-        # refuses as `no_program_change`. The accepted gold for the failing cases is magnitude 2.
-        magnitude = 2 if _ADVISORY in text else 0
-        return [json.dumps({"semantics": {**_SEMANTICS, "magnitude": magnitude}})]
-
-
-class _ScriptedJudgeLM(_ScriptedLM):
-    """The judge route, stamped like the real one.
-
-    `optimize` refuses an unstamped judge: the metric calls it directly, so without a role binding a
-    candidate would retain judge-derived scores with no record of the endpoint that produced them.
-    """
-
-    def __init__(self, model: str) -> None:
-        super().__init__(model)
-        self.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
-            role="metric_judge",
-            model=model,
-            api_base="https://scripted.test/v1",
-            max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
-            timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
-            temperature=0,
-            model_kwargs={},
-        )
-
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
-        del prompt, messages, kwargs
-        self.calls.append("metric_judge")
-        return [
-            json.dumps(
-                {
-                    "verdict": {
-                        "headline_equivalent": False,
-                        "why_equivalent": False,
-                        "facts_preserved": False,
-                    }
-                }
-            )
-        ]
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        host = request.url.host
+        if host == httpx.URL(_REFLECTION_BASE).host:
+            self.reflection_calls.append(body)
+            return self._reply(f"```\n{_ADVISORY}\n```")
+        if host == httpx.URL(_JUDGE_BASE).host:
+            self.judge_calls += 1
+            verdict = {"headline_equivalent": False, "why_equivalent": False, "facts_preserved": False}
+            if "supported_by_evidence" in json.dumps(body["response_format"]):
+                verdict = {"supported_by_evidence": False}
+            return self._reply(json.dumps({"verdict": verdict}))
+        self.task_calls.append(body)
+        instruction = body["messages"][0]["content"]
+        user = body["messages"][1]["content"]
+        if "## semantics_json" in user:
+            return self._reply(json.dumps({"card": _CARD}))
+        # The proposed instruction has to actually change the answer, or GEPA correctly keeps the seed and
+        # the run refuses as `no_program_change`. The accepted gold for the failing cases is magnitude 2.
+        magnitude = 2 if _ADVISORY in instruction else 0
+        return self._reply(json.dumps({"semantics": {**_SEMANTICS, "magnitude": magnitude}}))
 
 
 def _episode(
@@ -305,11 +255,10 @@ def _budget(**overrides: Any) -> OptimizationBudget:
 
 
 def _optimize_real(
-    task: Any,
-    reflection: Any,
+    endpoints: _ScriptedEndpoints,
     *,
     budget: OptimizationBudget | None = None,
-    optimizer_factory: Any = None,
+    optimize_fn: Any = None,
 ) -> Any:
     """One real GEPA run through the one entry point, over the scripted corpus.
 
@@ -319,10 +268,11 @@ def _optimize_real(
     """
 
     from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
 
     episodes = compiler_development_corpus()
-    dataset_payload = {"role": "development", "learning_epoch": "program_v7", "cases": []}
+    dataset_payload = {"role": "development", "learning_epoch": "program_v8", "cases": []}
     dataset = FrozenDevelopmentDataset.bind(
         dataset_payload=dataset_payload,
         ref=DevelopmentDatasetRef(
@@ -335,31 +285,41 @@ def _optimize_real(
         episodes=episodes,
         target_runtime_manifest_sha256="a" * 64,
     )
-    config_kwargs: dict[str, Any] = {}
-    if optimizer_factory is not None:
-        config_kwargs["optimizer_factory"] = optimizer_factory
+    async_transport = httpx.MockTransport(endpoints)
     return optimize(
         dataset,
         OptimizationConfig(
-            task_lm=task,
-            reflection_lm=reflection,
-            judge=CardEquivalenceJudge(
-                _ScriptedJudgeLM("scripted/judge"),
-                max_tokens=METRIC_JUDGE_MAX_TOKENS,
+            task_adapter=build_task_adapter(
+                model_name="openai/scripted-task",
+                api_key="k",
+                api_base=_TASK_BASE,
+                timeout=20.0,
+                max_tokens=1_200,
+                transport=async_transport,
+            ),
+            reflection_lm=build_reflection_lm(
+                model_name="openai/scripted-reflection",
+                api_key="k",
+                api_base=_REFLECTION_BASE,
+                transport=httpx.MockTransport(endpoints),
+            ),
+            judge=build_judge(
+                model_name="openai/scripted-judge",
+                api_key="k",
+                api_base=_JUDGE_BASE,
                 max_model_calls=400,
+                transport=httpx.MockTransport(endpoints),
             ),
             budget=budget or _budget(),
-            **config_kwargs,
+            optimize_fn=optimize_fn,
         ),
     )
 
 
-def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> None:
-    task = _ScriptedLM("scripted/task")
-    reflection = _ScriptedLM("scripted/reflection", reflection=True)
+def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() -> None:
+    endpoints = _ScriptedEndpoints()
     result = _optimize_real(
-        task,
-        reflection,
+        endpoints,
         # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
         # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
         budget=_budget(
@@ -373,8 +333,15 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
         ),
     )
 
+    stable = load_stable_program_artifact()
     learned = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    assert any(text.strip() for text in learned.values()), "GEPA produced no advisory at all"
+    assert any(text != stable.instruction_for(name) for name, text in learned.items()), (
+        "GEPA changed neither instruction"
+    )
+    # The real transport answered the real graph: every task request carries a Predictor instruction and a
+    # JSON-schema constraint built from the model the answer is validated against.
+    assert endpoints.task_calls and endpoints.reflection_calls
+    assert all("response_format" in body for body in endpoints.task_calls)
     # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
     # valset evaluation; the compiler allows exactly that and no more.
     # A completed run overshoots by whatever the step in flight consumed: one reflection minibatch plus, on
@@ -385,15 +352,12 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
     assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
     assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
-    # `dspy.GEPA` only rewrites instructions — `build_program` never touches `predictor.demos`. That the
-    # compile returned at all is the proof: `extract_optimizer_patch` runs `_validate_mutable_surface`, which
-    # refuses `news_program_optimizer_demos_forbidden` for any Predictor carrying one.
     assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v2"
     assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     receipt = result.report.optimizer
-    assert receipt["instruction_proposer"]["implementation"].endswith("RulePackAwareProposer")
-    assert receipt["omitted_unset_arguments"] == ["wandb_api_key"]
+    assert receipt["optimizer"]["implementation"] == "gepa.optimize"
+    assert receipt["instruction_proposer"]["implementation"].endswith("InstructionProposer")
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
     split = result.report.split
@@ -401,60 +365,89 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_strategy() -> No
     assert split["train"]["case_n"] > 0 and split["development_selection"]["case_n"] > 0
 
 
-def test_reflection_prompt_carries_every_rulepack() -> None:
-    """The whole point of the custom proposer: the model can see what it is amending."""
+def test_the_reflection_brief_names_the_whole_instruction_as_the_write_set() -> None:
+    """#306 Phase 2: the proposer's job changed from "do not touch this" to "you own all of it"."""
 
-    proposer = RulePackAwareProposer(load_stable_program_artifact())
+    proposer = InstructionProposer(reflection_lm=lambda prompt: "")
     brief = proposer.context_for("event_semantics")
-    packs = [pack for pack in code_owned_rule_packs() if pack.target in {"event_semantics", "both"}]
-    assert packs, "no code-owned RulePack targets event_semantics"
-    for pack in packs:
-        assert f"{pack.rule_id}@{pack.revision}" in brief
-        assert pack.body in brief
-    assert "LEARNEDSTRATEGY" in brief
-    assert "You may NOT change any of it except" in brief
+
+    assert "COMPLETE instruction" in brief
+    assert "replaces the whole instruction" in brief
+    # The RulePack stack it used to paste in is the component text now, so the brief must not duplicate it.
+    assert "RULEPACK" not in brief
+    assert "LEARNEDSTRATEGY" not in brief
 
 
-def test_advisory_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
-    """An LM told only "you scored zero" proposes the same rejected text again."""
+def test_instruction_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
+    """A writer told only "you scored zero" proposes the same rejected text again.
 
-    from tracefold.news.learning.metric import accepted_review_metric
+    Until #306 Phase 3 this needed a `_FeedbackCompileProgram` subclass to convert the refusal into a
+    prediction, because DSPy's evaluator caught the raise and recorded a failure score without ever calling
+    the metric. The adapter this repository owns does it directly, and no provider call is made at all.
+    """
+
+    from tracefold.news.learning.metric import _compile_example, bind_metric
+    from tracefold.news.learning.optimizer import NewsGepaAdapter
 
     artifact = load_stable_program_artifact()
-    program = _FeedbackCompileProgram(artifact)
-    # A URL is one of the code-owned advisory bounds; the text is otherwise unremarkable.
-    program.event_semantics.signature = program.event_semantics.signature.with_instructions(
-        "Consult https://example.invalid/rules before judging."
+    adapter = NewsGepaAdapter(
+        adapter=_RefusingAdapter(),
+        metric=bind_metric(None),
+        proposer=InstructionProposer(reflection_lm=lambda prompt: ""),
     )
-    prediction = program(evidence_json="{}", card_evidence_json="{}", told_count=0)
-    assert prediction.advisory_rejected == "news_program_learned_strategy_unsafe"
+    example = _compile_example(compiler_development_corpus()[0])
 
-    scored = accepted_review_metric(dspy.Example(accepted_review={}), prediction, None, None, None)
-    assert scored.score == 0.0
-    assert "news_program_learned_strategy_unsafe" in scored.feedback
-    assert "Rewrite it without URLs" in scored.feedback
+    # A URL is one of the code-owned instruction bounds; the text is otherwise unremarkable.
+    batch = adapter.evaluate(
+        [example],
+        {
+            "event_semantics": "Consult https://example.invalid/rules before judging.",
+            "reader_card": artifact.reader_card_instruction,
+        },
+        capture_traces=True,
+    )
+
+    assert batch.scores == [0.0]
+    assert batch.outputs[0].instruction_rejected == "news_program_instruction_unsafe"
+    records = adapter.make_reflective_dataset({}, batch, ["event_semantics"])
+    feedback = records["event_semantics"][0]["Feedback"]
+    assert "news_program_instruction_unsafe" in feedback
+    assert "Rewrite it without URLs" in feedback
+
+
+class _RefusingAdapter:
+    """Proves the rejection costs nothing: a provider call here is a test failure."""
+
+    def runtime_identity(self, model_binding: str) -> Any:
+        from tracefold.news.program.transport import RuntimeModelIdentity
+
+        del model_binding
+        return RuntimeModelIdentity.issue(provider="never", model="never/called")
+
+    async def invoke(self, request: Any, spec: Any) -> Any:
+        raise AssertionError("a rejected instruction must never reach a provider")
 
 
 def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
-    task = build_optimizer_lm(
-        model_name="openai/x", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200, role="task"
-    )
-    reflection = build_optimizer_lm(
-        model_name="openai/y", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200, role="reflection"
-    )
-    assert task.kwargs["temperature"] == 0 and task.kwargs["max_tokens"] == 1200
+    from tracefold.news.learning.optimizer import require_model_identity
+
+    task = build_task_adapter(model_name="openai/x", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200)
+    reflection = build_reflection_lm(model_name="openai/y", api_key="k", api_base="http://h/v1")
+
+    task_identity = require_model_identity(task, role="task")
+    assert (task_identity.temperature, task_identity.max_output_tokens) == (0, 1200)
     # A reflection call has to emit an entire replacement instruction; the task route's ceiling is below what
-    # `LearnedStrategy` itself accepts, so deriving one from the other truncated every proposal.
-    assert reflection.kwargs["temperature"] == 1.0
-    assert reflection.kwargs["max_tokens"] == REFLECTION_MAX_TOKENS
-    assert reflection.kwargs["timeout"] >= 300.0
-    assert task.num_retries == 0 and reflection.num_retries == 0
+    # the instruction bound itself accepts, so deriving one from the other truncated every proposal.
+    reflection_identity = require_model_identity(reflection, role="reflection")
+    assert reflection_identity.temperature == 1.0
+    assert reflection_identity.max_output_tokens == REFLECTION_MAX_TOKENS
+    assert reflection_identity.timeout_seconds >= 300.0
 
 
 @pytest.mark.parametrize("cost", [None, 7])
 def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) -> None:
     from tracefold.news.learning.optimizer import _BudgetMeter
-    from tracefold.news.program.dspy_adapter import ExactProviderMetadata
+    from tracefold.news.program.transport import ProviderCallMetrics
 
     budget = _budget(
         max_metric_calls=10,
@@ -468,7 +461,7 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     meter = _BudgetMeter(budget, imputed_call_cost_microusd=budget.max_call_cost_microusd)
     meter.before("task")
     meter.after(
-        ExactProviderMetadata(
+        ProviderCallMetrics(
             response_model="m",
             input_tokens=100,
             output_tokens=10,
@@ -482,84 +475,32 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     assert meter.imputed_cost_calls == (1 if cost is None else 0)
 
 
-def test_empty_advisory_survives_a_gepa_round_trip() -> None:
-    """A run that learned nothing must not emit DSPy boilerplate as a learned strategy.
-
-    `Signature.with_instructions("")` does not store an empty instruction — DSPy substitutes a generated one.
-    The Artifact's baseline advisory is empty, so GEPA's seed candidate is `""` and its first `build_program`
-    put "Given the fields ... produce the fields ..." into the advisory slot. When the Pareto front then kept
-    the seed, that boilerplate came back out as a *learned* strategy and `no_program_change` did not fire.
-    """
-
-    from tracefold.news.learning.optimizer import generated_default_instruction, restore_empty_advisories
-
-    artifact = load_stable_program_artifact()
-    program = _FeedbackCompileProgram(artifact)
-    seed = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert seed == {"event_semantics": "", "reader_card": ""}, "the baseline advisory is not empty"
-
-    # Exactly what GEPA's `build_program` does with its own seed candidate.
-    for name, pred in program.named_predictors():
-        pred.signature = pred.signature.with_instructions(seed[name])
-    polluted = {name: pred.signature.instructions for name, pred in program.named_predictors()}
-    assert polluted["event_semantics"] == generated_default_instruction(program.event_semantics)
-    assert "produce the fields" in polluted["event_semantics"]
-
-    restore_empty_advisories(program)
-    assert {name: pred.signature.instructions for name, pred in program.named_predictors()} == seed
-
-
-def test_checkpoint_receipt_records_the_empty_advisory_not_dspy_boilerplate() -> None:
-    """The compile receipt must describe what shipped, for the untouched Predictor as much as the changed one.
-
-    GEPA's `build_program` calls `with_instructions` for *every* component of its candidate, including the ones
-    it never rewrote, so a Predictor whose advisory stayed empty is holding DSPy's generated default by the time
-    the run ends. `_restore_empty_advisories` maps that back to `""` — but the checkpoint receipt used to be
-    taken one line before the restore, so `compile_checkpoint_receipt.v2` recorded "Given the fields ..., produce
-    the fields ..." as the produced instruction while the patch and the shipped artifact carried `""`. A receipt
-    that disagrees with the artifact it attests to is not evidence.
-    """
-
-    from tracefold.news.learning.optimizer import generated_default_instruction
-
-    result = _optimize_real(_ScriptedLM("scripted/task"), _ScriptedLM("scripted/reflection", reflection=True))
-
-    shipped = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    recorded = {name: state["instruction"] for name, state in result.report.checkpoint["predictors"].items()}
-    assert recorded == shipped
-
-    untouched = [name for name, text in shipped.items() if text == ""]
-    assert untouched, "this run rewrote both advisories, so it cannot exercise the untouched Predictor"
-    program = _FeedbackCompileProgram(load_stable_program_artifact())
-    for name in untouched:
-        boilerplate = generated_default_instruction(getattr(program, name))
-        # The exact text the receipt must not carry, so this test cannot pass vacuously.
-        assert "produce the fields" in boilerplate
-        assert recorded[name] == ""
-
-
 def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
-    """The guard only works once the empty advisory round-trips; before the fix it never fired."""
+    """A complete run whose Pareto front keeps the seed is `NO_OP`, not a candidate.
 
-    class _SeedOnlyGEPA:
-        """Stands in for a GEPA run whose Pareto front keeps the seed program."""
+    #306 Phase 2 deleted the two tests that used to sit above this one. Both were about DSPy substituting a
+    generated instruction for the empty advisory the baseline carried — the seed came back out of the round
+    trip as a *learned* strategy and this guard did not fire. A seed is a complete instruction now, and the
+    write-set is a plain mapping, so the failure mode cannot occur.
+    """
 
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            self.detailed_results = type(
-                "R", (), {"total_metric_calls": 3, "candidates": [], "val_aggregate_scores": []}
-            )()
+    def _seed_only(**kwargs: Any) -> Any:
+        """Stands in for a run whose Pareto front keeps the seed candidate."""
 
-        def compile(self, student: Any, *, trainset: Any, teacher: Any, valset: Any) -> Any:
-            for _name, pred in student.named_predictors():
-                pred.signature = pred.signature.with_instructions(pred.signature.instructions)
-            student.detailed_results = self.detailed_results
-            return student
+        from types import SimpleNamespace
 
-    result = _optimize_real(
-        _ScriptedLM("scripted/task"),
-        _ScriptedLM("scripted/reflection", reflection=True),
-        optimizer_factory=_SeedOnlyGEPA,
-    )
+        return SimpleNamespace(
+            best_candidate=dict(kwargs["seed_candidate"]),
+            parents=[[None]],
+            val_aggregate_scores=[0.5],
+            discovery_eval_counts=[1],
+            total_metric_calls=3,
+            num_full_val_evals=1,
+            seed=kwargs["seed"],
+            best_idx=0,
+        )
+
+    result = _optimize_real(_ScriptedEndpoints(), optimize_fn=_seed_only)
 
     # A terminal answer, not a traceback: the run happened, it kept the seed, and the report says so.
     assert result.outcome == "NO_OP"

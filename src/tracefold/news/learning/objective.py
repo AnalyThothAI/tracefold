@@ -39,6 +39,7 @@ from ..events.storyline import final_storyline_key
 from ..models import base_symbol
 from ..program.contracts import ScoredJudgment, TriageContext
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
+from .card_lint import lint_reader_card
 
 
 class _ExactModel(BaseModel):
@@ -535,6 +536,13 @@ def stable_hard_gate(
         return "must_hold_send"
     if dimensions.get("factual_fidelity") == "fail" and not judge_configured:
         return "factual_contradiction"
+    lint = lint_reader_card(
+        headline_zh=judgment.verdict.headline_zh,
+        why_zh=judgment.verdict.why_zh,
+        source_title=episode.context.evidence.title,
+    )
+    if lint.gate:
+        return lint.gate
     grounded = {
         base_symbol(str(value)) for value in dict(episode.policy_metric.get("gate") or {}).get("grounded_assets") or ()
     }

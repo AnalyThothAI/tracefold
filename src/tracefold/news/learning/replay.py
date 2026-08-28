@@ -16,18 +16,19 @@ from typing import Any, Literal, NoReturn, cast
 from ..artifact_identity import canonical_sha
 from ..program.artifact import ProgramStrategyArtifactV1
 from ..program.contracts import SemanticJudgment, TriageContext
-from ..program.dspy_adapter import (
-    PredictorAdapterError,
-    PredictorRequest,
-    PredictorResponse,
-    ProviderCallObservation,
-    RuntimeModelIdentity,
-)
-from ..program.graph import DspyNewsSemanticProgram
+from ..program.graph import NewsSemanticProgram
 from ..program.runtime import (
     PROGRAM_FACTORY_ID,
     PROGRAM_SCHEMA_VERSION,
     PROGRAM_VERSION,
+)
+from ..program.transport import (
+    PredictorAdapterError,
+    PredictorRequest,
+    PredictorResponse,
+    PredictorSpec,
+    ProviderCallObservation,
+    RuntimeModelIdentity,
 )
 
 ArmName = Literal["stable", "candidate"]
@@ -148,8 +149,8 @@ class _ScopedRecordingAdapter:
             binding_sha256=str(request.get("runtime_binding_sha256") or ""),
         )
 
-    async def invoke(self, request: PredictorRequest, predictor: Any) -> PredictorResponse:
-        del predictor
+    async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
+        del spec
         recording = self._next()
         expected = recording.request
         request_payload = request.model_dump(mode="json")
@@ -217,7 +218,7 @@ class _ScopedRecordingAdapter:
 class _ReplayArm:
     bundle_sha: str
     adapter: _ScopedRecordingAdapter
-    program: DspyNewsSemanticProgram
+    program: NewsSemanticProgram
 
 
 class RecordingReplayCapability:
@@ -363,7 +364,7 @@ def load_recording_replay_capability(
         replay_arms[arm] = _ReplayArm(
             bundle_sha=spec.bundle_sha,
             adapter=adapter,
-            program=DspyNewsSemanticProgram(
+            program=NewsSemanticProgram(
                 spec.artifact,
                 primary_adapter=adapter,
                 fallback_adapter=adapter,
@@ -446,20 +447,51 @@ def _parse_outcome(
     )
 
 
+# The HTTP statuses `transport.py` classifies as "ask again later". Kept as a literal set rather than
+# imported, so a recording made under one classification replays under the classification it was recorded
+# with; the transport's own set is what a *live* call is judged by, and the two are allowed to diverge as
+# the epoch moves.
+_RETRYABLE_RECORDED_STATUS: frozenset[str] = frozenset({"408", "409", "425", "429", "500", "502", "503", "504"})
+
+
 def _error_behavior(error_code: str) -> tuple[bool, bool]:
+    """How one recorded failure behaves on replay: `(retryable, output_failure)`.
+
+    Every code the Program can put in a trace has to land in a branch here, or a recorded run containing
+    it makes the whole replay corpus unloadable rather than replaying one failed call. #306 Phase 3 added
+    a family — the self-owned transport's HTTP statuses and its two "the provider answered, but not with
+    an answer" codes — and they are enumerated below for exactly that reason.
+    """
+
     if error_code == "news_program_route_deadline":
         raise RecordingReplayError("news_learning_recording_replay_outcome_unreplayable:route_deadline")
     if error_code == "news_program_runtime_binding_mismatch":
         raise RecordingReplayError("news_learning_recording_replay_outcome_unreplayable:runtime_binding")
-    if error_code == "news_program_output_truncated" or error_code.startswith("news_program_dspy_output_"):
+    if error_code == "news_program_output_truncated" or error_code.startswith("news_program_provider_output_"):
         return False, True
     if error_code in {"news_program_event_semantics_invalid", "news_program_reader_card_invalid"}:
         return False, True
+    if error_code == "news_program_provider_choice_missing":
+        # The provider answered with no content: an output failure, and the graph may spend its one retry.
+        return False, True
+    if error_code == "news_program_provider_body_not_json":
+        return False, False
+    if error_code.startswith("news_program_provider_http_"):
+        return error_code.removeprefix("news_program_provider_http_") in _RETRYABLE_RECORDED_STATUS, False
     if error_code.startswith("news_program_transport_"):
+        # The class names `integrations.chat_completions` puts in this code, split the way it splits them:
+        # a timeout, a network error, a proxy error or a peer that hung up mid-response is worth asking
+        # again; a malformed request is not.
         suffix = error_code.removeprefix("news_program_transport_")
-        if any(marker in suffix for marker in ("timeout", "connection", "transport", "server", "rate", "temporar")):
+        if any(
+            marker in suffix
+            for marker in ("timeout", "connect", "read", "write", "network", "pool", "proxy", "remoteprotocol")
+        ):
             return True, False
-        if any(marker in suffix for marker in ("auth", "invalidrequest", "contextwindow")):
+        if any(
+            marker in suffix
+            for marker in ("auth", "invalidrequest", "invalidurl", "contextwindow", "localprotocol", "unsupported")
+        ):
             return False, False
     raise RecordingReplayError(f"news_learning_recording_replay_outcome_unreplayable:{error_code}")
 

@@ -8,10 +8,14 @@ Three modes, each with its own question and its own exclusions:
 ``recorded``      Score the verdict production persisted, against the action it actually shipped. No model
                   request, no policy replay — so it stays reproducible across policy revisions and is the
                   calibration proof for metric wiring.
-``compile_live``  Run `DspyCompileProgram` — literally the graph GEPA optimizes — against one task endpoint.
-                  This is the optimizer's baseline. It has no fallback route, no fast retry, no per-route
-                  deadline and no circuit breaker, so its failure rate is not production's.
-``runtime_live``  Run the configured `DspyNewsSemanticProgram` through `composition.semantic_judge()`: four
+``compile_live``  Run the production `NewsSemanticProgram` against one task endpoint, with no fallback
+                  route configured. This is literally what the optimizer evaluates (#306 Phase 3 collapsed
+                  the separate optimizer student), so it is the optimizer's baseline; with one slot and no
+                  second route its failure rate is not production's. It is *not* stateless: the graph's
+                  fast retry, route deadline and primary breaker come with it, and an open breaker
+                  short-circuits later cases in the same run. `execution_scope` says so, because a report
+                  that claimed otherwise would invite reading a short-circuited stretch as measurement.
+``runtime_live``  Run the configured `NewsSemanticProgram` through `composition.semantic_judge()`: four
                   slots, one shared fast retry per route, fallback restarting the graph, per-route deadline
                   and the primary circuit breaker. This is the production *Program route*, and nothing more —
                   it does not simulate the consumer's transaction, the advisory lock, stale-evidence re-ask,
@@ -29,14 +33,14 @@ accepts and promotes nothing.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import math
 import random
 import statistics
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, NamedTuple
 
-import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
@@ -45,17 +49,20 @@ from ..program.artifact import (
     ProgramStrategyArtifactV1,
     render_model_evidence_json,
 )
-from ..program.contracts import TriageContext
-from ..program.dspy_adapter import DspyStrictJSONAdapter
-from ..program.graph import DspyCompileProgram
+from ..program.contracts import SemanticJudge, TriageContext
+from ..program.graph import NewsSemanticProgram
 from ..program.runtime import PROGRAM_VERSION
+from ..program.transport import ChatCompletionsPredictorAdapter
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
-from .judge import CardEquivalenceJudge
+from .judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from .metric import (
     COMPONENT_FIELDS,
     LABEL_GROUP,
     METRIC_ID,
     UNGROUPED_LABEL,
+    CandidatePrediction,
+    CompileExample,
+    MetricOutcome,
     bind_metric,
     build_compile_example,
     metric_receipt,
@@ -75,13 +82,14 @@ BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefo
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
 _EXECUTION_SCOPE = {
     "recorded": ("no model call", "no policy replay", "scores the action that shipped"),
+    # #306 Phase 3 made this the production graph on one slot, so it inherits the graph's own controls.
+    # Only the second route is genuinely absent, and saying otherwise would let an operator read a run
+    # short-circuited by an open breaker as a stateless per-case measurement.
     "compile_live": (
-        "the graph GEPA optimizes",
-        "single task endpoint",
+        "the graph GEPA evaluates: the production Program on a single task endpoint",
         "no fallback route",
-        "no fast retry",
-        "no per-route deadline",
-        "no circuit breaker",
+        "one shared fast retry per route",
+        "per-route deadline and primary circuit breaker, both carried across cases within the run",
     ),
     "runtime_live": (
         "configured four-slot Program route",
@@ -203,23 +211,22 @@ class BaselineReport(BaseModel):
         return canonical_sha({"latency_ms": self.latency_ms, "cases": [case.latency_ms for case in self.cases]})
 
 
-def _gold_example(case: BaselineCase) -> dspy.Example:
+def _gold_example(case: BaselineCase) -> CompileExample:
     """The metric's gold side. `recorded` mode pins the shipped action; the others let `decide()` run."""
 
     example = build_compile_example(case.episode)
     if not case.recorded_decision_result:
         raise ValueError(f"news_program_baseline_recorded_decision_missing:{case.episode.case_id[:16]}")
-    projection = dict(example.get("policy_metric") or {})
+    projection = dict(example.policy_metric)
     projection["recorded_decision_result"] = dict(case.recorded_decision_result)
-    example = example.copy(policy_metric=projection)
-    return example
+    return dataclasses.replace(example, policy_metric=projection)
 
 
-def _stored_prediction(case: BaselineCase) -> dspy.Prediction:
+def _stored_prediction(case: BaselineCase) -> CandidatePrediction:
     judgment = case.episode.production_judgment
     if judgment is None:
-        return dspy.Prediction(verdict={}, editorial={})
-    return dspy.Prediction(
+        return CandidatePrediction(verdict={}, editorial={})
+    return CandidatePrediction(
         verdict=judgment.verdict.model_dump(mode="json"),
         editorial=judgment.editorial.model_dump(mode="json"),
     )
@@ -273,7 +280,7 @@ def _hard_gates(results: Sequence[CaseResult]) -> dict[str, Any]:
     return {"by_gate": dict(sorted(tally.items())), "n": sum(tally.values())}
 
 
-def build_runtime_lm(
+def build_compile_adapter(
     *,
     model_name: str,
     api_key: str,
@@ -281,54 +288,30 @@ def build_runtime_lm(
     timeout: float,
     max_tokens: int,
     model_kwargs: Mapping[str, Any] | None = None,
-) -> dspy.LM:
-    """Provider binding for the explicit live evaluation modes; the CLI layer never imports DSPy."""
+) -> ChatCompletionsPredictorAdapter:
+    """The one task endpoint `compile_live` drives the production graph on.
 
-    extras = dict(model_kwargs or {})
-    owned = {"api_key", "api_base", "base_url", "cache", "num_retries", "temperature", "max_tokens", "timeout"}
-    if owned & set(extras):
-        raise ValueError(f"news_program_baseline_model_kwargs_owned:{','.join(sorted(owned & set(extras)))}")
-    return dspy.LM(
-        str(model_name),
-        api_key=str(api_key),
-        api_base=str(api_base),
-        timeout=float(timeout),
-        max_tokens=int(max_tokens),
-        temperature=0,
-        cache=False,
-        num_retries=0,
-        **extras,
-    )
-
-
-def build_metric_lm(
-    *,
-    model_name: str,
-    api_key: str,
-    api_base: str,
-    model_kwargs: Mapping[str, Any],
-    timeout: float = 120.0,
-    max_tokens: int = 4_096,
-) -> dspy.LM:
-    """A metric-side endpoint (judge, drafter). `model_kwargs` comes from the app's provider resolution.
-
-    Passing it matters: for `deepseek-v4-*` it carries `extra_body.thinking = disabled`, and this gateway
-    enables thinking by default. Without it the model spends its whole output budget reasoning and returns an
-    empty answer — which is what made every early judge verdict truncate and every early draft fail to parse.
-    Raising `max_tokens` only hid that.
+    It lives here rather than in the CLI for the reason the DSPy binding it replaces did: the command layer
+    resolves operator settings and prints a receipt, and the model transport is not its business.
     """
 
-    return dspy.LM(
-        str(model_name),
-        api_key=str(api_key),
-        api_base=str(api_base),
+    return ChatCompletionsPredictorAdapter(
+        model_name=model_name,
+        api_key=api_key,
+        api_base=api_base,
         timeout=float(timeout),
         max_tokens=int(max_tokens),
-        temperature=0,
-        cache=False,
-        num_retries=0,
-        **dict(model_kwargs),
+        model_kwargs=model_kwargs,
     )
+
+
+def build_compile_program(
+    artifact: ProgramStrategyArtifactV1,
+    adapter: ChatCompletionsPredictorAdapter,
+) -> NewsSemanticProgram:
+    """The graph GEPA evaluates: production, on one slot, with no fallback route."""
+
+    return NewsSemanticProgram(artifact, primary_adapter=adapter)
 
 
 def build_judge(
@@ -338,8 +321,9 @@ def build_judge(
     api_base: str,
     model_kwargs: Mapping[str, Any] | None = None,
     max_model_calls: int | None = None,
+    transport: Any = None,
 ) -> CardEquivalenceJudge:
-    """The semantic-equivalence judge, built here so the CLI layer never imports DSPy.
+    """The semantic-equivalence judge, built here so the CLI layer never composes a model transport.
 
     `max_model_calls` is the judge's own ceiling, admitted atomically before a slow provider call. A caller
     that spends unattended — `learning optimize`, which can run for hours — passes one; the interactive
@@ -353,13 +337,14 @@ def build_judge(
     them would make two runs judged by different models indistinguishable in provenance.
     """
 
-    lm = build_metric_lm(
+    lm = MetricJudgeEndpoint(
         model_name=model_name,
         api_key=api_key,
         api_base=api_base,
         model_kwargs=model_kwargs or {},
         timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
         max_tokens=METRIC_JUDGE_MAX_TOKENS,
+        transport=transport,
     )
     lm.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
         role="metric_judge",
@@ -609,16 +594,13 @@ def run_baseline(
     *,
     mode: BaselineMode,
     artifact: ProgramStrategyArtifactV1,
-    program_factory: Callable[[ProgramStrategyArtifactV1], dspy.Module] | None = None,
-    lm: dspy.LM | None = None,
     judge: CardEquivalenceJudge | None = None,
-    semantic_judge: Any = None,
+    semantic_judge: SemanticJudge | None = None,
     runtime_identity: Mapping[str, Any] | None = None,
     cohort_scope: str = "unknown",
     objective: GepaObjectivePlan | None = None,
     dataset_identity: Mapping[str, Any] | None = None,
     retrieval_population: Sequence[DevelopmentEpisode] | None = None,
-    num_threads: int = 1,
 ) -> BaselineReport:
     """Score `cases` and return one content-addressable report. Never writes, never delivers, never promotes.
 
@@ -654,8 +636,6 @@ def run_baseline(
     metric = bind_metric(None if mode == "recorded" else judge)
     strict = bind_metric(None) if judge is not None else None
     examples = [_gold_example(case) if mode == "recorded" else build_compile_example(case.episode) for case in cases]
-    by_case = {case.episode.case_id: case for case in cases}
-
     results: list[CaseResult] = []
     strict_scores: dict[str, float] = {}
     latency: dict[str, Any] = {}
@@ -663,74 +643,13 @@ def run_baseline(
 
     if mode == "recorded":
         for case, example in zip(cases, examples, strict=True):
-            outcome = metric(example, _stored_prediction(case), None, None, None)
+            outcome = metric(example, _stored_prediction(case))
             if strict is not None:
-                strict_scores[case.episode.case_id] = float(
-                    strict(example, _stored_prediction(case), None, None, None).score
-                )
+                strict_scores[case.episode.case_id] = float(strict(example, _stored_prediction(case)).score)
             results.append(_case_result(case, outcome, latency_ms=0))
 
-    elif mode == "compile_live":
-        if program_factory is None:
-            raise ValueError("news_program_baseline_requires_program_factory")
-        if lm is None and dspy.settings.lm is None:
-            # Without this the run "succeeds": every case raises `No LM is loaded`, `Evaluate` swallows it,
-            # and the receipt reads as a measured 0.0 baseline rather than a run that made no requests.
-            raise ValueError("news_program_baseline_requires_lm")
-        program = program_factory(artifact)
-        captured: dict[str, dspy.Prediction] = {}
-        # Separate from `captured` so a raise inside the metric — a stale `policy_sha256`, a schema drift —
-        # is not filed as `provider_or_program_failure` and read as route unavailability. Both are failures;
-        # they have nothing else in common and different people fix them.
-        metric_errors: dict[str, str] = {}
-
-        def scored_metric(gold: dspy.Example, pred: dspy.Prediction, *args: Any, **kwargs: Any) -> float:
-            case_id = str(gold.get("case_id"))
-            try:
-                captured[case_id] = metric(gold, pred, None, None, None)
-            except Exception as exc:  # a defect in the ruler, not an outcome of the route
-                metric_errors[case_id] = _error_code(exc)
-                return 0.0
-            if strict is not None:
-                # The same predictions scored the old way — the judge's verdicts are already cached, so this
-                # measures the ruler rather than model noise.
-                strict_scores[case_id] = float(strict(gold, pred, None, None, None).score)
-            return float(captured[case_id].score)
-
-        evaluate = dspy.Evaluate(
-            devset=examples,
-            metric=scored_metric,
-            num_threads=num_threads,
-            display_progress=False,
-            failure_score=0.0,
-            provide_traceback=True,
-            # A baseline must survive the cases it is measuring; `Evaluate` otherwise cancels the whole run.
-            max_errors=len(examples) * 10 + 100,
-        )
-        started = time.monotonic()
-        with (
-            dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False))
-            if lm
-            else (dspy.context(adapter=DspyStrictJSONAdapter(use_native_function_calling=False)))
-        ):
-            evaluation = evaluate(program)
-        wall_ms = int((time.monotonic() - started) * 1000)
-        latency = {
-            "wall_ms": wall_ms,
-            "per_case_mean_ms": round(wall_ms / max(1, len(examples)), 1),
-            "num_threads": num_threads,
-        }
-        for entry in evaluation.results:
-            case = by_case[str(entry[0].get("case_id"))]
-            outcome = captured.get(case.episode.case_id)
-            if outcome is None:
-                results.append(
-                    _failed_case(case, metric_errors.get(case.episode.case_id, "provider_or_program_failure"))
-                )
-                continue
-            results.append(_case_result(case, outcome, latency_ms=0))
-
-    elif mode == "runtime_live":
+    else:
+        # Both live modes execute the same production graph; the difference is what was bound to it.
         if semantic_judge is None:
             raise ValueError("news_program_baseline_requires_semantic_judge")
         started = time.monotonic()
@@ -787,14 +706,14 @@ def run_baseline(
             answering_route = "fallback" if judgment.fallback_from else "primary"
             routes[answering_route] = routes.get(answering_route, 0) + 1
             example = by_id[case.episode.case_id]
-            prediction = dspy.Prediction(
+            prediction = CandidatePrediction(
                 verdict=judgment.verdict.model_dump(mode="json"),
                 editorial=judgment.editorial.model_dump(mode="json"),
             )
             try:
-                outcome = metric(example, prediction, None, None, None)
+                outcome = metric(example, prediction)
                 if strict is not None:
-                    strict_scores[case.episode.case_id] = float(strict(example, prediction, None, None, None).score)
+                    strict_scores[case.episode.case_id] = float(strict(example, prediction).score)
             except Exception as exc:
                 # Unguarded, one bad episode raised *after* `asyncio.run` had already executed every case —
                 # destroying a run that had spent up to six real calls per case on the endpoint that also
@@ -845,9 +764,6 @@ def run_baseline(
             "provider_cost_microusd_known": known_cost,
             "cost_unknown_n": cost_unknown_n,
         }
-    else:  # pragma: no cover - Literal keeps this unreachable
-        raise ValueError(f"news_program_baseline_mode_invalid:{mode}")
-
     return _build_report(
         results,
         cases=cases,
@@ -1099,7 +1015,7 @@ def _failed_case(
 
 def _case_result(
     case: BaselineCase,
-    outcome: dspy.Prediction,
+    outcome: MetricOutcome,
     *,
     latency_ms: int,
     route: str | None = None,
@@ -1138,12 +1054,6 @@ def _case_result(
     )
 
 
-def compile_program_factory(artifact: ProgramStrategyArtifactV1) -> dspy.Module:
-    """The exact graph GEPA optimizes, so a baseline and a candidate score the same object."""
-
-    return DspyCompileProgram(artifact)
-
-
 def build_baseline_cases(episodes: Sequence[Mapping[str, Any]], *, action_source: str) -> tuple[BaselineCase, ...]:
     """Project the evaluator's episode dicts into scored cases.
 
@@ -1177,9 +1087,9 @@ __all__ = [
     "TriageContext",
     "TriageVerdict",
     "build_baseline_cases",
+    "build_compile_adapter",
+    "build_compile_program",
     "build_judge",
-    "build_metric_lm",
-    "compile_program_factory",
     "render_model_evidence_json",
     "run_baseline",
 ]

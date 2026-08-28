@@ -146,7 +146,7 @@ and Compose does not start Nautilus. The accepted keys are only:
 
 - `enabled`;
 - `candidates.*`: source age, counterpart lookbacks, cooldown, OI rank/value,
-  and daily DSPy budget;
+  and daily decision-model budget;
 - `regime.*`: the frozen OI/price measurement band;
 - `policy.min_whale_long_profit_bps`;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
@@ -563,8 +563,8 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, factory
-`tracefold.news.program.factory_v7`, source classifier
-`opennews_source_classifier_v1`, and epoch `program_v7`.
+`tracefold.news.program.factory_v8`, source classifier
+`opennews_source_classifier_v1`, and epoch `program_v8`.
 The exact Program identity is its content SHA, not the display version alone.
 
 The normalized tuple `2000 / 实时清算 / market / market` is a separate
@@ -580,11 +580,13 @@ Its current `complete=false` is a material fact.
 
 `ProgramStrategyArtifactV1` is the only executable semantic configuration, and
 it is one canonical JSON document — `schema_version`, `factory_id`, the
-`event_semantics_instruction` and `reader_card_instruction` advisories, and the
+`event_semantics_instruction` and `reader_card_instruction` texts, and the
 `program_sha256` over exactly those four values — carried in the application
-image as `<program_sha256>.json` and selected by the code-owned registry. The
-stable root is
-`535a1dff0ad52c4d731aa8da7089649482c59f90c5f11cbe1a5c753109b42af0`.
+image as `<program_sha256>.json` and selected by the code-owned registry. Since
+#306 Phase 2 each instruction is the complete prompt for its Predictor rather
+than an advisory appended to a rendered stack, and the reviewed seed text lives
+in `tracefold/news/program/seed.py`. The stable root is
+`c9bd53421b8c5c41c183cda5ef69150f241d467fee7699a6c087e2f71b27f3e9`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -598,13 +600,13 @@ second editable truth, and they contain no identity hash and no demo section.
 Loading fails closed on an unknown hash/version/factory, non-canonical or
 duplicate-keyed JSON, a non-finite number, a path or symlink violation, a file
 name that is not its own root, or unsafe or secret-bearing state.
-The optimizer can emit only a typed patch carrying the two advisory
-instructions; there is no DemoBank to write to, and a demo on a Predictor is
-refused. The trusted side reconstructs the final Artifact from the exact
-active stable root. Pickle, cloudpickle,
-DSPy Flex state, dynamic Python/classes,
-endpoints and credentials are not artifact formats. DSPy cache and hidden
-provider retries are disabled; every provider attempt must appear in the trace.
+The optimizer can emit only a typed patch carrying the two Predictor
+instructions; there is no DemoBank to write to. The trusted side reconstructs
+the final Artifact from the exact active stable root. Pickle, cloudpickle,
+dynamic Python/classes, endpoints and credentials are not artifact formats.
+One `invoke` is one HTTP request with no client cache, no client retry and no
+second call on a parse failure, so every provider attempt appears in the trace
+by construction.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
@@ -747,6 +749,12 @@ least-privilege Workers, Serve, and Nautilus grants.
 Cases, nonterminal Intents, or active/unknown legacy Orders, admits
 `INTENT_EMITTED`, and revokes legacy execution mutations from Workers. It has no
 downgrade because restoring a second writer is not a safe rollback.
+`20260828_0318` is #306's prompt-layer hard cut: it appends the `program_v8`
+epoch for `factory_v8`, trips every armed or active canary, adds no column, and
+is irreversible. Two byte changes land under that one identity migration —
+the kernel/RulePack/advisory/seal layering collapsing into one seed instruction
+per Predictor, and the Program's self-owned chat transport composing the request
+envelope — deliberately paid once rather than twice.
 A database
 at an earlier revision upgrades with `tracefold db migrate`; a fresh database
 runs the complete chain. The exact
@@ -934,7 +942,7 @@ judge's work, which is the bound that exists.
 (`news_program_baseline_dataset_requires_semantic_judge`,
 `..._requires_compiler_reflection_judge`). `subsets.development_selection` is
 published as the formal *before* value a Candidate is picked against, so it has
-to measure what the optimizer measures — `DspyCompileProgram` on one task
+to measure what the optimizer measures — the production graph on one task
 endpoint, judged by the ruler `run_gepa` refuses to run without. `recorded`
 scores the action that actually shipped while the Objective Plan classifies under
 a replayed `decide()`, so the two disagree on any case whose ledger state
@@ -956,8 +964,8 @@ The three modes answer three different questions and are never interchangeable
 | Mode | Executes | Question |
 | --- | --- | --- |
 | `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is metric wiring reproducible over history? |
-| `compile_live` | `DspyCompileProgram` on one task endpoint | what baseline does GEPA optimize against? |
-| `runtime_live` | the configured four-slot `DspyNewsSemanticProgram` | does the production Program route answer these cases? |
+| `compile_live` | the production `NewsSemanticProgram` on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
+| `runtime_live` | the configured four-slot `NewsSemanticProgram` | does the production Program route answer these cases? |
 
 `compile_live` is exactly the graph GEPA maximizes and deliberately has no
 fallback route, no fast retry, no per-route deadline and no circuit breaker, so
@@ -1010,15 +1018,24 @@ availability — and `action_confusion` splits agreement by `must_push`,
 gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `background_realtime_send`, `factual_contradiction_unchanged`,
 `ungrounded_primary_asset`, `schema_invalid`, `relevance_inconsistent`,
-`known_duplicate_leak`, `advisory_rejected`). A gated case keeps its resolved action and its per-dimension
+`known_duplicate_leak`, `advisory_rejected`, `card_lint_url`,
+`card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v4` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v5` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
-semantics/novelty and 10% ReaderCard. Reports expose each component's effective
+semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
+ReaderCard copy lint, normalized over the components a case carries. The lint
+publishes eight scored checks (`headline_language`, `headline_length`,
+`headline_number_count`, `banned_filler`, `meta_opening`, `why_length`,
+`why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
+`card_lint`, tables included. `headline_number_count` compares how many
+decision-relevant numbers the headline carries against how many the source
+stated, never which: a faithful rendering restates `$1.5B` as `15亿美元` and
+`5.50%` as `5.5%`, so a literal-identity test would fail exactly the conversions
+the card contract asks for and teach the optimizer to copy ASCII digits instead. Reports expose each component's effective
 denominator, effective weight mass, gold coverage and field count. The score is
-identical with or without DSPy's `pred_name`; that argument filters feedback
-only. EventSemantics receives relevance, semantics, novelty and its owned action
+identical with or without `pred_name`; that argument filters feedback only. EventSemantics receives relevance, semantics, novelty and its owned action
 feedback; ReaderCard receives headline/why/factual feedback and action feedback
 only for a headline-caused duplicate. Reviewer correction prose reaches a
 Predictor only when it has an owned failed dimension; it is not broadcast
@@ -1052,9 +1069,10 @@ addresses the timings separately. `identity.case_root_sha256` answers "the same
 cases?" and `identity.corpus_sha256` answers "the same inputs?" — hashing ids
 alone let one address describe two corpora, because any evidence edit that kept
 the ids left the receipt untouched.
-`compile_live` reports wall clock only, because in that mode `dspy.Evaluate`
-owns the program call and per-case provider timing is not observable. Neither
-receipt contains a credential or an endpoint URL.
+Both live modes report the same route and latency facts, because since #306
+Phase 3 both execute the same graph; what separates them is what was bound to it,
+and `execution_scope` is where the report says so. Neither receipt contains a
+credential or an endpoint URL.
 
 Policy is frozen into each scored example rather than read from process-global
 state: `policy_metric` carries the exact `policy_values` and `policy_sha256` of
@@ -1096,7 +1114,7 @@ Reviews whose `evidence_version` has been superseded are not replayable and are
 excluded, the same rule `_load_case` already enforced.
 
 The recorded metric audit/replay is pinned to a checked-in corpus
-(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v4), not to the live
+(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v5), not to the live
 database, so it proves metric wiring rather than tracking corpus growth. The v1
 fixture remains frozen metric-v3 audit evidence. The
 expected values are held only by `tests/news/test_news_audit_replay_corpus.py`;

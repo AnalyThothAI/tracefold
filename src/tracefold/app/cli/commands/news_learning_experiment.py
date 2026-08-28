@@ -70,7 +70,7 @@ def _snapshot(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
 
 def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     del stable
-    from tracefold.news.learning.baseline import BaselineReport, build_runtime_lm
+    from tracefold.news.learning.baseline import BaselineReport, build_compile_adapter, build_compile_program
     from tracefold.news.learning.experiment.compare import (
         answered_case_scores,
         compare_report,
@@ -115,13 +115,16 @@ def _compare(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]
             bounded,
             mode="compile_live",
             artifact=artifact,
-            lm=build_runtime_lm(
-                model_name=endpoint.model_name,
-                api_key=endpoint.api_key,
-                api_base=endpoint.api_base,
-                timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
-                max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
-                model_kwargs=endpoint.model_kwargs,
+            semantic_judge=build_compile_program(
+                artifact,
+                build_compile_adapter(
+                    model_name=endpoint.model_name,
+                    api_key=endpoint.api_key,
+                    api_base=endpoint.api_base,
+                    timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
+                    max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
+                    model_kwargs=endpoint.model_kwargs,
+                ),
             ),
             judge=judge,
             runtime_identity=_endpoint_identity(endpoint),
@@ -160,8 +163,6 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.contracts import (
-        REFLECTION_MAX_TOKENS,
-        REFLECTION_TIMEOUT_SECONDS,
         DevelopmentDatasetRef,
         OptimizationBudget,
     )
@@ -170,7 +171,8 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     from tracefold.news.learning.optimizer import (
         FrozenDevelopmentDataset,
         OptimizationConfig,
-        build_optimizer_lm,
+        build_reflection_lm,
+        build_task_adapter,
         optimize,
     )
     from tracefold.news.program.artifact import load_stable_program_artifact
@@ -218,8 +220,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         api_key=str(configured_reflection.api_key),
         base_url=str(configured_reflection.base_url),
     )
-    task_lm = build_optimizer_lm(
-        role="task",
+    task_adapter = build_task_adapter(
         model_name=task.model_name,
         api_key=task.api_key,
         api_base=task.api_base,
@@ -227,13 +228,10 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
         model_kwargs=task.model_kwargs,
     )
-    reflection_lm = build_optimizer_lm(
-        role="reflection",
+    reflection_lm = build_reflection_lm(
         model_name=reflection.model_name,
         api_key=reflection.api_key,
         api_base=reflection.api_base,
-        timeout=REFLECTION_TIMEOUT_SECONDS,
-        max_tokens=REFLECTION_MAX_TOKENS,
         model_kwargs=reflection.model_kwargs,
     )
     judge = build_judge(
@@ -248,7 +246,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     result = optimize(
         dataset,
         OptimizationConfig(
-            task_lm=task_lm,
+            task_adapter=task_adapter,
             reflection_lm=reflection_lm,
             judge=judge,
             budget=OptimizationBudget(

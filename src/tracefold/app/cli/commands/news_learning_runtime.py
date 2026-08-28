@@ -30,8 +30,8 @@ def _learning_program_judges(
     artifact_paths: Mapping[str, str],
     live: bool,
 ) -> dict[tuple[Literal["stable", "candidate"], str], SemanticJudge]:
-    from tracefold.news.program.dspy_adapter import RecordReplayPredictorAdapter
-    from tracefold.news.program.graph import DspyNewsSemanticProgram
+    from tracefold.news.program.graph import NewsSemanticProgram
+    from tracefold.news.program.transport import RecordReplayPredictorAdapter
 
     arm_artifacts = _learning_program_arm_artifacts(
         stable=stable,
@@ -62,7 +62,7 @@ def _learning_program_judges(
     judges: dict[tuple[Literal["stable", "candidate"], str], SemanticJudge] = {}
     for arm_name, arm, artifact in arm_artifacts:
         replay = RecordReplayPredictorAdapter(recordings_by_program.get(arm.program_sha256, {}))
-        judges[(arm_name, arm.bundle_sha)] = DspyNewsSemanticProgram(
+        judges[(arm_name, arm.bundle_sha)] = NewsSemanticProgram(
             artifact,
             primary_adapter=replay,
             fallback_adapter=replay,

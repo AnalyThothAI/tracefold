@@ -140,23 +140,20 @@ def _safe_json_state(value: Any) -> Any:
     raise TypeError(f"news_program_compiled_state_type_invalid:{type(value).__name__}")
 
 
+# The one budget a Predictor instruction has, applied to the whole text. #306 Phase 2 retired the separate
+# 8 KiB advisory ceiling with the layering it bounded: there is no longer an outer instruction and an inner
+# addendum to bound differently, and a human editing `seed.py` is held to exactly what a GEPA proposal is.
 PROGRAM_INSTRUCTION_MAX_BYTES: Final[int] = 32_768
 
-PROGRAM_RULE_PACK_MAX: Final[int] = 9
-
-PROGRAM_RULE_PACK_BODY_MAX_BYTES: Final[int] = 16_384
-
-PROGRAM_LEARNED_STRATEGY_MAX_BYTES: Final[int] = 8_192
-
-PROGRAM_LEARNED_STRATEGY_MAX_ESTIMATED_TOKENS: Final[int] = 2_048
+PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v7"
+PROGRAM_FACTORY_ID: Final[str] = "tracefold.news.program.factory_v8"
 
 PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
 
-PROGRAM_LEARNING_EPOCH: Final[str] = "program_v7"
+PROGRAM_LEARNING_EPOCH: Final[str] = "program_v8"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.
@@ -174,25 +171,6 @@ PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS: Final[int] = 60
 _UNTRUSTED_EVENT_OPEN: Final[str] = "<tracefold-untrusted-event-json-v1>"
 
 _UNTRUSTED_EVENT_CLOSE: Final[str] = "</tracefold-untrusted-event-json-v1>"
-
-_LEARNED_STRATEGY_AUTHORITY_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
-    re.compile(
-        r"\b(?:disregard|ignore|override|bypass|supersede|weaken|replace)\b.{0,96}"
-        r"\b(?:earlier|previous|prior|above|requirements?|instructions?|rules?|rulepacks?|"
-        r"qualitykernel|kernel|policy)\b",
-        re.IGNORECASE | re.DOTALL,
-    ),
-    re.compile(
-        r"\b(?:rules?|rulepacks?|qualitykernel|kernel|requirements?|instructions?|policy)\b.{0,96}"
-        r"\b(?:optional|advisory|ignore|override|bypass|supersede|weaken|replace)\b",
-        re.IGNORECASE | re.DOTALL,
-    ),
-    re.compile(
-        r"\b(?:always|never)\b.{0,48}\b(?:emit|return|choose|set)\b.{0,32}"
-        r"\b(?:push|drop|escalate)\b",
-        re.IGNORECASE | re.DOTALL,
-    ),
-)
 
 _MODEL_BINDING_SLOTS: Final[frozenset[str]] = frozenset(
     {

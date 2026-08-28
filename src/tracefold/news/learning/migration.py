@@ -13,20 +13,19 @@ current cohort.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
-
 from ..artifact_identity import canonical_sha
-from ..program.dspy_adapter import DspyStrictJSONAdapter
+from ..program.contracts import SemanticJudge
 from .judge import _SEMANTIC_FIELDS, CardEquivalenceJudge
-from .metric import _told_rows, build_compile_example
+from .metric import _told_rows
 from .objective import DevelopmentEpisode, production_decision
 
 MIGRATION_RECEIPT_SCHEMA = "tracefold.news.corpus_migration_receipt.v1"
 
-# The replay runs the compile route — the cold graph on one task LM, the same execution scope a
+# The replay runs the compile route — the production graph on one task endpoint, the same execution scope a
 # dataset-bound baseline publishes — not the four-slot production runtime. The receipt names that scope so
 # the seal can record it instead of implying a runtime replay that never happened.
 REPLAY_SCOPE = "compile_route"
@@ -128,8 +127,7 @@ def assess_replayed_case(
 def run_corpus_migration(
     episodes: Sequence[DevelopmentEpisode],
     *,
-    program: dspy.Module,
-    lm: dspy.LM,
+    program: SemanticJudge,
     judge: CardEquivalenceJudge,
     max_model_cases: int,
     from_dataset_sha: str,
@@ -149,7 +147,8 @@ def run_corpus_migration(
         raise ValueError("news_learning_migration_exceeds_model_case_budget")
     per_case: list[dict[str, Any]] = []
     told_index: dict[str, list[str]] = {}
-    with dspy.context(lm=lm, adapter=DspyStrictJSONAdapter(use_native_function_calling=False)):
+
+    async def _replay() -> None:
         for episode in episodes:
             told_index[episode.case_id] = [entry.event_id for entry in episode.context.told.entries]
             recorded = episode.production_judgment
@@ -159,10 +158,9 @@ def run_corpus_migration(
                 per_case.append(entry)
                 continue
             try:
-                example = build_compile_example(episode)
-                prediction = program(**example.inputs())
-                replayed_verdict = TriageVerdict.model_validate(_field(prediction, "verdict"))
-                replayed_editorial = _editorial(prediction, EditorialEnvelope)
+                judgment = await program.judge(episode.context)
+                replayed_verdict = TriageVerdict.model_validate(judgment.verdict.model_dump(mode="json"))
+                replayed_editorial = EditorialEnvelope.model_validate(judgment.editorial.model_dump(mode="json"))
                 entry.update(
                     assess_replayed_case(
                         recorded.verdict.model_dump(mode="json"),
@@ -194,6 +192,8 @@ def run_corpus_migration(
             except Exception as exc:  # one malformed case must cost one error entry, not the run
                 entry.update(verdict="error", field_diffs=[], judge_status=f"replay_error:{type(exc).__name__}")
             per_case.append(entry)
+
+    asyncio.run(_replay())
     for case_id, cause in contaminated_case_ids(
         per_case,
         told_event_ids_by_case=told_index,
@@ -218,18 +218,6 @@ def run_corpus_migration(
     }
     receipt["receipt_sha256"] = canonical_sha({key: receipt[key] for key in receipt if key != "receipt_sha256"})
     return receipt
-
-
-def _field(prediction: Any, name: str) -> Any:
-    value = prediction.get(name) if hasattr(prediction, "get") else getattr(prediction, name, None)
-    if value is None:
-        raise ValueError(f"news_learning_migration_replay_{name}_missing")
-    return value.model_dump(mode="json") if hasattr(value, "model_dump") else value
-
-
-def _editorial(prediction: Any, envelope_type: Any) -> Any:
-    value = _field(prediction, "editorial")
-    return value if isinstance(value, envelope_type) else envelope_type.model_validate(value)
 
 
 __all__ = [

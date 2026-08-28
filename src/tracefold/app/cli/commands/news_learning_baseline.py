@@ -27,29 +27,27 @@ def _baseline_mode(raw: object) -> BaselineMode:
     raise ValueError("news_program_baseline_mode_unknown")
 
 
-def _baseline_model_route(
-    mode: BaselineMode, *, settings: Any, artifact: Any
-) -> tuple[Any | None, Any | None, dict[str, Any]]:
-    """The model route a live mode runs on: its LM or its Judge, plus the identity the report records.
+def _baseline_model_route(mode: BaselineMode, *, settings: Any, artifact: Any) -> tuple[Any | None, dict[str, Any]]:
+    """The Program a live mode runs on, plus the identity the report records.
 
     `recorded` spends no provider call and gets neither. The two live modes answer different questions
     and therefore build different things — see the comments in each branch.
     """
 
     from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
-    from tracefold.news.learning.baseline import build_runtime_lm
+    from tracefold.news.learning.baseline import build_compile_adapter, build_compile_program
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         PROGRAM_READER_CARD_MAX_TOKENS,
         PROGRAM_ROUTE_DEADLINE_SECONDS,
     )
 
-    lm = None
-    semantic_judge = None
+    semantic_judge: Any = None
     runtime_identity: dict[str, Any] = {}
     if mode == "compile_live":
-        # One task endpoint driving the graph GEPA optimizes. Deliberately *not* the production route: this
-        # measures what the optimizer maximizes, and the report says so in `execution_scope`.
+        # One task endpoint driving the production graph, which since #306 Phase 3 is literally what the
+        # optimizer evaluates. Deliberately *not* the production *route*: no fallback slot is bound, so this
+        # measures what the optimizer maximizes and the report says so in `execution_scope`.
         #
         # Fail closed the way `runtime_live` does. `compose_news_program_runtime` falls back to the literal
         # model name "unconfigured" with an empty key and base, `configured_lm_endpoint` never raises, and the
@@ -59,13 +57,16 @@ def _baseline_model_route(
         if not composition.program_configured:
             raise ValueError("news_program_baseline_compile_route_not_configured")
         endpoint = composition.event_semantics_primary
-        lm = build_runtime_lm(
-            model_name=endpoint.model_name,
-            api_key=endpoint.api_key,
-            api_base=endpoint.api_base,
-            timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
-            max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
-            model_kwargs=endpoint.model_kwargs,
+        semantic_judge = build_compile_program(
+            artifact,
+            build_compile_adapter(
+                model_name=endpoint.model_name,
+                api_key=endpoint.api_key,
+                api_base=endpoint.api_base,
+                timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
+                max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
+                model_kwargs=endpoint.model_kwargs,
+            ),
         )
         # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve
         # the same name and produce different baselines. `runtime_live` records a per-slot fingerprint; this
@@ -87,7 +88,7 @@ def _baseline_model_route(
             "aliases": composition.slot_aliases(),
             "runtime_model_bindings_sha256": composition.runtime_model_bindings_sha256,
         }
-    return lm, semantic_judge, runtime_identity
+    return semantic_judge, runtime_identity
 
 
 def _readiness_model_targets(settings: Any) -> dict[str, Any]:
@@ -229,8 +230,8 @@ def _dataset_corpus(datasets: Any, dataset_sha: str) -> tuple[tuple[Any, ...], t
 def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
 
-    DSPy lives behind `program_baseline`; this layer only reads the corpus and prints the receipt, so the
-    architecture boundary that keeps DSPy out of the CLI still holds.
+    The model transport lives behind `program_baseline`; this layer only reads the corpus and prints the
+    receipt, so the architecture boundary that keeps provider plumbing out of the CLI still holds.
     """
 
     from tracefold.app.llm import configured_lm_endpoint
@@ -238,7 +239,6 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     from tracefold.news.learning.baseline import (
         build_baseline_cases,
         build_judge,
-        compile_program_factory,
         run_baseline,
     )
     from tracefold.news.learning.contracts import ClosedWindow
@@ -271,7 +271,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
 
     if dataset_sha and mode != "compile_live":
         # `--dataset` publishes `subsets.development_selection` as the formal *before* value a Candidate is
-        # picked against, so it has to measure what the optimizer measures: `DspyCompileProgram` on one
+        # picked against, so it has to measure what the optimizer measures: the production graph on one
         # task endpoint. The other two modes measure something else, each in its own way.
         #
         # `recorded` scores the action that actually shipped, while the Objective Plan classifies under a
@@ -326,7 +326,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         # available for a cheap probe, and says `discovery` in its own receipt.
         raise ValueError(f"news_program_baseline_dataset_requires_full_corpus_budget:{len(episodes)}")
     artifact = load_program_artifact(stable.program_sha256)
-    lm, semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
+    semantic_judge, runtime_identity = _baseline_model_route(mode, settings=settings, artifact=artifact)
     judge_model = str(args.semantic_judge).strip()
     judge = None
     if judge_model:
@@ -363,8 +363,6 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         retrieval_population=retrieval_population,
         mode=mode,
         artifact=artifact,
-        program_factory=compile_program_factory if mode == "compile_live" else None,
-        lm=lm,
         judge=judge,
         semantic_judge=semantic_judge,
         runtime_identity=runtime_identity,
@@ -467,10 +465,9 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     del stable
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.baseline import build_metric_lm
     from tracefold.news.program.artifact import render_model_evidence_json
     from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
-    from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch
+    from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch, build_drafter_lm
 
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
@@ -555,7 +552,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     )
     batch = build_draft_batch(
         ReviewDrafter(
-            build_metric_lm(
+            build_drafter_lm(
                 model_name=endpoint.model_name,
                 api_key=endpoint.api_key,
                 api_base=endpoint.api_base,
@@ -623,12 +620,8 @@ def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any)
         receipt = _json.loads(_Path(from_receipt).read_text(encoding="utf-8"))
     else:
         artifact = load_program_artifact(stable.program_sha256)
-        lm, _semantic_judge, runtime_identity = _baseline_model_route(
-            "compile_live", settings=settings, artifact=artifact
-        )
+        compile_program, runtime_identity = _baseline_model_route("compile_live", settings=settings, artifact=artifact)
         judge = _migration_judge(args, settings)
-        from tracefold.news.learning.baseline import compile_program_factory
-
         with postgres_connection(settings, role="workers") as conn:
             export = _store(conn).development_migration_export(str(args.from_dataset))
         episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
@@ -637,10 +630,11 @@ def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any)
             for case in export.dataset_payload.get("cases") or ()
             if str(case.get("delivery_truth")) == "observed_sent"
         }
+        if compile_program is None:  # pragma: no cover - `_baseline_model_route` raises first
+            raise ValueError("news_program_baseline_compile_route_not_configured")
         receipt = run_corpus_migration(
             episodes,
-            program=compile_program_factory(artifact),
-            lm=lm,
+            program=compile_program,
             judge=judge,
             max_model_cases=int(args.max_model_cases),
             from_dataset_sha=str(args.from_dataset),

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import recorded_decision, scored_judgment
@@ -14,7 +14,7 @@ from tracefold.news.learning.baseline import (
     build_baseline_cases,
     run_baseline,
 )
-from tracefold.news.learning.metric import accepted_review_metric
+from tracefold.news.learning.metric import CandidatePrediction, MetricOutcome, accepted_review_metric
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
@@ -52,7 +52,7 @@ _VERDICT: dict[str, Any] = {
     "restates": -1,
     "decision": "push",
     "confidence": 0.9,
-    "headline_zh": "特斯拉发布 Cybercab",
+    "headline_zh": "特斯拉发布 Cybercab 无人驾驶出租车",
     "why_zh": "新车型进入量产排程，直接改变该名字的交付预期",
     "title_zh": "",
 }
@@ -125,20 +125,17 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
     )
 
 
-def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> dspy.Prediction:
+def _score(episode: DevelopmentEpisode, verdict: dict[str, Any]) -> MetricOutcome:
     example = program_metric.build_compile_example(episode)
-    projection = dict(example.get("policy_metric") or {})
+    projection = dict(example.policy_metric)
     projection["recorded_decision_result"] = recorded_decision("push")
     judgment = scored_judgment(verdict)
     return accepted_review_metric(
-        example.copy(policy_metric=projection),
-        dspy.Prediction(
+        dataclasses.replace(example, policy_metric=projection),
+        CandidatePrediction(
             verdict=judgment.verdict.model_dump(mode="json"),
             editorial=judgment.editorial.model_dump(mode="json"),
         ),
-        None,
-        None,
-        None,
     )
 
 
@@ -271,17 +268,21 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
         "trade_relevance": 0.0,
         "semantics_novelty": 0.0,
         "reader_card": 0.0,
+        "reader_card_lint": 0.0,
     }
     assert case.component_denominators == {
         "final_action": 1,
         "trade_relevance": 7,
         "semantics_novelty": 4,
         "reader_card": 4,
+        # Seven of the eight deterministic card checks; the number count does not apply because this
+        # episode's source headline carries no standalone number to preserve.
+        "reader_card_lint": 7,
     }
-    assert case.effective_weight_mass == 1.0
+    assert case.effective_weight_mass == 1.1
     assert case.gold_scored_n == 1 and case.labelled_n == 15
     assert report.scores["component_denominators"] == case.component_denominators
-    assert report.scores["effective_weight_mass_mean"] == 1.0
+    assert report.scores["effective_weight_mass_mean"] == 1.1
 
 
 def test_build_baseline_cases_drops_loader_only_keys() -> None:

@@ -17,12 +17,12 @@ from tracefold.news.program.artifact import (
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.dspy_adapter import (
-    DspyPredictorAdapter,
+from tracefold.news.program.graph import NewsSemanticProgram
+from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
+from tracefold.news.program.transport import (
+    ChatCompletionsPredictorAdapter,
     RuntimeModelIdentity,
 )
-from tracefold.news.program.graph import DspyNewsSemanticProgram
-from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
 from tracefold.platform.config.models import news_model_availability
 
 
@@ -79,7 +79,7 @@ class NewsProgramRuntimeComposition:
         self,
         artifact: ProgramStrategyArtifactV1,
         *,
-        adapter_type: Any = DspyPredictorAdapter,
+        adapter_type: Any = ChatCompletionsPredictorAdapter,
     ) -> SemanticJudge | None:
         """Bind artifact slot names to Predictor-local Adapters without changing the News Interface."""
 
@@ -120,7 +120,7 @@ class NewsProgramRuntimeComposition:
                     max_tokens=artifact.reader_card.max_tokens,
                 ),
             }
-        return DspyNewsSemanticProgram(
+        return NewsSemanticProgram(
             artifact,
             primary_adapter=primary_adapters,
             fallback_adapter=fallback_adapters,

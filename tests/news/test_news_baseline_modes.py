@@ -12,23 +12,22 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import dspy
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
-from tracefold.news.learning.baseline import BaselineCase, compile_program_factory, run_baseline
+from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
-from tracefold.news.program.dspy_adapter import (
+from tracefold.news.program.graph import NewsSemanticProgram
+from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
+from tracefold.news.program.transport import (
     PredictorAdapterError,
     PredictorResponse,
     ScriptedPredictorAdapter,
 )
-from tracefold.news.program.graph import DspyNewsSemanticProgram
-from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 _SEMANTICS: dict[str, Any] = {
@@ -123,28 +122,22 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
     return BaselineCase(episode=episode)
 
 
-def _runtime(cases: list[BaselineCase], program: DspyNewsSemanticProgram, **kwargs: Any) -> Any:
+def _runtime(cases: list[BaselineCase], program: NewsSemanticProgram, **kwargs: Any) -> Any:
     artifact = kwargs.pop("artifact", None) or load_stable_program_artifact()
     return run_baseline(cases, mode="runtime_live", artifact=artifact, semantic_judge=program, **kwargs)
 
 
-class _ScriptedLM(dspy.BaseLM):  # type: ignore[misc]
-    """One task endpoint for `compile_live`, with no route around a bad answer."""
+def _compile_program(*, break_card: bool) -> NewsSemanticProgram:
+    """One task endpoint for `compile_live`, with no route around a bad answer.
 
-    def __init__(self, *, break_card: bool) -> None:
-        super().__init__(model="scripted/compile")
-        self.cache = False
-        self.num_retries = 0
-        self.kwargs = {"temperature": 0, "max_tokens": 4096}
-        self.calls: list[str] = []
-        self._break_card = break_card
+    Since #306 Phase 3 that is the whole difference between the two live modes: the same production
+    `NewsSemanticProgram`, bound to one slot instead of four and with no fallback adapter.
+    """
 
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
-        text = json.dumps(prompt if isinstance(prompt, str) else messages)
-        self.calls.append(text)
-        if "semantics_json" in text:
-            return [json.dumps({"card": {"nonsense": True} if self._break_card else _CARD})]
-        return [json.dumps({"semantics": _SEMANTICS})]
+    card: dict[str, Any] = {"nonsense": True} if break_card else _CARD
+    # Two attempts' worth of answers: the graph's one fast retry re-asks a card that failed to validate.
+    adapter = ScriptedPredictorAdapter([_SEMANTICS, card, card])
+    return NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=adapter)
 
 
 def test_compile_live_fails_where_runtime_live_answers_through_fallback() -> None:
@@ -162,13 +155,12 @@ def test_compile_live_fails_where_runtime_live_answers_through_fallback() -> Non
         [case],
         mode="compile_live",
         artifact=load_stable_program_artifact(),
-        program_factory=compile_program_factory,
-        lm=_ScriptedLM(break_card=True),
+        semantic_judge=_compile_program(break_card=True),
     )
     assert compiled.population == {"requested_n": 1, "answered_n": 0, "failure_n": 1, "failure_rate": 1.0}
     assert compiled.scores["case_macro_answered"] is None
 
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(),
         primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, {"nonsense": True}]),
         fallback_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
@@ -188,14 +180,20 @@ def test_each_mode_publishes_the_route_facts_only_it_can_know() -> None:
         [case],
         mode="compile_live",
         artifact=load_stable_program_artifact(),
-        program_factory=compile_program_factory,
-        lm=_ScriptedLM(break_card=False),
+        semantic_judge=_compile_program(break_card=False),
     )
-    assert compiled.route == {}
-    assert compiled.latency_ms.keys() == {"wall_ms", "per_case_mean_ms", "num_threads"}
+    # Both live modes publish the same route facts now, because both run the same graph. What separates
+    # them is what was bound to it, and `execution_scope` is where the report says so.
+    assert compiled.route["answered_by"] == {"primary": 1}
     assert "no fallback route" in compiled.execution_scope
+    # And it must not go on claiming the controls it inherited. A scope that still said "no circuit
+    # breaker" would invite reading a stretch of cases short-circuited by an open one as measurement.
+    assert not any(
+        line.startswith("no fast retry") or line.startswith("no circuit") for line in compiled.execution_scope
+    )
+    assert any("circuit breaker" in line and "carried across cases" in line for line in compiled.execution_scope)
 
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(),
         primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
     )
@@ -215,7 +213,7 @@ def test_runtime_live_consults_the_dedicated_reader_card_endpoint() -> None:
 
     semantics_adapter = ScriptedPredictorAdapter([_SEMANTICS], model_name="semantics-only")
     reader_adapter = ScriptedPredictorAdapter([_CARD], model_name="reader-only")
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(),
         primary_adapter={
             "event_semantics.primary": semantics_adapter,
@@ -234,7 +232,7 @@ def test_runtime_live_consults_the_dedicated_reader_card_endpoint() -> None:
 
 
 def test_a_normal_runtime_case_is_exactly_two_physical_calls() -> None:
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(),
         primary_adapter=ScriptedPredictorAdapter(
             [
@@ -264,7 +262,7 @@ def test_one_fast_retry_stays_inside_the_three_call_route_ceiling() -> None:
     """
 
     primary = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, _CARD])
-    program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
+    program = NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
     report = _runtime([_case(1)], program)
 
     assert report.route["answered_by"] == {"primary": 1}
@@ -278,9 +276,7 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
 
     primary = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, {"nonsense": True}])
     fallback = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, {"nonsense": True}])
-    program = DspyNewsSemanticProgram(
-        load_stable_program_artifact(), primary_adapter=primary, fallback_adapter=fallback
-    )
+    program = NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary, fallback_adapter=fallback)
 
     report = _runtime([_case(1)], program)
 
@@ -296,7 +292,7 @@ def test_an_exhausted_chain_is_published_as_a_failure_not_as_a_low_score() -> No
 def test_runtime_failures_keep_their_own_error_code_beside_a_real_score() -> None:
     mixed = _runtime(
         [_case(1), _case(2)],
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             load_stable_program_artifact(),
             primary_adapter=ScriptedPredictorAdapter(
                 [
@@ -327,7 +323,7 @@ def test_runtime_cases_run_sequentially_in_one_deterministic_order() -> None:
 
     cases = [_case(index, title=f"Tesla line {index}") for index in (3, 1, 2)]
     primary = ScriptedPredictorAdapter([_SEMANTICS, _CARD] * 3)
-    program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
+    program = NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
 
     report = _runtime(cases, program)
 
@@ -359,7 +355,7 @@ def test_the_primary_breaker_carries_across_cases_within_one_run() -> None:
         [PredictorAdapterError("provider_busy", retryable=True)] * (2 * PROGRAM_PRIMARY_BREAKER_FAILURES)
     )
     fallback = ScriptedPredictorAdapter([_SEMANTICS, _CARD] * len(cases))
-    program = DspyNewsSemanticProgram(artifact, primary_adapter=primary, fallback_adapter=fallback)
+    program = NewsSemanticProgram(artifact, primary_adapter=primary, fallback_adapter=fallback)
 
     report = run_baseline(cases, mode="runtime_live", artifact=artifact, semantic_judge=program)
 
@@ -374,7 +370,7 @@ def test_a_runtime_receipt_names_no_endpoint_credential_or_url() -> None:
     """The report is meant to be pasted into an issue. Cost is published as a number plus an explicit
     unknown count, and the identity names model bindings — never an api_base or a key."""
 
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(),
         primary_adapter=ScriptedPredictorAdapter(
             [
@@ -402,7 +398,7 @@ def test_report_sha_is_stable_across_runs_and_moves_with_the_answer() -> None:
     def run(card: dict[str, Any]) -> Any:
         return _runtime(
             [_case(1)],
-            DspyNewsSemanticProgram(
+            NewsSemanticProgram(
                 load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, card])
             ),
         )
@@ -428,7 +424,7 @@ def test_a_live_report_names_the_policy_it_replayed_and_moves_with_it() -> None:
     def run(case: BaselineCase) -> Any:
         return _runtime(
             [case],
-            DspyNewsSemanticProgram(
+            NewsSemanticProgram(
                 load_stable_program_artifact(),
                 primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
             ),
@@ -460,7 +456,7 @@ def test_the_published_address_is_the_measurement_and_not_the_stopwatch() -> Non
     def run() -> Any:
         return _runtime(
             [_case(1)],
-            DspyNewsSemanticProgram(
+            NewsSemanticProgram(
                 load_stable_program_artifact(),
                 primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD]),
             ),
@@ -484,7 +480,7 @@ def test_prediction_dimensions_follow_the_candidate_while_labels_do_not() -> Non
     def run(card: dict[str, Any]) -> Any:
         return _runtime(
             [_case(1)],
-            DspyNewsSemanticProgram(
+            NewsSemanticProgram(
                 load_stable_program_artifact(),
                 primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, card]),
             ),
@@ -525,7 +521,7 @@ def test_an_unusable_policy_is_refused_before_the_first_provider_call(damage: st
     broken = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}))
 
     primary = ScriptedPredictorAdapter([_SEMANTICS, _CARD])
-    program = DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
+    program = NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=primary)
     with pytest.raises(ValueError, match=f"news_program_baseline_policy_unusable:.*{code}"):
         _runtime([broken], program)
     assert primary.requests == [], "the corpus was rejected before anything was spent on it"
@@ -534,7 +530,7 @@ def test_an_unusable_policy_is_refused_before_the_first_provider_call(damage: st
 def test_the_report_address_covers_the_corpus_content_not_only_its_ids() -> None:
     """Two runs over the same case ids and different evidence must not share one address."""
 
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
     )
     base = _runtime([_case(1)], program)
@@ -543,7 +539,7 @@ def test_the_report_address_covers_the_corpus_content_not_only_its_ids() -> None
     context = edited.episode.context.model_copy(update={"queue_lag_ms": edited.episode.context.queue_lag_ms + 9_000})
     other = _runtime(
         [BaselineCase(episode=edited.episode.model_copy(update={"context": context}))],
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
         ),
     )
@@ -559,7 +555,7 @@ def test_a_policy_without_a_version_is_refused_like_any_other_unusable_policy() 
     projection = dict(_case(1).episode.policy_metric)
     projection.pop("policy_version")
     case = BaselineCase(episode=_case(1).episode.model_copy(update={"policy_metric": projection}))
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
     )
     with pytest.raises(ValueError, match="news_program_metric_policy_version_missing"):
@@ -570,12 +566,12 @@ def test_the_route_publishes_its_retries_and_both_latency_populations() -> None:
     """A retry is spend and a failure is the slowest case there is; the receipt has to say both."""
 
     retried = ScriptedPredictorAdapter([_SEMANTICS, {"nonsense": True}, _CARD])
-    report = _runtime([_case(1)], DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=retried))
+    report = _runtime([_case(1)], NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=retried))
     assert report.route["retry_count"] == 1
     assert report.route["physical_call_count"] == 3
 
     clean = ScriptedPredictorAdapter([_SEMANTICS, _CARD])
-    quiet = _runtime([_case(2)], DspyNewsSemanticProgram(load_stable_program_artifact(), primary_adapter=clean))
+    quiet = _runtime([_case(2)], NewsSemanticProgram(load_stable_program_artifact(), primary_adapter=clean))
     assert quiet.route["retry_count"] == 0
     # p50/p95/max cover answered cases, as the spec asks; the failure tail is published beside them.
     assert "answered cases" in quiet.latency_ms["population"]
@@ -586,7 +582,7 @@ def test_the_runtime_scope_names_the_told_context_it_replayed() -> None:
     """It feeds each case the ToldContext frozen at production time, not a ledger rebuilt from this run's own
     outputs. Without that line a reader may take the mode for a continuous production simulation."""
 
-    program = DspyNewsSemanticProgram(
+    program = NewsSemanticProgram(
         load_stable_program_artifact(), primary_adapter=ScriptedPredictorAdapter([_SEMANTICS, _CARD])
     )
     scope = _runtime([_case(1)], program).execution_scope

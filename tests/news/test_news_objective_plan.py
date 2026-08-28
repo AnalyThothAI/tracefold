@@ -587,7 +587,11 @@ def test_the_mirrored_hard_gate_ladder_agrees_with_the_metric_itself() -> None:
     import it. So the mirror is checked against the original on every shape that matters.
     """
 
-    from tracefold.news.learning.metric import accepted_review_metric, build_compile_example
+    from tracefold.news.learning.metric import (
+        CandidatePrediction,
+        accepted_review_metric,
+        build_compile_example,
+    )
 
     episodes = (
         _episode(1, should_push="must_push", reader_value="background"),  # must_push_miss
@@ -611,17 +615,11 @@ def test_the_mirrored_hard_gate_ladder_agrees_with_the_metric_itself() -> None:
     for episode in episodes:
         example = build_compile_example(episode)
         assert episode.production_judgment is not None
-        prediction = type(
-            "P",
-            (),
-            {
-                "get": lambda self, key, default=None, _e=episode: {
-                    "verdict": _e.production_judgment.verdict.model_dump(mode="json"),
-                    "editorial": _e.production_judgment.editorial.model_dump(mode="json"),
-                }.get(key, default)
-            },
-        )()
-        scored = accepted_review_metric(example, prediction, None, None, None)
+        prediction = CandidatePrediction(
+            verdict=episode.production_judgment.verdict.model_dump(mode="json"),
+            editorial=episode.production_judgment.editorial.model_dump(mode="json"),
+        )
+        scored = accepted_review_metric(example, prediction)
         decision = production_decision(episode.production_judgment, episode.policy_metric)
         assert stable_hard_gate(episode, decision) == str(scored.hard_gate or ""), episode.case_id
 
@@ -895,8 +893,7 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
     """The acceptance test #199 calls the most important one: capture what the optimizer really got."""
 
     from dataclasses import asdict
-
-    import dspy
+    from types import SimpleNamespace
 
     from tracefold.news.learning.baseline import BaselineCase, run_baseline
     from tracefold.news.learning.optimizer import run_gepa
@@ -925,28 +922,19 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
     )
     captured: dict[str, set[str]] = {}
 
-    class _CapturingOptimizer:
-        def __init__(self, metric: Any, **kwargs: Any) -> None:
-            del metric, kwargs
-
-        def compile(self, student: Any, *, trainset: list[Any], teacher: None, valset: list[Any]) -> Any:
-            captured["train"] = {example.case_id for example in trainset}
-            captured["val"] = {example.case_id for example in valset}
-            student.event_semantics.signature = student.event_semantics.signature.with_instructions("Learned.")
-            student.detailed_results = type(
-                "R",
-                (),
-                {
-                    "parents": [[None]],
-                    "val_aggregate_scores": [0.5],
-                    "discovery_eval_counts": [1],
-                    "total_metric_calls": 1,
-                    "num_full_val_evals": 1,
-                    "seed": 129,
-                    "best_idx": 0,
-                },
-            )()
-            return student
+    def _capturing_optimize(**kwargs: Any) -> Any:
+        captured["train"] = {example.case_id for example in kwargs["trainset"]}
+        captured["val"] = {example.case_id for example in kwargs["valset"]}
+        return SimpleNamespace(
+            best_candidate={**dict(kwargs["seed_candidate"]), "event_semantics": "Learned."},
+            parents=[[None]],
+            val_aggregate_scores=[0.5],
+            discovery_eval_counts=[1],
+            total_metric_calls=1,
+            num_full_val_evals=1,
+            seed=129,
+            best_idx=0,
+        )
 
     class _Judge:
         identity: ClassVar[dict[str, Any]] = {"judge_id": "test/noop", "failure_cache": False}
@@ -954,31 +942,21 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
         def retains(self, *_args: Any, **_kwargs: Any) -> bool:
             return False
 
-    from tracefold.news.learning.optimizer import build_optimizer_lm
+    from tracefold.news.learning.optimizer import build_reflection_lm, build_task_adapter
 
-    lm = build_optimizer_lm(
-        model_name="test/task", api_key="k", api_base="http://127.0.0.1:1", timeout=1.0, max_tokens=128
+    result = run_gepa(
+        base_program=artifact,
+        episodes=corpus,
+        task_adapter=build_task_adapter(
+            model_name="test/task", api_key="k", api_base="http://127.0.0.1:1", timeout=1.0, max_tokens=128
+        ),
+        reflection_lm=build_reflection_lm(model_name="test/reflection", api_key="k", api_base="http://127.0.0.1:1"),
+        judge=_Judge(),
+        max_metric_calls=4,
+        seed=129,
+        review_rubric_version="news_review_v4",
+        optimize_fn=_capturing_optimize,
     )
-    reflection = build_optimizer_lm(
-        model_name="test/reflection",
-        api_key="k",
-        api_base="http://127.0.0.1:1",
-        timeout=1.0,
-        max_tokens=128,
-        role="reflection",
-    )
-    with dspy.context(lm=lm):
-        result = run_gepa(
-            base_program=artifact,
-            episodes=corpus,
-            task_lm=lm,
-            reflection_lm=reflection,
-            judge=_Judge(),
-            max_metric_calls=4,
-            seed=129,
-            review_rubric_version="news_review_v4",
-            optimizer_factory=_CapturingOptimizer,
-        )
 
     seen = captured["train"] | captured["val"]
     assert seen == set(plan.optimizer_case_ids)

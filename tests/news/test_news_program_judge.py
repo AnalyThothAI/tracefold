@@ -2,21 +2,33 @@
 
 from __future__ import annotations
 
-import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tracefold.news.learning.contracts import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
+    ModelExecutionIdentity,
+)
 from tracefold.news.learning.judge import (
     JUDGE_ID,
     CardEquivalence,
     CardEquivalenceAssessment,
     CardEquivalenceJudge,
+    FactualEvidenceSupport,
+    MetricJudgeEndpoint,
 )
-from tracefold.news.learning.metric import _component, bind_metric, metric_receipt
+from tracefold.news.learning.metric import (
+    CandidatePrediction,
+    CompileExample,
+    _component,
+    bind_metric,
+    metric_receipt,
+)
+from tracefold.news.program.transport import ProviderCallMetrics
 
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",
@@ -32,8 +44,12 @@ _REWORDED = {
 _UNRELATED = {"headline_zh": "美联储维持利率不变", "why_zh": "政策利率不变，短端美债定价的加息预期落空"}
 
 
-class _ScriptedJudgeLM(dspy.BaseLM):  # type: ignore[misc]
-    """Answers the equivalence signature without a provider."""
+class _ScriptedJudgeLM(MetricJudgeEndpoint):
+    """Answers both judge questions over the real request envelope, without a socket.
+
+    A subclass rather than a duck: since #306 Phase 3 the judge composes its own chat request, so what a
+    fixture has to stand in for is the HTTP round trip and nothing above it.
+    """
 
     def __init__(
         self,
@@ -42,25 +58,33 @@ class _ScriptedJudgeLM(dspy.BaseLM):  # type: ignore[misc]
         facts_supported: bool = True,
         fail: bool = False,
     ) -> None:
-        super().__init__(model="scripted/judge")
-        self.cache = False
-        self.num_retries = 0
+        super().__init__(model_name="scripted/judge", api_key="k", api_base="https://judge.invalid/v1")
         self._verdict = verdict or CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=True)
         self._facts_supported = facts_supported
         self._fail = fail
         self.calls = 0
+        self.bodies: list[dict[str, Any]] = []
 
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+    def ask(self, **kwargs: Any) -> Any:
+        # Composed through the production path, so a rendering defect fails here rather than in production.
+        self.bodies.append(
+            self.request_body(
+                instruction=kwargs["instruction"],
+                field_order=kwargs["field_order"],
+                values=kwargs["values"],
+                output_model=kwargs["output_model"],
+            )
+        )
         self.calls += 1
         if self._fail:
             raise RuntimeError("provider unavailable")
-        return self._answer(prompt=prompt, messages=messages)
+        return self._answer(kwargs["output_model"])
 
-    def _answer(self, *, prompt: Any = None, messages: Any = None) -> list[str]:
-        rendered = json.dumps(messages if messages is not None else prompt, ensure_ascii=False, default=str)
-        if "supported_by_evidence" in rendered:
-            return [json.dumps({"verdict": {"supported_by_evidence": self._facts_supported}})]
-        return [json.dumps({"verdict": self._verdict.model_dump(mode="json")})]
+    def _answer(self, output_model: Any) -> Any:
+        metrics = ProviderCallMetrics(response_model=self.model, total_tokens=20, finish_reason="stop")
+        if output_model is FactualEvidenceSupport:
+            return FactualEvidenceSupport(supported_by_evidence=self._facts_supported), metrics
+        return self._verdict, metrics
 
 
 class _BlockingJudgeLM(_ScriptedJudgeLM):
@@ -73,7 +97,7 @@ class _BlockingJudgeLM(_ScriptedJudgeLM):
         self.release = threading.Event()
         self._calls_lock = threading.Lock()
 
-    def __call__(self, prompt: Any = None, messages: Any = None, **kwargs: Any) -> list[str]:
+    def ask(self, **kwargs: Any) -> Any:
         with self._calls_lock:
             self.calls += 1
             if self.calls == 1:
@@ -82,7 +106,7 @@ class _BlockingJudgeLM(_ScriptedJudgeLM):
                 self.second_call_entered.set()
         if not self.release.wait(timeout=2):
             raise RuntimeError("test did not release provider call")
-        return self._answer(prompt=prompt, messages=messages)
+        return self._answer(kwargs["output_model"])
 
 
 def _judge(**kwargs: Any) -> CardEquivalenceJudge:
@@ -268,16 +292,33 @@ def test_a_judge_failure_is_explicitly_unavailable_and_never_cached() -> None:
     }
 
 
-def test_judge_rejects_provider_cache_and_hidden_retry_configuration() -> None:
-    cached = _ScriptedJudgeLM()
-    cached.cache = True
-    with pytest.raises(ValueError, match="cache_must_be_disabled"):
-        CardEquivalenceJudge(cached)
+def test_judge_rejects_a_role_binding_that_does_not_match_its_own_ceiling() -> None:
+    """#306 Phase 3 turned two runtime refusals into a structural absence.
 
-    retrying = _ScriptedJudgeLM()
-    retrying.num_retries = 1
-    with pytest.raises(ValueError, match="hidden_retries_must_be_zero"):
-        CardEquivalenceJudge(retrying)
+    The judge used to check `cache is False` and `num_retries == 0` on the framework LM it held, because
+    either would have made "one verdict, one provider call" untrue. `MetricJudgeEndpoint` composes one
+    request and has neither setting, so what is left to refuse is a role binding that attests a different
+    ceiling than the judge actually runs under.
+    """
+
+    endpoint = _ScriptedJudgeLM()
+
+    # The judge's declared ceiling and the endpoint's own must be the same number, or the identity in the
+    # metric receipt attests a contract the requests were not sent under.
+    with pytest.raises(ValueError, match="role_binding_mismatch"):
+        CardEquivalenceJudge(endpoint, max_tokens=METRIC_JUDGE_MAX_TOKENS - 1)
+
+    endpoint.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
+        role="task",
+        model="scripted/judge",
+        api_base="https://judge.invalid/v1",
+        max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
+        timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
+        temperature=0,
+        model_kwargs={},
+    )
+    with pytest.raises(ValueError, match="role_binding_mismatch"):
+        CardEquivalenceJudge(endpoint)
 
 
 def test_metric_receipt_pins_the_judge_identity() -> None:
@@ -294,7 +335,7 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert judged["semantic_judge"]["factual_evidence_output_schema_sha256"]
     assert judged["semantic_judge"]["implementation_source_sha256"]
     assert judged["semantic_judge"]["adapter"] == {
-        "implementation": "tracefold.news.program.graph.DspyStrictJSONAdapter",
+        "implementation": "tracefold.news.program.transport.chat_request_body",
         "native_function_calling": False,
         "format_fallback": False,
     }
@@ -307,15 +348,42 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert plain["implementation"] == judged["implementation"]
 
 
-def test_bound_metric_still_matches_gepas_two_argument_call() -> None:
-    """`dspy.Evaluate` calls `metric(example, prediction)`; GEPA's feedback path passes five."""
+def test_bound_metric_scores_one_example_and_one_prediction() -> None:
+    """The judge is bound as a keyword, so a caller cannot accidentally score with a different ruler.
+
+    Until #306 Phase 3 this test was about DSPy's two calling conventions: `dspy.Evaluate` passed two
+    positional arguments and GEPA's feedback path passed five, and a missing default turned every
+    full-valset evaluation into a silent zero. The adapter this repository owns calls it one way.
+    """
 
     metric = bind_metric(_judge())
-    example = dspy.Example(accepted_review={}, production_judgment=None, policy_metric={})
-    outcome = metric(example, dspy.Prediction(verdict={}))
-    assert outcome.score == 0.0
+    example = CompileExample(
+        case_id="case-1",
+        cluster_id="cluster-1",
+        context=_metric_context(),
+        accepted_review={},
+        production_judgment=None,
+        policy_metric={},
+        card_evidence_json="",
+        source_title="",
+        told_count=0,
+    )
+    outcome = metric(example, CandidatePrediction(verdict={}))
+    assert outcome.score == 0.0 and outcome.hard_gate == "schema_invalid"
     with pytest.raises(TypeError):
         metric()  # type: ignore[call-arg]
+
+
+def _metric_context() -> Any:
+    from tracefold.news.program.contracts import TriageContext
+
+    return TriageContext.from_card(
+        {"event_id": "e", "leader_title": "t", "opened_at_ms": 1, "storyline_key": "k"},
+        watchlist=(),
+        told_rows=(),
+        now_ms=1,
+        queue_lag_ms=0,
+    )
 
 
 def test_no_judge_is_exactly_the_pre_148_rule() -> None:

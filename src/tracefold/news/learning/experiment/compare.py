@@ -17,7 +17,6 @@ from ..baseline import (
     BaselineMode,
     BaselineReport,
     build_baseline_cases,
-    compile_program_factory,
     run_baseline,
 )
 from .run import ExperimentCase, ExperimentRun
@@ -216,18 +215,12 @@ def score_arm(
 ) -> BaselineReport:
     """One arm, through the baseline harness the release plane already uses.
 
-    The factory is chosen here rather than by the caller. `run_baseline` refuses `compile_live` without one,
-    and leaving it to the CLI is what made every `experiment compare` die with
-    `news_program_baseline_requires_program_factory` — a required argument a second call site had to
-    remember, which is the kind of thing a call site eventually does not.
+    Both live modes take the same argument now: #306 Phase 3 collapsed the separate optimizer student, so
+    `compile_live` is the production graph bound to one endpoint and the caller passes it as
+    `semantic_judge` exactly as `runtime_live` does.
     """
 
-    return run_baseline(
-        baseline_cases(cases),
-        mode=mode,
-        program_factory=compile_program_factory if mode == "compile_live" else None,
-        **kwargs,
-    )
+    return run_baseline(baseline_cases(cases), mode=mode, **kwargs)
 
 
 __all__ = [

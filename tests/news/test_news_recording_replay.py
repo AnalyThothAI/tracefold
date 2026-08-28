@@ -16,8 +16,8 @@ from tracefold.news.learning.replay import (
 )
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import ProgramCallTrace, TriageContext
-from tracefold.news.program.dspy_adapter import ScriptedPredictorAdapter
-from tracefold.news.program.graph import DspyNewsSemanticProgram
+from tracefold.news.program.graph import NewsSemanticProgram
+from tracefold.news.program.transport import ScriptedPredictorAdapter
 
 RUN_SHA = "a" * 64
 STABLE_BUNDLE_SHA = "1" * 64
@@ -218,7 +218,7 @@ def test_sealed_replay_loads_null_error_calls_and_reexecutes_retry_and_fallback(
     primary = ScriptedPredictorAdapter([invalid, invalid])
     fallback = ScriptedPredictorAdapter([_semantics(), _card()])
     original = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             artifact,
             primary_adapter=primary,
             fallback_adapter=fallback,
@@ -263,7 +263,7 @@ def test_sealed_replay_reexecutes_program_owned_novelty_default() -> None:
     missing_novelty.pop("restates")
     primary = ScriptedPredictorAdapter([missing_novelty, missing_novelty, _card()])
     original = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             artifact,
             primary_adapter=primary,
         ).judge(_context())
@@ -323,7 +323,7 @@ def test_sealed_replay_rejects_program_v1_artifacts_before_reading_recordings() 
 def test_sealed_replay_exposes_an_incomplete_arm_corpus_as_unavailable() -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
-    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    original = asyncio.run(NewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     rows = [row for row in _recording_rows(judgment=original, adapters=(primary,)) if row["arm"] == "stable"]
 
     capability, _ = _load(rows)
@@ -335,7 +335,7 @@ def test_sealed_replay_exposes_an_incomplete_arm_corpus_as_unavailable() -> None
 def test_sealed_replay_exposes_an_absent_case_call_as_unavailable() -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
-    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    original = asyncio.run(NewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     capability, _ = _load(_recording_rows(judgment=original, adapters=(primary,)))
 
     with pytest.raises(RecordingReplayMiss, match="news_learning_recording_replay_call_missing"):
@@ -354,7 +354,7 @@ def test_sealed_replay_rejects_unreplayable_route_deadline_before_signing() -> N
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
     original = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             artifact,
             primary_adapter=primary,
         ).judge(_context())
@@ -378,7 +378,7 @@ def test_sealed_replay_rejects_a_null_outcome_without_an_error_identity() -> Non
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
     original = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             artifact,
             primary_adapter=primary,
         ).judge(_context())
@@ -399,7 +399,7 @@ def test_sealed_replay_rejects_a_response_whose_content_does_not_match_its_ident
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
     original = asyncio.run(
-        DspyNewsSemanticProgram(
+        NewsSemanticProgram(
             artifact,
             primary_adapter=primary,
         ).judge(_context())
@@ -419,7 +419,7 @@ def test_sealed_replay_rejects_a_response_whose_content_does_not_match_its_ident
 def test_sealed_replay_keeps_program_identity_mismatch_fail_closed() -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
-    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    original = asyncio.run(NewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     rows = _recording_rows(judgment=original, adapters=(primary,))
     rows[0] = {
         **rows[0],
@@ -445,7 +445,7 @@ def test_sealed_replay_rejects_a_recorded_request_the_live_request_does_not_repr
 
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
-    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    original = asyncio.run(NewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     rows = _recording_rows(judgment=original, adapters=(primary,))
     rows[0] = {
         **rows[0],
@@ -481,7 +481,7 @@ def test_sealed_replay_keeps_canonical_recording_identity_tamper_fail_closed(
 ) -> None:
     artifact = load_stable_program_artifact()
     primary = ScriptedPredictorAdapter([_semantics(), _card()])
-    original = asyncio.run(DspyNewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
+    original = asyncio.run(NewsSemanticProgram(artifact, primary_adapter=primary).judge(_context()))
     rows = _recording_rows(judgment=original, adapters=(primary,))
     rows[0] = {**rows[0], **tamper}
 
@@ -492,3 +492,44 @@ def test_sealed_replay_keeps_canonical_recording_identity_tamper_fail_closed(
         _load(rows)
 
     assert not isinstance(caught.value, RecordingReplayMiss)
+
+
+@pytest.mark.parametrize(
+    ("error_code", "expected"),
+    [
+        # The self-owned transport's status family (#306 Phase 3). None of these existed before, and a
+        # code with no branch does not degrade — it raises `RecordingReplayError` and takes the whole
+        # replay corpus down rather than replaying one failed call.
+        ("news_program_provider_http_503", (True, False)),
+        ("news_program_provider_http_429", (True, False)),
+        ("news_program_provider_http_500", (True, False)),
+        ("news_program_provider_http_400", (False, False)),
+        ("news_program_provider_http_401", (False, False)),
+        ("news_program_provider_choice_missing", (False, True)),
+        ("news_program_provider_body_not_json", (False, False)),
+        ("news_program_provider_output_not_json", (False, True)),
+        ("news_program_transport_connecttimeout", (True, False)),
+        ("news_program_transport_readerror", (True, False)),
+        ("news_program_output_truncated", (False, True)),
+    ],
+)
+def test_every_recordable_transport_failure_has_a_replay_behaviour(
+    error_code: str, expected: tuple[bool, bool]
+) -> None:
+    """A recorded run in which the local single-slot server returned a 503 has to replay, not explode.
+
+    `_error_behavior` is a closed classification: anything it does not recognise raises, which is right
+    for a code the Program cannot produce and catastrophic for one it produces routinely. #306 added a
+    whole family, so this pins each of them rather than the one rename that was noticed.
+    """
+
+    from tracefold.news.learning.replay import _error_behavior
+
+    assert _error_behavior(error_code) == expected
+
+
+def test_an_unknown_error_code_still_refuses_rather_than_guessing() -> None:
+    from tracefold.news.learning.replay import _error_behavior
+
+    with pytest.raises(RecordingReplayError, match="outcome_unreplayable:news_program_invented_code"):
+        _error_behavior("news_program_invented_code")

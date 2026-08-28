@@ -18,14 +18,14 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json, reject_secret_material
-from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_learned_instruction
+from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
 from ..triage_rules import DecidePolicy
 
 # v2 (#259): the development gate dropped `natural_days_min`. The profile is inside `TRUSTED_ROOT_SHA`,
 # so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
 # report prints, and one readable name must not stand for two different sets of gates.
 LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
-LEARNING_EPOCH: Literal["program_v7"] = "program_v7"
+LEARNING_EPOCH: Literal["program_v8"] = "program_v8"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v5"
 PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
@@ -45,7 +45,7 @@ COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_e
 )
 OptimizerRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
-# which capped a proposed instruction at 1,200 tokens — below what the advisory slot itself accepts — and
+# which capped a proposed instruction at 1,200 tokens — below what the instruction bound itself accepts — and
 # gave a reflection call the 20 s route deadline. These live here, not beside the optimizer, because the
 # metric judge is built by the baseline harness too and must not pull DSPy's GEPA in to learn its ceiling.
 REFLECTION_MAX_TOKENS = 32_000
@@ -327,7 +327,7 @@ class DevelopmentDatasetRef(BaseModel):
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_projection_root_sha256: str = Field(pattern=_SHA256_PATTERN)
     episode_count: int = Field(gt=0)
-    learning_epoch: Literal["program_v7"] = LEARNING_EPOCH
+    learning_epoch: Literal["program_v8"] = LEARNING_EPOCH
     learning_epoch_started_at_ms: int = Field(ge=0)
     review_rubric_version: str = Field(min_length=1, max_length=64)
 
@@ -360,12 +360,12 @@ class OptimizationBudget(BaseModel):
 
 
 class PromptPatchV1(BaseModel):
-    """The entire legal write-set of News learning: two advisory instructions.
+    """The entire legal write-set of News learning: two complete Predictor instructions.
 
     `ProgramStrategyPatchV1` says the same two things bound to a parent, because applying a patch to a
     Program is the Program package's business and needs the parent to refuse a mismatch. This one is the
     *candidate's* write-set, which is why it carries nothing else — a field here is a field an optimizer
-    could learn to write. The safety bounds are not restated: `validate_learned_instruction` is the one
+    could learn to write. The safety bounds are not restated: `validate_program_instruction` is the one
     implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
     """
 
@@ -376,8 +376,8 @@ class PromptPatchV1(BaseModel):
 
     @model_validator(mode="after")
     def _write_set_is_safe(self) -> PromptPatchV1:
-        validate_learned_instruction(self.event_semantics_instruction)
-        validate_learned_instruction(self.reader_card_instruction)
+        validate_program_instruction(self.event_semantics_instruction)
+        validate_program_instruction(self.reader_card_instruction)
         return self
 
     @classmethod
