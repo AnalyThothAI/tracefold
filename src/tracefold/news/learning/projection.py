@@ -10,12 +10,11 @@ what lets the release report and the review desk quote the same numbers.
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from ..artifact_identity import canonical_json, canonical_sha
+from ..artifact_identity import canonical_sha
 from ..models import TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment
 from .contracts import ArmManifest, DatasetCaseRef, ProposalReceipt
@@ -23,10 +22,6 @@ from .contracts import ArmManifest, DatasetCaseRef, ProposalReceipt
 
 def _sha(value: Any) -> str:
     return canonical_sha(value)
-
-
-def _json(value: Any) -> str:
-    return canonical_json(value)
 
 
 def _call_cost_microusd(call: Mapping[str, Any]) -> int | None:
@@ -332,71 +327,6 @@ def _observation_root(observations: Sequence[Mapping[str, Any]]) -> str:
         for item in observations
     ]
     return _sha({"observation_root_version": "news_observation_root_v1", "leaves": leaves})
-
-
-def _recording_verification_roots(
-    observations: Sequence[Mapping[str, Any]],
-) -> tuple[dict[str, str], str]:
-    """Hash only persisted, replay-deterministic observation fields.
-
-    Program wall time measures the verifier process rather than the recorded
-    provider call, so it is deliberately excluded. Per-call latency, usage,
-    cost, model identity, graph outputs, assembler verdict and policy result
-    remain in the root.
-    """
-
-    case_fields = (
-        "case_id",
-        "subject_kind",
-        "event_id",
-        "evidence_version",
-        "external_snapshot_id",
-        "evidence_sha256",
-        "review_id",
-        "cluster_id",
-        "stratum",
-        "opened_at_ms",
-    )
-    roots: dict[str, str] = {}
-    for item in observations:
-        case_ref = dict(item.get("case_ref") or {})
-        case_id = str(case_ref.get("case_id") or "")
-        if not case_id or case_id in roots:
-            raise ValueError("news_learning_recording_verification_case_identity_invalid")
-        payload = {
-            "case_ref": {field: case_ref.get(field) for field in case_fields},
-            "stable": _recording_verification_projection(item.get("stable") or {}),
-            "candidate": _recording_verification_projection(item.get("candidate") or {}),
-            "comparison": item.get("comparison") or {},
-        }
-        roots[case_id] = _sha(payload)
-    leaves = [{"case_id": case_id, "root": roots[case_id]} for case_id in sorted(roots)]
-    root = _sha({"observation_root_version": "news_strict_record_replay_v1", "leaves": leaves})
-    return roots, root
-
-
-def _recording_verification_projection(raw: Mapping[str, Any]) -> dict[str, Any]:
-    decoded: object = json.loads(_json(dict(raw)))
-    if not isinstance(decoded, dict):
-        raise ValueError("news_learning_recording_verification_projection_invalid")
-    projected = cast(dict[str, Any], decoded)
-    programs = projected.get("program")
-    if isinstance(programs, list):
-        for program in programs:
-            if not isinstance(program, dict):
-                continue
-            usage = program.get("usage")
-            if isinstance(usage, dict):
-                usage.pop("wall_latency_ms", None)
-            # #310: the provider's error prose is audit evidence, not behavior. Recordings do not carry
-            # it and a replayed refusal cannot reproduce it, so it leaves the root the same way the
-            # verifier's own wall time does — on both the trace's calls and the flattened copy.
-            for calls in (program.get("calls"), (program.get("trace") or {}).get("calls")):
-                if isinstance(calls, list):
-                    for call in calls:
-                        if isinstance(call, dict):
-                            call.pop("error_detail", None)
-    return projected
 
 
 def _percentile95(values: Sequence[int]) -> int | None:

@@ -27,20 +27,15 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.identity",
         "tracefold.news.learning.baseline",
         "tracefold.news.review.drafter",
-        # The two offline optimization capabilities. App composition may invoke them, while the capability
-        # tests assert that neither can reach database review, candidate registration or canary promotion.
+        # The one offline optimization capability. App composition may invoke it, while the capability
+        # tests assert that it cannot reach database review, candidate registration or canary promotion.
         "tracefold.news.learning.optimizer",
-        "tracefold.news.learning.experiment",
         # #202 §8: freezing a corpus, admitting a candidate and judging one are three objects now, and
         # the CLI composes them where the old evaluator hid the composition. `learning freeze --role
         # validation` is the one command that needs both: the release plane admits the candidate, and only
         # then does the freeze get to refuse the window.
         "tracefold.news.learning.dataset",
         "tracefold.news.learning.ledger",
-        # #300: the corpus carry-forward. The CLI composes the replay (task LM + equivalence judge) with
-        # the dataset store's migration seal; the module itself can reach neither review acceptance nor
-        # the release plane, which the capability tests keep true.
-        "tracefold.news.learning.migration",
         "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
@@ -55,13 +50,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
         "tracefold.news.learning.objective",
-        # #253 §8. The projection `learning run` publishes over the three reports it just composed. It
-        # reads their fields, computes no score and re-derives no plan, so it is the CLI's own summary
-        # rather than a fourth place the corpus is interpreted.
-        "tracefold.news.learning.run_summary",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
-        "tracefold.news.learning.replay",
         "tracefold.news.review.desk",
         "tracefold.news.program.contracts",
     ),

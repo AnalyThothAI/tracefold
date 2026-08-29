@@ -656,10 +656,11 @@ Diagnose News in this order:
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Each of the three roles is one
    `ModelExecutionIdentity`, and calls/cost/failures are accounted separately
-   before they are summed. Read `run_summary.json` first: it names the
-   standalone and GEPA-seed baselines apart, publishes their difference, and
-   exits `2` rather than implying a comparison when the two runs' dataset,
-   representative set, split, metric, Program or model binding disagree. The
+   before they are summed. The standalone baseline in
+   `baseline-compile-live.json` and the GEPA-seed score inside
+   `optimization_report.json` are two different numbers; running the three legs
+   in one process over one dataset SHA and one configured judge route is what
+   keeps them comparable. The
    three legs stay callable one at a time for a partial re-run. Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
    — re-applying the patch to derive the Program identity and re-deriving the

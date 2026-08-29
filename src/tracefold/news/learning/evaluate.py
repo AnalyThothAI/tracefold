@@ -24,7 +24,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
-from ..learning.replay import RecordingReplayCapability, RecordingReplayMiss
 from ..program.contracts import ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..release.candidate import CandidateRegistry
@@ -62,7 +61,6 @@ from .projection import (
     _program_call_identity_complete,
     _program_cost_by_predictor,
     _program_metric,
-    _recording_verification_roots,
 )
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
@@ -181,16 +179,7 @@ class CandidateEvaluator:
         )
         self._trusted_root_sha = trusted_root_sha
 
-    async def evaluate(
-        self,
-        request: EvaluationRequest,
-        *,
-        recording_replay: RecordingReplayCapability | None = None,
-    ) -> EvaluationReport:
-        if recording_replay is not None and not isinstance(recording_replay, RecordingReplayCapability):
-            raise ValueError("news_learning_recording_replay_capability_invalid")
-        if recording_replay is not None and request.stage not in {"offline", "holdout"}:
-            raise ValueError(f"news_learning_recording_verification_stage_unsupported:{request.stage}")
+    async def evaluate(self, request: EvaluationRequest) -> EvaluationReport:
         # Reject a stale constructor arm before loading data or spending one
         # model call. Re-read after execution as well, because a deployment can
         # legitimately change the active root while a long evaluation runs.
@@ -231,25 +220,9 @@ class CandidateEvaluator:
         dataset = development if request.stage == "offline" else validation
         existing = self._load_run_cases(run_sha)
         execution_errors: list[str] = []
-        recording_replay_missed = False
         observation_dimensions: dict[str, Any] | None = None
         observation_manifest_sha = request.observation_manifest_sha
-        recording_verification = None
-        if recording_replay is not None:
-            try:
-                recording_replay.assert_for_run(run_sha)
-                recording_verification = await self._verify_recorded_run(
-                    request=request,
-                    run_sha=run_sha,
-                    dataset=dataset,
-                    candidate=candidate,
-                    existing=existing,
-                    recording_replay=recording_replay,
-                )
-            except RecordingReplayMiss as exc:
-                recording_replay_missed = True
-                execution_errors.append(str(exc))
-        if not existing and recording_replay is None:
+        if not existing:
             if request.stage in {"shadow", "canary"}:
                 if request.observation_manifest_sha:
                     observations, observation_dimensions = self._load_production_observations(
@@ -327,11 +300,6 @@ class CandidateEvaluator:
         )
         if observation_manifest_sha:
             evidence["observation_manifest_sha"] = observation_manifest_sha
-        if recording_verification is not None:
-            evidence["recording_verification"] = recording_verification
-        if recording_replay_missed:
-            evidence["execution_incomplete"] = True
-            evidence["gate_outcome"] = "unknown"
         outcome = str(evidence["gate_outcome"])
         active_sha = self._ledger.active_stable_sha()
         eligibility = "current" if active_sha == candidate.parent_stable_sha else "stale"
@@ -388,7 +356,6 @@ class CandidateEvaluator:
         run_sha: str,
         dataset: DatasetManifest,
         candidate: CandidateManifest,
-        recording_replay: RecordingReplayCapability | None = None,
     ) -> list[dict[str, Any]]:
         states: dict[ArmName, ArmState] = {
             "stable": ArmState(deque(Receipt(**receipt) for receipt in dataset.seed_receipts)),
@@ -419,8 +386,6 @@ class CandidateEvaluator:
                     arm=arm,
                     context=context,
                     trial=1,
-                    persist_recordings=recording_replay is None,
-                    recording_replay=recording_replay,
                 )
                 program_observations = [first]
                 scored_judgment = first.get("scored_judgment")
@@ -449,8 +414,6 @@ class CandidateEvaluator:
                             arm=arms[arm_name],
                             context=context,
                             trial=trial,
-                            persist_recordings=recording_replay is None,
-                            recording_replay=recording_replay,
                         )
                         for trial in (2, 3)
                     ]
@@ -539,47 +502,6 @@ class CandidateEvaluator:
                 }
             )
         return observations
-
-    async def _verify_recorded_run(
-        self,
-        *,
-        request: EvaluationRequest,
-        run_sha: str,
-        dataset: DatasetManifest,
-        candidate: CandidateManifest,
-        existing: Sequence[Mapping[str, Any]],
-        recording_replay: RecordingReplayCapability,
-    ) -> dict[str, Any]:
-        """Re-execute an existing corpus through its supplied replay judges without appending model truth."""
-
-        if not existing:
-            raise RecordingReplayMiss("news_learning_recording_verification_cases_missing")
-        try:
-            replayed = await self._run_sequential(
-                run_sha=run_sha,
-                dataset=dataset,
-                candidate=candidate,
-                recording_replay=recording_replay,
-            )
-        except RecordReplayMiss as exc:
-            raise RecordingReplayMiss(f"news_learning_recording_verification_miss:{exc}") from exc
-
-        expected_roots, expected_root = _recording_verification_roots(existing)
-        actual_roots, actual_root = _recording_verification_roots(replayed)
-        if expected_roots.keys() != actual_roots.keys():
-            raise ValueError("news_learning_recording_verification_case_set_mismatch")
-        for case_id, expected in expected_roots.items():
-            if actual_roots[case_id] != expected:
-                raise ValueError(f"news_learning_recording_verification_mismatch:{case_id}")
-        if actual_root != expected_root:
-            raise ValueError("news_learning_recording_verification_root_mismatch")
-        replay_receipt = recording_replay.sealed_receipt()
-        return {
-            "mode": "strict_record_replay_v1",
-            **replay_receipt,
-            "case_n": len(expected_roots),
-            "observation_root": expected_root,
-        }
 
     @staticmethod
     def _review_case_ids(dataset: DatasetManifest, *, candidate: CandidateManifest) -> frozenset[str]:
@@ -896,11 +818,9 @@ class CandidateEvaluator:
         arm: ArmManifest,
         context: TriageContext,
         trial: int,
-        persist_recordings: bool = True,
-        recording_replay: RecordingReplayCapability | None = None,
     ) -> dict[str, Any]:
-        judge = self._judges.get((arm_name, arm.bundle_sha)) if recording_replay is None else None
-        if judge is None and recording_replay is None:
+        judge = self._judges.get((arm_name, arm.bundle_sha))
+        if judge is None:
             return {
                 "verdict": None,
                 "scored_judgment": None,
@@ -914,18 +834,7 @@ class CandidateEvaluator:
             }
         observation: dict[str, Any]
         try:
-            if recording_replay is not None:
-                judgment = await recording_replay.judge(
-                    arm=arm_name,
-                    bundle_sha=arm.bundle_sha,
-                    case_id=case_id,
-                    trial=trial,
-                    context=context,
-                )
-            else:
-                if judge is None:  # pragma: no cover - guarded by the artifact-missing return above
-                    raise RuntimeError("news_program_artifact_missing")
-                judgment = await judge.judge(context)
+            judgment = await judge.judge(context)
         except SemanticJudgeError as exc:
             if "recording_missing" in exc.code:
                 raise RecordReplayMiss(exc.code) from exc
@@ -965,21 +874,20 @@ class CandidateEvaluator:
         trace_context_sha = str(trace.get("context_sha256") or context_sha)
         if trace_context_sha != context_sha:
             raise ValueError("news_program_trace_context_mismatch")
-        if persist_recordings:
-            for call_index, raw_call in enumerate(observation.get("calls") or []):
-                if not bool(raw_call.get("physical_provider_call")):
-                    continue
-                self._persist_program_call(
-                    run_sha=run_sha,
-                    case_id=case_id,
-                    arm_name=arm_name,
-                    trial=trial,
-                    arm=arm,
-                    context_sha=context_sha,
-                    trace=trace,
-                    call_index=call_index,
-                    raw_call=raw_call,
-                )
+        for call_index, raw_call in enumerate(observation.get("calls") or []):
+            if not bool(raw_call.get("physical_provider_call")):
+                continue
+            self._persist_program_call(
+                run_sha=run_sha,
+                case_id=case_id,
+                arm_name=arm_name,
+                trial=trial,
+                arm=arm,
+                context_sha=context_sha,
+                trace=trace,
+                call_index=call_index,
+                raw_call=raw_call,
+            )
         return observation
 
     def _persist_program_call(

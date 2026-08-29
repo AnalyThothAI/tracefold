@@ -672,7 +672,7 @@ def provider_error_detail(payload: Mapping[str, Any] | None) -> str | None:
       into 401/403 bodies, which is an accident rather than an attack and so is not disposed of by
       removing the adversary from the model.
 
-    Excluded from `_recording_verification_projection` either way, so none of this reaches a replay hash.
+    Model recordings never carry `error_detail` (#310), so none of this is identity-bearing.
     """
 
     if not isinstance(payload, Mapping):

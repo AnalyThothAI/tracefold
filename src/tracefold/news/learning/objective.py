@@ -967,38 +967,6 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
     )
 
 
-def policy_candidate_failure_clusters(
-    cases: Sequence[Any],
-    reviews: Mapping[str, Mapping[str, Any]],
-) -> frozenset[str]:
-    """The clusters a *policy* candidate may declare. Deliberately not the GEPA rule, and not a hash of it.
-
-    A policy candidate is not GEPA's output: nobody proposes an instruction for it, so "which errors is a
-    Prompt allowed to try to repair" is the wrong question to hold it to. What it is held to is what an
-    accepted review says went wrong at all — a failed dimension, a stated correction, or the frozen
-    delivery disagreeing with the accepted action.
-
-    It reads `DatasetCaseRef` fields and review rows, and nothing else. That is the point: the release
-    plane can check a policy candidate without re-projecting the whole development corpus through
-    `decide()`, which is a per-case reader-history rebuild and a set of failure modes — drifted evidence,
-    a superseded judgment — that a policy screen would never have met.
-    """
-
-    failed: set[str] = set()
-    for case in cases:
-        review = dict(reviews.get(str(case.review_id)) or {})
-        dimensions = dict(review.get("dimensions") or {})
-        expected_sent = _expected_delivery(str(case.should_push or "uncertain"))
-        delivery_failed = (
-            expected_sent is not None
-            and str(case.delivery_truth or "unknown") != "unknown"
-            and (str(case.delivery_truth) == "observed_sent") != expected_sent
-        )
-        if delivery_failed or "fail" in dimensions.values() or bool(review.get("expected_correction")):
-            failed.add(str(case.cluster_id))
-    return frozenset(failed)
-
-
 def _expected_delivery(should_push: str) -> bool | None:
     """Which delivery the accepted action implies, or `None` when the reviewer stated no opinion.
 
@@ -1015,7 +983,7 @@ def _expected_delivery(should_push: str) -> bool | None:
 
 # v2 (#259): the report carries the frozen dataset's own `coverage` counts beside the plan, so one
 # document answers both "may this corpus be optimized" and "how much separable evidence is in it".
-# `run_summary` reads that block; a v1 report cannot answer it and must not be read as if it could.
+# A v1 report cannot answer the second question and must not be read as if it could.
 READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v2"] = "tracefold.news.gepa_readiness_report.v2"
 # The Program answers two Predictors per metric call, in a fixed order. Not an estimate — it is the graph.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
@@ -1145,7 +1113,6 @@ __all__ = [
     "build_gepa_objective_plan",
     "build_readiness_report",
     "optimizer_population_identity",
-    "policy_candidate_failure_clusters",
     "production_decision",
     "retrieval_receipt",
     "stable_hard_gate",

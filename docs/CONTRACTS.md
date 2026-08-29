@@ -1291,37 +1291,10 @@ evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
-`news learning snapshot|compare` (#193, flattened out of an `experiment` group
-by #202) is the operator's research window, and it is not part of the release
-plane. It reads the database once as `serve`, writes only into a run directory
-the operator names, and can propose nothing:
-
-| Command | Reads | Writes | Spends |
-| --- | --- | --- | --- |
-| `snapshot --hours N --limit N --out DIR` | one closed window through `CandidateEvaluator.baseline_episodes` | `DIR/manifest.json`, `DIR/cases/<case>.json` | nothing |
-| `compare --run DIR --student MODEL [--teacher MODEL] --max-model-cases N [--resume]` | the frozen cases | `DIR/compare/<case>.json`, `DIR/report.json` | one live arm per named model |
-
-The window ends at a ten-minute settlement grace rather than at `now`: the
-outcome loop keeps writing prices for minutes after an Event opens, so a
-snapshot taken to the current instant measures a corpus that changes underneath
-the comparison. `run_sha256` is issued over the window, the parent Program, the
-policy, the case counts and a root over the frozen case ids, so a run cannot
-silently change what it measured. The manifest is
-`tracefold.news.experiment_run_manifest.v2` and names the episode projection its
-cases were frozen under; a run frozen under an older one is refused by name
-(`news_experiment_run_projection_schema_stale`) rather than silently answering a
-question its cases cannot support — a snapshot taken before the Objective Plan
-existed carries no explicit owner, so every failure case in it would classify as
-`owner_absent`. `case_sha256` is the evaluator's own case id,
-which is what makes `--resume` a directory listing rather than a stored cursor.
-
-`compare` scores three arms that are never averaged together — `recorded` is
-what production shipped, `student` is the local route that will ship, `teacher`
-is a larger reference — and each named model runs on the credentials of the
-route that serves that role. A case with no accepted review is listed in
-`unlabelled_case_ids` and scored by nobody; `failure_clusters` ranks by cluster
-size times mean regression, so a broad small regression outranks one bad case
-and an improvement never enters the queue.
+`news learning snapshot|compare` — the #193 research window of frozen run
+directories and student/teacher arm comparison — was deleted in #343 together
+with the `tracefold.news.learning.experiment` package; `optimize` over a frozen
+development dataset is the only research entry.
 
 `news learning optimize --development SHA --out DIR --max-metric-calls N
 --max-task-model-calls N --max-reflection-model-calls N
@@ -1373,67 +1346,33 @@ free count, before any provider call. A corpus readiness reports as
 goes straight to `optimize`, whose `REJECTED` for that corpus costs nothing.
 
 The directory holds `readiness.json`, `baseline-compile-live.json`,
-`optimization/optimization_report.json`, `optimization/prompt_candidate.json` on
-`ADVANCE`, and `run_summary.json`
-(`tracefold.news.gepa_run_summary.v2`). Freezing with `--out
+`optimization/optimization_report.json`, and
+`optimization/prompt_candidate.json` on `ADVANCE`. Freezing with `--out
 DIR/development.json` makes the same directory loadable by
 `notebooks/news-gepa-frozen-run-evaluation.ipynb`.
 
-`run_summary.json` is a projection over those artifacts and never a fourth
-authority: it reads published fields, computes no score, re-derives no plan and
-carries no news text, Prompt, case list or endpoint. It names three baselines so
-none can be quoted as another —
-`standalone_selection_score`
-(`subsets.development_selection.case_macro_failure_as_zero`),
-`gepa_seed_selection_score` (`trajectory.val_aggregate_scores[0]`, the seed
-Program's score inside the run that proposed against it) and
-`future_test_baseline`, which is always `null` here because only `release
-evaluate --stage holdout` against a post-registration ValidationDataset can
-produce one. `numeric_drift` is `seed - standalone`, published rather than
-reconciled: two physical runs of one graph may differ, and a difference is not
-by itself evidence that a dataset identity is wrong.
-
-`dataset` carries the corpus counts and roots plus a `coverage` block forwarded
-from readiness, so the numbers and the population behind them read together. The
-block always has the same ten keys: a `gepa_readiness_report.v1` in an archived
-run directory carried none of these counts, so every value is `null` — never `0`,
-which would read as a measured corpus of nothing, and never an empty object,
-which a consumer would fall off the end of.
-
-`same_population` is a verdict over named `population_checks` — dataset SHA,
-episode projection root, episode count, representative case root and counts,
-both split roots, the metric receipt, the parent Program, the task model, and
-the task endpoint. Every corpus check is three-way against readiness, so a run
-explained as one corpus and measured as another is a `mismatch` even when the
-two measured legs agree. The metric receipt is compared whole except for
-`semantic_judge.execution.max_model_calls`, a spend bound that cannot change
-what "better" means; both observed ceilings are printed in the row. A judge that
-went `unavailable` is reported separately under `judge_availability`, because it
-makes its leg a lower bound rather than a different population. The endpoint check compares each report against the
-digest of the route this run composed rather than the two reports against each
-other, because the baseline fingerprints it as `configured_endpoint_model_v3`
-and the optimizer as `model_execution_identity.v1`. Any `mismatch` makes
-`same_population` false and exits `2` with
-`news_learning_run_population_identity_mismatch`; the summary is still written,
-because a refused comparison is not a reason to withhold its evidence. A leg
-that never ran is `not_comparable` and `same_population` is `null`, never
-`true`. `next_action` is `future_test` on `ADVANCE`, `keep_stable` on `NO_OP`,
-and on `REJECTED` it is `collect_more_gold` only when the terminal reasons say
-the corpus cannot answer — an exhausted budget keeps Stable and says so in
-`reasons`. A `false` `same_population` forces `keep_stable` whatever the
-terminal: the file must not recommend a future test that rests on a `before`
-number the same file just declined to vouch for. Exit `0` is `ADVANCE`; `1` is `NO_OP` or `REJECTED`, both complete
-experiments.
+The separate `run_summary.json` comparability projection
+(`tracefold.news.gepa_run_summary.v2`) was deleted in #343: with the three legs
+composed in one process over one dataset SHA and one judge route derived from
+`llm.news_compiler_reflection`, same-population is true by construction, so no
+fourth document re-checks the other three. The three baselines keep their own
+homes and their own meanings — the standalone number in
+`baseline-compile-live.json`
+(`subsets.development_selection.case_macro_failure_as_zero`), the GEPA seed
+number in `optimization/optimization_report.json`
+(`trajectory.val_aggregate_scores[0]`, the seed Program's score inside the run
+that proposed against it), and the future test number only ever from `release
+evaluate --stage holdout` against a post-registration ValidationDataset. Two
+physical runs of one graph may still differ in the last digits; a difference is
+not by itself evidence that a dataset identity is wrong. Exit `0` is `ADVANCE`;
+`1` is `NO_OP` or `REJECTED`, both complete answers.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
-[--include-reviewed] [--events-from DIR]` proposes `news_review_v4` rubrics for
-a human to accept and writes a file, never a review. `--events-from` closes the
-fast loop: it drafts exactly the unlabelled Events an experiment run froze, in
-the run's own fixed order, one ReviewDesk query per Event, and reports
-`requested_events` beside `tasks` so an Event whose desk task has been
-superseded is visible rather than read as judged. Without it the command keeps
-its queue-by-hours form, which is how a first corpus is grown before any run
-exists. A batch refuses duplicate task identities before its first model call
+[--include-reviewed]` proposes `news_review_v4` rubrics for
+a human to accept and writes a file, never a review. It drafts from the
+ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
+that drafted the Events a #193 experiment run had frozen went with that loop in
+#343. A batch refuses duplicate task identities before its first model call
 and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
 consume at most one drafting call.
 
@@ -1499,9 +1438,10 @@ dataset or metric-v4 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `snapshot`, `compare`, `optimize`, `freeze` — and none of them
-can ship anything. `run` is the recommended composition of the first three;
-the rest stay callable one at a time. `news release` admits a candidate and moves it: `register`,
+`draft-reviews`, `optimize`, `freeze` — and none of them can ship anything.
+`run` is the recommended composition of `readiness`, `baseline` and
+`optimize`; the rest stay callable one at a time. `news release` admits a
+candidate and moves it: `register`,
 `evaluate`, `shadow`, `canary`. The split is what an operator reads off
 `--help`, and it is the same boundary the packages carry: `news.learning`
 never imports `news.release`.
@@ -1533,12 +1473,11 @@ cannot be re-armed (migration `20260825_0307` trips anything still open).
 `release evaluate` runs the
 development/offline or validation/holdout release gate; validation calls both
 arms sequentially and `--live-program` can append exact per-Predictor
-recordings. Its mutually exclusive `--verify-recordings` mode is limited to
-offline/holdout Program candidates: it loads the exact existing run corpus,
-re-executes both real arm-scoped Program graphs with no live provider fallback,
-and seals the matching corpus/observation roots into the evaluation report. A
-missing corpus or recording produces an `incomplete`/`UNKNOWN` evaluation with
-no live fallback; an identity or tamper mismatch fails closed.
+recordings. Those recordings persist in `news_model_recordings` as
+content-addressed forensic evidence, and without `--live-program` the gate
+replays each arm from them; a missing recording produces an `incomplete`
+evaluation with no live fallback. The separate strict re-execution verification
+pass (`--verify-recordings`) was deleted in #343.
 `release shadow --live-program` cold-runs the candidate over the closed
 validation window and seals the observations; an existing sealed shadow
 observation manifest can be replayed instead.

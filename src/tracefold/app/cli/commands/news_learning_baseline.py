@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from argparse import Namespace
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
@@ -409,55 +408,6 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     )
 
 
-_DESK_MAX_LOOKBACK_HOURS = 720
-
-
-def _run_window(root: str) -> tuple[int, int] | None:
-    """The absolute window an experiment run froze, or `None` when no run was named.
-
-    This used to read the run's *case list* and draft the ones marked unaccepted. There are none, and
-    there never can be: `baseline_episodes` reaches a case through an acceptance row, so a snapshot holds
-    reviewed Events by construction. Drafting is for the rest of that same window — the Events the
-    comparison could not score because nobody has judged them.
-    """
-
-    if not root.strip():
-        return None
-    from pathlib import Path
-
-    from tracefold.news.learning.experiment.run import ExperimentRun
-
-    window = ExperimentRun(Path(root)).manifest().window
-    return int(window.from_ms), int(window.to_ms)
-
-
-def _desk_lookback_hours(window: tuple[int, int], *, now_ms: int) -> int:
-    """The look-back that reaches a run's window. The desk takes a width; a run has two edges."""
-
-    from_ms, _to_ms = window
-    if now_ms <= from_ms:
-        raise ValueError("news_review_drafter_run_window_not_in_the_past")
-    # Ceiling, so the look-back covers the window's leading edge rather than stopping just inside it.
-    hours = -(-(now_ms - from_ms) // 3_600_000)
-    if hours > _DESK_MAX_LOOKBACK_HOURS:
-        raise ValueError("news_review_drafter_run_window_exceeds_desk_lookback")
-    return int(hours)
-
-
-def _within_window(row: Mapping[str, Any], window: tuple[int, int] | None) -> bool:
-    """Whether one desk task belongs to the run's frozen window.
-
-    The desk's look-back is a width ending at *now*, so it necessarily reaches past `to_ms` — a snapshot
-    stops at the settlement grace on purpose — and rounds up to an hour before `from_ms`. Without this the
-    drafts would grow a corpus for a window the run never froze while claiming to target it.
-    """
-
-    if window is None:
-        return True
-    from_ms, to_ms = window
-    return from_ms <= int(row.get("opened_at_ms") or 0) < to_ms
-
-
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
 
@@ -487,12 +437,6 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     wanted = int(args.limit)
-    # `--events-from` narrows the queue to the run's own window; everything else about it — the stratified
-    # sampling, the cohort filter, the pending/all switch — is unchanged, because a corpus grown through
-    # the fast loop has to carry the same stratum mix as one grown through the queue.
-    window = _run_window(str(getattr(args, "events_from", "") or ""))
-    if window is not None:
-        hours = _desk_lookback_hours(window, now_ms=int(time.time() * 1000))
     with postgres_connection(settings, role="serve") as conn:
         desk = ReviewDesk(conn)
         # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
@@ -513,8 +457,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                 principal=principal,
             )
             page = list(queue.get("tasks") or ())
-            # The desk chose them; the run's window decides which of them belong to it.
-            rows.extend(row for row in page if _within_window(row, window))
+            rows.extend(page)
             cursor = str(queue.get("next_cursor") or "")
             if not page or not cursor:
                 break
@@ -588,8 +531,6 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "batch_sha256": batch.batch_sha256,
             "drafter": batch.drafter,
             "tasks": len(tasks),
-            # The look-back actually used, so a run-scoped draft says which window it drew from rather
-            # than leaving the reader to assume `--hours`.
             "lookback_hours": hours,
             "drafted": len(drafted),
             "unique_tasks": len({entry.task_id for entry in batch.drafts}),
@@ -598,114 +539,3 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "note": "proposals only - a human must accept each one through `tracefold news review submit`",
         },
     }
-
-
-def _handle_learning_migrate_corpus(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Carry a stale-cohort development dataset forward by replaying the current arm (#300).
-
-    The database is held only at the edges: one read to export the episodes, one short write transaction
-    to seal the carried subset. The replay itself — hours on the single-slot task endpoint — runs with no
-    connection open, and `--from-receipt` freezes from an already-written receipt so a failure after the
-    replay never re-pays it; the seal re-verifies the receipt's hash and the arm it was proven against.
-    """
-
-    import json as _json
-    from pathlib import Path as _Path
-
-    from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.dataset import DevelopmentDatasetStore
-    from tracefold.news.learning.ledger import LearningLedger
-    from tracefold.news.learning.migration import run_corpus_migration
-    from tracefold.news.learning.objective import DevelopmentEpisode
-    from tracefold.news.program.artifact import load_program_artifact
-
-    out_dir = _Path(str(args.out))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    from_receipt = str(getattr(args, "from_receipt", "") or "")
-
-    def _store(conn: Any) -> DevelopmentDatasetStore:
-        return DevelopmentDatasetStore(
-            conn,
-            stable=stable,
-            ledger=LearningLedger(conn, stable=stable, principal="operator"),
-        )
-
-    if from_receipt:
-        receipt = _json.loads(_Path(from_receipt).read_text(encoding="utf-8"))
-    else:
-        artifact = load_program_artifact(stable.program_sha256)
-        compile_program, runtime_identity = _baseline_model_route("compile_live", settings=settings, artifact=artifact)
-        judge = _migration_judge(args, settings)
-        with postgres_connection(settings, role="workers") as conn:
-            export = _store(conn).development_migration_export(str(args.from_dataset))
-        episodes = tuple(DevelopmentEpisode.model_validate(episode) for episode in export.episodes)
-        delivered = {
-            str(case.get("case_id")): str(case.get("event_id") or case.get("case_id"))
-            for case in export.dataset_payload.get("cases") or ()
-            if str(case.get("delivery_truth")) == "observed_sent"
-        }
-        if compile_program is None:  # pragma: no cover - `_baseline_model_route` raises first
-            raise ValueError("news_program_baseline_compile_route_not_configured")
-        receipt = run_corpus_migration(
-            episodes,
-            program=compile_program,
-            judge=judge,
-            max_model_cases=int(args.max_model_cases),
-            from_dataset_sha=str(args.from_dataset),
-            replay_identity={
-                "bundle_sha": stable.bundle_sha,
-                "program_sha256": stable.program_sha256,
-                **runtime_identity,
-            },
-            delivered_event_ids_by_case=delivered,
-        )
-        _write_json(str(out_dir / "migration-receipt.json"), receipt)
-
-    if not receipt["counts"]["equivalent"]:
-        # The store refuses an empty carry loudly; a zero-exit here would convert that refusal into a
-        # success an operator's `&&` chain sails past.
-        return 1, {
-            "ok": False,
-            "error": "news_learning_migration_carries_no_cases",
-            "data": {"counts": receipt["counts"], "out": str(out_dir)},
-        }
-    with postgres_connection(settings, role="workers") as conn, conn.transaction():
-        manifest = _store(conn).freeze_migrated_dataset(from_dataset_sha=str(args.from_dataset), receipt=receipt)
-    _write_json(str(out_dir / "migrated-dataset.json"), manifest.model_dump(mode="json"))
-    return 0, {
-        "ok": True,
-        "data": {
-            "receipt_sha256": receipt["receipt_sha256"],
-            "counts": receipt["counts"],
-            "migrated_dataset_sha": manifest.artifact_sha,
-            "excluded_case_ids": (manifest.migration or {}).get("excluded_case_ids"),
-            "out": str(out_dir),
-        },
-    }
-
-
-def _migration_judge(args: Namespace, settings: Any) -> Any:
-    """The card-equivalence judge on the compiler reflection route — the same restriction a dataset-bound
-    baseline carries, because a migration seal is release evidence."""
-
-    from tracefold.app.llm import configured_lm_endpoint
-    from tracefold.news.learning.baseline import build_judge
-
-    reflection = getattr(settings.llm, "news_compiler_reflection", None)
-    if reflection is None or not reflection.configured:
-        raise ValueError("news_program_baseline_judge_endpoint_not_configured")
-    endpoint = configured_lm_endpoint(
-        settings,
-        model_name=str(args.semantic_judge).strip(),
-        api_key=reflection.api_key,
-        base_url=reflection.base_url,
-        request_config=reflection.request,
-    )
-    return build_judge(
-        model_name=endpoint.model_name,
-        api_key=endpoint.api_key,
-        api_base=endpoint.api_base,
-        model_kwargs=endpoint.model_kwargs,
-        temperature=0 if endpoint.temperature is None else endpoint.temperature,
-        structured_output=endpoint.structured_output,
-    )

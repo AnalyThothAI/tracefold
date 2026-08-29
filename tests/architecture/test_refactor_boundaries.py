@@ -131,10 +131,8 @@ WORKER_FORBIDDEN_AUTHORITY_MODULES = (
     "tracefold.news.learning.baseline",
     "tracefold.news.learning.evaluate",
     "tracefold.news.learning.judge",
-    "tracefold.news.learning.replay",
     "tracefold.news.review.drafter",
     "tracefold.news.review.desk",
-    "tracefold.news.learning.experiment",
 )
 
 

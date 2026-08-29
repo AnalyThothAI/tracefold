@@ -70,31 +70,6 @@ def _learning_program_judges(
     return judges
 
 
-def _learning_recording_replay_capability(
-    conn: Any,
-    *,
-    stable: Any,
-    candidate: Any,
-    artifact_paths: Mapping[str, str],
-    run_sha: str,
-) -> Any:
-    from tracefold.news.learning.replay import ReplayArmSpec, load_recording_replay_capability
-
-    arm_artifacts = _learning_program_arm_artifacts(
-        stable=stable,
-        candidate=candidate,
-        artifact_paths=artifact_paths,
-    )
-    return load_recording_replay_capability(
-        conn,
-        run_sha=run_sha,
-        arms=tuple(
-            ReplayArmSpec(arm=arm_name, bundle_sha=arm.bundle_sha, artifact=artifact)
-            for arm_name, arm, artifact in arm_artifacts
-        ),
-    )
-
-
 def _learning_program_arm_artifacts(
     *,
     stable: Any,

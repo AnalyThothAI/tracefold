@@ -202,8 +202,7 @@ same endpoints, and files in a directory the operator named. The typed budget
 still bounds only the optimization leg — `run_baseline` has no meter and no
 deadline — so a composite run's spend is the declared budget plus a baseline leg
 bounded by its corpus, which `--max-baseline-model-cases` must cover exactly.
-`run_summary.json` carries identifiers, counts and scalars and is rejected before
-it is written if it names or contains credential material. Every physical provider call passes a meter that reserves the operator's
+Every physical provider call passes a meter that reserves the operator's
 declared per-call cost before the request and settles after it, and a wall-clock
 deadline is checked before each call rather than reported after the last. Task,
 reflection and `metric_judge` are each one `ModelExecutionIdentity` — the

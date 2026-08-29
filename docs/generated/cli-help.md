@@ -331,26 +331,20 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,migrate-corpus,freeze} ...
+                               {readiness,baseline,draft-reviews,optimize,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,snapshot,compare,optimize,run,migrate-corpus,freeze}
+  {readiness,baseline,draft-reviews,optimize,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
     draft-reviews       propose news_review_v4 rubrics with exact gold for a
                         human to accept (writes a file, never the DB)
-    snapshot            freeze one closed window into a run directory; never
-                        writes to the database
-    compare             score a frozen snapshot under recorded / student /
-                        teacher and report the differences
     optimize            run the one bounded GEPA optimization over a frozen
                         development dataset; ADVANCE is not a release
     run                 the recommended path: readiness -> standalone baseline
-                        -> optimize -> run_summary.json
-    migrate-corpus      carry a stale-cohort development dataset forward by
-                        replaying the current arm (#300)
+                        -> optimize, into one directory
     freeze              freeze accepted reviews into a dataset
 
 options:
@@ -428,57 +422,16 @@ options:
 ```
 usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
                                              --model MODEL [--limit LIMIT]
-                                             [--include-reviewed]
-                                             [--events-from EVENTS_FROM]
-                                             --out OUT
+                                             [--include-reviewed] --out OUT
 
 options:
-  -h, --help            show this help message and exit
-  --hours HOURS         look back this many hours from now (max 720)
-  --model MODEL         drafting model, e.g. deepseek-v4-pro
+  -h, --help          show this help message and exit
+  --hours HOURS       look back this many hours from now (max 720)
+  --model MODEL       drafting model, e.g. deepseek-v4-pro
   --limit LIMIT
-  --include-reviewed    also draft Events that already carry an accepted
-                        review (default: only unjudged ones)
-  --events-from EVENTS_FROM
-                        draft the unjudged Events in this experiment run's
-                        window (replaces --hours)
-  --out OUT             write the draft batch JSON for human review
-
-```
-
-## `news learning snapshot`
-
-```
-usage: tracefold news learning snapshot [-h] [--hours HOURS] [--limit LIMIT]
-                                        --out OUT
-
-options:
-  -h, --help     show this help message and exit
-  --hours HOURS  width of the closed window ending at the settlement grace
-  --limit LIMIT
-  --out OUT      run directory to create, e.g. .tracefold/runs/news-24h
-
-```
-
-## `news learning compare`
-
-```
-usage: tracefold news learning compare [-h] --run RUN --student STUDENT
-                                       [--teacher TEACHER]
-                                       --max-model-cases MAX_MODEL_CASES
-                                       [--semantic-judge SEMANTIC_JUDGE]
-                                       [--resume]
-
-options:
-  -h, --help            show this help message and exit
-  --run RUN             run directory created by `snapshot`
-  --student STUDENT     student model, e.g. the local route
-  --teacher TEACHER     optional reference model, e.g. deepseek-v4-pro
-  --max-model-cases MAX_MODEL_CASES
-                        hard bound on cases sent to a provider
-  --semantic-judge SEMANTIC_JUDGE
-                        equivalence judge model
-  --resume              skip cases this run directory already answered
+  --include-reviewed  also draft Events that already carry an accepted review
+                      (default: only unjudged ones)
+  --out OUT           write the draft batch JSON for human review
 
 ```
 
@@ -551,31 +504,6 @@ options:
 
 ```
 
-## `news learning migrate-corpus`
-
-```
-usage: tracefold news learning migrate-corpus [-h] --from-dataset FROM_DATASET
-                                              --semantic-judge SEMANTIC_JUDGE
-                                              --max-model-cases MAX_MODEL_CASES
-                                              [--from-receipt FROM_RECEIPT]
-                                              --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --from-dataset FROM_DATASET
-                        development dataset artifact SHA to carry
-  --semantic-judge SEMANTIC_JUDGE
-                        card-equivalence judge model
-  --max-model-cases MAX_MODEL_CASES
-                        hard bound on replayed cases; must cover the whole
-                        dataset
-  --from-receipt FROM_RECEIPT
-                        freeze from an already-written migration receipt
-                        instead of replaying again
-  --out OUT             directory for the receipt and dataset manifest
-
-```
-
 ## `news learning freeze`
 
 ```
@@ -643,7 +571,7 @@ usage: tracefold news release evaluate [-h] --development DEVELOPMENT
                                        [--validation VALIDATION]
                                        --candidate CANDIDATE
                                        [--stage {offline,holdout,canary}]
-                                       [--live-program | --verify-recordings]
+                                       [--live-program]
                                        [--observation-manifest OBSERVATION_MANIFEST]
                                        --out OUT
 
@@ -657,10 +585,8 @@ options:
                         candidate manifest JSON/YAML
   --stage {offline,holdout,canary}
                         evaluation evidence stage
-  --live-program        run the assigned DSPy Program live and append per-
-                        Predictor recordings
-  --verify-recordings   strictly re-run an existing offline/holdout corpus
-                        without live provider calls
+  --live-program        run the assigned Program live and append per-Predictor
+                        recordings
   --observation-manifest OBSERVATION_MANIFEST
                         optional sealed canary observation artifact SHA
   --out OUT             write the sealed evaluation report
