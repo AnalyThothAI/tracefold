@@ -1,0 +1,525 @@
+{
+    "source": {
+        "stage": "triage",
+        "transaction": "read_only",
+        "database_role": "tracefold_serve"
+    },
+    "windows": {
+        "health_ms": 86400000,
+        "distribution_ms": 604800000,
+        "post_315_deploy_since_ms": 1787948760000
+    },
+    "artifact": "tracefold_news_classification_baseline_v1",
+    "totals_7d": {
+        "n": 10060,
+        "delivered": 3623,
+        "delivered_pct": 36.0
+    },
+    "health_24h": {
+        "n": 1081,
+        "degraded": 43,
+        "avg_latency_ms": 8108,
+        "p95_latency_ms": 18132,
+        "fallback_answered": 147
+    },
+    "captured_at_ms": 1788003883072,
+    "fallback_from_24h": [
+        {
+            "n": 94,
+            "fallback_from": "news_program_restatement_index_invalid"
+        },
+        {
+            "n": 49,
+            "fallback_from": "news_program_event_semantics_invalid"
+        },
+        {
+            "n": 4,
+            "fallback_from": "news_program_route_deadline"
+        }
+    ],
+    "health_24h_hourly": [
+        {
+            "n": 11,
+            "degraded": 3,
+            "fallback": 0,
+            "hour_utc": "2026-08-28T11:00Z"
+        },
+        {
+            "n": 75,
+            "degraded": 20,
+            "fallback": 0,
+            "hour_utc": "2026-08-28T12:00Z"
+        },
+        {
+            "n": 98,
+            "degraded": 9,
+            "fallback": 23,
+            "hour_utc": "2026-08-28T13:00Z"
+        },
+        {
+            "n": 92,
+            "degraded": 2,
+            "fallback": 32,
+            "hour_utc": "2026-08-28T14:00Z"
+        },
+        {
+            "n": 99,
+            "degraded": 2,
+            "fallback": 29,
+            "hour_utc": "2026-08-28T15:00Z"
+        },
+        {
+            "n": 76,
+            "degraded": 4,
+            "fallback": 18,
+            "hour_utc": "2026-08-28T16:00Z"
+        },
+        {
+            "n": 56,
+            "degraded": 0,
+            "fallback": 15,
+            "hour_utc": "2026-08-28T17:00Z"
+        },
+        {
+            "n": 80,
+            "degraded": 1,
+            "fallback": 18,
+            "hour_utc": "2026-08-28T18:00Z"
+        },
+        {
+            "n": 48,
+            "degraded": 0,
+            "fallback": 9,
+            "hour_utc": "2026-08-28T19:00Z"
+        },
+        {
+            "n": 37,
+            "degraded": 0,
+            "fallback": 3,
+            "hour_utc": "2026-08-28T20:00Z"
+        },
+        {
+            "n": 19,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-28T21:00Z"
+        },
+        {
+            "n": 29,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-28T22:00Z"
+        },
+        {
+            "n": 24,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-28T23:00Z"
+        },
+        {
+            "n": 40,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T00:00Z"
+        },
+        {
+            "n": 46,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T01:00Z"
+        },
+        {
+            "n": 27,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T02:00Z"
+        },
+        {
+            "n": 22,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T03:00Z"
+        },
+        {
+            "n": 16,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T04:00Z"
+        },
+        {
+            "n": 20,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T05:00Z"
+        },
+        {
+            "n": 45,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T06:00Z"
+        },
+        {
+            "n": 25,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T07:00Z"
+        },
+        {
+            "n": 15,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T08:00Z"
+        },
+        {
+            "n": 23,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T09:00Z"
+        },
+        {
+            "n": 43,
+            "degraded": 2,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T10:00Z"
+        },
+        {
+            "n": 15,
+            "degraded": 0,
+            "fallback": 0,
+            "hour_utc": "2026-08-29T11:00Z"
+        }
+    ],
+    "product_magnitude_7d": [
+        {
+            "m": "1",
+            "n": 471,
+            "delivered": 2
+        },
+        {
+            "m": "2",
+            "n": 891,
+            "delivered": 647
+        }
+    ],
+    "health_post_315_deploy": {
+        "n": 433,
+        "degraded": 2,
+        "fallback_answered": 0
+    },
+    "program_identity_mix_7d": [
+        {
+            "n": 4603,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "e54c8d69b960"
+        },
+        {
+            "n": 1246,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "8c6dcf5085ba"
+        },
+        {
+            "n": 648,
+            "first_seen_utc": "2026-08-27",
+            "program_sha256_prefix": "535a1dff0ad5"
+        },
+        {
+            "n": 593,
+            "first_seen_utc": "2026-08-22",
+            "program_sha256_prefix": "c62e0d69bf6c"
+        },
+        {
+            "n": 497,
+            "first_seen_utc": "2026-08-28",
+            "program_sha256_prefix": "23bb047c1ca2"
+        },
+        {
+            "n": 470,
+            "first_seen_utc": "2026-08-28",
+            "program_sha256_prefix": "c9bd53421b8c"
+        },
+        {
+            "n": 398,
+            "first_seen_utc": "2026-08-28",
+            "program_sha256_prefix": "c71bd9041f26"
+        },
+        {
+            "n": 311,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "9334eae481e2"
+        },
+        {
+            "n": 262,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "ab58a4dcdf57"
+        },
+        {
+            "n": 258,
+            "first_seen_utc": "2026-08-23",
+            "program_sha256_prefix": "648e696df5a8"
+        },
+        {
+            "n": 213,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "fcfd949e0ae7"
+        },
+        {
+            "n": 136,
+            "first_seen_utc": "2026-08-27",
+            "program_sha256_prefix": "f390a0cec9b2"
+        },
+        {
+            "n": 131,
+            "first_seen_utc": "2026-08-23",
+            "program_sha256_prefix": "fd9715ab02b5"
+        },
+        {
+            "n": 128,
+            "first_seen_utc": "2026-08-26",
+            "program_sha256_prefix": "bdbb5c8c3efd"
+        },
+        {
+            "n": 108,
+            "first_seen_utc": "2026-08-24",
+            "program_sha256_prefix": "7a460f8d3812"
+        },
+        {
+            "n": 39,
+            "first_seen_utc": "2026-08-22",
+            "program_sha256_prefix": "a0c21e0745d4"
+        },
+        {
+            "n": 16,
+            "first_seen_utc": "2026-08-22",
+            "program_sha256_prefix": "5bc03f976b10"
+        },
+        {
+            "n": 3,
+            "first_seen_utc": "2026-08-26",
+            "program_sha256_prefix": "a46665306226"
+        }
+    ],
+    "degraded_error_codes_24h": [
+        {
+            "n": 30,
+            "error_code": "news_program_provider_http_400"
+        },
+        {
+            "n": 8,
+            "error_code": "news_program_route_deadline"
+        },
+        {
+            "n": 3,
+            "error_code": "news_program_reader_card_invalid"
+        },
+        {
+            "n": 2,
+            "error_code": "news_program_event_semantics_invalid"
+        }
+    ],
+    "event_type_by_decision_7d": [
+        {
+            "n": 4053,
+            "drop": 2268,
+            "push": 1438,
+            "escalate": 215,
+            "throttled": 132,
+            "event_type": "macro",
+            "delivered_pct": 40.8
+        },
+        {
+            "n": 1819,
+            "drop": 1802,
+            "push": 17,
+            "escalate": 0,
+            "throttled": 0,
+            "event_type": "noise",
+            "delivered_pct": 0.9
+        },
+        {
+            "n": 1362,
+            "drop": 663,
+            "push": 649,
+            "escalate": 0,
+            "throttled": 50,
+            "event_type": "product",
+            "delivered_pct": 47.7
+        },
+        {
+            "n": 801,
+            "drop": 431,
+            "push": 305,
+            "escalate": 20,
+            "throttled": 45,
+            "event_type": "regulation",
+            "delivered_pct": 40.6
+        },
+        {
+            "n": 432,
+            "drop": 202,
+            "push": 203,
+            "escalate": 0,
+            "throttled": 27,
+            "event_type": "partnership",
+            "delivered_pct": 47.0
+        },
+        {
+            "n": 343,
+            "drop": 153,
+            "push": 165,
+            "escalate": 1,
+            "throttled": 24,
+            "event_type": "earnings",
+            "delivered_pct": 48.4
+        },
+        {
+            "n": 272,
+            "drop": 116,
+            "push": 138,
+            "escalate": 0,
+            "throttled": 18,
+            "event_type": "funding",
+            "delivered_pct": 50.7
+        },
+        {
+            "n": 193,
+            "drop": 94,
+            "push": 81,
+            "escalate": 0,
+            "throttled": 18,
+            "event_type": "filing",
+            "delivered_pct": 42.0
+        },
+        {
+            "n": 174,
+            "drop": 157,
+            "push": 14,
+            "escalate": 0,
+            "throttled": 3,
+            "event_type": "rumor",
+            "delivered_pct": 8.0
+        },
+        {
+            "n": 173,
+            "drop": 65,
+            "push": 79,
+            "escalate": 0,
+            "throttled": 29,
+            "event_type": "listing",
+            "delivered_pct": 45.7
+        },
+        {
+            "n": 126,
+            "drop": 32,
+            "push": 90,
+            "escalate": 0,
+            "throttled": 4,
+            "event_type": "whale",
+            "delivered_pct": 71.4
+        },
+        {
+            "n": 94,
+            "drop": 52,
+            "push": 35,
+            "escalate": 6,
+            "throttled": 1,
+            "event_type": "rates",
+            "delivered_pct": 43.6
+        },
+        {
+            "n": 71,
+            "drop": 17,
+            "push": 44,
+            "escalate": 2,
+            "throttled": 8,
+            "event_type": "hack",
+            "delivered_pct": 64.8
+        },
+        {
+            "n": 67,
+            "drop": 3,
+            "push": 64,
+            "escalate": 0,
+            "throttled": 0,
+            "event_type": "oi_spike",
+            "delivered_pct": 95.5
+        },
+        {
+            "n": 42,
+            "drop": 11,
+            "push": 30,
+            "escalate": 0,
+            "throttled": 1,
+            "event_type": "exploit",
+            "delivered_pct": 71.4
+        },
+        {
+            "n": 21,
+            "drop": 2,
+            "push": 12,
+            "escalate": 0,
+            "throttled": 7,
+            "event_type": "delisting",
+            "delivered_pct": 57.1
+        },
+        {
+            "n": 17,
+            "drop": 2,
+            "push": 15,
+            "escalate": 0,
+            "throttled": 0,
+            "event_type": "liquidation",
+            "delivered_pct": 88.2
+        }
+    ],
+    "product_progress_channel_7d": {
+        "pp_rows": 1440,
+        "not_product_pct": 41.1,
+        "event_type_not_product": 592
+    },
+    "product_progress_channel_event_types_7d": [
+        {
+            "n": 848,
+            "event_type": "product"
+        },
+        {
+            "n": 273,
+            "event_type": "partnership"
+        },
+        {
+            "n": 133,
+            "event_type": "listing"
+        },
+        {
+            "n": 72,
+            "event_type": "funding"
+        },
+        {
+            "n": 36,
+            "event_type": "regulation"
+        },
+        {
+            "n": 26,
+            "event_type": "filing"
+        },
+        {
+            "n": 23,
+            "event_type": "macro"
+        },
+        {
+            "n": 13,
+            "event_type": "rumor"
+        },
+        {
+            "n": 9,
+            "event_type": "earnings"
+        },
+        {
+            "n": 4,
+            "event_type": "noise"
+        },
+        {
+            "n": 3,
+            "event_type": "delisting"
+        }
+    ]
+}
