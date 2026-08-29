@@ -174,6 +174,7 @@ export function gateEvidence(
   return {
     blacklist_reason: "",
     enabled: [],
+    holds: "",
     lane_full: "",
     live_exchange_id: "",
     rule: "",
