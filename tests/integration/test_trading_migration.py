@@ -652,6 +652,75 @@ def test_0325_refuses_to_cut_over_a_warm_lane(blocker: str, error: str) -> None:
             conn.close()
 
 
+def test_0326_drops_the_daily_fence_and_stops_the_schema_pinning_one_policy_digest() -> None:
+    """#348. The index bounded throughput; the CHECK made the table unwritable on a policy change."""
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260829_0325")
+        _upgrade("20260829_0326")
+        conn = connect_postgres_test(read_only=False)
+
+        indexes = {
+            row["indexname"]
+            for row in conn.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'trading_intents'").fetchall()
+        }
+        assert "ux_trading_intents_one_entry_per_utc_day" not in indexes
+        # The invariant that actually bounds exposure is untouched.
+        assert "ux_trading_intents_one_active" in indexes
+
+        # A v2 Intent under a *different* policy digest is now writable. The old CHECK pinned the
+        # digest by value, so changing the execution policy did not merely move an identity — it made
+        # the table unwritable. What "two entries on one UTC day" looks like end to end is proved
+        # against the real repository in `test_a_closed_thesis_frees_the_lane_for_another_entry_the_
+        # same_day`; here the question is only whether the schema still claims to know which policy
+        # an Intent may name.
+        conn.execute(
+            """
+            INSERT INTO trading_execution_capability_snapshots (
+              snapshot_sha256, created_at_ms, execution_environment,
+              included_count, excluded_count, payload
+            ) VALUES (%s, %s, 'BINANCE_USDM_DEMO', 1, 0, '{}'::jsonb)
+            """,
+            ("4" * 64, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
+              strategy_config_digest, primary_source_key, supplemental_source_keys,
+              manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+            ) VALUES ('intent-case', 'crypto:SOL', 'oi', 'binance_oi_smart_money_long_v2',
+                      'binance_oi_smart_money_long_v2', %s, 'source-intent-case', '[]'::jsonb,
+                      '{}'::jsonb, %s, 'INTENT_EMITTED', %s, %s, %s)
+            """,
+            ("0" * 64, "3" * 64, NOW, NOW, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_intents (
+              intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+              execution_environment, execution_capability_snapshot_sha256,
+              blacklist_revision_at_emission, blacklist_snapshot_sha256_at_emission,
+              blacklist_snapshot_payload_at_emission, instrument_id, underlying_key, side,
+              created_at_ms, valid_until_ms, reference_price, target_notional_usd,
+              stop_loss_bps, max_holding_ms, max_entry_drift_bps, max_spread_bps,
+              execution_state, terminal_outcome, reason_code
+            ) VALUES (%s, 'trade_intent_v2', 'intent-case', %s, %s,
+                      'BINANCE_USDM_DEMO', %s, 0, %s,
+                      '{"snapshot_version": "blacklist_snapshot_v1"}'::jsonb,
+                      'SOLUSDT-PERP.BINANCE', 'crypto:SOL', 'long', %s, %s, 100, 10,
+                      200, 180000, 25, 30, 'TERMINAL', 'EXPIRED', 'intent_expired')
+            """,
+            # A digest that is emphatically not the one the constraint used to name.
+            ("9" * 64, "3" * 64, "b" * 64, "4" * 64, "5" * 64, NOW, NOW + 60_000),
+        )
+        conn.commit()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def test_0325_drains_the_per_poll_counters_and_admits_the_new_admission_vocabulary() -> None:
     conn: Any | None = None
     try:
