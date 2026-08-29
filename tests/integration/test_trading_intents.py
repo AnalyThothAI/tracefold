@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
 from threading import Barrier, Event
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,6 +45,18 @@ from tracefold.trading.strategy.root import strategies
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
 
 NOW = 1_900_000_000_000
+
+
+def _install_nautilus_test_module(
+    monkeypatch: pytest.MonkeyPatch,
+    provider_rows: Callable[[], Any],
+) -> None:
+    nautilus_module = ModuleType("tracefold.integrations.nautilus")
+    nautilus_module.load_binance_usdm_demo_capabilities = provider_rows  # type: ignore[attr-defined]
+    nautilus_module.installed_nautilus_wheel_identity = lambda: "test-wheel"  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "tracefold.integrations.nautilus", nautilus_module)
+
+
 # The bundle epoch the fixture Cases are frozen under, and the one the runner is composed with.
 NEWS_GENERATION = "bundle_00000000"
 AUTHORITY: dict[str, BlacklistSnapshotV1] = {}
@@ -645,13 +659,52 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
     _reset_authority(conn)
 
 
+def test_capability_refresh_requires_explicit_paused_control(
+    conn: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.app.cli.commands import trading as trading_cli
+    from tracefold.app.workers.wiring import news_to_trading
+
+    _case(conn)
+    conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+    conn.commit()
+
+    calls = {"news": 0, "provider": 0}
+
+    async def provider_rows() -> list[object]:
+        calls["provider"] += 1
+        return []
+
+    def news_rows(_repos: object) -> list[object]:
+        calls["news"] += 1
+        return []
+
+    _install_nautilus_test_module(monkeypatch, provider_rows)
+    monkeypatch.setattr(news_to_trading, "news_execution_instruments", news_rows)
+    monkeypatch.setattr(
+        trading_cli,
+        "load_settings",
+        lambda **_kwargs: Settings(storage=postgres_settings_storage()),
+    )
+
+    code, payload = trading_cli.handle_trading(SimpleNamespace(trading_command="refresh-capabilities"))
+
+    assert code == 1
+    assert payload == {"ok": False, "error": "execution_capability_refresh_requires_paused"}
+    assert calls == {"news": 0, "provider": 0}
+    runtime = repositories_for_connection(conn).trading.runtime_state()
+    assert runtime is not None
+    assert runtime["control"] == "RUNNING"
+    assert runtime["active_capability_snapshot_sha256"] == CAPABILITY_SNAPSHOT.snapshot_sha256
+    _reset_authority(conn)
+    conn.commit()
+
+
 def test_capability_refresh_uses_post_provider_activation_time_for_freshness(
     conn: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import sys
-    from types import ModuleType
-
     from tracefold.app.cli.commands import trading as trading_cli
     from tracefold.app.workers.wiring import news_to_trading
 
@@ -667,18 +720,17 @@ def test_capability_refresh_uses_post_provider_activation_time_for_freshness(
     async def provider_rows() -> list[object]:
         return []
 
-    nautilus_module = ModuleType("tracefold.integrations.nautilus")
-    nautilus_module.load_binance_usdm_demo_capabilities = provider_rows  # type: ignore[attr-defined]
-    nautilus_module.installed_nautilus_wheel_identity = lambda: "test-wheel"  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "tracefold.integrations.nautilus", nautilus_module)
+    _install_nautilus_test_module(monkeypatch, provider_rows)
     monkeypatch.setattr(news_to_trading, "news_execution_instruments", lambda _repos: [])
     monkeypatch.setattr(trading_cli, "build_execution_capability_snapshot", lambda **_kwargs: replacement)
     monkeypatch.setattr(trading_cli, "_now_ms", lambda: NOW + 15_001)
-
-    code, payload = trading_cli._refresh_capabilities(
-        Settings(storage=postgres_settings_storage()),
-        now_ms=NOW,
+    monkeypatch.setattr(
+        trading_cli,
+        "load_settings",
+        lambda **_kwargs: Settings(storage=postgres_settings_storage()),
     )
+
+    code, payload = trading_cli.handle_trading(SimpleNamespace(trading_command="refresh-capabilities"))
 
     assert code == 1
     assert payload == {"ok": False, "error": "execution_capability_activation_blocked"}

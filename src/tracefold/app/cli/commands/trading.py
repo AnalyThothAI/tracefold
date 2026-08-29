@@ -24,9 +24,9 @@ def _now_ms() -> int:
 def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     command = str(getattr(args, "trading_command", "") or "")
-    now = _now_ms()
     if command == "refresh-capabilities":
-        return _refresh_capabilities(settings, now_ms=now)
+        return _refresh_capabilities(settings)
+    now = _now_ms()
     if command == "replay-oi":
         from .trading_replay import handle_oi_replay
 
@@ -140,7 +140,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
 
 
-def _refresh_capabilities(settings: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
+def _refresh_capabilities(settings: Any) -> tuple[int, dict[str, Any]]:
     from tracefold.app.workers.wiring.news_to_trading import news_execution_instruments
     from tracefold.integrations.nautilus import (
         installed_nautilus_wheel_identity,
@@ -148,7 +148,9 @@ def _refresh_capabilities(settings: Any, *, now_ms: int) -> tuple[int, dict[str,
     )
 
     with repositories(settings, role="workers") as repos, repos.transaction():
-        repos.trading.set_control(control="PAUSED", now_ms=now_ms)
+        runtime = repos.trading.runtime_state()
+        if runtime is None or runtime.get("control") != "PAUSED":
+            return 1, {"ok": False, "error": "execution_capability_refresh_requires_paused"}
         news_rows = news_execution_instruments(repos)
     try:
         provider_rows = asyncio.run(load_binance_usdm_demo_capabilities())

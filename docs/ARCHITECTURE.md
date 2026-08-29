@@ -1841,10 +1841,14 @@ no nonterminal Intent may exist. Activation consumes either the current
 process's fresh green heartbeat/account-wide zero proof or a fresh proof from
 the explicit zero-claim process; that process binds the expected active pointer,
 never reports formal readiness, and cannot run outside `PAUSED`. The deployment
-lifecycle uses it for first activation and replacement so an unloadable old
-snapshot cannot prevent its own safe rotation. Activation clears the bootstrap
-proof and invalidates readiness; before activation it remains valid for the
-bounded provider load, up to five minutes. The replacement process then loads every
+lifecycle uses it only for first activation when no active snapshot exists.
+Once an active pointer exists, deployment reuses it — stale-but-valid is an
+accepted runtime state — and never refreshes capability or writes Trading
+control. Replacement is an explicit operator cold operation; the refresh
+command refuses unless control is already `PAUSED` and never pauses or resumes
+the capital lane itself. Activation clears the bootstrap proof and invalidates
+readiness; before activation the proof remains valid for the bounded provider
+load, up to five minutes. The next normal Nautilus process then loads every
 included instrument, revalidates all frozen provider facts, and reconciles a
 complete provider account report before it can become ready.
 

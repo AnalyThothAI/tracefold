@@ -846,7 +846,7 @@ positional arguments:
                         funnel
     refresh-capabilities
                         cold refresh of the Binance Demo execution capability
-                        snapshot
+                        snapshot; requires PAUSED
     cases               list Trading cases newest first
     replay-oi           source-native BAR replay with an audited artifact and
                         immutable receipt (#286)

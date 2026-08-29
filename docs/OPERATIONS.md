@@ -69,29 +69,38 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
-For the V2 capability cut, keep Trading `PAUSED` and require zero nonterminal
-Intents. `make up` starts a bounded zero-claim Nautilus process, waits for its
-fresh account-wide `nautilus_bootstrap_account_zero_at_ms` proof while
-`/readyz` correctly remains red, refreshes/activates the snapshot, stops that
-process, and recreates the normal capability-governed Nautilus service. This
-same sequence handles both first activation and replacement, including recovery
-from an old snapshot that the provider can no longer load. The proof remains
-valid for the bounded provider load (at most five minutes) and activation clears
-it. Deploy/migrate the
-exact reviewed image to `20260828_0320`, then run:
+For the first V2 capability activation, keep Trading `PAUSED` and require zero
+nonterminal Intents. When no active snapshot exists, `make up` starts a bounded
+zero-claim Nautilus process, waits for its fresh account-wide
+`nautilus_bootstrap_account_zero_at_ms` proof while `/readyz` correctly remains
+red, activates the first snapshot, stops that process, and recreates the normal
+capability-governed Nautilus service. The proof remains valid for the bounded
+provider load (at most five minutes) and activation clears it.
+
+Once an active snapshot exists, `make up` and `make deploy-image` reuse it and
+only recreate normal Nautilus. They do not refresh capability or write Trading
+control; stale-but-valid is an accepted deployment state. A later replacement
+is an explicit paused-window operation:
 
 ```text
+uv run tracefold trading control paused
 uv run tracefold trading refresh-capabilities
+make up
 uv run tracefold trading status
+uv run tracefold trading control running
 ```
 
-Record the active snapshot digest/count and blacklist revision. Require
-readiness to return green only after the recreated Nautilus loads and
-revalidates every included instrument. Then set control to `RUNNING`. A failed
-load or activation leaves the old active snapshot unchanged and Trading paused.
-`tracefold nautilus run --bootstrap-zero-claims` is deployment-only: it refuses
-anything except `PAUSED` with zero active Intent and never claims readiness or
-consumes an Intent.
+Before refresh, require zero nonterminal Intents and current Nautilus readiness
+with no unexpected exposure; leave Nautilus running so that proof stays fresh.
+The refresh command fails before provider I/O unless control is already
+`PAUSED`, and it never pauses or resumes Trading itself. Record the new snapshot
+digest/count and blacklist revision, and restore `RUNNING` only after recreated
+Nautilus is ready and has revalidated every included instrument. A failed load
+or activation leaves the old active snapshot unchanged and the operator-chosen
+`PAUSED` control intact. If the old snapshot cannot load, keep Trading `PAUSED`
+and use the bounded `tracefold nautilus run --bootstrap-zero-claims` recovery
+process before retrying refresh; that process refuses active Intents, never
+claims readiness, and never consumes an Intent.
 
 Do not seed a production Case or Intent to make the console non-empty. A normal
 source must produce the Case, and only a frozen long/non-shadow Case admitted by
