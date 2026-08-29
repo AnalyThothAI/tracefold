@@ -158,16 +158,16 @@ lint: ## run ruff
 	@uv run python -m ruff check .
 
 compile: ## compile Python files
-	@uv run python -m compileall src tests
+	@uv run python -m compileall tracefold tests
 
 check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff check .
 	@uv run ruff format --check .
-	@uv run mypy src
+	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
-	@uv run python -m compileall src tests
+	@uv run python -m compileall tracefold tests
 
 check: check-static ## static checks plus local architecture/contract regression
 	@uv run python -m pytest $(QUALITY_TEST_SELECTION)
@@ -430,7 +430,7 @@ _deploy-image-locked:
 		relevant_untracked=$$(git ls-files --others -- \
 			':(glob)compose*.yaml' ':(glob)compose*.yml' \
 			':(glob)docker-compose*.yaml' ':(glob)docker-compose*.yml' \
-			':(glob)src/tracefold/platform/postgres/alembic/versions/*.py'); \
+			':(glob)tracefold/platform/postgres/alembic/versions/*.py'); \
 		if [ -e .env ] || [ -n "$$relevant_untracked" ]; then \
 			echo "deploy-image refuses an untracked deployment input (.env, Compose override, or migration source)." >&2; \
 			exit 2; \
@@ -637,7 +637,7 @@ workers-shell: preflight ## open a shell in the Workers container
 
 clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__
-	@find src tests -type d -name __pycache__ -prune -exec rm -rf {} +
+	@find tracefold tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
 .PHONY: docs-generated docs-db-schema docs-cli-help
 

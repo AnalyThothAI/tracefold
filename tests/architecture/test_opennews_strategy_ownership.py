@@ -21,7 +21,7 @@ from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.platform.config.models import NewsSettings
 
 ROOT = Path(__file__).resolve().parents[2]
-NEWS_ROOT = ROOT / "src" / "tracefold" / "news"
+NEWS_ROOT = ROOT / "tracefold" / "news"
 SOURCE_CONTRACT_PATH = NEWS_ROOT / "source_contracts.py"
 BOUND_IDS = ("1019", "1353", "2000", "2026", "2083")
 

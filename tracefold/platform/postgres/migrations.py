@@ -8,7 +8,11 @@ from alembic.script import ScriptDirectory
 
 
 def alembic_config() -> Config:
-    root = Path(__file__).resolve().parents[4]
+    # `alembic.ini` and the `versions/` tree are repository content, not package data: the flat
+    # layout puts this module at `<root>/tracefold/platform/postgres/migrations.py`, so the
+    # repository root is exactly three parents up. Migrations run from a checkout or from the
+    # image's `/app`, never from a bare wheel install.
+    root = Path(__file__).resolve().parents[3]
     return Config(str(root / "alembic.ini"))
 
 

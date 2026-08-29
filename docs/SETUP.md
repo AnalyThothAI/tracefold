@@ -530,7 +530,7 @@ Developer checks remain separate from startup:
 make install-hooks
 uv run pytest
 uv run ruff check .
-uv run python -m compileall src tests
+uv run python -m compileall tracefold tests
 cd web && npm run typecheck && npm run lint
 ```
 

@@ -9,7 +9,7 @@ import tracefold.news.program as news_agents
 from tracefold import news
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "tracefold"
+SRC = ROOT / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {

@@ -193,7 +193,7 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
 
 
 def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_membership() -> None:
-    migration = Path("src/tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(encoding="utf-8")
+    migration = Path("tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(encoding="utf-8")
 
     assert "IF current_user <> 'tracefold_owner' THEN" in migration
     assert "tracefold_runtime_role_bootstrap_superuser_required" in migration

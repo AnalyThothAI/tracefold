@@ -978,7 +978,7 @@ def test_deploy_image_rejects_main_that_is_not_origin_main(tmp_path: Path) -> No
     [
         ("compose.override.yaml", "services: {}\n"),
         (
-            "src/tracefold/platform/postgres/alembic/versions/untracked_revision.py",
+            "tracefold/platform/postgres/alembic/versions/untracked_revision.py",
             'revision = "untracked"\n',
         ),
     ],
@@ -1012,7 +1012,7 @@ def test_deploy_image_rejects_relevant_untracked_inputs_before_stopping_services
     [
         ("compose.override.yaml", "services: {}\n"),
         (
-            "src/tracefold/platform/postgres/alembic/versions/ignored_revision.py",
+            "tracefold/platform/postgres/alembic/versions/ignored_revision.py",
             'revision = "ignored"\n',
         ),
     ],

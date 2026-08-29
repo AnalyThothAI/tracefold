@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "tracefold"
+SRC = ROOT / "tracefold"
 
 
 def _production_files() -> list[Path]:
