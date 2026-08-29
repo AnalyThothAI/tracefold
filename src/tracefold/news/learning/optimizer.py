@@ -502,6 +502,10 @@ class NewsGepaAdapter:
         if self._growth_budget is not None:
             over = self._growth_budget.over(candidate)
             if over is not None:
+                # Code only; the guidance is dropped on purpose. Merge evaluation runs with
+                # capture_traces=False and an over-budget merge scores zero and never enters the frontier,
+                # so no reflection ever reads it today. If merge evaluation ever starts capturing traces,
+                # route over[1] into the reflective dataset instead of wondering where the guidance went.
                 return over[0]
         return NewsSemanticProgram(artifact, primary_adapter=self._adapter)
 
