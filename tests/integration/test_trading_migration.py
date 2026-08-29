@@ -782,7 +782,7 @@ def test_0325_drains_the_per_poll_counters_and_admits_the_new_admission_vocabula
             conn.close()
 
 
-def test_0327_preserves_a_nonterminal_intent_and_0328_refuses_to_orphan_it() -> None:
+def test_0327_preserves_a_nonterminal_intent_and_0329_refuses_to_orphan_it() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at("20260829_0326")
@@ -857,20 +857,20 @@ def test_0327_preserves_a_nonterminal_intent_and_0328_refuses_to_orphan_it() -> 
         conn.close()
         conn = None
         with pytest.raises(DBAPIError, match="intent_quote_authority_requires_no_recovery_obligation"):
-            _upgrade("20260829_0328")
+            _upgrade("20260829_0329")
     finally:
         if conn is not None:
             conn.close()
 
 
-def test_0328_adds_the_bounded_submission_fence_contract() -> None:
+def test_0329_adds_the_bounded_submission_fence_contract() -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260829_0327")
-        _upgrade("20260829_0328")
+        _fresh_schema_at("20260829_0328")
+        _upgrade("20260829_0329")
         conn = connect_postgres_test(read_only=False)
 
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0328"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
         columns = {
             row["column_name"]
             for row in conn.execute(

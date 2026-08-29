@@ -306,7 +306,7 @@ catalog snapshots but cannot update/delete them. The Nautilus role can read
 binding facts and update only its own non-secret runtime/account columns.
 Catalog payloads are public metadata and their append-only trigger also applies
 to the database owner.
-Migration `0328` grants Nautilus only the additional Intent projection columns
+Migration `0329` grants Nautilus only the additional Intent projection columns
 needed for bounded Q1/Q2 audit, exact submission quantity, and unlabeled
 lifecycle clocks. It grants no tick-table, credential, provider-adapter, or
 cross-capability write authority.

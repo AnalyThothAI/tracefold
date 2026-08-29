@@ -2050,9 +2050,9 @@ a recovery obligation, then installs the orthogonal Decision/binding/catalog own
 Workers credential projection forces PAUSED. Changing control alone cannot
 emit an Intent, and there is no `accept_intents` rollout flag.
 
-Migration `20260829_0328` requires PAUSED with no nonterminal Intent, because a
+Migration `20260829_0329` requires PAUSED with no nonterminal Intent, because a
 pre-quote-authority fence cannot reconstruct the exact quote or quantity that
-authorized it. Its automatic `0327` preflight checks only those two database
+authorized it. Its automatic `0328` preflight checks only those two database
 facts, so a no-key deployment does not need to invent a Nautilus replica. For
 each later active Intent, the Nautilus strategy subscribes only to that exact
 instrument and the adapter converts only a real `QuoteTick`; the provider-neutral

@@ -1,15 +1,15 @@
 """Intent-level execution Quote authority and SubmissionFenceV1 (#303).
 
-Revision ID: 20260829_0328
-Revises: 20260829_0327
+Revision ID: 20260829_0329
+Revises: 20260829_0328
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260829_0328"
-down_revision = "20260829_0327"
+revision = "20260829_0329"
+down_revision = "20260829_0328"
 branch_labels = None
 depends_on = None
 
