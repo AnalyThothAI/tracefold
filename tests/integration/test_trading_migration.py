@@ -782,7 +782,7 @@ def test_0325_drains_the_per_poll_counters_and_admits_the_new_admission_vocabula
             conn.close()
 
 
-def test_0327_preserves_a_nonterminal_intent_as_a_no_key_recovery_obligation() -> None:
+def test_0327_preserves_a_nonterminal_intent_and_0328_refuses_to_orphan_it() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at("20260829_0326")
@@ -854,6 +854,49 @@ def test_0327_preserves_a_nonterminal_intent_as_a_no_key_recovery_obligation() -
             ]
             == "PENDING"
         )
+        conn.close()
+        conn = None
+        with pytest.raises(DBAPIError, match="intent_quote_authority_requires_no_recovery_obligation"):
+            _upgrade("20260829_0328")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0328_adds_the_bounded_submission_fence_contract() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260829_0327")
+        _upgrade("20260829_0328")
+        conn = connect_postgres_test(read_only=False)
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0328"
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'trading_intents'"
+            ).fetchall()
+        }
+        assert {
+            "adopted_at_ms",
+            "entry_fence_requested_at_ms",
+            "submission_fence_version",
+            "submission_quantity",
+            "entry_quote_q1",
+            "entry_quote_q2",
+            "entry_submitted_at_ms",
+            "entry_accepted_at_ms",
+        } <= columns
+        granted = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.column_privileges "
+                "WHERE grantee = 'tracefold_nautilus' AND table_name = 'trading_intents' "
+                "AND privilege_type = 'UPDATE'"
+            ).fetchall()
+        }
+        assert {"submission_quantity", "entry_quote_q1", "entry_quote_q2"} <= granted
     finally:
         if conn is not None:
             conn.close()

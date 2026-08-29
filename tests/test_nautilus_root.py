@@ -47,6 +47,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
             captured["config"] = config
             captured["loop"] = loop
             self.trader = FakeTrader()
+            self.kernel = SimpleNamespace(data_engine=SimpleNamespace(check_connected=lambda: True))
             self.is_running = False
             self._stopped = asyncio.Event()
 
@@ -206,6 +207,19 @@ def test_nautilus_probe_is_bound_to_its_one_internal_port() -> None:
     server = root._probe_server(lambda: {"ok": False})
 
     assert server.config.port == 8767
+
+
+def test_quote_stream_monitor_requires_a_new_tick_generation_after_reconnect() -> None:
+    from tracefold.app.nautilus import root
+
+    monitor = root._QuoteStreamMonitor()
+
+    assert monitor.observe(False) == root.QuoteStreamChanged(connected=False, generation=0)
+    assert monitor.observe(False) is None
+    assert monitor.observe(True) == root.QuoteStreamChanged(connected=True, generation=1)
+    assert monitor.observe(True) is None
+    assert monitor.observe(False) == root.QuoteStreamChanged(connected=False, generation=1)
+    assert monitor.observe(True) == root.QuoteStreamChanged(connected=True, generation=2)
 
 
 def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(

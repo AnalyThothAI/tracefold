@@ -35,6 +35,7 @@ from .intent import (
     INTENT_POLICY_SHA256,
     IntentOutcome,
     IntentReasonCode,
+    RejectedReason,
     TradeIntent,
     deterministic_client_order_id,
 )
@@ -65,6 +66,7 @@ __all__ = [
     "IntentOutcome",
     "IntentReasonCode",
     "ProviderInstrumentCandidateV1",
+    "RejectedReason",
     "ReplayArtifactV1",
     "ReplayBarV1",
     "ReplayExecutionIntentV1",

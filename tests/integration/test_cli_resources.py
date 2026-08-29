@@ -63,7 +63,12 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "verdict_persisted_to_case_created",
         "case_created_to_case_decided",
         "case_created_to_intent_emitted",
+        "intent_emitted_to_adopted",
         "intent_emitted_to_entry_fenced",
+        "entry_fence_requested_to_entry_fenced",
+        "entry_fenced_to_entry_submitted",
+        "entry_submitted_to_entry_accepted",
+        "entry_submitted_to_position_opened",
         "entry_fenced_to_position_opened",
         "position_opened_to_closed_flat",
     }

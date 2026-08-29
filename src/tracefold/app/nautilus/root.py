@@ -8,6 +8,7 @@ import json
 import signal
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext, suppress
+from dataclasses import dataclass
 from decimal import Decimal
 from queue import Full
 from typing import Any
@@ -31,6 +32,7 @@ from tracefold.integrations.nautilus import (
     single_execution_client,
 )
 from tracefold.integrations.nautilus.messages import (
+    QuoteStreamChanged,
     StartupAccountReconciliationConfirmed,
     StartupAccountReconciliationUnproven,
     StrategyCommand,
@@ -121,7 +123,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
         node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
         node.build()
         server = _probe_server(bridge.readiness)
-        loop.run_until_complete(_run_runtime(node=node, bridge=bridge, server=server))
+        loop.run_until_complete(_run_runtime(node=node, bridge=bridge, server=server, queues=queues))
     finally:
         if node is not None:
             node.dispose()
@@ -134,6 +136,7 @@ async def _run_runtime(
     node: TradingNode,
     bridge: NautilusDatabaseBridge,
     server: uvicorn.Server,
+    queues: StrategyQueues,
 ) -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -151,6 +154,8 @@ async def _run_runtime(
             node_task=node_task,
             probe_task=probe_task,
             bridge=bridge,
+            node=node,
+            queues=queues,
         )
     finally:
         server.should_exit = True
@@ -176,7 +181,10 @@ async def _supervise(
     node_task: asyncio.Task[None],
     probe_task: asyncio.Task[None],
     bridge: NautilusDatabaseBridge,
+    node: TradingNode,
+    queues: StrategyQueues,
 ) -> None:
+    quote_stream = _QuoteStreamMonitor()
     while not stop_event.is_set():
         if bridge.error is not None:
             raise RuntimeError("nautilus_database_failed") from bridge.error
@@ -186,8 +194,25 @@ async def _supervise(
         if probe_task.done():
             await probe_task
             raise RuntimeError("nautilus_probe_returned")
+        transition = quote_stream.observe(bool(node.kernel.data_engine.check_connected()))
+        if transition is not None:
+            await _enqueue_strategy_command(queues, transition)
         with suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=0.1)
+
+
+@dataclass(slots=True)
+class _QuoteStreamMonitor:
+    generation: int = 0
+    connected: bool | None = None
+
+    def observe(self, connected: bool) -> QuoteStreamChanged | None:
+        if connected == self.connected:
+            return None
+        if connected:
+            self.generation += 1
+        self.connected = connected
+        return QuoteStreamChanged(connected=connected, generation=self.generation)
 
 
 def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:

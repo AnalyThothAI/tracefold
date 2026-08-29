@@ -39,13 +39,19 @@ from tracefold.integrations.nautilus.messages import (
     EntryFenceGranted,
     EntryFenceRequested,
     EntryFilled,
+    EntryNoSubmitRequested,
+    EntryPreflightRejected,
     EntryRejected,
+    EntrySubmissionGranted,
+    EntrySubmissionRequested,
+    EntrySubmitted,
     IntentRefused,
     IntentReleased,
     OrderOutcomeUnknown,
     PositionClosedObserved,
     PositionFlatConfirmed,
     PositionQuantityChanged,
+    QuoteStreamChanged,
     ReadinessChanged,
     StartupAccountReconciliationConfirmed,
     StartupAccountReconciliationUnproven,
@@ -134,6 +140,40 @@ def _outcome(intent: TradeIntent, **values: object) -> IntentOutcome:
     return IntentOutcome.model_validate(payload)
 
 
+def _deliver_current_quote(strategy: RecordingStrategy) -> None:
+    quote = strategy.cache.quote_tick(SOLUSDT_PERP)
+    assert quote is not None
+    strategy.on_quote_tick(quote)
+    strategy.on_timer(None)
+
+
+def _adopt_and_request_fence(
+    strategy: RecordingStrategy,
+    queues: StrategyQueues,
+    intent: TradeIntent,
+) -> EntryFenceRequested:
+    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
+    strategy.on_timer(None)
+    _deliver_current_quote(strategy)
+    request = queues.events.get_nowait()
+    assert isinstance(request, EntryFenceRequested)
+    return request
+
+
+def _fenced_outcome(intent: TradeIntent, request: EntryFenceRequested) -> IntentOutcome:
+    return _outcome(
+        intent,
+        execution_state="IN_FLIGHT",
+        execution_phase="ENTRY",
+        engine_identity="nt-v1",
+        entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
+        entry_fenced_at_ms=NOW_MS,
+        submission_fence_version="submission_fence_v1",
+        submission_quantity=request.quantity,
+        entry_quote_q1=request.q1_evidence,
+    )
+
+
 class RecordingStrategy(TracefoldNautilusStrategy):
     def __init__(
         self,
@@ -213,20 +253,16 @@ def _registered_strategy(
 def _fenced_strategy(*, queue_maxsize: int = 64) -> tuple[RecordingStrategy, StrategyQueues, TradeIntent]:
     strategy, queues = _registered_strategy(queue_maxsize=queue_maxsize)
     intent = _intent()
-    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
+    request = _adopt_and_request_fence(strategy, queues, intent)
+    fenced = _fenced_outcome(intent, request)
+    queues.commands.put_nowait(EntryFenceGranted(outcome=fenced))
     strategy.on_timer(None)
-    request = queues.events.get_nowait()
-    assert isinstance(request, EntryFenceRequested)
-    fenced = _outcome(
-        intent,
-        execution_state="IN_FLIGHT",
-        execution_phase="ENTRY",
-        engine_identity="nt-v1",
-        entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
-        entry_fenced_at_ms=NOW_MS + 1,
-    )
-    queues.commands.put_nowait(EntryFenceGranted(outcome=fenced, quantity=request.quantity))
+    authorization = queues.events.get_nowait()
+    assert isinstance(authorization, EntrySubmissionRequested)
+    authorized = fenced.model_copy(update={"entry_quote_q2": authorization.q2_evidence})
+    queues.commands.put_nowait(EntrySubmissionGranted(outcome=authorized))
     strategy.on_timer(None)
+    assert isinstance(queues.events.get_nowait(), EntrySubmitted)
     return strategy, queues, intent
 
 
@@ -430,17 +466,14 @@ def test_zero_claim_bootstrap_projects_fresh_zero_proof_but_never_claims_readine
 def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -> None:
     strategy, queues = _registered_strategy()
     intent = _intent()
-    pending = _outcome(intent)
 
-    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=pending))
-    strategy.on_timer(None)
-
-    request = queues.events.get_nowait()
-    assert request == EntryFenceRequested(
-        intent_id=intent.intent_id,
-        engine_identity="nt-v1",
-        quantity=Decimal("0.001"),
+    request = _adopt_and_request_fence(strategy, queues, intent)
+    assert (request.intent_id, request.engine_identity, request.quantity) == (
+        intent.intent_id,
+        "nt-v1",
+        Decimal("0.001"),
     )
+    assert request.q1_evidence["stage"] == "Q1"
     assert strategy.submitted == []
 
     fenced = _outcome(
@@ -449,9 +482,20 @@ def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -
         execution_phase="ENTRY",
         engine_identity="nt-v1",
         entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
-        entry_fenced_at_ms=NOW_MS + 1,
+        entry_fenced_at_ms=NOW_MS,
+        submission_fence_version="submission_fence_v1",
+        submission_quantity=request.quantity,
+        entry_quote_q1=request.q1_evidence,
     )
-    queues.commands.put_nowait(EntryFenceGranted(outcome=fenced, quantity=request.quantity))
+    queues.commands.put_nowait(EntryFenceGranted(outcome=fenced))
+    strategy.on_timer(None)
+
+    q2 = queues.events.get_nowait()
+    assert isinstance(q2, EntrySubmissionRequested)
+    assert strategy.submitted == []
+
+    authorized = fenced.model_copy(update={"entry_quote_q2": q2.q2_evidence})
+    queues.commands.put_nowait(EntrySubmissionGranted(outcome=authorized))
     strategy.on_timer(None)
 
     assert len(strategy.submitted) == 1
@@ -462,6 +506,80 @@ def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -
     assert entry.client_order_id.value == deterministic_client_order_id(intent.intent_id, "entry")
     assert entry.is_reduce_only is False
     assert position_id is None
+    assert queues.events.get_nowait() == EntrySubmitted(
+        intent_id=intent.intent_id,
+        client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
+        submitted_at_ms=NOW_MS,
+    )
+
+
+@pytest.mark.parametrize(
+    ("bid", "ask", "advance_ms", "reason"),
+    [
+        (None, None, 2_001, "quote_receive_stale"),
+        (9_900, 10_000, 0, "quote_spread_exceeded"),
+        (10_020, 10_030, 0, "quote_reference_drift_exceeded"),
+    ],
+)
+def test_q2_quote_rejection_is_typed_and_never_submits(
+    bid: int | None,
+    ask: int | None,
+    advance_ms: int,
+    reason: str,
+) -> None:
+    strategy, queues = _registered_strategy()
+    intent = _intent()
+    request = _adopt_and_request_fence(strategy, queues, intent)
+    if bid is not None and ask is not None:
+        quote = TestDataStubs.quote_tick(
+            instrument=_solusdt_perp_binance(),
+            bid_price=bid,
+            ask_price=ask,
+            ts_event=NOW_MS * 1_000_000,
+            ts_init=NOW_MS * 1_000_000,
+        )
+        strategy.cache.add_quote_tick(quote)
+        strategy.on_quote_tick(quote)
+    if advance_ms:
+        strategy.clock.set_time((NOW_MS + advance_ms) * 1_000_000)
+
+    queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
+    strategy.on_timer(None)
+
+    no_submit = queues.events.get_nowait()
+    assert isinstance(no_submit, EntryNoSubmitRequested)
+    assert no_submit.reason_code == reason
+    assert no_submit.q2_evidence["stage"] == "Q2"
+    assert no_submit.q2_evidence["reason"] == reason
+    assert strategy.submitted == []
+
+
+def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick() -> None:
+    strategy, queues = _registered_strategy()
+    intent = _intent()
+    request = _adopt_and_request_fence(strategy, queues, intent)
+
+    queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
+    queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
+    strategy.on_timer(None)
+    queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
+    strategy.on_timer(None)
+
+    rejected = queues.events.get_nowait()
+    assert isinstance(rejected, EntryNoSubmitRequested)
+    assert rejected.reason_code == "quote_missing"
+    assert strategy.submitted == []
+
+    fresh_strategy, fresh_queues = _registered_strategy()
+    fresh_intent = _intent(case_id="case-new-generation")
+    fresh_queues.commands.put_nowait(AdoptIntent(intent=fresh_intent, outcome=_outcome(fresh_intent)))
+    fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
+    fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
+    fresh_strategy.on_timer(None)
+    _deliver_current_quote(fresh_strategy)
+    fresh_request = fresh_queues.events.get_nowait()
+    assert isinstance(fresh_request, EntryFenceRequested)
+    assert fresh_request.q1_evidence["stream_generation"] == 1
 
 
 def test_dynamic_subscription_waits_for_its_first_quote_before_requesting_the_fence() -> None:
@@ -475,22 +593,50 @@ def test_dynamic_subscription_waits_for_its_first_quote_before_requesting_the_fe
     assert strategy.submitted == []
 
     instrument = _solusdt_perp_binance()
-    strategy.cache.add_quote_tick(
-        TestDataStubs.quote_tick(
-            instrument=instrument,
-            bid_price=9_999,
-            ask_price=10_000,
-            ts_event=NOW_MS * 1_000_000,
-            ts_init=NOW_MS * 1_000_000,
-        )
+    quote = TestDataStubs.quote_tick(
+        instrument=instrument,
+        bid_price=9_999,
+        ask_price=10_000,
+        ts_event=NOW_MS * 1_000_000,
+        ts_init=NOW_MS * 1_000_000,
     )
+    strategy.cache.add_quote_tick(quote)
+    strategy.on_quote_tick(quote)
     strategy.on_timer(None)
 
-    assert queues.events.get_nowait() == EntryFenceRequested(
-        intent_id=intent.intent_id,
-        engine_identity="nt-v1",
-        quantity=Decimal("0.001"),
+    request = queues.events.get_nowait()
+    assert isinstance(request, EntryFenceRequested)
+    assert (request.intent_id, request.engine_identity, request.quantity) == (
+        intent.intent_id,
+        "nt-v1",
+        Decimal("0.001"),
     )
+
+
+def test_missing_active_intent_quote_terminalizes_after_the_bounded_wait() -> None:
+    strategy, queues = _registered_strategy(with_quote=False)
+    intent = _intent(case_id="case-missing-quote")
+    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
+    strategy.on_timer(None)
+
+    strategy.clock.set_time((NOW_MS + 2_000) * 1_000_000)
+    strategy.on_timer(None)
+
+    rejected = queues.events.get_nowait()
+    assert isinstance(rejected, EntryPreflightRejected)
+    assert rejected.reason_code == "quote_missing"
+    assert rejected.q1_evidence["stage"] == "Q1"
+    assert strategy.submitted == []
+
+
+def test_quote_stream_state_is_not_global_execution_readiness() -> None:
+    strategy, queues = _registered_strategy()
+
+    queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
+    strategy.on_timer(None)
+
+    assert queues.events.empty()
+    assert strategy._readiness().ready is True
 
 
 def test_entry_preflight_refuses_quantity_below_the_venue_min_notional() -> None:
@@ -501,11 +647,15 @@ def test_entry_preflight_refuses_quantity_below_the_venue_min_notional() -> None
 
     queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
     strategy.on_timer(None)
+    _deliver_current_quote(strategy)
 
-    assert queues.events.get_nowait() == IntentRefused(
+    rejection = queues.events.get_nowait()
+    assert rejection == EntryPreflightRejected(
         intent_id=intent.intent_id,
         reason_code="quantity_unexecutable",
+        q1_evidence=rejection.q1_evidence,
     )
+    assert rejection.q1_evidence["reason"] == "accepted"
     assert strategy.submitted == []
 
 
@@ -565,11 +715,7 @@ def test_no_provider_entry_is_sent_without_a_committed_entry_grant() -> None:
     strategy, queues = _registered_strategy()
     intent = _intent()
 
-    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
-    strategy.on_timer(None)
-
-    request = queues.events.get_nowait()
-    assert isinstance(request, EntryFenceRequested)
+    _adopt_and_request_fence(strategy, queues, intent)
     assert strategy.submitted == []
 
     # The database answered "released" rather than "granted": still nothing sent.
@@ -624,14 +770,13 @@ def test_terminal_refusal_clears_runtime_for_the_next_intent() -> None:
 def test_database_terminalization_releases_pending_runtime_for_the_next_intent() -> None:
     strategy, queues = _registered_strategy()
     first = _intent(case_id="case-1")
-    queues.commands.put_nowait(AdoptIntent(intent=first, outcome=_outcome(first)))
-    strategy.on_timer(None)
-    assert isinstance(queues.events.get_nowait(), EntryFenceRequested)
+    _adopt_and_request_fence(strategy, queues, first)
 
     queues.commands.put_nowait(IntentReleased(intent_id=first.intent_id))
     second = _intent(case_id="case-2")
     queues.commands.put_nowait(AdoptIntent(intent=second, outcome=_outcome(second)))
     strategy.on_timer(None)
+    _deliver_current_quote(strategy)
 
     second_request = queues.events.get_nowait()
     assert isinstance(second_request, EntryFenceRequested)
@@ -1092,6 +1237,7 @@ def test_pre_submit_order_denial_is_the_only_authoritative_entry_rejection() -> 
     second = _intent(case_id="case-2")
     queues.commands.put_nowait(AdoptIntent(intent=second, outcome=_outcome(second)))
     strategy.on_timer(None)
+    _deliver_current_quote(strategy)
     request = queues.events.get_nowait()
     assert isinstance(request, EntryFenceRequested)
     assert request.intent_id == second.intent_id
@@ -1495,6 +1641,24 @@ def test_fenced_intent_recovery_waits_for_startup_reconciliation_then_queries_wi
     assert queues.events.empty()
 
 
+def test_submission_projection_failure_restarts_query_first_and_never_rematerializes() -> None:
+    preparing, preparing_queues = _registered_strategy()
+    intent = _intent(case_id="case-projection-failure")
+    request = _adopt_and_request_fence(preparing, preparing_queues, intent)
+    fenced = _fenced_outcome(intent, request)
+    strategy, queues = _registered_strategy()
+
+    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=fenced))
+    strategy.on_timer(None)
+
+    assert len(strategy.queried) == 1
+    queried = strategy.queried[0]
+    assert queried.client_order_id.value == deterministic_client_order_id(intent.intent_id, "entry")
+    assert queried.quantity.as_decimal() == request.quantity
+    assert strategy.submitted == []
+    assert queues.events.empty()
+
+
 def test_position_closed_callback_reports_observation_without_claiming_reconciled_flat() -> None:
     strategy, queues, intent = _fenced_strategy()
     instrument = _solusdt_perp_binance()
@@ -1583,6 +1747,7 @@ def test_position_closed_callback_reports_observation_without_claiming_reconcile
     second = _intent(case_id="case-2")
     queues.commands.put_nowait(AdoptIntent(intent=second, outcome=_outcome(second)))
     strategy.on_timer(None)
+    _deliver_current_quote(strategy)
     assert isinstance(queues.events.get_nowait(), EntryFenceRequested)
 
 

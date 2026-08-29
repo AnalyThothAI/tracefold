@@ -373,7 +373,8 @@ _trading-hard-cut-preflight-if-needed:
 		case "$$migration_state" in \
 			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
 				make --no-print-directory trading-hard-cut-preflight ;; \
-			*\|t\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
+			20260829_0328\|t\|t) echo "Trading hard cuts are already present at database head 20260829_0328." ;; \
+			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
 

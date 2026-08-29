@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from decimal import Decimal
 from typing import Any, Final, Literal, Self
@@ -57,6 +58,21 @@ IntentReasonCode = Literal[
     "market_unacceptable",
     "quantity_unexecutable",
     "risk_denied",
+    "quote_missing",
+    "quote_type_invalid",
+    "quote_instrument_mismatch",
+    "quote_book_invalid",
+    "quote_side_unsupported",
+    "quote_intent_not_active",
+    "quote_intent_expired",
+    "quote_clock_invalid",
+    "quote_receive_stale",
+    "quote_event_stale",
+    "quote_source_latency_exceeded",
+    "quote_future_skew",
+    "quote_event_out_of_order",
+    "quote_spread_exceeded",
+    "quote_reference_drift_exceeded",
     "entry_outcome_unknown",
     "protection_unproven",
     "close_outcome_unknown",
@@ -78,6 +94,21 @@ RejectedReason = Literal[
     "market_unacceptable",
     "quantity_unexecutable",
     "risk_denied",
+    "quote_missing",
+    "quote_type_invalid",
+    "quote_instrument_mismatch",
+    "quote_book_invalid",
+    "quote_side_unsupported",
+    "quote_intent_not_active",
+    "quote_intent_expired",
+    "quote_clock_invalid",
+    "quote_receive_stale",
+    "quote_event_stale",
+    "quote_source_latency_exceeded",
+    "quote_future_skew",
+    "quote_event_out_of_order",
+    "quote_spread_exceeded",
+    "quote_reference_drift_exceeded",
 ]
 
 
@@ -264,8 +295,16 @@ class IntentOutcome(BaseModel):
     execution_phase: Literal["ENTRY", "PROTECTION", "EXIT"] | None = None
     terminal_outcome: Literal["EXPIRED", "REJECTED", "CLOSED_FLAT"] | None = None
     reason_code: IntentReasonCode | None = None
+    adopted_at_ms: int | None = None
+    entry_fence_requested_at_ms: int | None = None
+    submission_fence_version: Literal["submission_fence_v1"] | None = None
     entry_client_order_id: str | None = None
     entry_fenced_at_ms: int | None = None
+    submission_quantity: Decimal | None = None
+    entry_quote_q1: dict[str, str | int] | None = None
+    entry_quote_q2: dict[str, str | int] | None = None
+    entry_submitted_at_ms: int | None = None
+    entry_accepted_at_ms: int | None = None
     stop_client_order_id: str | None = None
     stop_generation: int | None = None
     stop_submitted_at_ms: int | None = None
@@ -286,6 +325,25 @@ class IntentOutcome(BaseModel):
     realized_pnl_currency: str | None = None
     commissions_by_currency: dict[str, str] | None = None
     updated_at_ms: int
+
+    @field_validator("entry_quote_q1", "entry_quote_q2")
+    @classmethod
+    def validate_entry_quote_audit(
+        cls,
+        value: dict[str, str | int] | None,
+    ) -> dict[str, str | int] | None:
+        if value is None:
+            return None
+        if value.get("snapshot_version") not in {
+            "execution_quote_snapshot_v1",
+            "execution_quote_rejection_v1",
+        }:
+            raise ValueError("intent_entry_quote_audit_version_invalid")
+        if value.get("stage") not in {"Q1", "Q2"} or not isinstance(value.get("reason"), str):
+            raise ValueError("intent_entry_quote_audit_shape_invalid")
+        if len(json.dumps(value, sort_keys=True, separators=(",", ":"))) > 2_048:
+            raise ValueError("intent_entry_quote_audit_too_large")
+        return value
 
     @field_validator("commissions_by_currency")
     @classmethod

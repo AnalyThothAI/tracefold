@@ -1789,6 +1789,8 @@ Capital PAUSED with no undecided Case. A nonterminal Intent is preserved as an e
 obligation; removing it would erase the exact state the no-key binding projection must report.
 `20260829_0328` then restricts Review v5 taxonomy Gold to ordinary News and trips open canaries for the
 Program v7/taxonomy-v1 epoch hard cut.
+`20260829_0329` installs Intent-level Q1/fence/Q2 quote authority after a
+paused, zero-recovery-obligation cutover.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -2047,6 +2049,22 @@ Migration `20260829_0327` requires PAUSED with no undecided Case, preserves any 
 a recovery obligation, then installs the orthogonal Decision/binding/catalog owners. Every
 Workers credential projection forces PAUSED. Changing control alone cannot
 emit an Intent, and there is no `accept_intents` rollout flag.
+
+Migration `20260829_0328` requires PAUSED with no nonterminal Intent, because a
+pre-quote-authority fence cannot reconstruct the exact quote or quantity that
+authorized it. For each later active Intent, the Nautilus strategy subscribes
+only to that exact instrument and accepts only side-aware `QuoteTick` bid/ask.
+The pure validator applies code-owned receive/event/source-latency/future-skew,
+monotonicity, spread, and reference-drift ceilings. Q1 computes quantity; the
+existing Intent row atomically freezes `SubmissionFenceV1` (deterministic client
+identity, exact quantity, and bounded Q1 evidence). Only after that commit does
+the strategy reread and validate Q2. Accepted Q2 evidence commits before the
+provider write; rejected Q2 becomes a typed, durable fenced-no-submit terminal.
+A failed Q2 projection sends nothing, leaving the fence for query-first recovery.
+Data-client reconnect increments an in-process generation and clears the active
+Intent quote; a tick delivered in the new generation is required before quote
+authority can resume. No quote tick is written to PostgreSQL, and quote state is
+neither binding readiness nor a global readiness claim.
 
 Rollback is allowed only with venue-proven flat and a schema-compatible image.
 When exposure exists, the only safe direction is roll-forward: Nautilus retains

@@ -18,6 +18,10 @@ from tracefold.integrations.nautilus.messages import (
     CloseSubmitted,
     EntryFenceGranted,
     EntryFenceRequested,
+    EntryNoSubmitFinalized,
+    EntryNoSubmitRequested,
+    EntrySubmissionGranted,
+    EntrySubmissionRequested,
     IntentReleased,
     OrderOutcomeUnknown,
     PositionClosedObserved,
@@ -32,6 +36,11 @@ from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, d
 from tracefold.trading.storage.intents import EntryFence
 
 NOW_MS = 1_900_000_000_000
+Q1_EVIDENCE: dict[str, str | int] = {
+    "snapshot_version": "execution_quote_snapshot_v1",
+    "stage": "Q1",
+    "reason": "accepted",
+}
 
 
 def _settings() -> Any:
@@ -61,6 +70,16 @@ def _outcome(intent: TradeIntent, **values: object) -> IntentOutcome:
     }
     payload.update(values)
     return IntentOutcome.model_validate(payload)
+
+
+def _fence_request(intent: TradeIntent, quantity: Decimal = Decimal("0.001")) -> EntryFenceRequested:
+    return EntryFenceRequested(
+        intent_id=intent.intent_id,
+        engine_identity="nt-v1",
+        quantity=quantity,
+        q1_evidence=Q1_EVIDENCE,
+        requested_at_ms=NOW_MS,
+    )
 
 
 class _Repositories:
@@ -140,6 +159,7 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     repos = _Repositories()
     repos.trading.active_intent.return_value = (intent, outcome)
     repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.mark_intent_adopted.return_value = outcome
 
     bridge._cycle(repos)
     assert queues.commands.empty()
@@ -188,6 +208,9 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         engine_identity="nt-v1",
         entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
         entry_fenced_at_ms=NOW_MS,
+        submission_fence_version="submission_fence_v1",
+        submission_quantity=quantity,
+        entry_quote_q1=Q1_EVIDENCE,
     )
 
     def fence(*_args: object, **_kwargs: object) -> EntryFence:
@@ -199,11 +222,11 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
 
     bridge._handle_event(
         repos,
-        EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=quantity),
+        _fence_request(intent, quantity),
     )
 
     assert repos.order == ["begin", "fence", "commit"]
-    assert queues.commands.get_nowait() == EntryFenceGranted(outcome=fenced, quantity=quantity)
+    assert queues.commands.get_nowait() == EntryFenceGranted(outcome=fenced)
     repos.trading.intent.assert_not_called()
 
 
@@ -228,7 +251,7 @@ def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence:
 
     bridge._handle_event(
         repos,
-        EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=quantity),
+        _fence_request(intent, quantity),
     )
 
     assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
@@ -253,10 +276,106 @@ def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_reje
 
     bridge._handle_event(
         repos,
-        EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=Decimal("0.001")),
+        _fence_request(intent),
     )
 
     assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
+
+
+def test_q2_evidence_commits_before_the_strategy_receives_submission_authority() -> None:
+    intent = _intent()
+    client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
+    q2 = {**Q1_EVIDENCE, "stage": "Q2"}
+    authorized = _outcome(
+        intent,
+        execution_state="IN_FLIGHT",
+        execution_phase="ENTRY",
+        entry_client_order_id=client_order_id,
+        entry_fenced_at_ms=NOW_MS,
+        submission_fence_version="submission_fence_v1",
+        submission_quantity=Decimal("0.001"),
+        entry_quote_q1=Q1_EVIDENCE,
+        entry_quote_q2=q2,
+    )
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+    repos.trading.authorize_entry_submission.return_value = authorized
+
+    assert bridge._handle_event(
+        repos,
+        EntrySubmissionRequested(
+            intent_id=intent.intent_id,
+            client_order_id=client_order_id,
+            q2_evidence=q2,
+        ),
+    )
+
+    assert repos.order == ["begin", "commit"]
+    assert queues.commands.get_nowait() == EntrySubmissionGranted(outcome=authorized)
+
+
+def test_q2_no_submit_terminal_commits_before_the_strategy_releases_the_intent() -> None:
+    intent = _intent()
+    client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
+    q2 = {
+        "snapshot_version": "execution_quote_rejection_v1",
+        "stage": "Q2",
+        "reason": "quote_receive_stale",
+        "evaluated_at_ns": NOW_MS * 1_000_000,
+    }
+    rejected = _outcome(
+        intent,
+        execution_state="TERMINAL",
+        terminal_outcome="REJECTED",
+        reason_code="quote_receive_stale",
+        entry_client_order_id=client_order_id,
+        entry_fenced_at_ms=NOW_MS,
+        submission_fence_version="submission_fence_v1",
+        submission_quantity=Decimal("0.001"),
+        entry_quote_q1=Q1_EVIDENCE,
+        entry_quote_q2=q2,
+    )
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+    repos.trading.record_fenced_quote_no_submit.return_value = rejected
+
+    assert bridge._handle_event(
+        repos,
+        EntryNoSubmitRequested(
+            intent_id=intent.intent_id,
+            client_order_id=client_order_id,
+            reason_code="quote_receive_stale",
+            q2_evidence=q2,
+        ),
+    )
+
+    assert repos.order == ["begin", "commit"]
+    assert queues.commands.get_nowait() == EntryNoSubmitFinalized(outcome=rejected)
+
+
+def test_q2_projection_failure_never_grants_submission_authority() -> None:
+    intent = _intent()
+    client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
+    q2 = {**Q1_EVIDENCE, "stage": "Q2"}
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+    repos.trading.authorize_entry_submission.return_value = None
+    repos.trading.intent_outcome.return_value = None
+
+    with pytest.raises(RuntimeError, match="entry_submission_authority_projection_failed"):
+        bridge._handle_event(
+            repos,
+            EntrySubmissionRequested(
+                intent_id=intent.intent_id,
+                client_order_id=client_order_id,
+                q2_evidence=q2,
+            ),
+        )
+
+    assert queues.commands.empty()
 
 
 def test_execution_events_write_only_authoritative_identifiers_and_quantities() -> None:

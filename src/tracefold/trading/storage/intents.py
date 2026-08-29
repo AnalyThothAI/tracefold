@@ -28,6 +28,8 @@ max_entry_drift_bps, max_spread_bps
 _OUTCOME_COLUMNS = """
 intent_id, engine_identity, execution_state, execution_phase, terminal_outcome,
 reason_code, entry_client_order_id, entry_fenced_at_ms,
+adopted_at_ms, entry_fence_requested_at_ms, submission_fence_version,
+submission_quantity, entry_quote_q1, entry_quote_q2, entry_submitted_at_ms, entry_accepted_at_ms,
 stop_client_order_id, stop_submitted_at_ms, close_client_order_id, close_submitted_at_ms,
 stop_generation, actual_quantity, protected_quantity, avg_entry_price, avg_exit_price,
 position_id, protection_order_id,
@@ -77,6 +79,41 @@ class EntryFence:
     @property
     def granted(self) -> bool:
         return self.disposition == "GRANTED"
+
+
+def _require_quote_audit(
+    evidence: dict[str, str | int],
+    *,
+    stage: Literal["Q1", "Q2"],
+    accepted: bool,
+    reason: str | None = None,
+) -> None:
+    expected_version = "execution_quote_snapshot_v1" if accepted else "execution_quote_rejection_v1"
+    expected_reason = "accepted" if accepted else reason
+    snapshot_fields = {
+        "instrument_id",
+        "side",
+        "side_price",
+        "bid",
+        "ask",
+        "ts_event_ns",
+        "ts_init_ns",
+        "evaluated_at_ns",
+        "stream_generation",
+        "receive_age_ns",
+        "event_age_ns",
+        "source_latency_ns",
+        "spread_bps",
+        "reference_drift_bps",
+    }
+    if (
+        evidence.get("snapshot_version") != expected_version
+        or evidence.get("stage") != stage
+        or evidence.get("reason") != expected_reason
+        or (accepted and not snapshot_fields.issubset(evidence))
+        or len(_dumps(evidence)) > 2_048
+    ):
+        raise ValueError("entry_quote_audit_invalid")
 
 
 class IntentStorage:
@@ -156,7 +193,30 @@ class IntentStorage:
         outcome_values = {name: values[name] for name in IntentOutcome.model_fields}
         return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
 
-    def fence_entry(self, intent_id: str, *, engine_identity: str, now_ms: int) -> EntryFence:
+    def mark_intent_adopted(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET adopted_at_ms = COALESCE(adopted_at_ms, %(now)s),
+                   updated_at_ms = GREATEST(updated_at_ms, %(now)s)
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'PENDING'
+               AND entry_fenced_at_ms IS NULL
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {"intent_id": intent_id, "now": int(now_ms)},
+        )
+
+    def fence_entry(
+        self,
+        intent_id: str,
+        *,
+        engine_identity: str,
+        submission_quantity: Decimal,
+        q1_evidence: dict[str, str | int],
+        requested_at_ms: int,
+        now_ms: int,
+    ) -> EntryFence:
         """Take the durable entry fence, or say in one closed word why it was not taken.
 
         The order is: prove the two capital-authority facts that must terminate the Intent at zero
@@ -165,6 +225,12 @@ class IntentStorage:
         the whole at-most-once guarantee, and it is why this returns a disposition rather than a
         nullable outcome the caller has to guess at.
         """
+
+        if submission_quantity <= 0:
+            raise ValueError("submission_fence_quantity_invalid")
+        _require_quote_audit(q1_evidence, stage="Q1", accepted=True)
+        if requested_at_ms > now_ms:
+            raise ValueError("submission_fence_clock_invalid")
 
         blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         observation = blacklist.model_dump(mode="json")
@@ -202,6 +268,9 @@ class IntentStorage:
                 UPDATE trading_intents
                    SET execution_state = 'TERMINAL', terminal_outcome = 'REJECTED',
                        reason_code = %(reason)s,
+                       adopted_at_ms = COALESCE(adopted_at_ms, %(requested_at)s),
+                       entry_fence_requested_at_ms = %(requested_at)s,
+                       entry_quote_q1 = %(q1_evidence)s::jsonb,
                        blacklist_revision_at_fence = %(blacklist_revision)s,
                        blacklist_snapshot_sha256_at_fence = %(blacklist_sha)s,
                        blacklist_snapshot_payload_at_fence = %(blacklist_payload)s::jsonb,
@@ -214,6 +283,8 @@ class IntentStorage:
                 {
                     "intent_id": intent_id,
                     "reason": reason,
+                    "requested_at": int(requested_at_ms),
+                    "q1_evidence": _dumps(q1_evidence),
                     "blacklist_revision": blacklist.revision,
                     "blacklist_sha": blacklist.snapshot_sha256,
                     "blacklist_payload": _dumps(observation),
@@ -235,6 +306,11 @@ class IntentStorage:
                    execution_phase = 'ENTRY',
                    entry_client_order_id = %(client_id)s,
                    entry_fenced_at_ms = %(now)s,
+                   adopted_at_ms = COALESCE(adopted_at_ms, %(requested_at)s),
+                   entry_fence_requested_at_ms = %(requested_at)s,
+                   submission_fence_version = 'submission_fence_v1',
+                   submission_quantity = %(submission_quantity)s,
+                   entry_quote_q1 = %(q1_evidence)s::jsonb,
                    blacklist_revision_at_fence = %(blacklist_revision)s,
                    blacklist_snapshot_sha256_at_fence = %(blacklist_sha)s,
                    blacklist_snapshot_payload_at_fence = %(blacklist_payload)s::jsonb,
@@ -266,6 +342,9 @@ class IntentStorage:
                 "intent_id": intent_id,
                 "engine": engine_identity,
                 "client_id": deterministic_client_order_id(intent_id, "entry"),
+                "requested_at": int(requested_at_ms),
+                "submission_quantity": submission_quantity,
+                "q1_evidence": _dumps(q1_evidence),
                 "now": int(now_ms),
                 "blacklist_revision": blacklist.revision,
                 "blacklist_sha": blacklist.snapshot_sha256,
@@ -285,6 +364,158 @@ class IntentStorage:
         if int(permission["valid_until_ms"]) <= int(now_ms):
             return EntryFence(disposition="UNAVAILABLE", reason="intent_expired")
         return EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready")
+
+    def record_entry_preflight_no_submit(
+        self,
+        intent_id: str,
+        *,
+        reason_code: IntentReasonCode,
+        q1_evidence: dict[str, str | int],
+        now_ms: int,
+    ) -> IntentOutcome | None:
+        q1_accepted = q1_evidence.get("reason") == "accepted"
+        _require_quote_audit(
+            q1_evidence,
+            stage="Q1",
+            accepted=q1_accepted,
+            reason=None if q1_accepted else reason_code,
+        )
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET execution_state = 'TERMINAL',
+                   execution_phase = NULL,
+                   terminal_outcome = 'REJECTED',
+                   reason_code = %(reason)s,
+                   adopted_at_ms = COALESCE(adopted_at_ms, %(now)s),
+                   entry_quote_q1 = %(q1_evidence)s::jsonb,
+                   updated_at_ms = %(now)s
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'PENDING'
+               AND entry_fenced_at_ms IS NULL
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {
+                "intent_id": intent_id,
+                "reason": reason_code,
+                "q1_evidence": _dumps(q1_evidence),
+                "now": int(now_ms),
+            },
+        )
+
+    def authorize_entry_submission(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        q2_evidence: dict[str, str | int],
+        now_ms: int,
+    ) -> IntentOutcome | None:
+        _require_quote_audit(q2_evidence, stage="Q2", accepted=True)
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET entry_quote_q2 = %(q2_evidence)s::jsonb,
+                   updated_at_ms = %(now)s
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'IN_FLIGHT'
+               AND execution_phase = 'ENTRY'
+               AND submission_fence_version = 'submission_fence_v1'
+               AND entry_client_order_id = %(client_id)s
+               AND entry_quote_q2 IS NULL
+               AND entry_submitted_at_ms IS NULL
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {
+                "intent_id": intent_id,
+                "client_id": entry_client_order_id,
+                "q2_evidence": _dumps(q2_evidence),
+                "now": int(now_ms),
+            },
+        )
+
+    def record_fenced_quote_no_submit(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        reason_code: RejectedReason,
+        q2_evidence: dict[str, str | int],
+        now_ms: int,
+    ) -> IntentOutcome | None:
+        _require_quote_audit(q2_evidence, stage="Q2", accepted=False, reason=reason_code)
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET execution_state = 'TERMINAL',
+                   execution_phase = NULL,
+                   terminal_outcome = 'REJECTED',
+                   reason_code = %(reason)s,
+                   entry_quote_q2 = %(q2_evidence)s::jsonb,
+                   flat_verified_at_ms = %(now)s,
+                   updated_at_ms = %(now)s
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'IN_FLIGHT'
+               AND execution_phase = 'ENTRY'
+               AND submission_fence_version = 'submission_fence_v1'
+               AND entry_client_order_id = %(client_id)s
+               AND entry_quote_q2 IS NULL
+               AND entry_submitted_at_ms IS NULL
+               AND actual_quantity IS NULL
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {
+                "intent_id": intent_id,
+                "client_id": entry_client_order_id,
+                "reason": reason_code,
+                "q2_evidence": _dumps(q2_evidence),
+                "now": int(now_ms),
+            },
+        )
+
+    def record_entry_submitted(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        submitted_at_ms: int,
+    ) -> IntentOutcome | None:
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET entry_submitted_at_ms = COALESCE(entry_submitted_at_ms, %(now)s),
+                   updated_at_ms = GREATEST(updated_at_ms, %(now)s)
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'IN_FLIGHT'
+               AND execution_phase = 'ENTRY'
+               AND entry_client_order_id = %(client_id)s
+               AND entry_quote_q2 ->> 'reason' = 'accepted'
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {"intent_id": intent_id, "client_id": entry_client_order_id, "now": int(submitted_at_ms)},
+        )
+
+    def record_entry_accepted(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        accepted_at_ms: int,
+    ) -> IntentOutcome | None:
+        return self._outcome_update(
+            f"""
+            UPDATE trading_intents
+               SET entry_accepted_at_ms = COALESCE(entry_accepted_at_ms, %(now)s),
+                   updated_at_ms = GREATEST(updated_at_ms, %(now)s)
+             WHERE intent_id = %(intent_id)s
+               AND execution_state = 'IN_FLIGHT'
+               AND execution_phase = 'ENTRY'
+               AND entry_client_order_id = %(client_id)s
+               AND entry_submitted_at_ms IS NOT NULL
+         RETURNING {_OUTCOME_COLUMNS}
+            """,
+            {"intent_id": intent_id, "client_id": entry_client_order_id, "now": int(accepted_at_ms)},
+        )
 
     def expire_unfenced_intent(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
         return self._outcome_update(

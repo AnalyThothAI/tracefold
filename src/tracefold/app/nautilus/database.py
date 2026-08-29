@@ -18,10 +18,17 @@ from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
     CloseSubmitted,
+    EntryAccepted,
     EntryFenceGranted,
     EntryFenceRequested,
     EntryFilled,
+    EntryNoSubmitFinalized,
+    EntryNoSubmitRequested,
+    EntryPreflightRejected,
     EntryRejected,
+    EntrySubmissionGranted,
+    EntrySubmissionRequested,
+    EntrySubmitted,
     IntentRefused,
     IntentReleased,
     OrderOutcomeUnknown,
@@ -184,6 +191,11 @@ class NautilusDatabaseBridge:
                         command = IntentReleased(intent_id=intent.intent_id)
                     self._dispatched_intent_id = None
                 elif self._should_dispatch(runtime, outcome) and self._dispatched_intent_id != intent.intent_id:
+                    if outcome.execution_state == "PENDING":
+                        adopted = repos.trading.mark_intent_adopted(intent.intent_id, now_ms=now_ms)
+                        if adopted is None:
+                            raise RuntimeError("nautilus_intent_adoption_projection_failed")
+                        outcome = adopted
                     command = AdoptIntent(intent=intent, outcome=outcome)
                     self._dispatched_intent_id = intent.intent_id
             repos.trading.set_nautilus_runtime(
@@ -234,6 +246,9 @@ class NautilusDatabaseBridge:
                 fence = repos.trading.fence_entry(
                     event.intent_id,
                     engine_identity=event.engine_identity,
+                    submission_quantity=event.quantity,
+                    q1_evidence=event.q1_evidence,
+                    requested_at_ms=event.requested_at_ms,
                     now_ms=self._now_ms(),
                 )
             # Three dispositions, three different facts (#331). `GRANTED` is the only one that may
@@ -248,7 +263,46 @@ class NautilusDatabaseBridge:
                 self._dispatched_intent_id = None
                 self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
                 return True
-            self._queues.commands.put_nowait(EntryFenceGranted(outcome=fence.outcome, quantity=event.quantity))
+            self._queues.commands.put_nowait(EntryFenceGranted(outcome=fence.outcome))
+            return True
+
+        if isinstance(event, EntrySubmissionRequested):
+            with repos.transaction():
+                outcome = repos.trading.authorize_entry_submission(
+                    event.intent_id,
+                    entry_client_order_id=event.client_order_id,
+                    q2_evidence=event.q2_evidence,
+                    now_ms=self._now_ms(),
+                )
+                if outcome is None:
+                    current = repos.trading.intent_outcome(event.intent_id)
+                    if current is not None and current.entry_quote_q2 == event.q2_evidence:
+                        outcome = current
+                if outcome is None:
+                    raise RuntimeError("entry_submission_authority_projection_failed")
+            self._queues.commands.put_nowait(EntrySubmissionGranted(outcome=outcome))
+            return True
+
+        if isinstance(event, EntryNoSubmitRequested):
+            with repos.transaction():
+                outcome = repos.trading.record_fenced_quote_no_submit(
+                    event.intent_id,
+                    entry_client_order_id=event.client_order_id,
+                    reason_code=event.reason_code,
+                    q2_evidence=event.q2_evidence,
+                    now_ms=self._now_ms(),
+                )
+                if outcome is None:
+                    current = repos.trading.intent_outcome(event.intent_id)
+                    if (
+                        current is not None
+                        and current.entry_quote_q2 == event.q2_evidence
+                        and current.terminal_outcome == "REJECTED"
+                    ):
+                        outcome = current
+                if outcome is None:
+                    raise RuntimeError("entry_no_submit_projection_failed")
+            self._queues.commands.put_nowait(EntryNoSubmitFinalized(outcome=outcome))
             return True
 
         if isinstance(event, OrderOutcomeUnknown) and event.intent_id is None:
@@ -280,6 +334,25 @@ class NautilusDatabaseBridge:
                     entry_client_order_id=None,
                     now_ms=self._now_ms(),
                 )
+        elif isinstance(event, EntryPreflightRejected):
+            outcome = trading.record_entry_preflight_no_submit(
+                event.intent_id,
+                reason_code=event.reason_code,
+                q1_evidence=event.q1_evidence,
+                now_ms=self._now_ms(),
+            )
+        elif isinstance(event, EntrySubmitted):
+            outcome = trading.record_entry_submitted(
+                event.intent_id,
+                entry_client_order_id=event.client_order_id,
+                submitted_at_ms=event.submitted_at_ms,
+            )
+        elif isinstance(event, EntryAccepted):
+            outcome = trading.record_entry_accepted(
+                event.intent_id,
+                entry_client_order_id=event.client_order_id,
+                accepted_at_ms=event.accepted_at_ms,
+            )
         elif isinstance(event, EntryFilled):
             outcome = trading.record_entry_fill(
                 event.intent_id,
@@ -397,6 +470,22 @@ class NautilusDatabaseBridge:
         if isinstance(event, IntentRefused):
             terminal = "EXPIRED" if event.reason_code == "intent_expired" else "REJECTED"
             return bool(outcome.terminal_outcome == terminal and outcome.reason_code == event.reason_code)
+        if isinstance(event, EntryPreflightRejected):
+            return bool(
+                outcome.terminal_outcome == "REJECTED"
+                and outcome.reason_code == event.reason_code
+                and outcome.entry_quote_q1 == event.q1_evidence
+            )
+        if isinstance(event, EntrySubmitted):
+            return bool(
+                outcome.entry_client_order_id == event.client_order_id
+                and outcome.entry_submitted_at_ms == event.submitted_at_ms
+            )
+        if isinstance(event, EntryAccepted):
+            return bool(
+                outcome.entry_client_order_id == event.client_order_id
+                and outcome.entry_accepted_at_ms == event.accepted_at_ms
+            )
         if isinstance(event, EntryFilled):
             return bool(
                 outcome.actual_quantity == event.actual_quantity

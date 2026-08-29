@@ -108,7 +108,9 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    revoking the legacy writer. The later `0327` cut requires PAUSED and no
    undecided Case but deliberately preserves a nonterminal Intent as a recovery
    obligation, projected as `recovery_blocked_credentials_missing` when its
-   binding has no credential.
+   binding has no credential. Before `0328`, the automatic hard-cut preflight
+   requires PAUSED and drains that recovery obligation; `0328` repeats those
+   two database predicates before installing Intent-level Q1/fence/Q2 evidence.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
    `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current

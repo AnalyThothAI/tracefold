@@ -7,7 +7,7 @@ from decimal import Decimal
 from queue import Queue
 from typing import Literal
 
-from tracefold.trading import IntentOutcome, IntentReasonCode, TradeIntent
+from tracefold.trading import IntentOutcome, IntentReasonCode, RejectedReason, TradeIntent
 
 OrderLeg = Literal["entry", "stop", "close"]
 
@@ -41,7 +41,28 @@ class EntryFenceGranted:
     """Confirm the entry fence was committed before the provider write."""
 
     outcome: IntentOutcome
-    quantity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class EntrySubmissionGranted:
+    """Confirm Q2 evidence was committed before the provider write."""
+
+    outcome: IntentOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class EntryNoSubmitFinalized:
+    """Confirm the fenced Intent durably terminalized without a provider write."""
+
+    outcome: IntentOutcome
+
+
+@dataclass(frozen=True, slots=True)
+class QuoteStreamChanged:
+    """Invalidate cached execution quotes across a data-client disconnect/reconnect."""
+
+    connected: bool
+    generation: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +126,44 @@ class EntryFenceRequested:
     intent_id: str
     engine_identity: str
     quantity: Decimal
+    q1_evidence: dict[str, str | int]
+    requested_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class EntryPreflightRejected:
+    intent_id: str
+    reason_code: IntentReasonCode
+    q1_evidence: dict[str, str | int]
+
+
+@dataclass(frozen=True, slots=True)
+class EntrySubmissionRequested:
+    intent_id: str
+    client_order_id: str
+    q2_evidence: dict[str, str | int]
+
+
+@dataclass(frozen=True, slots=True)
+class EntryNoSubmitRequested:
+    intent_id: str
+    client_order_id: str
+    reason_code: RejectedReason
+    q2_evidence: dict[str, str | int]
+
+
+@dataclass(frozen=True, slots=True)
+class EntrySubmitted:
+    intent_id: str
+    client_order_id: str
+    submitted_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class EntryAccepted:
+    intent_id: str
+    client_order_id: str
+    accepted_at_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +271,10 @@ StrategyCommand = (
     | StartupAccountReconciliationConfirmed
     | StartupAccountReconciliationUnproven
     | EntryFenceGranted
+    | EntrySubmissionGranted
+    | EntryNoSubmitFinalized
     | IntentReleased
+    | QuoteStreamChanged
     | VenueFlatConfirmed
     | VenueFlatUnproven
 )
@@ -220,6 +282,11 @@ StrategyEvent = (
     BootstrapAccountZeroChanged
     | ReadinessChanged
     | EntryFenceRequested
+    | EntryPreflightRejected
+    | EntrySubmissionRequested
+    | EntryNoSubmitRequested
+    | EntrySubmitted
+    | EntryAccepted
     | IntentRefused
     | EntryFilled
     | EntryRejected
@@ -251,10 +318,17 @@ __all__ = [
     "AdoptIntent",
     "BootstrapAccountZeroChanged",
     "CloseSubmitted",
+    "EntryAccepted",
     "EntryFenceGranted",
     "EntryFenceRequested",
     "EntryFilled",
+    "EntryNoSubmitFinalized",
+    "EntryNoSubmitRequested",
+    "EntryPreflightRejected",
     "EntryRejected",
+    "EntrySubmissionGranted",
+    "EntrySubmissionRequested",
+    "EntrySubmitted",
     "IntentRefused",
     "IntentReleased",
     "OrderLeg",
@@ -262,6 +336,7 @@ __all__ = [
     "PositionClosedObserved",
     "PositionFlatConfirmed",
     "PositionQuantityChanged",
+    "QuoteStreamChanged",
     "ReadinessChanged",
     "StartupAccountReconciliationConfirmed",
     "StartupAccountReconciliationUnproven",
