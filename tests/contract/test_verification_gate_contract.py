@@ -20,6 +20,9 @@ REQUIRED_JOBS = {
     "runtime-process",
     "frontend",
 }
+# Report-only (#373 PR 2). It is in the workflow but not in `ci-gate`'s dependencies, and the tests
+# below hold it to both halves of that: it may not decide a merge, and it may not run a test.
+REPORT_ONLY_JOB = "test-effectiveness"
 pytestmark = pytest.mark.contract
 
 
@@ -44,7 +47,7 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
 
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
-    assert set(jobs) == REQUIRED_JOBS | {"ci-gate"}
+    assert set(jobs) == REQUIRED_JOBS | {"ci-gate", REPORT_ONLY_JOB}
     for name in REQUIRED_JOBS:
         job = jobs[name]
         assert "needs" not in job
@@ -70,6 +73,51 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
             action = step.get("uses")
             if action:
                 assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), action
+
+
+def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
+    """#373 PR 2 is measurement without authority: no merge power, no execution, no re-adjudication.
+
+    Three independent halves, and the third is the one that is easy to miss. `ci-gate` not depending
+    on it keeps a coverage regression from blocking a merge. Its running no test runner keeps it from
+    becoming a second execution truth beside the fixed jobs. And `continue-on-error` keeps it out of
+    the *workflow run's* conclusion — which matters because `scripts/require_main_ci.py` requires the
+    run to have concluded `success`, not merely `ci-gate`. Without it, a coverage job that failed on
+    a green main would raise `main_ci_gate_not_full_plan` and refuse the deployment, which is a great
+    deal of authority for a job whose comment says it has none.
+    """
+
+    workflow = _workflow()
+    jobs = workflow["jobs"]
+    job = jobs[REPORT_ONLY_JOB]
+
+    assert REPORT_ONLY_JOB not in set(jobs["ci-gate"]["needs"])
+    assert set(job["needs"]) == REQUIRED_JOBS
+    assert job["if"] == "always()"
+    assert job["continue-on-error"] is True
+    assert "services" not in job
+    for name, required in jobs.items():
+        if name in REQUIRED_JOBS or name == "ci-gate":
+            assert "continue-on-error" not in required, name
+
+    commands = "\n".join(step.get("run", "") for step in job["steps"])
+    assert 'test "$(git rev-parse HEAD)" = "$TESTED_SHA"' in commands
+    assert "make ci-test-effectiveness" in commands
+    for runner in ("pytest", "vitest", "playwright", "npm ", "junit"):
+        assert runner not in commands.lower()
+
+    recipe = subprocess.run(
+        ["make", "--dry-run", "ci-test-effectiveness"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    for runner in ("pytest", "vitest", "playwright", "npm ", "require_test_reports"):
+        assert runner not in recipe.lower()
+    for standard in ("coverage combine", "coverage report", "coverage json", "coverage xml", "coverage html"):
+        assert standard in recipe
+    assert "--fail-under" not in recipe
 
 
 def test_ci_gate_is_a_unique_thin_all_success_interface() -> None:

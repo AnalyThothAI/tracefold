@@ -20,6 +20,8 @@ is reached through the flat package and matches what its source says it is.
 from __future__ import annotations
 
 import ast
+import os
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -104,6 +106,27 @@ def test_the_migration_tree_resolves_inside_the_flat_package() -> None:
 
     assert Path(script.dir).resolve() == (VERSIONS.parent).resolve()
     assert Path(script.dir).resolve().is_relative_to(ROOT / "tracefold")
+
+
+def test_the_migration_tree_resolves_from_a_working_directory_that_is_not_the_repository() -> None:
+    """Alembic resolves a bare relative `script_location` against the current directory.
+
+    Asserting resolution while pytest happens to run from the repository root proves only that the
+    root is the root. `migrations.py` already resolves `alembic.ini` absolutely from its own
+    `__file__` so that a caller's working directory cannot matter; before #373 the `script_location`
+    inside that file quietly reintroduced the dependency, and this is what noticed.
+    """
+
+    origin = Path.cwd()
+    with tempfile.TemporaryDirectory(prefix="tracefold-alembic-cwd-") as elsewhere:
+        os.chdir(elsewhere)
+        try:
+            script = ScriptDirectory.from_config(alembic_config())
+            resolved = Path(script.dir).resolve()
+        finally:
+            os.chdir(origin)
+
+    assert resolved == VERSIONS.parent.resolve()
 
 
 def test_the_reachable_revision_graph_is_the_revision_files_on_disk() -> None:

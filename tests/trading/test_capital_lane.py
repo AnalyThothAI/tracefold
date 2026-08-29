@@ -11,8 +11,11 @@ this replaces:
   which consumed the Source forever and hid a PostgreSQL fault inside a business statistic.
 
 The database is a fake here on purpose: what these tests own is the *ordering* and the *vocabulary*.
-Atomicity, concurrency and the two commit-time races are proved against real PostgreSQL in
-`tests/integration/test_trading_capital_lane.py`.
+Atomicity, concurrency and the commit-time races are proved against real PostgreSQL in
+`tests/integration/test_trading_capital_lane.py`, which #373 wrote — until then this reference named
+a file that did not exist. That module holds the two claims this one cannot make: a model-based walk
+of the Case lifecycle under arbitrary worker, lease and clock interleavings, and the whole authority
+product reaching a Policy LONG with exactly one capital reason and no Intent.
 """
 
 from __future__ import annotations

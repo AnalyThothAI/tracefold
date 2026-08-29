@@ -25,6 +25,19 @@ export default defineConfig({
   },
   test: {
     allowOnly: false,
+    /*
+     * Report-only coverage (#373). Nothing here turns coverage on: it activates only for the run
+     * that passes `--coverage`, which is the single unit/component/routes pass `make ci-frontend`
+     * already executes. `test:architecture` and Playwright therefore never re-run for a percentage.
+     * Native V8 output only — no custom reporter, and no threshold until PR 3 measures one.
+     */
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: ["src/lib/types/**"],
+      reporter: ["text-summary", "json", "lcov", "html"],
+      reportsDirectory: "../artifacts/coverage/frontend",
+    },
     environment: "jsdom",
     exclude: [...configDefaults.exclude, "tests/e2e/**"],
     passWithNoTests: false,

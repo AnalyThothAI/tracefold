@@ -95,9 +95,12 @@ def test_the_build_backend_ships_exactly_the_flat_package() -> None:
 
 
 def test_alembic_reads_the_migration_tree_from_the_flat_package() -> None:
+    """`%(here)s`, not a bare relative path: Alembic resolves those against the caller's directory."""
+
     alembic_ini = (ROOT / "alembic.ini").read_text(encoding="utf-8")
 
-    assert f"script_location = {PACKAGE}/platform/postgres/alembic" in alembic_ini
+    assert f"script_location = %(here)s/{PACKAGE}/platform/postgres/alembic" in alembic_ini
+    assert "prepend_sys_path = %(here)s" in alembic_ini
     assert (ROOT / PACKAGE / "platform" / "postgres" / "alembic" / "env.py").is_file()
 
 
