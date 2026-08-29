@@ -6,11 +6,13 @@ import asyncio
 import hashlib
 import json
 import signal
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext, suppress
+from dataclasses import dataclass, field
 from decimal import Decimal
 from queue import Full
-from typing import Any
+from threading import Lock
+from typing import Any, cast
 
 import uvicorn
 from loguru import logger
@@ -31,6 +33,7 @@ from tracefold.integrations.nautilus import (
     single_execution_client,
 )
 from tracefold.integrations.nautilus.messages import (
+    QuoteStreamChanged,
     StartupAccountReconciliationConfirmed,
     StartupAccountReconciliationUnproven,
     StrategyCommand,
@@ -88,6 +91,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             loop=loop,
         )
         queues = strategy_queues()
+        quote_stream = _QuoteStreamGeneration()
         bridge = NautilusDatabaseBridge(
             settings,
             queues,
@@ -101,6 +105,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             instrument_ids=instrument_ids,
             capabilities=capabilities,
             queues=queues,
+            quote_stream_generation=quote_stream.current,
             request_venue_flat=lambda request: _schedule_venue_flat_proof(
                 node=node,
                 queues=queues,
@@ -117,7 +122,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             ),
         )
         node.trader.add_strategy(strategy)
-        node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+        node.add_data_client_factory(BINANCE, _quote_stream_data_client_factory(queues, quote_stream))
         node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
         node.build()
         server = _probe_server(bridge.readiness)
@@ -188,6 +193,75 @@ async def _supervise(
             raise RuntimeError("nautilus_probe_returned")
         with suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=0.1)
+
+
+@dataclass(slots=True)
+class _QuoteStreamGeneration:
+    generation: int = 0
+    lock: Lock = field(default_factory=Lock)
+
+    def current(self) -> int:
+        with self.lock:
+            return self.generation
+
+    def reconnected(self) -> QuoteStreamChanged:
+        with self.lock:
+            self.generation += 1
+            generation = self.generation
+        return QuoteStreamChanged(connected=True, generation=generation)
+
+
+def _quote_stream_data_client_factory(
+    queues: StrategyQueues,
+    generation: _QuoteStreamGeneration,
+) -> type[BinanceLiveDataClientFactory]:
+    async def on_reconnect() -> None:
+        await _enqueue_strategy_command(queues, generation.reconnected())
+
+    class QuoteStreamBinanceLiveDataClientFactory(BinanceLiveDataClientFactory):
+        @staticmethod
+        def create(
+            loop: asyncio.AbstractEventLoop,
+            name: str,
+            config: Any,
+            msgbus: Any,
+            cache: Any,
+            clock: Any,
+        ) -> Any:
+            client = BinanceLiveDataClientFactory.create(
+                loop=loop,
+                name=name,
+                config=config,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+            )
+            _chain_binance_reconnect_callbacks(client, on_reconnect)
+            return client
+
+    return QuoteStreamBinanceLiveDataClientFactory
+
+
+def _chain_binance_reconnect_callbacks(
+    client: Any,
+    on_reconnect: Callable[[], Awaitable[None]],
+) -> None:
+    """Chain Tracefold invalidation onto both reconnect callbacks in the pinned adapter."""
+
+    for name in ("_ws_client", "_ws_public_client"):
+        websocket = getattr(client, name, None)
+        if websocket is None:
+            raise RuntimeError("nautilus_binance_reconnect_callback_unavailable")
+        original = getattr(websocket, "_handler_reconnect", None)
+        if original is None or not callable(original):
+            raise RuntimeError("nautilus_binance_reconnect_callback_unavailable")
+        typed_original = cast(Callable[[], Awaitable[None]], original)
+
+        async def chained(original: Callable[[], Awaitable[None]] = typed_original) -> None:
+            await on_reconnect()
+            await original()
+
+        websocket._handler_reconnect = chained
 
 
 def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:

@@ -45,6 +45,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/catalog.py",
     "trading/intent.py",
     "trading/execution_policy.py",
+    "trading/quote_authority.py",
     "trading/telemetry.py",
     "trading/storage/root.py",
     "trading/storage/lane.py",
@@ -433,6 +434,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ACTIVE_INTENT_STATES",
         "BAR_FIDELITY_VERSION",
         "INTENT_POLICY_SHA256",
+        "MAX_RECEIVE_AGE_NS",
         "Bar",
         "BlacklistSnapshotV1",
         "CapitalRuntimeV1",
@@ -440,11 +442,16 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "DecisionRuntimeV1",
         "ExecutionCapabilitySnapshotV1",
         "ExecutionInstrumentCapabilityV1",
+        "ExecutionQuote",
+        "ExecutionQuoteAuditV1",
+        "ExecutionQuoteRejectionV1",
+        "ExecutionQuoteSnapshotV1",
         "ExecutionUniverseCandidateRow",
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
         "ProviderInstrumentCandidateV1",
+        "RejectedReason",
         "ReplayArtifactV1",
         "ReplayBarV1",
         "ReplayExecutionIntentV1",
@@ -453,6 +460,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ReplaySpecV1",
         "ReplayTerminalOutcomeV1",
         "StableCapabilityExclusionV1",
+        "SubmissionFenceV1",
         "TradeIntent",
         "TradingCaseManifest",
         "VenueBinding",
@@ -461,10 +469,21 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "VenueInstrumentCatalogSnapshotV1",
         "build_venue_catalog_snapshot",
         "deterministic_client_order_id",
+        "validate_entry_quote",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__
     assert "__getattr__" not in trading.__dict__
+
+
+def test_execution_quote_authority_is_trading_owned_and_nautilus_only_converts_ticks() -> None:
+    domain = SRC / "trading/quote_authority.py"
+    adapter = SRC / "integrations/nautilus/quote_authority.py"
+
+    assert not any(module.startswith("nautilus_trader") for module in _imported_modules(domain))
+    adapter_names = _executable_names(adapter)
+    assert "execution_quote_from_nautilus" in adapter_names
+    assert "validate_entry_quote" not in adapter_names
 
 
 def test_trading_enabled_controls_only_decision_not_the_public_catalog() -> None:

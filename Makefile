@@ -44,7 +44,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pyte
 	--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit-$(1).xml" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-evidence-prepare test-evidence-quality-static test-evidence-python-hermetic test-evidence-postgres-behavior test-evidence-migration test-evidence-runtime-process test-evidence-frontend-python test-evidence-trust-root test-evidence-frontend test-evidence-aggregate test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-evidence-prepare test-evidence-quality-static test-evidence-python-hermetic test-evidence-postgres-behavior test-evidence-migration test-evidence-runtime-process test-evidence-frontend-python test-evidence-trust-root test-evidence-frontend test-evidence-aggregate test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -335,6 +335,22 @@ trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutove
 		fi; \
 		echo "Trading hard-cut preflight passed: venue flat, PAUSED, ledgers drained, one Nautilus replica."
 
+_trading-intent-quote-preflight:
+	@set -eu; \
+		cut_state=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			PGOPTIONS="-c default_transaction_read_only=on"; \
+			export PGPASSWORD PGOPTIONS; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
+			"SELECT concat_ws('|', \
+			  COALESCE((SELECT control FROM trading_runtime_state WHERE id = 1), 'MISSING'), \
+			  (SELECT count(*) FROM trading_intents WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')))"); \
+		if [ "$$cut_state" != "PAUSED|0" ]; then \
+			echo "Intent Quote cut requires PAUSED|nonterminal_intents=0; observed $$cut_state." >&2; \
+			exit 1; \
+		fi; \
+		echo "Intent Quote preflight passed: PAUSED and no recovery obligations."
+
 _trading-hard-cut-preflight-if-needed:
 	@set -eu; \
 		postgres_id=$$(docker compose ps -q postgres); \
@@ -373,7 +389,9 @@ _trading-hard-cut-preflight-if-needed:
 		case "$$migration_state" in \
 			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
 				make --no-print-directory trading-hard-cut-preflight ;; \
-			*\|t\|t) echo "Trading hard cut is already present at database head $${migration_state%%|*}." ;; \
+			20260829_0328\|t\|t) make --no-print-directory _trading-intent-quote-preflight ;; \
+			20260829_0329\|t\|t) echo "Trading hard cuts are already present at database head 20260829_0329." ;; \
+			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
 

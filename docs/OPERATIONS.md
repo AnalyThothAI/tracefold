@@ -100,7 +100,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260829_0328`
+5. Deploy the exact reviewed image at the current Alembic head (`20260829_0329`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -108,7 +108,12 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    revoking the legacy writer. The later `0327` cut requires PAUSED and no
    undecided Case but deliberately preserves a nonterminal Intent as a recovery
    obligation, projected as `recovery_blocked_credentials_missing` when its
-   binding has no credential.
+   binding has no credential. The `0328` → `0329` automatic preflight is
+   deliberately database-only: it requires PAUSED and zero nonterminal Intents,
+   so a no-key deployment can drain that recovery obligation without inventing
+   a Nautilus readiness requirement. `0329` repeats those two predicates before
+   installing Intent-level Q1/fence/Q2 evidence. Older execution-authority cutover
+   routes retain the full venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
    `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current

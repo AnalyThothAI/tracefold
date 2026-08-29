@@ -30,3 +30,18 @@ def test_serve_session_policy_is_applied_at_connect_time() -> None:
         }
     finally:
         asyncio.run(database.aclose())
+
+
+def test_serve_pool_is_fully_warm_when_startup_returns() -> None:
+    database = ServeDatabase.create(
+        Settings(storage=postgres_settings_storage()),
+        telemetry=None,
+    )
+    try:
+        stats = database.api_pool.get_stats()
+        assert stats["pool_min"] == 7
+        assert stats["pool_max"] == 7
+        assert stats["pool_size"] == 7
+        assert stats["pool_available"] == 7
+    finally:
+        asyncio.run(database.aclose())

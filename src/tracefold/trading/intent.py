@@ -24,6 +24,7 @@ from .execution_policy import (
     TARGET_NOTIONAL_CEILING_USD,
     deterministic_client_order_id,
 )
+from .quote_authority import ExecutionQuoteAuditV1, QuoteRejectionReason
 
 TRADE_INTENT_VERSION: Final[Literal["trade_intent_v2"]] = "trade_intent_v2"
 BINANCE_USDM_DEMO: Final[Literal["BINANCE_USDM_DEMO"]] = "BINANCE_USDM_DEMO"
@@ -48,20 +49,23 @@ ACTIVE_INTENT_STATES: Final[tuple[IntentExecutionState, ...]] = (
     "OPEN_PROTECTED",
     "MANUAL_REVIEW",
 )
-IntentReasonCode = Literal[
-    "intent_expired",
-    "runtime_not_ready",
-    "external_exposure",
-    "blacklisted",
-    "capability_mismatch",
-    "market_unacceptable",
-    "quantity_unexecutable",
-    "risk_denied",
-    "entry_outcome_unknown",
-    "protection_unproven",
-    "close_outcome_unknown",
-    "operator_intervention",
-]
+IntentReasonCode = (
+    Literal[
+        "intent_expired",
+        "runtime_not_ready",
+        "external_exposure",
+        "blacklisted",
+        "capability_mismatch",
+        "market_unacceptable",
+        "quantity_unexecutable",
+        "risk_denied",
+        "entry_outcome_unknown",
+        "protection_unproven",
+        "close_outcome_unknown",
+        "operator_intervention",
+    ]
+    | QuoteRejectionReason
+)
 ManualReviewReason = Literal[
     "entry_outcome_unknown",
     "protection_unproven",
@@ -70,15 +74,18 @@ ManualReviewReason = Literal[
 ]
 _CURRENCY_RE = re.compile(r"^[A-Z0-9]{1,12}$")
 _DECIMAL_STRING_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
-RejectedReason = Literal[
-    "runtime_not_ready",
-    "external_exposure",
-    "blacklisted",
-    "capability_mismatch",
-    "market_unacceptable",
-    "quantity_unexecutable",
-    "risk_denied",
-]
+RejectedReason = (
+    Literal[
+        "runtime_not_ready",
+        "external_exposure",
+        "blacklisted",
+        "capability_mismatch",
+        "market_unacceptable",
+        "quantity_unexecutable",
+        "risk_denied",
+    ]
+    | QuoteRejectionReason
+)
 
 
 def executable_instrument_id(instrument: InstrumentRef) -> str:
@@ -264,8 +271,16 @@ class IntentOutcome(BaseModel):
     execution_phase: Literal["ENTRY", "PROTECTION", "EXIT"] | None = None
     terminal_outcome: Literal["EXPIRED", "REJECTED", "CLOSED_FLAT"] | None = None
     reason_code: IntentReasonCode | None = None
+    adopted_at_ms: int | None = None
+    entry_fence_requested_at_ms: int | None = None
+    submission_fence_version: Literal["submission_fence_v1"] | None = None
     entry_client_order_id: str | None = None
     entry_fenced_at_ms: int | None = None
+    submission_quantity: Decimal | None = None
+    entry_quote_q1: ExecutionQuoteAuditV1 | None = None
+    entry_quote_q2: ExecutionQuoteAuditV1 | None = None
+    entry_submitted_at_ms: int | None = None
+    entry_accepted_at_ms: int | None = None
     stop_client_order_id: str | None = None
     stop_generation: int | None = None
     stop_submitted_at_ms: int | None = None

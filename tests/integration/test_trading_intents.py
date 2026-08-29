@@ -38,6 +38,11 @@ from tracefold.trading.contracts import (
     TradingCaseManifest,
 )
 from tracefold.trading.policy import CAPITAL_POLICY
+from tracefold.trading.quote_authority import (
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
+    QuoteStage,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -168,6 +173,49 @@ def _allow_entry(connection: Any) -> None:
            SET control = 'RUNNING', nautilus_ready = true, nautilus_unexpected_exposure = false
          WHERE id = 1
         """
+    )
+
+
+def _accepted_q1(
+    intent: TradeIntent,
+    *,
+    evaluated_at_ms: int,
+    stage: QuoteStage = "Q1",
+) -> ExecutionQuoteSnapshotV1:
+    return ExecutionQuoteSnapshotV1(
+        stage=stage,
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        side_price=intent.reference_price,
+        bid=intent.reference_price,
+        ask=intent.reference_price,
+        ts_event_ns=evaluated_at_ms * 1_000_000,
+        ts_init_ns=evaluated_at_ms * 1_000_000,
+        evaluated_at_ns=evaluated_at_ms * 1_000_000,
+        stream_generation=1,
+        receive_age_ns=0,
+        event_age_ns=0,
+        source_latency_ns=0,
+        spread_bps=Decimal(0),
+        reference_drift_bps=Decimal(0),
+    )
+
+
+def _fence(
+    repos: Any,
+    intent: TradeIntent,
+    *,
+    engine_identity: str,
+    now_ms: int,
+) -> Any:
+    return repos.trading.fence_entry(
+        intent.intent_id,
+        engine_identity=engine_identity,
+        submission_quantity=Decimal("0.0001"),
+        q1_evidence=_accepted_q1(intent, evaluated_at_ms=now_ms),
+        requested_at_ms=now_ms,
+        now_ms=now_ms,
     )
 
 
@@ -969,19 +1017,19 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     # `UNAVAILABLE`, and it says why (#331). The old `None` meant this, a stale dispatch, an expired
     # TTL and a spent daily fence at once, so an engine held back by readiness looked exactly like one
     # with nothing to do.
-    paused = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    paused = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000)
     assert (paused.disposition, paused.reason, paused.outcome) == ("UNAVAILABLE", "runtime_not_ready", None)
     conn.commit()
 
     conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
     conn.commit()
-    not_ready = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_500)
+    not_ready = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_500)
     assert (not_ready.disposition, not_ready.reason) == ("UNAVAILABLE", "runtime_not_ready")
     conn.commit()
 
     _allow_entry(conn)
     conn.commit()
-    fence = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 2_000)
+    fence = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 2_000)
     conn.commit()
 
     assert (fence.disposition, fence.reason) == ("GRANTED", "entry_fence_granted")
@@ -991,13 +1039,193 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     assert fenced.execution_phase == "ENTRY"
     assert fenced.entry_client_order_id == deterministic_client_order_id(intent.intent_id, "entry")
     assert fenced.entry_fenced_at_ms == NOW + 2_000
+    assert fenced.submission_fence_version == "submission_fence_v1"
+    assert fenced.submission_quantity == Decimal("0.0001")
+    assert fenced.entry_quote_q1 == _accepted_q1(intent, evaluated_at_ms=NOW + 2_000)
 
     # A duplicate scan or restart can read this projection, but cannot acquire a second submit fence.
-    again = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000)
+    again = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 3_000)
     assert (again.disposition, again.reason) == ("UNAVAILABLE", "intent_not_claimable")
     conn.commit()
     recovered = repos.trading.intent_outcome(intent.intent_id)
     assert recovered == fenced
+
+
+def test_q2_acceptance_preserves_the_fenced_quantity_before_submit(conn: Any) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    q2 = _accepted_q1(intent, evaluated_at_ms=NOW + 2_000, stage="Q2")
+
+    authorized = repos.trading.authorize_entry_submission(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        q2_evidence=q2,
+        now_ms=NOW + 2_000,
+    )
+    conn.commit()
+
+    assert authorized is not None
+    assert authorized.submission_quantity == fenced.submission_quantity == Decimal("0.0001")
+    assert authorized.entry_quote_q1 == fenced.entry_quote_q1
+    assert authorized.entry_quote_q2 == q2
+    assert authorized.entry_submitted_at_ms is None
+    submitted = repos.trading.record_entry_submitted(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        submitted_at_ms=NOW + 2_500,
+    )
+    assert submitted is not None
+    accepted = repos.trading.record_entry_accepted(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        accepted_at_ms=NOW + 2_600,
+    )
+    conn.commit()
+    assert accepted is not None
+    latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
+    assert latency["intent_emitted_to_adopted"] == {"n": 1, "p50": 1_000, "p95": 1_000}
+    assert latency["entry_fence_requested_to_entry_fenced"] == {"n": 1, "p50": 0, "p95": 0}
+    assert latency["entry_fenced_to_entry_submitted"] == {"n": 1, "p50": 1_500, "p95": 1_500}
+    assert latency["entry_submitted_to_entry_accepted"] == {"n": 1, "p50": 100, "p95": 100}
+
+
+def test_reconnect_can_replace_an_unspent_q2_authorization_with_durable_no_submit(conn: Any) -> None:
+    case_id = "case-q2-reconnect"
+    _case(conn, case_id=case_id)
+    intent = _intent(case_id=case_id)
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    accepted_q2 = _accepted_q1(intent, evaluated_at_ms=NOW + 2_000, stage="Q2")
+    assert (
+        repos.trading.authorize_entry_submission(
+            intent.intent_id,
+            entry_client_order_id=fenced.entry_client_order_id,
+            q2_evidence=accepted_q2,
+            now_ms=NOW + 2_000,
+        )
+        is not None
+    )
+    rejected_q2 = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_missing",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 2_001) * 1_000_000,
+    )
+
+    rejected = repos.trading.record_fenced_quote_no_submit(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        reason_code="quote_missing",
+        q2_evidence=rejected_q2,
+        now_ms=NOW + 2_001,
+    )
+    conn.commit()
+
+    assert rejected is not None
+    assert rejected.entry_quote_q2 == rejected_q2
+    assert (rejected.terminal_outcome, rejected.entry_submitted_at_ms) == ("REJECTED", None)
+
+
+def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    q2 = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_receive_stale",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 3_001) * 1_000_000,
+        receive_age_ns=2_001_000_000,
+    )
+
+    rejected = repos.trading.record_fenced_quote_no_submit(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        reason_code="quote_receive_stale",
+        q2_evidence=q2,
+        now_ms=NOW + 3_001,
+    )
+    conn.commit()
+
+    assert rejected is not None
+    assert (rejected.execution_state, rejected.terminal_outcome, rejected.reason_code) == (
+        "TERMINAL",
+        "REJECTED",
+        "quote_receive_stale",
+    )
+    assert rejected.submission_quantity == Decimal("0.0001")
+    assert rejected.entry_quote_q2 == q2
+    assert rejected.entry_submitted_at_ms is None
+    assert repos.trading.active_intent() is None
+    assert (
+        repos.trading.record_fenced_quote_no_submit(
+            intent.intent_id,
+            entry_client_order_id=fenced.entry_client_order_id,
+            reason_code="quote_receive_stale",
+            q2_evidence=q2,
+            now_ms=NOW + 3_002,
+        )
+        is None
+    )
+    conn.commit()
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        {"intent_id": "f" * 64},
+        {"instrument_id": "BTCUSDT-PERP.BINANCE"},
+        {"side": "sell"},
+        {"stage": "Q1"},
+        {"reason": "quote_missing"},
+    ),
+    ids=("intent", "instrument", "side", "stage", "reason"),
+)
+def test_repository_rejects_quote_audit_that_does_not_match_the_durable_intent(
+    conn: Any,
+    change: dict[str, str],
+) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    audit = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_receive_stale",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 3_001) * 1_000_000,
+    ).model_copy(update=change)
+
+    with pytest.raises(ValueError, match="entry_quote_audit_invalid"):
+        repos.trading.record_fenced_quote_no_submit(
+            intent.intent_id,
+            entry_client_order_id=fenced.entry_client_order_id,
+            reason_code="quote_receive_stale",
+            q2_evidence=audit,
+            now_ms=NOW + 3_001,
+        )
+    conn.rollback()
 
 
 def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fence(conn: Any) -> None:
@@ -1014,7 +1242,7 @@ def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fe
     _allow_entry(conn)
     conn.commit()
 
-    fence = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    fence = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000)
     conn.commit()
 
     assert fence.disposition == "REFUSED"
@@ -1062,7 +1290,7 @@ def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> Non
     conn.commit()
 
     conn.execute("SET ROLE tracefold_nautilus")
-    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=db_now_ms).outcome
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=db_now_ms).outcome
     conn.commit()
     conn.execute("RESET ROLE")
     conn.commit()
@@ -1094,8 +1322,9 @@ def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner
         try:
             contender_repos = repositories_for_connection(contender)
             barrier.wait(timeout=5)
-            result = contender_repos.trading.fence_entry(
-                intent.intent_id,
+            result = _fence(
+                contender_repos,
+                intent,
                 engine_identity=engine_identity,
                 now_ms=NOW + 2_000,
             ).outcome
@@ -1129,7 +1358,7 @@ def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any
     first = _intent()
     assert repos.trading.insert_intent(first) is True
     _allow_entry(conn)
-    assert repos.trading.fence_entry(first.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, first, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         first.intent_id,
         actual_quantity=Decimal("0.0001"),
@@ -1170,7 +1399,7 @@ def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any
     assert repos.trading.insert_intent(second) is True
     conn.commit()
 
-    granted = repos.trading.fence_entry(second.intent_id, engine_identity="nt-1", now_ms=NOW + 5_000)
+    granted = _fence(repos, second, engine_identity="nt-1", now_ms=NOW + 5_000)
     assert granted.disposition == "GRANTED"
     conn.commit()
 
@@ -1270,7 +1499,7 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     conn.execute("SET ROLE tracefold_nautilus")
     active = repos.trading.active_intent()
     assert active is not None and active[0] == intent
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     repos.trading.set_nautilus_runtime(
         heartbeat_at_ms=NOW + 1_000,
         ready=True,
@@ -1347,7 +1576,7 @@ def test_fenced_authoritative_rejection_requires_the_exact_entry_and_zero_exposu
     intent = _intent()
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
-    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     conn.commit()
     assert fenced is not None and fenced.entry_client_order_id is not None
 
@@ -1382,7 +1611,7 @@ def test_unknown_entry_outcome_becomes_manual_review_and_never_a_rejection(conn:
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
     conn.commit()
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     conn.commit()
 
     review = repos.trading.mark_manual_review(
@@ -1412,7 +1641,7 @@ def test_manual_review_only_follows_a_fence_and_authoritative_facts_resume_autom
         is None
     )
     _allow_entry(conn)
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.mark_manual_review(
         intent.intent_id,
         reason_code="entry_outcome_unknown",
@@ -1440,7 +1669,7 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
     intent = _intent()
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         intent.intent_id,
         actual_quantity=Decimal("0.0001"),
@@ -1591,7 +1820,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     _allow_entry(conn)
     conn.commit()
 
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     conn.commit()
     protection = repos.trading.record_entry_fill(
         intent.intent_id,
@@ -1725,7 +1954,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     assert closed.commissions_by_currency == {"USDT": "0.02"}
     verified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
     assert verified_latency["position_opened_to_closed_flat"] == {"n": 1, "p50": 1_100, "p95": 1_100}
-    assert not repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000).granted
+    assert not _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 3_000).granted
 
 
 def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> None:
@@ -1735,7 +1964,7 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
     conn.commit()
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
+    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         intent.intent_id,
         actual_quantity=Decimal("100"),

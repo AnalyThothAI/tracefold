@@ -28,7 +28,15 @@ _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("verdict_persisted_to_case_created", "c.created_at_ms - c.trigger_persisted_at_ms"),
     ("case_created_to_case_decided", "c.decided_at_ms - c.created_at_ms"),
     ("case_created_to_intent_emitted", "i.created_at_ms - c.created_at_ms"),
+    ("intent_emitted_to_adopted", "i.adopted_at_ms - i.created_at_ms"),
     ("intent_emitted_to_entry_fenced", "i.entry_fenced_at_ms - i.created_at_ms"),
+    (
+        "entry_fence_requested_to_entry_fenced",
+        "i.entry_fenced_at_ms - i.entry_fence_requested_at_ms",
+    ),
+    ("entry_fenced_to_entry_submitted", "i.entry_submitted_at_ms - i.entry_fenced_at_ms"),
+    ("entry_submitted_to_entry_accepted", "i.entry_accepted_at_ms - i.entry_submitted_at_ms"),
+    ("entry_submitted_to_position_opened", "i.opened_at_ms - i.entry_submitted_at_ms"),
     ("entry_fenced_to_position_opened", "i.opened_at_ms - i.entry_fenced_at_ms"),
     ("position_opened_to_closed_flat", "i.flat_verified_at_ms - i.opened_at_ms"),
 )

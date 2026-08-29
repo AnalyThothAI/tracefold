@@ -11,16 +11,23 @@ from typing import Any
 
 from nautilus_trader.adapters.binance import BINANCE, BINANCE_VENUE
 from nautilus_trader.config import StrategyConfig
+from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, InstrumentId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
 from tracefold.trading import (
+    MAX_RECEIVE_AGE_NS,
     ExecutionInstrumentCapabilityV1,
+    ExecutionQuote,
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
     IntentOutcome,
     IntentReasonCode,
+    SubmissionFenceV1,
     TradeIntent,
     deterministic_client_order_id,
+    validate_entry_quote,
 )
 from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
 
@@ -29,10 +36,17 @@ from .messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
     CloseSubmitted,
+    EntryAccepted,
     EntryFenceGranted,
     EntryFenceRequested,
     EntryFilled,
+    EntryNoSubmitFinalized,
+    EntryNoSubmitRequested,
+    EntryPreflightRejected,
     EntryRejected,
+    EntrySubmissionGranted,
+    EntrySubmissionRequested,
+    EntrySubmitted,
     IntentRefused,
     IntentReleased,
     OrderLeg,
@@ -40,6 +54,7 @@ from .messages import (
     PositionClosedObserved,
     PositionFlatConfirmed,
     PositionQuantityChanged,
+    QuoteStreamChanged,
     ReadinessChanged,
     StartupAccountReconciliationConfirmed,
     StartupAccountReconciliationUnproven,
@@ -52,6 +67,7 @@ from .messages import (
     VenueFlatProofRequested,
     VenueFlatUnproven,
 )
+from .quote_authority import execution_quote_from_nautilus
 
 _FLAT_PROOF_RETRY_MS = 5_000
 
@@ -78,6 +94,7 @@ class TracefoldNautilusStrategy(Strategy):
         instrument_ids: Sequence[InstrumentId],
         capabilities: Mapping[str, ExecutionInstrumentCapabilityV1],
         queues: StrategyQueues,
+        quote_stream_generation: Callable[[], int],
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
         request_startup_account_reconciliation: Callable[[], None],
         config: StrategyConfig | None = None,
@@ -95,6 +112,9 @@ class TracefoldNautilusStrategy(Strategy):
             raise ValueError("nautilus_capability_claims_mismatch")
         self._capabilities = dict(capabilities)
         self._queues = queues
+        self._quote_stream_generation_authority = quote_stream_generation
+        if int(self._quote_stream_generation_authority()) < 0:
+            raise ValueError("nautilus_quote_stream_generation_invalid")
         self._request_venue_flat = request_venue_flat
         self._request_startup_account_reconciliation = request_startup_account_reconciliation
         self._bootstrap_mode = not claims
@@ -109,6 +129,12 @@ class TracefoldNautilusStrategy(Strategy):
         self._active_intent: TradeIntent | None = None
         self._active_outcome: IntentOutcome | None = None
         self._pending_fence_quantity: Decimal | None = None
+        self._pending_fence_quote: ExecutionQuoteSnapshotV1 | None = None
+        self._latest_entry_quote: ExecutionQuote | None = None
+        self._last_accepted_quote_ts_event_ns: int | None = None
+        self._quote_wait_started_at_ns: int | None = None
+        self._quote_stream_generation = 0
+        self._quote_stream_connected = True
         self._orders: dict[str, tuple[str, OrderLeg]] = {}
         self._position_id: PositionId | None = None
         self._position_quantity: Decimal | None = None
@@ -257,7 +283,13 @@ class TracefoldNautilusStrategy(Strategy):
                     )
                 )
         elif isinstance(command, EntryFenceGranted):
-            self._submit_fenced_entry(command)
+            self._validate_quote_after_fence(command)
+        elif isinstance(command, EntrySubmissionGranted):
+            self._submit_authorized_entry(command)
+        elif isinstance(command, EntryNoSubmitFinalized):
+            self._finalize_fenced_no_submit(command)
+        elif isinstance(command, QuoteStreamChanged):
+            self._change_quote_stream(command)
         elif isinstance(command, IntentReleased):
             pending = self._pending_startup_adopt
             if pending is not None and pending.intent.intent_id == command.intent_id:
@@ -296,6 +328,9 @@ class TracefoldNautilusStrategy(Strategy):
 
         self._active_intent = intent
         self._active_outcome = outcome
+        self._latest_entry_quote = None
+        self._last_accepted_quote_ts_event_ns = None
+        self._quote_wait_started_at_ns = int(self.clock.timestamp_ns())
         self.subscribe_quote_ticks(instrument_id)
         if outcome.entry_fenced_at_ms is not None:
             self._recover_fenced_intent(outcome)
@@ -312,15 +347,19 @@ class TracefoldNautilusStrategy(Strategy):
             or self._pending_fence_quantity is not None
         ):
             return
-        quantity = self._entry_quantity(intent)
-        if quantity is None:
+        preflight = self._entry_preflight(intent)
+        if preflight is None:
             return
+        quantity, quote = preflight
         self._pending_fence_quantity = quantity
+        self._pending_fence_quote = quote
         self._emit(
             EntryFenceRequested(
                 intent_id=intent.intent_id,
                 engine_identity=self._engine_identity,
                 quantity=quantity,
+                q1_evidence=quote,
+                requested_at_ms=quote.evaluated_at_ns // 1_000_000,
             )
         )
 
@@ -333,7 +372,21 @@ class TracefoldNautilusStrategy(Strategy):
             raise RuntimeError("nautilus_fenced_intent_release_refused")
         self._clear_active_without_exposure(intent_id)
 
-    def _entry_quantity(self, intent: TradeIntent) -> Decimal | None:
+    def on_quote_tick(self, tick: QuoteTick) -> None:
+        intent = self._active_intent
+        if (
+            intent is None
+            or not self._quote_stream_connected
+            or tick.instrument_id.value != intent.instrument_id
+            or (self._active_outcome is not None and self._active_outcome.entry_fenced_at_ms is not None)
+        ):
+            return
+        self._latest_entry_quote = execution_quote_from_nautilus(
+            tick,
+            stream_generation=self._authoritative_quote_generation(),
+        )
+
+    def _entry_preflight(self, intent: TradeIntent) -> tuple[Decimal, ExecutionQuoteSnapshotV1] | None:
         now_ms = int(self.clock.timestamp_ms())
         if now_ms >= intent.valid_until_ms:
             self._refuse_intent(intent, "intent_expired")
@@ -349,23 +402,40 @@ class TracefoldNautilusStrategy(Strategy):
 
         instrument_id = self._instrument_id()
         instrument = self.cache.instrument(instrument_id)
-        quote = self.cache.quote_tick(instrument_id)
         if instrument is None:
             self._refuse_intent(intent, "runtime_not_ready")
             return None
+        now_ns = int(self.clock.timestamp_ns())
+        quote = self._authoritative_entry_quote()
         if quote is None:
+            wait_started_at_ns = self._quote_wait_started_at_ns
+            if wait_started_at_ns is not None and now_ns < min(
+                intent.valid_until_ms * 1_000_000,
+                wait_started_at_ns + MAX_RECEIVE_AGE_NS,
+            ):
+                return None
+        validation = validate_entry_quote(
+            intent=intent,
+            quote=quote,
+            stage="Q1",
+            now_ns=now_ns,
+            last_accepted_ts_event_ns=self._last_accepted_quote_ts_event_ns,
+        )
+        if isinstance(validation, ExecutionQuoteRejectionV1):
+            self._reject_entry_preflight(
+                intent,
+                validation.reason,
+                validation,
+            )
             return None
-
-        quote_ms = int(quote.ts_event) // 1_000_000
-        bid = quote.bid_price.as_decimal()
-        ask = quote.ask_price.as_decimal()
+        self._last_accepted_quote_ts_event_ns = validation.ts_event_ns
         decision = evaluate_entry(
             now_ms=now_ms,
             created_at_ms=intent.created_at_ms,
             valid_until_ms=intent.valid_until_ms,
-            quote_at_ms=quote_ms,
-            bid=bid,
-            ask=ask,
+            quote_at_ms=validation.ts_event_ns // 1_000_000,
+            bid=validation.bid,
+            ask=validation.ask,
             reference_price=intent.reference_price,
             target_notional=intent.target_notional_usd,
             size_increment=instrument.size_increment.as_decimal(),
@@ -375,9 +445,22 @@ class TracefoldNautilusStrategy(Strategy):
             max_drift_bps=intent.max_entry_drift_bps,
         )
         if decision.quantity is None:
-            self._refuse_intent(intent, decision.reason)
+            self._reject_entry_preflight(
+                intent,
+                decision.reason,
+                validation,
+            )
             return None
-        return decision.quantity
+        return decision.quantity, validation
+
+    def _reject_entry_preflight(
+        self,
+        intent: TradeIntent,
+        reason_code: IntentReasonCode,
+        q1_evidence: ExecutionQuoteSnapshotV1 | ExecutionQuoteRejectionV1,
+    ) -> None:
+        self._emit(EntryPreflightRejected(intent.intent_id, reason_code, q1_evidence))
+        self._clear_active_without_exposure(intent.intent_id)
 
     def _refuse_intent(self, intent: TradeIntent, reason_code: IntentReasonCode) -> None:
         self._emit(IntentRefused(intent.intent_id, reason_code))
@@ -394,23 +477,104 @@ class TracefoldNautilusStrategy(Strategy):
         self._active_intent = None
         self._active_outcome = None
         self._pending_fence_quantity = None
+        self._pending_fence_quote = None
+        self._latest_entry_quote = None
+        self._last_accepted_quote_ts_event_ns = None
+        self._quote_wait_started_at_ns = None
         self._orders.clear()
 
-    def _submit_fenced_entry(self, command: EntryFenceGranted) -> None:
+    def _validate_quote_after_fence(self, command: EntryFenceGranted) -> None:
         intent = self._active_intent
         outcome = command.outcome
+        q1 = self._pending_fence_quote
         expected_id = None if intent is None else deterministic_client_order_id(intent.intent_id, "entry")
+        try:
+            fence = SubmissionFenceV1.from_outcome(outcome)
+        except ValueError as exc:
+            raise ValueError("nautilus_entry_fence_grant_invalid") from exc
         if (
             intent is None
-            or self._pending_fence_quantity != command.quantity
+            or q1 is None
+            or self._pending_fence_quantity != fence.quantity
             or outcome.intent_id != intent.intent_id
             or outcome.entry_fenced_at_ms is None
-            or outcome.entry_client_order_id != expected_id
+            or fence.client_order_id != expected_id
+            or fence.q1_evidence != q1
             or outcome.execution_state != "IN_FLIGHT"
             or outcome.execution_phase != "ENTRY"
         ):
             raise ValueError("nautilus_entry_fence_grant_invalid")
+        now_ns = int(self.clock.timestamp_ns())
+        validation = validate_entry_quote(
+            intent=intent,
+            quote=self._authoritative_entry_quote(),
+            stage="Q2",
+            now_ns=now_ns,
+            last_accepted_ts_event_ns=q1.ts_event_ns,
+        )
+        self._active_outcome = outcome
+        self._pending_fence_quantity = None
+        self._pending_fence_quote = None
+        if isinstance(validation, ExecutionQuoteRejectionV1):
+            self._emit(
+                EntryNoSubmitRequested(
+                    intent_id=intent.intent_id,
+                    client_order_id=expected_id,
+                    reason_code=validation.reason,
+                    q2_evidence=validation,
+                )
+            )
+            return
+        self._last_accepted_quote_ts_event_ns = validation.ts_event_ns
+        self._emit(
+            EntrySubmissionRequested(
+                intent_id=intent.intent_id,
+                client_order_id=expected_id,
+                q2_evidence=validation,
+            )
+        )
+
+    def _submit_authorized_entry(self, command: EntrySubmissionGranted) -> None:
+        intent = self._active_intent
+        outcome = command.outcome
+        expected_id = None if intent is None else deterministic_client_order_id(intent.intent_id, "entry")
+        try:
+            fence = SubmissionFenceV1.from_outcome(outcome)
+        except ValueError as exc:
+            raise ValueError("nautilus_entry_submission_grant_invalid") from exc
+        if (
+            intent is None
+            or outcome.intent_id != intent.intent_id
+            or fence.client_order_id != expected_id
+            or outcome.entry_quote_q2 is None
+            or not isinstance(outcome.entry_quote_q2, ExecutionQuoteSnapshotV1)
+            or outcome.entry_submitted_at_ms is not None
+            or outcome.execution_state != "IN_FLIGHT"
+            or outcome.execution_phase != "ENTRY"
+        ):
+            raise ValueError("nautilus_entry_submission_grant_invalid")
         if expected_id in self._orders:
+            return
+        if outcome.entry_quote_q2.stream_generation != self._authoritative_quote_generation():
+            now_ns = int(self.clock.timestamp_ns())
+            rejection = validate_entry_quote(
+                intent=intent,
+                quote=None,
+                stage="Q2",
+                now_ns=now_ns,
+                last_accepted_ts_event_ns=outcome.entry_quote_q2.ts_event_ns,
+            )
+            if not isinstance(rejection, ExecutionQuoteRejectionV1):
+                raise AssertionError("quote_generation_rejection_invalid")
+            self._active_outcome = outcome
+            self._emit(
+                EntryNoSubmitRequested(
+                    intent_id=intent.intent_id,
+                    client_order_id=expected_id,
+                    reason_code=rejection.reason,
+                    q2_evidence=rejection,
+                )
+            )
             return
 
         instrument_id = self._instrument_id()
@@ -420,14 +584,64 @@ class TracefoldNautilusStrategy(Strategy):
         entry = self.order_factory.market(
             instrument_id=instrument_id,
             order_side=OrderSide.BUY,
-            quantity=instrument.make_qty(command.quantity),
+            quantity=instrument.make_qty(fence.quantity),
             reduce_only=False,
             client_order_id=ClientOrderId(expected_id),
         )
         self._orders[expected_id] = (intent.intent_id, "entry")
         self._active_outcome = outcome
-        self._pending_fence_quantity = None
         self.submit_order(entry, client_id=ClientId(BINANCE))
+        self._emit(
+            EntrySubmitted(
+                intent_id=intent.intent_id,
+                client_order_id=expected_id,
+                submitted_at_ms=int(self.clock.timestamp_ms()),
+            )
+        )
+
+    def _change_quote_stream(self, command: QuoteStreamChanged) -> None:
+        if command.generation > self._authoritative_quote_generation():
+            raise ValueError("nautilus_quote_stream_generation_unowned")
+        if command.generation < self._quote_stream_generation:
+            raise ValueError("nautilus_quote_stream_generation_regressed")
+        if command.connected and command.generation == self._quote_stream_generation and self._quote_stream_connected:
+            return
+        self._quote_stream_generation = command.generation
+        self._quote_stream_connected = command.connected
+        if self._latest_entry_quote is None or self._latest_entry_quote.stream_generation < command.generation:
+            self._latest_entry_quote = None
+        self._last_accepted_quote_ts_event_ns = None
+        if self._active_intent is not None and self._active_outcome is not None:
+            self._quote_wait_started_at_ns = int(self.clock.timestamp_ns())
+
+    def _authoritative_quote_generation(self) -> int:
+        generation = int(self._quote_stream_generation_authority())
+        if generation < 0:
+            raise RuntimeError("nautilus_quote_stream_generation_invalid")
+        return generation
+
+    def _authoritative_entry_quote(self) -> ExecutionQuote | None:
+        quote = self._latest_entry_quote
+        if quote is None or quote.stream_generation != self._authoritative_quote_generation():
+            return None
+        return quote
+
+    def _finalize_fenced_no_submit(self, command: EntryNoSubmitFinalized) -> None:
+        intent = self._active_intent
+        outcome = command.outcome
+        if (
+            intent is None
+            or outcome.intent_id != intent.intent_id
+            or outcome.execution_state != "TERMINAL"
+            or outcome.terminal_outcome != "REJECTED"
+            or outcome.entry_fenced_at_ms is None
+            or outcome.entry_quote_q2 is None
+            or outcome.entry_quote_q2.reason != outcome.reason_code
+            or outcome.entry_submitted_at_ms is not None
+        ):
+            raise ValueError("nautilus_entry_no_submit_finalization_invalid")
+        self._active_outcome = outcome
+        self._clear_active_without_exposure(intent.intent_id)
 
     def _recover_fenced_intent(self, outcome: IntentOutcome) -> None:
         intent = self._active_intent
@@ -436,13 +650,29 @@ class TracefoldNautilusStrategy(Strategy):
             raise ValueError("nautilus_fenced_entry_identity_missing")
         order = self.cache.order(ClientOrderId(client_order_id))
         if order is None:
-            self._emit(
-                OrderOutcomeUnknown(
-                    intent_id=intent.intent_id,
-                    leg="entry",
-                    observed_at_ms=int(self.clock.timestamp_ms()),
+            instrument = self.cache.instrument(self._instrument_id())
+            if (
+                outcome.submission_fence_version == "submission_fence_v1"
+                and outcome.submission_quantity is not None
+                and instrument is not None
+            ):
+                order = self.order_factory.market(
+                    instrument_id=self._instrument_id(),
+                    order_side=OrderSide.BUY,
+                    quantity=instrument.make_qty(outcome.submission_quantity),
+                    reduce_only=False,
+                    client_order_id=ClientOrderId(client_order_id),
                 )
-            )
+                self._orders[client_order_id] = (intent.intent_id, "entry")
+                self.query_order(order, client_id=ClientId(BINANCE))
+            else:
+                self._emit(
+                    OrderOutcomeUnknown(
+                        intent_id=intent.intent_id,
+                        leg="entry",
+                        observed_at_ms=int(self.clock.timestamp_ms()),
+                    )
+                )
         elif order.venue_order_id is not None:
             self._orders[client_order_id] = (intent.intent_id, "entry")
             self.query_order(order, client_id=ClientId(BINANCE))
@@ -856,7 +1086,18 @@ class TracefoldNautilusStrategy(Strategy):
 
     def on_order_accepted(self, event: Any) -> None:
         identity = self._orders.get(event.client_order_id.value)
-        if identity is None or identity[1] != "stop" or self._stop_order is None:
+        if identity is None:
+            return
+        if identity[1] == "entry":
+            self._emit(
+                EntryAccepted(
+                    intent_id=identity[0],
+                    client_order_id=event.client_order_id.value,
+                    accepted_at_ms=self._event_ms(event),
+                )
+            )
+            return
+        if identity[1] != "stop" or self._stop_order is None:
             return
         trigger_price = self._stop_trigger_price
         if not self._owned_stop_contract_matches(event.client_order_id):
@@ -1208,6 +1449,10 @@ class TracefoldNautilusStrategy(Strategy):
         self._active_intent = None
         self._active_outcome = None
         self._pending_fence_quantity = None
+        self._pending_fence_quote = None
+        self._latest_entry_quote = None
+        self._last_accepted_quote_ts_event_ns = None
+        self._quote_wait_started_at_ns = None
         self._orders.clear()
         self._position_id = None
         self._position_quantity = None
