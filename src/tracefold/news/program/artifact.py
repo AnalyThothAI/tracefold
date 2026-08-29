@@ -5,19 +5,20 @@ texts and the schema version, and nothing else, which is why two compiles that a
 instructions are the same running Program however much they cost, whoever launched them, and whatever
 trajectory they took.
 
-Everything else the Program needs — the graph, the schemas, the normalizer, the assembler, the model route
+Everything else the Program needs — the native Module, schemas, normalizer, assembler, model route
 and the execution budget — is code, and `identity.compute_execution_identity` hashes what that code
 renders (#314). It used to be declared here instead, as a `factory_id` literal somebody had to remember to
 bump; the artifact carried the literal and hashed it, which made a forgotten bump indistinguishable from
 no change at all.
 
-Since #306 Phase 2 the instruction *is* the whole prompt rather than an advisory appended to one. There is
-no renderer left: `seed.py` holds the reviewed baseline text, an artifact carries whatever text is current,
-and `PredictorState.instruction` is that text unchanged. A human editing the seed and an optimizer
+Since #306 Phase 2 the instruction *is* the whole reviewed instruction rather than an advisory appended to
+one. There is no Tracefold-owned prompt renderer: `seed.py` holds the reviewed baseline text, an artifact
+carries whatever text is current, and DSPy's public Signature adapter injects `PredictorState.instruction`
+unchanged while rendering the surrounding schema and inputs. A human editing the seed and an optimizer
 proposing a replacement are the same operation on the same string, held to the same bounds by
 `validate_program_instruction` and released through the same candidate/canary pipeline.
 
-`graph.py` executes an artifact; this module decides what a legal artifact *is*.
+`module.py` executes an artifact; this module decides what a legal artifact *is*.
 """
 
 from __future__ import annotations

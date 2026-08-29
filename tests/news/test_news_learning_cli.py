@@ -253,12 +253,96 @@ def test_policy_candidate_gets_arm_local_program_adapter_and_breaker_state() -> 
     candidate_judge = judges[("candidate", candidate_arm.bundle_sha)]
 
     assert stable_judge is not candidate_judge
-    assert stable_judge.primary_adapter is not candidate_judge.primary_adapter
-    assert stable_judge.primary_adapter.requests is not candidate_judge.primary_adapter.requests
+    assert stable_judge.primary.event_semantics is not candidate_judge.primary.event_semantics
+    assert stable_judge.primary.reader_card is not candidate_judge.primary.reader_card
     for _ in range(PROGRAM_PRIMARY_BREAKER_FAILURES):
         stable_judge._record_primary_failure()
     assert stable_judge._primary_open_until > 0
     assert candidate_judge._primary_open_until == 0
+
+
+def test_recorded_slots_group_schema_fallback_and_reject_old_schema() -> None:
+    from tracefold.app.cli.commands.news_learning_runtime import _recorded_program_slots
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+    from tracefold.news.program.lm import RuntimeModelIdentity
+
+    arm = SimpleNamespace(
+        program_sha256="a" * 64,
+        runtime_model_bindings_sha256="b" * 64,
+        envelope_sha256=EXECUTION_ENVELOPE_SHA256,
+    )
+    identity = RuntimeModelIdentity.issue(
+        provider="fixture",
+        model="fixture/model",
+        model_sha256=canonical_sha({"configured": "fixture/model"}),
+    )
+    execution_sha = canonical_sha(
+        {
+            "program_sha256": arm.program_sha256,
+            "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
+            "envelope_sha256": arm.envelope_sha256,
+            "runtime_binding_sha256": identity.binding_sha256,
+            "provider": identity.provider,
+        }
+    )
+
+    def row(response_format: Any) -> dict[str, Any]:
+        request = {
+            "schema": "tracefold.news.lm_request.v1",
+            "model": identity.model,
+            "messages": [],
+            "tools": [],
+            "config": {"response_format": response_format, "extensions": {}},
+        }
+        request_identity = {
+            "schema": "tracefold.news.audited_lm_request.v2",
+            "endpoint_fingerprint": identity.model_sha256,
+            "model_binding": "event_semantics.primary",
+        }
+        request_sha = canonical_sha({**request_identity, "request": request})
+        terminal = {
+            "schema": "tracefold.news.recorded_lm.v1",
+            "request_sha256": request_sha,
+            "request_identity": request_identity,
+            "request": request,
+            "response": {
+                "model": identity.model,
+                "text": "{}",
+                "finish_reason": "stop",
+                "truncated": False,
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                    "cache_read_tokens": 0,
+                },
+                "cost": None,
+            },
+            "error": None,
+        }
+        return {
+            "execution_contract_sha": execution_sha,
+            "predictor_name": "event_semantics",
+            "route": "primary",
+            "provider": identity.provider,
+            "model": identity.model,
+            "model_sha": identity.model_sha256,
+            "request_sha256": request_sha,
+            "request": request,
+            "response": terminal,
+        }
+
+    rows = [row({"type": "object", "properties": {}}), row({"type": "json_object"})]
+    slots = _recorded_program_slots(rows, arm=arm)
+
+    assert slots[("event_semantics", "primary")]["identity"] == identity
+    assert slots[("event_semantics", "primary")]["modes"] == {"json_schema", "json_object"}
+    assert len(slots[("event_semantics", "primary")]["recordings"]) == 2
+
+    rows[0]["response"] = {"output": {"semantics": {}}}
+    with pytest.raises(ValueError, match="news_program_recording_schema_unsupported"):
+        _recorded_program_slots(rows, arm=arm)
 
 
 def _readiness_args(**updates: Any) -> SimpleNamespace:
@@ -514,7 +598,7 @@ def test_baseline_defaults_each_mode_to_its_only_valid_action_source() -> None:
 
 
 def test_a_live_baseline_refuses_to_run_without_an_explicit_provider_bound(monkeypatch: Any) -> None:
-    """`runtime_live` spends 2-6 real calls per case, sequentially, on the endpoints that also serve
+    """`runtime_live` spends 2-8 real calls per case, sequentially, on the endpoints that also serve
     production Triage. Every other model-spending command in this plane makes its budget required; this one
     defaulted `--limit` to 500, so the unbounded form was the *shortest* form to type."""
 
@@ -546,17 +630,8 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
     """
 
     from tracefold.app.cli.commands.news_learning_baseline import _baseline_model_route
-    from tracefold.news.program.runtime import (
-        PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
-        PROGRAM_READER_CARD_MAX_TOKENS,
-        PROGRAM_ROUTE_DEADLINE_SECONDS,
-    )
 
     built: dict[str, Any] = {}
-
-    def record_adapter(**kwargs: Any) -> object:
-        built.update(kwargs)
-        return object()
 
     endpoint = SimpleNamespace(
         model_name="local/qwen-test",
@@ -566,18 +641,17 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
         temperature=0.0,
         structured_output="json_schema",
     )
-    monkeypatch.setattr(
-        learning_runtime,
-        "compose_news_program_runtime",
-        lambda _settings: SimpleNamespace(
-            program_configured=True,
-            event_semantics_primary=endpoint,
-        ),
-    )
-    monkeypatch.setattr("tracefold.news.learning.baseline.build_compile_adapter", record_adapter)
-    monkeypatch.setattr(
-        "tracefold.news.learning.baseline.build_compile_program", lambda artifact, adapter: (artifact, adapter)
-    )
+
+    class _Composition:
+        program_configured = True
+        event_semantics_primary = endpoint
+
+        @staticmethod
+        def compile_semantic_judge(artifact: Any) -> object:
+            built["artifact"] = artifact
+            return object()
+
+    monkeypatch.setattr(learning_runtime, "compose_news_program_runtime", lambda _settings: _Composition())
 
     program, identity = _baseline_model_route(
         "compile_live",
@@ -586,8 +660,7 @@ def test_each_live_mode_builds_its_route_from_the_code_owned_execution_budget(mo
     )
 
     assert program is not None
-    assert built["timeout"] == float(PROGRAM_ROUTE_DEADLINE_SECONDS)
-    assert built["max_tokens"] == max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS)
+    assert built["artifact"] == load_stable_program_artifact()
     assert identity["compile_task_model"] == "local/qwen-test"
 
 

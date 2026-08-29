@@ -177,51 +177,62 @@ def test_news_value_families_do_not_depend_on_io_or_runtime_owners() -> None:
 
 
 def test_dspy_is_confined_to_model_implementation_families() -> None:
-    """#306 Phase 3 removed `news/program` and `news/learning` from this list.
-
-    The Program owns its transport (`program/transport.py`), and the optimizer calls `gepa.optimize`
-    through an adapter this repository writes, so neither family imports DSPy at all any more. What is
-    left is the issue's own follow-on list: the review drafter and the Trading decision Program, both of
-    which are ordinary public-API users with no private-surface dependency.
-    """
+    """#344 makes DSPy the one model framework while keeping it behind owned seams."""
 
     allowed_roots = (
+        NEWS_ROOT / "program",
+        NEWS_ROOT / "learning",
         # #202 §4.3. The review plane acquires human truth; the drafter is the one thing in it that asks a
         # model first, so a person has a rubric to accept or rewrite rather than a blank form. The companion
         # test below keeps that to the one module — a ReviewDesk that could call a model would be a desk
         # that could manufacture its own Gold.
         NEWS_ROOT / "review",
-        SRC / "trading" / "decision",
         SRC / "app" / "workers" / "wiring",
     )
     offenders = [
         str(path.relative_to(ROOT))
         for path in SRC.rglob("*.py")
-        if "dspy" in _imported_roots(path) and not any(root in path.parents for root in allowed_roots)
+        if "dspy" in _imported_roots(path)
+        and path != SRC / "app" / "learning_runtime.py"
+        and not any(root in path.parents for root in allowed_roots)
     ]
     assert offenders == []
 
 
-def test_the_news_program_and_its_optimizer_import_no_model_framework() -> None:
-    """The positive half of #306 Phase 3, stated where the boundary lives.
+def test_news_model_code_uses_only_public_dspy_and_no_direct_gepa() -> None:
+    """#344 permits DSPy public APIs and hard-cuts private DSPy and direct GEPA APIs."""
 
-    The test above would still pass if `news/program` grew a DSPy import back and someone widened the
-    allow-list; this one says what the Issue actually bought, and it fails on the widening.
-    """
+    model_files = sorted((NEWS_ROOT / "program").rglob("*.py")) + sorted((NEWS_ROOT / "learning").rglob("*.py"))
+    forbidden_dspy: list[str] = []
+    for path in model_files:
+        for module in sorted(_imported_modules(path)):
+            if module == "dspy.clients" or module.startswith("dspy.clients."):
+                forbidden_dspy.append(f"{path.relative_to(ROOT)} -> {module}")
+            if module == "dspy.core" or module.startswith("dspy.core."):
+                forbidden_dspy.append(f"{path.relative_to(ROOT)} -> {module}")
+            if module.startswith("dspy.") and any(part.startswith("_") for part in module.split(".")[1:]):
+                forbidden_dspy.append(f"{path.relative_to(ROOT)} -> {module}")
+    assert forbidden_dspy == []
 
-    for family in (NEWS_ROOT / "program", NEWS_ROOT / "learning"):
-        offenders = sorted(
-            str(path.relative_to(ROOT)) for path in family.rglob("*.py") if "dspy" in _imported_roots(path)
-        )
-        assert offenders == []
-
-    # And the one thing that may reach gepa-core is the optimizer, which is where the adapter lives.
     gepa_users = sorted(
         str(path.relative_to(ROOT))
         for path in SRC.rglob("*.py")
         if "gepa" in _imported_roots(path) or "gepa" in {module.split(".")[0] for module in _imported_modules(path)}
     )
-    assert gepa_users == ["src/tracefold/news/learning/optimizer.py"]
+    assert gepa_users == []
+
+
+def test_news_program_does_not_own_provider_transport() -> None:
+    """DSPy/LiteLLM own HTTP and provider request rendering after the hard cut."""
+
+    forbidden_roots = {"httpx", "aiohttp", "requests"}
+    forbidden_modules = {"tracefold.integrations.chat_completions"}
+    violations = [
+        str(path.relative_to(ROOT))
+        for path in (NEWS_ROOT / "program").rglob("*.py")
+        if (_imported_roots(path) & forbidden_roots) or (_imported_modules(path) & forbidden_modules)
+    ]
+    assert violations == []
 
 
 def test_only_the_drafter_may_call_a_model_inside_the_review_plane() -> None:

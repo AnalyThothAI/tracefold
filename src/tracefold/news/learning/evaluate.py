@@ -24,8 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..events.storyline import final_storyline_key
-from ..program.contracts import ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
+from ..program.contracts import ProgramCallTrace, ScoredJudgment, SemanticJudge, SemanticJudgeError, TriageContext
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
+from ..program.lm import RecordedLM, RuntimeModelIdentity
 from ..release.candidate import CandidateRegistry
 from ..review.desk import (
     READER_CONTRACT_SHA256,
@@ -833,12 +834,14 @@ class CandidateEvaluator:
                 "error_code": "news_program_artifact_missing",
             }
         observation: dict[str, Any]
+        trace_calls: tuple[ProgramCallTrace, ...]
         try:
             judgment = await judge.judge(context)
         except SemanticJudgeError as exc:
             if "recording_missing" in exc.code:
                 raise RecordReplayMiss(exc.code) from exc
             partial_trace = exc.partial_trace.model_dump(mode="json") if exc.partial_trace is not None else {}
+            trace_calls = exc.partial_trace.calls if exc.partial_trace is not None else ()
             observation = {
                 "verdict": None,
                 "scored_judgment": None,
@@ -861,6 +864,7 @@ class CandidateEvaluator:
                 or judgment.trace.envelope_sha256 != LEARNING_EXECUTION_ENVELOPE_SHA256
             ):
                 raise ValueError("news_program_judgment_identity_mismatch")
+            trace_calls = judgment.trace.calls
             observation = judgment.model_dump(mode="json")
             observation["verdict"] = judgment.verdict.model_dump(mode="json")
             observation["scored_judgment"] = judgment.scored().model_dump(mode="json")
@@ -874,7 +878,10 @@ class CandidateEvaluator:
         trace_context_sha = str(trace.get("context_sha256") or context_sha)
         if trace_context_sha != context_sha:
             raise ValueError("news_program_trace_context_mismatch")
-        for call_index, raw_call in enumerate(observation.get("calls") or []):
+        serialized_calls = list(observation.get("calls") or [])
+        if len(serialized_calls) != len(trace_calls):
+            raise ValueError("news_program_call_trace_incomplete")
+        for call_index, raw_call in enumerate(serialized_calls):
             if not bool(raw_call.get("physical_provider_call")):
                 continue
             self._persist_program_call(
@@ -883,10 +890,10 @@ class CandidateEvaluator:
                 arm_name=arm_name,
                 trial=trial,
                 arm=arm,
-                context_sha=context_sha,
                 trace=trace,
                 call_index=call_index,
                 raw_call=raw_call,
+                recording=trace_calls[call_index].recording,
             )
         return observation
 
@@ -898,10 +905,10 @@ class CandidateEvaluator:
         arm_name: ArmName,
         trial: int,
         arm: ArmManifest,
-        context_sha: str,
         trace: Mapping[str, Any],
         call_index: int,
         raw_call: Mapping[str, Any],
+        recording: Mapping[str, Any] | None,
     ) -> None:
         call = dict(raw_call)
         if call_index < 0 or not _program_call_identity_complete(call):
@@ -909,19 +916,14 @@ class CandidateEvaluator:
         predictor_name = str(call.get("predictor") or "")
         attempt = int(call.get("attempt") or 0)
         route = str(call.get("route") or "")
-        model_binding = str(call.get("model_binding") or "")
         runtime_provider = str(call.get("runtime_provider") or "")
         runtime_model = str(call.get("runtime_model") or "")
         runtime_model_sha = str(call.get("runtime_model_sha256") or "")
         runtime_binding_sha = str(call.get("runtime_binding_sha256") or "")
-        response_provider = str(call.get("provider") or "")
-        response_model = str(call.get("model") or "")
-        response_model_sha = str(call.get("model_sha256") or "")
-        provider = response_provider or "unobserved"
+        provider = runtime_provider
         request_sha = str(call.get("request_sha256") or "")
-        input_sha = str(call.get("input_sha256") or "")
-        model = response_model or "unobserved"
-        model_sha = response_model_sha or _sha({"provider": provider, "model": model})
+        model = runtime_model
+        model_sha = runtime_model_sha
         expected_runtime_binding_sha = _sha(
             {
                 "provider": runtime_provider,
@@ -940,47 +942,31 @@ class CandidateEvaluator:
         )
         if not model or runtime_binding_sha != expected_runtime_binding_sha:
             raise ValueError("news_program_call_trace_incomplete")
-        request = {
-            "program_version": arm.program_version,
-            "program_sha256": arm.program_sha256,
-            "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
-            "context_sha256": context_sha,
-            "predictor": predictor_name,
-            "call_index": call_index,
-            "attempt": attempt,
-            "route": route,
-            "request_sha256": request_sha,
-            "input_sha256": input_sha,
-            "model_binding": model_binding,
-            "runtime_provider": runtime_provider,
-            "runtime_model": runtime_model,
-            "runtime_model_sha256": runtime_model_sha,
-            "runtime_binding_sha256": runtime_binding_sha,
-            "upstream_sha256": call.get("upstream_sha256"),
-        }
-        validated_output = call.get("validated_output")
-        response = None
-        if isinstance(validated_output, Mapping):
-            output_field = "semantics" if predictor_name == "event_semantics" else "card"
-            response = {
-                "output": {output_field: dict(validated_output)},
-                "provider": call.get("provider"),
-                "model": call.get("model"),
-                "model_sha256": call.get("model_sha256"),
-                "latency_ms": int(call.get("latency_ms") or 0),
-                "input_tokens": int(call.get("input_tokens") or 0),
-                "output_tokens": int(call.get("output_tokens") or 0),
-                "cached_tokens": int(call.get("cached_tokens") or 0),
-                "total_tokens": int(call.get("total_tokens") or 0),
-                "provider_cost_microusd": call.get("provider_cost_microusd"),
-                "finish_reason": call.get("finish_reason"),
-                "runtime_binding_sha256": runtime_binding_sha,
-            }
-        if len(_json(request).encode()) > MODEL_RECORDING_BYTES_MAX or (
-            response is not None and len(_json(response).encode()) > MODEL_RECORDING_BYTES_MAX
+        if recording is None:
+            raise ValueError("news_program_call_recording_missing")
+        terminal = dict(recording)
+        recorded_request = terminal.get("request")
+        if not isinstance(recorded_request, Mapping):
+            raise ValueError("news_program_call_recording_missing")
+        request = dict(recorded_request)
+        # Public replay validation proves schema, request address, and exactly
+        # one success/error terminal before append-only persistence.
+        RecordedLM(
+            {request_sha: terminal},
+            model=runtime_model,
+            runtime_identity=RuntimeModelIdentity.issue(
+                provider=runtime_provider,
+                model=runtime_model,
+                model_sha256=runtime_model_sha,
+            ),
+            model_binding=str(call.get("model_binding") or ""),
+        )
+        if (
+            len(_json(request).encode()) > MODEL_RECORDING_BYTES_MAX
+            or len(_json(terminal).encode()) > MODEL_RECORDING_BYTES_MAX
         ):
             raise ValueError("news_model_recording_oversized")
-        response_sha = _sha(response) if response is not None else None
+        response_sha = _sha(terminal)
         identity = {
             "run_sha": run_sha,
             "case_id": case_id,
@@ -1010,7 +996,7 @@ class CandidateEvaluator:
             "request_sha256": request_sha,
             "response_sha256": response_sha,
             "request": request,
-            "response": response,
+            "response": terminal,
             "provider": provider,
             "model": model,
             "model_sha": model_sha,
@@ -1038,7 +1024,7 @@ class CandidateEvaluator:
                 request_sha,
                 response_sha,
                 _json(request),
-                _json(response) if response is not None else None,
+                _json(terminal),
                 provider,
                 model,
                 model_sha,
@@ -1062,8 +1048,7 @@ class CandidateEvaluator:
             raise ValueError("news_model_recording_conflict")
         actual_recording = {key: persisted[key] for key in expected_recording}
         actual_recording["request"] = dict(actual_recording["request"])
-        if actual_recording["response"] is not None:
-            actual_recording["response"] = dict(actual_recording["response"])
+        actual_recording["response"] = dict(actual_recording["response"])
         if actual_recording != expected_recording:
             raise ValueError("news_model_recording_conflict")
 

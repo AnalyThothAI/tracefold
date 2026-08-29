@@ -241,7 +241,7 @@ def test_reopening_the_same_bundle_is_idempotent_and_keeps_the_original_start(co
 def _arm(
     *,
     policy: dict[str, object] | None = None,
-    program_version: str = "news_semantic_program_v5",
+    program_version: str = PROGRAM_VERSION,
     program_sha256: str | None = None,
     runtime_model_bindings_sha256: str | None = None,
 ) -> ArmManifest:
@@ -342,42 +342,86 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
             "model_sha256": runtime_model_sha,
         }
     )
-    calls = tuple(
-        ProgramCallTrace(
-            predictor=predictor,
-            route="primary",
-            attempt=1,
-            request_sha256=_sha(
+    calls: list[ProgramCallTrace] = []
+    for predictor, output in (("event_semantics", semantics), ("reader_card", card)):
+        request = {
+            "schema": "tracefold.news.lm_request.v1",
+            "model": "fixture-model",
+            "messages": [
                 {
-                    "program_sha256": arm.program_sha256,
-                    "context_sha256": context_sha,
-                    "predictor": predictor,
-                    "runtime_binding_sha256": runtime_binding_sha,
+                    "role": "user",
+                    "parts": [{"type": "text", "metadata": {}, "text": f"fixture:{predictor}:{context_sha}"}],
+                    "metadata": {},
                 }
-            ),
-            input_sha256=_sha({"context_sha256": context_sha, "predictor": predictor}),
-            model_binding="news_triage_primary",
-            physical_provider_call=True,
-            runtime_provider="fixture-provider",
-            runtime_model="fixture-model",
-            runtime_model_sha256=runtime_model_sha,
-            runtime_binding_sha256=runtime_binding_sha,
-            upstream_sha256=None if predictor == "event_semantics" else _sha(semantics),
-            output_sha256=_sha(output),
-            validated_output=output,
-            provider="fixture-provider",
-            model="fixture-model",
-            model_sha256=runtime_model_sha,
-            latency_ms=450,
-            input_tokens=250,
-            output_tokens=45,
-            cached_tokens=20,
-            total_tokens=295,
-            provider_cost_microusd=100,
-            finish_reason="stop",
+            ],
+            "tools": [],
+            "config": {"extensions": {}},
+        }
+        request_identity = {
+            "schema": "tracefold.news.audited_lm_request.v2",
+            "endpoint_fingerprint": runtime_model_sha,
+            "model_binding": "news_triage_primary",
+        }
+        request_sha = _sha({**request_identity, "request": request})
+        output_field = "semantics" if predictor == "event_semantics" else "card"
+        recording = {
+            "schema": "tracefold.news.recorded_lm.v1",
+            "request_sha256": request_sha,
+            "request_identity": request_identity,
+            "request": request,
+            "response": {
+                "model": "fixture-model",
+                "text": json.dumps({output_field: output}, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                "finish_reason": "stop",
+                "truncated": False,
+                "usage": {
+                    "input_tokens": 250,
+                    "output_tokens": 45,
+                    "total_tokens": 295,
+                    "cache_read_tokens": 20,
+                },
+                "cost": 0.0001,
+            },
+            "error": None,
+        }
+        calls.append(
+            ProgramCallTrace(
+                predictor=predictor,
+                route="primary",
+                attempt=1,
+                request_sha256=request_sha,
+                input_sha256=_sha({"context_sha256": context_sha, "predictor": predictor}),
+                model_binding="news_triage_primary",
+                physical_provider_call=True,
+                runtime_provider="fixture-provider",
+                runtime_model="fixture-model",
+                runtime_model_sha256=runtime_model_sha,
+                runtime_binding_sha256=runtime_binding_sha,
+                upstream_sha256=None if predictor == "event_semantics" else _sha(semantics),
+                output_sha256=_sha(output),
+                validated_output=output,
+                provider="fixture-provider",
+                model="fixture-model",
+                model_sha256=runtime_model_sha,
+                latency_ms=450,
+                input_tokens=250,
+                output_tokens=45,
+                cached_tokens=20,
+                total_tokens=295,
+                provider_cost_microusd=100,
+                finish_reason="stop",
+                terminal_disposition="provider_success",
+                invocation_sha256=_sha(
+                    {
+                        "program_sha256": arm.program_sha256,
+                        "context_sha256": context_sha,
+                        "predictor": predictor,
+                        "request_sha256": request_sha,
+                    }
+                ),
+                recording=recording,
+            )
         )
-        for predictor, output in (("event_semantics", semantics), ("reader_card", card))
-    )
     return ProgramTrace(
         program_version=arm.program_version,
         program_sha256=arm.program_sha256,
@@ -388,7 +432,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
         verdict_sha256=_sha(verdict),
         editorial_sha256=editorial.editorial_sha256,
         answering_route="primary",
-        calls=calls,
+        calls=tuple(calls),
     )
 
 
@@ -533,6 +577,9 @@ class _SyntheticFallbackJudge(_StaticJudge):
                 "provider_cost_microusd": None,
                 "finish_reason": None,
                 "error_code": "news_program_model_binding_unresolved",
+                "terminal_disposition": None,
+                "invocation_sha256": None,
+                "recording": None,
             }
         )
         calls = (
@@ -2227,13 +2274,13 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
     assert {row["cached_tokens"] for row in recordings} == {20}
     assert {row["total_tokens"] for row in recordings} == {295}
     assert {row["provider_cost_microusd"] for row in recordings} == {100}
-    assert all(row["request"]["runtime_model_bindings_sha256"] for row in recordings)
-    # Every recorded request is bound to the exact Program identity of the arm that produced it.
-    assert {row["request"]["program_sha256"] for row in recordings} == {
-        stable.program_sha256,
-        candidate.candidate_arm.program_sha256,
-    }
-    assert all(row["response"]["output"] for row in recordings)
+    assert all(row["request"]["schema"] == "tracefold.news.lm_request.v1" for row in recordings)
+    assert all(row["request"]["model"] == "fixture-model" for row in recordings)
+    # Logical Program/arm metadata stays in columns and hashes, never in the
+    # exact provider request replay payload.
+    assert all("program_sha256" not in row["request"] for row in recordings)
+    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v1" for row in recordings)
+    assert all((row["response"]["response"] is None) != (row["response"]["error"] is None) for row in recordings)
     candidate_artifact = conn.execute(
         "SELECT payload FROM news_learning_artifacts WHERE kind = 'candidate' AND payload->>'candidate_sha' = %s",
         (candidate.candidate_sha,),
@@ -2297,8 +2344,86 @@ def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> Non
         (invocation["run_sha"],),
     ).fetchall()
     assert [row["predictor_name"] for row in recordings] == ["event_semantics", "reader_card"]
-    assert recordings[1]["response"]["output"]["card"]["headline_zh"] == "DRAM 合约价续涨"
+    replayed_card = json.loads(recordings[1]["response"]["response"]["text"])["card"]
+    assert replayed_card["headline_zh"] == "DRAM 合约价续涨"
     assert conn.execute("SELECT count(*) AS n FROM news_learning_cases").fetchone()["n"] == 0
+
+
+def test_every_physical_terminal_persists_a_complete_replay_document(conn) -> None:
+    stable = _arm()
+    evaluator = CandidateEvaluator(conn, stable=stable, judges={})
+    context = TriageContext.from_card(
+        {
+            "event_id": "ev-terminal-recordings",
+            "evidence_version": 1,
+            "evidence_sha256": "a" * 64,
+            "focus_fact_id": "fact-terminal-recordings",
+            "leader_title": "Terminal recording fixture",
+            "opened_at_ms": NOW - 3_600_000,
+            "member_count": 1,
+            "family": "general",
+            "queue_priority": "normal",
+            "asset_class": "none",
+            "storyline_key": "topic:recording",
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=NOW,
+        queue_lag_ms=0,
+    )
+    call = _trace(stable, context, _verdict()).calls[0]
+    assert call.recording is not None
+    run_sha = _sha("terminal-recording-run")
+    terminals: dict[str, dict[str, Any]] = {}
+    for name in ("success", "truncation", "schema_invalid"):
+        terminal = json.loads(json.dumps(call.recording))
+        if name == "truncation":
+            terminal["response"].update(truncated=True, finish_reason="length")
+        elif name == "schema_invalid":
+            terminal["response"]["text"] = "not-json"
+        terminals[name] = terminal
+    for name, error in {
+        "429": ("LMRateLimitError", 429),
+        "503": ("LMServerError", 503),
+        "timeout": ("LMTimeoutError", None),
+    }.items():
+        terminal = json.loads(json.dumps(call.recording))
+        terminal["response"] = None
+        terminal["error"] = {
+            "type": error[0],
+            "message": name,
+            "code": name,
+            "model": "fixture-model",
+            "provider": "fixture-provider",
+            "provider_code": None,
+            "status": error[1],
+            "retry_after": None,
+        }
+        terminals[name] = terminal
+
+    for call_index, (name, terminal) in enumerate(terminals.items()):
+        evaluator._persist_program_call(
+            run_sha=run_sha,
+            case_id=_sha({"terminal": name}),
+            arm_name="stable",
+            trial=1,
+            arm=stable,
+            trace={"envelope_sha256": EXECUTION_ENVELOPE_SHA256},
+            call_index=call_index,
+            raw_call=call.model_dump(mode="json"),
+            recording=terminal,
+        )
+
+    rows = conn.execute(
+        "SELECT request_sha256, response_sha256, request, response FROM news_model_recordings "
+        "WHERE run_sha = %s ORDER BY call_index",
+        (run_sha,),
+    ).fetchall()
+    assert len(rows) == len(terminals) == 6
+    assert all(row["response_sha256"] for row in rows)
+    assert all(row["response"]["schema"] == "tracefold.news.recorded_lm.v1" for row in rows)
+    assert all(row["request"] == row["response"]["request"] for row in rows)
+    assert all(row["request_sha256"] == row["response"]["request_sha256"] for row in rows)
 
 
 def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> None:

@@ -75,22 +75,10 @@ def normalize_restates(*, novelty: str, restates: int) -> int:
     return restates if novelty == "restatement" or restates == -1 else -1
 
 
-def is_fast_retryable(*, retryable: bool, output_failure: bool, truncated_finish: bool) -> bool:
-    """Whether one failed attempt earns an immediate second attempt on the same route.
-
-    Truncation is excluded deliberately: a reply cut off at `max_tokens` will be cut off again, so retrying
-    it spends a call to reach the same place. Which model answers an Event depends on this, so it is
-    behavior-deciding rather than an implementation detail.
-    """
-
-    return (retryable or output_failure) and not truncated_finish
-
-
 __all__ = [
     "READER_VALUE_DECISION",
     "decision_for",
     "is_actionable",
-    "is_fast_retryable",
     "normalize_restates",
     "restatement_index_error",
 ]

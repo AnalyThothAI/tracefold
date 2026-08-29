@@ -20,6 +20,7 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.lm import ScriptedLM
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
@@ -117,12 +118,12 @@ class _SilentJudgeLM(MetricJudgeEndpoint):
     """Never answers, because `recorded` must never ask it. Any call is the bug this pins."""
 
     def __init__(self) -> None:
-        super().__init__(model_name="scripted/judge", api_key="k", api_base="https://judge.invalid/v1")
-        self.calls = 0
+        self.delegate = ScriptedLM([], model="scripted/judge")
+        super().__init__(self.delegate)
 
-    def ask(self, **kwargs: Any) -> Any:
-        self.calls += 1
-        raise AssertionError("recorded mode consulted the semantic judge")
+    @property
+    def calls(self) -> int:
+        return len(self.delegate.requests)
 
 
 def test_recorded_factual_failure_fails_closed_without_a_judge_call() -> None:

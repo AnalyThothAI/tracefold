@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from typing import Any, cast
 
+import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.learning.contracts import (
     METRIC_JUDGE_MAX_TOKENS,
     METRIC_JUDGE_TIMEOUT_SECONDS,
@@ -15,6 +17,8 @@ from tracefold.news.learning.contracts import (
 )
 from tracefold.news.learning.judge import (
     JUDGE_ID,
+    JUDGE_MAX_CALLS_PER_QUESTION,
+    JUDGE_PROGRAM_SHA256,
     CardEquivalence,
     CardEquivalenceAssessment,
     CardEquivalenceJudge,
@@ -28,8 +32,7 @@ from tracefold.news.learning.metric import (
     bind_metric,
     metric_receipt,
 )
-from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
-from tracefold.news.program.transport import ProviderCallMetrics
+from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
 
 _ACCEPTED = {
     "headline_zh": "BounceBit Chain 授权漏洞转移 2.865 亿枚 BB，决定永久停止运营",
@@ -45,12 +48,10 @@ _REWORDED = {
 _UNRELATED = {"headline_zh": "美联储维持利率不变", "why_zh": "政策利率不变，短端美债定价的加息预期落空"}
 
 
-class _ScriptedJudgeLM(MetricJudgeEndpoint):
-    """Answers both judge questions over the real request envelope, without a socket.
+class _JudgeDelegate(dspy.BaseLM):  # type: ignore[misc]
+    """Typed provider double below the real DSPy adapter and audited LM seam."""
 
-    A subclass rather than a duck: since #306 Phase 3 the judge composes its own chat request, so what a
-    fixture has to stand in for is the HTTP round trip and nothing above it.
-    """
+    forward_contract = "typed_lm"
 
     def __init__(
         self,
@@ -58,34 +59,69 @@ class _ScriptedJudgeLM(MetricJudgeEndpoint):
         *,
         facts_supported: bool = True,
         fail: bool = False,
+        steps: list[Any] | None = None,
     ) -> None:
-        super().__init__(model_name="scripted/judge", api_key="k", api_base="https://judge.invalid/v1")
+        super().__init__("scripted/judge", cache=False, num_retries=0)
         self._verdict = verdict or CardEquivalence(headline_equivalent=True, why_equivalent=True, facts_preserved=True)
         self._facts_supported = facts_supported
         self._fail = fail
+        self._steps = list(steps or [])
         self.calls = 0
-        self.bodies: list[dict[str, Any]] = []
+        self.requests: list[dspy.LMRequest] = []
+        self._calls_lock = threading.Lock()
 
-    def ask(self, **kwargs: Any) -> Any:
-        # Composed through the production path, so a rendering defect fails here rather than in production.
-        self.bodies.append(
-            self.request_body(
-                instruction=kwargs["instruction"],
-                field_order=kwargs["field_order"],
-                values=kwargs["values"],
-                output_model=kwargs["output_model"],
-            )
-        )
-        self.calls += 1
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        with self._calls_lock:
+            self.calls += 1
+            call_number = self.calls
+            self.requests.append(request)
+        self._before_answer(call_number)
         if self._fail:
-            raise RuntimeError("provider unavailable")
-        return self._answer(kwargs["output_model"])
+            raise dspy.LMServerError("provider unavailable", status=503)
+        if self._steps:
+            step = self._steps.pop(0)
+            if isinstance(step, BaseException):
+                raise step
+            text = step if isinstance(step, str) else canonical_json(step)
+        else:
+            response_schema = request.config.response_format
+            schema_text = (
+                canonical_json(cast(Any, response_schema).model_json_schema())
+                if isinstance(response_schema, type)
+                else ""
+            )
+            verdict: CardEquivalence | FactualEvidenceSupport
+            if "supported_by_evidence" in schema_text:
+                verdict = FactualEvidenceSupport(supported_by_evidence=self._facts_supported)
+            else:
+                verdict = self._verdict
+            text = canonical_json({"verdict": verdict.model_dump(mode="json")})
+        return dspy.LMResponse.from_text(
+            text,
+            model=self.model,
+            usage={"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        )
 
-    def _answer(self, output_model: Any) -> Any:
-        metrics = ProviderCallMetrics(response_model=self.model, total_tokens=20, finish_reason="stop")
-        if output_model is FactualEvidenceSupport:
-            return FactualEvidenceSupport(supported_by_evidence=self._facts_supported), metrics
-        return self._verdict, metrics
+    def _before_answer(self, call_number: int) -> None:
+        del call_number
+
+
+class _ScriptedJudgeLM(MetricJudgeEndpoint):
+    def __init__(self, *args: Any, steps: list[Any] | None = None, **kwargs: Any) -> None:
+        self.delegate = _JudgeDelegate(*args, steps=steps, **kwargs)
+        audited = AuditedConfiguredLM(
+            self.delegate,
+            structured_output="json_schema",
+            runtime_identity=RuntimeModelIdentity.issue(provider="scripted", model=self.delegate.model),
+            predictor="metric_judge",
+            route="compile",
+            model_binding="metric_judge.primary",
+        )
+        super().__init__(audited)
+
+    @property
+    def calls(self) -> int:
+        return self.delegate.calls
 
 
 class _BlockingJudgeLM(_ScriptedJudgeLM):
@@ -96,22 +132,32 @@ class _BlockingJudgeLM(_ScriptedJudgeLM):
         self.first_call_entered = threading.Event()
         self.second_call_entered = threading.Event()
         self.release = threading.Event()
-        self._calls_lock = threading.Lock()
 
-    def ask(self, **kwargs: Any) -> Any:
-        with self._calls_lock:
-            self.calls += 1
-            if self.calls == 1:
+        def before_answer(call_number: int) -> None:
+            if call_number == 1:
                 self.first_call_entered.set()
-            elif self.calls == 2:
+            elif call_number == 2:
                 self.second_call_entered.set()
-        if not self.release.wait(timeout=2):
-            raise RuntimeError("test did not release provider call")
-        return self._answer(kwargs["output_model"])
+            if not self.release.wait(timeout=2):
+                raise RuntimeError("test did not release provider call")
+
+        self.delegate._before_answer = before_answer  # type: ignore[method-assign]
 
 
 def _judge(**kwargs: Any) -> CardEquivalenceJudge:
     return CardEquivalenceJudge(_ScriptedJudgeLM(**kwargs))
+
+
+def test_endpoint_has_two_named_native_predictors() -> None:
+    endpoint = _ScriptedJudgeLM()
+
+    assert [name for name, _ in endpoint.named_predictors()] == ["equivalence", "factual_evidence"]
+    assert endpoint.equivalence.signature.instructions.startswith("You are checking whether a rewritten Chinese")
+    assert endpoint.factual_evidence.signature.instructions.startswith(
+        "You are checking whether a corrected Chinese news card"
+    )
+    assert endpoint.identity["program_sha256"] == JUDGE_PROGRAM_SHA256
+    assert endpoint.identity["program"]["max_calls_per_question"] == JUDGE_MAX_CALLS_PER_QUESTION == 2
 
 
 def test_identical_cards_need_no_model_call() -> None:
@@ -293,6 +339,40 @@ def test_a_judge_failure_is_explicitly_unavailable_and_never_cached() -> None:
     }
 
 
+def test_json_format_fallback_spends_one_global_admission_per_physical_call() -> None:
+    answer = {
+        "verdict": {
+            "headline_equivalent": True,
+            "why_equivalent": True,
+            "facts_preserved": True,
+        }
+    }
+    refused_lm = _ScriptedJudgeLM(steps=["not-json", answer])
+    refused = CardEquivalenceJudge(refused_lm, max_model_calls=1, require_exact_accounting=True)
+
+    unavailable = refused.equivalence(_ACCEPTED, _REWORDED)
+
+    assert unavailable.status == "unavailable"
+    assert refused_lm.calls == 1, "the second JSON attempt must be refused before the provider"
+    assert refused.stats == {
+        "attempts": 1,
+        "model_calls": 1,
+        "cache_entries": 0,
+        "failures": 1,
+        "actual_cost_microusd": 0,
+    }
+
+    allowed_lm = _ScriptedJudgeLM(steps=["not-json", answer])
+    allowed = CardEquivalenceJudge(allowed_lm, max_model_calls=2, require_exact_accounting=True)
+
+    answered = allowed.equivalence(_ACCEPTED, _REWORDED)
+
+    assert answered.status == "answered"
+    assert allowed_lm.calls == 2
+    assert allowed.stats["model_calls"] == 2
+    assert allowed.stats["cache_entries"] == 1
+
+
 def test_judge_rejects_a_role_binding_that_does_not_match_its_own_ceiling() -> None:
     """#306 Phase 3 turned two runtime refusals into a structural absence.
 
@@ -335,13 +415,18 @@ def test_metric_receipt_pins_the_judge_identity() -> None:
     assert judged["semantic_judge"]["factual_evidence_signature_sha256"]
     assert judged["semantic_judge"]["factual_evidence_output_schema_sha256"]
     assert judged["semantic_judge"]["implementation_source_sha256"]
-    # The shared envelope is named *and* identified (#315). Naming the function alone let a change to what
-    # the judge is sent leave every receipt identical, which is the defect #314 removed from the Program.
-    assert judged["semantic_judge"]["adapter"] == {
-        "implementation": "tracefold.news.program.transport.chat_request_body",
-        "envelope_sha256": EXECUTION_ENVELOPE_SHA256,
-        "native_function_calling": False,
-        "format_fallback": False,
+    adapter = judged["semantic_judge"]["adapter"]
+    assert adapter["implementation"] == "dspy.JSONAdapter"
+    assert adapter["dspy_version"] == "3.3.1"
+    assert adapter["program_sha256"] == JUDGE_PROGRAM_SHA256
+    assert len(adapter["equivalence_render_sha256"]) == 64
+    assert len(adapter["factual_evidence_render_sha256"]) == 64
+    assert adapter["native_function_calling"] is False
+    assert adapter["format_fallback"] is True
+    assert adapter["max_calls_per_question"] == JUDGE_MAX_CALLS_PER_QUESTION == 2
+    assert adapter["effective_lm_capability"] == {
+        "supported_params": ["response_format"],
+        "supports_response_schema": True,
     }
     assert judged["semantic_judge"]["execution"]["max_output_tokens"] == 4_096
     assert judged["semantic_judge"]["execution"]["cache"] is False
@@ -375,7 +460,7 @@ def test_bound_metric_scores_one_example_and_one_prediction() -> None:
     outcome = metric(example, CandidatePrediction(verdict={}))
     assert outcome.score == 0.0 and outcome.hard_gate == "schema_invalid"
     with pytest.raises(TypeError):
-        metric()  # type: ignore[call-arg]
+        metric()
 
 
 def _metric_context() -> Any:

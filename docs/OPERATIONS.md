@@ -483,26 +483,27 @@ Adapter runs the code-owned Program
 deterministic assembler`. The normalizer changes a stray non-negative
 `restates` value on `new_fact`/`progression` to `-1`, records both values on the
 EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
-spends no provider call or fast retry. ReaderCard.v2
+spends no provider call. ReaderCard.v2
 produces only `headline_zh` and `why_zh`; the assembler retains public
 `title_zh=""` as a
 compatibility sentinel. Both Predictor payloads exclude queue priority,
 provider score, Gate macro lexicon, queue lag and watchlist; ReaderCard receives
-only its reduced semantic view and never ToldContext or delivery intent. A successful primary route normally makes two serial
-provider calls. One fast retry is
-shared across both Predictors, so one route makes at most three calls; the
-code-owned 20-second deadline covers the whole route. If primary
-fails, a configured `llm.news_triage_fallback` restarts the full graph with its
-own retry/deadline budget. Its ReaderCard slot explicitly aliases the same
+only its reduced semantic view and never ToldContext or delivery intent. A
+successful primary route makes exactly two serial provider calls. JSONAdapter
+may make one format fallback per Predictor, so one route makes at most four
+calls; provider errors and truncation do not spend a format fallback. The
+code-owned 20-second deadline covers the whole route. If primary fails, a
+configured `llm.news_triage_fallback` restarts the full Program with its own
+deadline budget. Its ReaderCard slot explicitly aliases the same
 endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
 one missing or invalid fallback slot disables fallback instead of mixing
-routes. One Program execution's maximum remains six. The transport makes one HTTP
-request per `invoke` with no client cache and no client retry, so every billable
-attempt is visible. There is still one persisted final semantic judgment and one card,
+routes. One Program execution's maximum is eight. The typed LM seam makes one
+stock DSPy/LiteLLM call per physical invocation with no client cache or provider
+retry, so every billable attempt is visible. There is still one persisted final semantic judgment and one card,
 not a restored Analyst stage. Capacity planning must account for the normal
 1 -> 2 call increase and serial latency. A stale-ledger re-ask is a second full
 Program execution:
-normally four calls total for that Event, with the same per-execution six-call
+normally four calls total for that Event, with the same per-execution eight-call
 ceiling and all superseded/failed work included in telemetry.
 
 By default both Predictors use the Triage endpoint, but each has its own
@@ -514,10 +515,12 @@ slot. `tracefold config` and `/api/news/status.pipeline` expose the effective
 model names and dedicated-Reader flags without exposing endpoints or
 credentials.
 
-A fast-retryable timeout, rate limit, connection error, or non-truncated
-schema/output failure can spend the route's one retry. A `max_tokens`
-truncation (`news_program_output_truncated`, `finish_reason=length`) does not
-retry. The code-owned primary-route breaker defaults to three retryable
+A schema-capable Predictor may spend one stock JSONAdapter **format fallback**
+only after a schema answer cannot parse. Provider timeouts, rate limits,
+connection errors and other typed LM failures do not spend that format call;
+they fail the route and may restart the complete Program on fallback. A
+`max_tokens` truncation (`news_program_output_truncated`,
+`finish_reason=length`) also does not retry. The code-owned primary-route breaker defaults to three retryable
 transport failures and 60 seconds; while open it routes directly to fallback.
 Separately, the consumer's configured circuit opens a
 `triage_circuit_open` incident after the whole primary+fallback chain fails
@@ -618,12 +621,16 @@ Diagnose News in this order:
    `docs/ARCHITECTURE.md`). `--mode recorded` costs
    nothing and answers "is the metric still wired the way it was"; it makes no
    provider call, so it cannot see a Prompt change. `--mode compile_live` is the
-   graph GEPA optimizes and has no fallback, retry, deadline or breaker.
+   native Program GEPA optimizes on one endpoint. It has no fallback route, but
+   disables the whole-route deadline and cross-case primary breaker that GEPA
+   does not run; the endpoint keeps its per-call timeout and DSPy JSONAdapter's
+   single format fallback per Predictor.
    `--mode runtime_live` is the configured production Program route and is the
    only mode whose failure rate resembles the reader's — it spends real provider
    calls on the same single-slot GPU that serves Triage, so both live modes
-   require an explicit `--max-model-cases N`; expect roughly two physical calls
-   per case, and up to six for one that fails. Read both
+   require an explicit `--max-model-cases N`; expect exactly two physical calls
+   on common success, at most four on one route and at most eight across a full
+   primary/fallback judgment. Read both
    `scores.case_macro_answered` and `scores.case_macro_failure_as_zero`: the
    first is quality given an answer, the second counts every unanswered case as
    zero, and the gap between them is the availability of the route rather than
@@ -687,10 +694,9 @@ Diagnose News in this order:
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
    (expect a handful per day; a surge means same-key floods);
-   `pipeline.novelty_defaulted_24h`
-   counts verdicts the model returned without the `novelty` field (accepted as
-   `new_fact` after the retry — a rising count means the schema stopped
-   landing and novelty is silently off).
+   `pipeline.novelty_defaulted_24h` remains a historical-series diagnostic.
+   Native Program v6 fails closed on missing `novelty`, so new v6 rows must not
+   increment it; a nonzero current-cohort value is an identity or audit defect.
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 

@@ -8,16 +8,14 @@ Three modes, each with its own question and its own exclusions:
 ``recorded``      Score the verdict production persisted, against the action it actually shipped. No model
                   request, no policy replay — so it stays reproducible across policy revisions and is the
                   calibration proof for metric wiring.
-``compile_live``  Run the production `NewsSemanticProgram` against one task endpoint, with no fallback
-                  route configured. This is literally what the optimizer evaluates (#306 Phase 3 collapsed
-                  the separate optimizer student), so it is the optimizer's baseline; with one slot and no
-                  second route its failure rate is not production's. It is *not* stateless: the graph's
-                  fast retry, route deadline and primary breaker come with it, and an open breaker
-                  short-circuits later cases in the same run. `execution_scope` says so, because a report
-                  that claimed otherwise would invite reading a short-circuited stretch as measurement.
-``runtime_live``  Run the configured `NewsSemanticProgram` through `composition.semantic_judge()`: four
-                  slots, one shared fast retry per route, fallback restarting the graph, per-route deadline
-                  and the primary circuit breaker. This is the production *Program route*, and nothing more —
+``compile_live``  Run the native `NativeNewsProgram` against one task endpoint, with no fallback
+                  route configured. This is literally what the optimizer evaluates, so it is the
+                  optimizer's baseline; the production whole-route deadline and cross-case primary
+                  breaker are disabled because GEPA does not run either. The task endpoint retains its
+                  per-call timeout. With one endpoint and no second route its failure rate is not production's.
+``runtime_live``  Run the configured native Program through `composition.semantic_judge()`: four slots,
+                  stock JSONAdapter format fallback, full fallback restart, per-route deadline and the
+                  primary circuit breaker. This is the production *Program route*, and nothing more —
                   it does not simulate the consumer's transaction, the advisory lock, stale-evidence re-ask,
                   the degraded wire-card fallback, RabbitMQ or delivery. The report names those exclusions
                   rather than claiming end-to-end parity.
@@ -41,6 +39,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Literal, NamedTuple
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..artifact_identity import canonical_sha
@@ -50,10 +49,9 @@ from ..program.artifact import (
     render_model_evidence_json,
 )
 from ..program.contracts import SemanticJudge, TriageContext
-from ..program.graph import NewsSemanticProgram
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
+from ..program.lm import AuditedConfiguredLM, RuntimeModelIdentity, StructuredOutputMode
 from ..program.runtime import PROGRAM_VERSION
-from ..program.transport import ChatCompletionsPredictorAdapter, StructuredOutputMode
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 from .judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from .metric import (
@@ -83,18 +81,16 @@ BASELINE_SCHEMA: Literal["tracefold.news.program_baseline_report.v3"] = "tracefo
 _BOOTSTRAP = {"seed": 112, "replicates": 2_000, "confidence": 0.95}
 _EXECUTION_SCOPE = {
     "recorded": ("no model call", "no policy replay", "scores the action that shipped"),
-    # #306 Phase 3 made this the production graph on one slot, so it inherits the graph's own controls.
-    # Only the second route is genuinely absent, and saying otherwise would let an operator read a run
-    # short-circuited by an open breaker as a stateless per-case measurement.
     "compile_live": (
-        "the graph GEPA evaluates: the production Program on a single task endpoint",
+        "the native Module dspy.GEPA evaluates on a single task endpoint",
         "no fallback route",
-        "one shared fast retry per route",
-        "per-route deadline and primary circuit breaker, both carried across cases within the run",
+        "stock JSONAdapter may make one format fallback per Predictor",
+        "no whole-route deadline or cross-case primary circuit breaker",
+        "the task endpoint retains its per-call timeout",
     ),
     "runtime_live": (
         "configured four-slot Program route",
-        "one shared fast retry per route",
+        "stock JSONAdapter may make one format fallback per Predictor",
         "fallback restarts the graph",
         "per-route deadline and primary circuit breaker",
         "replays the frozen production ToldContext; no arm-local ledger replay",
@@ -281,44 +277,6 @@ def _hard_gates(results: Sequence[CaseResult]) -> dict[str, Any]:
     return {"by_gate": dict(sorted(tally.items())), "n": sum(tally.values())}
 
 
-def build_compile_adapter(
-    *,
-    model_name: str,
-    api_key: str,
-    api_base: str,
-    timeout: float,
-    max_tokens: int,
-    model_kwargs: Mapping[str, Any] | None = None,
-    temperature: float | None = 0,
-    structured_output: StructuredOutputMode | None = None,
-) -> ChatCompletionsPredictorAdapter:
-    """The one task endpoint `compile_live` drives the production graph on.
-
-    It lives here rather than in the CLI for the reason the DSPy binding it replaces did: the command layer
-    resolves operator settings and prints a receipt, and the model transport is not its business.
-    """
-
-    return ChatCompletionsPredictorAdapter(
-        model_name=model_name,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=float(timeout),
-        max_tokens=int(max_tokens),
-        model_kwargs=model_kwargs,
-        temperature=temperature,
-        structured_output=structured_output,
-    )
-
-
-def build_compile_program(
-    artifact: ProgramStrategyArtifactV1,
-    adapter: ChatCompletionsPredictorAdapter,
-) -> NewsSemanticProgram:
-    """The graph GEPA evaluates: production, on one slot, with no fallback route."""
-
-    return NewsSemanticProgram(artifact, primary_adapter=adapter)
-
-
 def build_judge(
     *,
     model_name: str,
@@ -328,7 +286,6 @@ def build_judge(
     temperature: float = 0,
     structured_output: StructuredOutputMode | None = None,
     max_model_calls: int | None = None,
-    transport: Any = None,
 ) -> CardEquivalenceJudge:
     """The semantic-equivalence judge, built here so the CLI layer never composes a model transport.
 
@@ -344,18 +301,7 @@ def build_judge(
     them would make two runs judged by different models indistinguishable in provenance.
     """
 
-    lm = MetricJudgeEndpoint(
-        model_name=model_name,
-        api_key=api_key,
-        api_base=api_base,
-        model_kwargs=model_kwargs or {},
-        temperature=temperature,
-        structured_output=structured_output,
-        timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
-        max_tokens=METRIC_JUDGE_MAX_TOKENS,
-        transport=transport,
-    )
-    lm.tracefold_compiler_role_binding = ModelExecutionIdentity.issue(
+    role_binding = ModelExecutionIdentity.issue(
         role="metric_judge",
         model=str(model_name),
         api_base=str(api_base),
@@ -364,7 +310,44 @@ def build_judge(
         temperature=temperature,
         model_kwargs=dict(model_kwargs or {}),
     )
-    return CardEquivalenceJudge(lm, max_tokens=METRIC_JUDGE_MAX_TOKENS, max_model_calls=max_model_calls)
+    request: dict[str, Any] = {
+        "api_key": str(api_key),
+        "api_base": str(api_base),
+        "timeout": float(METRIC_JUDGE_TIMEOUT_SECONDS),
+        "max_tokens": METRIC_JUDGE_MAX_TOKENS,
+        "temperature": float(temperature),
+        "cache": False,
+        "num_retries": 0,
+        **dict(model_kwargs or {}),
+    }
+    delegate = dspy.LM(str(model_name), **request)
+    audited = AuditedConfiguredLM(
+        delegate,
+        structured_output=structured_output or "json_schema",
+        runtime_identity=RuntimeModelIdentity.issue(
+            provider=role_binding.provider,
+            model=role_binding.model,
+            model_sha256=canonical_sha(
+                {
+                    "endpoint_fingerprint": role_binding.endpoint_fingerprint,
+                    "model": role_binding.model,
+                    "temperature": role_binding.temperature,
+                    "model_kwargs": role_binding.model_kwargs,
+                    "structured_output": structured_output or "json_schema",
+                }
+            ),
+        ),
+        predictor="metric_judge",
+        route="compile",
+        model_binding="metric_judge.primary",
+    )
+    endpoint = MetricJudgeEndpoint(
+        audited,
+        model_kwargs=model_kwargs or {},
+        temperature=temperature,
+    )
+    endpoint.tracefold_compiler_role_binding = role_binding
+    return CardEquivalenceJudge(endpoint, max_tokens=METRIC_JUDGE_MAX_TOKENS, max_model_calls=max_model_calls)
 
 
 def _percentile(values: Sequence[int], fraction: float) -> int:
@@ -589,7 +572,7 @@ async def _run_runtime_route(
             error: str | None = None
         except Exception as exc:
             judgment, error = None, getattr(exc, "code", None) or type(exc).__name__
-            # A failed route is the most expensive kind: up to the whole six-call chain budget. Dropping its
+            # A failed route is the most expensive kind: up to the whole eight-call chain budget. Dropping its
             # spend understated `route` and `latency_ms` precisely where the operator most needs them, and
             # left `route.answered_by` not summing to the requested population with nothing saying why.
             # `SemanticJudgeError` carries the partial trace for exactly this reason.
@@ -658,7 +641,7 @@ def run_baseline(
             results.append(_case_result(case, outcome, latency_ms=0))
 
     else:
-        # Both live modes execute the same production graph; the difference is what was bound to it.
+        # Both live modes execute the same native Module; runtime_live adds production availability controls.
         if semantic_judge is None:
             raise ValueError("news_program_baseline_requires_semantic_judge")
         started = time.monotonic()
@@ -725,7 +708,7 @@ def run_baseline(
                     strict_scores[case.episode.case_id] = float(strict(example, prediction).score)
             except Exception as exc:
                 # Unguarded, one bad episode raised *after* `asyncio.run` had already executed every case —
-                # destroying a run that had spent up to six real calls per case on the endpoint that also
+                # destroying a run that had spent up to eight real calls per case on the endpoint that also
                 # serves production Triage, with no `--out` file written.
                 code = _error_code(exc)
                 results.append(
@@ -810,7 +793,7 @@ def _build_report(
     failed = [result for result in results if not result.answered]
 
     # `None`, not `0.0`. "The route answered nothing" is the single most important `runtime_live` result and
-    # the predecessor was the only outcome that produced no receipt at all — after up to six real provider
+    # the predecessor was the only outcome that produced no receipt at all — after up to eight real provider
     # calls per case had been paid for. It raised so a reader could not mistake an empty run for a measured
     # zero; a null score says that better, and keeps the per-case error codes, the failure breakdown and the
     # route aggregates that make the run diagnosable.
@@ -1096,8 +1079,6 @@ __all__ = [
     "TriageContext",
     "TriageVerdict",
     "build_baseline_cases",
-    "build_compile_adapter",
-    "build_compile_program",
     "build_judge",
     "render_model_evidence_json",
     "run_baseline",

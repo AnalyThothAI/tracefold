@@ -1,28 +1,22 @@
-"""The two Predictor output shapes.
-
-`EventSemantics` is what the interpreting Predictor must return; `ReaderCard` is what the writing one must,
-together with the bounded fields each is shown and the envelope key its answer arrives under. Since #306
-Phase 3 the output models are also what the provider is constrained by: `transport.response_format` builds
-the request's `json_schema` from `model_json_schema()`, so the schema the code validates against and the
-schema the model is handed cannot drift.
-
-All four values are code, not artifact state, and `identity.compute_execution_identity` hashes the request
-they compose. They live here rather than in `graph.py` so that identity can be computed without importing
-the executor.
-"""
+"""The two native DSPy Signatures and their exact News output contracts."""
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from collections.abc import Mapping
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel, Field, model_validator
+import dspy  # type: ignore[import-untyped]
+from pydantic import Field, PrivateAttr, model_validator
 
 from ..models import TriageAsset
 from .contracts import TradeRelevanceV1
-from .runtime import PredictorName, _ExactModel
+from .runtime import _ExactModel
 
 
 class EventSemantics(_ExactModel):
+    _raw_channels: tuple[str, ...] | None = PrivateAttr(default=None)
+    _raw_affected_markets: tuple[str, ...] | None = PrivateAttr(default=None)
+
     novelty: Literal["new_fact", "progression", "restatement"]
     restates: int = Field(
         default=-1,
@@ -58,6 +52,24 @@ class EventSemantics(_ExactModel):
     audience: Literal["crypto", "us_equity", "macro", "none"] = "none"
     relevance: TradeRelevanceV1
 
+    @model_validator(mode="wrap")
+    @classmethod
+    def _retain_pre_normalization_code_order(cls, value: Any, handler: Any) -> EventSemantics:
+        semantics = cast(EventSemantics, handler(value))
+        if not isinstance(value, Mapping) or not isinstance(value.get("relevance"), Mapping):
+            return semantics
+        relevance = value["relevance"]
+        channels = relevance.get("channels")
+        markets = relevance.get("affected_markets")
+        if isinstance(channels, (list, tuple)) and all(isinstance(item, str) for item in channels):
+            semantics._raw_channels = tuple(channels)
+        if isinstance(markets, (list, tuple)) and all(isinstance(item, str) for item in markets):
+            semantics._raw_affected_markets = tuple(markets)
+        return semantics
+
+    def raw_relevance_codes(self, field: Literal["channels", "affected_markets"]) -> tuple[str, ...] | None:
+        return self._raw_channels if field == "channels" else self._raw_affected_markets
+
 
 class ReaderCard(_ExactModel):
     headline_zh: str = Field(min_length=1, max_length=60)
@@ -70,14 +82,20 @@ class ReaderCard(_ExactModel):
         return self
 
 
-# The bounded fields each Predictor is shown, in the fixed order the transport renders them.
-PREDICTOR_INPUT_FIELDS: Final[dict[PredictorName, tuple[str, ...]]] = {
-    "event_semantics": ("evidence_json",),
-    "reader_card": ("evidence_json", "semantics_json"),
-}
+class EventSemanticsSignature(dspy.Signature):  # type: ignore[misc]
+    """Interpret one bounded Event against the selected reader-history ledger."""
 
-# The single envelope key each Predictor answers under, and the model that key is validated against.
-PREDICTOR_OUTPUT: Final[dict[PredictorName, tuple[str, type[BaseModel]]]] = {
-    "event_semantics": ("semantics", EventSemantics),
-    "reader_card": ("card", ReaderCard),
-}
+    evidence_json: str = dspy.InputField(
+        desc="Canonical bounded Event, gate, and event_status JSON inside Tracefold's untrusted-data delimiters."
+    )
+    semantics: EventSemantics = dspy.OutputField(desc="The exact typed semantic interpretation of this Event.")
+
+
+class ReaderCardSignature(dspy.Signature):  # type: ignore[misc]
+    """Write factual reader copy from bounded Event evidence and accepted semantics."""
+
+    evidence_json: str = dspy.InputField(
+        desc="Canonical bounded Event and gate JSON inside Tracefold's untrusted-data delimiters; no told ledger."
+    )
+    semantics_json: str = dspy.InputField(desc="Canonical ReaderCardSemanticView JSON from EventSemantics.")
+    card: ReaderCard = dspy.OutputField(desc="The exact typed Chinese reader card.")

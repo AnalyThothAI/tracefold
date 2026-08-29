@@ -8,14 +8,14 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
-from tracefold.news.program.identity import compute_execution_identity, execution_envelope
+from tracefold.news.program.identity import _material_symbol_ast_sha, compute_execution_identity, execution_envelope
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "b4f16799f2b46dae7d195eee533a9078177504fb7d0f5bddf560151999af80d8"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "5d0494c627a58f03c1849efb46ffdbd6acf4728aa9c164cd4d2812f81decc185"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -56,7 +56,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v5",
+        "program_version": "news_semantic_program_v6",
         "policy_version": "news_triage_policy_v10",
         "review_rubric_version": "news_review_v4",
         "metric_id": "tracefold.news.production_action_trade_relevance_v5",
@@ -90,68 +90,172 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
 
     envelope = execution_envelope()
 
-    assert set(envelope) == {"identity_schema", "requests", "model_visible_input", "assembly", "route"}
+    assert set(envelope) == {
+        "identity_schema",
+        "framework",
+        "implementation_ast_sha256",
+        "signatures",
+        "requests",
+        "capabilities",
+        "model_visible_input",
+        "adapter_output_semantics",
+        "request_identity",
+        "assembly",
+        "route",
+    }
+    assert envelope["framework"] == {
+        "dspy": "3.3.1",
+        "litellm": "1.86.2",
+        "gepa": "0.1.4",
+        "public_api_only": True,
+        "adapter": "dspy.JSONAdapter(use_native_function_calling=False)",
+    }
     assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == {"event_semantics", "reader_card"}
+    assert set(envelope["signatures"]) == {"event_semantics", "reader_card"}
+    assert set(envelope["implementation_ast_sha256"]) == {
+        "artifact.render_model_evidence_json",
+        "assembly.decision_for",
+        "assembly.is_actionable",
+        "assembly.normalize_restates",
+        "assembly.restatement_index_error",
+        "contracts.EditorialEnvelope",
+        "contracts.ProgramTrace",
+        "contracts.TriageContext",
+        "contracts.TradeRelevanceV1",
+        "contracts._canonical_code_set",
+        "contracts.aggregate_program_usage",
+        "lm.AuditedConfiguredLM",
+        "lm.LMCallLedger",
+        "lm.LMCallReceipt",
+        "lm.RecordedLM",
+        "lm.RuntimeModelIdentity",
+        "lm._LedgerParseCallback",
+        "lm._RecordedErrorModel",
+        "lm._RecordedResponseModel",
+        "lm._RecordedUsageModel",
+        "lm._RecordingModel",
+        "lm._RequestIdentityModel",
+        "lm._cost_microusd",
+        "lm._error_code",
+        "lm._recorded_error",
+        "lm._recorded_response",
+        "lm._recording",
+        "lm._reject_secret_shaped_config",
+        "lm._replayed_error",
+        "lm._safe_config_projection",
+        "lm._safe_extra_body",
+        "lm._safe_retry_after",
+        "lm._safe_status",
+        "lm._sanitized_lm_error",
+        "lm._scrub_detail",
+        "lm._stable_error_code",
+        "lm._usage_values",
+        "lm._validate_request_defaults",
+        "lm.lm_request_identity",
+        "lm.lm_request_projection",
+        "lm.lm_request_sha256",
+        "lm.mark_active_domain_failure",
+        "lm.program_json_adapter",
+        "lm.structured_output_capability",
+        "module.NativeNewsProgram",
+        "module._assemble",
+        "module._normalize_and_validate_semantics",
+        "module._prepare",
+        "module._reader_card_semantic_view",
+        "module._rejected",
+        "module._relevance_normalizations",
+        "routing.RoutedSemanticJudge",
+        "signatures.EventSemantics",
+        "signatures.ReaderCard",
+    }
     for predictor, modes in envelope["requests"].items():
         assert set(modes) == {"json_schema", "json_object", "prompt_json"}, predictor
-        for mode, request in modes.items():
-            # The whole wire envelope, not a summary of it: the system message carries the output
-            # contract, the user message carries the field order and headings, and `response_format`
-            # carries the schema the provider is held to.
-            expected_fields = {
-                "model",
-                "messages",
-                "temperature",
-                "max_tokens",
-                "stream",
-            }
-            if mode != "prompt_json":
-                expected_fields.add("response_format")
-            assert set(request) == expected_fields, (predictor, mode)
+        for mode, path in modes.items():
+            request = path["initial"]
+            assert set(request) == {"schema", "model", "messages", "tools", "config"}, (predictor, mode)
             assert [message["role"] for message in request["messages"]] == ["system", "user"]
+            assert ("response_format" in request["config"]) == (mode != "prompt_json")
+            assert (path["format_fallback"] is not None) == (mode == "json_schema")
+            if path["format_fallback"] is not None:
+                assert path["format_fallback"]["config"]["response_format"] == {"type": "json_object"}
     assert set(envelope["assembly"]) == {
+        "normalization_capture",
         "reader_value_decision",
         "actionable",
         "restatement_index",
         "normalize_restates",
-        "fast_retry",
         "trade_channel_order",
+        "trade_affected_market_order",
     }
     assert set(envelope["route"]) == {
         "model_binding_slots",
-        "wire_model_prefix",
-        "json_object_only_model_prefixes",
+        "order",
+        "route_graph",
+        "fallback_restart",
         "deadline_seconds",
-        "primary_breaker_failures",
-        "primary_breaker_open_seconds",
-        "truncated_finish_reasons",
-        "retryable_status",
-        "retryable_markers",
+        "primary_breaker",
+        "call_ceiling",
+        "transitions",
     }
+
+
+def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_behavior() -> None:
+    base = 'def material(value):\n    """prose"""\n    return value + 1\n\ndef unrelated():\n    return 1\n'
+    prose_and_unrelated = (
+        'def material(value):\n    """rewritten prose"""\n    return value + 1\n\ndef unrelated():\n    return 999\n'
+    )
+    behavior = "def material(value):\n    return value + 2\n"
+
+    expected = _material_symbol_ast_sha(base, module="fixture", symbol="material")
+    assert _material_symbol_ast_sha(prose_and_unrelated, module="fixture", symbol="material") == expected
+    assert _material_symbol_ast_sha(behavior, module="fixture", symbol="material") != expected
 
 
 @pytest.mark.parametrize(
     "mutate",
     [
         pytest.param(lambda e: e["route"].__setitem__("deadline_seconds", 999), id="route_deadline"),
-        pytest.param(lambda e: e["route"].__setitem__("primary_breaker_failures", 999), id="breaker"),
-        pytest.param(lambda e: e["route"]["json_object_only_model_prefixes"].append("qwen"), id="capability_table"),
+        pytest.param(lambda e: e["route"]["primary_breaker"].__setitem__("failures", 999), id="breaker"),
+        pytest.param(
+            lambda e: e["capabilities"]["event_semantics.fallback"]["json_object"].__setitem__(
+                "supports_response_schema", True
+            ),
+            id="capability_mapping",
+        ),
         pytest.param(lambda e: e["route"]["model_binding_slots"].pop(), id="binding_slots"),
         pytest.param(
-            lambda e: e["requests"]["event_semantics"]["json_schema"].__setitem__("max_tokens", 999),
+            lambda e: e["requests"]["event_semantics"]["json_schema"]["initial"]["config"].__setitem__(
+                "max_tokens", 999
+            ),
             id="predictor_token_ceiling",
         ),
         pytest.param(
-            lambda e: e["requests"]["reader_card"]["json_schema"]["messages"][0].__setitem__("content", "rewritten"),
+            lambda e: e["requests"]["reader_card"]["json_schema"]["initial"]["messages"][0].__setitem__(
+                "content", "rewritten"
+            ),
             id="output_contract_text",
         ),
         pytest.param(
-            lambda e: e["requests"]["reader_card"]["json_schema"]["messages"][1].__setitem__("content", "reordered"),
+            lambda e: e["requests"]["reader_card"]["json_schema"]["initial"]["messages"][1].__setitem__(
+                "content", "reordered"
+            ),
             id="user_message_field_order",
         ),
         pytest.param(
-            lambda e: e["requests"]["event_semantics"]["json_schema"]["response_format"].__setitem__("type", "other"),
+            lambda e: e["requests"]["event_semantics"]["json_schema"]["format_fallback"]["config"][
+                "response_format"
+            ].__setitem__("type", "other"),
             id="response_format",
+        ),
+        pytest.param(lambda e: e["framework"].__setitem__("dspy", "9.9.9"), id="dspy_version"),
+        pytest.param(
+            lambda e: e["adapter_output_semantics"].__setitem__("outer_envelope_unknown_siblings", "reject"),
+            id="outer_envelope_semantics",
+        ),
+        pytest.param(lambda e: e["route"]["call_ceiling"].__setitem__("judgment", 9), id="call_ceiling"),
+        pytest.param(
+            lambda e: e["route"]["transitions"].__setitem__("output_truncated", "format_retry"),
+            id="truncation_transition",
         ),
         pytest.param(
             lambda e: e["model_visible_input"]["event_semantics"].__setitem__("open", "<other>"),
@@ -177,15 +281,10 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
             id="restatement_index_rule",
         ),
         pytest.param(lambda e: e["assembly"]["trade_channel_order"].reverse(), id="trade_channel_order"),
-        # Found one level up from `_assemble` by the same review: these decide what is stored and which
-        # model answers, and nothing else in the bundle moves when they change.
+        # Found one level up from `_assemble`: this decides what is stored.
         pytest.param(
             lambda e: e["assembly"]["normalize_restates"].__setitem__("progression|restates=0", 0),
             id="normalize_restates_rule",
-        ),
-        pytest.param(
-            lambda e: e["assembly"]["fast_retry"].__setitem__("retryable=1|output_failure=0|truncated=1", True),
-            id="fast_retry_rule",
         ),
     ],
 )

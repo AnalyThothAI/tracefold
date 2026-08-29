@@ -2,30 +2,52 @@
 
 from __future__ import annotations
 
-from typing import Any
+import dspy  # type: ignore[import-untyped]
 
+from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.learning.optimizer import InstructionGrowthBudget, InstructionProposer
 from tracefold.news.program.artifact import load_stable_program_artifact
 
 _EXAMPLES = [{"Inputs": {}, "Generated Outputs": {}, "Feedback": "magnitude was wrong"}]
 # The component text GEPA carries *is* the whole instruction now, so the "current" side of a proposal is
 # the shipped seed rather than an empty advisory slot.
-_CURRENT = {name: load_stable_program_artifact().instruction_for(name) for name in ("event_semantics", "reader_card")}
+_STABLE = load_stable_program_artifact()
+_CURRENT = {
+    "event_semantics": _STABLE.instruction_for("event_semantics"),
+    "reader_card": _STABLE.instruction_for("reader_card"),
+}
 
 
-class _ScriptedReflectionLM:
-    """The reflection role's whole contract: one callable, one string in, one string out."""
+class _ScriptedReflectionLM(dspy.BaseLM):  # type: ignore[misc]
+    """Typed reflection fake returning the Signature's one JSON field."""
+
+    forward_contract = "typed_lm"
 
     def __init__(self, replies: list[str]) -> None:
+        super().__init__("reflection/test", cache=False, num_retries=0)
         self._replies = iter(replies)
         self.prompts: list[str] = []
 
-    def __call__(self, prompt: Any) -> str:
-        self.prompts.append(str(prompt))
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
+
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.prompts.append(str(request.messages))
         try:
-            return next(self._replies)
+            reply = next(self._replies)
         except StopIteration:
-            return "```\n(exhausted)\n```"
+            reply = "(exhausted)"
+        return dspy.LMResponse.from_text(
+            canonical_json({"new_instruction": reply}),
+            model=self.model,
+            usage={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            cost=0,
+        )
 
 
 def test_proposer_reasks_when_the_instruction_bounds_reject_its_text() -> None:
@@ -42,8 +64,8 @@ def test_proposer_reasks_when_the_instruction_bounds_reject_its_text() -> None:
             # to trigger this path; the budget is a surviving bound and the re-ask behaviour it proves —
             # deliver the error code while the model that wrote the text is still in the loop — is the
             # business correctness this test is actually about.
-            f"```\n{'Restate the rule at length. ' * 1400}\n```",
-            "```\nTreat a named production-capacity commitment as magnitude 2.\n```",  # accepted
+            "Restate the rule at length. " * 1400,
+            "Treat a named production-capacity commitment as magnitude 2.",  # accepted
         ]
     )
     proposer = InstructionProposer(reflection_lm=lm)
@@ -62,7 +84,7 @@ def test_proposer_reasks_when_the_instruction_bounds_reject_its_text() -> None:
 def test_proposer_drops_a_component_it_cannot_make_safe() -> None:
     """Leaving the component unchanged beats handing GEPA text the applier will refuse."""
 
-    lm = _ScriptedReflectionLM([oversized := f"```\n{'Restate the rule at length. ' * 1400}\n```", oversized])
+    lm = _ScriptedReflectionLM([oversized := "Restate the rule at length. " * 1400, oversized])
     proposer = InstructionProposer(reflection_lm=lm)
     updated = proposer(
         candidate={"reader_card": _CURRENT["reader_card"]},
@@ -74,7 +96,7 @@ def test_proposer_drops_a_component_it_cannot_make_safe() -> None:
 
 
 def test_proposer_passes_a_safe_proposal_through_without_a_second_call() -> None:
-    lm = _ScriptedReflectionLM(["```\nPrefer the accepted magnitude for capacity commitments.\n```"])
+    lm = _ScriptedReflectionLM(["Prefer the accepted magnitude for capacity commitments."])
     proposer = InstructionProposer(reflection_lm=lm)
     updated = proposer(
         candidate={"event_semantics": _CURRENT["event_semantics"]},
@@ -115,8 +137,8 @@ def test_proposer_prices_instruction_growth_during_selection() -> None:
 
     lm = _ScriptedReflectionLM(
         [
-            f"```\n{'Add a well-meant but long clarification. ' * 40}\n```",  # safe, but over seed+budget
-            "```\nMerge the two overlapping magnitude rules into one sentence.\n```",  # compressed
+            "Add a well-meant but long clarification. " * 40,  # safe, but over seed+budget
+            "Merge the two overlapping magnitude rules into one sentence.",  # compressed
         ]
     )
     proposer = InstructionProposer(
@@ -141,7 +163,7 @@ def test_growth_budget_is_anchored_to_the_seed_not_the_current_candidate() -> No
 
     seed = "Seed rule. " * 30  # ~90 estimated tokens
     grown_candidate = "Previously accepted growth. " * 80  # far past seed + 50 already
-    shorter_than_candidate = "```\n" + "Still too long for the seed budget. " * 40 + "\n```"
+    shorter_than_candidate = "Still too long for the seed budget. " * 40
 
     lm = _ScriptedReflectionLM([shorter_than_candidate, shorter_than_candidate])
     proposer = InstructionProposer(
@@ -162,7 +184,7 @@ def test_growth_budget_is_anchored_to_the_seed_not_the_current_candidate() -> No
 def test_without_seed_instructions_only_the_safety_bounds_apply() -> None:
     """Direct constructions (tests, probes) opt in to the budget; `run_gepa` always supplies the seeds."""
 
-    long_but_valid = "```\n" + "A long yet lawful instruction. " * 200 + "\n```"
+    long_but_valid = "A long yet lawful instruction. " * 200
     lm = _ScriptedReflectionLM([long_but_valid])
     proposer = InstructionProposer(reflection_lm=lm)
     updated = proposer(
@@ -186,7 +208,7 @@ def test_the_headroom_is_shared_across_components_like_the_gate_charges_it() -> 
 
     seeds = {"event_semantics": "Seed rule. " * 30, "reader_card": "Card rule. " * 30}
     budget = InstructionGrowthBudget.from_seeds(seeds, max_growth_tokens=50)
-    modest = "```\n" + "A modest addition. " * 20 + "\n```"
+    modest = "A modest addition. " * 20
     lm = _ScriptedReflectionLM([modest, modest])
     proposer = InstructionProposer(reflection_lm=lm, budget=budget)
 

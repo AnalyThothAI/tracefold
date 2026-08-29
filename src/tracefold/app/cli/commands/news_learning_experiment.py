@@ -51,10 +51,11 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         FrozenDevelopmentDataset,
         OptimizationConfig,
         build_reflection_lm,
-        build_task_adapter,
+        build_task_lm,
         optimize,
     )
     from tracefold.news.program.artifact import load_stable_program_artifact
+    from tracefold.news.program.lm import LMCallLedger
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         PROGRAM_READER_CARD_MAX_TOKENS,
@@ -101,7 +102,8 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         base_url=str(configured_reflection.base_url),
         request_config=configured_reflection.request,
     )
-    task_adapter = build_task_adapter(
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
+    task_lm = build_task_lm(
         model_name=task.model_name,
         api_key=task.api_key,
         api_base=task.api_base,
@@ -110,12 +112,15 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         model_kwargs=task.model_kwargs,
         temperature=0 if task.temperature is None else task.temperature,
         structured_output=task.structured_output,
+        ledger=ledger,
     )
     reflection_lm = build_reflection_lm(
         model_name=reflection.model_name,
         api_key=reflection.api_key,
         api_base=reflection.api_base,
         model_kwargs=reflection.model_kwargs,
+        structured_output=reflection.structured_output,
+        ledger=ledger,
     )
     judge = build_judge(
         model_name=reflection.model_name,
@@ -131,7 +136,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
     result = optimize(
         dataset,
         OptimizationConfig(
-            task_adapter=task_adapter,
+            task_lm=task_lm,
             reflection_lm=reflection_lm,
             judge=judge,
             budget=OptimizationBudget(

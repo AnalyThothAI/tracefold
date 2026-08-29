@@ -19,6 +19,7 @@ not to become an author of record.
 
 from __future__ import annotations
 
+import importlib.metadata
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal
 
@@ -35,6 +36,23 @@ from ..program.contracts import (
     TradeSurprise,
     TradeTradability,
 )
+from ..program.lm import StructuredOutputMode, structured_output_capability
+
+
+class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
+    """Stock DSPy LM with the endpoint's explicit structured-output capability."""
+
+    def __init__(self, model: str, *, structured_output: StructuredOutputMode, **kwargs: Any) -> None:
+        self._structured_output = structured_output
+        super().__init__(model, **kwargs)
+
+    @property
+    def supported_params(self) -> set[str]:
+        return set(structured_output_capability(self._structured_output)["supported_params"])
+
+    @property
+    def supports_response_schema(self) -> bool:
+        return bool(structured_output_capability(self._structured_output)["supports_response_schema"])
 
 
 def build_drafter_lm(
@@ -43,20 +61,21 @@ def build_drafter_lm(
     api_key: str,
     api_base: str,
     model_kwargs: Mapping[str, Any],
+    structured_output: StructuredOutputMode,
     temperature: float | None = 0,
     timeout: float = 120.0,
     max_tokens: int = 4_096,
-) -> dspy.LM:
+    lm_type: type[ConfiguredDrafterLM] = ConfiguredDrafterLM,
+) -> ConfiguredDrafterLM:
     """The drafting endpoint. `model_kwargs` comes from the app's provider resolution.
 
     Passing it matters: for `deepseek-v4-*` it carries `extra_body.thinking = disabled`, and this gateway
     enables thinking by default. Without it the model spends its whole output budget reasoning and returns an
     empty answer — which is what made every early draft fail to parse. Raising `max_tokens` only hid that.
 
-    It lives here rather than in `learning/baseline.py`, where it used to sit beside the metric judge's
-    binding: #306 Phase 3 moved the Program and the whole optimization chain off DSPy, and the drafter is
-    now the reason DSPy is still a dependency at all. Keeping its binding in a module that no longer
-    imports the framework would have put the last DSPy import back where the architecture test forbids it.
+    It lives here rather than in `learning/baseline.py`, beside the draft-only
+    proposal contract it serves. The Program and optimizer use their own native
+    DSPy seams and do not route through this review helper.
     """
 
     request: dict[str, Any] = {
@@ -70,10 +89,10 @@ def build_drafter_lm(
     }
     if temperature is not None:
         request["temperature"] = temperature
-    return dspy.LM(str(model_name), **request)
+    return lm_type(str(model_name), structured_output=structured_output, **request)
 
 
-DRAFTER_ID = "tracefold.news.review_drafter_v2"
+DRAFTER_ID = "tracefold.news.review_drafter_v3"
 # `Final` is what makes mypy infer the literal type rather than `str`, which is what the
 # `Literal[...]` field below needs as its default.
 DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v2"
@@ -243,11 +262,27 @@ class ReviewDrafter:
 
     @property
     def identity(self) -> dict[str, Any]:
+        signature = _ReviewDraftSignature.with_instructions(_INSTRUCTION)
+        adapter = dspy.JSONAdapter(use_native_function_calling=False)
+        rendered = adapter.format(
+            signature,
+            [],
+            {"evidence_json": "{}", "card_json": "{}", "told_json": "[]"},
+        )
+        supported = tuple(sorted(str(value) for value in (getattr(self._lm, "supported_params", ()) or ())))
         return {
             "drafter_id": DRAFTER_ID,
             "model": str(getattr(self._lm, "model", "") or ""),
+            "dspy_version": importlib.metadata.version("dspy"),
             "instruction_sha256": canonical_sha(_INSTRUCTION),
             "output_schema_sha256": canonical_sha(ReviewDraft.model_json_schema()),
+            "signature_sha256": canonical_sha(signature.dump_state()),
+            "adapter_render_sha256": canonical_sha(rendered),
+            "structured_output_capability": {
+                "source": "configured_endpoint.structured_output",
+                "response_format": "response_format" in supported,
+                "supports_response_schema": bool(getattr(self._lm, "supports_response_schema", False)),
+            },
             "authority": "proposal_only; a human accepts it through ReviewDesk.submit",
         }
 
@@ -354,6 +389,7 @@ __all__ = [
     "DRAFTABLE_DIMENSIONS",
     "DRAFTER_ID",
     "DRAFT_SCHEMA",
+    "ConfiguredDrafterLM",
     "DraftedReview",
     "ReviewDraft",
     "ReviewDraftBatch",

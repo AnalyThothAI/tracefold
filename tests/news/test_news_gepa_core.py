@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-import asyncio
 import dataclasses
+from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
+import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.learning.contracts import (
     METRIC_JUDGE_MAX_TOKENS,
     METRIC_JUDGE_TIMEOUT_SECONDS,
@@ -20,18 +21,19 @@ from tracefold.news.learning.metric import (
     CandidatePrediction,
     CompileExample,
     MetricOutcome,
-    _compile_example,
     _metric_receipt,
     accepted_review_metric,
 )
 from tracefold.news.learning.objective import DevelopmentEpisode, _honest_split, _retrieval_receipt
 from tracefold.news.learning.optimizer import (
+    INSTRUCTION_GROWTH_BUDGET_TOKENS,
+    InstructionGrowthBudget,
     InstructionProposer,
     _BudgetMeter,
-    _MeteredPredictorAdapter,
-    _MeteredReflectionLM,
+    _candidate_guard,
+    _MeteredLearningLM,
     build_reflection_lm,
-    build_task_adapter,
+    build_task_lm,
     require_model_identity,
     run_gepa,
 )
@@ -46,13 +48,8 @@ from tracefold.news.program.contracts import (
     TradeRelevanceV1,
     TriageContext,
 )
-from tracefold.news.program.transport import (
-    PredictorRequest,
-    PredictorResponse,
-    PredictorSpec,
-    ProviderCallMetrics,
-    RuntimeModelIdentity,
-)
+from tracefold.news.program.lm import LMCallLedger
+from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.told_context import ToldLedgerEntry
 
 
@@ -146,14 +143,16 @@ class _EvidenceJudge(_NoopJudge):
         return self.supported
 
 
-class _MeteredTaskAdapter:
-    """A fake task route carrying the same stamp `build_task_adapter` puts on a real one.
+class _MeteredTaskLM(dspy.BaseLM):  # type: ignore[misc]
+    """A typed fake task LM carrying the same compiler role stamp as the real builder.
 
     `optimize` refuses a route without `tracefold_compiler_endpoint_identity`, before any provider call,
     because the role contract — temperature, output ceiling, deadline — is what an identity attests and
     cannot be inferred from the object it describes. A fake that skips the stamp is not a cheaper fixture,
     it is a route the optimizer would refuse in production.
     """
+
+    forward_contract = "typed_lm"
 
     def __init__(
         self,
@@ -162,10 +161,9 @@ class _MeteredTaskAdapter:
         cost: float = 0.000002,
         api_base: str = "https://compiler.test/v1",
     ) -> None:
-        self.model = model
+        super().__init__(model, cache=False, num_retries=0)
         self.cost = cost
-        self.calls: list[tuple[str, dict[str, Any]]] = []
-        self._runtime = RuntimeModelIdentity.issue(provider="fake", model=model)
+        self.requests: list[dspy.LMRequest] = []
         self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
             role="task",
             model=model,
@@ -176,36 +174,34 @@ class _MeteredTaskAdapter:
             model_kwargs={},
         )
 
-    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
-        del model_binding
-        return self._runtime
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
 
-    async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-        self.calls.append((spec.name, dict(request.inputs)))
-        answer = _semantics() if spec.name == "event_semantics" else _card()
-        return PredictorResponse(
-            output={spec.output_field: answer},
-            provider="fake",
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.requests.append(request)
+        answer = {"semantics": _semantics()} if len(self.requests) % 2 else {"card": _card()}
+        return dspy.LMResponse.from_text(
+            canonical_json(answer),
             model=self.model,
-            model_sha256=canonical_sha({"provider": "fake", "model": self.model}),
-            input_tokens=10,
-            output_tokens=5,
-            total_tokens=15,
-            provider_cost_microusd=round(self.cost * 1_000_000),
-            finish_reason="stop",
-            runtime_binding_sha256=request.runtime_binding_sha256,
+            usage={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            cost=self.cost,
         )
 
 
-class _MeteredFakeReflectionLM:
-    """The reflection role's fake: one callable, one settled cost, one stamped identity."""
+class _MeteredFakeReflectionLM(dspy.BaseLM):  # type: ignore[misc]
+    """Typed reflection fake returning one complete replacement instruction."""
+
+    forward_contract = "typed_lm"
 
     def __init__(self, model: str = "reflection/model", *, cost: float = 0.000003) -> None:
-        self.model = model
-        self.prompts: list[Any] = []
-        self.last_metrics = ProviderCallMetrics(
-            provider_cost_microusd=round(cost * 1_000_000), finish_reason="stop", total_tokens=9
-        )
+        super().__init__(model, cache=False, num_retries=0)
+        self.requests: list[dspy.LMRequest] = []
+        self.cost = cost
         self.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(
             role="reflection",
             model=model,
@@ -216,9 +212,22 @@ class _MeteredFakeReflectionLM:
             model_kwargs={},
         )
 
-    def __call__(self, prompt: Any) -> str:
-        self.prompts.append(prompt)
-        return "```\nA proposed replacement instruction.\n```"
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
+
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.requests.append(request)
+        return dspy.LMResponse.from_text(
+            canonical_json({"new_instruction": "A proposed replacement instruction."}),
+            model=self.model,
+            usage={"input_tokens": 6, "output_tokens": 3, "total_tokens": 9},
+            cost=self.cost,
+        )
 
 
 def _semantics(**overrides: Any) -> dict[str, Any]:
@@ -249,62 +258,29 @@ def _card(**overrides: Any) -> dict[str, Any]:
     return values
 
 
-def _spec(predictor: str = "event_semantics") -> PredictorSpec:
-    from tracefold.news.program.graph import predictor_spec
-
-    return predictor_spec(load_stable_program_artifact().predictor_state(predictor))
-
-
-def _fake_request(adapter: Any, spec: PredictorSpec) -> PredictorRequest:
-    runtime = adapter.runtime_identity(f"{spec.name}.primary")
-    return PredictorRequest(
-        program_version="test",
-        program_sha256="a" * 64,
-        context_sha256="b" * 64,
-        predictor=spec.name,
-        route="primary",
-        attempt=1,
-        model_binding=f"{spec.name}.primary",
-        runtime_provider=runtime.provider,
-        runtime_model=runtime.model,
-        runtime_model_sha256=runtime.model_sha256,
-        runtime_binding_sha256=runtime.binding_sha256,
-        inputs={"evidence_json": "{}"},
-    )
-
-
-class _FakeGepaOptimize:
-    """Stands in for `gepa.optimize`, and drives the adapter the way the real engine does.
-
-    It is a class only so the recorded kwargs survive between the call and the assertion; what `run_gepa`
-    receives is the `__call__` below, which is exactly the `optimize_fn` seam.
-    """
+class _FakeGepaCompile:
+    """Deterministic `dspy.GEPA.compile` seam that still runs the native student once."""
 
     calls: ClassVar[list[dict[str, Any]]] = []
 
-    def __call__(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        adapter = kwargs["adapter"]
-        trainset, valset = list(kwargs["trainset"]), list(kwargs["valset"])
-        seed = dict(kwargs["seed_candidate"])
-        # The whole point of the split: GEPA optimizes on one set and picks the winner on another.
+    def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+        self.calls.append({"student": student, "trainset": trainset, "valset": valset})
         assert trainset and valset
-        assert {example.case_id for example in trainset}.isdisjoint({example.case_id for example in valset})
-        assert {example.cluster_id for example in trainset}.isdisjoint({example.cluster_id for example in valset})
-        # The card Predictor's evidence is visibly delimited before the optimizer ever sees it: the model is
-        # told where untrusted Event bytes begin and end, on the compile path as much as in production.
+        assert {example.gold.case_id for example in trainset}.isdisjoint({example.gold.case_id for example in valset})
+        assert {example.gold.cluster_id for example in trainset}.isdisjoint(
+            {example.gold.cluster_id for example in valset}
+        )
         for example in trainset + valset:
-            assert example.card_evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
-            assert example.card_evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
+            assert example.gold.card_evidence_json.startswith("<tracefold-untrusted-event-json-v1>\n")
+            assert example.gold.card_evidence_json.endswith("\n</tracefold-untrusted-event-json-v1>")
 
-        batch = adapter.evaluate(trainset[:1], seed, capture_traces=True)
-        adapter.make_reflective_dataset(seed, batch, ["event_semantics"])
-        adapter.propose_new_texts(seed, {"event_semantics": [{"Feedback": "x"}]}, ["event_semantics"])
-
-        winner = {**seed, "event_semantics": seed["event_semantics"] + "\nCompiler candidate instruction."}
-        return SimpleNamespace(
-            best_candidate=winner,
-            candidates=[seed, winner],
+        student(context=trainset[0].gold.context)
+        optimized = student.deepcopy()
+        optimized.event_semantics.signature = optimized.event_semantics.signature.with_instructions(
+            student.event_semantics.signature.instructions + "\nCompiler candidate instruction."
+        )
+        optimized.detailed_results = SimpleNamespace(
+            candidates=[student, optimized],
             parents=[[None], [0]],
             val_aggregate_scores=[0.4, 0.7],
             discovery_eval_counts=[1, 2],
@@ -313,6 +289,7 @@ class _FakeGepaOptimize:
             seed=17,
             best_idx=1,
         )
+        return optimized
 
 
 def _episode_payloads() -> tuple[dict[str, Any], ...]:
@@ -366,7 +343,7 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
                 **_frozen_policy_projection(),
             },
             "accepted_review": review,
-            "production_judgment": _judgment(**verdict).model_dump(mode="json"),
+            "production_judgment": _judgment(**verdict).model_dump(mode="json"),  # type: ignore[arg-type]
         }
         # Three target/control pairs so the 70/30 split is possible, and both halves carry every required stratum: a
         # safety/positive case and a safety/negative one. Since #199 each half also has to carry at
@@ -427,89 +404,92 @@ def _budget(**overrides: Any) -> OptimizationBudget:
     return OptimizationBudget(**values)
 
 
-def _run(*, optimize_fn: Any = None, judge: Any = None) -> Any:
+def _learning_lms(
+    *,
+    task_delegate: dspy.BaseLM | None = None,
+    reflection_delegate: dspy.BaseLM | None = None,
+    budget: OptimizationBudget | None = None,
+) -> tuple[_MeteredLearningLM, _MeteredLearningLM, _BudgetMeter]:
+    ledger = LMCallLedger(
+        max_calls_per_predictor=None,
+        max_calls_per_route=None,
+        max_calls_per_scope=None,
+    )
+    task = build_task_lm(
+        model_name="task/model",
+        api_key="test",
+        api_base="https://compiler.test/v1",
+        timeout=20.0,
+        max_tokens=512,
+        ledger=ledger,
+        delegate=task_delegate or _MeteredTaskLM(),
+    )
+    reflection = build_reflection_lm(
+        model_name="reflection/model",
+        api_key="test",
+        api_base="https://compiler.test/v1",
+        ledger=ledger,
+        delegate=reflection_delegate or _MeteredFakeReflectionLM(),
+    )
+    meter = _BudgetMeter(budget or _budget(), imputed_call_cost_microusd=5)
+    return (
+        _MeteredLearningLM(task, meter=meter, role="task"),
+        _MeteredLearningLM(reflection, meter=meter, role="reflection"),
+        meter,
+    )
+
+
+def _request(model: str) -> dspy.LMRequest:
+    return dspy.LMRequest.from_call(model=model, messages=[dspy.User("probe")])
+
+
+def _run(
+    *,
+    compile_fn: Any = None,
+    judge: Any = None,
+    task_delegate: dspy.BaseLM | None = None,
+) -> Any:
     """One bounded GEPA run over the corpus above, through the shared core.
 
-    The container, the proxy and `ProgramCompiler` are gone (#202 PR-C); what is left is the core itself,
-    which is what these tests were ever about. The metered path is exercised through `optimize()` in
-    `tests/news/test_news_learning_optimize.py`.
+    The metered entry point is exercised through `optimize()` in
+    `tests/news/test_news_learning_optimize.py`; this helper isolates `run_gepa` receipts and write-set.
     """
 
-    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+    task_lm, reflection_lm, _meter = _learning_lms(task_delegate=task_delegate)
     return run_gepa(
         base_program=load_stable_program_artifact(),
         episodes=_episodes(),
-        task_adapter=_MeteredPredictorAdapter(_MeteredTaskAdapter(), meter=meter),
-        reflection_lm=_MeteredReflectionLM(_MeteredFakeReflectionLM(), meter=meter),
+        task_lm=task_lm,
+        reflection_lm=reflection_lm,
         judge=judge or _NoopJudge(),
         max_metric_calls=3,
         seed=17,
         review_rubric_version="news_review_v4",
-        optimize_fn=optimize_fn or _FakeGepaOptimize(),
+        compile_fn=compile_fn or _FakeGepaCompile(),
     )
 
 
 def test_the_meter_settles_each_provider_answer_from_the_response_it_returned() -> None:
-    inner = _MeteredTaskAdapter(cost=0.000002)
+    inner = _MeteredTaskLM(cost=0.000002)
     meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
-    adapter = _MeteredPredictorAdapter(inner, meter=meter)
-    spec = _spec()
-    request = _fake_request(adapter, spec)
+    lm = _MeteredLearningLM(inner, meter=meter, role="task")
 
-    assert asyncio.run(adapter.invoke(request, spec)).output == {"semantics": _semantics()}
+    assert lm(request=_request(inner.model)).text == canonical_json({"semantics": _semantics()})
 
     # The provider reported 2 micro-USD for this call; nothing else is consulted for the number.
     assert meter.actual_cost_microusd == 2
     assert meter.task_model_calls == 1
 
 
-def test_the_meter_charges_a_provider_answer_that_failed_to_parse() -> None:
-    """A refused answer is still a paid call, and `provider_observation` is how the transport says so."""
-
-    from tracefold.news.program.transport import PredictorAdapterError, ProviderCallObservation
-
-    class _ParseFailingAdapter(_MeteredTaskAdapter):
-        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-            raise PredictorAdapterError(
-                "news_program_provider_output_not_json",
-                output_failure=True,
-                provider_observation=ProviderCallObservation(
-                    provider="fake",
-                    model=self.model,
-                    model_sha256=canonical_sha({"provider": "fake", "model": self.model}),
-                    latency_ms=3,
-                    input_tokens=10,
-                    output_tokens=5,
-                    cached_tokens=0,
-                    total_tokens=15,
-                    provider_cost_microusd=2,
-                    finish_reason="stop",
-                    runtime_binding_sha256=request.runtime_binding_sha256,
-                ),
-            )
-
-    inner = _ParseFailingAdapter()
-    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
-    adapter = _MeteredPredictorAdapter(inner, meter=meter)
-    spec = _spec()
-
-    with pytest.raises(PredictorAdapterError, match="output_not_json"):
-        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
-
-    assert meter.actual_cost_microusd == 2
-    assert meter.task_model_calls == 1
-
-
 def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
-    _FakeGepaOptimize.calls.clear()
+    _FakeGepaCompile.calls.clear()
 
     result = _run()
 
-    kwargs = _FakeGepaOptimize.calls[-1]
-    assert kwargs["max_metric_calls"] == 3
-    assert kwargs["seed"] == 17
-    assert kwargs["track_best_outputs"] is False
-    assert set(kwargs["seed_candidate"]) == {"event_semantics", "reader_card"}
+    call = _FakeGepaCompile.calls[-1]
+    predictors = dict(call["student"].named_predictors())
+    assert set(predictors) == {"event_semantics", "reader_card"}
+    assert all(not predictor.demos for predictor in predictors.values())
     assert result.patch.parent_program_sha256 == load_stable_program_artifact().program_sha256
     # The whole write-set: one complete instruction per Predictor, carrying exactly what the optimizer
     # wrote. The fake optimizer appends to the seed, so the patch is the seed plus its line — an untouched
@@ -523,45 +503,57 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     assert result.failure_cluster_ids == ("cluster-1-target", "cluster-2-target", "cluster-3-target")
     assert result.target_dimensions == ("direction",)
     receipts = result.model_dump(mode="json")
-    assert receipts["optimizer_config"]["optimizer"]["implementation"] == "gepa.optimize"
-    assert receipts["optimizer_config"]["optimizer"]["evaluator"].startswith("production NewsSemanticProgram")
-    assert "dspy_version" not in receipts["optimizer_config"]["optimizer"]
+    assert receipts["optimizer_config"]["optimizer"]["implementation"] == "dspy.GEPA"
+    assert receipts["optimizer_config"]["optimizer"]["evaluator"].startswith("NativeNewsProgram")
+    assert receipts["optimizer_config"]["optimizer"]["dspy_version"] == "3.3.1"
+    assert receipts["optimizer_config"]["constructor_scalar_arguments"]["num_threads"] == 1
     assert "source" in receipts["metric"]["implementation"]
 
 
 def test_non_json_trajectory_value_fails_closed() -> None:
-    class _UnsafeOptimize(_FakeGepaOptimize):
-        def __call__(self, **kwargs: Any) -> Any:
-            run = super().__call__(**kwargs)
-            run.parents = [[object()]]
-            return run
+    class _UnsafeCompile(_FakeGepaCompile):
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            optimized = super().__call__(student, trainset=trainset, valset=valset)
+            optimized.detailed_results.parents = [[object()]]
+            return optimized
 
     with pytest.raises(TypeError, match="non_json_receipt_value"):
-        _run(optimize_fn=_UnsafeOptimize())
+        _run(compile_fn=_UnsafeCompile())
 
 
 def test_nonfinite_trajectory_value_fails_closed() -> None:
-    class _NonfiniteOptimize(_FakeGepaOptimize):
-        def __call__(self, **kwargs: Any) -> Any:
-            run = super().__call__(**kwargs)
-            run.val_aggregate_scores = [float("nan")]
-            return run
+    class _NonfiniteCompile(_FakeGepaCompile):
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            optimized = super().__call__(student, trainset=trainset, valset=valset)
+            optimized.detailed_results.val_aggregate_scores = [float("nan")]
+            return optimized
 
     with pytest.raises(TypeError, match="nonfinite_receipt_value"):
-        _run(optimize_fn=_NonfiniteOptimize())
+        _run(compile_fn=_NonfiniteCompile())
 
 
 def test_a_winner_missing_a_component_is_refused_rather_than_shipped() -> None:
     """gepa returns a `dict[str, str]`; the write-set is exactly two named texts or it is not a candidate."""
 
-    class _PartialOptimize(_FakeGepaOptimize):
-        def __call__(self, **kwargs: Any) -> Any:
-            run = super().__call__(**kwargs)
-            run.best_candidate = {"event_semantics": "only one component"}
-            return run
+    class _PartialCompile(_FakeGepaCompile):
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            optimized = super().__call__(student, trainset=trainset, valset=valset)
+            del optimized.reader_card
+            return optimized
 
     with pytest.raises(ValueError, match="compile_result_type_invalid"):
-        _run(optimize_fn=_PartialOptimize())
+        _run(compile_fn=_PartialCompile())
+
+
+def test_a_winner_with_demos_is_refused_rather_than_expanding_the_write_set() -> None:
+    class _DemoCompile(_FakeGepaCompile):
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            optimized = super().__call__(student, trainset=trainset, valset=valset)
+            optimized.event_semantics.demos = [dspy.Example(evidence_json="x", semantics=_semantics())]
+            return optimized
+
+    with pytest.raises(ValueError, match="compile_result_write_set_invalid"):
+        _run(compile_fn=_DemoCompile())
 
 
 def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent() -> None:
@@ -570,7 +562,7 @@ def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent(
     Inferring it from the object it describes would be circular, so an LM without the stamp is refused.
     """
 
-    class _Unstamped(_MeteredTaskAdapter):
+    class _Unstamped(_MeteredTaskLM):
         def __init__(self, model: str = "task/model") -> None:
             super().__init__(model)
             del self.tracefold_compiler_endpoint_identity
@@ -585,10 +577,13 @@ def test_an_unstamped_or_misrouted_endpoint_is_refused_before_anything_is_spent(
 def test_each_role_is_built_under_its_own_exact_budget() -> None:
     """The reflection role's budget is exact, not a floor: its builder takes no timeout or ceiling at all."""
 
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
     reflection = build_reflection_lm(
         model_name="reflection/model",
         api_key="k",
         api_base="https://reflection.test/v1",
+        ledger=ledger,
+        delegate=_MeteredFakeReflectionLM(),
     )
     identity = require_model_identity(reflection, role="reflection")
 
@@ -596,12 +591,14 @@ def test_each_role_is_built_under_its_own_exact_budget() -> None:
     assert identity.timeout_seconds == REFLECTION_TIMEOUT_SECONDS
     assert identity.temperature == 1
 
-    task = build_task_adapter(
+    task = build_task_lm(
         model_name="task/model",
         api_key="k",
         api_base="https://task.test/v1",
         timeout=20.0,
         max_tokens=1_200,
+        ledger=ledger,
+        delegate=_MeteredTaskLM(),
     )
     task_identity = require_model_identity(task, role="task")
     assert (task_identity.max_output_tokens, task_identity.timeout_seconds, task_identity.temperature) == (
@@ -610,6 +607,59 @@ def test_each_role_is_built_under_its_own_exact_budget() -> None:
         0,
     )
     assert (METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS) == (4_096, 120.0)
+
+
+def test_compile_refuses_distinct_task_and_reflection_ledgers_before_provider_spend() -> None:
+    task_delegate = _MeteredTaskLM()
+    reflection_delegate = _MeteredFakeReflectionLM()
+    task = build_task_lm(
+        model_name=task_delegate.model,
+        api_key="test",
+        api_base="https://compiler.test/v1",
+        timeout=20.0,
+        max_tokens=512,
+        ledger=LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None),
+        delegate=task_delegate,
+    )
+    reflection = build_reflection_lm(
+        model_name=reflection_delegate.model,
+        api_key="test",
+        api_base="https://compiler.test/v1",
+        ledger=LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None),
+        delegate=reflection_delegate,
+    )
+    meter = _BudgetMeter(_budget(), imputed_call_cost_microusd=5)
+
+    with pytest.raises(ValueError, match="news_program_compile_lm_ledger_mismatch"):
+        run_gepa(
+            base_program=load_stable_program_artifact(),
+            episodes=_episodes(),
+            task_lm=_MeteredLearningLM(task, meter=meter, role="task"),
+            reflection_lm=_MeteredLearningLM(reflection, meter=meter, role="reflection"),
+            judge=_NoopJudge(),
+            max_metric_calls=3,
+            seed=17,
+            review_rubric_version="news_review_v4",
+            compile_fn=_FakeGepaCompile(),
+        )
+
+    assert task_delegate.requests == []
+    assert reflection_delegate.requests == []
+
+
+@pytest.mark.parametrize("owned", ["api_key", "temperature", "token"])
+def test_learning_builders_reject_owned_or_secret_model_kwargs(owned: str) -> None:
+    with pytest.raises(ValueError, match="news_program_compile_model_kwargs_owned"):
+        build_task_lm(
+            model_name="task/model",
+            api_key="test",
+            api_base="https://compiler.test/v1",
+            timeout=20.0,
+            max_tokens=512,
+            model_kwargs={owned: "must-not-enter-the-request-or-receipt"},
+            ledger=LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None),
+            delegate=_MeteredTaskLM(),
+        )
 
 
 def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
@@ -634,7 +684,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     metric_sha = "a" * 64
     base = _optimizer_config_receipt(
         constructor=constructor,
-        task_adapter=_MeteredTaskAdapter("task/model"),
+        task_lm=_MeteredTaskLM("task/model"),
         reflection_lm=_MeteredFakeReflectionLM(),
         proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
@@ -644,7 +694,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_scalar = _optimizer_config_receipt(
         constructor={**constructor, "seed": 18},
-        task_adapter=_MeteredTaskAdapter("task/model"),
+        task_lm=_MeteredTaskLM("task/model"),
         reflection_lm=_MeteredFakeReflectionLM(),
         proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
@@ -654,7 +704,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_model = _optimizer_config_receipt(
         constructor=constructor,
-        task_adapter=_MeteredTaskAdapter("task/other-model"),
+        task_lm=_MeteredTaskLM("task/other-model"),
         reflection_lm=_MeteredFakeReflectionLM(),
         proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
@@ -664,7 +714,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
     )
     changed_endpoint = _optimizer_config_receipt(
         constructor=constructor,
-        task_adapter=_MeteredTaskAdapter("task/model", api_base="https://other-compiler.test/v1"),
+        task_lm=_MeteredTaskLM("task/model", api_base="https://other-compiler.test/v1"),
         reflection_lm=_MeteredFakeReflectionLM(),
         proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
         metric_sha256=metric_sha,
@@ -1130,34 +1180,41 @@ def test_retrieval_is_reported_separately_so_a_scalar_score_cannot_hide_a_recall
     assert _retrieval_receipt([outside])["accepted_restatements_in_window"] == 0
 
 
-def test_an_open_primary_circuit_stops_the_run_rather_than_scoring_every_case_zero() -> None:
-    """The compile route has one slot and no fallback, so an open breaker means the endpoint is down.
+def test_a_terminal_task_failure_cannot_be_laundered_into_a_candidate() -> None:
+    """DSPy's evaluator may translate the Module exception to zero; the post-compile check is authoritative."""
 
-    `graph.judge` opens the primary breaker after three retryable failures and then refuses every call for
-    60 seconds without touching a provider. Caught like any other per-example failure that would score
-    `0.0` — indistinguishable on the Pareto front from a candidate that genuinely answered badly, and for
-    every case in the window. Neither predecessor student had a breaker at all, so this is new surface.
-    """
+    class _DownLM(_MeteredTaskLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempts = 0
 
-    from tracefold.news.learning.metric import bind_metric
-    from tracefold.news.learning.optimizer import NewsGepaAdapter
-    from tracefold.news.program.transport import PredictorAdapterError
+        def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+            self.attempts += 1
+            raise dspy.LMServerError("provider unavailable", model=request.model, status=503)
 
-    class _DownAdapter(_MeteredTaskAdapter):
-        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-            raise PredictorAdapterError("news_program_provider_http_503", retryable=True)
+    class _SwallowingCompile:
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            with suppress(BaseException):
+                student(context=trainset[0].gold.context)
+            optimized = student.deepcopy()
+            optimized.event_semantics.signature = optimized.event_semantics.signature.with_instructions(
+                student.event_semantics.signature.instructions + "\nFalse winner after swallowed outage."
+            )
+            optimized.detailed_results = SimpleNamespace(
+                parents=[[None], [0]],
+                val_aggregate_scores=[0.0, 0.1],
+                discovery_eval_counts=[1, 2],
+                total_metric_calls=2,
+                num_full_val_evals=1,
+                seed=17,
+                best_idx=1,
+            )
+            return optimized
 
-    stable = load_stable_program_artifact()
-    adapter = NewsGepaAdapter(
-        adapter=_DownAdapter(),
-        metric=bind_metric(_NoopJudge()),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
-    )
-    examples = [_compile_example(episode) for episode in _episodes()]
-    seed = {name: stable.instruction_for(name) for name in ("event_semantics", "reader_card")}
-
-    with pytest.raises(Exception, match="primary_circuit_open"):
-        adapter.evaluate(examples, seed, capture_traces=True)
+    down = _DownLM()
+    with pytest.raises(dspy.LMError, match="news_program_compile_task_provider_unavailable"):
+        _run(compile_fn=_SwallowingCompile(), task_delegate=down)
+    assert down.attempts == 3
 
 
 def test_the_reflection_role_keeps_its_metered_transport_retry() -> None:
@@ -1173,17 +1230,17 @@ def test_the_reflection_role_keeps_its_metered_transport_retry() -> None:
             super().__init__()
             self.attempts = 0
 
-        def __call__(self, prompt: Any) -> str:
+        def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
             self.attempts += 1
             if self.attempts == 1:
-                raise ConnectionError("peer reset the connection")
-            return super().__call__(prompt)
+                raise dspy.LMTransportError("peer reset the connection", model=request.model)
+            return super().forward(request)
 
     inner = _FlakyReflectionLM()
     meter = _BudgetMeter(_budget(max_reflection_model_calls=4), imputed_call_cost_microusd=5)
-    lm = _MeteredReflectionLM(inner, meter=meter)
+    lm = _MeteredLearningLM(inner, meter=meter, role="reflection")
 
-    assert "A proposed replacement instruction." in lm(prompt="probe")
+    assert "A proposed replacement instruction." in lm(request=_request(inner.model)).text
     assert inner.attempts == 2
     assert lm.transport_retries == 1
     # Both physical attempts are charged: a retry the budget could not see would not be a budget.
@@ -1200,18 +1257,15 @@ def test_a_provider_that_refuses_is_still_charged_to_the_cost_budget() -> None:
     success takes.
     """
 
-    from tracefold.news.program.transport import PredictorAdapterError
-
-    class _RefusingEndpoint(_MeteredTaskAdapter):
-        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-            raise PredictorAdapterError("news_program_provider_http_429", retryable=True, provider_reached=True)
+    class _RefusingEndpoint(_MeteredTaskLM):
+        def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+            raise dspy.LMRateLimitError("provider refused", model=request.model, status=429)
 
     meter = _BudgetMeter(_budget(max_task_model_calls=8), imputed_call_cost_microusd=5)
-    adapter = _MeteredPredictorAdapter(_RefusingEndpoint(), meter=meter)
-    spec = _spec()
+    lm = _MeteredLearningLM(_RefusingEndpoint(), meter=meter, role="task")
 
-    with pytest.raises(PredictorAdapterError, match="http_429"):
-        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
+    with pytest.raises(dspy.LMError, match="news_program_compile_task_provider_unavailable"):
+        lm(request=_request(lm.model))
 
     # Three attempts (the retry is metered too), each charged the declared per-call ceiling.
     assert meter.task_model_calls == 3
@@ -1226,22 +1280,19 @@ def test_a_request_that_never_arrived_is_not_charged() -> None:
     `before()` already applied — it refuses to start a call the budget could not afford.
     """
 
-    from tracefold.news.program.transport import PredictorAdapterError
-
-    class _UnreachableEndpoint(_MeteredTaskAdapter):
-        async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-            raise PredictorAdapterError("news_program_transport_connecttimeout", retryable=True)
+    class _UnreachableEndpoint(_MeteredTaskLM):
+        def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+            raise dspy.LMTransportError("connect timeout", model=request.model)
 
     meter = _BudgetMeter(_budget(max_task_model_calls=8), imputed_call_cost_microusd=5)
-    adapter = _MeteredPredictorAdapter(_UnreachableEndpoint(), meter=meter)
-    spec = _spec()
+    lm = _MeteredLearningLM(_UnreachableEndpoint(), meter=meter, role="task")
 
-    with pytest.raises(PredictorAdapterError, match="connecttimeout"):
-        asyncio.run(adapter.invoke(_fake_request(adapter, spec), spec))
+    with pytest.raises(dspy.LMError, match="news_program_compile_task_provider_unavailable"):
+        lm(request=_request(lm.model))
 
     assert meter.task_model_calls == 3
     assert meter.actual_cost_microusd == 0
-    assert adapter.transport_failures == 1
+    assert lm.transport_failures == 1
 
 
 def test_the_growth_floor_rejects_a_merged_fat_candidate_before_any_provider_call() -> None:
@@ -1252,51 +1303,48 @@ def test_the_growth_floor_rejects_a_merged_fat_candidate_before_any_provider_cal
     for a code the metric can report — and for zero provider spend.
     """
 
-    from tracefold.news.learning.metric import bind_metric
-    from tracefold.news.learning.optimizer import InstructionGrowthBudget, NewsGepaAdapter
-    from tracefold.news.program.transport import ScriptedPredictorAdapter
-
     stable = load_stable_program_artifact()
-    seeds = {name: stable.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    task = ScriptedPredictorAdapter([])
-    adapter = NewsGepaAdapter(
-        adapter=task,
-        metric=bind_metric(_NoopJudge()),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
-        growth_budget=InstructionGrowthBudget.from_seeds(seeds, max_growth_tokens=50),
+    seeds = {
+        "event_semantics": stable.instruction_for("event_semantics"),
+        "reader_card": stable.instruction_for("reader_card"),
+    }
+    task = _MeteredTaskLM()
+    program = NativeNewsProgram(
+        stable,
+        candidate_guard=_candidate_guard(InstructionGrowthBudget.from_seeds(seeds, max_growth_tokens=50)),
     )
     merged = {name: text + " Lineage growth." * 10 for name, text in seeds.items()}
+    program.event_semantics.signature = program.event_semantics.signature.with_instructions(merged["event_semantics"])
+    program.reader_card.signature = program.reader_card.signature.with_instructions(merged["reader_card"])
 
-    batch = [_compile_example(episode) for episode in _episodes()][:1]
-    result = adapter.evaluate(batch, merged, capture_traces=True)
+    result = program(context=_episodes()[0].context, event_lm=task, card_lm=task)
 
     assert task.requests == [], "a budget-rejected candidate must not spend a single provider call"
-    rollout = result.trajectories[0]
-    assert rollout.prediction.instruction_rejected == "news_program_instruction_growth_budget"
+    assert result.instruction_rejected == "news_program_instruction_growth_budget"
 
 
 def test_run_gepa_wires_the_default_budget_from_the_seed_instructions() -> None:
     """#334 acceptance: the production path is budgeted by default, and a refactor that drops the wiring
     must fail here rather than silently turning the budget into a no-op."""
 
-    from tracefold.news.learning.optimizer import (
-        INSTRUCTION_GROWTH_BUDGET_TOKENS,
-        NewsGepaAdapter,
-    )
-    from tracefold.news.program.runtime import _estimated_tokens
+    class _InspectDefaultGuard(_FakeGepaCompile):
+        rejection: str | None = None
 
-    fake = _FakeGepaOptimize()
-    _run(optimize_fn=fake)
-    kwargs = fake.calls[-1]
-    adapter = kwargs["adapter"]
-    assert isinstance(adapter, NewsGepaAdapter)
+        def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
+            event = student.event_semantics.signature.instructions
+            card = student.reader_card.signature.instructions
+            student.event_semantics.signature = student.event_semantics.signature.with_instructions(
+                event + " x" * 2_000
+            )
+            student.reader_card.signature = student.reader_card.signature.with_instructions(card + " x" * 2_000)
+            rejected = student(context=trainset[0].gold.context)
+            self.rejection = rejected.instruction_rejected
+            student.event_semantics.signature = student.event_semantics.signature.with_instructions(event)
+            student.reader_card.signature = student.reader_card.signature.with_instructions(card)
+            return super().__call__(student, trainset=trainset, valset=valset)
 
-    stable = load_stable_program_artifact()
-    budget = adapter._growth_budget
-    assert budget is not None
-    assert budget.seed_tokens == {
-        name: _estimated_tokens(stable.instruction_for(name)) for name in ("event_semantics", "reader_card")
-    }
-    assert budget.max_growth_tokens == INSTRUCTION_GROWTH_BUDGET_TOKENS == 800
-    # One budget object, two enforcement points: the proposer teaches, the floor catches merge.
-    assert adapter.propose_new_texts._budget is budget
+    compile_fn = _InspectDefaultGuard()
+    _run(compile_fn=compile_fn)
+
+    assert compile_fn.rejection == "news_program_instruction_growth_budget"
+    assert INSTRUCTION_GROWTH_BUDGET_TOKENS == 800

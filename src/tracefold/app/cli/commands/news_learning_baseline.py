@@ -35,12 +35,6 @@ def _baseline_model_route(mode: BaselineMode, *, settings: Any, artifact: Any) -
     """
 
     from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
-    from tracefold.news.learning.baseline import build_compile_adapter, build_compile_program
-    from tracefold.news.program.runtime import (
-        PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
-        PROGRAM_READER_CARD_MAX_TOKENS,
-        PROGRAM_ROUTE_DEADLINE_SECONDS,
-    )
 
     semantic_judge: Any = None
     runtime_identity: dict[str, Any] = {}
@@ -57,25 +51,19 @@ def _baseline_model_route(mode: BaselineMode, *, settings: Any, artifact: Any) -
         if not composition.program_configured:
             raise ValueError("news_program_baseline_compile_route_not_configured")
         endpoint = composition.event_semantics_primary
-        semantic_judge = build_compile_program(
-            artifact,
-            build_compile_adapter(
-                model_name=endpoint.model_name,
-                api_key=endpoint.api_key,
-                api_base=endpoint.api_base,
-                timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
-                max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
-                model_kwargs=endpoint.model_kwargs,
-                temperature=endpoint.temperature,
-                structured_output=endpoint.structured_output,
-            ),
-        )
+        semantic_judge = composition.compile_semantic_judge(artifact)
+        if semantic_judge is None:  # pragma: no cover - guarded by program_configured above
+            raise ValueError("news_program_baseline_compile_route_not_configured")
         # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve
         # the same name and produce different baselines. `runtime_live` records a per-slot fingerprint; this
         # mode records the same kind of thing for its one slot.
         runtime_identity = {
             "compile_task_model": endpoint.model_name,
             "compile_task_endpoint_sha256": _endpoint_model_sha256(endpoint),
+            "availability_controls": {
+                "whole_route_deadline_seconds": None,
+                "primary_breaker_enabled": False,
+            },
         }
     elif mode == "runtime_live":
         # The configured four-slot Program with its own retry, fallback, deadline and circuit — built by the
@@ -513,6 +501,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                 api_key=endpoint.api_key,
                 api_base=endpoint.api_base,
                 model_kwargs=endpoint.model_kwargs,
+                structured_output=endpoint.structured_output,
                 temperature=endpoint.temperature,
                 max_tokens=4_096,
             )

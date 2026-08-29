@@ -1,29 +1,14 @@
-"""The one offline optimization this repository runs, and the only thing that produces a Prompt candidate.
+"""The one bounded offline optimizer that can produce a News Prompt candidate.
 
-Before #202 this was five modules and a container platform. The trusted compiler sealed a corpus, launched
-a sealed image against a metered proxy sidecar under a seccomp policy, and produced a `CompileRecordV1`
-carrying a three-party build attestation and a tariff; the experiment loop ran the same `run_gepa()` in
-process and produced an `ExperimentCandidate` marked `promotable=False`. Both optimized the same two
-strings, and the whole platform existed to prove *where* those two strings came from.
-
-The generator was never the authority for them. What makes a candidate trustworthy is downstream of
-generation — a bounded write-set, a parent bound to the active stable, a frozen dataset, an independent
-evaluation, future holdout, shadow, canary and a human promotion — and none of it needs to know where the
-text came from. The sandbox threat model it was built for was "the optimizer might return code"; GEPA
-returns a typed patch of two instructions, and `dspy.GEPA` cannot write anything else (`build_program` only
-assigns `pred.signature.with_instructions(...)`). If dynamic code generation ever returns, §6.3 says that
-is a new Issue with a new threat model, not a platform kept warm for a hypothetical.
-
-So this module owns generation, whole: the role identities every call answers under, the budget every
-physical call is metered against, the Objective Plan that decides what GEPA may see, the reflective
-proposer, the run itself, and the terminal answer. It owns nothing downstream: no database handle, no
-artifact writer, no registration, no canary, no promotion. A run ends in `NO_OP`, `REJECTED` or `ADVANCE`,
-and `ADVANCE` is a candidate, not a release.
+Public ``dspy.GEPA`` compiles ``NativeNewsProgram`` against a frozen Objective Plan. Task and reflection
+calls share one audited ledger and one physical-call meter; the returned winner is accepted only when it
+contains exactly the two named instruction predictors and no demos. The module owns no persistence,
+activation, canary, or promotion authority. A run ends in ``NO_OP``, ``REJECTED``, or ``ADVANCE``, and an
+``ADVANCE`` candidate is still subject to every downstream release gate.
 """
 
 from __future__ import annotations
 
-import asyncio
 import importlib.metadata
 import math
 import time
@@ -31,36 +16,27 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, Protocol, cast
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
 
-from ...integrations.chat_completions import chat_completions_url, post_chat_completion_sync
-from ..artifact_identity import canonical_sha
+from ..artifact_identity import canonical_json, canonical_sha
 from ..program.artifact import (
     ProgramStrategyArtifactV1,
     ProgramStrategyPatchV1,
     load_stable_program_artifact,
-    render_model_evidence_json,
     validate_program_instruction,
 )
-from ..program.graph import NewsSemanticProgram
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
-from ..program.runtime import PredictorName, _estimated_tokens
-from ..program.transport import (
-    ChatCompletionsPredictorAdapter,
-    PredictorAdapter,
-    PredictorAdapterError,
-    PredictorRequest,
-    PredictorResponse,
-    PredictorSpec,
-    ProviderCallMetrics,
+from ..program.lm import (
+    AuditedConfiguredLM,
+    LMCallContext,
+    LMCallLedger,
     RuntimeModelIdentity,
     StructuredOutputMode,
-    _is_retryable_exception,
-    provider_call_metrics,
-    provider_error_detail,
-    reject_owned_model_kwargs,
-    wire_model_name,
+    program_json_adapter,
 )
+from ..program.module import NativeNewsProgram
+from ..program.runtime import PROGRAM_VERSION, PredictorName, _estimated_tokens
 from .contracts import (
     METRIC_JUDGE_MAX_TOKENS,
     METRIC_JUDGE_TIMEOUT_SECONDS,
@@ -154,16 +130,7 @@ def gepa_metric_call_ceiling(
 
 
 class GepaRunResult(_ExactModel):
-    """Everything one optimization run produced, and nothing about who paid for it.
-
-    Both planes produce one of these: the trusted compiler inside its container, and the operator's
-    experiment loop in process. It lives here rather than beside `run_gepa` so that the host — which must
-    never import DSPy — can hold the same object the runner produced instead of a second model of it.
-
-    Three documents used to restate these ten fields: the runner's own result, the receipts the host
-    parsed out of the container, and the compile record built around them, with a field-by-field copy
-    between each pair. They are one object now, carried whole.
-    """
+    """The typed patch and complete evidence produced by one public DSPy compile."""
 
     patch: ProgramStrategyPatchV1
     metric: dict[str, Any]
@@ -208,8 +175,8 @@ Rules for what you write:
 # evaluation runs, one observation averages ~9.0k tokens and each instruction rides it about once, so the
 # gate's 10% window is ~900 tokens of headroom for the candidate AS A WHOLE. The budget therefore charges
 # one shared envelope over both instructions — the way the gate will charge it — and is enforced twice:
-# in the proposer, where a re-ask can still teach the reflection model to compress, and as a floor in
-# `NewsGepaAdapter._program`, which merge proposals reach without ever meeting the proposer (#334).
+# in the proposer, where a re-ask can still teach the reflection model to compress, and in the native
+# Program's candidate guard, which merge proposals reach without ever meeting the proposer (#334).
 INSTRUCTION_GROWTH_BUDGET_TOKENS: Final[int] = 800
 
 
@@ -268,6 +235,18 @@ class InstructionGrowthBudget:
         )
 
 
+class InstructionRewriteSignature(dspy.Signature):  # type: ignore[misc]
+    """Rewrite one complete Predictor instruction from bounded reflective evidence."""
+
+    current_instruction_doc: str = dspy.InputField(
+        desc="The complete current instruction plus Tracefold's immutable rewrite rules."
+    )
+    dataset_with_feedback: str = dspy.InputField(
+        desc="Canonical JSON examples containing predictor inputs, outputs, score, and routed feedback."
+    )
+    new_instruction: str = dspy.OutputField(desc="The complete replacement instruction, not a patch or commentary.")
+
+
 class InstructionProposer:
     """A `ProposalFn` that asks for a complete replacement instruction and applies the code-owned bounds.
 
@@ -279,11 +258,9 @@ class InstructionProposer:
     """
 
     def __init__(self, *, reflection_lm: Any, budget: InstructionGrowthBudget | None = None) -> None:
-        # Injected rather than resolved from ambient framework state. `dspy.GEPA` invoked a custom proposer
-        # inside `dspy.context(lm=reflection_lm)`, so the previous version reached into `dspy.settings` to
-        # find the budgeted endpoint — which meant the proposer only worked inside that context manager.
         self._reflection_lm = reflection_lm
-        # One budget object shared with `NewsGepaAdapter`'s floor; `run_gepa` supplies it, so the
+        self._predict = dspy.Predict(InstructionRewriteSignature)
+        # One budget object shared with the native Program's floor; `run_gepa` supplies it, so the
         # production path is always budgeted. A direct construction without one keeps safety bounds only.
         self._budget = budget
         self.calls = 0
@@ -303,8 +280,6 @@ class InstructionProposer:
         reflective_dataset: Mapping[str, Sequence[Mapping[str, Any]]],
         components_to_update: Sequence[str],
     ) -> dict[str, str]:
-        from gepa.strategies.instruction_proposal import InstructionProposalSignature
-
         updated: dict[str, str] = {}
         for component in components_to_update:
             examples = list(reflective_dataset.get(component) or ())
@@ -319,15 +294,7 @@ class InstructionProposer:
                 f"{current}\n"
                 "===== END CURRENT INSTRUCTION ====="
             )
-            proposal = InstructionProposalSignature.run(
-                lm=self._reflection_lm,
-                input_dict={
-                    "current_instruction_doc": doc,
-                    "dataset_with_feedback": examples,
-                    "prompt_template": None,
-                },
-            )
-            text = str(proposal.get("new_instruction") or "").strip()
+            text = self._propose(doc, examples)
             rejected = self._rejection(component, text, candidate)
             if rejected is not None:
                 # Validate here, where the model that wrote the text is still in the loop.
@@ -337,22 +304,23 @@ class InstructionProposer:
                 # real but unreachable. It can only be delivered by asking again, here, with the code.
                 code, guidance = rejected
                 self.rejections.append(code)
-                retry = InstructionProposalSignature.run(
-                    lm=self._reflection_lm,
-                    input_dict={
-                        "current_instruction_doc": (
-                            f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n{guidance}"
-                        ),
-                        "dataset_with_feedback": examples,
-                        "prompt_template": None,
-                    },
-                )
-                text = str(retry.get("new_instruction") or "").strip()
+                text = self._propose(f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n{guidance}", examples)
                 if self._rejection(component, text, candidate) is not None:
                     continue
             if text:
                 updated[component] = text
         return updated
+
+    def _propose(self, current_instruction_doc: str, examples: Sequence[Mapping[str, Any]]) -> str:
+        # The LM is explicit and the Adapter is local. GEPA's ambient context must never decide which
+        # endpoint writes a candidate, and process-global `dspy.configure` would let another Program do so.
+        with dspy.context(adapter=program_json_adapter()):
+            proposal = self._predict(
+                current_instruction_doc=current_instruction_doc,
+                dataset_with_feedback=canonical_json(_json_safe(list(examples))),
+                lm=self._reflection_lm,
+            )
+        return str(proposal.new_instruction or "").strip()
 
     def _rejection(self, component: str, text: str, candidate: Mapping[str, str]) -> tuple[str, str] | None:
         """The (code, re-ask guidance) this text is refused with, or `None`. Safety first, then the budget.
@@ -398,6 +366,26 @@ def _instruction_rejection(text: str) -> str | None:
 # instruction bound itself accepts and gave a reflection call the 20 s route deadline.
 _REFLECTION_TEMPERATURE = 1.0
 _TASK_TEMPERATURE = 0
+_OWNED_LM_KWARGS: Final[frozenset[str]] = frozenset(
+    {
+        "api_base",
+        "api_key",
+        "authorization",
+        "base_url",
+        "cache",
+        "headers",
+        "max_tokens",
+        "model",
+        "num_retries",
+        "password",
+        "secret",
+        "structured_output",
+        "temperature",
+        "timeout",
+        "token",
+        "transport",
+    }
+)
 
 
 # The bounds a proposal can still fail (#319 removed the marker and credential codes with the checks that
@@ -433,200 +421,72 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
-@dataclass(frozen=True, slots=True)
-class _Rollout:
-    """One candidate answer on one case, kept only long enough to build a reflective record from it."""
+class _DspyAcceptedReviewMetric:
+    """Public DSPy metric adapter around Tracefold's framework-neutral ruler."""
 
-    example: CompileExample
-    prediction: CandidatePrediction
-    outcome: MetricOutcome
-    error: str = ""
-
-
-class NewsGepaAdapter:
-    """The one integration point between this Program and `gepa.optimize` (#306 Phase 3).
-
-    Until now the same job was done by `dspy.GEPA` plus three pieces of scaffolding this repository had to
-    own anyway: a `DspyCompileProgram` student that mirrored the production graph, a `_FeedbackCompileProgram`
-    subclass that turned a rejected instruction into a scorable prediction, and a `_rekey_trace` hack that
-    re-attributed each recorded call from the anonymous inner Predictor that actually answered to the
-    component GEPA was optimizing. All three existed because the framework decided what "running the
-    program" meant.
-
-    Here it is decided in one place: `evaluate` builds the candidate's artifact, runs the *production*
-    `NewsSemanticProgram` over the frozen contexts on one task endpoint, and scores each answer with the
-    same metric an operator's baseline runs. The optimizer therefore measures what production does, and the
-    seed's own score in a run is the same number a standalone `compile_live` baseline reports.
-    """
-
-    def __init__(
-        self,
-        *,
-        adapter: PredictorAdapter,
-        metric: Callable[..., MetricOutcome],
-        proposer: InstructionProposer,
-        budget_guard: Callable[[], None] | None = None,
-        growth_budget: InstructionGrowthBudget | None = None,
-    ) -> None:
-        self._adapter = adapter
+    def __init__(self, metric: Callable[..., MetricOutcome]) -> None:
         self._metric = metric
-        # The floor under the proposer's teaching: merge proposals combine two lineages per predictor
-        # without ever calling `InstructionProposer`, so the envelope has to be enforced where every
-        # candidate must pass — before it spends a single provider call (#334).
-        self._growth_budget = growth_budget
-        # A budget refusal is not one case's bad answer. `evaluate` must never raise for a single example —
-        # the engine would log it and skip the whole iteration — so an exhausted budget raised mid-example
-        # is caught below like any other failure, and this is what turns it back into the run-level answer
-        # it is. Without it a one-call budget produced a complete `ADVANCE` built from failed rollouts.
-        self._budget_guard = budget_guard or (lambda: None)
-        self.propose_new_texts = proposer
 
-    def _program(self, candidate: Mapping[str, str]) -> NewsSemanticProgram | str:
-        """The candidate's runnable Program, or the exact code the safety bounds refused it with.
+    def __call__(
+        self,
+        gold: dspy.Example,
+        pred: dspy.Prediction,
+        trace: Any = None,
+        pred_name: str | None = None,
+        pred_trace: Any = None,
+    ) -> dspy.Prediction:
+        del trace, pred_trace
+        example = getattr(gold, "gold", None)
+        if not isinstance(example, CompileExample):
+            raise TypeError("news_program_compile_example_invalid")
+        verdict = getattr(pred, "verdict", None)
+        if isinstance(verdict, BaseModel):
+            verdict = verdict.model_dump(mode="json")
+        candidate = CandidatePrediction(
+            verdict=verdict if isinstance(verdict, Mapping) else None,
+            editorial=getattr(pred, "editorial", None),
+            instruction_rejected=str(getattr(pred, "instruction_rejected", "") or ""),
+        )
+        outcome = self._metric(example, candidate, pred_name=pred_name)
+        return dspy.Prediction(score=float(outcome.score), feedback=outcome.feedback)
 
-        A rejection is a *value* here rather than an exception for the reason it always was: raised, the
-        evaluator records `failure_score` and the reflection model is told it scored zero and nothing about
-        why, so it proposes text that trips the same bound again.
-        """
 
+def _dspy_example(example: CompileExample) -> dspy.Example:
+    return dspy.Example(context=example.context, gold=example).with_inputs("context")
+
+
+def _candidate_guard(growth_budget: InstructionGrowthBudget) -> Callable[[str, str], str | None]:
+    """The compile-only floor reached by proposal, mutation, and GEPA merge candidates."""
+
+    def guard(event_instruction: str, card_instruction: str) -> str | None:
+        candidate = {"event_semantics": event_instruction, "reader_card": card_instruction}
         try:
-            artifact = ProgramStrategyArtifactV1.issue(
-                event_semantics_instruction=str(candidate.get("event_semantics") or ""),
-                reader_card_instruction=str(candidate.get("reader_card") or ""),
+            ProgramStrategyArtifactV1.issue(
+                event_semantics_instruction=event_instruction,
+                reader_card_instruction=card_instruction,
             )
-        except Exception as exc:  # pydantic wraps the ValueError the bounds raise
+        except Exception as exc:
             code = _instruction_rejection_code(exc)
             if code is None:
                 raise
             return code
-        if self._growth_budget is not None:
-            over = self._growth_budget.over(candidate)
-            if over is not None:
-                # Code only; the guidance is dropped on purpose. Merge evaluation runs with
-                # capture_traces=False and an over-budget merge scores zero and never enters the frontier,
-                # so no reflection ever reads it today. If merge evaluation ever starts capturing traces,
-                # route over[1] into the reflective dataset instead of wondering where the guidance went.
-                return over[0]
-        return NewsSemanticProgram(artifact, primary_adapter=self._adapter)
+        over = growth_budget.over(candidate)
+        return over[0] if over is not None else None
 
-    def evaluate(
-        self,
-        batch: list[CompileExample],
-        candidate: dict[str, str],
-        capture_traces: bool = False,
-    ) -> Any:
-        from gepa.core.adapter import EvaluationBatch
-
-        rollouts = asyncio.run(self._run_batch(list(batch), candidate))
-        return EvaluationBatch(
-            outputs=[rollout.prediction for rollout in rollouts],
-            scores=[float(rollout.outcome.score) for rollout in rollouts],
-            trajectories=list(rollouts) if capture_traces else None,
-        )
-
-    async def _run_batch(self, batch: Sequence[CompileExample], candidate: Mapping[str, str]) -> list[_Rollout]:
-        program = self._program(candidate)
-        rollouts: list[_Rollout] = []
-        for example in batch:
-            if isinstance(program, str):
-                prediction = CandidatePrediction(instruction_rejected=program)
-                rollouts.append(_Rollout(example, prediction, self._metric(example, prediction), error=program))
-                continue
-            try:
-                judgment = await program.judge(example.context)
-            except Exception as exc:
-                code = str(getattr(exc, "code", "") or type(exc).__name__)
-                if code == "primary_circuit_open":
-                    # There is one route here and no fallback, so an open breaker means the endpoint is
-                    # down, not that this candidate answered badly. Scored as a zero it would be
-                    # indistinguishable on the Pareto front from a genuinely bad answer — and it would
-                    # stay that way for every case in the 60-second window. The run stops instead.
-                    raise
-                # Never raise for one example otherwise: the engine would log it and skip the whole
-                # iteration, which turns one unlucky provider answer into a lost reflection round.
-                prediction = CandidatePrediction()
-                rollouts.append(_Rollout(example, prediction, self._metric(example, prediction), error=code))
-                self._budget_guard()
-                continue
-            prediction = CandidatePrediction(
-                verdict=judgment.verdict.model_dump(mode="json"),
-                editorial=judgment.editorial,
-            )
-            rollouts.append(_Rollout(example, prediction, self._metric(example, prediction)))
-            self._budget_guard()
-        return rollouts
-
-    def make_reflective_dataset(
-        self,
-        candidate: dict[str, str],
-        eval_batch: Any,
-        components_to_update: list[str],
-    ) -> dict[str, list[dict[str, Any]]]:
-        """One record per case per component, carrying only what the writer can act on.
-
-        Feedback is re-scored per component rather than reused from `evaluate`: the metric routes repair
-        instructions by `pred_name`, and a ReaderCard record carrying "the accepted magnitude is 2" asks
-        the copy writer to repair something it cannot cause.
-        """
-
-        rollouts = [rollout for rollout in (eval_batch.trajectories or ()) if isinstance(rollout, _Rollout)]
-        dataset: dict[str, list[dict[str, Any]]] = {}
-        for component in components_to_update:
-            if component not in COMPONENTS:
-                raise ValueError(f"news_program_proposer_unknown_component:{component}")
-            records: list[dict[str, Any]] = []
-            for rollout in rollouts:
-                routed = self._metric(rollout.example, rollout.prediction, pred_name=component)
-                records.append(
-                    {
-                        "Inputs": self._inputs(rollout, component),
-                        "Generated Outputs": self._outputs(rollout, component),
-                        "Feedback": routed.feedback,
-                        "score": routed.score,
-                        "hard_gate": routed.hard_gate,
-                    }
-                )
-            dataset[component] = records
-        return dataset
-
-    @staticmethod
-    def _inputs(rollout: _Rollout, component: str) -> dict[str, Any]:
-        """Exactly what that Predictor was shown, delimiters included.
-
-        Rendered rather than dumped: the instruction being rewritten talks about the
-        `<tracefold-untrusted-event-json-v1>` boundary, so a reflective record that showed a bare payload
-        would describe an input the model never received and an instruction clause with no referent.
-        """
-
-        if component == "event_semantics":
-            payload = rollout.example.context.event_semantics_payload()
-            return {"evidence_json": render_model_evidence_json(payload, predictor="event_semantics")}
-        return {"evidence_json": rollout.example.card_evidence_json}
-
-    @staticmethod
-    def _outputs(rollout: _Rollout, component: str) -> dict[str, Any]:
-        verdict = dict(rollout.prediction.verdict or {})
-        if rollout.error:
-            return {"error": rollout.error}
-        if component == "reader_card":
-            return {"headline_zh": verdict.get("headline_zh", ""), "why_zh": verdict.get("why_zh", "")}
-        return {
-            name: verdict.get(name)
-            for name in ("novelty", "restates", "event_type", "assets", "direction", "scope", "magnitude", "audience")
-        }
+    return guard
 
 
 def run_gepa(
     *,
     base_program: ProgramStrategyArtifactV1,
     episodes: Sequence[DevelopmentEpisode],
-    task_adapter: PredictorAdapter,
+    task_lm: dspy.BaseLM,
     reflection_lm: Any,
     judge: Any,
     max_metric_calls: int,
     seed: int,
     review_rubric_version: str,
-    optimize_fn: Callable[..., Any] | None = None,
+    compile_fn: Callable[..., NativeNewsProgram] | None = None,
 ) -> GepaRunResult:
     """Optimize the two Predictor instructions against accepted-review truth."""
 
@@ -649,23 +509,19 @@ def run_gepa(
     if plan.blocking_reasons:
         raise ValueError("news_program_compile_objective_blocked:" + ",".join(plan.blocking_reasons))
     split_receipt = plan.split
-    train_examples = [_compile_example(episode) for episode in plan.train_episodes]
-    val_examples = [_compile_example(episode) for episode in plan.development_selection_episodes]
+    train_examples = [_dspy_example(_compile_example(episode)) for episode in plan.train_episodes]
+    val_examples = [_dspy_example(_compile_example(episode)) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)
 
-    metric = bind_metric(judge)
-    metric_receipt = _metric_receipt(metric, review_rubric_version=review_rubric_version)
+    domain_metric = bind_metric(judge)
+    metric = _DspyAcceptedReviewMetric(domain_metric)
+    metric_receipt = _metric_receipt(domain_metric, review_rubric_version=review_rubric_version)
     growth_budget = InstructionGrowthBudget.from_seeds(
         {component: base_program.instruction_for(component) for component in COMPONENTS}
     )
     proposer = InstructionProposer(reflection_lm=reflection_lm, budget=growth_budget)
-    gepa_adapter = NewsGepaAdapter(
-        adapter=task_adapter,
-        metric=metric,
-        proposer=proposer,
-        budget_guard=getattr(task_adapter, "raise_if_exhausted", None),
-        growth_budget=growth_budget,
-    )
+    candidate_guard = _candidate_guard(growth_budget)
+    student = NativeNewsProgram(base_program, candidate_guard=candidate_guard)
     constructor = optimizer_constructor(
         max_metric_calls=max_metric_calls,
         seed=seed,
@@ -674,7 +530,7 @@ def run_gepa(
     config_receipt = optimizer_config_receipt(
         growth_budget=growth_budget,
         constructor=constructor,
-        task_adapter=task_adapter,
+        task_lm=task_lm,
         reflection_lm=reflection_lm,
         proposer=proposer,
         metric_sha256=canonical_sha(metric_receipt),
@@ -682,14 +538,46 @@ def run_gepa(
         train_count=len(train_examples),
         val_count=len(val_examples),
     )
-    seed_candidate = {name: base_program.instruction_for(name) for name in COMPONENTS}
-    run = (optimize_fn or _gepa_optimize)(
-        seed_candidate=seed_candidate,
-        trainset=train_examples,
-        valset=val_examples,
-        adapter=gepa_adapter,
+    stopper = getattr(task_lm, "stopper", None)
+    if not callable(stopper):
+
+        def stopper(_state: Any) -> bool:
+            return False
+
+    optimizer = dspy.GEPA(
+        metric=metric,
+        reflection_lm=reflection_lm,
+        instruction_proposer=proposer,
+        gepa_kwargs={"stop_callbacks": stopper},
         **constructor,
     )
+    scope_context = LMCallContext(
+        program_version=PROGRAM_VERSION,
+        program_sha256=base_program.program_sha256,
+        context_sha256=canonical_sha(
+            {
+                "train": [example.gold.case_id for example in train_examples],
+                "val": [example.gold.case_id for example in val_examples],
+            }
+        ),
+    )
+    task_ledger = getattr(task_lm, "ledger", None)
+    reflection_ledger = getattr(reflection_lm, "ledger", None)
+    if not isinstance(task_ledger, LMCallLedger) or reflection_ledger is not task_ledger:
+        raise ValueError("news_program_compile_lm_ledger_mismatch")
+    with task_ledger.scope(scope_context), dspy.context(lm=task_lm, adapter=program_json_adapter()):
+        optimized = (compile_fn or optimizer.compile)(student, trainset=train_examples, valset=val_examples)
+
+    # DSPy's evaluator translates every per-example Exception to `failure_score`. A physical budget refusal
+    # or systemic provider failure is a run answer, not a bad candidate, so reconcile it before looking at
+    # the returned winner. The stopper merely avoids starting another GEPA step; this check is authoritative.
+    raise_terminal = getattr(task_lm, "raise_if_terminal", None)
+    if callable(raise_terminal):
+        raise_terminal()
+
+    run = getattr(optimized, "detailed_results", None)
+    if run is None:
+        raise ValueError("news_program_compile_trajectory_missing")
 
     reported_calls = getattr(run, "total_metric_calls", None)
     metric_calls = int(reported_calls) if isinstance(reported_calls, int) else -1
@@ -704,7 +592,10 @@ def run_gepa(
             f"observed={metric_calls},requested={max_metric_calls},ceiling={ceiling}"
         )
     trajectory = trajectory_receipt(run)
-    winner = _winning_candidate(run)
+    winner = _winning_candidate(optimized)
+    rejected = candidate_guard(winner["event_semantics"], winner["reader_card"])
+    if rejected is not None:
+        raise ValueError(rejected)
     checkpoint = checkpoint_receipt(winner)
     patch = ProgramStrategyPatchV1.issue(
         parent=base_program,
@@ -733,25 +624,19 @@ def run_gepa(
     return result
 
 
-def _gepa_optimize(**kwargs: Any) -> Any:
-    """The one call into gepa-core. Imported here so nothing else in this module depends on it."""
+def _winning_candidate(program: dspy.Module) -> dict[str, str]:
+    """Extract exactly two instruction-only public DSPy predictors."""
 
-    from gepa.api import optimize
-
-    return optimize(**kwargs)
-
-
-def _winning_candidate(run: Any) -> dict[str, str]:
-    """The instructions on the Pareto front's best index, refused unless both components are present."""
-
-    candidate = getattr(run, "best_candidate", None)
-    if not isinstance(candidate, Mapping) or set(candidate) != set(COMPONENTS):
+    predictors = dict(program.named_predictors())
+    if set(predictors) != set(COMPONENTS):
         raise ValueError("news_program_compile_result_type_invalid")
-    return {name: str(candidate[name]) for name in COMPONENTS}
+    if any(list(getattr(predictors[name], "demos", ()) or ()) for name in COMPONENTS):
+        raise ValueError("news_program_compile_result_write_set_invalid")
+    return {name: str(predictors[name].signature.instructions) for name in COMPONENTS}
 
 
 def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int) -> dict[str, Any]:
-    """The one `gepa.optimize` configuration this repository constructs."""
+    """The one public `dspy.GEPA` configuration this repository constructs."""
 
     return {
         "max_metric_calls": max_metric_calls,
@@ -764,15 +649,16 @@ def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int)
         "reflection_minibatch_size": min(10, train_count),
         "candidate_selection_strategy": "pareto",
         "skip_perfect_score": True,
-        "module_selector": "round_robin",
+        "component_selector": "round_robin",
         "use_merge": True,
         "max_merge_invocations": 5,
+        "num_threads": 1,
+        "failure_score": 0.0,
         "perfect_score": 1.0,
+        "track_stats": True,
         "track_best_outputs": False,
-        "display_progress_bar": False,
         "use_wandb": False,
         "use_mlflow": False,
-        "raise_on_exception": True,
         "seed": seed,
     }
 
@@ -780,7 +666,7 @@ def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int)
 def optimizer_config_receipt(
     *,
     constructor: dict[str, Any],
-    task_adapter: PredictorAdapter,
+    task_lm: dspy.BaseLM,
     reflection_lm: Any,
     proposer: InstructionProposer,
     growth_budget: InstructionGrowthBudget | None = None,
@@ -790,14 +676,15 @@ def optimizer_config_receipt(
     val_count: int,
 ) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v3",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v4",
         "optimizer": {
-            "implementation": "gepa.optimize",
+            "implementation": "dspy.GEPA",
+            "dspy_version": importlib.metadata.version("dspy"),
             "gepa_version": importlib.metadata.version("gepa"),
-            # #306 Phase 3. `dspy.GEPA` and the private JSON-adapter surface under it are gone from this
-            # path, so there is no DSPy version for this receipt to pin any more.
-            "adapter": f"{NewsGepaAdapter.__module__}.{NewsGepaAdapter.__qualname__}",
-            "evaluator": "production NewsSemanticProgram on one task endpoint",
+            "adapter": "tracefold.news.program.lm.program_json_adapter",
+            "evaluator": "NativeNewsProgram on one explicit task LM",
+            "terminal_stopper": "shared_physical_lm_meter",
+            "upstream_fixed_arguments": {"display_progress_bar": True, "raise_on_exception": True},
         },
         "metric_sha256": metric_sha256,
         "constructor_scalar_arguments": _json_scalars(constructor),
@@ -810,7 +697,7 @@ def optimizer_config_receipt(
         # the run was not budgeted, which is itself evidence.
         "instruction_growth_budget": growth_budget.receipt() if growth_budget is not None else None,
         "model_identities": {
-            "task": require_model_identity(task_adapter, role="task").model_dump(mode="json"),
+            "task": require_model_identity(task_lm, role="task").model_dump(mode="json"),
             "reflection": require_model_identity(reflection_lm, role="reflection").model_dump(mode="json"),
         },
         "compile_call": {
@@ -823,73 +710,71 @@ def optimizer_config_receipt(
     }
 
 
-class ReflectionLM:
-    """The reflection role, as one callable against one OpenAI-compatible endpoint.
-
-    gepa calls a `LanguageModel` with either a rendered string or a message list and expects the reply text.
-    That is the whole contract, which is why this is 40 lines rather than a framework: the reflection call
-    is unstructured — it reads a minibatch of failures and writes an instruction — so none of the JSON-schema
-    machinery the task route needs applies to it.
-    """
-
-    def __init__(
-        self,
-        *,
-        model_name: str,
-        api_key: str,
-        api_base: str,
-        max_tokens: int = REFLECTION_MAX_TOKENS,
-        timeout: float = REFLECTION_TIMEOUT_SECONDS,
-        model_kwargs: Mapping[str, Any] | None = None,
-        transport: Any = None,
-    ) -> None:
-        extras = reject_owned_model_kwargs(model_kwargs, code="news_program_compile_model_kwargs_owned")
-        self.model_name = str(model_name)
-        self._wire_model = wire_model_name(self.model_name)
-        self._api_key = str(api_key)
-        self._url = chat_completions_url(api_base)
-        self._max_tokens = int(max_tokens)
-        self._timeout = float(timeout)
-        self._extra_body = dict(extras.pop("extra_body", {}) or {})
-        self._extras = extras
-        self._transport = transport
-        self.last_metrics: ProviderCallMetrics | None = None
-
-    def __call__(self, prompt: str | list[dict[str, Any]]) -> str:
-        messages = [{"role": "user", "content": prompt}] if isinstance(prompt, str) else list(prompt)
-        body = {
-            "model": self._wire_model,
-            "messages": messages,
-            "temperature": _REFLECTION_TEMPERATURE,
-            "max_tokens": self._max_tokens,
-            "stream": False,
-            **self._extras,
-            **self._extra_body,
-        }
-        reply = post_chat_completion_sync(
-            url=self._url,
-            body=body,
-            api_key=self._api_key,
-            timeout=self._timeout,
-            transport=self._transport,
-        )
-        if reply.status_code >= 400 or reply.payload is None:
-            detail = provider_error_detail(reply.payload)
-            raise RuntimeError(
-                f"news_program_compile_reflection_http_{reply.status_code}" + (f": {detail}" if detail else "")
-            )
-        payload = reply.payload
-        self.last_metrics = provider_call_metrics(payload)
-        choices = payload.get("choices") or []
-        if not choices or not isinstance(choices[0], Mapping):
-            raise ValueError("news_program_proposer_reflection_output_invalid")
-        content = (choices[0].get("message") or {}).get("content")
-        if not isinstance(content, str):
-            raise ValueError("news_program_proposer_reflection_output_invalid")
-        return content
+def _build_learning_lm(
+    *,
+    role: Literal["task", "reflection"],
+    model_name: str,
+    api_key: str,
+    api_base: str,
+    timeout: float,
+    max_tokens: int,
+    model_kwargs: Mapping[str, Any] | None = None,
+    temperature: float,
+    structured_output: StructuredOutputMode,
+    ledger: LMCallLedger,
+    delegate: dspy.BaseLM | None = None,
+) -> AuditedConfiguredLM:
+    extras = dict(model_kwargs or {})
+    owned = sorted(key for key in extras if key.casefold() in _OWNED_LM_KWARGS)
+    if owned:
+        raise ValueError("news_program_compile_model_kwargs_owned:" + ",".join(owned))
+    inner = delegate or dspy.LM(
+        str(model_name),
+        api_key=api_key,
+        api_base=api_base,
+        cache=False,
+        num_retries=0,
+        timeout=float(timeout),
+        max_tokens=int(max_tokens),
+        temperature=temperature,
+        **extras,
+    )
+    if inner.model != str(model_name):
+        raise ValueError("news_program_compile_lm_model_mismatch")
+    provider = str(model_name).split("/", 1)[0] if "/" in str(model_name) else "openai"
+    role_binding = ModelExecutionIdentity.issue(
+        role=role,
+        model=str(model_name),
+        api_base=str(api_base),
+        max_output_tokens=int(max_tokens),
+        timeout_seconds=float(timeout),
+        temperature=temperature,
+        model_kwargs=extras,
+    )
+    lm = AuditedConfiguredLM(
+        inner,
+        structured_output=structured_output,
+        runtime_identity=RuntimeModelIdentity.issue(
+            provider=provider,
+            model=str(model_name),
+            model_sha256=canonical_sha(
+                {
+                    "model_execution_identity": role_binding.model_dump(mode="json"),
+                    "structured_output": structured_output,
+                }
+            ),
+        ),
+        predictor=role,
+        route="compile",
+        model_binding=role,
+        ledger=ledger,
+        request_kwargs=extras,
+    )
+    lm.tracefold_compiler_endpoint_identity = role_binding
+    return lm
 
 
-def build_task_adapter(
+def build_task_lm(
     *,
     model_name: str,
     api_key: str,
@@ -898,36 +783,23 @@ def build_task_adapter(
     max_tokens: int,
     model_kwargs: Mapping[str, Any] | None = None,
     temperature: float = _TASK_TEMPERATURE,
-    structured_output: StructuredOutputMode | None = None,
-    transport: Any = None,
-) -> ChatCompletionsPredictorAdapter:
-    """The task route `run_gepa` drives, stamped with the identity it will be held to.
-
-    `transport` is the same seam the adapter itself exposes, forwarded so an offline test can drive the
-    real builder — identity stamp included — instead of a hand-assembled stand-in for it.
-    """
-
-    adapter = ChatCompletionsPredictorAdapter(
+    structured_output: StructuredOutputMode = "json_schema",
+    ledger: LMCallLedger,
+    delegate: dspy.BaseLM | None = None,
+) -> AuditedConfiguredLM:
+    return _build_learning_lm(
+        role="task",
         model_name=model_name,
         api_key=api_key,
         api_base=api_base,
-        timeout=float(timeout),
-        max_tokens=int(max_tokens),
+        timeout=timeout,
+        max_tokens=max_tokens,
         model_kwargs=model_kwargs,
         temperature=temperature,
         structured_output=structured_output,
-        transport=transport,
+        ledger=ledger,
+        delegate=delegate,
     )
-    adapter.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(  # type: ignore[attr-defined]
-        role="task",
-        model=str(model_name),
-        api_base=str(api_base),
-        max_output_tokens=int(max_tokens),
-        timeout_seconds=float(timeout),
-        temperature=temperature,
-        model_kwargs=dict(model_kwargs or {}),
-    )
-    return adapter
 
 
 def build_reflection_lm(
@@ -936,33 +808,23 @@ def build_reflection_lm(
     api_key: str,
     api_base: str,
     model_kwargs: Mapping[str, Any] | None = None,
-    transport: Any = None,
-) -> ReflectionLM:
-    """The reflection route, whose budget is exact rather than a floor.
-
-    `ModelExecutionIdentity` holds the role to these values, so accepting a caller's larger timeout or token
-    ceiling would silently contradict the thing meant to attest them.
-    """
-
-    lm = ReflectionLM(
+    structured_output: StructuredOutputMode = "json_schema",
+    ledger: LMCallLedger,
+    delegate: dspy.BaseLM | None = None,
+) -> AuditedConfiguredLM:
+    return _build_learning_lm(
+        role="reflection",
         model_name=model_name,
         api_key=api_key,
         api_base=api_base,
-        max_tokens=REFLECTION_MAX_TOKENS,
         timeout=REFLECTION_TIMEOUT_SECONDS,
+        max_tokens=REFLECTION_MAX_TOKENS,
         model_kwargs=model_kwargs,
-        transport=transport,
-    )
-    lm.tracefold_compiler_endpoint_identity = ModelExecutionIdentity.issue(  # type: ignore[attr-defined]
-        role="reflection",
-        model=str(model_name),
-        api_base=str(api_base),
-        max_output_tokens=REFLECTION_MAX_TOKENS,
-        timeout_seconds=REFLECTION_TIMEOUT_SECONDS,
         temperature=_REFLECTION_TEMPERATURE,
-        model_kwargs=dict(model_kwargs or {}),
+        structured_output=structured_output,
+        ledger=ledger,
+        delegate=delegate,
     )
-    return lm
 
 
 def require_model_identity(role_holder: Any, *, role: str) -> ModelExecutionIdentity:
@@ -1046,21 +908,12 @@ _REJECTION_PREFIXES = (
 _NO_OP_CODE = "news_program_compile_no_program_change"
 
 
-class OptimizationBudgetExceeded(RuntimeError):
+class OptimizationRunTerminated(dspy.LMError):  # type: ignore[misc]
+    """A bounded provider run ended without a candidate-quality answer."""
+
+
+class OptimizationBudgetExceeded(OptimizationRunTerminated):
     """Raised before another model call, or after a provider reports overspend."""
-
-
-class _WorstCaseRates(Protocol):
-    """What the meter needs from a rate table, without naming the trusted compiler's own.
-
-    Structural on purpose: #202 deletes the tariff along with the proxy that reserved against it, and the
-    meter has to outlive both. The offline job charges an unpriced call at the operator's declared per-call
-    ceiling instead (`imputed_call_cost_microusd`), which needs no rate table at all.
-    """
-
-    def worst_case_cost_microusd(
-        self, *, role: Literal["task", "reflection", "metric_judge"], request_bytes: int, max_output_tokens: int
-    ) -> int: ...
 
 
 class _MeteredBudget(Protocol):
@@ -1082,18 +935,14 @@ class _BudgetMeter:
         self,
         budget: _MeteredBudget,
         *,
-        tariff: _WorstCaseRates | None = None,
         imputed_call_cost_microusd: int | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         max_wall_clock_seconds: float | None = None,
     ) -> None:
         self.budget = budget
         # Neither the local llama.cpp endpoint nor DeepSeek returns a price litellm can resolve, so
-        # `provider_cost_microusd` is `None` for every endpoint this project actually uses and the meter used
-        # to fail closed on the first call. The trusted compiler answered that with the proxy's own worst-case
-        # tariff; the offline job answers it with the ceiling the operator already had to declare for a single
-        # call. Both over-charge, which is the safe direction: the budget stops the run early, not late.
-        self.tariff = tariff
+        # `provider_cost_microusd` is `None` for endpoints whose provider cannot price the response. Charge
+        # the operator's declared per-call ceiling instead, which stops the run early rather than late.
         self.imputed_call_cost_microusd = imputed_call_cost_microusd
         self.task_model_calls = 0
         self.reflection_model_calls = 0
@@ -1101,11 +950,9 @@ class _BudgetMeter:
         self.reflection_cost_microusd = 0
         self.actual_cost_microusd = 0
         self.imputed_cost_calls = 0
-        self._role: Literal["task", "reflection"] = "task"
-        # The first refusal, kept. A budget that stopped one call is a run-level answer, and the graph
-        # under the metered adapter turns any exception into one case's failure — so the refusal has to
-        # survive being swallowed there.
-        self.exhausted: OptimizationBudgetExceeded | None = None
+        # DSPy's evaluator converts every Module Exception to `failure_score`. Keep the first run-level
+        # failure out of band so a returned Program cannot launder exhaustion into a candidate score.
+        self.first_terminal_error: BaseException | None = None
         self._monotonic = monotonic
         self._max_wall_clock_seconds = max_wall_clock_seconds
         self._started_monotonic = monotonic()
@@ -1129,7 +976,6 @@ class _BudgetMeter:
             raise self._refuse(f"news_program_compile_{role}_model_call_budget_exhausted")
         if self.actual_cost_microusd + self.budget.max_call_cost_microusd > self.budget.max_cost_microusd:
             raise self._refuse("news_program_compile_cost_reservation_exhausted")
-        self._role = role
         if role == "task":
             self.task_model_calls += 1
         else:
@@ -1137,180 +983,162 @@ class _BudgetMeter:
 
     def _refuse(self, code: str) -> OptimizationBudgetExceeded:
         refusal = OptimizationBudgetExceeded(code)
-        self.exhausted = self.exhausted or refusal
+        self.first_terminal_error = self.first_terminal_error or refusal
         return refusal
 
-    def _cost(self, metadata: ProviderCallMetrics) -> int:
-        if metadata.provider_cost_microusd is not None:
-            return metadata.provider_cost_microusd
-        if self.tariff is not None:
-            self.imputed_cost_calls += 1
-            # Charged at the trusted worst-case rate, from tokens the provider did report.
-            return self.tariff.worst_case_cost_microusd(
-                role=self._role,
-                request_bytes=metadata.input_tokens,
-                max_output_tokens=max(1, metadata.output_tokens),
-            )
+    def _cost(self, response: dspy.LMResponse | None) -> int:
+        if response is not None and response.cost is not None:
+            return max(0, round(float(response.cost) * 1_000_000))
         if self.imputed_call_cost_microusd is not None:
             self.imputed_cost_calls += 1
             return self.imputed_call_cost_microusd
-        raise OptimizationBudgetExceeded("news_program_compile_provider_cost_unavailable")
+        raise self._refuse("news_program_compile_provider_cost_unavailable")
 
-    def after(self, metadata: ProviderCallMetrics) -> None:
-        cost = self._cost(metadata)
+    def after(self, role: Literal["task", "reflection"], response: dspy.LMResponse) -> None:
+        self._settle(role, self._cost(response))
+
+    def after_provider_failure(self, role: Literal["task", "reflection"], *, provider_reached: bool) -> None:
+        if provider_reached:
+            self._settle(role, self._cost(None))
+
+    def _settle(self, role: Literal["task", "reflection"], cost: int) -> None:
         if cost > self.budget.max_call_cost_microusd:
             raise self._refuse("news_program_compile_call_cost_reservation_exceeded")
         self.actual_cost_microusd += cost
-        if self._role == "task":
+        if role == "task":
             self.task_cost_microusd += cost
         else:
             self.reflection_cost_microusd += cost
         if self.actual_cost_microusd > self.budget.max_cost_microusd:
             raise self._refuse("news_program_compile_cost_budget_exceeded")
 
+    def remember_terminal(self, error: BaseException) -> None:
+        self.first_terminal_error = self.first_terminal_error or error
 
-def _is_transport_failure(exc: BaseException) -> bool:
-    """The Program's own classifier, so "the provider did not answer" means one thing in both planes."""
+    def stopper(self, _state: Any) -> bool:
+        return self.first_terminal_error is not None
 
-    return _is_retryable_exception(exc)
+    def raise_if_terminal(self) -> None:
+        if self.first_terminal_error is not None:
+            raise self.first_terminal_error
 
 
-class _MeteredPredictorAdapter:
-    """Transparent Adapter proxy that makes every provider attempt observable and budgeted.
+def _is_retryable_lm_failure(exc: BaseException) -> bool:
+    return isinstance(
+        exc,
+        (
+            dspy.LMTransportError,
+            dspy.LMTimeoutError,
+            dspy.LMRateLimitError,
+            dspy.LMServerError,
+            ConnectionError,
+            TimeoutError,
+        ),
+    )
 
-    Until #306 Phase 3 this was `_BudgetedLM`, a `dspy.BaseLM` subclass wrapping the framework's LM and
-    settling its budget out of a captured provider response. The transport hands the response back
-    directly now, so the proxy is a proxy: `before` admits the attempt, the call happens, `after` settles
-    it. `before` does not accumulate anything — it refuses a call the budget could not afford one
-    worst-case attempt of — so every attempt that reached the provider has to reach `after`, answered or
-    refused. `transport_failures` counts only requests that never arrived, which is what its name says.
-    """
 
-    def __init__(self, adapter: PredictorAdapter, *, meter: _BudgetMeter) -> None:
-        self._adapter = adapter
+def _provider_reached(exc: BaseException) -> bool:
+    return not isinstance(exc, (dspy.LMTransportError, ConnectionError))
+
+
+class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
+    """Physical-call budget and learning-only retry around one audited DSPy LM."""
+
+    forward_contract = "typed_lm"
+
+    def __init__(self, lm: dspy.BaseLM, *, meter: _BudgetMeter, role: Literal["task", "reflection"]) -> None:
+        super().__init__(
+            model=lm.model,
+            model_type=getattr(lm, "model_type", "chat"),
+            cache=False,
+            num_retries=0,
+            **dict(getattr(lm, "kwargs", {}) or {}),
+        )
+        self._lm = lm
         self._meter = meter
+        self._role = role
         self.transport_failures = 0
         self.transport_retries = 0
+        self.tracefold_compiler_endpoint_identity = getattr(lm, "tracefold_compiler_endpoint_identity", None)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._adapter, name)
+    @property
+    def supports_response_schema(self) -> bool:
+        return bool(self._lm.supports_response_schema)
 
-    def raise_if_exhausted(self) -> None:
-        """Re-raise the first budget refusal, after the graph has had its chance to swallow it."""
+    @property
+    def supported_params(self) -> set[str]:
+        return set(self._lm.supported_params)
 
-        if self._meter.exhausted is not None:
-            raise self._meter.exhausted
+    @property
+    def supports_function_calling(self) -> bool:
+        return bool(self._lm.supports_function_calling)
 
-    def runtime_identity(self, model_binding: str) -> RuntimeModelIdentity:
-        return self._adapter.runtime_identity(model_binding)
+    @property
+    def supports_reasoning(self) -> bool:
+        return bool(self._lm.supports_reasoning)
 
-    async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-        """One metered attempt, retried only on transport-class failures.
+    @property
+    def ledger(self) -> LMCallLedger | None:
+        ledger = getattr(self._lm, "ledger", None)
+        return ledger if isinstance(ledger, LMCallLedger) else None
 
-        The retry is here rather than in the transport because this proxy is what proves the budget: every
-        physical request has to pass `before`/`after`. Without it, one transient 5xx from the single-slot
-        local server made GEPA score that example as a failure — indistinguishable, on the Pareto front,
-        from a candidate that genuinely answered badly.
-        """
+    def stopper(self, state: Any) -> bool:
+        return self._meter.stopper(state)
 
+    def raise_if_terminal(self) -> None:
+        self._meter.raise_if_terminal()
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        return self._invoke(lambda: self._lm(request=request))
+
+    async def aforward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
-            self._meter.before("task")
+            self._meter.before(self._role)
             try:
-                response = await self._adapter.invoke(request, spec)
-            except PredictorAdapterError as exc:
-                if exc.provider_reached:
-                    # The provider answered — with a refusal, an unparseable body or a truncation — so the
-                    # attempt is settled before anything else happens to it. An observation carries exact
-                    # usage; a bare status code carries none, and `_cost` then charges the operator's own
-                    # declared per-call ceiling, which is the safe direction. Skipping this is how a run of
-                    # 429s spends real provider work against a ledger that never moves: `before()` refuses
-                    # a call the budget cannot afford, but it accumulates nothing on its own.
-                    observation = exc.provider_observation
-                    self._meter.after(
-                        ProviderCallMetrics(
-                            response_model=observation.model if observation else None,
-                            input_tokens=observation.input_tokens if observation else 0,
-                            output_tokens=observation.output_tokens if observation else 0,
-                            cached_tokens=observation.cached_tokens if observation else 0,
-                            total_tokens=observation.total_tokens if observation else 0,
-                            provider_cost_microusd=observation.provider_cost_microusd if observation else None,
-                            finish_reason=observation.finish_reason if observation else exc.finish_reason,
-                        )
-                    )
-                    if not exc.retryable or attempt == _NUM_RETRIES:
-                        raise
+                response = await self._lm.acall(request=request)
+                if not isinstance(response, dspy.LMResponse):
+                    raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
+            except BaseException as exc:
+                self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+                if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
-                # The request never arrived, so nothing reported usage and nothing was billed. `before()`
-                # refused to start it unless the budget could afford one worst-case call, which is the
-                # bound that matters when there is nothing to settle.
-                if not exc.retryable or attempt == _NUM_RETRIES:
-                    self.transport_failures += 1
-                    raise
-                self.transport_retries += 1
-                last = exc
-                continue
-            except BaseException as exc:
-                if not _is_transport_failure(exc) or attempt == _NUM_RETRIES:
-                    self.transport_failures += 1
-                    raise
-                self.transport_retries += 1
-                last = exc
-                continue
-            self._meter.after(
-                ProviderCallMetrics(
-                    response_model=response.model,
-                    input_tokens=response.input_tokens,
-                    output_tokens=response.output_tokens,
-                    cached_tokens=response.cached_tokens,
-                    total_tokens=response.total_tokens,
-                    provider_cost_microusd=response.provider_cost_microusd,
-                    finish_reason=response.finish_reason,
-                )
-            )
+                self.transport_failures += 1
+                terminal = self._terminal_error(exc)
+                self._meter.remember_terminal(terminal)
+                raise terminal from exc
+            self._meter.after(self._role, response)
             return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
 
-
-class _MeteredReflectionLM:
-    """The same proof for the reflection role, which answers text rather than a typed schema."""
-
-    def __init__(self, lm: Any, *, meter: _BudgetMeter) -> None:
-        self._lm = lm
-        self._meter = meter
-        self.transport_failures = 0
-        self.transport_retries = 0
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._lm, name)
-
-    def __call__(self, prompt: Any) -> str:
-        """One metered attempt, retried only on transport-class failures.
-
-        The retry is not decoration. `raise_on_exception` is on, so one transient connection reset during
-        a reflection call would otherwise abort a multi-hour run — and the predecessor `_BudgetedLM`
-        routed *both* roles through the same retry, so dropping it here would have been a silent
-        regression rather than a decision.
-        """
-
+    def _invoke(self, invoke: Callable[[], Any]) -> dspy.LMResponse:
         last: BaseException | None = None
         for attempt in range(_NUM_RETRIES + 1):
-            self._meter.before("reflection")
+            self._meter.before(self._role)
             try:
-                answer = self._lm(prompt)
+                response = invoke()
+                if not isinstance(response, dspy.LMResponse):
+                    raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                if not _is_transport_failure(exc) or attempt == _NUM_RETRIES:
-                    self.transport_failures += 1
-                    raise
-                self.transport_retries += 1
-                last = exc
-                continue
-            metrics = getattr(self._lm, "last_metrics", None)
-            self._meter.after(metrics if isinstance(metrics, ProviderCallMetrics) else ProviderCallMetrics())
-            return str(answer)
+                self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+                if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
+                    self.transport_retries += 1
+                    last = exc
+                    continue
+                self.transport_failures += 1
+                terminal = self._terminal_error(exc)
+                self._meter.remember_terminal(terminal)
+                raise terminal from exc
+            self._meter.after(self._role, response)
+            return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
+
+    def _terminal_error(self, exc: BaseException) -> BaseException:
+        if _is_retryable_lm_failure(exc):
+            return OptimizationRunTerminated(f"news_program_compile_{self._role}_provider_unavailable")
+        return exc
 
 
 @dataclass(frozen=True)
@@ -1375,13 +1203,12 @@ class OptimizationConfig:
     fields is the list of powers this job has.
     """
 
-    task_adapter: PredictorAdapter
-    reflection_lm: Any
+    task_lm: dspy.BaseLM
+    reflection_lm: dspy.BaseLM
     judge: Any
     budget: OptimizationBudget
-    # Injected so a test can drive the whole entry point without gepa-core; production leaves it None and
-    # `run_gepa` calls `gepa.optimize`.
-    optimize_fn: Callable[..., Any] | None = None
+    # Injected so a test can drive the entry point without model spend; production uses `dspy.GEPA.compile`.
+    compile_fn: Callable[..., NativeNewsProgram] | None = None
     # Injected so a terminal report is byte-reproducible under test; production passes the wall clock.
     now_ms: Callable[[], int] = field(default=lambda: int(time.time() * 1000))
     monotonic: Callable[[], float] = time.monotonic
@@ -1445,7 +1272,7 @@ def plan_blockers(plan: GepaObjectivePlan) -> tuple[str, ...]:
 def require_judge_identity(judge: Any, *, budget: OptimizationBudget) -> dict[str, Any]:
     """The judge's complete role contract, and its own admission ceiling bound to this budget.
 
-    The metric calls the judge directly, so `_BudgetedLM` never sees those requests: the judge admits them
+    The metric calls the judge directly, so the learning LM meter never sees those requests: the judge admits them
     itself, atomically, before each provider call. That is a real pre-call bound — but only if the ceiling
     it admits against is the one the operator declared here, which is what this checks. Without it a judge
     built with a larger ceiling could outspend `max_metric_judge_model_calls` and be discovered afterwards,
@@ -1477,7 +1304,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         raise ValueError("news_program_compile_metric_judge_required")
     # Before anything is spent: the three roles answer under identities they were stamped with, or the run
     # does not start. Reconstructing an identity from the object it describes would attest nothing.
-    task_identity = require_model_identity(config.task_adapter, role="task")
+    task_identity = require_model_identity(config.task_lm, role="task")
     reflection_identity = require_model_identity(config.reflection_lm, role="reflection")
     judge_identity = require_judge_identity(config.judge, budget=config.budget)
     identities = {
@@ -1520,9 +1347,9 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         monotonic=config.monotonic,
         max_wall_clock_seconds=config.budget.max_wall_clock_seconds,
     )
-    task_adapter = _MeteredPredictorAdapter(config.task_adapter, meter=meter)
-    reflection_lm = _MeteredReflectionLM(config.reflection_lm, meter=meter)
-    budgeted: tuple[Any, ...] = (task_adapter, reflection_lm)
+    task_lm = _MeteredLearningLM(config.task_lm, meter=meter, role="task")
+    reflection_lm = _MeteredLearningLM(config.reflection_lm, meter=meter, role="reflection")
+    budgeted: tuple[Any, ...] = (task_lm, reflection_lm)
     run: GepaRunResult | None = None
     reasons: tuple[str, ...] = ()
     outcome: Literal["NO_OP", "REJECTED", "ADVANCE"] = "ADVANCE"
@@ -1530,18 +1357,18 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         run = run_gepa(
             base_program=dataset.parent_program,
             episodes=dataset.episodes,
-            task_adapter=task_adapter,
+            task_lm=task_lm,
             reflection_lm=reflection_lm,
             judge=config.judge,
             max_metric_calls=config.budget.max_metric_calls,
             seed=config.budget.seed,
             review_rubric_version=dataset.ref.review_rubric_version,
-            optimize_fn=config.optimize_fn,
+            compile_fn=config.compile_fn,
         )
     except GepaNoProgramChange as exc:
         # A complete run that kept the seed. The receipts are the run's, not an empty stand-in.
         run, outcome, reasons = exc.result, "NO_OP", (_NO_OP_CODE,)
-    except OptimizationBudgetExceeded as exc:
+    except OptimizationRunTerminated as exc:
         outcome, reasons = "REJECTED", (str(exc),)
     except ValueError as exc:
         code = str(exc)
@@ -1735,7 +1562,7 @@ def _usage(
 def _overspend(usage: Mapping[str, Any], *, budget: OptimizationBudget, elapsed_seconds: float) -> tuple[str, ...]:
     """The bounds the meter cannot stop mid-call: the judge's own spend, and the clock.
 
-    The judge is metered by the metric, not by `_BudgetedLM`, so its calls only become visible once the run
+    The judge is metered by the metric, not by the learning LM meter, so its calls only become visible once the run
     returns. A run that finished over budget still gets a complete terminal report — it just does not get a
     candidate.
     """
@@ -1763,13 +1590,12 @@ __all__ = [
     "GepaRunResult",
     "InstructionProposer",
     "ModelExecutionIdentity",
-    "NewsGepaAdapter",
     "OptimizationBudgetExceeded",
     "OptimizationConfig",
+    "OptimizationRunTerminated",
     "OptimizerRole",
-    "ReflectionLM",
     "build_reflection_lm",
-    "build_task_adapter",
+    "build_task_lm",
     "checkpoint_receipt",
     "gepa_metric_call_ceiling",
     "objective_summary",

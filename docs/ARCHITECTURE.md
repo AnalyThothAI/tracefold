@@ -578,10 +578,10 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        -> deterministic SemanticNormalizer -> ReaderCard.v2
        -> deterministic VerdictAssembler -> one atomic SemanticJudgment
           (verdict + editorial envelope + trace/runtime identities); normally two
-       serial provider calls through Predictor-local Adapters/token caps
-       (ReaderCard.v2 optionally has a dedicated primary endpoint), one shared
-       fast retry per route (at most three calls), and a full fallback restart
-       only after primary failure (at most six calls across both routes) -> final storyline key
+       serial provider calls through explicit Predictor-local LMs/token caps
+       (ReaderCard.v2 optionally has a dedicated primary endpoint); JSONAdapter
+       may make one format fallback per Predictor (at most four calls per route),
+       and primary failure restarts the full fallback route (at most eight calls) -> final storyline key
        from the verdict (written back) -> decide() policy -> verdict row
        (title_zh="" compatibility sentinel, audience, editorial and scored-
        judgment hashes, exact runtime manifest,
@@ -906,11 +906,12 @@ Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 **Interface** is `SemanticJudge.judge(TriageContext) -> SemanticJudgment`; the
 consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
-semantic-judgment **Seam**, and `NewsSemanticProgram` is the production
-**Adapter** there. Recorded-arm replay is an evaluator-side composition seam,
+semantic-judgment **Seam**, and `RoutedSemanticJudge` is the production
+**Adapter** there. It wraps one `NativeNewsProgram(dspy.Module)` and explicit
+primary/fallback model slots. Recorded-arm replay is an evaluator-side composition seam,
 not a second production generation Interface: the default evaluation path
-re-executes the real arm-scoped `NewsSemanticProgram` graph with every
-Predictor call answered from the run's content-addressed recordings. The graph
+re-executes the real arm-scoped native Program with every Predictor call
+answered by `RecordedLM` from the run's content-addressed recordings. The Program
 still enters through `judge(TriageContext)`. A missing recording makes the
 evaluation `incomplete` without falling through to a live provider; a request
 or identity mismatch is a miss, never live I/O. This shape gives
@@ -944,7 +945,7 @@ sentinel, and keeps public `title_zh` empty. Splitting semantic judgment from co
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The only executable generation is `news_semantic_program_v5`. Issue #193
+The only executable generation is `news_semantic_program_v6`. Issue #193
 hard-cuts the artifact to one canonical JSON document; issue #306 keeps that
 shape and changes what the two instructions *are*, each becoming the complete
 prompt for its Predictor rather than a bounded advisory appended to a rendered
@@ -959,11 +960,12 @@ three values. The stable root is
 `program_sha256` addresses the write-set a human or GEPA may edit.
 `envelope_sha256` — `compute_execution_identity()` in
 `tracefold/news/program/identity.py` — addresses everything the code decides
-about a model call: the golden render of each Predictor's complete chat request
-in all three structured-output modes, the single output contract and its JSON
-schema, the model-visible input shapes and their delimiters, the endpoint
-capability table, the model binding slots, the route deadline, the token
-ceilings and the breaker. It is computed from those values rather than declared
+about a model call: exact DSPy/LiteLLM/transitive-GEPA versions, public Signature
+dumps, actual `dspy.JSONAdapter` renders for the schema, JSON-object and
+prompt-only capability paths, both typed output contracts, model-visible input
+shapes, the four model slots, retry/fallback/error transitions, route deadline,
+2/4/8 physical-call ceilings, token ceilings, normalization/assembly surface
+and the breaker. It is computed from those values rather than declared
 beside them, so a change to any of them moves the identity whether or not anyone
 remembers to say so. One contract test
 (`tests/contract/test_program_release_identity.py`) pins it, and re-pinning that
@@ -993,18 +995,20 @@ hash over one golden render rather than twenty-odd component hashes that the
 same package generated and verified in the same process; that was a self-proof,
 not an attestation, and neither it nor this replaces exact image/CI evidence.
 
-Every model is sent the same two messages, whatever structured-output format its
-endpoint accepts (#315). Only `response_format` follows the endpoint: the real
-constraint where it is accepted, `{"type": "json_object"}` where it is refused.
-The output contract always carries the schema inline, because a structured-output
-constraint expresses shape and the schema's field descriptions express meaning —
-`restates` is a visible `event_status.told` index only when novelty is
-restatement, and no format carries that. #306 Phase 3 briefly moved those
-descriptions out of the model's view into `response_format` alone; llama.cpp
-compiles that into a GBNF grammar, so the primary route was held to a shape while
-the rules it needed sat in a document it never read.
+DSPy's public `JSONAdapter` renders every request from the same Signature.
+Application configuration resolves and declares each self-hosted endpoint's
+effective capability; the audited Program seam consumes that declaration and
+does not infer capabilities from the model name. Schema-capable endpoints receive a JSON Schema
+constraint, JSON-object endpoints receive that response format, and prompt-only
+endpoints receive neither. Field descriptions remain model-visible on every
+path. An unknown outer DSPy envelope sibling is filtered by JSONAdapter, while
+unknown or missing fields inside the business Pydantic output fail closed. A
+truncated response is terminal for that Predictor and never enters the adapter's
+single format fallback.
 
-There is one prompt text per Predictor and no renderer (#306 Phase 2). Until
+There is one instruction text per Predictor and no Tracefold-owned prompt
+renderer (#306 Phase 2): DSPy's public adapter renders the surrounding
+Signature and inputs while injecting that instruction unchanged. Until
 then the prompt was a layering — a sealed QualityKernel, nine ordered code-owned
 RulePacks, one bounded advisory slot the optimizer could write, and a final
 authority seal telling the model to resolve conflicts in that order — assembled
@@ -1033,9 +1037,19 @@ optimizer's proposal, which is the point — there is one author role now.
 An instruction carries no identity hash: a digest cannot help a model judge
 news, it was billed on every call, and carrying one meant a pure identity change
 rewrote the prompt. There is no demo section either. The DemoBank family is
-deleted rather than left empty, and the transport composes one system message
-and one user message from the instruction and the bounded fields, so there is no
-path by which a demo could reach a provider at all.
+deleted rather than left empty. `NativeNewsProgram` constructs exactly two named
+`dspy.Predict` objects with empty demos, so there is no path by which a demo can
+reach a provider.
+
+DSPy owns Predictor execution, request rendering, structured-output parsing and
+LiteLLM provider I/O. Tracefold's thin `AuditedConfiguredLM(dspy.BaseLM)` calls
+the public typed `LMRequest -> LMResponse` contract and owns only safe request
+identity, usage/cost and one terminal disposition per physical call. It provides
+sync execution for `dspy.GEPA` and genuine async execution for production; it
+does not construct HTTP, messages or `response_format`. Provider retry and cache
+are disabled. JSONAdapter may perform one format fallback per Predictor, so a
+common route uses exactly two calls, one route is capped at four, and a complete
+primary-to-fallback judgment is capped at eight.
 
 The factory owns route topology, slot roles, token ceilings, deadlines and
 breaker policy. The concrete model bound to each slot has a separate
@@ -1179,25 +1193,24 @@ drops silently.
 
 The Program factory owns the execution contract. A successful primary route
 normally makes two serial provider calls: EventSemantics, then ReaderCard.v2.
-The in-process normalizer and assembler make no provider request, and the
-non-restatement normalization spends no fast retry. One
-fast retry is shared by the entire route, so a retry consumed by the first
-Predictor is unavailable to the second and a route makes at most three calls.
-A retryable transport failure or a non-truncated unusable answer can spend that
-retry; `max_tokens` truncation cannot. The code-owned 20-second deadline
+The in-process normalizer and assembler make no provider request. DSPy's
+JSONAdapter may make one formatting fallback independently for either Predictor,
+so a route makes at most four calls. Provider errors do not trigger that fallback,
+and `max_tokens` truncation is terminal without another format call. The
+code-owned 20-second deadline
 applies to the whole route, not to each call. If primary still fails, fallback
-restarts the full graph with its own shared retry and route deadline; the
-complete chain therefore makes at most six visible provider attempts. Client-side
+restarts the full Program with its own route deadline; the complete chain
+therefore makes at most eight visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
-attempts. A verdict complete except for `novelty` can still be accepted as
-`new_fact` (`novelty_defaulted`) after the retry. A Program failure is
+attempts. Missing or invalid `novelty` fails closed; the historical
+`novelty_defaulted` behavior is not produced by v6. A Program failure is
 degraded, not silent: deterministic listing/telemetry and a grounded watchlist
 hit fail open on the wire headline; every other failure drops as
 `degraded_no_objective_guard`, even when the provider score or queue priority is
-high or the text contains macro words. Three
-consecutive retryable whole-chain failures open the default 60-second consumer
-circuit that also opens a
-`triage_circuit_open` incident (closed by the next success); an output failure
+high or the text contains macro words. Three consecutive retryable primary-route
+failures open the default 60-second in-process primary-route circuit, which
+skips directly to fallback. Separately, the consumer owns the durable
+whole-chain `triage_circuit_open` incident; an output failure
 (`news_program_output_truncated` when a Predictor hit `max_tokens`, or a
 typed Program output error on schema mismatch) is degraded but never
 counts toward the circuit and records the failing Predictor, finish reason,
@@ -1235,7 +1248,7 @@ the deterministic degraded fallback over the refreshed Gate facts, with no
 selected Program execution; a second evidence change before persistence raises
 `news_event_evidence_changed` for durable retry.
 The re-ask is a separate Program execution: the ordinary rare case is four
-provider calls total, while each execution independently retains the six-call,
+provider calls total, while each execution independently retains the eight-call,
 two-route ceiling. All work from both executions remains in audit and cost
 telemetry even when the first result is superseded or the second fails.
 `news_verdicts` atomically stores the verdict JSON, editorial envelope,
@@ -1250,7 +1263,8 @@ the told context as shown with event ids, selection tier and similarity,
 every initial/re-ask Program execution and which one was selected (when the
 persisted verdict came from the Program), `reask_reason`,
 `first_judgment`/`first_input_sha256`/`reask_failed` when re-asked,
-`verdict_sha256`, `editorial_sha256`, `novelty_defaulted`, and the final
+`verdict_sha256`, `editorial_sha256`, the historical `novelty_defaulted` field
+(always false for v6 output), and the final
 storyline key). Exact record/replay and every scoring path validate one typed
 `ScoredJudgment`; they never reconstruct editorial state from an independent
 verdict dict. Exact replay binds
@@ -1342,8 +1356,9 @@ text cannot become a target. Impact and polarity share one direction row, such a
 novelty is a badge immediately below the title (`🆕 新事实` or `🔄 新进展`). A progression names the previous
 headline immediately only when the optional post-delivery verifier is unavailable and an exact-fact retrieval or
 a stored title-similarity score of at least `0.50` supports it. With the verifier configured, the first message
-shows a one-line indented `关联确认中` child block without naming a parent. After the send receipt is durable, one bounded structured LLM
-call compares the current Event with at most eight selected told-ledger candidates. It confirms only the same
+shows a one-line indented `关联确认中` child block without naming a parent. After the send receipt is durable,
+one bounded structured Predictor compares the current Event with at most eight selected told-ledger candidates:
+the common path is one physical call and JSONAdapter may spend one format fallback. It confirms only the same
 concrete subject and event chain with a material new action, result, number, confirmation, reversal, or state
 change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
 run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
@@ -1470,11 +1485,13 @@ delivery, canary or promotion credential — and can emit only a bounded
 `PromptPatchV1`. That patch carries the two Predictor instructions and nothing
 else: the graph, the output schemas, the execution budget, the model slots and
 the policy are code, covered by `envelope_sha256`, and outside the write set. Since #306
-Phase 3 the optimizer calls `gepa.optimize` directly through a `GEPAAdapter`
-this repository owns, and evaluates a candidate by running the production
-Program over the frozen corpus — so "the optimized bytes are the production
-bytes" is structural rather than something a refactor-baseline test has to keep
-proving. GEPA cannot accept a review,
+Phase 3 the optimizer calls public `dspy.GEPA` with the production
+`NativeNewsProgram` as its student and `num_threads=1`. Frozen examples become
+`dspy.Example`; the metric returns `dspy.Prediction(score, feedback)`; and the
+winner is extracted only from the two named Predictor instructions with empty
+demos. A compile-only candidate guard validates proposal, mutation and merge
+instructions before the first task-model call. There is no direct GEPA import,
+private DSPy API or optimizer-owned Program adapter. GEPA cannot accept a review,
 register/deploy its output, move a stable pointer, or promote a candidate.
 #202 deleted the container platform that used to surround it — image, launcher,
 metered proxy sidecar, sandbox policy, tariff, build attestation — because it
@@ -1491,9 +1508,10 @@ the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
 *where* two instructions were produced. Nothing downstream ever needed that:
-`gepa.optimize` returns a `dict[str, str]` of named component texts, so the
-write-set is two strings and `run_gepa` refuses a winner that is not exactly the
-two. Rows written under the old chain stay in `news_learning_artifacts`
+public `dspy.GEPA` returns an optimized native Module, and `run_gepa` extracts
+only the two named Predictor instructions while refusing demos or any extra
+Predictor. The write-set is therefore still exactly two strings. Rows written
+under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
 
 What replaced provenance is binding, checked at registration by a party that did
