@@ -664,6 +664,14 @@
 | `blacklist_revision_at_fence` | `BIGINT` | True | `None` |
 | `blacklist_snapshot_sha256_at_fence` | `TEXT` | True | `None` |
 | `blacklist_snapshot_payload_at_fence` | `JSONB` | True | `None` |
+| `adopted_at_ms` | `BIGINT` | True | `None` |
+| `entry_fence_requested_at_ms` | `BIGINT` | True | `None` |
+| `submission_fence_version` | `TEXT` | True | `None` |
+| `submission_quantity` | `NUMERIC` | True | `None` |
+| `entry_quote_q1` | `JSONB` | True | `None` |
+| `entry_quote_q2` | `JSONB` | True | `None` |
+| `entry_submitted_at_ms` | `BIGINT` | True | `None` |
+| `entry_accepted_at_ms` | `BIGINT` | True | `None` |
 
 ## `trading_order_observations`
 
