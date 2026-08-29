@@ -65,22 +65,6 @@ def test_the_offline_entry_point_reaches_no_database_review_or_release_seam() ->
     assert not any(module.startswith("tracefold.news.storage") for module in modules)
 
 
-def test_the_research_package_cannot_reach_promotion_or_the_release_seam() -> None:
-    """Research scaffolding, structurally: it may read the corpus, and it names nothing that can ship.
-
-    This proves the absence of a direct import, not the absence of a write — the research plane reaches the
-    corpus through `CandidateEvaluator`, and a determined caller could reach further through it. What it
-    buys is that promoting a winner cannot be written here by accident.
-    """
-
-    forbidden = {"tracefold.news.release.canary", "tracefold.news.learning.optimizer"}
-    experiment = SRC / "news" / "learning" / "experiment"
-    for path in sorted(experiment.rglob("*.py")):
-        modules = _imports(path)
-        assert not (modules & forbidden), (path, sorted(modules & forbidden))
-        assert not any(module.startswith("tracefold.news.storage") for module in modules), path
-
-
 def test_the_learning_plane_never_reaches_into_the_release_plane() -> None:
     """#202 §8, the direction that makes the split real rather than cosmetic.
 

@@ -455,23 +455,17 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 uv run tracefold news learning baseline --from-ms START --to-ms END \
   --mode runtime_live --max-model-cases 30 --out /tmp/baseline-runtime.json
 
-# The research window (#193, flattened by #202). Outside the release plane
-# entirely: reads once as `serve`, writes only into the run directory. Freeze a
-# closed window, see where the local route disagrees with what shipped, and
-# draft the cases nobody has judged.
-uv run tracefold news learning snapshot --hours 24 \
-  --limit 500 --out .tracefold/runs/news-24h
-uv run tracefold news learning compare --run .tracefold/runs/news-24h \
-  --student qwen3-30b --teacher deepseek-v4-pro --max-model-cases 30 --resume
+# Draft the cases nobody has judged, over the ReviewDesk look-back window; a
+# human accepts or rewrites every rubric before it becomes truth.
 uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
-  --events-from .tracefold/runs/news-24h --out /tmp/drafts.json
+  --hours 24 --out /tmp/drafts.json
 
 # The golden path (#253). Freeze once, then `run` — readiness, the standalone
-# `compile_live` baseline over that exact corpus, the one optimization, and the
-# `run_summary.json` that says whether the two Stable numbers may be compared.
+# `compile_live` baseline over that exact corpus, and the one optimization,
+# composed in one process over one dataset SHA and one configured judge route.
 # It composes the three commands below and owns no second Objective Plan,
 # Metric, split, budget or optimizer. Exit 0 means ADVANCE; 1 means NO_OP or
-# REJECTED, both complete answers; 2 means the population identities disagree.
+# REJECTED, both complete answers.
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out artifacts/run-1/development.json
 uv run tracefold news learning run --development DATASET_SHA \
@@ -493,7 +487,7 @@ uv run tracefold news learning optimize --development DATASET_SHA \
   --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
 
-# Only after `run_summary.json` says terminal=ADVANCE, and only because a human
+# Only after `optimization_report.json` says terminal=ADVANCE, and only because a human
 # decided to test the candidate on examples it was never optimized against.
 uv run tracefold news release register --development DATASET_SHA \
   --candidate artifacts/run-1/optimization/prompt_candidate.json \
@@ -556,7 +550,7 @@ the four questions it answers are the whole plane: are there accepted examples,
 what did Stable score on them, did GEPA find an instruction worth testing, and
 does that instruction still win on examples it never saw. It is a composition —
 `readiness`, `baseline --dataset --mode compile_live`, `optimize` — into one
-directory, plus `run_summary.json`. Everything it adds is a check the three
+directory. Everything it adds is a check the three
 commands could not make about each other: the equivalence judge is
 `llm.news_compiler_reflection` rather than a model name retyped per command, the
 corpus bound is checked against readiness before a provider call is spent, and a
@@ -577,17 +571,15 @@ them as if they were one number:
   ValidationDataset frozen strictly after registration). Only this one answers
   generalization.
 
-`run_summary.json` publishes the first two side by side with `numeric_drift`
-and a `same_population` verdict over named checks — dataset SHA, episode
-projection root, representative set root and counts, both split roots, the whole
-metric receipt, the Program, and the task endpoint. Any check that disagrees
-makes `same_population` false and the command exit `2`: the two scalars are
-still written, because they are facts about two runs that happened, but the
-claim that they may be subtracted from each other is withheld. Two physical runs
-of one graph can differ in the last digits; that is reported, and it is not on
-its own evidence that a dataset identity is wrong. It also forwards readiness's
-`coverage` block — the frozen dataset's own sealed counts — so the corpus behind
-those numbers is readable in the same file.
+The separate `run_summary.json` comparability projection is gone (#343): with
+the three legs composed in one process over one dataset SHA and one configured
+judge route, same-population holds by construction rather than by a fourth
+document re-checking the other three. The standalone number lives in
+`baseline-compile-live.json`, the GEPA seed number in
+`optimization/optimization_report.json`, and the frozen dataset's own sealed
+`coverage` counts in `readiness.json`. Two physical runs of one graph can still
+differ in the last digits; that is a fact about two runs that happened, and it
+is not on its own evidence that a dataset identity is wrong.
 
 **When a corpus is big enough (#259).** Coverage decides it: independent
 connected fact clusters by role, at least one safety case, the required strata
@@ -598,8 +590,8 @@ two minutes apart across midnight were two and a hundred cases spread over 23 h
 inside one date were one, and combined with the active-bundle filter it made a
 Stable deployed this morning unusable until the calendar caught up. Phase A runs
 as soon as `news learning readiness` says `ready`, whatever the age of the
-bundle. `natural_day_n` and `window_duration_hours` remain in the dataset counts,
-the readiness `coverage` block and `run_summary.json` as diagnostics of case
+bundle. `natural_day_n` and `window_duration_hours` remain in the dataset counts and
+the readiness `coverage` block as diagnostics of case
 concentration — read together, since a 72 h freeze whose reviews all landed in
 one afternoon reads `1` and `72.0`; a corpus that concentrated is worth
 *looking* at, and observing several settled days before trusting a result is
@@ -630,15 +622,10 @@ rather than trusting the candidate's own summary, and refuses anything that
 disagrees. An `ADVANCE` is still not a release: future holdout, blind pairwise,
 shadow, canary and a human promotion are unchanged.
 
-`learning snapshot | compare` (#193) is what comes *before* spending a model
-budget, and it exists because the release plane's cycle is measured in days:
-freeze a closed window, compare arms on it, draft the cases nobody has judged,
-and read whether an optimization is worth running at all. Three properties make
-it safe to run beside a release plane, and `tests/news/test_news_experiment_loop.py`
-asserts each rather than arguing it: only an accepted review can score anything
-(a teacher draft is a proposal, never truth), a case nobody judged is named in
-the report rather than dropped from the denominator, and the package can no
-longer produce a candidate of its own.
+`learning snapshot | compare` — the #193 research fast loop of frozen run
+directories and per-arm comparison — was deleted in #343, along with the
+`tracefold.news.learning.experiment` package that carried it; `optimize` over a
+frozen corpus is the one research entry left.
 `tests/architecture/test_news_optimizer_boundary.py` names the one CLI module
 allowed to load the optimizer in process, and asserts what the optimizer itself
 can reach: no database session, no review plane, no canary, no promotion.

@@ -319,15 +319,12 @@ model sees cannot go on accruing evidence into the previous cohort. Rows
 append-only audit history. Only accepted `news_review_v4` evidence created in
 the running bundle's epoch and bound to that exact bundle is eligible for
 metric v5, compiler, replay or release gates.
-Beside that plane, and deliberately not in it, sits the operator's fast loop
-(`tracefold.news.learning.experiment`, #193). It freezes one closed window into
-a run directory on disk, compares arms on the frozen cases, and runs the same
-`run_gepa` core a trusted compile runs — in process, against endpoints named on
-the command line. It reads the database once as `serve` and writes nothing back:
-no verdict, no review, no dataset, no candidate, no activation. A run directory
-is not a second truth, and the release plane cannot read one. What it produces
-is a `tracefold.news.experiment_candidate.v1` marked `promotable: false`, which
-exists to tell an operator whether a sealed compile is worth spending.
+The operator fast loop that used to sit beside that plane
+(`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
+its on-disk run directories, snapshot/compare arm comparison and the
+`promotable: false` experiment candidate. Offline research now enters only
+through `news learning optimize` over a frozen development dataset, alone or
+composed by `news learning run`.
 
 `news_learning_retention_state` makes the bounded 90/365-day cold purge and
 its current backlog/error observable; the database function pins the current
@@ -361,11 +358,9 @@ tracefold.news
     optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
     evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
     ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
-    experiment/       operator run directories: frozen window and arm comparison
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
     canary.py         deterministic one-arm assignment and durable trip/close control
-  recording_replay.py sealed-corpus verification composition for exact Program re-execution
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
   delivery.py / control.py  cards, control commands
@@ -912,13 +907,13 @@ Triage is a deep semantic-judgment **Module**. Its only hot-path generation
 consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
 semantic-judgment **Seam**, and `NewsSemanticProgram` is the production
-**Adapter** there. Cold strict replay is an evaluator-side sealed-corpus
-verification composition seam, not a second production generation Interface:
-it scopes one persisted run's physical calls to the requested arm/case/trial,
-then re-executes the real arm-scoped `NewsSemanticProgram` graph. The graph
-still enters through `judge(TriageContext)`. A missing corpus or recording makes
-the verification evaluation `incomplete`/`UNKNOWN` without falling through to a
-live provider; an identity or tamper mismatch fails closed. This shape gives
+**Adapter** there. Recorded-arm replay is an evaluator-side composition seam,
+not a second production generation Interface: the default evaluation path
+re-executes the real arm-scoped `NewsSemanticProgram` graph with every
+Predictor call answered from the run's content-addressed recordings. The graph
+still enters through `judge(TriageContext)`. A missing recording makes the
+evaluation `incomplete` without falling through to a live provider; a request
+or identity mismatch is a miss, never live I/O. This shape gives
 the hot-path caller **Leverage** (one call owns graph execution, validation,
 fallback and audit) while keeping replay authority outside production
 generation. Its **Depth** is the amount of behavior hidden behind the single
@@ -1052,8 +1047,7 @@ temperature, choose JSON Schema, JSON-object, or prompt-only JSON, and add guard
 OpenAI-compatible body fields. There is no Kimi URL/model special case. Known
 provider defaults remain narrow (including MiniMax M3's valid sampling and JSON
 prompt envelope), while local and other models are configured through the same
-request block. The learning experiment student arm inherits the production
-endpoint request contract when it rebinds a model name.
+request block.
 
 The production registry resolves an image-carried SHA, never arbitrary database
 instructions, and the document is one `<program_sha256>.json` file. Loading
@@ -1454,8 +1448,10 @@ current-epoch / `news_review_v4` evidence, compares stable with exactly one decl
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
-content-addressed; replay mode must match request, Program and resolved runtime
-model identities exactly or fail. A frozen dataset accepts Event cases only
+content-addressed — retained as auditable forensic evidence — and the default
+replay path answers each arm from those recordings, surfacing a request or
+identity miss as an incomplete evaluation rather than falling through to live
+I/O. A frozen dataset accepts Event cases only
 from the exact active Program bundle cohort and records every Program,
 retrieval, runtime-model, execution and policy hash plus the reader-contract
 version; a mutable provider model alias is marked as mutable rather than
@@ -1592,16 +1588,16 @@ evidence.
 
 `news learning run` (#253) is the recommended way to reach a terminal report:
 one command that runs readiness, the standalone `compile_live` baseline and the
-one optimization over the same frozen corpus, and then publishes
-`run_summary.json`. That summary is a projection, not an authority — it reads
-what the three reports already published — and it exists to keep three different
-baselines apart. The **standalone** number is an independent physical run; the
-**GEPA seed** number is the seed Program's score inside the run that proposed
-against it, and is the real *before*; the **future test** number is Stable on
-accepted examples that did not exist when the candidate was made, and only the
-release plane's holdout stage can produce one. The summary publishes the first
-two with their difference and refuses to imply a comparison when dataset,
-representative set, split, metric, Program or model binding disagree.
+one optimization over the same frozen corpus, into one directory, exiting `0`
+only on `ADVANCE`. The three legs run in one process over one dataset SHA and
+one equivalence judge derived from `llm.news_compiler_reflection`, which is
+what keeps their numbers comparable; the separate `run_summary.json`
+comparability projection was deleted in #343. Three different baselines still
+carry three different meanings. The **standalone** number is an independent
+physical run; the **GEPA seed** number is the seed Program's score inside the
+run that proposed against it, and is the real *before*; the **future test**
+number is Stable on accepted examples that did not exist when the candidate was
+made, and only the release plane's holdout stage can produce one.
 
 Metric v5 (`tracefold.news.production_action_trade_relevance_v5`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster

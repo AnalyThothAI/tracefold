@@ -8,8 +8,9 @@ artifact anywhere that said whether the two numbers even described the same expe
 
 This command is that composition and nothing more. It calls the same `readiness`, the same
 `baseline --dataset --mode compile_live` and the same `optimize` an operator can still call one at a time,
-into one directory, and then publishes `run_summary.json` — the projection that answers whether the two
-Stable numbers are comparable, and what to do next.
+into one directory. The separate `run_summary.json` comparability projection was deleted in #343: with the
+three legs composed in one process over one dataset SHA and one configured judge route, same-population is
+true by construction, and the three underlying reports are the record.
 
 It defines no second Objective Plan, Metric, split, budget or optimizer. What it does own is the wiring
 those three commands could not check about each other:
@@ -33,29 +34,28 @@ from pathlib import Path
 from typing import Any
 
 from .news_learning_baseline import _handle_learning_baseline, _handle_learning_readiness
-from .news_learning_documents import _write_json
 
 _READINESS_FILE = "readiness.json"
 _BASELINE_FILE = "baseline-compile-live.json"
 _OPTIMIZATION_DIR = "optimization"
 _OPTIMIZATION_FILE = "optimization_report.json"
 _CANDIDATE_FILE = "prompt_candidate.json"
-_SUMMARY_FILE = "run_summary.json"
+# Written by pre-#343 runs; still cleared so a reused directory cannot present a stale comparability
+# verdict beside fresh reports.
+_LEGACY_SUMMARY_FILE = "run_summary.json"
 
 
 def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Readiness, standalone baseline, optimization, summary — in that order, into one directory."""
-
-    from tracefold.news.learning.run_summary import build_run_summary
+    """Readiness, standalone baseline, optimization — in that order, into one directory."""
 
     out = Path(str(args.out))
     out.mkdir(parents=True, exist_ok=True)
     # A directory is the record of *one* run. Every artifact of a previous one goes first, because a run
     # that stops early — a corpus readiness refuses, a provider failure in the baseline — otherwise leaves
-    # a fresh `readiness.json` beside the last run's report and candidate, with no summary to reveal that
-    # they came from different corpora. `optimize` clears its own stale candidate for the same reason.
+    # a fresh `readiness.json` beside the last run's report and candidate from different corpora.
+    # `optimize` clears its own stale candidate for the same reason.
     for stale in (
-        out / _SUMMARY_FILE,
+        out / _LEGACY_SUMMARY_FILE,
         out / _BASELINE_FILE,
         out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE,
         out / _OPTIMIZATION_DIR / _CANDIDATE_FILE,
@@ -66,7 +66,6 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
     # identity that would otherwise turn a planned run into an error only once readiness and the baseline
     # had already been paid for.
     judge_model = _reflection_judge_model(settings)
-    task_route = _task_route(settings)
 
     readiness = _readiness(settings, stable, out=out, development=development)
     baseline: dict[str, Any] | None = None
@@ -74,55 +73,24 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
         _require_full_corpus_budget(args, readiness)
         baseline = _baseline(args, settings, stable, out=out, development=development, judge_model=judge_model)
     # Run even on a corpus readiness refused: `optimize` rebuilds the same plan and returns a `REJECTED`
-    # terminal report before it touches an endpoint, so the summary's terminal is one the optimizer
-    # actually produced rather than a verdict this command invented from a readiness outcome.
+    # terminal report before it touches an endpoint, so the terminal outcome is one the optimizer actually
+    # produced rather than a verdict this command invented from a readiness outcome.
     optimization = _optimize(args, settings, stable, out=out, development=development)
 
     candidate = out / _OPTIMIZATION_DIR / _CANDIDATE_FILE
-    summary = build_run_summary(
-        development_dataset_sha=development,
-        readiness=readiness,
-        baseline=baseline,
-        optimization=optimization,
-        task_route=task_route,
-        artifacts={
-            "readiness": _READINESS_FILE,
-            "baseline": _BASELINE_FILE if baseline is not None else None,
-            "optimization": f"{_OPTIMIZATION_DIR}/{_OPTIMIZATION_FILE}",
-            "prompt_candidate": f"{_OPTIMIZATION_DIR}/{_CANDIDATE_FILE}" if candidate.is_file() else None,
+    advance = str(optimization.get("outcome")) == "ADVANCE"
+    return (0 if advance else 1), {
+        "ok": advance,
+        "data": {
+            "out": str(out),
+            "outcome": optimization.get("outcome"),
+            "reasons": list(optimization.get("reasons") or ()),
+            "readiness": str(out / _READINESS_FILE),
+            "baseline": str(out / _BASELINE_FILE) if baseline is not None else None,
+            "optimization": str(out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE),
+            "prompt_candidate": str(candidate) if candidate.is_file() else None,
         },
-    )
-    _write_json(str(out / _SUMMARY_FILE), summary)
-    # The summary is written whatever the verdict — a run whose two Stable numbers are not comparable is
-    # exactly the run an operator has to be able to read — but it is never *quoted* as a comparison: the
-    # exit code separates "no candidate" from "this pair of numbers proves nothing".
-    if summary["baseline"]["same_population"] is False:
-        return 2, {
-            "ok": False,
-            "error": {
-                "code": "news_learning_run_population_identity_mismatch",
-                "path": str(out / _SUMMARY_FILE),
-                "mismatched_checks": [
-                    check["name"] for check in summary["baseline"]["population_checks"] if check["status"] == "mismatch"
-                ],
-            },
-        }
-    advance = summary["optimization"]["terminal"] == "ADVANCE"
-    return (0 if advance else 1), {"ok": advance, "data": _stdout_summary(summary, path=out / _SUMMARY_FILE)}
-
-
-def _stdout_summary(summary: dict[str, Any], *, path: Path) -> dict[str, Any]:
-    """The summary an operator reads in the terminal: everything but the twelve-row check table.
-
-    Same convention `readiness` uses for its per-case dispositions. The rows are the evidence behind
-    `same_population` and they belong in the file; printing them would bury the four numbers this command
-    exists to show behind a wall of digests.
-    """
-
-    baseline = dict(summary["baseline"])
-    baseline["population_checks_written_to"] = str(path)
-    del baseline["population_checks"]
-    return {"path": str(path), **summary, "baseline": baseline}
+    }
 
 
 def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
@@ -238,29 +206,6 @@ def _reflection_judge_model(settings: Any) -> str:
     if reflection is None or not bool(getattr(reflection, "configured", False)):
         raise ValueError("news_learning_optimize_reflection_not_configured")
     return str(reflection.model)
-
-
-def _task_route(settings: Any) -> dict[str, str]:
-    """The task endpoint this run composes, fingerprinted the two ways the two reports fingerprint it.
-
-    The baseline records `configured_endpoint_model_v3` and the optimizer records
-    `model_execution_identity.v1` over the same endpoint, so the digests differ by construction. Resolving
-    the endpoint once here and computing both is what lets the summary check each report against the host
-    this run actually used instead of comparing two incomparable hashes.
-    """
-
-    from tracefold.app.learning_runtime import _endpoint_model_sha256, compose_news_program_runtime
-    from tracefold.news.learning.contracts import endpoint_fingerprint
-
-    composition = compose_news_program_runtime(settings)
-    if not composition.program_configured:
-        raise ValueError("news_program_baseline_compile_route_not_configured")
-    endpoint = composition.event_semantics_primary
-    return {
-        "model": str(endpoint.model_name),
-        "baseline_endpoint_sha256": _endpoint_model_sha256(endpoint),
-        "optimizer_endpoint_fingerprint": endpoint_fingerprint(str(endpoint.api_base)),
-    }
 
 
 def _error_code(payload: Mapping[str, Any], *, fallback: str) -> str:

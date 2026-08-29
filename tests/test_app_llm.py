@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from tracefold.app import learning_runtime
-from tracefold.app.cli.commands.news_learning_experiment import _arm_endpoint
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha
@@ -214,25 +213,6 @@ def test_news_runtime_composes_progression_review_from_the_event_model_endpoint(
     assert created[0]["model_name"] == "openai/triage-model"
     assert created[0]["max_tokens"] == 512
     assert created[0]["timeout"] == 12.0
-
-
-def test_news_experiment_student_inherits_the_production_request_controls() -> None:
-    settings = Settings.model_validate(
-        {
-            "llm": {
-                "api_key": "event-key",
-                "base_url": "http://127.0.0.1:8080/v1",
-                "news_triage_model": "local-model",
-                "request": {"send_temperature": False, "structured_output": "prompt_json"},
-            }
-        }
-    )
-
-    student = _arm_endpoint(settings, arm="student", model="local-model")
-
-    assert student.temperature is None
-    assert student.structured_output == "prompt_json"
-    assert student.model_kwargs == {}
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:

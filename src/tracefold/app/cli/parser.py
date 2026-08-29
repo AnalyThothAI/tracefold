@@ -219,41 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
-    # #193 PR-C. Closes the fast loop: a snapshot holds the window's *reviewed* Events, so drafting is for
-    # the rest of that same window rather than for whatever the last N hours happen to contain. The queue
-    # still does the selecting, so this inherits its stratified sampling and its task identity.
-    learning_draft.add_argument(
-        "--events-from",
-        default="",
-        help="draft the unjudged Events in this experiment run's window (replaces --hours)",
-    )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
-    # The operator's research loop, flattened out of its own `experiment` group (#202 §7). It kept a
-    # second command namespace because it used to produce a second kind of candidate; it does not any more,
-    # so a snapshot is simply a closed window an operator can score, and nothing here can propose anything.
-    experiment_snapshot = learning_subcommands.add_parser(
-        "snapshot", help="freeze one closed window into a run directory; never writes to the database"
-    )
-    experiment_snapshot.add_argument(
-        "--hours", type=_positive_int, default=24, help="width of the closed window ending at the settlement grace"
-    )
-    experiment_snapshot.add_argument("--limit", type=_positive_int, default=500)
-    experiment_snapshot.add_argument(
-        "--out", required=True, help="run directory to create, e.g. .tracefold/runs/news-24h"
-    )
-    experiment_compare = learning_subcommands.add_parser(
-        "compare", help="score a frozen snapshot under recorded / student / teacher and report the differences"
-    )
-    experiment_compare.add_argument("--run", required=True, help="run directory created by `snapshot`")
-    experiment_compare.add_argument("--student", required=True, help="student model, e.g. the local route")
-    experiment_compare.add_argument("--teacher", default="", help="optional reference model, e.g. deepseek-v4-pro")
-    experiment_compare.add_argument(
-        "--max-model-cases", type=_positive_int, required=True, help="hard bound on cases sent to a provider"
-    )
-    experiment_compare.add_argument("--semantic-judge", default="", help="equivalence judge model")
-    experiment_compare.add_argument(
-        "--resume", action="store_true", help="skip cases this run directory already answered"
-    )
     # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
     # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
     # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,
@@ -278,14 +244,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
     # #253 §7 Phase C. The one recommended path: readiness, the standalone `compile_live` baseline over the
-    # same frozen corpus, the one optimization, and the summary that says whether the two Stable numbers may
-    # be compared at all. It composes the three commands above and owns no Objective Plan, Metric, split,
-    # budget or optimizer of its own, which is why it carries their budget flags rather than defaults of
-    # its own. It takes no `--semantic-judge`: the judge is the configured compiler reflection route, so
-    # the baseline and GEPA cannot be handed two different rulers.
+    # same frozen corpus, and the one optimization, composed in one process over one dataset SHA. It owns
+    # no Objective Plan, Metric, split, budget or optimizer of its own, which is why it carries their
+    # budget flags rather than defaults of its own. It takes no `--semantic-judge`: the judge is the
+    # configured compiler reflection route, so the baseline and GEPA cannot be handed two different rulers.
     learning_run = learning_subcommands.add_parser(
         "run",
-        help="the recommended path: readiness -> standalone baseline -> optimize -> run_summary.json",
+        help="the recommended path: readiness -> standalone baseline -> optimize, into one directory",
     )
     learning_run.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_run.add_argument("--out", required=True, help="run directory for every artifact this run writes")
@@ -338,24 +303,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     learning_register.add_argument("--hypothesis", default="", help="what this candidate is expected to repair")
     learning_register.add_argument("--out", required=True, help="write the sealed candidate manifest")
-    learning_migrate = learning_subcommands.add_parser(
-        "migrate-corpus",
-        help="carry a stale-cohort development dataset forward by replaying the current arm (#300)",
-    )
-    learning_migrate.add_argument("--from-dataset", required=True, help="development dataset artifact SHA to carry")
-    learning_migrate.add_argument("--semantic-judge", required=True, help="card-equivalence judge model")
-    learning_migrate.add_argument(
-        "--max-model-cases",
-        type=_positive_int,
-        required=True,
-        help="hard bound on replayed cases; must cover the whole dataset",
-    )
-    learning_migrate.add_argument(
-        "--from-receipt",
-        default="",
-        help="freeze from an already-written migration receipt instead of replaying again",
-    )
-    learning_migrate.add_argument("--out", required=True, help="directory for the receipt and dataset manifest")
     learning_freeze = learning_subcommands.add_parser("freeze", help="freeze accepted reviews into a dataset")
     learning_freeze.add_argument("--role", choices=("development", "validation"), required=True)
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
@@ -378,12 +325,7 @@ def build_parser() -> argparse.ArgumentParser:
             execution_mode.add_argument(
                 "--live-program",
                 action="store_true",
-                help="run the assigned DSPy Program live and append per-Predictor recordings",
-            )
-            execution_mode.add_argument(
-                "--verify-recordings",
-                action="store_true",
-                help="strictly re-run an existing offline/holdout corpus without live provider calls",
+                help="run the assigned Program live and append per-Predictor recordings",
             )
             learning_eval.add_argument(
                 "--observation-manifest",

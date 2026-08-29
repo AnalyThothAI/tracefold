@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from argparse import Namespace
-from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any
 
 from tracefold.platform.config.loader import load_settings
 
@@ -18,14 +17,9 @@ from .news_learning_documents import (
     _read_json_or_yaml,
     _write_json,
 )
-
-if TYPE_CHECKING:
-    from tracefold.news.program.contracts import SemanticJudge
-
 from .news_learning_runtime import (
     _insert_learning_artifact,
     _learning_program_judges,
-    _learning_recording_replay_capability,
     _load_candidate_bundle,
 )
 
@@ -91,11 +85,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return _handle_learning_run(args, settings, stable)
         if action == "draft-reviews":
             return _handle_learning_draft_reviews(args, settings, stable)
-        if action == "migrate-corpus":
-            from .news_learning_baseline import _handle_learning_migrate_corpus
-
-            return _handle_learning_migrate_corpus(args, settings, stable)
-        if action in {"snapshot", "compare", "optimize"}:
+        if action == "optimize":
             from .news_learning_experiment import handle_research
 
             return handle_research(args, settings, stable)
@@ -275,12 +265,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             if candidate is None:
                 raise ValueError("news_learning_candidate_required")
             observation_manifest = str(getattr(args, "observation_manifest", "") or "") or None
-            verify_recordings = bool(getattr(args, "verify_recordings", False))
             if action == "shadow" and observation_manifest is None and not bool(args.live_program):
                 raise ValueError("news_learning_shadow_live_program_confirmation_required")
             stage = str(args.stage) if action == "evaluate" else action
-            if verify_recordings and stage not in {"offline", "holdout"}:
-                raise ValueError(f"news_learning_recording_verification_stage_unsupported:{stage}")
             request = EvaluationRequest(
                 development_dataset_sha=str(args.development),
                 validation_dataset_sha=str(args.validation) or None,
@@ -288,44 +275,21 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 stage=stage,
                 observation_manifest_sha=observation_manifest,
             )
-            recording_replay = None
-            if verify_recordings:
-                from tracefold.news.learning.evaluate import evaluation_run_sha
-
-                run_sha = evaluation_run_sha(
-                    request,
-                    stable_bundle_sha=stable.bundle_sha,
-                    candidate_sha=candidate.candidate_sha,
-                )
-                recording_replay = _learning_recording_replay_capability(
-                    conn,
-                    stable=stable,
-                    candidate=candidate,
-                    artifact_paths=artifact_paths,
-                    run_sha=run_sha,
-                )
-                judges: Mapping[tuple[Literal["stable", "candidate"], str], SemanticJudge] = {}
-            else:
-                judges = _learning_program_judges(
-                    conn,
-                    settings=settings,
-                    stable=stable,
-                    candidate=candidate,
-                    artifact_paths=artifact_paths,
-                    live=bool(getattr(args, "live_program", False)),
-                )
+            judges = _learning_program_judges(
+                conn,
+                settings=settings,
+                stable=stable,
+                candidate=candidate,
+                artifact_paths=artifact_paths,
+                live=bool(getattr(args, "live_program", False)),
+            )
             evaluator = CandidateEvaluator(
                 conn,
                 stable=stable,
                 judges=judges,
                 candidate_catalog=(candidate,),
             )
-            report = asyncio.run(
-                evaluator.evaluate(
-                    request,
-                    recording_replay=recording_replay,
-                )
-            )
+            report = asyncio.run(evaluator.evaluate(request))
             payload = report.model_dump(mode="json")
             _write_json(str(args.out), payload)
             code = 0 if report.gate_outcome == "pass" else 1

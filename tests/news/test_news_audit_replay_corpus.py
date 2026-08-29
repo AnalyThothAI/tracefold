@@ -76,7 +76,11 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #315 unifies the model-visible OUTPUT CONTRACT across endpoint modes. The configurable request-envelope
 # cut additionally records prompt-only JSON and its temperature/request behavior. Recorded mode makes no
 # provider call, so neither change can reach a score; only the identity block and report root move.
-_EXPECTED_REPORT_SHA256 = "07ee75d474f1614e9c5fe7cce654ccc277845f1d069a5af4840622d2f476e4bb"
+# #343 deletes the dead `policy_candidate_failure_clusters` from `learning/objective.py`, which the metric
+# receipt commits to whole. Swapping only that file's source hash back to its pre-#343 value and recomputing
+# the helper root reproduces the previous pin byte-for-byte, so exactly two receipt lines and this content
+# address move; every score, case result and dimension outcome below is untouched.
+_EXPECTED_REPORT_SHA256 = "663a1a297a73508d84aaef3ff08cfdbc8a8d0e5b92567b84b72f42805f3c05df"
 
 
 @pytest.fixture(scope="module")

@@ -283,9 +283,8 @@ instructions. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
 accept, deploy or promote. `tracefold news learning run` is the recommended
 entry: it runs readiness, the standalone baseline and the one optimization over
-that corpus and writes `run_summary.json`, which keeps the standalone, GEPA-seed
-and future-test baselines apart instead of leaving three different numbers to be
-quoted as one. Migration
+that corpus, composed in one process over one dataset SHA and one configured
+judge route, into one directory. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality
