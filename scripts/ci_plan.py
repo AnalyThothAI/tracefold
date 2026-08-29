@@ -192,7 +192,7 @@ def verify_plan(plan: Mapping[str, Any]) -> None:
     if base_sha is not None and not _HEX_SHA.fullmatch(str(base_sha)):
         raise ValueError("ci_plan_base_sha_invalid")
     lanes = plan.get("lanes")
-    if not isinstance(lanes, dict) or tuple(lanes) != REQUIRED_LANES:
+    if not isinstance(lanes, dict) or set(lanes) != set(REQUIRED_LANES):
         raise ValueError("ci_plan_lanes_invalid")
     for lane, decision in lanes.items():
         if not isinstance(decision, dict) or decision.get("status") not in {"required", "not_required"}:

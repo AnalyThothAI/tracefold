@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 import pytest
 
@@ -142,6 +143,18 @@ def test_plan_digest_rejects_tampering() -> None:
 
     with pytest.raises(ValueError, match="ci_plan_sha256_mismatch"):
         ci_plan.verify_plan(tampered)
+
+
+def test_plan_verification_survives_the_canonical_sorted_json_round_trip() -> None:
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=("README.md",),
+        tested_sha="1" * 40,
+        base_sha="0" * 40,
+    )
+    reloaded = json.loads(json.dumps(plan, sort_keys=True))
+
+    ci_plan.verify_plan(reloaded)
 
 
 def test_gate_requires_planned_jobs_and_rejects_unplanned_execution() -> None:
