@@ -267,10 +267,12 @@ function ReactionValue({ event, horizon }: { event: NewsFeedEvent; horizon: "1h"
 }
 
 /**
- * The admission answer, and a Case *link* when the frame authored one.
+ * The admission answer, and nothing else.
  *
  * Never a Case state and never an execution state: those are other aggregates, and a cell that carried
- * all three taught readers that a gate refusal and a policy refusal were the same kind of fact.
+ * all three taught readers that a gate refusal and a policy refusal were the same kind of fact. The
+ * Case *link* is in the expanded row rather than here, because the row itself is one button and an
+ * anchor nested inside a button is neither valid nor operable.
  */
 function AdmissionCell({ lookup }: { lookup: TradingAdmissionLookup }) {
   const copy = tradingAdmissionCellCopy(lookup);
@@ -278,14 +280,6 @@ function AdmissionCell({ lookup }: { lookup: TradingAdmissionLookup }) {
     <span className="news-oi-trading-cell" title={copy.title}>
       {copy.secondary ? <small>{copy.secondary}</small> : null}
       <b>{copy.primary}</b>
-      {copy.caseId ? (
-        <Link
-          onClick={(sink) => sink.stopPropagation()}
-          to={`${newsLeveragePath()}?case=${encodeURIComponent(copy.caseId)}`}
-        >
-          案例
-        </Link>
-      ) : null}
     </span>
   );
 }
@@ -299,6 +293,7 @@ function FrameDetail({
 }) {
   const referrer = useRouteReferrer();
   const symbol = event.oi?.symbol ?? "";
+  const caseId = admission.decision?.case_id ?? null;
   return (
     <div className="news-oi-detail">
       <div className="news-oi-detail-left">
@@ -313,6 +308,15 @@ function FrameDetail({
           {symbol ? (
             <Link className="news-oi-open" state={referrer} to={newsSymbolPath(symbol)}>
               代币页 {symbol} <ChevronRight aria-hidden />
+            </Link>
+          ) : null}
+          {/* The Case this Source authored, when it authored one. A link, never a restated decision. */}
+          {caseId ? (
+            <Link
+              className="news-oi-open"
+              to={`${newsLeveragePath()}?case=${encodeURIComponent(caseId)}`}
+            >
+              资本判定 <ChevronRight aria-hidden />
             </Link>
           ) : null}
         </span>

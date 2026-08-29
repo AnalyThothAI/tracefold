@@ -16,11 +16,18 @@
     font-size: var(--font-size-mono-meta);
   }
 
-  .trading-case-badge[data-state="INTENT_EMITTED"],
-  .trading-case-badge[data-state="ORDER_PREPARED"] {
+  /* The one admission answer that authored a Case. Everything else stays neutral: a refusal, a
+     research-only source and an unevaluated frame are three different facts and none of them is an
+     accent-worthy event. */
+  .trading-case-badge[data-gate="CASE_CREATED"] {
     border-color: var(--accent-border);
     background: var(--accent-soft);
     color: var(--accent-primary);
+  }
+
+  .trading-case-badge a {
+    color: inherit;
+    text-decoration: underline;
   }
 
   .trading-case-badge code {
