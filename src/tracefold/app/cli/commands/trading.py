@@ -7,6 +7,7 @@ from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
+from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1
 from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
@@ -33,19 +34,26 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         trading = repos.trading
 
         if command == "status":
-            decision = trading.decision_runtime() or {
-                "state": "FAULTED",
-                "heartbeat_at_ms": None,
-                "reason": "decision_runtime_missing",
-            }
-            runtime = trading.runtime_state() or {}
+            decision = trading.decision_runtime() or DecisionRuntimeV1(
+                state="FAULTED",
+                heartbeat_at_ms=None,
+                reason="decision_runtime_missing",
+                updated_at_ms=now,
+            )
+            capital = trading.capital_runtime() or CapitalRuntimeV1(
+                control="PAUSED", blacklist_revision=0, updated_at_ms=now
+            )
             return 0, {
                 "ok": True,
                 "data": {
-                    "decision": decision,
+                    "decision": {
+                        "state": decision.state,
+                        "heartbeat_at_ms": decision.heartbeat_at_ms,
+                        "reason": decision.reason,
+                    },
                     "capital": {
-                        "control": runtime.get("control", "PAUSED"),
-                        "blacklist_revision": int(runtime.get("blacklist_revision") or 0),
+                        "control": capital.control,
+                        "blacklist_revision": capital.blacklist_revision,
                     },
                     "bindings": [
                         binding.model_dump(mode="json") for binding in trading.binding_runtime_rows(now_ms=now)

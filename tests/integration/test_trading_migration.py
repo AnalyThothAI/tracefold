@@ -867,7 +867,9 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         conn = connect_postgres_test(read_only=False)
         repos = TradingRepository(conn)
 
-        assert repos.decision_runtime() == {
+        decision = repos.decision_runtime()
+        assert decision is not None
+        assert decision.model_dump(mode="json") == {
             "state": "DISABLED",
             "heartbeat_at_ms": None,
             "reason": "trading_disabled",

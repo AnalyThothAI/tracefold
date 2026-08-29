@@ -441,6 +441,63 @@ def test_real_trading_wiring_fault_fails_workers_startup_and_readiness(tmp_path:
 
 
 @pytest.mark.slow
+def test_real_missing_trading_authority_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_missing_authority",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "startup_failed"
+        conn = connect_postgres_test(read_only=False)
+        try:
+            decision = conn.execute("SELECT state, reason FROM trading_decision_runtime WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        assert dict(decision) == {"state": "DISABLED", "reason": "trading_disabled"}
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_lost_trading_authority_faults_decision_and_closes_running_workers_readiness(tmp_path: Path) -> None:
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_bindings",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        _wait_ready(process, port)
+        _wait_trading_binding_projection(("unconfigured", "unconfigured"))
+        conn = connect_postgres_test(read_only=False)
+        try:
+            conn.execute("DELETE FROM trading_runtime_state WHERE id = 1")
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "child_failed"
+        conn = connect_postgres_test(read_only=False)
+        try:
+            decision = conn.execute("SELECT state, reason FROM trading_decision_runtime WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        assert dict(decision) == {"state": "FAULTED", "reason": "decision_turn_fault"}
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
 def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> None:
     port = _free_port()
     process = _start_workers_process("control_transient_startup", port)

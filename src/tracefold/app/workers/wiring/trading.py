@@ -111,9 +111,11 @@ async def run_venue_catalog(
     while not stop_event.is_set():
         started = time.perf_counter()
         complete = True
-        published = 0
+        source_count = 0
+        target_count = 0
         try:
             for binding, fetch in fetchers:
+                source_count += 1
                 source: Literal["binance", "hyperliquid"] = "binance" if binding == "BINANCE_USDM" else "hyperliquid"
                 try:
                     instruments = await catalog.observe_provider(source=source, call=fetch())
@@ -122,14 +124,20 @@ async def run_venue_catalog(
                     await catalog.unavailable(binding=binding, reason=exc.code)
                 else:
                     await catalog.publish(binding=binding, instruments=instruments)
-                    published += 1
+                    target_count += len(instruments)
         except BaseException:
-            catalog.record_turn("error", time.perf_counter() - started, source_count=published)
+            catalog.record_turn(
+                "error",
+                time.perf_counter() - started,
+                source_count=source_count,
+                target_count=target_count,
+            )
             raise
         catalog.record_turn(
             "success" if complete else "partial",
             time.perf_counter() - started,
-            source_count=published,
+            source_count=source_count,
+            target_count=target_count,
         )
         wait = period_seconds if complete else min(period_seconds, VENUE_CATALOG_RETRY_SECONDS)
         with contextlib.suppress(TimeoutError):
@@ -145,8 +153,9 @@ async def run_capital_lane(
 ) -> None:
     """Poll `advance()` until the process stops. The lane owns no clock of its own.
 
-    An exception out of `advance()` is an infrastructure fault by construction — every business refusal
-    is a durable row — so it is logged and retried on the next tick rather than crashing the worker.
+    An exception out of `advance()` is an infrastructure fault by construction — every business
+    refusal is a durable row — so it terminates this business task and makes the Workers root fail
+    closed. Retrying here would leave process readiness green beside a FAULTED Decision Plane.
     """
 
     while not stop_event.is_set():
@@ -156,12 +165,17 @@ async def run_capital_lane(
             await lane.advance()
         except Exception:
             logger.exception("capital lane turn failed")
-        else:
-            outcome = "success"
+            if telemetry is not None:
+                telemetry.record_external_data_turn(
+                    "trading_capital_lane",
+                    outcome,
+                    time.perf_counter() - started,
+                )
+            raise
         if telemetry is not None:
             telemetry.record_external_data_turn(
                 "trading_capital_lane",
-                outcome,
+                "success",
                 time.perf_counter() - started,
             )
         with contextlib.suppress(TimeoutError):

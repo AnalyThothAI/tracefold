@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..catalog import VenueBinding, VenueBindingRuntime, VenueInstrumentCatalogSnapshotV1
+from ..catalog import DecisionRuntimeV1, VenueBinding, VenueBindingRuntime, VenueInstrumentCatalogSnapshotV1
 from .sql_values import _dumps
 
 
@@ -12,11 +12,11 @@ class CatalogStorage:
     conn: Any
 
     # ---------------------------------------------------------------- decision
-    def decision_runtime(self) -> dict[str, Any] | None:
+    def decision_runtime(self) -> DecisionRuntimeV1 | None:
         row = self.conn.execute(
             "SELECT state, heartbeat_at_ms, reason, updated_at_ms FROM trading_decision_runtime WHERE id = 1"
         ).fetchone()
-        return dict(row) if row is not None else None
+        return DecisionRuntimeV1.model_validate(dict(row)) if row is not None else None
 
     def set_decision_runtime(
         self,
@@ -113,10 +113,12 @@ class CatalogStorage:
             return False
         # Every Workers start re-projects credentials and is an activation boundary. A restart, a new
         # Key or a fingerprint change can therefore never inherit RUNNING capital from an old process.
-        self.conn.execute(
-            "UPDATE trading_runtime_state SET control = 'PAUSED', updated_at_ms = %s WHERE id = 1",
+        capital = self.conn.execute(
+            "UPDATE trading_runtime_state SET control = 'PAUSED', updated_at_ms = %s WHERE id = 1 RETURNING id",
             (int(now_ms),),
-        )
+        ).fetchone()
+        if capital is None:
+            raise RuntimeError("trading_runtime_state_missing")
         if credential_state == "unconfigured" and binding == "BINANCE_USDM":
             recovery = self.conn.execute(
                 "SELECT 1 FROM trading_intents "

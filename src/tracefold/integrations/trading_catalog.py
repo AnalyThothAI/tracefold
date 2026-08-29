@@ -6,6 +6,7 @@ keeping the adapters separate preserves the sibling business boundary while App 
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -34,6 +35,18 @@ async def fetch_binance_usdm_catalog(
 ) -> tuple[VenueInstrumentCatalogEntryV1, ...]:
     """Return every public USD-M instrument row, including inactive and malformed rows."""
 
+    try:
+        async with asyncio.timeout(_TIMEOUT_SECONDS):
+            return await _fetch_binance_usdm_catalog(transport=transport, base_url=base_url)
+    except TimeoutError:
+        raise VenueExpectedError("venue_timeout", venue="binance.usdm") from None
+
+
+async def _fetch_binance_usdm_catalog(
+    *,
+    transport: httpx.AsyncBaseTransport | None,
+    base_url: str,
+) -> tuple[VenueInstrumentCatalogEntryV1, ...]:
     async with _client(transport) as client:
         payload = await _get(client, f"{base_url.rstrip('/')}/fapi/v1/exchangeInfo", venue="binance.usdm")
     symbols = payload.get("symbols")
@@ -49,6 +62,18 @@ async def fetch_hyperliquid_perp_catalog(
 ) -> tuple[VenueInstrumentCatalogEntryV1, ...]:
     """Return every main/HIP-3 perp row; any missing DEX leaves the last-good snapshot active."""
 
+    try:
+        async with asyncio.timeout(_TIMEOUT_SECONDS):
+            return await _fetch_hyperliquid_perp_catalog(transport=transport, base_url=base_url)
+    except TimeoutError:
+        raise VenueExpectedError("venue_timeout", venue="hyperliquid.perp") from None
+
+
+async def _fetch_hyperliquid_perp_catalog(
+    *,
+    transport: httpx.AsyncBaseTransport | None,
+    base_url: str,
+) -> tuple[VenueInstrumentCatalogEntryV1, ...]:
     url = f"{base_url.rstrip('/')}/info"
     rows: list[VenueInstrumentCatalogEntryV1] = []
     async with _client(transport) as client:

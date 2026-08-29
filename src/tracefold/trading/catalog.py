@@ -41,6 +41,23 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class DecisionRuntimeV1(_Frozen):
+    """The durable Decision Plane heartbeat projected across the App seam."""
+
+    state: Literal["DISABLED", "FAULTED", "RUNNING", "STARTING"]
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
+
+
+class CapitalRuntimeV1(_Frozen):
+    """The narrow durable Capital control projected across the App seam."""
+
+    control: Literal["CLOSE_ONLY", "PAUSED", "RUNNING"]
+    blacklist_revision: int = Field(ge=0)
+    updated_at_ms: int
+
+
 class VenueBindingRuntime(_Frozen):
     """The public, secret-free runtime facts for one closed execution binding."""
 
@@ -211,13 +228,14 @@ class VenueCatalog:
         seconds: float,
         *,
         source_count: int,
+        target_count: int,
     ) -> None:
         if self._telemetry is not None:
             self._telemetry.record_external_data_turn(
                 "trading_venue_catalog",
                 outcome,
                 seconds,
-                target_count=2,
+                target_count=target_count,
                 source_count=source_count,
             )
 
@@ -256,7 +274,9 @@ class VenueCatalog:
 
 __all__ = [
     "CATALOG_SNAPSHOT_VERSION",
+    "CapitalRuntimeV1",
     "CatalogDatabasePort",
+    "DecisionRuntimeV1",
     "ProductKind",
     "VenueBinding",
     "VenueBindingRuntime",

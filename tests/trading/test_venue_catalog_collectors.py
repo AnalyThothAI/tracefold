@@ -4,8 +4,14 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
-from tracefold.integrations.trading_catalog import fetch_binance_usdm_catalog, fetch_hyperliquid_perp_catalog
+from tracefold.integrations import trading_catalog
+from tracefold.integrations.trading_catalog import (
+    VenueExpectedError,
+    fetch_binance_usdm_catalog,
+    fetch_hyperliquid_perp_catalog,
+)
 
 
 def test_binance_catalog_keeps_inactive_and_malformed_provider_rows() -> None:
@@ -61,3 +67,19 @@ def test_hyperliquid_catalog_preserves_dex_namespace() -> None:
     assert rows[0].canonical_namespace == "main"
     assert rows[1].canonical_namespace == "dex:xyz"
     assert rows[1].provider_instrument_id == "dex:xyz:XYZ-CL"
+
+
+def test_hyperliquid_catalog_enforces_one_deadline_across_its_request_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.006)
+        body = json.loads(request.content)
+        if body == {"type": "perpDexs"}:
+            return httpx.Response(200, json=[None, {"name": "xyz"}])
+        return httpx.Response(200, json={"universe": []})
+
+    monkeypatch.setattr(trading_catalog, "_TIMEOUT_SECONDS", 0.01)
+
+    with pytest.raises(VenueExpectedError, match="venue_timeout"):
+        asyncio.run(fetch_hyperliquid_perp_catalog(transport=httpx.MockTransport(handler)))

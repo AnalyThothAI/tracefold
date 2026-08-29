@@ -104,4 +104,5 @@ def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_othe
         'source="hyperliquid"} 1.0' in metrics
     )
     assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in metrics
-    assert 'tracefold_external_data_source_count{name="trading_venue_catalog"} 1.0' in metrics
+    assert 'tracefold_external_data_source_count{name="trading_venue_catalog"} 2.0' in metrics
+    assert 'tracefold_external_data_target_count{name="trading_venue_catalog"} 1.0' in metrics

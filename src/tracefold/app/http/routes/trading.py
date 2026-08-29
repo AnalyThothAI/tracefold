@@ -29,7 +29,7 @@ from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import VenueBindingRuntime
+from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntime
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -69,12 +69,15 @@ def get_trading_status(request: Request) -> Response:
     settings = runtime.settings
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        decision = repos.trading.decision_runtime() or {
-            "state": "FAULTED",
-            "heartbeat_at_ms": None,
-            "reason": "decision_runtime_missing",
-        }
-        capital = repos.trading.runtime_state() or {}
+        decision = repos.trading.decision_runtime() or DecisionRuntimeV1(
+            state="FAULTED",
+            heartbeat_at_ms=None,
+            reason="decision_runtime_missing",
+            updated_at_ms=now_ms,
+        )
+        capital = repos.trading.capital_runtime() or CapitalRuntimeV1(
+            control="PAUSED", blacklist_revision=0, updated_at_ms=now_ms
+        )
         bindings = repos.trading.binding_runtime_rows(now_ms=now_ms)
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
     policy = capital_lane_config(settings).policy
@@ -84,13 +87,13 @@ def get_trading_status(request: Request) -> Response:
                 "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
             },
             "decision": {
-                "state": str(decision["state"]),
-                "heartbeat_at_ms": decision.get("heartbeat_at_ms"),
-                "reason": decision.get("reason"),
+                "state": decision.state,
+                "heartbeat_at_ms": decision.heartbeat_at_ms,
+                "reason": decision.reason,
             },
             "capital": {
-                "control": str(capital.get("control") or "PAUSED"),
-                "blacklist_revision": int(capital.get("blacklist_revision") or 0),
+                "control": capital.control,
+                "blacklist_revision": capital.blacklist_revision,
             },
             "bindings": [_binding_runtime(row) for row in bindings],
             "policy": {
