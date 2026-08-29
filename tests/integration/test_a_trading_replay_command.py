@@ -92,7 +92,7 @@ def _expire_sol(connection: Any, *, now_ms: int) -> None:
     connection.commit()
 
 
-def _run_replay(connection: Any, tmp_path: Path) -> tuple[int, dict[str, Any]]:
+def _run_replay(connection: Any, tmp_path: Path) -> tuple[int, dict[str, Any], str]:
     home = tmp_path / "home"
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True)
@@ -120,16 +120,22 @@ def _run_replay(connection: Any, tmp_path: Path) -> tuple[int, dict[str, Any]]:
         text=True,
         timeout=30,
     )
-    return completed.returncode, json.loads(completed.stdout)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(
+            {"stdout": completed.stdout, "stderr": completed.stderr, "returncode": completed.returncode}
+        ) from exc
+    return completed.returncode, payload, completed.stderr
 
 
 def test_replay_handler_materializes_expiry_before_the_serve_snapshot(conn: Any, tmp_path: Any) -> None:
     now_ms = _db_now_ms(conn)
     _expire_sol(conn, now_ms=now_ms)
 
-    code, payload = _run_replay(conn, tmp_path)
+    code, payload, stderr = _run_replay(conn, tmp_path)
 
-    assert code == 0
+    assert code == 0, {"payload": payload, "stderr": stderr}
     assert payload["data"]["terminal"] == "OI_BAR_REPLAY_ATTRIBUTED"
     assert payload["data"]["summary"]["source_count"] == 0
     evidence = conn.execute(
@@ -151,10 +157,10 @@ def test_replay_handler_returns_stable_error_when_workers_cannot_materialize_exp
     conn.execute("REVOKE EXECUTE ON FUNCTION materialize_trading_blacklist_expiry() FROM tracefold_workers")
     conn.commit()
     try:
-        code, payload = _run_replay(conn, tmp_path)
+        code, payload, stderr = _run_replay(conn, tmp_path)
     finally:
         conn.execute("GRANT EXECUTE ON FUNCTION materialize_trading_blacklist_expiry() TO tracefold_workers")
         conn.commit()
 
-    assert (code, payload) == (1, {"ok": False, "error": "replay_authority_unavailable"})
+    assert (code, payload) == (1, {"ok": False, "error": "replay_authority_unavailable"}), stderr
     assert conn.execute("SELECT count(*) AS n FROM trading_replay_runs").fetchone()["n"] == receipts_before
