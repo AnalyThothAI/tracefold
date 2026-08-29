@@ -244,12 +244,19 @@ jobs:
           if-no-files-found: warn
 
   # Report-only (#373 PR 2). It combines the coverage data the fixed jobs already produced and prints
-  # standard coverage.py reports. It reads no JUnit, Vitest, or Playwright report, re-runs no test,
-  # and is deliberately absent from `ci-gate`'s dependencies: nothing here can pass or fail a merge.
+  # standard coverage.py reports. It reads no JUnit, Vitest, or Playwright report, and re-runs no test.
+  #
+  # Absence from `ci-gate`'s dependencies is only half of "report-only", and the missing half is the
+  # one that bites. `scripts/require_main_ci.py` requires the whole *workflow run* to have concluded
+  # `success`, not merely `ci-gate` — so a failure in any job of this workflow, required or not,
+  # would raise `main_ci_gate_not_full_plan` and refuse to deploy an otherwise green main.
+  # `continue-on-error` keeps a coverage failure out of the run's conclusion, which is what actually
+  # makes this job unable to decide anything.
   test-effectiveness:
     name: test-effectiveness
     needs: [quality-static, python-hermetic, postgres-behavior, migration, runtime-process, frontend]
     if: always()
+    continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

@@ -271,7 +271,6 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
 
     hit = _one_hit()
     strategy_id = str((hit.get("strategy") or {}).get("id") or "")
-    published_at_ms = int(_raw_message(hit).payload["observed_at_ms"])
     bus = RecordingBus()
     db = FaultInjectingDatabase(conn)
     receiver = OpenNewsReceiver(bus=bus, db=db, ws_client=None, history_client=None, recovery=None)
@@ -322,7 +321,14 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     conn.commit()
     assert [row["event_id"] for row in _events(conn)] == [row["event_id"] for row in after_recovery]
     assert _count(conn, "SELECT count(*) AS n FROM news_items WHERE source_item_key = %s", (str(hit["id"]),)) == 1
-    assert published_at_ms > 0
+    # The recovered Item is the artifact the outage lost, not a re-mint: its source identity is the
+    # status the frame pointed at, and it decodes to the instant the frame claimed.
+    artifact_id, artifact_published_at_ms = source_artifact_identity(str(hit["link"]))
+    stored = conn.execute(
+        "SELECT canonical_url FROM news_items WHERE source_item_key = %s", (str(hit["id"]),)
+    ).fetchone()
+    assert stored is not None
+    assert source_artifact_identity(str(stored["canonical_url"])) == (artifact_id, artifact_published_at_ms)
 
 
 # ------------------------------------------------------- Deduper: published to the broker, unmarked in the row

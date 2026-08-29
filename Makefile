@@ -144,17 +144,27 @@ test-ci: ## complete local verification; merge/release authority is exact-SHA ma
 # Report-only (#373 PR 2). Standard coverage.py combine and reports over the data the required
 # lanes already produced; it re-runs nothing, reads no JUnit/Vitest/Playwright report, and
 # adjudicates no pass/fail. Thresholds arrive in PR 3, from measured exact-main baselines.
+#
+# One shell, so the early return really returns: a lane that failed before reaching pytest
+# uploaded no data, `coverage combine` exits non-zero on an empty directory, and a report that
+# went red because there was nothing to report would be the one failure that is not about
+# coverage at all.
 ci-test-effectiveness:
-	@mkdir -p "$(TRACEFOLD_COVERAGE_DIR)"
-	@uv run python -m coverage combine
-	@uv run python -m coverage report
-	@echo "--- tracefold/news ---"
-	@uv run python -m coverage report --include='tracefold/news/*'
-	@echo "--- tracefold/trading ---"
-	@uv run python -m coverage report --include='tracefold/trading/*'
-	@uv run python -m coverage json -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.json"
-	@uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"
-	@uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
+	@set -eu; \
+		mkdir -p "$(TRACEFOLD_COVERAGE_DIR)"; \
+		if ! ls "$(TRACEFOLD_COVERAGE_DIR)"/.coverage* >/dev/null 2>&1; then \
+			echo "no coverage data was produced; nothing to report"; \
+			exit 0; \
+		fi; \
+		uv run python -m coverage combine; \
+		uv run python -m coverage report; \
+		echo "--- tracefold/news ---"; \
+		uv run python -m coverage report --include='tracefold/news/*'; \
+		echo "--- tracefold/trading ---"; \
+		uv run python -m coverage report --include='tracefold/trading/*'; \
+		uv run python -m coverage json -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.json"; \
+		uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"; \
+		uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property

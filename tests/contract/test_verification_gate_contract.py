@@ -78,10 +78,13 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
 def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
     """#373 PR 2 is measurement without authority: no merge power, no execution, no re-adjudication.
 
-    The two halves are independent and both matter. `ci-gate` not depending on it is what keeps a
-    coverage regression from blocking a merge before a threshold has been measured. Its running no
-    test runner is what keeps it from becoming a second execution truth beside the fixed jobs — a
-    report that re-runs a suite can disagree with the suite, and then the repository has two answers.
+    Three independent halves, and the third is the one that is easy to miss. `ci-gate` not depending
+    on it keeps a coverage regression from blocking a merge. Its running no test runner keeps it from
+    becoming a second execution truth beside the fixed jobs. And `continue-on-error` keeps it out of
+    the *workflow run's* conclusion — which matters because `scripts/require_main_ci.py` requires the
+    run to have concluded `success`, not merely `ci-gate`. Without it, a coverage job that failed on
+    a green main would raise `main_ci_gate_not_full_plan` and refuse the deployment, which is a great
+    deal of authority for a job whose comment says it has none.
     """
 
     workflow = _workflow()
@@ -91,7 +94,11 @@ def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
     assert REPORT_ONLY_JOB not in set(jobs["ci-gate"]["needs"])
     assert set(job["needs"]) == REQUIRED_JOBS
     assert job["if"] == "always()"
+    assert job["continue-on-error"] is True
     assert "services" not in job
+    for name, required in jobs.items():
+        if name in REQUIRED_JOBS or name == "ci-gate":
+            assert "continue-on-error" not in required, name
 
     commands = "\n".join(step.get("run", "") for step in job["steps"])
     assert 'test "$(git rev-parse HEAD)" = "$TESTED_SHA"' in commands

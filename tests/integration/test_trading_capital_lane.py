@@ -200,9 +200,13 @@ class CaseLifecycle(RuleBasedStateMachine):
     model and the row is a finding rather than a bookkeeping error in the model.
     """
 
-    def __init__(self, connection: Any) -> None:
+    def __init__(self, connection: Any, observed: dict[str, int]) -> None:
         super().__init__()
         self.conn = connection
+        # Shared across every example so the test can prove afterwards that the branches carrying the
+        # headline assertions were actually reached. An unreachable assertion passes exactly like a
+        # satisfied one, and a state machine is unusually good at hiding that.
+        self.observed = observed
         self.repos = repositories_for_connection(connection)
         self.clock = NOW
         # case_id -> the run_id currently believed to hold the lease, and its expiry.
@@ -243,17 +247,32 @@ class CaseLifecycle(RuleBasedStateMachine):
         case_id = str(row["case_id"])
         assert case_id not in self.decided, "a terminal Case must never be claimable again"
         assert row["state"] == CaseState.RUNNING.value
+        self.observed["reclaimed" if self.holders.get(case_id, (None, 0))[0] is not None else "claimed"] += 1
         self.holders[case_id] = (run_id, self.clock + LEASE_MS)
+
+    def _undecided(self) -> list[str]:
+        """Cases the model believes are still decidable, held ones first.
+
+        Both matter. Targeting a *decided* Case makes `settle_case` correctly refuse forever, and the
+        rule quietly becomes a no-op that proves nothing; targeting one nobody holds makes the
+        "current holder" branch unreachable, so the assertion that only the holder may terminalise a
+        Case never runs. Sorting by "has a live run" puts the interesting case first.
+        """
+
+        undecided = sorted(set(self.holders) - set(self.decided))
+        return sorted(undecided, key=lambda case_id: self.holders[case_id][0] is None)
 
     @rule(
         state=st.sampled_from(sorted(state.value for state in CURRENT_TERMINAL_STATES)),
         use_current_holder=st.booleans(),
+        pick=st.integers(min_value=0, max_value=8),
     )
-    @precondition(lambda self: bool(self.holders))
-    def settle_a_case(self, state: str, use_current_holder: bool) -> None:
+    @precondition(lambda self: bool(set(self.holders) - set(self.decided)))
+    def settle_a_case(self, state: str, use_current_holder: bool, pick: int) -> None:
         """Terminalise with either the run that holds the lease, or a run that used to."""
 
-        case_id = sorted(self.holders)[0]
+        undecided = self._undecided()
+        case_id = undecided[pick % len(undecided)]
         held_by, _expiry = self.holders[case_id]
         run_id = held_by if (use_current_holder and held_by is not None) else uuid.uuid4().hex
         with self.repos.transaction():
@@ -271,6 +290,38 @@ class CaseLifecycle(RuleBasedStateMachine):
             assert run_id == held_by, "only the run that holds the Case may terminalise it"
             assert case_id not in self.decided, "a terminal Case cannot be decided twice"
             self.decided[case_id] = state
+            self.observed["settled"] += 1
+        else:
+            self.observed["refused"] += 1
+
+    @rule()
+    @precondition(lambda self: bool(self.decided))
+    def try_to_redecide_a_terminal_case(self) -> None:
+        """A decided Case, its own run, a second answer — and the database must refuse it.
+
+        Deliberate rather than incidental. `settle_case` carries two predicates and they fail
+        differently: `run_id` stops the wrong worker, and `state IN ('PENDING','RUNNING')` stops the
+        *right* worker from answering twice — the returning worker that was inside a commit while
+        something else terminalised the Case. Only a rule that re-offers an already-decided Case with
+        the run that decided it can reach the second one, and a rule that only ever picks undecided
+        Cases never will.
+        """
+
+        case_id = sorted(self.decided)[0]
+        held_by, _expiry = self.holders[case_id]
+        with self.repos.transaction():
+            settled = self.repos.trading.settle_case(
+                case_id=case_id,
+                run_id=held_by or "",
+                state=CaseState(self.decided[case_id]),
+                policy_decision="long",
+                policy_reason="policy_long",
+                capital_disposition="blocked",
+                capital_reason="credentials_unconfigured",
+                now_ms=self.clock,
+            )
+        assert not settled, "a terminal Case cannot be decided twice, not even by the run that decided it"
+        self.observed["redecide_refused"] += 1
 
     @rule()
     def let_every_lease_expire(self) -> None:
@@ -329,17 +380,27 @@ class CaseLifecycle(RuleBasedStateMachine):
 def test_the_case_lifecycle_holds_under_any_sequence_of_workers_leases_and_clocks(conn) -> None:
     """Bounded on purpose: every step is real SQL, so the budget buys interleavings, not iterations."""
 
+    observed = dict.fromkeys(("claimed", "reclaimed", "settled", "refused", "redecide_refused"), 0)
     run_state_machine_as_test(
-        lambda: CaseLifecycle(conn),
+        lambda: CaseLifecycle(conn, observed),
         settings=settings(
-            max_examples=25,
-            stateful_step_count=12,
+            max_examples=30,
+            stateful_step_count=20,
             deadline=None,
             derandomize=True,
             database=None,
             suppress_health_check=[HealthCheck.function_scoped_fixture],
         ),
     )
+
+    # Every branch the invariants depend on was exercised. Without this the module could pass while
+    # `settle_case` silently refused every call — which is what it does if the rule targets a Case
+    # nobody holds, and the failure looks identical to success.
+    assert observed["claimed"] > 0
+    assert observed["reclaimed"] > 0, "an expired lease must be reclaimable, and must have been"
+    assert observed["settled"] > 0, "the holder-terminalises path must be reachable"
+    assert observed["refused"] > 0, "the stale-run refusal must be reachable"
+    assert observed["redecide_refused"] > 0, "the terminal-state refusal must be reachable"
 
 
 # ------------------------------------------------------------------ the pre-#360 authority matrix
