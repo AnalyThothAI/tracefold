@@ -99,7 +99,7 @@ class ExperimentCase(_ExactModel):
     """
 
     # Constrained because it is used as a filename. Left as `min_length=1` it accepted `../../../pwned`,
-    # and `write_compared` would have written outside the run root the safe-directory check guards.
+    # and `write_compared` would have written outside the run root the run-directory check guards.
     case_sha256: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
     cluster_id: str = Field(min_length=1)
     stratum: str = Field(min_length=1)
@@ -120,7 +120,7 @@ class ExperimentRun:
     def __init__(self, root: Path, *, create: bool = False) -> None:
         """`create` only for `snapshot`. The three read commands must not conjure the run they were given."""
 
-        self.root = _safe_directory(root, create=create)
+        self.root = _run_directory(root, create=create)
 
     @property
     def manifest_path(self) -> Path:
@@ -200,28 +200,36 @@ def case_root_sha256(cases: Sequence[ExperimentCase]) -> str:
     return canonical_sha(sorted(case.case_sha256 for case in cases))
 
 
-def _safe_directory(root: Path, *, create: bool) -> Path:
-    """Resolve a run root, refusing a traversal or a symlink *before* anything is created."""
+def _run_directory(root: Path, *, create: bool) -> Path:
+    """The operator's own run directory.
+
+    #319 removed the traversal and symlink armouring: this path comes from the operator's own command
+    line on their own machine. What remains is the check that catches a typo — reading a run that is not
+    there — which is an ordinary usability failure rather than a defence.
+    """
 
     requested = Path(root)
-    if ".." in requested.parts or requested.is_symlink():
-        raise ValueError("news_experiment_run_path_invalid")
     if create:
-        requested.mkdir(parents=True, exist_ok=True, mode=0o700)
+        requested.mkdir(parents=True, exist_ok=True)
     elif not requested.is_dir():
         raise ValueError("news_experiment_run_directory_missing")
-    resolved = requested.resolve(strict=True)
-    if not resolved.is_dir():
-        raise ValueError("news_experiment_run_path_invalid")
-    return resolved
+    # Resolved, though no longer *armoured*: the snapshot manifest takes its name from `root.name`, and
+    # `--run .` or `--run some/path/..` would otherwise yield "" or ".." and fail a pydantic pattern at
+    # the end of a full window freeze. Resolution is about naming the directory, not about refusing one.
+    return requested.resolve()
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:
-    """Atomic and no-follow, so a half-written run directory is never mistaken for a complete one."""
+    """Atomic, so a half-written run directory is never mistaken for a complete one.
+
+    `O_EXCL` stays for the reason it does on the artifact write: a unique temporary that already exists
+    means two runs are writing one directory, and that must fail rather than interleave. `O_NOFOLLOW`
+    went with #319.
+    """
 
     document = canonical_json(dict(value)) + "\n"
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         encoded = document.encode("utf-8")
         written = 0
@@ -238,8 +246,6 @@ def _write_json(path: Path, value: Mapping[str, Any]) -> None:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"news_experiment_run_file_invalid:{path.name}")
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError(f"news_experiment_run_file_invalid:{path.name}")

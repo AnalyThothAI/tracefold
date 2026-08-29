@@ -34,7 +34,6 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
 from .runtime import (
-    _HIGH_CONFIDENCE_SECRET_PATTERNS,
     _MODEL_BINDING_SLOTS,
     _UNTRUSTED_EVENT_CLOSE,
     _UNTRUSTED_EVENT_OPEN,
@@ -46,37 +45,26 @@ from .runtime import (
     PredictorName,
     _estimated_tokens,
     _ExactModel,
-    _reject_duplicate_keys,
-    _reject_json_constant,
     _reject_nonfinite_json,
-    _reject_unsafe_state,
     _require_nfc,
 )
 from .seed import seed_instruction
 
-# Injection and credential shapes, not authority claims. #306 Phase 2 retired the authority patterns with
-# the layering they policed: with one text per Predictor there is no lower-authority section for a sentence
-# to claim to outrank, and the patterns' real effect was to refuse ordinary editorial prose — "never emit
-# push for a scheduled item" is exactly the kind of rule a reviewed instruction is made of. What is left is
-# the set of things that are never editorial content at any authority: a template engine, a script tag, a
-# URL, a credential header, and a prompt-injection opener.
-_FORBIDDEN_INSTRUCTION_MARKERS: tuple[str, ...] = (
-    "{{",
-    "{%",
-    "{#",
-    "<script",
-    "api_key",
-    "authorization:",
-    "bearer ",
-    "://",
-    "ignore previous",
-    "ignore all previous",
-    "disregard previous",
-)
-
 
 def validate_program_instruction(value: str) -> str:
-    """Apply the code-owned safety bounds to one complete Predictor instruction.
+    """The bounds one complete Predictor instruction must satisfy to be optimizable.
+
+    Three of them, and each one is here because the optimization loop needs it, not because a text could
+    be hostile (#319). NFC because two encodings of the same characters hash differently and the whole
+    cohort model rests on that hash. The byte and token ceilings because every call pays for this text and
+    an unbounded instruction breaks the context and the budget. Non-empty because there is no such thing as
+    a Predictor with no prompt.
+
+    What went with #319: an injection-marker blacklist (`{{`, `<script`, `://`, "ignore previous") and a
+    credential-shape scan. Both policed a text authored by the operator or proposed by GEPA in a system
+    with one human and no second principal to be injected *into*, and the blacklist's real effect was to
+    refuse ordinary editorial prose — a URL in an example, a brace in a JSON illustration. What decides
+    whether a proposed instruction is good here is the metric and the canary, not a substring table.
 
     The same function for both authors, deliberately. A human editing `seed.py` and an optimizer proposing
     a replacement are writing the same string, and the instruction proposer calls this while the model that
@@ -91,11 +79,6 @@ def validate_program_instruction(value: str) -> str:
         or _estimated_tokens(value) > PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS
     ):
         raise ValueError("news_program_instruction_too_large")
-    folded = value.casefold()
-    if any(marker in folded for marker in _FORBIDDEN_INSTRUCTION_MARKERS):
-        raise ValueError("news_program_instruction_unsafe")
-    if any(pattern.search(value) for pattern in _HIGH_CONFIDENCE_SECRET_PATTERNS):
-        raise ValueError("news_program_instruction_secret")
     return value
 
 
@@ -265,26 +248,30 @@ def apply_program_patch(
 
 
 class ProgramStrategyArtifactCodec:
-    """Strict codec for the sole supported artifact representation: one canonical JSON document."""
+    """The one artifact representation: canonical JSON out, ordinary JSON in.
+
+    Writing stays canonical because `program_sha256` is a hash of the document and a hash needs one
+    serialization. Reading no longer *enforces* canonicality, rejects duplicate keys, or re-checks that a
+    parse round-trips (#319): those defended against a document somebody tampered with, and in a
+    single-operator system with no adversary the artifact on disk is the one this repository shipped.
+
+    What survives is the check that carries business weight: the hash. `ProgramStrategyArtifactV1`
+    recomputes it on validation, so a file whose bytes do not match its identity still fails to load —
+    that is not tamper-proofing, it is the property the whole cohort model rests on.
+    """
 
     @classmethod
     def _json_object(cls, document: str | bytes, *, kind: str) -> dict[str, Any]:
         try:
             text = document.decode("utf-8") if isinstance(document, bytes) else document
-            raw = json.loads(
-                text,
-                object_pairs_hook=_reject_duplicate_keys,
-                parse_constant=_reject_json_constant,
-            )
+            raw = json.loads(text)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             raise ValueError(f"news_program_{kind}_json_invalid") from exc
         if not isinstance(raw, dict):
             raise ValueError(f"news_program_{kind}_must_be_object")
-        canonical_document = canonical_json(raw)
-        if text not in {canonical_document, canonical_document + "\n"}:
-            raise ValueError(f"news_program_{kind}_json_noncanonical")
+        # A non-finite float has no canonical JSON form, so it would break the hash rather than attack
+        # anything. Kept for that reason alone.
         _reject_nonfinite_json(raw)
-        _reject_unsafe_state(raw)
         return raw
 
     @classmethod
@@ -293,18 +280,14 @@ class ProgramStrategyArtifactCodec:
         if raw.get("schema_version") != PROGRAM_SCHEMA_VERSION:
             raise ValueError("news_program_artifact_version_unsupported")
         try:
-            artifact = ProgramStrategyArtifactV1.model_validate(raw)
+            return ProgramStrategyArtifactV1.model_validate(raw)
         except ValidationError as exc:
             raise ValueError("news_program_artifact_schema_invalid") from exc
-        if canonical_json(raw) != canonical_json(artifact.model_dump(mode="json")):
-            raise ValueError("news_program_artifact_round_trip_mismatch")
-        return artifact
 
     @staticmethod
     def encode(artifact: ProgramStrategyArtifactV1) -> str:
         payload = artifact.model_dump(mode="json")
         _reject_nonfinite_json(payload)
-        _reject_unsafe_state(payload)
         if artifact.program_sha256 != artifact.computed_sha256():
             raise ValueError("news_program_artifact_hash_mismatch")
         return canonical_json(payload) + "\n"
@@ -313,19 +296,15 @@ class ProgramStrategyArtifactCodec:
     def load(cls, path: str | None = None) -> ProgramStrategyArtifactV1:
         if path is None:
             return load_stable_program_artifact()
-        requested = Path(path)
-        if ".." in requested.parts:
-            raise ValueError("news_program_artifact_path_invalid")
+        # The path armouring went, but its error *contract* has to stay: the CLI catches
+        # `(ValueError, PermissionError, RuntimeError)` and turns a coded failure into exit 2 with a named
+        # error. A bare `read_text` on a candidate whose artifact root was cleaned out would escape as
+        # `FileNotFoundError` and surface as a traceback instead.
         try:
-            candidate = requested.resolve(strict=True)
+            document = Path(path).read_text(encoding="utf-8")
         except OSError as exc:
             raise ValueError("news_program_artifact_path_invalid") from exc
-        if requested.absolute() != candidate or requested.is_symlink() or not candidate.is_file():
-            raise ValueError("news_program_artifact_path_invalid")
-        artifact = cls.decode(candidate.read_text(encoding="utf-8"))
-        if candidate.name != f"{artifact.program_sha256}.json":
-            raise ValueError("news_program_artifact_file_identity_mismatch")
-        return artifact
+        return cls.decode(document)
 
 
 def load_stable_program_artifact() -> ProgramStrategyArtifactV1:
@@ -336,54 +315,23 @@ def load_stable_program_artifact() -> ProgramStrategyArtifactV1:
 
 
 def _programs_resource_root() -> Any:
-    package_root = importlib.resources.files("tracefold.news.program")
-    root = package_root.joinpath("resources")
-    if not isinstance(root, Path):
-        # Zip/importlib Traversables have no filesystem symlink surface.  Their
-        # bytes still pass the same strict registry and artifact codec below.
-        return root
-    if not isinstance(package_root, Path):
-        raise ValueError("news_program_registry_path_invalid")
-    try:
-        resolved_package_root = package_root.resolve(strict=True)
-        resolved = root.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("news_program_registry_path_invalid") from exc
-    if (
-        package_root.is_symlink()
-        or root.is_symlink()
-        or resolved.parent != resolved_package_root
-        or not resolved.is_dir()
-    ):
-        raise ValueError("news_program_registry_path_invalid")
-    return resolved
+    """The package's own resources directory.
 
+    #319 removed the symlink, `..` and `resolve(strict=True)` armouring that used to wrap this. It
+    defended against a planted path inside the application's own installed package — an attacker who
+    already had write access to the code being run.
+    """
 
-def _verified_resource_file(root: Any, name: str) -> Any:
-    child = root.joinpath(name)
-    if not isinstance(root, Path) or not isinstance(child, Path):
-        return child
-    try:
-        resolved_root = root.resolve(strict=True)
-        resolved_child = child.resolve(strict=True)
-    except (OSError, RuntimeError) as exc:
-        raise ValueError("news_program_artifact_path_invalid") from exc
-    if (
-        child.is_symlink()
-        or child.absolute() != resolved_child
-        or resolved_child.parent != resolved_root
-        or not resolved_child.is_file()
-    ):
-        raise ValueError("news_program_artifact_path_invalid")
-    return resolved_child
+    return importlib.resources.files("tracefold.news.program").joinpath("resources")
 
 
 def _load_program_registry() -> dict[str, Any]:
-    root = _programs_resource_root()
-    registry_resource = _verified_resource_file(root, "registry.json")
-    if not registry_resource.is_file():
-        raise ValueError("news_program_registry_path_invalid")
-    raw = ProgramStrategyArtifactCodec._json_object(registry_resource.read_text(encoding="utf-8"), kind="registry")
+    registry_resource = _programs_resource_root().joinpath("registry.json")
+    try:
+        document = registry_resource.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("news_program_registry_path_invalid") from exc
+    raw = ProgramStrategyArtifactCodec._json_object(document, kind="registry")
     if set(raw) != {"stable", "images"} or not isinstance(raw["images"], list):
         raise ValueError("news_program_registry_schema_invalid")
     images = [str(value) for value in raw["images"]]
@@ -401,11 +349,12 @@ def load_program_artifact(program_sha256: str) -> ProgramStrategyArtifactV1:
     registry = _load_program_registry()
     if identity not in registry["images"]:
         raise ValueError("news_program_artifact_not_registered")
-    root = _programs_resource_root()
-    image = _verified_resource_file(root, f"{identity}.json")
-    if not image.is_file():
-        raise ValueError("news_program_artifact_path_invalid")
-    artifact = ProgramStrategyArtifactCodec.decode(image.read_text(encoding="utf-8"))
+    image = _programs_resource_root().joinpath(f"{identity}.json")
+    try:
+        document = image.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError("news_program_artifact_path_invalid") from exc
+    artifact = ProgramStrategyArtifactCodec.decode(document)
     if artifact.program_sha256 != identity:
         raise ValueError("news_program_artifact_file_identity_mismatch")
     return artifact
@@ -414,20 +363,16 @@ def load_program_artifact(program_sha256: str) -> ProgramStrategyArtifactV1:
 def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, artifact_root: Path) -> str:
     """Persist one already trusted/applied artifact document atomically."""
 
-    requested_root = Path(artifact_root)
-    if ".." in requested_root.parts or requested_root.is_symlink():
-        raise ValueError("news_program_compile_artifact_root_invalid")
-    requested_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        root = requested_root.resolve(strict=True)
-    except OSError as exc:
-        raise ValueError("news_program_compile_artifact_root_invalid") from exc
-    if not root.is_dir() or requested_root.absolute().resolve() != root:
-        raise ValueError("news_program_compile_artifact_root_invalid")
+    root = Path(artifact_root)
+    root.mkdir(parents=True, exist_ok=True)
     document = ProgramStrategyArtifactCodec.encode(artifact)
     destination = root / f"{artifact.program_sha256}.json"
     if destination.exists():
-        if ProgramStrategyArtifactCodec.load(str(destination)) != artifact:
+        # Write verification, not tamper defence, and #319's own criterion keeps it: a truncated or
+        # older-encoder `<sha>.json` already in the artifact root would otherwise be reported as a
+        # successful write and stamped into the candidate manifest, surfacing much later as an opaque
+        # schema error against a file this run believed it had produced.
+        if destination.read_text(encoding="utf-8") != document:
             raise ValueError("news_program_compile_artifact_collision")
         return str(destination)
     temporary = root / f".{artifact.program_sha256}.{uuid.uuid4().hex}.tmp"
@@ -437,13 +382,26 @@ def write_program_candidate_artifact(artifact: ProgramStrategyArtifactV1, *, art
     except Exception:
         temporary.unlink(missing_ok=True)
         raise
-    if ProgramStrategyArtifactCodec.load(str(destination)) != artifact:
+    if destination.read_text(encoding="utf-8") != document:
         raise ValueError("news_program_compile_artifact_write_verification_failed")
     return str(destination)
 
 
 def _write_exclusive(path: Path, document: str) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    """Create and write one file, refusing to open an existing one.
+
+    `O_NOFOLLOW` went with #319; `O_EXCL` stays, but not for the reason an earlier version of this
+    docstring gave. It claimed exclusive creation is what stops two concurrent compilers corrupting one
+    artifact — that was wrong, and review caught it. Every caller passes a uuid-unique temporary that
+    cannot collide, and the destination is published by `os.rename`, which overwrites silently. The
+    property that actually protects the destination is the content verification in
+    `write_program_candidate_artifact`, which this commit restores.
+
+    What `O_EXCL` does here is narrower and still worth its one flag: it refuses to write into a
+    temporary that somehow already exists rather than truncating it.
+    """
+
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         encoded = document.encode("utf-8")
         written = 0

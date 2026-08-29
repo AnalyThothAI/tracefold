@@ -30,6 +30,7 @@ handed cannot drift.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -44,7 +45,25 @@ from ...integrations.chat_completions import (
     post_chat_completion,
 )
 from ..artifact_identity import canonical_json, canonical_sha
-from .runtime import _HIGH_CONFIDENCE_SECRET_PATTERNS, _ExactModel
+from .runtime import _ExactModel
+
+# Kept by explicit operator decision when #319 removed every other secret scan, and worth recording why,
+# because the reason is not the one the name suggests. What these catch here is not an attacker: it is a
+# provider handing our own credential back in its error body — `Invalid API key: sk-…` is ordinary provider
+# behaviour — which would then land in `news_verdicts.trace`, a table that is backed up, pasted into
+# issues and loaded into notebooks under a 365-day retention. That is an accident class, not an attack
+# class, so "single operator, no adversary" does not dispose of it. It lives here rather than in
+# `runtime.py` because `provider_error_detail` is now its only consumer, and a module that scans nothing
+# should not own a scanner.
+_HIGH_CONFIDENCE_SECRET_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (
+    re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{16,}\b"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b", re.IGNORECASE),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+)
 
 _RETRYABLE_MARKERS: Final[tuple[str, ...]] = (
     "timeout",
@@ -66,6 +85,24 @@ _RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({408, 409, 425, 429, 500, 5
 # OpenAI-compatible servers that have never heard of it. Anything else an operator writes — including a
 # genuine `vendor/model` identifier — is sent through unchanged.
 _WIRE_MODEL_PREFIX: Final[str] = "openai/"
+
+# Every field `chat_request_body` composes. `response_format` is on the list because a caller that set it
+# through `model_kwargs` would silently drop the structured-output constraint the output contract depends
+# on — the answer would still fail validation in `graph.py`, but as a parse error rather than as the
+# configuration mistake it is.
+_OWNED_MODEL_KWARGS: Final[frozenset[str]] = frozenset(
+    {
+        "api_key",
+        "api_base",
+        "base_url",
+        "max_tokens",
+        "messages",
+        "model",
+        "response_format",
+        "stream",
+        "temperature",
+    }
+)
 
 StructuredOutputMode = Literal["json_schema", "json_object", "prompt_json"]
 
@@ -123,13 +160,6 @@ class RuntimeModelIdentity(_ExactModel):
                 }
             ),
         )
-
-    @model_validator(mode="after")
-    def _binding_matches_fields(self) -> RuntimeModelIdentity:
-        expected = canonical_sha({"provider": self.provider, "model": self.model, "model_sha256": self.model_sha256})
-        if self.binding_sha256 != expected:
-            raise ValueError("news_program_runtime_binding_identity_mismatch")
-        return self
 
 
 class ProviderCallMetrics(_ExactModel):
@@ -189,6 +219,29 @@ _OUTPUT_CONTRACT: Final[str] = (
     "match this JSON schema exactly; every field the schema marks required must be present.\n"
     "{schema}"
 )
+
+
+def reject_owned_model_kwargs(model_kwargs: Mapping[str, Any] | None, *, code: str) -> dict[str, Any]:
+    """Refuse operator `model_kwargs` that would silently overwrite a field this package composes.
+
+    Business correctness, not security, so it survives #319: an operator who sets `response_format`
+    through `model_kwargs` does not get an attack, they get a JSON-schema constraint quietly dropped and a
+    parse error three layers away that reads like a model failure. The guard turns that into the
+    configuration mistake it is, at construction, naming the key.
+
+    One implementation for the three callers — the Predictor transport, the metric judge and the reflection
+    LM — because they compose the same envelope and three copies of one list drift apart one key at a time.
+    Each passes its own error code, which is the only thing that ever differed between them.
+
+    `extra_body` is spread into the request body last, so its keys face the same guard: otherwise the
+    escape hatch overrides exactly the fields the guard names.
+    """
+
+    extras = dict(model_kwargs or {})
+    overlap = _OWNED_MODEL_KWARGS.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
+    if overlap:
+        raise ValueError(f"{code}:{','.join(sorted(overlap))}")
+    return extras
 
 
 def system_message(instruction: str, *, output_field: str, output_model: type[BaseModel]) -> str:
@@ -315,16 +368,6 @@ class PredictorRequest(_ExactModel):
     upstream_sha256: str | None = None
     inputs: dict[str, Any]
 
-    @model_validator(mode="after")
-    def _runtime_identity_matches(self) -> PredictorRequest:
-        RuntimeModelIdentity(
-            provider=self.runtime_provider,
-            model=self.runtime_model,
-            model_sha256=self.runtime_model_sha256,
-            binding_sha256=self.runtime_binding_sha256,
-        )
-        return self
-
     @property
     def request_sha256(self) -> str:
         return canonical_sha(self.model_dump(mode="json"))
@@ -436,27 +479,7 @@ class ChatCompletionsPredictorAdapter:
         structured_output: StructuredOutputMode | None = None,
         transport: Any = None,
     ) -> None:
-        extras = dict(model_kwargs or {})
-        # Every field this class composes. `response_format` is on the list because a caller that set it
-        # through `model_kwargs` would silently drop the JSON-schema constraint the output contract depends
-        # on — the answer would still fail validation in `graph.py`, but as a parse error rather than as
-        # the configuration mistake it is.
-        owned = {
-            "api_key",
-            "api_base",
-            "base_url",
-            "max_tokens",
-            "messages",
-            "model",
-            "response_format",
-            "stream",
-            "temperature",
-        }
-        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
-        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
-        overlap = owned.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
-        if overlap:
-            raise ValueError(f"news_program_runtime_model_kwargs_owned:{','.join(sorted(overlap))}")
+        extras = reject_owned_model_kwargs(model_kwargs, code="news_program_runtime_model_kwargs_owned")
         self._model_name = str(model_name)
         self._wire_model = wire_model_name(self._model_name)
         self._api_key = str(api_key)
@@ -533,8 +556,6 @@ class ChatCompletionsPredictorAdapter:
         )
 
     async def invoke(self, request: PredictorRequest, spec: PredictorSpec) -> PredictorResponse:
-        if request.runtime_binding_sha256 != self._runtime.binding_sha256:
-            raise PredictorAdapterError("news_program_runtime_binding_mismatch")
         body = self.request_body(spec, request.inputs)
         started = time.perf_counter()
         try:
@@ -637,12 +658,21 @@ def choice_content(payload: Mapping[str, Any]) -> str | None:
 
 
 def provider_error_detail(payload: Mapping[str, Any] | None) -> str | None:
-    """A bounded, secret-scrubbed summary of one provider error body.
+    """A bounded, scrubbed summary of one provider error body.
 
-    Provider-authored text, so it is scrubbed with the same high-confidence secret patterns the artifact
-    loader applies and capped, then carried on the failed attempt's trace — the difference between reading
-    "This response_format type is unavailable now" in the audit row and reproducing the request offline to
-    learn the same thing (#310).
+    Three behaviours with three different justifications, separated here because #319 nearly took all of
+    them out under one name:
+
+    - the `code: message` extraction is why the field exists — the difference between reading "This
+      response_format type is unavailable now" in an audit row and reproducing the request offline (#310);
+    - the 200-byte cap is a *resource* control, not a security one. A provider may answer with a whole
+      HTML page or a stack trace, once per failed attempt, into a JSONB column retained for a year. It
+      survives every threat model because it was never about a threat;
+    - the substitution is ledger hygiene, kept by operator decision (#319): providers echo credentials
+      into 401/403 bodies, which is an accident rather than an attack and so is not disposed of by
+      removing the adversary from the model.
+
+    Excluded from `_recording_verification_projection` either way, so none of this reaches a replay hash.
     """
 
     if not isinstance(payload, Mapping):
@@ -786,6 +816,8 @@ class RecordReplayPredictorAdapter:
                 if isinstance(raw_recording, PredictorRecording)
                 else PredictorRecording.model_validate(raw_recording)
             )
+            # Keyed-by-its-own-hash: a corpus whose key and payload disagree would silently address the
+            # wrong recording, which is a corruption the replay cannot otherwise see.
             recorded_sha = str(recording.request.get("request_sha256") or "")
             if request_sha != recorded_sha:
                 raise ValueError("news_program_recording_request_identity_mismatch")
@@ -818,23 +850,14 @@ class RecordReplayPredictorAdapter:
         recording = self._recordings.get(request.request_sha256)
         if recording is None:
             raise PredictorAdapterError("news_program_recording_missing")
-        expected = {
-            "program_version": request.program_version,
-            "program_sha256": request.program_sha256,
-            "context_sha256": request.context_sha256,
-            "predictor": request.predictor,
-            "attempt": request.attempt,
-            "route": request.route,
-            "request_sha256": request.request_sha256,
-            "model_binding": request.model_binding,
-            "runtime_provider": request.runtime_provider,
-            "runtime_model": request.runtime_model,
-            "runtime_model_sha256": request.runtime_model_sha256,
-            "runtime_binding_sha256": request.runtime_binding_sha256,
-            "upstream_sha256": request.upstream_sha256,
-        }
-        if any(recording.request.get(key) != value for key, value in expected.items()):
-            raise PredictorAdapterError("news_program_recording_request_identity_mismatch")
+        # Addressing *is* the check (#319). `request_sha256` is the canonical hash of the whole
+        # `PredictorRequest` — every field the old thirteen-way comparison re-checked is already inside
+        # it — so a recording found under this key cannot disagree about them. Re-listing the fields was
+        # a second implementation of the hash that had to be edited whenever the request gained one.
+        #
+        # The response's binding is checked because it is *not* addressed by the request hash: a recording
+        # whose reply came from a different model than its request names is a corrupt pair, and replay is
+        # the one place that can still notice.
         if recording.response.runtime_binding_sha256 != request.runtime_binding_sha256:
             raise PredictorAdapterError("news_program_recording_model_identity_mismatch")
         return recording.response
@@ -868,6 +891,7 @@ __all__ = [
     "choice_content",
     "provider_call_metrics",
     "provider_error_detail",
+    "reject_owned_model_kwargs",
     "response_format",
     "structured_output_mode",
     "system_message",

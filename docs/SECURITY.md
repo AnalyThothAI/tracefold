@@ -135,33 +135,52 @@ Analyst stage removed in #57. The card's Chinese text is the Triage verdict's
 provider exists. Item identity, Event identity, Gate admission, storyline keys,
 `decide()` and feed ordering remain deterministic.
 
-The only loadable semantic image is one canonical, content-addressed
+The only loadable semantic image is one content-addressed
 `news_program_strategy_artifact_v1` JSON document carried in the application
 image as `<program_sha256>.json` and selected by its code-owned registry. It
 holds a schema version and the two complete Predictor instructions;
-`program_sha256` is the canonical hash of exactly those three values. The loader
-re-verifies that hash and the schema, applies the instruction bounds — NFC, byte and estimated-token
-size, template/script/URL/credential-header/injection markers, secret patterns
-(#306 Phase 2 retired the authority patterns with the layering they policed) —
-and rejects non-canonical or duplicate-keyed
-JSON, non-finite numbers, unsafe or secret-bearing keys, a symlinked or
-traversing path, and a file whose name is not its own root.
-Everything the loader used to re-verify component by component — RulePacks, the
-graph, Signatures, the Adapter, the normalizer/assembler contracts, the model
-route, the token and deadline budgets — is code, proved by shipping the image
-rather than by the package hashing itself. Its identity travels beside the
-artifact as the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the
-model.
-An optimizer's write set is those two instructions and nothing else; there is no
-DemoBank to write to, and the transport composes its two messages from the
-instruction and the bounded fields, so no demo path exists to reach a provider.
-Pickle, cloudpickle,
-dynamic Python/classes, arbitrary callbacks/history, endpoints, credentials and
-secret-bearing headers are forbidden artifact state; a database candidate is
-not executable merely because it was persisted. Production candidate images
-must pass normal code review and be shipped in the registry.
-There is no legacy Prompt executor or dynamic compatibility loader to bypass
-these checks; Prompt-era database fields are audit-only.
+`program_sha256` is the canonical hash of exactly those three values, and the
+loader re-verifies it. That check is not tamper-proofing — it is the property the
+cohort model rests on, since a file whose bytes disagree with its identity would
+make "which Program produced this evidence" unanswerable.
+
+Issue #319 removed the rest of what used to sit here, on the operator's ruling
+that this system's threat model is a single operator on a local network with an
+offline optimizer and no adversarial party. Gone: `..`/symlink/`resolve` path
+armouring, byte-exact canonical enforcement and round-trip re-checking on read,
+duplicate-key rejection, the filename-equals-sha check, recursive scanning for
+credential-shaped artifact state, and the injection-marker blacklist on
+instructions. Each defended against someone who could already write to the code
+being executed, and each cost something real — the canonical check refused a
+pretty-printed file, the blacklist refused ordinary editorial prose containing a
+URL.
+
+What the loader still applies to an instruction is NFC, a byte and
+estimated-token budget, and non-empty. None of the three is a defence: NFC
+because two encodings hash differently, the budget because every call pays for
+those bytes, non-empty because a Predictor without a prompt is not one.
+
+One secret-handling mechanism survives #319, by explicit operator decision, and
+it is worth naming because its reason is not the obvious one.
+`transport.provider_error_detail` substitutes credential-shaped text out of a
+provider's error body before that body is carried on a failed attempt's trace.
+What it catches is not an attacker: it is a provider handing our own key back —
+`Invalid API key: sk-…` is ordinary provider behaviour — into
+`news_verdicts.trace`, a table that is backed up, pasted into issues, and
+retained for a year. That is an accident, not an attack, so removing the
+adversary from the threat model does not dispose of it. The same function's
+200-byte cap is a resource control rather than a security one: a provider may
+answer with a whole HTML page, once per failed attempt, into a JSONB column.
+
+Everything else the Program runs on — the graph, Signatures, the Adapter, the
+normalizer and assembler, the model route, the token and deadline budgets — is
+code, proved by shipping the image. Its identity travels beside the artifact as
+the computed `envelope_sha256`; `docs/ARCHITECTURE.md` describes the model.
+An optimizer's write set is those two instructions and nothing else, so no demo
+or endpoint path exists to reach a provider. Production candidate images pass
+normal code review and are shipped in the registry; a database candidate is not
+executable merely because it was persisted, and Prompt-era database fields are
+audit-only.
 
 The GEPA optimizer is a cold manual development workflow, not a runtime
 Worker. Issue #202 deleted the container platform that used to surround it: the

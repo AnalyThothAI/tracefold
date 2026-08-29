@@ -398,22 +398,24 @@ def test_instruction_rejection_becomes_scorable_feedback_not_a_silent_zero() -> 
     )
     example = _compile_example(compiler_development_corpus()[0])
 
-    # A URL is one of the code-owned instruction bounds; the text is otherwise unremarkable.
+    # An oversized instruction trips a code-owned bound; the text is otherwise unremarkable. #319 removed
+    # the marker blacklist this used to trip, and the point under test is unchanged: a refusal has to reach
+    # the writer as scorable feedback rather than as a silent zero.
     batch = adapter.evaluate(
         [example],
         {
-            "event_semantics": "Consult https://example.invalid/rules before judging.",
+            "event_semantics": "Judge the filing on its own mechanism. " * 1400,
             "reader_card": artifact.reader_card_instruction,
         },
         capture_traces=True,
     )
 
     assert batch.scores == [0.0]
-    assert batch.outputs[0].instruction_rejected == "news_program_instruction_unsafe"
+    assert batch.outputs[0].instruction_rejected == "news_program_instruction_too_large"
     records = adapter.make_reflective_dataset({}, batch, ["event_semantics"])
     feedback = records["event_semantics"][0]["Feedback"]
-    assert "news_program_instruction_unsafe" in feedback
-    assert "Rewrite it without URLs" in feedback
+    assert "news_program_instruction_too_large" in feedback
+    assert "under 32768 bytes" in feedback
 
 
 class _RefusingAdapter:

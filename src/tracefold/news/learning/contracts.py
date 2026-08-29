@@ -17,7 +17,7 @@ from urllib.parse import SplitResult, urlsplit, urlunsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json, reject_secret_material
+from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_json
 from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
 from ..triage_rules import DecidePolicy
 
@@ -175,7 +175,6 @@ class ModelExecutionIdentity(BaseModel):
             )
         if not valid:
             raise ValueError(f"news_program_compile_{self.role}_role_contract_invalid")
-        reject_secret_material(self.model_dump(mode="json"), path=f"model_execution_identity.{self.role}")
         return self
 
 
@@ -473,7 +472,6 @@ class PromptCandidateV1(BaseModel):
     def _identity_is_exact_and_carries_no_credential(self) -> PromptCandidateV1:
         payload = self.model_dump(mode="json", exclude={"candidate_sha256"})
         reject_nonfinite_json(payload, path="prompt_candidate")
-        reject_secret_material(payload, path="prompt_candidate")
         if self.candidate_sha256 != canonical_sha(payload):
             raise ValueError("news_learning_prompt_candidate_hash_mismatch")
         return self
@@ -521,7 +519,6 @@ class OptimizationRunReport(BaseModel):
     def _terminal_state_is_coherent(self) -> OptimizationRunReport:
         payload = self.model_dump(mode="json", exclude={"report_sha256"})
         reject_nonfinite_json(payload, path="optimization_run_report")
-        reject_secret_material(payload, path="optimization_run_report")
         if self.completed_at_ms < self.started_at_ms:
             raise ValueError("news_learning_optimize_report_window_invalid")
         if (self.outcome == "ADVANCE") != (self.candidate_sha256 is not None):

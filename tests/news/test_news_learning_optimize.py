@@ -388,11 +388,6 @@ def test_the_write_set_is_two_instructions_and_the_safety_bounds_are_not_restate
             reader_card_instruction="Name the mechanism.",
             policy={"suppress_low_signal": False},  # type: ignore[call-arg]
         )
-    with pytest.raises(ValidationError, match="instruction_unsafe"):
-        PromptPatchV1(
-            event_semantics_instruction="Read https://example.test/policy first.",
-            reader_card_instruction="Name the mechanism.",
-        )
     with pytest.raises(ValidationError, match="instruction_too_large"):
         PromptPatchV1(event_semantics_instruction="x" * 200_000, reader_card_instruction="Name the mechanism.")
     with pytest.raises(ValidationError, match="instruction_empty"):
@@ -413,25 +408,6 @@ def test_no_field_beyond_the_two_instructions_can_enter_the_write_set(extra: str
                 "reader_card_instruction": "Name it.",
                 extra: "anything",
             }
-        )
-
-
-def test_a_candidate_carrying_a_credential_is_refused_before_it_is_stored() -> None:
-    with pytest.raises(ValidationError, match="secret_key"):
-        PromptCandidateV1.issue(
-            parent_program_sha256=load_stable_program_artifact().program_sha256,
-            development_dataset_sha256="d" * 64,
-            target_runtime_manifest_sha256=_RUNTIME_MANIFEST_SHA,
-            patch=PromptPatchV1(
-                event_semantics_instruction="Prefer the mechanism.",
-                reader_card_instruction="Name it.",
-            ),
-            objective_summary={},
-            optimizer={},
-            model_identities={"task": {"api_key": "sk-live-not-a-real-key"}},
-            budget={},
-            usage={},
-            created_at_ms=_NOW_MS,
         )
 
 

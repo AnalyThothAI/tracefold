@@ -58,6 +58,7 @@ from ..program.transport import (
     _is_retryable_exception,
     provider_call_metrics,
     provider_error_detail,
+    reject_owned_model_kwargs,
     wire_model_name,
 )
 from .contracts import (
@@ -272,8 +273,7 @@ class InstructionProposer:
                         "current_instruction_doc": (
                             f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n"
                             f"Code-owned instruction safety rejected it: {rejection}.\n"
-                            "Rewrite it without URLs, template braces, credential-shaped text or a "
-                            "prompt-injection opener, keep it valid NFC, and keep it under 32768 bytes."
+                            "Keep it valid NFC, non-empty, and under 32768 bytes."
                         ),
                         "dataset_with_feedback": examples,
                         "prompt_template": None,
@@ -305,9 +305,6 @@ def _instruction_rejection(text: str) -> str | None:
 
 # --- the bounded GEPA run (was `compiler/gepa.py`) ------------------------------------------------
 
-_OWNED_LM_KWARGS = frozenset(
-    {"api_key", "api_base", "base_url", "max_tokens", "messages", "model", "stream", "temperature"}
-)
 # The task route answers the Program's own schemas, so it keeps production's determinism: temperature 0 and
 # the route's own token ceiling. The reflection role does something else entirely — it reads a minibatch of
 # failures and writes a whole new instruction — and the guidance for it is the opposite on every axis. Until
@@ -317,10 +314,11 @@ _REFLECTION_TEMPERATURE = 1.0
 _TASK_TEMPERATURE = 0
 
 
+# The bounds a proposal can still fail (#319 removed the marker and credential codes with the checks that
+# raised them). Each one is a fact about the optimization loop rather than about a hostile text: a hash
+# needs one encoding, every call pays for these bytes, and a Predictor with no prompt is not a Predictor.
 _INSTRUCTION_REJECTIONS = (
     "news_program_instruction_too_large",
-    "news_program_instruction_unsafe",
-    "news_program_instruction_secret",
     "news_program_instruction_unicode_noncanonical",
     "news_program_instruction_empty",
 )
@@ -737,12 +735,7 @@ class ReflectionLM:
         model_kwargs: Mapping[str, Any] | None = None,
         transport: Any = None,
     ) -> None:
-        extras = dict(model_kwargs or {})
-        # `extra_body` is spread into the request body last, so its keys have to pass the same guard the
-        # top-level ones do — otherwise the escape hatch quietly overrides the very fields the guard names.
-        overlap = _OWNED_LM_KWARGS.intersection(set(extras) | set(dict(extras.get("extra_body") or {})))
-        if overlap:
-            raise ValueError(f"news_program_compile_model_kwargs_owned:{','.join(sorted(overlap))}")
+        extras = reject_owned_model_kwargs(model_kwargs, code="news_program_compile_model_kwargs_owned")
         self.model_name = str(model_name)
         self._wire_model = wire_model_name(self.model_name)
         self._api_key = str(api_key)
