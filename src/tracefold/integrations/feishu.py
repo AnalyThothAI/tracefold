@@ -14,6 +14,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from tracefold.news import ReaderDeliveryPresentation
+
 FEISHU_WEBHOOK_REQUEST_MAX_BYTES = 20 * 1024
 FEISHU_WEBHOOK_RATE_LIMIT_CODE = 11232
 _FEISHU_WEBHOOK_PATH_PREFIX = "/open-apis/bot/v2/hook/"
@@ -173,7 +175,16 @@ class FeishuNewsPushSender:
         self._client = FeishuWebhookClient(webhook_url=webhook_url, signing_secret=signing_secret, transport=transport)
         self._timestamp_seconds = timestamp_seconds or (lambda: int(time.time()))
 
-    def send_card(self, card: Mapping[str, Any]) -> dict[str, Any]:
+    def prepare(self) -> None:
+        """Feishu has no separate target preflight; keep the delivery lifecycle uniform."""
+
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        del presentation  # Feishu receives the stable reader card unchanged; rich context is adapter-only.
         try:
             receipt = self._client.send(dict(card), timestamp_seconds=self._timestamp_seconds())
         except FeishuDeliveryError as exc:

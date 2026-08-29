@@ -1,4 +1,4 @@
-"""Feishu card rendering — the reader contract (issue #57): one Event, one card, four lines (#113).
+"""Reader-card rendering — the delivery contract (issue #57): one Event, one card, four lines (#113).
 
     header  ⚡? headline_zh            (model: one complete headline incl. the decisive fact, Chinese)
     line 1  why_zh                     (model: why it matters now and to whom, Chinese)
@@ -30,9 +30,10 @@ import time
 from collections.abc import Mapping, Sequence
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from math import isfinite
-from typing import Any
+from typing import Any, Literal
 
-from .market_review.pricing import parse_price
+from .market_review.pricing import parse_price, return_bps
+from .models import ReaderMarketMovement, ReaderTradeTarget
 from .oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from .outcome import DIRECTION_ZH, MAGNITUDE_ZH, NOVELTY_ZH
 
@@ -41,6 +42,8 @@ _HANDLE_RE = re.compile(r"(?<!\w)@[\w]{1,32}")
 _MARKDOWN_RE = re.compile(r"[*_`#>\[\]()]")
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _SPACE_RE = re.compile(r"\s+")
+_LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
+_LINKABLE_VENUE_SYMBOL_RE = re.compile(r"^[A-Za-z0-9@][A-Za-z0-9@:/._-]{0,63}$")
 
 _DIRECTION_COLOR = {"bullish": "green", "bearish": "red", "neutral": "grey", "unclear": "grey"}
 _MAX_ASSETS = 4
@@ -130,6 +133,112 @@ def _format_change(value: object, basis: object) -> str:
     if not isfinite(pct):  # NaN / inf never reach a reader
         return ""
     return f"{label} {'+' if pct > 0 else ''}{pct:.2f}%"
+
+
+def reader_trade_targets(quotes: Sequence[Mapping[str, Any]]) -> tuple[ReaderTradeTarget, ...]:
+    """Typed, catalogue-backed contract identities for adapter-only reader actions."""
+
+    targets: list[ReaderTradeTarget] = []
+    for quote in quotes[:_MAX_ASSETS]:
+        if not isinstance(quote, Mapping):
+            continue
+        ticker = str(quote.get("requested_symbol") or "").strip()
+        symbol = str(quote.get("symbol") or "").strip()
+        base_symbol = str(quote.get("base_symbol") or "").strip()
+        venue = str(quote.get("venue") or "")
+        venue_symbol = str(quote.get("venue_symbol") or "").strip()
+        quote_asset = str(quote.get("quote_asset") or "").strip()
+        if venue.startswith("hl.") and venue not in {"hl.perp", "hl.spot"}:
+            target_venue = "hl.builder"
+        elif venue in {
+            "binance.perp",
+            "binance.spot",
+            "hl.perp",
+            "hl.spot",
+            "okx.perp",
+            "okx.spot",
+            "lighter.perp",
+            "lighter.spot",
+            "bitget.perp",
+            "bitget.spot",
+        }:
+            target_venue = venue
+        else:
+            continue
+        if (
+            _LINKABLE_TICKER_RE.fullmatch(ticker) is None
+            or _LINKABLE_TICKER_RE.fullmatch(base_symbol) is None
+            or _LINKABLE_VENUE_SYMBOL_RE.fullmatch(venue_symbol) is None
+            or not symbol
+        ):
+            continue
+        if venue.startswith("binance.") and (
+            ticker != base_symbol or symbol != base_symbol or venue_symbol != f"{base_symbol}{quote_asset}"
+        ):
+            continue
+        if venue.startswith("okx.") and not venue_symbol.startswith(f"{base_symbol}-"):
+            continue
+        targets.append(
+            ReaderTradeTarget(
+                ticker=ticker,
+                venue=target_venue,  # type: ignore[arg-type]
+                venue_symbol=venue_symbol,
+                base_symbol=base_symbol,
+                quote_asset=quote_asset,
+            )
+        )
+    return tuple(targets)
+
+
+def reader_market_movements(
+    assets: Sequence[str],
+    quotes: Sequence[Mapping[str, Any]],
+) -> tuple[ReaderMarketMovement, ...]:
+    """Reader returns measured against the prices selected for this exact push.
+
+    The fresh quote sampled immediately before send is the common endpoint. ``price_at_news`` anchors
+    “新闻后”; ``price_one_hour_before_push`` anchors the trailing “1h”. Historical Event-Reaction horizons
+    remain review data and never leak into these reader labels.
+    """
+
+    quote_by_ticker = {
+        str(quote.get("requested_symbol") or "").strip(): quote
+        for quote in quotes[:_MAX_ASSETS]
+        if isinstance(quote, Mapping) and str(quote.get("requested_symbol") or "").strip()
+    }
+    movements: list[ReaderMarketMovement] = []
+    for ticker in [str(asset).strip() for asset in assets[:_MAX_ASSETS] if str(asset).strip()]:
+        quote = quote_by_ticker.get(ticker, {})
+        current = parse_price(quote.get("price")) if quote.get("state") == "fresh" else None
+        news_anchor = parse_price(quote.get("price_at_news"))
+        hour_anchor = parse_price(quote.get("price_one_hour_before_push"))
+        after_news_bps = return_bps(news_anchor, current) if current is not None and news_anchor is not None else None
+        return_1h_bps = return_bps(hour_anchor, current) if current is not None and hour_anchor is not None else None
+        one_hour_state: Literal["available", "unavailable"] = (
+            "available" if return_1h_bps is not None else "unavailable"
+        )
+        change_24h_bps: int | None = None
+        change_pct = quote.get("change_pct")
+        if (
+            quote.get("state") == "fresh"
+            and quote.get("change_basis") == "rolling_24h"
+            and isinstance(change_pct, int | float)
+            and not isinstance(change_pct, bool)
+            and isfinite(float(change_pct))
+        ):
+            change_24h_bps = int(
+                (Decimal(str(change_pct)) * Decimal(100)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            )
+        movements.append(
+            ReaderMarketMovement(
+                ticker=ticker,
+                after_news_bps=after_news_bps,
+                return_1h_bps=return_1h_bps,
+                change_24h_bps=change_24h_bps,
+                one_hour_state=one_hour_state,
+            )
+        )
+    return tuple(movements)
 
 
 def _quote_line(quotes: Sequence[Mapping[str, Any]]) -> str:
@@ -331,4 +440,11 @@ def render_first_card(
     }
 
 
-__all__ = ["card_assets", "reader_assets", "render_first_card", "sanitize_ai_text"]
+__all__ = [
+    "card_assets",
+    "reader_assets",
+    "reader_market_movements",
+    "reader_trade_targets",
+    "render_first_card",
+    "sanitize_ai_text",
+]

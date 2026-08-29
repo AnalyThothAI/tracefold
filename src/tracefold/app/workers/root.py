@@ -506,18 +506,20 @@ async def _graceful_cleanup(
     components: _Components,
 ) -> None:
     try:
-        db.close_business_admission()
         finite.close_admission()
         if components.news_pipeline is not None:
-            await _within(components.news_pipeline.close(), started_at)
+            await _within(components.news_pipeline.drain(), started_at)
         if components.trading_pipeline is not None:
             await _within(components.trading_pipeline.close(), started_at)
         if components.news_bus is not None:
             await _within(components.news_bus.close(), started_at)
+        db.close_business_admission()
         if not await db.drain_business(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("worker_database_business_drain_timeout")
         if not await finite.drain(timeout_seconds=_remaining(started_at)):
             raise RuntimeError("finite_operation_drain_timeout")
+        if components.news_pipeline is not None:
+            await _within(components.news_pipeline.close(), started_at)
         finite.close()
     except TimeoutError as exc:
         raise RuntimeError("graceful_deadline_exceeded") from exc

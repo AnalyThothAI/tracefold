@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from tracefold.app import learning_runtime
+from tracefold.app.cli.commands.news_learning_experiment import _arm_endpoint
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.artifact_identity import canonical_sha
@@ -65,6 +66,59 @@ def test_qwen_disables_thinking_via_chat_template_kwargs() -> None:
     assert endpoint.model_kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_minimax_m3_disables_thinking_for_structured_outputs() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3")
+
+    assert endpoint.model_name == "openai/MiniMax-M3"
+    assert endpoint.model_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert endpoint.temperature == 1.0
+    assert endpoint.structured_output == "prompt_json"
+    assert endpoint.model_kwargs["top_p"] == 0.95
+
+
+def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M3", thinking=True)
+
+    assert "extra_body" not in endpoint.model_kwargs
+
+
+def test_kimi_coding_endpoint_has_no_hidden_compatibility_profile() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="k3")
+
+    assert endpoint.model_kwargs == {}
+    assert endpoint.temperature == 0.0
+    assert endpoint.structured_output == "json_schema"
+
+
+def test_operator_can_describe_a_custom_openai_compatible_request_without_endpoint_detection() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "my-local-model",
+                "request": {
+                    "send_temperature": False,
+                    "structured_output": "prompt_json",
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+                },
+            }
+        }
+    )
+
+    endpoint = configured_lm_endpoint(settings, model_name="my-local-model")
+
+    assert endpoint.temperature is None
+    assert endpoint.structured_output == "prompt_json"
+    assert endpoint.model_kwargs == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+
+
 def test_endpoint_override_targets_the_fallback_gateway() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="local-key", base_url="http://192.168.0.2:8080/v1"))
     endpoint = configured_lm_endpoint(
@@ -91,6 +145,7 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
 
     assert composition.program_configured is False
     assert composition.semantic_judge(load_stable_program_artifact()) is None
+    assert composition.progression_verifier() is None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
         "reader_card.primary": None,
@@ -99,6 +154,85 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     }
     assert composition.slot_aliases() == {}
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
+
+
+def test_news_runtime_composition_assigns_operator_request_controls_per_role() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "event-model",
+                "request": {"send_temperature": False, "structured_output": "prompt_json"},
+                "news_reader_card": {
+                    "api_key": "reader-key",
+                    "base_url": "https://reader.test/v1",
+                    "model": "reader-model",
+                    "request": {"temperature": 0.4, "send_temperature": True},
+                },
+            }
+        }
+    )
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+
+    assert composition.event_semantics_primary.temperature is None
+    assert composition.event_semantics_primary.structured_output == "prompt_json"
+    assert composition.reader_card_primary.temperature == 0.4
+    assert composition.reader_card_primary.structured_output == "json_schema"
+
+
+def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
+    created: list[dict[str, Any]] = []
+
+    class ScriptedFactory:
+        @classmethod
+        def from_runtime(cls, **kwargs: Any) -> ScriptedPredictorAdapter:
+            created.append(dict(kwargs))
+            return ScriptedPredictorAdapter(
+                [{"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}],
+                model_name=str(kwargs["model_name"]),
+                provider="openai",
+                model_sha256=str(kwargs["model_sha256"]),
+            )
+
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+            }
+        }
+    )
+
+    verifier = learning_runtime.compose_news_program_runtime(settings).progression_verifier(
+        adapter_type=ScriptedFactory
+    )
+
+    assert verifier is not None
+    assert created[0]["model_name"] == "openai/triage-model"
+    assert created[0]["max_tokens"] == 512
+    assert created[0]["timeout"] == 12.0
+
+
+def test_news_experiment_student_inherits_the_production_request_controls() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "local-model",
+                "request": {"send_temperature": False, "structured_output": "prompt_json"},
+            }
+        }
+    )
+
+    student = _arm_endpoint(settings, arm="student", model="local-model")
+
+    assert student.temperature is None
+    assert student.structured_output == "prompt_json"
+    assert student.model_kwargs == {}
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:
@@ -609,13 +743,17 @@ def _wire_startup_test(
     )
     stable_artifact = SimpleNamespace(program_sha256="b" * 64, schema_version="news_program_strategy_artifact_v1")
     stable_program = object()
+    progression_verifier = object()
     news = _StartupNewsRepository(
         candidate_manifest_sha=candidate_manifest_sha,
         candidate_bundle_sha=candidate_bundle_sha,
     )
     database = _StartupDatabase(news)
     monkeypatch.setattr("tracefold.integrations.rabbitmq.RabbitMQBus", _StartupBus)
-    composition = SimpleNamespace(semantic_judge=lambda _artifact: stable_program)
+    composition = SimpleNamespace(
+        semantic_judge=lambda _artifact: stable_program,
+        progression_verifier=lambda: progression_verifier,
+    )
     monkeypatch.setattr(workers, "compose_news_program_runtime", lambda _settings: composition)
     monkeypatch.setattr(workers, "active_arm_manifest", lambda _settings, **_kwargs: stable_arm)
     monkeypatch.setattr(workers, "load_stable_program_artifact", lambda: stable_artifact)
@@ -638,6 +776,7 @@ def _wire_startup_test(
 
     assert bus.connected is True
     assert pipeline.triage.judge is stable_program
+    assert pipeline.deliverer._progression_verifier is progression_verifier
     assert identity_reads == 1
     manifest = pipeline.triage.runtime_manifest
     assert manifest["image_digest"] == "image"

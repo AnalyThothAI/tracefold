@@ -43,6 +43,7 @@ def build_drafter_lm(
     api_key: str,
     api_base: str,
     model_kwargs: Mapping[str, Any],
+    temperature: float | None = 0,
     timeout: float = 120.0,
     max_tokens: int = 4_096,
 ) -> dspy.LM:
@@ -58,17 +59,18 @@ def build_drafter_lm(
     imports the framework would have put the last DSPy import back where the architecture test forbids it.
     """
 
-    return dspy.LM(
-        str(model_name),
-        api_key=str(api_key),
-        api_base=str(api_base),
-        timeout=float(timeout),
-        max_tokens=int(max_tokens),
-        temperature=0,
-        cache=False,
-        num_retries=0,
+    request: dict[str, Any] = {
+        "api_key": str(api_key),
+        "api_base": str(api_base),
+        "timeout": float(timeout),
+        "max_tokens": int(max_tokens),
+        "cache": False,
+        "num_retries": 0,
         **dict(model_kwargs),
-    )
+    }
+    if temperature is not None:
+        request["temperature"] = temperature
+    return dspy.LM(str(model_name), **request)
 
 
 DRAFTER_ID = "tracefold.news.review_drafter_v2"

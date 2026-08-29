@@ -9,6 +9,7 @@ from tracefold.news.outcome import (
     OUTCOME_GROUP,
     OVERRIDE_RULE_ZH,
     admission_zh,
+    delivery_error_zh,
     error_code_zh,
     event_outcome,
     override_rule_zh,
@@ -18,6 +19,10 @@ from tracefold.news.outcome import (
 from tracefold.news.timeline import event_timeline
 
 NOW = 1_800_000_000_000
+
+
+def test_unexpected_delivery_error_copy_is_provider_neutral() -> None:
+    assert delivery_error_zh("news_delivery_failed:ProviderError") == "推送失败（ProviderError）"
 
 
 def _triage(final: str, **over: object) -> dict[str, object]:
@@ -275,7 +280,7 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
     assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 上币 · 模型建议：推送"
     assert steps[3]["summary_zh"] == "推送 · 交易相关性达到实时推送标准"
-    assert steps[4]["summary_zh"] == "已推送到飞书" and steps[4]["at_ms"] == NOW + 9_500
+    assert steps[4]["summary_zh"] == "已送达" and steps[4]["at_ms"] == NOW + 9_500
     assert steps[3]["facts"]["storyline_zh"] == "XYZ"
 
 
@@ -483,6 +488,7 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
 
     off = status_health(**_status_inputs(delivery={"delivery_available": False}, model_configured=False))  # type: ignore[arg-type]
     assert off["health"]["delivery"]["level"] == "off" and off["health"]["model"]["level"] == "bad"
+    assert off["health"]["delivery"]["detail_zh"] == "news.push 未启用、配置无效或 Workers 未运行"
     assert off["health"]["overall"] == "bad"
 
 

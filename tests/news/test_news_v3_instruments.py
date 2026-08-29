@@ -10,6 +10,7 @@ import pytest
 
 from tracefold.integrations.venues.binance import fetch_binance_instruments
 from tracefold.integrations.venues.errors import VenueExpectedError
+from tracefold.integrations.venues.okx import fetch_okx_instruments
 from tracefold.integrations.venues.us_reference import fetch_us_reference_instruments
 from tracefold.news.events.gate import GateInput, asset_class_of, evaluate_gate, grounded_assets
 from tracefold.news.events.storyline import final_storyline_key, storyline_key
@@ -238,6 +239,43 @@ def test_an_unmapped_tradfi_underlying_does_not_read_as_crypto() -> None:
     spot = {"symbols": [{"symbol": "BTCUSDT", "status": "TRADING", "baseAsset": "BTC", "quoteAsset": "USDT"}]}
     fetched = asyncio.run(fetch_binance_instruments(transport=_binance_transport(spot, futures)))
     assert [i.instrument_class for i in fetched if i.venue == "binance.perp"] == ["equity"]
+
+
+def test_okx_catalogue_includes_live_tradfi_swap_and_spot_without_guessing_contract_names() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params["instType"] == "SWAP":
+            data = [
+                {
+                    "instId": "MSFT-USDT-SWAP",
+                    "state": "live",
+                    "ctValCcy": "MSFT",
+                    "settleCcy": "USDT",
+                    "instCategory": "3",
+                },
+                {
+                    "instId": "BTC-USD-SWAP",
+                    "state": "live",
+                    "ctValCcy": "BTC",
+                    "settleCcy": "USD",
+                    "instCategory": "1",
+                },
+            ]
+        else:
+            data = [
+                {
+                    "instId": "BTC-USDT",
+                    "state": "live",
+                    "baseCcy": "BTC",
+                    "quoteCcy": "USDT",
+                }
+            ]
+        return httpx.Response(200, json={"code": "0", "data": data})
+
+    fetched = asyncio.run(fetch_okx_instruments(transport=httpx.MockTransport(handler)))
+    assert [(row.venue, row.venue_symbol, row.instrument_class) for row in fetched] == [
+        ("okx.perp", "MSFT-USDT-SWAP", "equity"),
+        ("okx.spot", "BTC-USDT", "crypto"),
+    ]
 
 
 # ------------------------------------------------------------------ asset class

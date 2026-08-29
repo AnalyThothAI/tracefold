@@ -12,7 +12,15 @@ import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.bus import BusDecodeError, BusMessage, decode_body
-from tracefold.news.delivery import _CHANGE_BASIS_LABEL, _quote_line, card_assets, render_first_card, sanitize_ai_text
+from tracefold.news.delivery import (
+    _CHANGE_BASIS_LABEL,
+    _quote_line,
+    card_assets,
+    reader_market_movements,
+    reader_trade_targets,
+    render_first_card,
+    sanitize_ai_text,
+)
 from tracefold.news.eval.replay import replay_hits
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, grounded_assets
@@ -26,7 +34,7 @@ from tracefold.news.events.storyline import (
 from tracefold.news.events.titles import extract_title
 from tracefold.news.events.tokens import comparison_tokens, jaccard
 from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
-from tracefold.news.models import ReaderReceipt, TriageAsset, TriageVerdict
+from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
 from tracefold.news.similarity import similarity
@@ -219,6 +227,15 @@ def test_reader_receipt_never_confuses_decision_or_ambiguous_send_with_received(
         {"state": "sent", "settled_at_ms": 123, "card": {"header": {"title": {"content": "实际卡片"}}}}
     )
     assert sent.state == "received" and sent.received_at_ms == 123 and sent.rendered_card is not None
+    deleted = ReaderReceipt.from_delivery(
+        {
+            "state": "sent",
+            "settled_at_ms": 123,
+            "delete_state": "deleted",
+            "card": {"header": {"title": {"content": "已删除卡片"}}},
+        }
+    )
+    assert deleted.state == "not_received" and deleted.rendered_card is None
 
 
 # ---------------------------------------------------------------- tokens / minhash
@@ -1282,6 +1299,185 @@ def test_card_market_line_is_display_only() -> None:
     )
     assert degraded["elements"][0]["content"].splitlines()[-1] == "行情 ETH $2,348.14 24h +4.25%"
     assert "新进展" not in json.dumps(degraded, ensure_ascii=False)
+
+
+def test_reader_market_movements_require_fresh_push_price_and_selected_anchors() -> None:
+    quote = _quote(
+        "BTC",
+        "101.10",
+        3.2,
+        requested_symbol="BTC",
+        base_symbol="BTC",
+        venue="binance.perp",
+        venue_symbol="BTCUSDT",
+        quote_asset="USDT",
+        price_at_news="100.00",
+        price_one_hour_before_push="99.00",
+    )
+    assert reader_market_movements(["BTC"], [quote]) == (ReaderMarketMovement("BTC", 110, 212, 320, "available"),)
+    assert reader_market_movements(["BTC"], [{**quote, "state": "stale"}]) == (
+        ReaderMarketMovement("BTC", None, None, None, "unavailable"),
+    )
+
+
+def test_reader_market_movements_never_fabricate_missing_anchor_prices() -> None:
+    quote = _quote(
+        "BTC",
+        "101.10",
+        3.2,
+        requested_symbol="BTC",
+        base_symbol="BTC",
+        venue="binance.perp",
+        venue_symbol="BTCUSDT",
+        quote_asset="USDT",
+        price_at_news="not-a-price",
+    )
+    assert reader_market_movements(["BTC"], [quote]) == (ReaderMarketMovement("BTC", None, None, 320, "unavailable"),)
+
+
+def test_delivery_returns_use_news_and_push_centered_price_windows() -> None:
+    quote = _quote(
+        "MSFT",
+        "102.00",
+        2.27,
+        requested_symbol="MSFT",
+        base_symbol="MSFT",
+        venue="hl.xyz",
+        venue_symbol="xyz:MSFT",
+        price_at_news="100.00",
+        price_one_hour_before_push="101.00",
+    )
+
+    assert reader_market_movements(["MSFT"], [quote]) == (ReaderMarketMovement("MSFT", 200, 99, 227, "available"),)
+
+
+def test_reader_trade_targets_bind_ticker_to_exact_binance_contracts_without_changing_the_card() -> None:
+    perpetual_quote = _quote(
+        "LRCX",
+        "317.53",
+        1.12,
+        requested_symbol="LRCX",
+        base_symbol="LRCX",
+        venue="binance.perp",
+        venue_symbol="LRCXUSDT",
+        quote_asset="USDT",
+        instrument_class="equity",
+    )
+    spot_quote = _quote(
+        "BTC",
+        "74553.10",
+        7.91,
+        requested_symbol="BTC",
+        base_symbol="BTC",
+        venue="binance.spot",
+        venue_symbol="BTCUSDT",
+        quote_asset="USDT",
+    )
+    assert reader_trade_targets([perpetual_quote, spot_quote]) == (
+        ReaderTradeTarget(
+            ticker="LRCX",
+            venue="binance.perp",
+            venue_symbol="LRCXUSDT",
+            base_symbol="LRCX",
+            quote_asset="USDT",
+        ),
+        ReaderTradeTarget(
+            ticker="BTC",
+            venue="binance.spot",
+            venue_symbol="BTCUSDT",
+            base_symbol="BTC",
+            quote_asset="USDT",
+        ),
+    )
+    assert _market_lines(quotes=[perpetual_quote], assets=["LRCX"]) == [
+        "利空 · 影响重大 · LRCX · jin10",
+        "行情 LRCX $317.53 24h +1.12%（永续）",
+    ]
+
+    assert reader_trade_targets(
+        [_quote("ETH", "2300", 1.0, requested_symbol="ETH", base_symbol="ETH", venue="hl.perp", venue_symbol="ETH")]
+    ) == (
+        ReaderTradeTarget(
+            ticker="ETH",
+            venue="hl.perp",
+            venue_symbol="ETH",
+            base_symbol="ETH",
+            quote_asset="",
+        ),
+    )
+
+    # The adapter gets no target for malformed contracts or a Binance ticker/base/pair mismatch.
+    unsafe = [
+        _quote(
+            "SOL",
+            "200",
+            1.0,
+            requested_symbol="SOL",
+            base_symbol="SOL",
+            venue="binance.perp",
+            venue_symbol="SOL/USDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "BTC",
+            "74553.10",
+            7.91,
+            requested_symbol="BTC",
+            base_symbol="ETH",
+            venue="binance.spot",
+            venue_symbol="ETHUSDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "ETH",
+            "2300",
+            1.0,
+            requested_symbol="ETH",
+            base_symbol="BTC",
+            venue="binance.perp",
+            venue_symbol="BTCUSDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "BTC",
+            "74553.10",
+            7.91,
+            requested_symbol="BTC",
+            base_symbol="BTC",
+            venue="binance.spot",
+            venue_symbol="ETHUSDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "BTC",
+            "74553.10",
+            7.91,
+            base_symbol="BTC",
+            venue="binance.perp",
+            venue_symbol="BTCUSDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "BTC",
+            "74553.10",
+            7.91,
+            requested_symbol="BTC",
+            venue="binance.perp",
+            venue_symbol="BTCUSDT",
+            quote_asset="USDT",
+        ),
+        _quote(
+            "ETH",
+            "2300",
+            1.0,
+            requested_symbol="BTC",
+            base_symbol="BTC",
+            venue="binance.perp",
+            venue_symbol="BTCUSDT",
+            quote_asset="USDT",
+        ),
+    ]
+    assert all(reader_trade_targets([quote]) == () for quote in unsafe)
 
 
 def test_card_change_basis_labels_cover_the_price_domain() -> None:

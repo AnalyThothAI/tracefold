@@ -158,6 +158,7 @@ services:
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
+      - ${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "workers"]

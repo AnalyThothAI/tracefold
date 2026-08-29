@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from psycopg.errors import RaiseException
+from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import reset_postgres_schema as migrate
@@ -310,13 +310,124 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     repos = repositories_for_connection(conn)
     row = conn.execute("SELECT event_id FROM news_events ORDER BY opened_at_ms DESC LIMIT 1").fetchone()
     event_id = row["event_id"]
+    target_sha256 = "a" * 64
+    initial_receipt = {
+        "provider": "telegram",
+        "message_id": 42,
+        "pushed_at_ms": 1_500,
+        "target_sha256": target_sha256,
+    }
+    updated_receipt = {**initial_receipt, "edited_at_ms": 2_500}
     with repos.transaction():
         assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000) == "new"
         assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=1_000) == "sending"
         assert repos.news.settle_delivery(
-            event_id=event_id, kind="first", state="sent", receipt={"code": 0}, error_code=None, now_ms=2_000
+            event_id=event_id,
+            kind="first",
+            state="sent",
+            receipt=initial_receipt,
+            error_code=None,
+            now_ms=2_000,
+        )
+        assert not repos.news.begin_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            card={"x": 99},
+            receipt={**initial_receipt, "source_url": "https://should-not-persist.test"},
+            now_ms=2_100,
+        )
+        assert repos.news.begin_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            card={"x": 2, "market_data_state": "ready"},
+            receipt=initial_receipt,
+            now_ms=2_200,
+        )
+        editing = repos.news.delivery(event_id=event_id, kind="first")
+        assert editing is not None
+        assert editing["card"] == {"x": 1}
+        assert editing["pending_card"] == {"x": 2, "market_data_state": "ready"}
+        assert editing["edit_state"] == "editing"
+        assert not repos.news.settle_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            receipt={**updated_receipt, "pushed_at_ms": 1_501},
+            now_ms=2_400,
+        )
+        assert not repos.news.settle_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            receipt={**updated_receipt, "provider_response": "untrusted"},
+            now_ms=2_400,
+        )
+        assert not repos.news.settle_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            receipt={**updated_receipt, "edited_at_ms": 1_499},
+            now_ms=2_400,
+        )
+        assert repos.news.settle_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            receipt=updated_receipt,
+            now_ms=2_500,
         )
         assert repos.news.begin_delivery(event_id=event_id, kind="first", card={}, now_ms=3_000) == "sent"
+    delivery = repos.news.delivery(event_id=event_id, kind="first")
+    assert delivery is not None
+    assert delivery["card"] == {"x": 2, "market_data_state": "ready"}
+    assert delivery["receipt"] == updated_receipt
+    assert delivery["pending_card"] is None
+    assert delivery["edit_state"] == "edited"
+    with repos.transaction():
+        assert repos.news.begin_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            card={"x": 3, "market_data_state": "newer"},
+            receipt=updated_receipt,
+            now_ms=3_000,
+        )
+        # A new process owns no edit task yet, so even a just-written inherited intent is unambiguously interrupted.
+        assert repos.news.terminalize_interrupted_delivery_edits(now_ms=3_001) == 1
+    interrupted = repos.news.delivery(event_id=event_id, kind="first")
+    assert interrupted is not None
+    assert interrupted["card"] == {"x": 2, "market_data_state": "ready"}
+    assert interrupted["pending_card"] == {"x": 3, "market_data_state": "newer"}
+    assert interrupted["edit_state"] == "ambiguous"
+    assert interrupted["edit_error_code"] == "edit_ambiguous_after_crash"
+    with pytest.raises(CheckViolation), repos.transaction():
+        conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = NULL, pending_card = '{}'::jsonb,
+                   edit_error_code = NULL, edit_attempted_at_ms = 4_000,
+                   edit_settled_at_ms = NULL
+             WHERE event_id = %s AND kind = 'first'
+            """,
+            (event_id,),
+        )
+    with repos.transaction():
+        conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = 'edited', pending_card = NULL, edit_error_code = NULL,
+                   edit_attempted_at_ms = 4_000, edit_settled_at_ms = 4_001
+             WHERE event_id = %s AND kind = 'first'
+            """,
+            (event_id,),
+        )
+        assert repos.news.begin_delivery_edit(
+            event_id=event_id,
+            kind="first",
+            card={"x": 4, "market_data_state": "stale-settlement"},
+            receipt=updated_receipt,
+            now_ms=5_000,
+        )
+        assert repos.news.terminalize_stale_delivery_edits(now_ms=65_001) == 1
+    stale = repos.news.delivery(event_id=event_id, kind="first")
+    assert stale is not None
+    assert stale["edit_state"] == "ambiguous"
+    assert stale["edit_error_code"] == "edit_settlement_unavailable"
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "sent"
     feed = repos.news.list_feed(
@@ -384,6 +495,94 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     assert {"e2e_p50_ms", "e2e_p95_ms"} <= status["delivery"].keys()
     assert status["learning_retention"]["eligible_recordings"] == 0
     conn.commit()
+
+
+def test_delivery_delete_requires_durable_five_venue_evidence_and_exact_receipt(conn) -> None:
+    repos = repositories_for_connection(conn)
+    row = conn.execute(
+        """
+        SELECT e.event_id
+          FROM news_events e
+          LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+         WHERE d.event_id IS NULL
+         ORDER BY e.opened_at_ms DESC
+         LIMIT 1
+        """
+    ).fetchone()
+    assert row is not None
+    event_id = row["event_id"]
+    receipt = {
+        "provider": "telegram",
+        "message_id": 84,
+        "pushed_at_ms": 5_000,
+        "target_sha256": "b" * 64,
+    }
+    evidence = {
+        "tradability_review": {
+            "state": "absent",
+            "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+            "failed_venues": [],
+            "matches": [],
+        }
+    }
+    reason = "Binance、Hyperliquid、OKX、Lighter、Bitget 均未发现可交易合约。"
+    with repos.transaction():
+        assert repos.news.begin_delivery(event_id=event_id, kind="first", card={"x": 1}, now_ms=4_000) == "new"
+        assert repos.news.settle_delivery(
+            event_id=event_id,
+            kind="first",
+            state="sent",
+            receipt=receipt,
+            error_code=None,
+            now_ms=5_000,
+        )
+        assert not repos.news.begin_delivery_delete(
+            event_id=event_id,
+            kind="first",
+            evidence=evidence,
+            reason=reason,
+            receipt={**receipt, "provider_response": "untrusted"},
+            now_ms=5_100,
+        )
+        assert repos.news.begin_delivery_delete(
+            event_id=event_id,
+            kind="first",
+            evidence=evidence,
+            reason=reason,
+            receipt=receipt,
+            now_ms=5_100,
+        )
+        assert not repos.news.settle_delivery_delete(
+            event_id=event_id,
+            kind="first",
+            receipt={**receipt, "deleted_at_ms": 4_999},
+            now_ms=5_200,
+        )
+        deleted_receipt = {**receipt, "deleted_at_ms": 5_200}
+        assert repos.news.settle_delivery_delete(
+            event_id=event_id,
+            kind="first",
+            receipt=deleted_receipt,
+            now_ms=5_200,
+        )
+    delivery = repos.news.delivery(event_id=event_id, kind="first")
+    assert delivery is not None
+    assert delivery["state"] == "sent"
+    assert delivery["delete_state"] == "deleted"
+    assert delivery["delete_evidence"] == evidence
+    assert delivery["delete_reason"] == reason
+    assert delivery["receipt"] == deleted_receipt
+    with pytest.raises(CheckViolation), repos.transaction():
+        conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = NULL, delete_evidence = '{}'::jsonb,
+                   delete_reason = NULL, delete_error_code = NULL,
+                   delete_attempted_at_ms = NULL, delete_settled_at_ms = NULL
+             WHERE event_id = %s AND kind = 'first'
+            """,
+            (event_id,),
+        )
 
 
 def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(conn) -> None:
@@ -1426,6 +1625,40 @@ def test_source_artifact_backfill_matches_the_parser(conn) -> None:
     assert rows
     for row in rows:
         assert row["sql_id"] == source_artifact_identity(str(row["canonical_url"]))[0], row["canonical_url"]
+    conn.commit()
+
+
+def test_delivery_timing_uses_original_tweet_time_and_first_local_observation(conn) -> None:
+    repos = repositories_for_connection(conn)
+    hit = _hit(
+        hit_id=9_109_901,
+        text="Bitcoin ETF inflows accelerate",
+        engine="news",
+        score=90,
+        coins=[{"symbol": "BTC", "grade": "A"}],
+        source="serenity",
+        ts="2026-08-19T18:10:00+08:00",
+    )
+    hit["link"] = "https://x.com/serenity/status/2089761853727490268"
+    event = parse_opennews_message({"method": "strategy.triggered", "params": hit})
+    assert event is not None
+    observed_at_ms = int(event.entry.published_at_ms or 0) + 4_321
+    with repos.transaction():
+        admitted = admit_item(
+            repos,
+            event=event,
+            ingest_mode="live",
+            observed_at_ms=observed_at_ms,
+            trace_id="delivery-timing",
+            watchlist_symbols=frozenset({"BTC"}),
+            now_ms=observed_at_ms,
+        )
+
+    assert repos.news.event_delivery_timing(admitted.event_id) == {
+        "news_at_ms": 1_787_073_026_483,
+        "reaction_anchor_at_ms": int(event.entry.published_at_ms or 0),
+        "observed_at_ms": observed_at_ms,
+    }
     conn.commit()
 
 
