@@ -553,6 +553,24 @@ def test_a_source_that_already_authored_a_case_is_terminally_consumed() -> None:
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:already_consumed"}
 
 
+# ---------------------------------------------------------------------------- decision-time guards
+def test_a_case_frozen_under_another_news_generation_is_blocked_not_traded() -> None:
+    trading = FakeTrading(authority=_authority(), rows=[_row()])
+    lane, _ = _lane(trading)
+    _advance(lane)
+    assert trading.commits == list(trading.cases)
+
+    # A deployment later, the process runs a different News generation than this Case was frozen
+    # under. `program_version` and `policy_version` do not move when a prompt or a model slot does,
+    # so without this the Case would advance to an Intent under rules it was never reasoned under.
+    trading.claimable = list(trading.cases)
+    trading.commits.clear()
+    lane._news_generation = "epoch-3"
+    asyncio.run(lane._decide_one())
+    assert trading.settled[-1][1:] == (CaseState.BLOCKED, "source_generation_retired")
+    assert trading.commits == []
+
+
 def test_a_case_older_than_the_decision_budget_is_blocked_rather_than_sized_off_a_stale_mark() -> None:
     trading = FakeTrading(authority=_authority(), rows=[_row()])
     lane, _ = _lane(trading)
