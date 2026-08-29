@@ -37,7 +37,9 @@ export type TradingAdmissionCellCopy = {
  * `event_id` is recovered only when `primary_source_key` round-trips as `oi:{event_id}:{metric_version}`,
  * which is exactly the population an Event-first surface can ask about.
  */
-export function tradingGateByEventId(gate: TradingGate | undefined): Map<string, TradingGateDecision> {
+export function tradingGateByEventId(
+  gate: TradingGate | undefined,
+): Map<string, TradingGateDecision> {
   const result = new Map<string, TradingGateDecision>();
   for (const decision of gate?.decisions ?? []) {
     if (decision.event_id) result.set(decision.event_id, decision);
@@ -46,9 +48,7 @@ export function tradingGateByEventId(gate: TradingGate | undefined): Map<string,
 }
 
 /** The one cell the frame table draws: what admission answered, and the Case it authored if it did. */
-export function tradingAdmissionCellCopy(
-  lookup: TradingAdmissionLookup,
-): TradingAdmissionCellCopy {
+export function tradingAdmissionCellCopy(lookup: TradingAdmissionLookup): TradingAdmissionCellCopy {
   if (lookup.loadFailed) {
     return { primary: "读取失败", title: "准入台账本轮不可用；不能据此断言这一帧没有结论。" };
   }
@@ -96,14 +96,17 @@ export function tradingAdmissionTraceEntries(
       : "";
   const entries: Array<[string, string]> = [
     ["来源标识", decision.source_key],
-    ["结论", GATE_STATUS_ZH[decision.gate_status ?? ""] ?? (decision.gate_status ?? "—")],
+    ["结论", GATE_STATUS_ZH[decision.gate_status ?? ""] ?? decision.gate_status ?? "—"],
     ["规则", key ? `${gateReasonLabel(key)}（${key}）` : "—"],
     ["可重试", decision.gate_retryable ? "是" : "否"],
     ["资本权限", decision.research_only ? "仅研究，无资本权限" : "live"],
     ["首次评估", caseClock(decision.gate_first_evaluated_at_ms)],
     ["最近评估", caseClock(decision.gate_last_evaluated_at_ms)],
     ["评估次数", String(decision.gate_attempt_count ?? "—")],
-    ["准入版本", `${decision.gate_version ?? "—"} · ${(decision.gate_config_digest ?? "").slice(0, 12)}`],
+    [
+      "准入版本",
+      `${decision.gate_version ?? "—"} · ${(decision.gate_config_digest ?? "").slice(0, 12)}`,
+    ],
     ["案例", decision.case_id ?? "未开案"],
   ];
   const evidence = decision.gate_evidence;

@@ -33,7 +33,9 @@ describe("AppBottomNav", () => {
     // The same `isActive` predicate the sidebar uses, so the two presentations cannot disagree about where
     // the reader is. `NavLink` would decide by prefix and light up both.
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).not.toHaveAttribute(
+      "aria-current",
+    );
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 

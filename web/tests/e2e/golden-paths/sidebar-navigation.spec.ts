@@ -64,10 +64,9 @@ test.describe("desktop sidebar navigation", () => {
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
     await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
     await expect(page).toHaveURL(/\/news\/oi$/);
-    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
+    ).toHaveAttribute("aria-current", "page");
 
     await expectSidebarRouteChange(page, "事件流", "/news");
     /*
@@ -150,10 +149,9 @@ test.describe("mobile bottom navigation", () => {
     await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
     await expect(page).toHaveURL(/\/news\/oi$/);
     await expect(primaryNavigation).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
+    ).toHaveAttribute("aria-current", "page");
 
     await primaryNavigation.getByRole("link", { name: "事件流" }).click();
     await expect(page).toHaveURL(/\/news(?:\?|$)/);

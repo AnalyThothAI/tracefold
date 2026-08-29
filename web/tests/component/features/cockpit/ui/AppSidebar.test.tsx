@@ -76,7 +76,10 @@ describe("AppSidebar", () => {
     renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
 
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
-    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute("href", "/news/oi");
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
+      "href",
+      "/news/oi",
+    );
   });
 
   it("carries no health chrome of its own", () => {

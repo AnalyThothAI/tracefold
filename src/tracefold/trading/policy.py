@@ -151,6 +151,7 @@ class CapitalPolicy:
                 invalidation="",
                 checks=tuple(checks),
                 policy_id=self.policy_id,
+                policy_version=self.policy_version,
             )
 
         # The window first. Without it "10%" is a number with no interval attached, and every replay of
@@ -224,6 +225,7 @@ class CapitalPolicy:
             invalidation="价格跌破冻结止损，或持仓时限到期",
             checks=tuple(checks),
             policy_id=self.policy_id,
+            policy_version=self.policy_version,
         )
 
 

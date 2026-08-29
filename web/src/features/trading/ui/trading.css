@@ -75,6 +75,42 @@
     font-size: var(--font-size-mono-meta);
   }
 
+  /* The two 24h tallies. Each is its own keyed distribution, so each gets its own caption and its own
+     wrapping run of chips rather than a shared table row that implies a join. */
+  .trading-tally {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    align-items: baseline;
+    margin: 0;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border-faint);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-tally dt {
+    min-width: 72px;
+    color: var(--text-subtle);
+    font-weight: 700;
+  }
+
+  .trading-tally dd {
+    display: inline-flex;
+    gap: 6px;
+    align-items: baseline;
+    margin: 0;
+    padding: 1px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xs);
+    background: var(--surface-raised);
+    color: var(--text-secondary);
+  }
+
+  .trading-tally dd b {
+    color: var(--text-primary);
+  }
+
+  .trading-tally code,
   .trading-exposure-row code,
   .trading-case-row code {
     font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);

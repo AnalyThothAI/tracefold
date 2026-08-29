@@ -675,7 +675,9 @@ describe("NewsOiPage", () => {
     fireEvent.click(rows[0]);
     // The expanded trace carries the row the ledger wrote, evidence included.
     expect(screen.getByText("资本准入 · ADMISSION")).toBeInTheDocument();
-    expect(screen.getByText(/持仓额低于流动性地板（eligibility:oi_value_below_floor）/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/持仓额低于流动性地板（eligibility:oi_value_below_floor）/),
+    ).toBeInTheDocument();
     expect(screen.getByText("5000000")).toBeInTheDocument();
   });
 

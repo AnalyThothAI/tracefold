@@ -26,7 +26,9 @@ const tradingArchetype = {
   name: "trading",
   path: "/trading",
   ready: (page: Page) => page.locator(".trading-exposure-row").first(),
-  settled: (page: Page) => page.locator(".trading-case-row").first(),
+  // The last thing this page paints is the 24h tally, and it is the page's own markup rather than the
+  // Case table's — /trading stopped carrying Cases in #331.
+  settled: (page: Page) => page.locator(".trading-tally").first(),
 } as const;
 
 const symbolArchetype = {

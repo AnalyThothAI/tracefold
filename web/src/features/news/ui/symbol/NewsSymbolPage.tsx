@@ -192,4 +192,3 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
 function count(value: number | undefined): string {
   return value == null ? "—" : String(value);
 }
-

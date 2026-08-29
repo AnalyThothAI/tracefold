@@ -166,6 +166,27 @@ def test_a_hyperliquid_frame_is_replayed_in_full_and_never_marked_routable() -> 
     assert report.outcomes[0].stage in {"policy", "pending_market_context"}
 
 
+def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routable_one() -> None:
+    """Two cohorts under one rulebook, or the comparison between them means nothing.
+
+    `research_only_venue` ends the venue stage without ending the replay. It used to also skip
+    eligibility outright, so the Hyperliquid cohort was scored with no rank ceiling, no OI-value floor
+    and no blacklist — a laxer rulebook than the Binance cohort it was being read against.
+    """
+
+    ranked_out = {"rank_in_window": 9}
+    binance, hyperliquid = _replay(
+        [
+            _row(event_id="bn", **ranked_out),
+            _row(event_id="hl", venue="hyperliquid", **ranked_out),
+        ]
+    ).outcomes
+
+    assert (binance.stage, binance.reason) == ("eligibility", "rank_above_limit")
+    assert (hyperliquid.stage, hyperliquid.reason) == (binance.stage, binance.reason)
+    assert (binance.routable, hyperliquid.routable) == (True, False)
+
+
 def test_coverage_is_left_to_the_caller_rather_than_reported_as_a_zero_nobody_measured() -> None:
     """A `0` for an issuer nobody looked up reads as "no native perp listed", which is a false negative.
 

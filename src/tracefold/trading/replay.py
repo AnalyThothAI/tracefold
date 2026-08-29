@@ -295,7 +295,12 @@ def plan_replay_source(
             source_identity=outcome.source_key,
             strategy_identity=strategy_identity,
             decision=cast(Literal["NO_TRADE", "SKIPPED"], decision),
-            decision_reason=outcome.reason if decision == "NO_TRADE" else _skip_reason(outcome.stage, outcome.reason),
+            # The reason verbatim. It used to be re-prefixed here by stage (`gate_`, `source_`), which
+            # was a second vocabulary for facts that already have one: `ADMISSION_REASONS` is a closed,
+            # globally distinct set the ledger and the console both aggregate on, and the source-stage
+            # reasons already say `source_`. The prefixing had also silently stopped matching — it keyed
+            # on a stage named `admission` that #331's admission never emits.
+            decision_reason=outcome.reason,
             capital_admission="NOT_APPLICABLE",
             execution="NOT_APPLICABLE",
             execution_reason="strategy_not_directional",
@@ -612,14 +617,6 @@ def _decimal_places(value: Decimal) -> int:
     if not isinstance(exponent, int):
         raise ValueError("replay_bar_price_non_finite")
     return max(0, -exponent)
-
-
-def _skip_reason(stage: str, reason: str) -> str:
-    if stage == "source":
-        return f"source_{reason}"
-    if stage == "admission":
-        return f"gate_{reason}"
-    return reason
 
 
 def summarize_replay_outcomes(outcomes: list[ReplayTerminalOutcomeV1]) -> dict[str, Any]:

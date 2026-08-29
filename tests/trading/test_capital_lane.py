@@ -459,6 +459,37 @@ def test_one_issuer_produces_one_thesis_and_the_loser_is_deferred_not_retired() 
     }
 
 
+def test_a_second_issuer_in_one_turn_is_deferred_rather_than_frozen_into_a_doomed_case() -> None:
+    """The surplus keeps its Source. It is the lane that is full, not the frame that is unusable.
+
+    The lane freezes one Case per turn because only one can ever reach `INTENT_EMITTED`: the daily entry
+    fence is one. Freezing several meant the first to answer `long` took the fence and the rest were
+    settled `BLOCKED / capacity_exhausted` — *terminal*, which puts `primary_source_key` beyond
+    re-admission for good. The surplus has to come back at admission, where a refusal is retryable.
+    """
+
+    trading = FakeTrading(
+        authority=_authority(capability=_snapshot(_capability(), _capability("DOGEUSDT"))),
+        rows=[_row(), _row(event_id="evt-2", symbol="DOGE")],
+    )
+    lane, _ = _lane(trading)
+
+    turn = _advance(lane)
+
+    assert turn.cases_created == 1
+    assert _reasons(trading) == {
+        "oi:evt-1:oi_signal_v1": "freeze:case_created",
+        "oi:evt-2:oi_signal_v1": "eligibility:lane_capacity_exhausted",
+    }
+    surplus = next(row for row in trading.admission if row["source_key"] == "oi:evt-2:oi_signal_v1")
+    assert surplus["status"] == "DEFERRED"
+    assert surplus["evidence"]["lane_full"] == "freezes_per_turn"
+    # And no Case was opened only to be closed against a fence its own turn had just consumed: the one
+    # Case that exists committed an Intent, and nothing was settled by the lane at all.
+    assert trading.commits == list(trading.cases)
+    assert trading.settled == []
+
+
 def test_a_source_that_already_authored_a_case_is_terminally_consumed() -> None:
     trading = FakeTrading(
         authority=_authority(cased_source_keys=frozenset({"oi:evt-1:oi_signal_v1"})),

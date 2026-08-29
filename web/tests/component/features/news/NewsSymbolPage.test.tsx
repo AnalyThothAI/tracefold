@@ -280,7 +280,9 @@ describe("NewsSymbolPage", () => {
 
   it("distinguishes an unreadable capital ledger from an empty one", async () => {
     server.use(
-      http.get(/.*\/api\/trading\/cases.*/, () => HttpResponse.json({ ok: false }, { status: 503 })),
+      http.get(/.*\/api\/trading\/cases.*/, () =>
+        HttpResponse.json({ ok: false }, { status: 503 }),
+      ),
     );
     renderSymbol();
 

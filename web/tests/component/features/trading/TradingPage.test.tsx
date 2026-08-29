@@ -55,7 +55,9 @@ describe("TradingPage", () => {
 
   it("keeps the readiness answer and says the Intent ledger failed", async () => {
     server.use(
-      http.get(/.*\/api\/trading\/intents$/, () => HttpResponse.json({ ok: false }, { status: 503 })),
+      http.get(/.*\/api\/trading\/intents$/, () =>
+        HttpResponse.json({ ok: false }, { status: 503 }),
+      ),
     );
 
     renderTrading();

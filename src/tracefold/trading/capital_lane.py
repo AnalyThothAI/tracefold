@@ -96,7 +96,20 @@ COLD_WRITE_TIMEOUT_SECONDS: Final = 10.0
 # paused lane self-healing; `primary_source_key` rejects whatever a previous turn already used.
 _SCAN_OVERLAP_FACTOR: Final = 3
 _CASE_LEASE_MS: Final = 60_000
-_MAX_CASES_PER_TURN: Final = 4
+# One freeze per turn, and it is a capital rule rather than a throughput choice.
+#
+# The lane's global fence is one nonterminal Intent and one fenced entry per UTC day, so at most one
+# frozen Case can reach `INTENT_EMITTED` at a time. Freezing four meant that when the first answered
+# `long`, the other three were decided against a fence the first had just taken and settled
+# `BLOCKED / capacity_exhausted` — a *terminal* state, which put their `primary_source_key` beyond
+# re-admission forever. That is precisely the confusion admission refuses to make one stage earlier:
+# the lane was full, the Source was not unusable. At one freeze per turn the loser is answered
+# `DEFERRED / lane_capacity_exhausted` instead, and wins a later scan inside its own trigger budget —
+# 150 turns at the shipped 2 s poll and 300 s freshness, against a measured two Cases an hour.
+_MAX_FREEZES_PER_TURN: Final = 1
+# Draining already-frozen Cases is not the same question: a restart or a paused lane can leave several
+# claimable, and deciding them costs no capital — every one of them is refused by the same fence.
+_MAX_DECISIONS_PER_TURN: Final = 4
 # How long a frozen Case may wait to be decided. Its own budget, separate from the freshness admission
 # already spent, so queueing behind another Case cannot silently discard a signal — and short enough
 # that a paused lane resumed hours later cannot size and stop off a stale bar close.
@@ -254,21 +267,21 @@ class CapitalLane:
         results: dict[str, AdmissionResult] = {}
         admitted = self._admit(rows, authority=authority, now=now, results=results)
         created = 0
-        for candidate in admitted[:_MAX_CASES_PER_TURN]:
+        for candidate in admitted[:_MAX_FREEZES_PER_TURN]:
             if await self._freeze(candidate, authority=authority, now=now, results=results):
                 created += 1
-        for candidate in admitted[_MAX_CASES_PER_TURN:]:
+        for candidate in admitted[_MAX_FREEZES_PER_TURN:]:
             results[candidate.source_key] = defer(
                 candidate,
                 stage="eligibility",
                 reason="lane_capacity_exhausted",
-                evidence={"lane_full": "cases_per_turn"},
+                evidence={"lane_full": "freezes_per_turn"},
             )
         await self._flush_admission(results, now)
         await self._maintain_admission(now)
 
         no_trade = blocked = emitted = 0
-        for _ in range(_MAX_CASES_PER_TURN):
+        for _ in range(_MAX_DECISIONS_PER_TURN):
             decided = await self._decide_one()
             if decided is None:
                 break

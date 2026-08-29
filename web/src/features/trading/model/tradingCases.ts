@@ -50,7 +50,12 @@ export function caseTabCount(cases: readonly TradingCase[], tab: CaseTab): numbe
   return casesForTab(cases, tab).length;
 }
 
-export type CaseFigure = { key: string; label: string; value: string; tone: "plain" | "accent" | "caution" };
+export type CaseFigure = {
+  key: string;
+  label: string;
+  value: string;
+  tone: "plain" | "accent" | "caution";
+};
 
 /**
  * The title row's figures, every one of them a durable count the server aggregated (#331).

@@ -42,12 +42,19 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 
 1. Set Trading control to `PAUSED`. Do not stop Nautilus; it must retain
    authority over any already-fenced lifecycle.
-2. Update `~/.tracefold/config.yaml` to the PR 2 contract before running the new
-   CLI or image: remove the retired `mode`, `live_symbol`, `account_ref`,
-   `venues`, `opentrade`, and `nautilus.accept_intents` keys. Preserve the
-   strategy/gate values, `trading.enabled`, `trading.order.fixed_notional_usd`
-   (`0 < value <= 10`), and the two Nautilus Demo secret-file paths. Run
-   `uv run tracefold config`; unknown retired keys fail closed.
+2. Update `~/.tracefold/config.yaml` to the current contract before running the
+   new CLI or image: remove the retired `mode`, `live_symbol`, `account_ref`,
+   `venues`, `opentrade` and `nautilus.accept_intents` keys, and — since #331 —
+   `trading.regime.*`, `trading.policy.*`, `trading.candidates.news_lookback_seconds`,
+   `trading.candidates.oi_lookback_seconds`, `trading.candidates.max_dspy_cases_per_day`
+   and `llm.trading_decision_model`. Those six are gone because a capital
+   threshold in a YAML file is a rule with no version and no frozen evidence;
+   the policy owns its own numbers and freezes them onto every Case. Preserve
+   `trading.enabled`, the four `trading.candidates.*` universe/timing filters,
+   `trading.order.fixed_notional_usd` (`0 < value <= 10`) and the two Nautilus
+   Demo secret-file paths. Run `uv run tracefold config`; every model is
+   `extra="forbid"`, so a retired key left in place fails Serve and Workers at
+   settings load rather than being ignored.
 3. Confirm the current Nautilus `/readyz` is green. Its startup reconciliation
    must have proved the exact Demo account/instrument configuration,
    authoritative venue flat, and no unexpected exposure.
@@ -992,6 +999,17 @@ closed if an existing row violates either lifecycle before replacing the constra
 Issue #325 owns the operator-approved recovery: keep the database at `0323`,
 repair only the invalid lifecycle tuple from provider evidence, and then roll
 forward to `0324`; never start an older-schema image after that migration commits.
+
+Before applying 0325 remove `trading.regime.*`, `trading.policy.*`,
+`trading.candidates.news_lookback_seconds`, `trading.candidates.oi_lookback_seconds`,
+`trading.candidates.max_dspy_cases_per_day` and `llm.trading_decision_model`
+from `~/.tracefold/config.yaml`; the settings schema rejects them and
+Serve/Workers fail to start with them present. Verify after restart:
+`uv run tracefold trading status` reports `control`, the active capability
+digest, `engine_ready=true` and `unexpected_exposure=false`; `/api/trading/gate`
+answers with a `trading_admission_v2` config block; and the first admitted
+Binance OI frame reaches a Case whose `policy_checks` carry the thresholds it
+was decided against.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the

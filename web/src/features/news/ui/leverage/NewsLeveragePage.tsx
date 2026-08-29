@@ -55,7 +55,8 @@ export function NewsLeveragePage({ token }: { token: string }) {
   const tab = defaultCaseTab(cases, parseCaseTab(searchParams.get("lev")));
   const visible = casesForTab(cases, tab);
   const selectedId = searchParams.get("case");
-  const selected = (selectedId ? cases.find((item) => item.case_id === selectedId) : undefined) ?? visible[0];
+  const selected =
+    (selectedId ? cases.find((item) => item.case_id === selectedId) : undefined) ?? visible[0];
   const figures = caseFigures(data);
   const reasons = caseReasonRows(data);
   const coldFailure = casesQuery.isError && !data;
@@ -110,8 +111,9 @@ export function NewsLeveragePage({ token }: { token: string }) {
         <PageState.Empty
           hint={
             <>
-              过去 {data.window_hours} 小时资本通道成案 {figures[0].value} 个。0 成案是当前规则的正常输出；
-              上游看见了多少来源、卡在哪条规则，在 <Link to={newsOiPath()}>OI 来源与准入审计</Link>。
+              过去 {data.window_hours} 小时资本通道成案 {figures[0].value} 个。0
+              成案是当前规则的正常输出； 上游看见了多少来源、卡在哪条规则，在{" "}
+              <Link to={newsOiPath()}>OI 来源与准入审计</Link>。
             </>
           }
           title={cases.length ? `${CASE_TABS[tab].label}里没有案例` : "24 小时内没有成案"}

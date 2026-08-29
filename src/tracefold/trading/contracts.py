@@ -44,7 +44,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # lost `mode`, the News counterpart, the liquidation contexts and the OI/price quadrant, and gained
 # nothing, because a Case is now one Binance OI frame plus the price window it was frozen against.
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v7"
-TRADING_POLICY_VERSION = "trading_capital_policy_v2"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
@@ -332,7 +331,12 @@ class CapitalDecision(_Frozen):
     invalidation: str
     checks: tuple[PolicyCheck, ...]
     policy_id: str
-    policy_version: str = TRADING_POLICY_VERSION
+    # Required, and always the deciding policy's own version. It defaulted to a separate
+    # `trading_capital_policy_v2` constant, so one Case row said `binance_oi_smart_money_long_v2` in
+    # `strategy_version` and something else in `policy_checks.policy_version` — two names for one
+    # version in one row, on the surface whose whole job is being readable against the exact identity
+    # that decided it.
+    policy_version: str
 
     def evidence(self) -> dict[str, Any]:
         """The document persisted beside the Case, and the one the read model renders."""
@@ -423,7 +427,6 @@ __all__ = [
     "LIVE_VENUE",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
-    "TRADING_POLICY_VERSION",
     "Bar",
     "BlockedReason",
     "CapitalDecision",

@@ -1,8 +1,4 @@
-import {
-  NEWS_OI_TABS,
-  type NewsFeedOi,
-  type NewsOiTab,
-} from "../api/newsQueries";
+import { NEWS_OI_TABS, type NewsFeedOi, type NewsOiTab } from "../api/newsQueries";
 
 /**
  * Display helpers for #137's deterministic open-interest lane (#207).

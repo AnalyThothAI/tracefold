@@ -99,7 +99,11 @@ export async function installMockApi(
     // #269: the admission ledger the OI audit reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());
     if (path.startsWith("/api/trading/gate/")) {
-      return fulfill(route, { decision: null, event_id: path.split("/").pop() ?? "", joinable: false });
+      return fulfill(route, {
+        decision: null,
+        event_id: path.split("/").pop() ?? "",
+        joinable: false,
+      });
     }
     if (path.startsWith("/api/news/symbols/")) {
       return fulfill(

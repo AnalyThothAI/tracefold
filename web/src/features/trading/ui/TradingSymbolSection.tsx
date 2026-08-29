@@ -2,7 +2,12 @@ import { Card } from "@shared/ui/Card";
 
 import { useTradingCasesWithToken, useTradingIntentsWithToken } from "../api/tradingQueries";
 import { caseStateLabel } from "../model/tradingCases";
-import { INTENT_STATE_NOTE, caseClock, policyLabel, policyReasonLabel } from "../model/tradingLabels";
+import {
+  INTENT_STATE_NOTE,
+  caseClock,
+  policyLabel,
+  policyReasonLabel,
+} from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 

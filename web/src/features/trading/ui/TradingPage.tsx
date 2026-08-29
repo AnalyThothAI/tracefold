@@ -104,8 +104,9 @@ export function TradingPage({ token }: { token: string }) {
               empty={
                 <>
                   当前没有非终态 Intent；Nautilus 不持有待执行工作。过去 24 小时资本通道成案{" "}
-                  <b>{status.counts.cases_24h}</b> 个、形成 Intent <b>{status.counts.intents_24h}</b>{" "}
-                  个；判定过程在 <Link to={newsLeveragePath()}>资本判定</Link>。
+                  <b>{status.counts.cases_24h}</b> 个、形成 Intent{" "}
+                  <b>{status.counts.intents_24h}</b> 个；判定过程在{" "}
+                  <Link to={newsLeveragePath()}>资本判定</Link>。
                 </>
               }
               loading={intentsQuery.isPending}
@@ -124,35 +125,53 @@ export function TradingPage({ token }: { token: string }) {
               hint="执行阶段的终局分布，来自 durable 行的有界聚合"
               title="24h Outcome 分布"
             >
-              <div className="trading-table">
-                {Object.entries(intentsQuery.data?.outcome_counts_24h ?? {}).length ? (
-                  Object.entries(intentsQuery.data?.outcome_counts_24h ?? {}).map(
-                    ([outcome, count]) => (
-                      <article className="trading-case-row" key={outcome}>
-                        <b>{outcome}</b>
-                        <span>{count}</span>
-                        <span>
-                          {Object.entries(intentsQuery.data?.reason_counts_24h ?? {})
-                            .map(([reason, n]) => `${reason} ${n}`)
-                            .join(" · ") || "—"}
-                        </span>
-                      </article>
-                    ),
-                  )
-                ) : (
-                  <TradingEmptyNote>
-                    {intentsQuery.isError && !intentsQuery.data
-                      ? "Intent 账本本轮不可用；不能据此断言没有终局。"
-                      : "过去 24 小时没有终局 Outcome。"}
-                  </TradingEmptyNote>
-                )}
-              </div>
+              {Object.entries(intentsQuery.data?.outcome_counts_24h ?? {}).length ? (
+                <>
+                  <Tally caption="终局状态" counts={intentsQuery.data?.outcome_counts_24h ?? {}} />
+                  <Tally caption="终局原因" counts={intentsQuery.data?.reason_counts_24h ?? {}} />
+                </>
+              ) : (
+                <TradingEmptyNote>
+                  {intentsQuery.isError && !intentsQuery.data
+                    ? "Intent 账本本轮不可用；不能据此断言没有终局。"
+                    : "过去 24 小时没有终局 Outcome。"}
+                </TradingEmptyNote>
+              )}
               <TradingSourceLine path="GET /api/trading/intents → outcome_counts_24h · reason_counts_24h" />
             </Card>
           </div>
         </PageState.Stale>
       ) : null}
     </TradingShell>
+  );
+}
+
+/**
+ * One bounded aggregate, keyed on its own dimension.
+ *
+ * The two 24h tallies are independent aggregates over the same window: one keyed on the terminal state,
+ * one on the reason. They were rendered as one table, with the whole reason distribution repeated in
+ * every outcome row — which reads as "these are CLOSED_FLAT's reasons" and is a join the server never
+ * made. Two captioned lists say what each figure is counted by, and nothing more.
+ */
+function Tally({ caption, counts }: { caption: string; counts: Record<string, number> }) {
+  const rows = Object.entries(counts);
+  return (
+    <dl className="trading-tally">
+      <dt>{caption}</dt>
+      {rows.length ? (
+        rows.map(([key, count]) => (
+          <dd key={key}>
+            <code>{key}</code>
+            <b>{count}</b>
+          </dd>
+        ))
+      ) : (
+        <dd>
+          <span>—</span>
+        </dd>
+      )}
+    </dl>
   );
 }
 
