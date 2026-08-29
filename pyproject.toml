@@ -75,6 +75,7 @@ markers = [
   "scheduled: opt-in production-duration diagnostics excluded from merge evidence",
   "slow: deterministic process/meta tests using shortened injected deadlines (excluded from make test)",
   "property: bounded Hypothesis properties over pure state and typed boundaries",
+  "package: builds and installs the real distribution; needs uv and its dependency cache",
 ]
 
 [tool.ruff]

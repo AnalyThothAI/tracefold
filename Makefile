@@ -17,7 +17,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 
 TRACEFOLD_TEST_RESULT_DIR ?= artifacts/test-results
 QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not external_codegen and not slow and not scheduled"
-FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
+FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen and not package"
 CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not live and not slow and not scheduled and not external_codegen"
 CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 CI_POSTGRES_BEHAVIOR_SELECTION := tests/integration -m "integration and not migration and not slow and not scheduled"

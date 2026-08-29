@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -33,9 +34,17 @@ from pathlib import Path
 
 import pytest
 
+# `package` keeps this out of `make test-fast`. Everything else in the default developer loop is
+# hermetic, and this module is not: it shells out to `uv build`, `uv venv` and `uv pip install`, so
+# offline or with a cold cache it fails rather than skips. `python-hermetic` excludes by marker name
+# and does not name this one, so the required lane still runs it.
+pytestmark = pytest.mark.package
+
 ROOT = Path(__file__).resolve().parents[2]
 DISTRIBUTION_NAME = "tracefold"
-DISTRIBUTION_VERSION = "0.1.0"
+# Read, not restated. A version bump would otherwise leave `uv build` succeeding while the fixture
+# looked for a filename that no longer exists, and report it as "uv build produced no wheel".
+DISTRIBUTION_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
 
 _PROBE = '''
 """Report what the isolated environment can actually see. Written next to the venv, not in the repo."""
