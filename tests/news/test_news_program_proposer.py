@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.news.learning.optimizer import InstructionProposer
+from tracefold.news.learning.optimizer import InstructionGrowthBudget, InstructionProposer
 from tracefold.news.program.artifact import load_stable_program_artifact
 
 _EXAMPLES = [{"Inputs": {}, "Generated Outputs": {}, "Feedback": "magnitude was wrong"}]
@@ -121,8 +121,7 @@ def test_proposer_prices_instruction_growth_during_selection() -> None:
     )
     proposer = InstructionProposer(
         reflection_lm=lm,
-        seed_instructions={"event_semantics": "Seed rule. " * 30},
-        max_growth_tokens=50,
+        budget=InstructionGrowthBudget.from_seeds({"event_semantics": "Seed rule. " * 30}, max_growth_tokens=50),
     )
     updated = proposer(
         candidate={"event_semantics": _CURRENT["event_semantics"]},
@@ -133,7 +132,7 @@ def test_proposer_prices_instruction_growth_during_selection() -> None:
     assert proposer.rejections == ["news_program_instruction_growth_budget"]
     assert len(lm.prompts) == 2
     assert "news_program_instruction_growth_budget" in lm.prompts[1]
-    assert "per-call tokens" in lm.prompts[1], "the re-ask must name the release gate's reason, not just a code"
+    assert "per-observation tokens" in lm.prompts[1], "the re-ask must name the release gate's reason, not just a code"
     assert updated["event_semantics"].startswith("Merge the two overlapping magnitude rules")
 
 
@@ -147,8 +146,7 @@ def test_growth_budget_is_anchored_to_the_seed_not_the_current_candidate() -> No
     lm = _ScriptedReflectionLM([shorter_than_candidate, shorter_than_candidate])
     proposer = InstructionProposer(
         reflection_lm=lm,
-        seed_instructions={"event_semantics": seed},
-        max_growth_tokens=50,
+        budget=InstructionGrowthBudget.from_seeds({"event_semantics": seed}, max_growth_tokens=50),
     )
     updated = proposer(
         candidate={"event_semantics": grown_candidate},
@@ -175,3 +173,40 @@ def test_without_seed_instructions_only_the_safety_bounds_apply() -> None:
 
     assert proposer.rejections == []
     assert updated["event_semantics"].startswith("A long yet lawful instruction.")
+
+
+def test_the_headroom_is_shared_across_components_like_the_gate_charges_it() -> None:
+    """The gate charges one ~10% window per observation, and both instructions ride it.
+
+    A per-component allowance would admit a candidate whose two components each grew "within budget" while
+    their sum blows the gate — which is exactly what a round-robin run or a merge produces. The envelope is
+    therefore charged over the whole candidate: growth already accepted into one component spends headroom
+    the other can no longer use.
+    """
+
+    seeds = {"event_semantics": "Seed rule. " * 30, "reader_card": "Card rule. " * 30}
+    budget = InstructionGrowthBudget.from_seeds(seeds, max_growth_tokens=50)
+    modest = "```\n" + "A modest addition. " * 20 + "\n```"
+    lm = _ScriptedReflectionLM([modest, modest])
+    proposer = InstructionProposer(reflection_lm=lm, budget=budget)
+
+    updated = proposer(
+        candidate={
+            "event_semantics": seeds["event_semantics"],
+            "reader_card": seeds["reader_card"] + "Extra colour. " * 40,
+        },
+        reflective_dataset={"event_semantics": _EXAMPLES},
+        components_to_update=["event_semantics"],
+    )
+
+    assert updated == {}
+    assert proposer.rejections == ["news_program_instruction_growth_budget"]
+    # The identical proposal fits when the other component has not eaten the shared headroom.
+    lm2 = _ScriptedReflectionLM([modest])
+    proposer2 = InstructionProposer(reflection_lm=lm2, budget=budget)
+    accepted = proposer2(
+        candidate=dict(seeds),
+        reflective_dataset={"event_semantics": _EXAMPLES},
+        components_to_update=["event_semantics"],
+    )
+    assert accepted["event_semantics"].startswith("A modest addition.")

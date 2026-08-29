@@ -202,12 +202,70 @@ Rules for what you write:
 """
 
 
-# The offline release gate refuses a candidate whose mean per-case tokens grow more than 10% over stable.
-# #199's first ADVANCE died exactly there: +2.60 selection points, +4.7KB of instruction, rejected after a
-# four-hour run — because nothing in GEPA's world said bytes cost anything. ~10% of a baseline case is about
-# 800 estimated tokens, and the instruction rides every event_semantics call, so this budget prices the
-# growth during selection, where the reflection model can still compress, instead of at release (#334).
+# The offline release gate refuses a candidate whose mean tokens per program observation grow more than
+# 10% over stable. #199's first ADVANCE died exactly there: +2.60 selection points, +4.7KB of instruction,
+# rejected after a four-hour run — nothing in GEPA's world had said bytes cost anything. Measured on live
+# evaluation runs, one observation averages ~9.0k tokens and each instruction rides it about once, so the
+# gate's 10% window is ~900 tokens of headroom for the candidate AS A WHOLE. The budget therefore charges
+# one shared envelope over both instructions — the way the gate will charge it — and is enforced twice:
+# in the proposer, where a re-ask can still teach the reflection model to compress, and as a floor in
+# `NewsGepaAdapter._program`, which merge proposals reach without ever meeting the proposer (#334).
 INSTRUCTION_GROWTH_BUDGET_TOKENS: Final[int] = 800
+
+
+@dataclass(frozen=True)
+class InstructionGrowthBudget:
+    """One shared token envelope over the whole candidate, anchored to the seed instructions.
+
+    Anchored to the seed, never the current candidate: an anchor that moved with accepted rounds would let
+    the allowance ratchet upward across a run. Components absent from a candidate are counted at their
+    seed size, so a partial mapping cannot dodge the envelope.
+    """
+
+    seed_tokens: Mapping[str, int]
+    max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS
+
+    @classmethod
+    def from_seeds(
+        cls, seeds: Mapping[str, str], *, max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS
+    ) -> InstructionGrowthBudget:
+        return cls(
+            seed_tokens={component: _estimated_tokens(text) for component, text in seeds.items()},
+            max_growth_tokens=int(max_growth_tokens),
+        )
+
+    def total_budget(self) -> int:
+        return sum(self.seed_tokens.values()) + self.max_growth_tokens
+
+    def receipt(self) -> dict[str, Any]:
+        return {
+            "seed_tokens": dict(self.seed_tokens),
+            "max_growth_tokens": self.max_growth_tokens,
+            "total_budget": self.total_budget(),
+            "estimator": "utf8_bytes_over_4",
+        }
+
+    def over(self, texts: Mapping[str, str]) -> tuple[str, str] | None:
+        """(code, guidance) when the candidate exceeds the envelope, else None."""
+
+        if not self.seed_tokens:
+            return None
+        total = 0
+        for component, seed in self.seed_tokens.items():
+            text = str(texts.get(component) or "")
+            total += _estimated_tokens(text) if text.strip() else seed
+        budget = self.total_budget()
+        if total <= budget:
+            return None
+        return "news_program_instruction_growth_budget", (
+            f"news_program_instruction_growth_budget: the candidate totals {total} estimated tokens "
+            f"against a budget of {budget} (seeds {dict(self.seed_tokens)} + shared headroom "
+            f"{self.max_growth_tokens}).\n"
+            "The offline release gate refuses a candidate whose per-observation tokens grow more than "
+            "10%, however well it scores, and both instructions ride every observation. Compress rather "
+            "than cut substance: merge overlapping rules and drop restatements of what the instruction "
+            "already says."
+        )
 
 
 class InstructionProposer:
@@ -220,24 +278,14 @@ class InstructionProposer:
     an input to that.
     """
 
-    def __init__(
-        self,
-        *,
-        reflection_lm: Any,
-        seed_instructions: Mapping[str, str] | None = None,
-        max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS,
-    ) -> None:
+    def __init__(self, *, reflection_lm: Any, budget: InstructionGrowthBudget | None = None) -> None:
         # Injected rather than resolved from ambient framework state. `dspy.GEPA` invoked a custom proposer
         # inside `dspy.context(lm=reflection_lm)`, so the previous version reached into `dspy.settings` to
         # find the budgeted endpoint — which meant the proposer only worked inside that context manager.
         self._reflection_lm = reflection_lm
-        # The growth budget is anchored to the *seed* instruction, never the current candidate: an anchor
-        # that moved with each accepted round would let the allowance ratchet upward across a run. Only
-        # components with a seed are budgeted; `run_gepa` supplies both, so the production path always is.
-        self._seed_tokens: dict[str, int] = {
-            component: _estimated_tokens(text) for component, text in dict(seed_instructions or {}).items()
-        }
-        self._max_growth_tokens = int(max_growth_tokens)
+        # One budget object shared with `NewsGepaAdapter`'s floor; `run_gepa` supplies it, so the
+        # production path is always budgeted. A direct construction without one keeps safety bounds only.
+        self._budget = budget
         self.calls = 0
         self.components_seen: list[str] = []
         self.rejections: list[str] = []
@@ -280,7 +328,7 @@ class InstructionProposer:
                 },
             )
             text = str(proposal.get("new_instruction") or "").strip()
-            rejected = self._rejection(component, text)
+            rejected = self._rejection(component, text, candidate)
             if rejected is not None:
                 # Validate here, where the model that wrote the text is still in the loop.
                 #
@@ -300,14 +348,19 @@ class InstructionProposer:
                     },
                 )
                 text = str(retry.get("new_instruction") or "").strip()
-                if self._rejection(component, text) is not None:
+                if self._rejection(component, text, candidate) is not None:
                     continue
             if text:
                 updated[component] = text
         return updated
 
-    def _rejection(self, component: str, text: str) -> tuple[str, str] | None:
-        """The (code, re-ask guidance) this text is refused with, or `None`. Safety first, then the budget."""
+    def _rejection(self, component: str, text: str, candidate: Mapping[str, str]) -> tuple[str, str] | None:
+        """The (code, re-ask guidance) this text is refused with, or `None`. Safety first, then the budget.
+
+        The budget is charged over the whole candidate — the proposed text alongside the candidate's other
+        components — because that is how the release gate will charge it: one shared window per program
+        observation, which both instructions ride.
+        """
 
         code = _instruction_rejection(text)
         if code is not None:
@@ -315,18 +368,8 @@ class InstructionProposer:
                 f"Code-owned instruction safety rejected it: {code}.\n"
                 "Keep it valid NFC, non-empty, and under 32768 bytes."
             )
-        seed = self._seed_tokens.get(component)
-        if seed is not None:
-            budget = seed + self._max_growth_tokens
-            grown = _estimated_tokens(text)
-            if grown > budget:
-                return "news_program_instruction_growth_budget", (
-                    f"news_program_instruction_growth_budget: {grown} estimated tokens against a budget of "
-                    f"{budget} (seed {seed} + headroom {self._max_growth_tokens}).\n"
-                    "The offline release gate refuses a candidate whose per-call tokens grow more than 10%, "
-                    "however well it scores. Compress rather than cut substance: merge overlapping rules and "
-                    "drop restatements of what the instruction already says."
-                )
+        if self._budget is not None:
+            return self._budget.over({**dict(candidate), component: text})
         return None
 
 
@@ -423,9 +466,14 @@ class NewsGepaAdapter:
         metric: Callable[..., MetricOutcome],
         proposer: InstructionProposer,
         budget_guard: Callable[[], None] | None = None,
+        growth_budget: InstructionGrowthBudget | None = None,
     ) -> None:
         self._adapter = adapter
         self._metric = metric
+        # The floor under the proposer's teaching: merge proposals combine two lineages per predictor
+        # without ever calling `InstructionProposer`, so the envelope has to be enforced where every
+        # candidate must pass — before it spends a single provider call (#334).
+        self._growth_budget = growth_budget
         # A budget refusal is not one case's bad answer. `evaluate` must never raise for a single example —
         # the engine would log it and skip the whole iteration — so an exhausted budget raised mid-example
         # is caught below like any other failure, and this is what turns it back into the run-level answer
@@ -451,6 +499,10 @@ class NewsGepaAdapter:
             if code is None:
                 raise
             return code
+        if self._growth_budget is not None:
+            over = self._growth_budget.over(candidate)
+            if over is not None:
+                return over[0]
         return NewsSemanticProgram(artifact, primary_adapter=self._adapter)
 
     def evaluate(
@@ -599,15 +651,16 @@ def run_gepa(
 
     metric = bind_metric(judge)
     metric_receipt = _metric_receipt(metric, review_rubric_version=review_rubric_version)
-    proposer = InstructionProposer(
-        reflection_lm=reflection_lm,
-        seed_instructions={component: base_program.instruction_for(component) for component in COMPONENTS},
+    growth_budget = InstructionGrowthBudget.from_seeds(
+        {component: base_program.instruction_for(component) for component in COMPONENTS}
     )
+    proposer = InstructionProposer(reflection_lm=reflection_lm, budget=growth_budget)
     gepa_adapter = NewsGepaAdapter(
         adapter=task_adapter,
         metric=metric,
         proposer=proposer,
         budget_guard=getattr(task_adapter, "raise_if_exhausted", None),
+        growth_budget=growth_budget,
     )
     constructor = optimizer_constructor(
         max_metric_calls=max_metric_calls,
@@ -615,6 +668,7 @@ def run_gepa(
         train_count=len(train_examples),
     )
     config_receipt = optimizer_config_receipt(
+        growth_budget=growth_budget,
         constructor=constructor,
         task_adapter=task_adapter,
         reflection_lm=reflection_lm,
@@ -725,13 +779,14 @@ def optimizer_config_receipt(
     task_adapter: PredictorAdapter,
     reflection_lm: Any,
     proposer: InstructionProposer,
+    growth_budget: InstructionGrowthBudget | None = None,
     metric_sha256: str,
     example_count: int,
     train_count: int,
     val_count: int,
 ) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v2",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v3",
         "optimizer": {
             "implementation": "gepa.optimize",
             "gepa_version": importlib.metadata.version("gepa"),
@@ -747,6 +802,9 @@ def optimizer_config_receipt(
             "reads": "the current complete predictor instruction plus the reflective dataset",
             "writes": "one complete replacement predictor instruction",
         },
+        # v3 (#334): a selection rule that can decide who wins belongs in the compile record. `null` means
+        # the run was not budgeted, which is itself evidence.
+        "instruction_growth_budget": growth_budget.receipt() if growth_budget is not None else None,
         "model_identities": {
             "task": require_model_identity(task_adapter, role="task").model_dump(mode="json"),
             "reflection": require_model_identity(reflection_lm, role="reflection").model_dump(mode="json"),
