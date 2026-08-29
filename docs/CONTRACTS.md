@@ -216,9 +216,11 @@ by default. A disabled Trading context constructs no capital lane and no
 adapter, and Compose does not start Nautilus. The accepted keys are only:
 
 - `enabled`;
-- `candidates.*`: `max_age_seconds`, `symbol_cooldown_seconds`,
-  `max_rank_in_window`, `min_oi_value_usd` — universe and timing filters, never
-  sizing and never Alpha;
+- `candidates.*`: `max_age_seconds`, `min_oi_value_usd` — a freshness budget and
+  a venue liquidity prior, never sizing and never Alpha. `symbol_cooldown_seconds`
+  and `max_rank_in_window` were retired by #348: a per-symbol re-entry delay is
+  what a lane needs when several positions can be open at once, and a rank ceiling
+  is selectivity, which the policy already owns;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
 - `nautilus.api_key_file` and `nautilus.api_secret_file`, resolved relative
@@ -243,8 +245,8 @@ capability snapshot minus the canonical underlying blacklist. It is not an
 operator target-symbol list. The code-owned contract remains NETTING/one-way,
 long-only, 1x, market entry, 60-second Intent TTL,
 200-bps native fixed-quantity reduce-only stop, 180-second maximum holding,
-25-bps entry drift, 30-bps spread, one nonterminal Intent globally, and one
-entry fence per UTC day. Quantity is
+25-bps entry drift, 30-bps spread, and one nonterminal Intent globally.
+Quantity is
 `floor_to_venue_precision(target_notional_usd / fresh_price)`; venue minimum,
 balance, quote, and ceiling failures refuse rather than resize or reroute.
 
@@ -955,7 +957,9 @@ lifecycle and a `case_id` back-reference; the status surface carries readiness
 and bounded durable totals and no threshold at all.
 
 - `GET /api/trading/status` — runtime and execution readiness. `budget` exposes
-  only target notional and the code-owned one-entry-per-UTC-day ceiling.
+  target notional and nothing else: #348 retired the one-entry-per-UTC-day
+  ceiling, and publishing a ceiling nobody enforces is worse than publishing
+  none. The lane's bound is one live thesis, held by a unique index.
   `readiness` exposes enabled/control, `nautilus`, `BINANCE_USDM_DEMO`, active
   capability digest/count, canonical blacklist revision, redacted credential
   availability, engine readiness/reason, heartbeat, and unexpected exposure.
@@ -1030,7 +1034,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260829_0325`). Since
+append without rewrite access (current at migration `20260829_0326`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

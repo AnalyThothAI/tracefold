@@ -304,9 +304,10 @@ class NewsOiSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsOiSettings:
-        # The same 1-10 band `TradingCandidateSettings.max_rank_in_window` carries, for the same reason: this
-        # is "the opening N moves of a run", and a mistyped 1000 would silently mean "every frame" — and now
-        # also renders a rank slot per unit in the 持仓异动 window card. Fail at startup instead.
+        # A 1-10 band, because this is "the opening N moves of a run": a mistyped 1000 would silently
+        # mean "every frame", and the 持仓异动 window card renders one rank slot per unit. Fail at
+        # startup instead. Trading carried a rank ceiling of its own until #348 retired it; this one
+        # is the *notification* gate's and is unrelated to capital.
         if not 1 <= self.max_rank_in_window <= 10:
             raise ValueError("news_oi_max_rank_invalid")
         if not 300_000 <= self.window_ms <= 86_400_000:
@@ -454,8 +455,6 @@ class TradingCandidateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     max_age_seconds: int = 300
-    symbol_cooldown_seconds: int = 1_800
-    max_rank_in_window: int = 2
     # 20M, not the 1M a "universe-quality floor" suggests. `docs/research/oi-agent-design-2026-08-22.md`
     # §1.5 measured the 10-50M OI bucket as the *worst* (+4h -0.77%, 48% win) and >200M as the best; a
     # one-million floor admits the losing bucket wholesale.
@@ -465,10 +464,6 @@ class TradingCandidateSettings(BaseModel):
     def validate_bounds(self) -> TradingCandidateSettings:
         if not 30 <= self.max_age_seconds <= 3_600:
             raise ValueError("trading_candidate_max_age_invalid")
-        if not 0 <= self.symbol_cooldown_seconds <= 86_400:
-            raise ValueError("trading_candidate_symbol_cooldown_invalid")
-        if not 1 <= self.max_rank_in_window <= 10:
-            raise ValueError("trading_candidate_rank_invalid")
         return self
 
 

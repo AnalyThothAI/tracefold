@@ -239,7 +239,7 @@ class NautilusDatabaseBridge:
             # Three dispositions, three different facts (#331). `GRANTED` is the only one that may
             # precede a provider entry, and it is committed before this line runs. `REFUSED` wrote a
             # terminal rejection at zero exposure; `UNAVAILABLE` wrote nothing at all and names why —
-            # a stale dispatch, an unready runtime, the day's entry already taken, or an expired TTL.
+            # a stale dispatch, an unready runtime, or an expired TTL.
             # The old `None` carried every one of those, so an engine held back by readiness looked
             # exactly like one with nothing to do.
             if not fence.granted or fence.outcome is None:

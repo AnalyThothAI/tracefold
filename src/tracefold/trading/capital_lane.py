@@ -98,9 +98,11 @@ _SCAN_OVERLAP_FACTOR: Final = 3
 _CASE_LEASE_MS: Final = 60_000
 # One freeze per turn, and it is a capital rule rather than a throughput choice.
 #
-# The lane's global fence is one nonterminal Intent and one fenced entry per UTC day, so at most one
-# frozen Case can reach `INTENT_EMITTED` at a time. Freezing four meant that when the first answered
-# `long`, the other three were decided against a fence the first had just taken and settled
+# `ux_trading_intents_one_active` admits a single nonterminal Intent, so at most one frozen Case can
+# reach `INTENT_EMITTED` at a time. (Until #348 this paragraph said "one fenced entry per UTC day"
+# instead, and that rule is gone — but the conclusion does not depend on it, and the reason to keep
+# this constant at 1 is unchanged.) Freezing four meant that when the first answered `long`, the
+# other three were decided against a fence the first had just taken and settled
 # `BLOCKED / capacity_exhausted` — a *terminal* state, which put their `primary_source_key` beyond
 # re-admission forever. That is precisely the confusion admission refuses to make one stage earlier:
 # the lane was full, the Source was not unusable. At one freeze per turn the loser is answered
@@ -145,10 +147,6 @@ LaneOutcome = Literal["ADVANCED", "HALTED"]
 
 def now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
-
-
-def _day_start_ms(now: int) -> int:
-    return now // 86_400_000 * 86_400_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +235,6 @@ class CapitalLane:
             "trading_capital_authority",
             lambda repos: _trading(repos).capital_authority(
                 since_ms=now - self._config.scan_horizon_ms,
-                day_start_ms=_day_start_ms(now),
                 now_ms=now,
             ),
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
@@ -341,7 +338,6 @@ class CapitalLane:
                 active_underlyings=authority.active_underlyings,
                 underlyings_in_flight=authority.underlyings_in_flight,
                 cased_source_keys=authority.cased_source_keys,
-                last_close_at_ms=authority.last_close_at_ms,
             )
             if verdict is not None:
                 results[normalized.source_key] = verdict
@@ -563,7 +559,6 @@ class CapitalLane:
                 policy_reason=decision.rule,
                 policy_checks=evidence,
                 target_notional_usd=self._config.target_notional_usd,
-                day_start_ms=_day_start_ms(commit_at),
                 now_ms=commit_at,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -633,10 +628,16 @@ def _source_key(row: OiCandidateRow, metric_version: str) -> str:
 
 
 def _capacity_reason(authority: CapitalAuthority) -> str | None:
-    """Whether the lane has room for another thesis at all. One entry per UTC day, one at a time."""
+    """Whether the lane has room for another thesis at all. One live economic lifecycle, at a time.
 
-    if authority.entries_today >= 1:
-        return "daily_entry_fence"
+    The one-entry-per-UTC-day fence is gone (#348). It was a throughput cap wearing a safety costume:
+    measured over seven days it would have capped the busiest day at one of six qualifying frames while
+    the lane already serialises to a single live position held at most three minutes. What it actually
+    bought was a blind spot — after the day's first entry every later frame was refused *before* the
+    policy ran, so the lane could not say which of them it should have taken. Serialisation is what
+    bounds capital here, and it survives untouched, including inside the entry fence's own statement.
+    """
+
     if authority.active_underlyings:
         return "active_intent"
     return None

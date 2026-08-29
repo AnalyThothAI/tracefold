@@ -78,7 +78,6 @@ def get_trading_status(request: Request) -> Response:
         {
             "budget": {
                 "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
-                "max_entries_per_utc_day": 1,
             },
             "readiness": {
                 "control": str(state.get("control") or "PAUSED"),

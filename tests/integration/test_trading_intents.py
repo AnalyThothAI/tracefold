@@ -1148,7 +1148,16 @@ def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner
     assert stored.engine_identity in {"nt-a", "nt-b"}
 
 
-def test_entry_fence_enforces_the_code_owned_one_entry_per_utc_day(conn: Any) -> None:
+def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any) -> None:
+    """#348 inverts this test. It used to prove the one-entry-per-UTC-day fence, code and index both.
+
+    Exposure was never what that fence bounded — `ux_trading_intents_one_active` is a unique index
+    admitting a single nonterminal Intent, and it is untouched. The daily cap bounded *throughput*,
+    and the cost was a blind spot on exactly the days the lane worked: every frame after the first
+    entry was refused before the policy ran, so the lane could not say which of them it should have
+    taken. Once the first thesis is flat, the second may enter the same day.
+    """
+
     _case(conn)
     repos = repositories_for_connection(conn)
     first = _intent()
@@ -1195,20 +1204,9 @@ def test_entry_fence_enforces_the_code_owned_one_entry_per_utc_day(conn: Any) ->
     assert repos.trading.insert_intent(second) is True
     conn.commit()
 
-    spent = repos.trading.fence_entry(second.intent_id, engine_identity="nt-1", now_ms=NOW + 5_000)
-    assert (spent.disposition, spent.reason) == ("UNAVAILABLE", "daily_entry_fence_taken")
+    granted = repos.trading.fence_entry(second.intent_id, engine_identity="nt-1", now_ms=NOW + 5_000)
+    assert granted.disposition == "GRANTED"
     conn.commit()
-    with pytest.raises(UniqueViolation):
-        conn.execute(
-            """
-            UPDATE trading_intents
-               SET execution_state = 'IN_FLIGHT', execution_phase = 'ENTRY',
-                   entry_client_order_id = 'tf-e-database-backstop', entry_fenced_at_ms = %s
-             WHERE intent_id = %s
-            """,
-            (NOW + 5_000, second.intent_id),
-        )
-    conn.rollback()
 
 
 def test_database_allows_only_one_nonterminal_intent_globally(conn: Any) -> None:

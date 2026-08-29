@@ -45,10 +45,10 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     """One projected telemetry fact, or a named source-contract failure. No clock, no policy (#264).
 
     This is the **source** stage and nothing else: is the row a usable, live, current-generation OI
-    fact at all? Rank, the liquidity floor, the deny list, freshness, cooldown and idempotency belong
-    to Admission, and they used to be here as well as in News's SELECT — which is how the same
-    threshold came to be executed in three places and a rejection came to be indistinguishable from a
-    row that never existed.
+    fact at all? The liquidity floor, the deny list, freshness and idempotency belong to Admission,
+    and they used to be here as well as in News's SELECT — which is how the same threshold came to be
+    executed in three places and a rejection came to be indistinguishable from a row that never
+    existed. (A rank ceiling and a per-symbol cooldown were on that list until #348 retired both.)
 
     `rank_in_window` is read here because the candidate carries it, not because a ceiling is applied.
     """

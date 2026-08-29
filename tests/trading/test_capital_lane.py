@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from tracefold.app.http.schemas.trading import TradingGateEvidenceData
 from tracefold.trading.admission import AdmissionConfig
 from tracefold.trading.blacklist import Blacklist
 from tracefold.trading.capabilities import (
@@ -130,7 +131,7 @@ class FakeTrading:
         self.maintained = 0
 
     # -- read
-    def capital_authority(self, *, since_ms: int, day_start_ms: int, now_ms: int) -> CapitalAuthority | None:
+    def capital_authority(self, *, since_ms: int, now_ms: int) -> CapitalAuthority | None:
         return self._authority
 
     # -- freeze
@@ -219,12 +220,10 @@ class FakeDb:
 def _authority(**overrides: Any) -> CapitalAuthority:
     values: dict[str, Any] = {
         "control": "RUNNING",
-        "entries_today": 0,
         "blacklist": Blacklist.from_rows([]),
         "active_underlyings": frozenset(),
         "underlyings_in_flight": frozenset(),
         "cased_source_keys": frozenset(),
-        "last_close_at_ms": {},
         "capability": _snapshot(),
     }
     values.update(overrides)
@@ -385,7 +384,7 @@ def test_every_refusal_is_stage_specific_and_none_of_them_is_a_catch_all() -> No
         rows=[
             _row(event_id="poor", symbol="AAA", oi_value_usd=1_000_000),
             _row(event_id="old", symbol="BBB", observed_at_ms=NOW - 3_600_000),
-            _row(event_id="deep", symbol="CCC", rank_in_window=9),
+            _row(event_id="unlisted", symbol="CCC"),
         ],
     )
     lane, _ = _lane(trading)
@@ -395,7 +394,7 @@ def test_every_refusal_is_stage_specific_and_none_of_them_is_a_catch_all() -> No
     assert _reasons(trading) == {
         "oi:poor:oi_signal_v1": "eligibility:oi_value_below_floor",
         "oi:old:oi_signal_v1": "eligibility:trigger_stale",
-        "oi:deep:oi_signal_v1": "eligibility:rank_above_limit",
+        "oi:unlisted:oi_signal_v1": "capability:capability_absent",
     }
 
 
@@ -434,13 +433,39 @@ def test_missing_bars_defer_and_a_gap_at_the_cutoff_rejects() -> None:
 
 
 def test_a_full_lane_answers_every_admitted_frame_rather_than_leaving_a_hole() -> None:
-    trading = FakeTrading(authority=_authority(entries_today=1), rows=[_row()])
+    """A live thesis fills the lane. Having already entered today does not (#348)."""
+
+    trading = FakeTrading(authority=_authority(active_underlyings=frozenset({"crypto:SOL"})), rows=[_row()])
     lane, _ = _lane(trading)
 
     _advance(lane)
 
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:lane_capacity_exhausted"}
-    assert trading.admission[0]["evidence"]["lane_full"] == "daily_entry_fence"
+    assert trading.admission[0]["evidence"]["lane_full"] == "active_intent"
+
+
+def test_having_entered_today_does_not_refuse_a_later_frame() -> None:
+    """#348: the one-entry-per-UTC-day fence is gone, and with it the day's blind spot.
+
+    It refused every later frame *before* the policy ran, so on any day the lane traded it could not
+    say which of the day's remaining frames it should have taken. Measured over seven days it would
+    have capped the busiest day at one of six qualifying frames, while the real bound — one live
+    position, held at most three minutes — was doing the work all along.
+    """
+
+    # Three entries already fenced today, and a fourth frame still gets a Case and a decision. The
+    # authority no longer even counts them: `entries_today` is gone from the read (#348), so the only
+    # honest way to state this is that nothing about the UTC day reaches the lane at all.
+    assert not hasattr(_authority(), "entries_today")
+
+    trading = FakeTrading(authority=_authority(), rows=[_row()])
+    lane, _ = _lane(trading)
+
+    turn = _advance(lane)
+
+    assert turn.cases_created == 1
+    assert turn.intents_emitted == 1
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
 
 
 def test_one_issuer_produces_one_thesis_and_the_loser_is_deferred_not_retired() -> None:
@@ -462,8 +487,10 @@ def test_one_issuer_produces_one_thesis_and_the_loser_is_deferred_not_retired() 
 def test_a_second_issuer_in_one_turn_is_deferred_rather_than_frozen_into_a_doomed_case() -> None:
     """The surplus keeps its Source. It is the lane that is full, not the frame that is unusable.
 
-    The lane freezes one Case per turn because only one can ever reach `INTENT_EMITTED`: the daily entry
-    fence is one. Freezing several meant the first to answer `long` took the fence and the rest were
+    The lane freezes one Case per turn because only one can ever reach `INTENT_EMITTED`:
+    `ux_trading_intents_one_active` is a unique index admitting a single nonterminal Intent. (#348
+    removed the one-entry-per-UTC-day fence this clause used to cite; the index is what the guarantee
+    always rested on.) Freezing several meant the first to answer `long` took the fence and the rest were
     settled `BLOCKED / capacity_exhausted` — *terminal*, which puts `primary_source_key` beyond
     re-admission for good. The surplus has to come back at admission, where a refusal is retryable.
     """
@@ -490,6 +517,30 @@ def test_a_second_issuer_in_one_turn_is_deferred_rather_than_frozen_into_a_doome
     assert trading.settled == []
 
 
+def test_a_busy_issuer_is_one_refusal_whose_evidence_says_which_side_holds_it() -> None:
+    """#348 merged `active_underlying` and `case_in_flight`. Both halves need a test, and the row it
+    writes has to survive the HTTP schema — the reason this branch had none is why the schema mismatch
+    that follows it shipped green.
+    """
+
+    for holder, authority in (
+        ("intent", _authority(active_underlyings=frozenset({"crypto:TUT"}))),
+        ("case", _authority(underlyings_in_flight=frozenset({"crypto:TUT"}))),
+    ):
+        trading = FakeTrading(authority=authority, rows=[_row()])
+        lane, _ = _lane(trading)
+
+        _advance(lane)
+
+        assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:underlying_busy"}
+        row = trading.admission[0]
+        assert (row["status"], row["retryable"]) == ("DEFERRED", True)
+        assert row["evidence"]["holds"] == holder
+        # The ledger row is what `/api/trading/gate` serves, and that schema forbids extra keys, so
+        # the whole evidence document has to validate — not just the key this refusal adds.
+        TradingGateEvidenceData.model_validate(row["evidence"])
+
+
 def test_a_source_that_already_authored_a_case_is_terminally_consumed() -> None:
     trading = FakeTrading(
         authority=_authority(cased_source_keys=frozenset({"oi:evt-1:oi_signal_v1"})),
@@ -500,19 +551,6 @@ def test_a_source_that_already_authored_a_case_is_terminally_consumed() -> None:
     _advance(lane)
 
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:already_consumed"}
-
-
-def test_a_symbol_inside_its_cooldown_defers_with_the_measured_gap() -> None:
-    trading = FakeTrading(
-        authority=_authority(last_close_at_ms={"crypto:TUT": NOW - 60_000}),
-        rows=[_row()],
-    )
-    lane, _ = _lane(trading)
-
-    _advance(lane)
-
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:cooldown"}
-    assert trading.admission[0]["evidence"]["since_close_ms"] == 60_000
 
 
 # ---------------------------------------------------------------------------- decision-time guards

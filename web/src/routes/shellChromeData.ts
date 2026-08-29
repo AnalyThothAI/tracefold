@@ -138,7 +138,6 @@ export function topbarFigures(
 ): CockpitTopbarFigure[] {
   if (pathname === "/trading") {
     const readiness = tradingStatus?.readiness;
-    const budget = tradingStatus?.budget;
     return [
       { label: "AUTHORITY", text: readiness?.execution_authority },
       {
@@ -150,9 +149,7 @@ export function topbarFigures(
       },
       {
         label: "今日入场",
-        text: budget
-          ? `${tradingStatus?.counts.entries_today ?? 0} / ${budget.max_entries_per_utc_day}`
-          : undefined,
+        text: tradingStatus ? `${tradingStatus.counts.entries_today}` : undefined,
       },
     ];
   }

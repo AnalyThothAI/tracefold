@@ -19,7 +19,7 @@ export const CAPITAL_POLICY_ID = "binance_oi_smart_money_long_v2";
  */
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
-    budget: { max_entries_per_utc_day: 1, target_notional_usd: "10" },
+    budget: { target_notional_usd: "10" },
     counts: {
       active_intents: 1,
       cases_24h: 7,
@@ -174,6 +174,7 @@ export function gateEvidence(
   return {
     blacklist_reason: "",
     enabled: [],
+    holds: "",
     lane_full: "",
     live_exchange_id: "",
     rule: "",
@@ -200,7 +201,7 @@ export function tradingGateDecisionFixture(
     gate_retryable: false,
     gate_stage: "eligibility",
     gate_status: "REJECTED",
-    gate_version: "trading_admission_v2",
+    gate_version: "trading_admission_v3",
     research_only: false,
     source_key: "oi:evt-oi-storj:oi_signal_v1",
     source_observed_at_ms: TRADING_NOW_MS - 120_000,
@@ -215,10 +216,8 @@ export function tradingGateConfigFixture(): TradingGate["config"] {
     config_digest: "c".repeat(64),
     live_exchange_id: "binance",
     max_age_ms: 300_000,
-    max_rank_in_window: 2,
     min_oi_value_usd: 5_000_000,
-    symbol_cooldown_ms: 1_800_000,
-    version: "trading_admission_v2",
+    version: "trading_admission_v3",
   };
 }
 

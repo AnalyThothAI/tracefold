@@ -15,7 +15,7 @@ are not admitted at all: they are not a Source of this lane and no code path off
 
     source          the row is a usable, current-generation, live OI fact at all
     venue           the frame's own venue carries live capital authority
-    eligibility     rank, liquidity floor, blacklist, freshness, cooldown, idempotency, one per underlying
+    eligibility     liquidity floor, blacklist, freshness, idempotency, one live thesis per underlying
     capability      the active Binance Demo snapshot lists an executable instrument for this issuer
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
@@ -52,7 +52,7 @@ from .sources import SourceRejected
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
 # so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
 # v2 is #331: `RESEARCH_ONLY` exists, News triggers do not, and capability replaced the catalogue.
-ADMISSION_VERSION: Final = "trading_admission_v2"
+ADMISSION_VERSION: Final = "trading_admission_v3"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "capability", "market_context", "freeze"]
@@ -70,12 +70,13 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "research_only_venue",
         "venue_unresolved",
         "trigger_stale",
-        "rank_above_limit",
         "oi_value_below_floor",
         "blacklisted",
-        "cooldown",
-        "active_underlying",
-        "case_in_flight",
+        # One name for "this issuer is already busy", whether a live Intent or an undecided Case holds
+        # it. `cooldown` is gone with the same edit (#348): a per-symbol re-entry delay is what you
+        # need when several positions can be open at once, and the lane serialises to one held at most
+        # three minutes. It refused two frames in seven days.
+        "underlying_busy",
         # The active capability snapshot lists no executable Binance Demo instrument for this issuer.
         # Retryable: a cold capability refresh can add one.
         "capability_absent",
@@ -83,8 +84,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
-        # The per-turn Case budget and the one-entry-per-day fence refuse a Source that passed every
-        # rule about itself; calling that `active_underlying` would blame the frame's own issuer.
+        # The per-turn Case budget and the lane's one live thesis refuse a Source that passed every
+        # rule about itself; calling that `underlying_busy` would blame the frame's own issuer for a
+        # different name being in the way.
         "lane_capacity_exhausted",
         "case_created",
     }
@@ -116,17 +118,13 @@ class AdmissionConfig:
     """
 
     max_age_ms: int = 300_000
-    max_rank_in_window: int = 2
     min_oi_value_usd: int = 20_000_000
-    symbol_cooldown_ms: int = 1_800_000
 
     @property
     def snapshot(self) -> dict[str, Any]:
         return {
             "max_age_ms": self.max_age_ms,
-            "max_rank_in_window": self.max_rank_in_window,
             "min_oi_value_usd": self.min_oi_value_usd,
-            "symbol_cooldown_ms": self.symbol_cooldown_ms,
             "live_exchange_id": LIVE_EXCHANGE_ID,
         }
 
@@ -291,24 +289,21 @@ def admit_venue(candidate: OiTradeCandidate) -> AdmissionResult | None:
 
 
 def admit_frame(candidate: OiTradeCandidate, *, config: AdmissionConfig) -> AdmissionResult | None:
-    """The rules that read only the frame's own frozen numbers, and therefore bind it everywhere.
+    """The one rule that reads only the frame's own frozen numbers, and therefore binds it everywhere.
 
-    Rank and the absolute liquidity floor are properties of the frame, not of the moment: they can
-    never change, and they say whether this fact may ground a capital decision *at all*.
+    The absolute liquidity floor is a property of the frame, not of the moment: it can never change,
+    and it says whether this fact may ground a capital decision *at all*. It is a venue prior — how
+    much book stands behind the name — which is why it lives here and not in the policy.
+
+    `rank_above_limit` used to sit beside it and is gone (#348). A "only the top N in the window"
+    ceiling is a *selectivity* rule, and selectivity belongs to the policy, which already owns four
+    thresholds of it. Splitting the strategy's rulebook across two files bought two refusals in seven
+    days and cost a reader having to know both places to answer what the strategy requires.
 
     Terminal on purpose: a `DEFERRED` here would promise a retry that can only ever reach the same
     conclusion, since the number it failed on is frozen in the frame.
     """
 
-    if candidate.rank_in_window > config.max_rank_in_window:
-        return _result(
-            candidate=candidate,
-            status="REJECTED",
-            stage="eligibility",
-            reason="rank_above_limit",
-            retryable=False,
-            evidence={"limit": config.max_rank_in_window},
-        )
     if candidate.oi_value_usd < config.min_oi_value_usd:
         return _result(
             candidate=candidate,
@@ -330,7 +325,6 @@ def admit_trigger(
     active_underlyings: Container[str] = (),
     underlyings_in_flight: Container[str] = (),
     cased_source_keys: Container[str] = (),
-    last_close_at_ms: Mapping[str, int] | None = None,
 ) -> AdmissionResult | None:
     """Whether this fact may start a Case *now*, or the one named reason it may not.
 
@@ -382,31 +376,19 @@ def admit_trigger(
             retryable=False,
             evidence={"age_ms": now_ms - candidate.observed_at_ms, "max_age_ms": config.max_age_ms},
         )
-    if key in active_underlyings:
+    # One reason, because it is one fact: this issuer is already busy. It used to be two — an
+    # `active_underlying` for a live Intent and a `case_in_flight` for an undecided Case — which read
+    # as two rules to satisfy when it is one, and made the ledger's own aggregation answer a question
+    # nobody asks (of the frames refused because the name was busy, how many were busy *which way*).
+    # The evidence still carries which set matched, for anyone who does ask (#348).
+    if key in active_underlyings or key in underlyings_in_flight:
         return _result(
             candidate=candidate,
             status="DEFERRED",
             stage="eligibility",
-            reason="active_underlying",
+            reason="underlying_busy",
             retryable=True,
-        )
-    if key in underlyings_in_flight:
-        return _result(
-            candidate=candidate,
-            status="DEFERRED",
-            stage="eligibility",
-            reason="case_in_flight",
-            retryable=True,
-        )
-    closed_at = (last_close_at_ms or {}).get(key)
-    if closed_at is not None and now_ms - int(closed_at) < config.symbol_cooldown_ms:
-        return _result(
-            candidate=candidate,
-            status="DEFERRED",
-            stage="eligibility",
-            reason="cooldown",
-            retryable=True,
-            evidence={"since_close_ms": now_ms - int(closed_at), "cooldown_ms": config.symbol_cooldown_ms},
+            evidence={"holds": "intent" if key in active_underlyings else "case"},
         )
     return None
 

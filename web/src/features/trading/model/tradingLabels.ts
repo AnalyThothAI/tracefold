@@ -92,16 +92,20 @@ export function policyLabel(policyId: string): string {
  */
 export const GATE_REASON_ZH: Record<string, string> = {
   "capability:capability_absent": "当前能力快照没有这个标的",
-  "eligibility:active_underlying": "该标的已有在场仓位",
   "eligibility:already_consumed": "同一来源已成案",
   "eligibility:blacklisted": "标的在拒绝名单",
-  "eligibility:case_in_flight": "该标的已有未决案例",
-  "eligibility:cooldown": "标的冷却期内",
-  "eligibility:lane_capacity_exhausted": "通道当日额度已满",
+  "eligibility:lane_capacity_exhausted": "通道已有在场仓位",
   "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
-  "eligibility:rank_above_limit": "窗口内名次超限",
   "eligibility:superseded_by_newer_trigger": "被同标的更新的帧合并",
+  "eligibility:underlying_busy": "该标的已被占用",
   "eligibility:trigger_stale": "帧已过触发时效",
+  // Retired by #348 and kept only to read the ledger's 90-day history. `lane_capacity_exhausted`
+  // survives as a current answer but no longer means a daily quota: the lane's bound is one live
+  // thesis, so the label above says that instead.
+  "eligibility:active_underlying": "该标的已有在场仓位（旧）",
+  "eligibility:case_in_flight": "该标的已有未决案例（旧）",
+  "eligibility:cooldown": "标的冷却期内（旧）",
+  "eligibility:rank_above_limit": "窗口内名次超限（旧）",
   "freeze:already_consumed": "同一来源已成案",
   "freeze:case_created": "已开案",
   "market_context:market_data_invalid": "截面无可用收盘价",

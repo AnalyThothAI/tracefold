@@ -107,7 +107,7 @@ describe("NewsOiPage", () => {
      */
     renderOi();
     expect(
-      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v2 · Alpha 阈值随案例冻结/),
+      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v3 · Alpha 阈值随案例冻结/),
     ).toBeInTheDocument();
     expect(screen.getByText("binance")).toBeInTheDocument();
     expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();
@@ -571,7 +571,10 @@ describe("NewsOiPage", () => {
     const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
     const admissionCard = admission.closest("article") as HTMLElement;
     expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
-    expect(within(admissionCard).getByText("≤ 2")).toBeInTheDocument();
+    // #348 retired the capital rank ceiling and the per-symbol cooldown. The push gate keeps its own
+    // rank (`≤ 2 / 4h`, asserted above), and the two must not be confused for one another again.
+    expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
+    expect(admissionCard).not.toHaveTextContent("冷却");
     // One live venue, code-owned. Everything else is `RESEARCH_ONLY` and the frame table says so per row.
     expect(within(admissionCard).getByText("binance")).toBeInTheDocument();
     expect(admissionCard).toHaveTextContent("5m");

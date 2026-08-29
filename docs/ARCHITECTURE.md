@@ -1859,8 +1859,7 @@ scan, Case, provider call or Intent; it is never defaulted to `RUNNING`.
 The Nautilus entry fence returns a typed disposition — `GRANTED` (committed;
 only then may a provider entry be sent), `REFUSED` (a durable terminal
 rejection at zero exposure) or `UNAVAILABLE` (nothing written, and which of
-`runtime_not_ready` / `daily_entry_fence_taken` / `intent_not_claimable` /
-`intent_expired` it was). Risk-reducing actions — stop, close, flat proof — are
+`runtime_not_ready` / `intent_not_claimable` / `intent_expired` it was). Risk-reducing actions — stop, close, flat proof — are
 never blocked by the entry fence.
 
 ### Frozen execution contract
@@ -1894,7 +1893,8 @@ value:
   `reduce_only=true`;
 - 180-second maximum holding from authoritative first fill;
 - 25 bps maximum entry drift and 30 bps maximum spread;
-- globally at most one nonterminal Intent and one entry fence per UTC day;
+- globally at most one nonterminal Intent, enforced inside the entry fence's own
+  statement rather than by a daily count (#348);
 - quantity equal to
   `floor_to_venue_precision(target_notional_usd / fresh_price)`.
 
@@ -1950,8 +1950,7 @@ audit identity. Workers may insert its immutable columns; the Nautilus role may
 read the row and update only the execution projection; Serve is read-only.
 Database constraints enforce the Demo environment, V2 capability/blacklist
 identity, immutable Intent columns,
-Case-to-Intent one-to-one identity, one nonterminal row globally, and one
-fenced entry per UTC day.
+Case-to-Intent one-to-one identity, and one nonterminal row globally.
 
 ### OI BAR replay and attribution
 
@@ -2031,8 +2030,11 @@ sole authority until it protects or closes the position.
 
 ### Research, admission, and durable data
 
-Admission owns source contract, venue authority, freshness, deny-list,
-rank/liquidity, cooldown, capability presence, market context and capacity. It
+Admission owns source contract, venue authority, freshness, deny-list, the
+liquidity floor, capability presence, market context and capacity. (A rank
+ceiling and a per-symbol cooldown were on that list until #348 retired both:
+selectivity belongs to the policy, and a re-entry delay is what a lane needs
+when several positions can be open at once.) It
 records one `(source_key, gate_version, gate_config_digest)` decision in
 `trading_candidate_gate_decisions` — the admission ledger — so the console can
 explain why a Source did not become a Case. The scan re-reads a bounded overlap

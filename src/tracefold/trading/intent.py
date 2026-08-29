@@ -27,7 +27,7 @@ from .execution_policy import (
 
 TRADE_INTENT_VERSION: Final[Literal["trade_intent_v2"]] = "trade_intent_v2"
 BINANCE_USDM_DEMO: Final[Literal["BINANCE_USDM_DEMO"]] = "BINANCE_USDM_DEMO"
-INTENT_POLICY_VERSION = "trade_intent_policy_v2"
+INTENT_POLICY_VERSION = "trade_intent_policy_v3"
 INTENT_POLICY_PAYLOAD: Final = {
     "version": INTENT_POLICY_VERSION,
     "execution_environment": BINANCE_USDM_DEMO,
@@ -38,7 +38,6 @@ INTENT_POLICY_PAYLOAD: Final = {
     "max_holding_ms": MAX_HOLDING_MS,
     "max_entry_drift_bps": MAX_ENTRY_DRIFT_BPS,
     "max_spread_bps": MAX_SPREAD_BPS,
-    "max_entries_per_utc_day": 1,
     "quantity_rule": "floor_to_venue_precision(target_notional_usd/fresh_price)",
 }
 INTENT_POLICY_SHA256 = canonical_sha256(INTENT_POLICY_PAYLOAD)
@@ -188,8 +187,16 @@ class TradeIntent(BaseModel):
     def validate_identity(self) -> TradeIntent:
         if self.valid_until_ms != self.created_at_ms + ENTRY_TTL_MS:
             raise ValueError("trade_intent_ttl_invalid")
-        if self.intent_version == "trade_intent_v2" and self.intent_policy_sha256 != INTENT_POLICY_SHA256:
-            raise ValueError("trade_intent_policy_identity_invalid")
+        # The stored digest is deliberately *not* compared to the current constant here. This
+        # validator runs on every load, so pinning it meant that changing the execution policy made
+        # every Intent written under the previous one unreadable — the row would raise instead of
+        # saying which policy it was created under. #331 settled the same question for Case states:
+        # history stays readable, the writer is what is constrained.
+        #
+        # `create()` cannot be that constraint either: it assigns `INTENT_POLICY_SHA256` and would be
+        # comparing the constant to itself. The real one is the release pin in
+        # `tests/contract/test_trading_intent_policy_identity.py`, which fails when the digest moves
+        # without someone re-signing for it — the same evidence shape Program identity uses (#348).
         if self.intent_version == "trade_intent_v2":
             if (
                 self.execution_capability_snapshot_sha256 is None

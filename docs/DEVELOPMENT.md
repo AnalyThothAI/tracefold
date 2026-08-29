@@ -409,7 +409,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260829_0325` head; schema tests also run against that migrated head.
+current `20260829_0326` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL

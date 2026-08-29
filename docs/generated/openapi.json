@@ -4681,13 +4681,8 @@
       },
       "TradingBudgetData": {
         "additionalProperties": false,
+        "description": "What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).\n\n`max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any\nmore, and publishing a ceiling nobody enforces is worse than publishing none.",
         "properties": {
-          "max_entries_per_utc_day": {
-            "const": 1,
-            "default": 1,
-            "title": "Max Entries Per Utc Day",
-            "type": "integer"
-          },
           "target_notional_usd": {
             "title": "Target Notional Usd",
             "type": "string"
@@ -4975,16 +4970,8 @@
             "title": "Max Age Ms",
             "type": "integer"
           },
-          "max_rank_in_window": {
-            "title": "Max Rank In Window",
-            "type": "integer"
-          },
           "min_oi_value_usd": {
             "title": "Min Oi Value Usd",
-            "type": "integer"
-          },
-          "symbol_cooldown_ms": {
-            "title": "Symbol Cooldown Ms",
             "type": "integer"
           },
           "version": {
@@ -4996,9 +4983,7 @@
           "version",
           "config_digest",
           "max_age_ms",
-          "max_rank_in_window",
           "min_oi_value_usd",
-          "symbol_cooldown_ms",
           "live_exchange_id"
         ],
         "title": "TradingGateConfigData",
@@ -5314,6 +5299,11 @@
               }
             ],
             "title": "Floor"
+          },
+          "holds": {
+            "default": "",
+            "title": "Holds",
+            "type": "string"
           },
           "lane_full": {
             "default": "",

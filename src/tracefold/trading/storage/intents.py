@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from ..intent import (
     ACTIVE_INTENT_STATES,
     IntentOutcome,
+    IntentReasonCode,
     ManualReviewReason,
     RejectedReason,
     TradeIntent,
@@ -41,9 +42,11 @@ EntryFenceDisposition = Literal["GRANTED", "REFUSED", "UNAVAILABLE"]
 EntryFenceUnavailable = Literal[
     "intent_not_claimable",
     "runtime_not_ready",
-    "daily_entry_fence_taken",
     "intent_expired",
 ]
+# Serialisation is deliberately absent: `ux_trading_intents_one_active` is a unique index, so a second
+# live Intent cannot exist to be refused here (#348).
+type EntryFenceReason = EntryFenceUnavailable | Literal["entry_fence_granted"] | IntentReasonCode
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +59,7 @@ class EntryFence:
                      after this row commits may a provider entry be sent.
         REFUSED      a terminal `REJECTED` was written at zero exposure, with a durable reason.
         UNAVAILABLE  nothing was written. The Intent is not claimable *now* — a stale dispatch, a
-                     runtime that is not ready, the day's entry already taken, or an expired TTL.
+                     runtime that is not ready, or an expired TTL.
 
     `fence_entry` used to return `IntentOutcome | None`, and `None` carried every one of the
     `UNAVAILABLE` cases plus the race where another engine already fenced. The caller could only
@@ -65,7 +68,10 @@ class EntryFence:
     """
 
     disposition: EntryFenceDisposition
-    reason: str
+    # Typed, because a bare `str` made `EntryFenceUnavailable` decorative: #348 invented an
+    # `active_intent_exists` reason, documented it and parametrised a test with it, and nothing
+    # objected because no annotation connected the Literal to this field. It cannot happen twice.
+    reason: EntryFenceReason
     outcome: IntentOutcome | None = None
 
     @property
@@ -182,7 +188,7 @@ class IntentStorage:
         if permission is None:
             # Not PENDING, already fenced, or gone. Nothing was written and nothing should be sent.
             return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
-        reason: str | None = None
+        reason: IntentReasonCode | None = None
         if (
             permission["execution_capability_snapshot_sha256"] != permission["active_capability_snapshot_sha256"]
             or not permission["instrument_in_snapshot"]
@@ -254,12 +260,6 @@ class IntentStorage:
                       WHERE ('crypto:' || denied.base_symbol) = intent.underlying_key
                         AND (denied.expires_at_ms IS NULL OR denied.expires_at_ms > %(now)s)
                    )
-               AND NOT EXISTS (
-                     SELECT 1
-                       FROM trading_intents prior
-                      WHERE prior.entry_fenced_at_ms >= %(day_start)s
-                        AND prior.entry_fenced_at_ms < %(day_end)s
-                   )
          RETURNING {_OUTCOME_COLUMNS}
             """,
             {
@@ -270,8 +270,6 @@ class IntentStorage:
                 "blacklist_revision": blacklist.revision,
                 "blacklist_sha": blacklist.snapshot_sha256,
                 "blacklist_payload": _dumps(observation),
-                "day_start": int(now_ms) // 86_400_000 * 86_400_000,
-                "day_end": (int(now_ms) // 86_400_000 + 1) * 86_400_000,
             },
         ).fetchone()
         if row is not None:
@@ -281,24 +279,12 @@ class IntentStorage:
                 outcome=IntentOutcome.model_validate(dict(row)),
             )
         # The UPDATE matched nothing. Say which of the guard clauses refused, from the same statement
-        # snapshot, so a lane held back by an unready engine is distinguishable from one that has
-        # already spent the day's single entry.
+        # snapshot, so a lane held back by an unready engine is distinguishable from one whose Intent
+        # simply aged out. Serialisation is not among the answers: `ux_trading_intents_one_active` is a
+        # unique index, so a second live Intent cannot exist to be refused here (#348).
         if int(permission["valid_until_ms"]) <= int(now_ms):
             return EntryFence(disposition="UNAVAILABLE", reason="intent_expired")
-        if self._daily_entry_fence_taken(now_ms=now_ms):
-            return EntryFence(disposition="UNAVAILABLE", reason="daily_entry_fence_taken")
         return EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready")
-
-    def _daily_entry_fence_taken(self, *, now_ms: int) -> bool:
-        row = self.conn.execute(
-            "SELECT EXISTS (SELECT 1 FROM trading_intents "
-            "WHERE entry_fenced_at_ms >= %(day_start)s AND entry_fenced_at_ms < %(day_end)s) AS taken",
-            {
-                "day_start": int(now_ms) // 86_400_000 * 86_400_000,
-                "day_end": (int(now_ms) // 86_400_000 + 1) * 86_400_000,
-            },
-        ).fetchone()
-        return bool(row is not None and row["taken"])
 
     def expire_unfenced_intent(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
         return self._outcome_update(

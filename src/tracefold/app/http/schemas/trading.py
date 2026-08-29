@@ -25,8 +25,13 @@ GateStage = Literal["source", "venue", "eligibility", "capability", "routing", "
 
 # ---------------------------------------------------------------------------- runtime readiness
 class TradingBudgetData(ExactApiSchema):
+    """What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
+
+    `max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any
+    more, and publishing a ceiling nobody enforces is worse than publishing none.
+    """
+
     target_notional_usd: str
-    max_entries_per_utc_day: Literal[1] = 1
 
 
 class TradingReadinessData(ExactApiSchema):
@@ -89,9 +94,15 @@ class TradingGateEvidenceData(ExactApiSchema):
     source_decision: str = ""
     source_rule: str = ""
     floor: int | None = None
-    limit: int | None = None
     age_ms: int | None = None
     max_age_ms: int | None = None
+    # Which side holds the busy issuer, for the merged `underlying_busy` refusal (#348).
+    holds: str = ""
+    # Read-only history. `limit`, `since_close_ms` and `cooldown_ms` were written by
+    # `rank_above_limit` and `cooldown`, both retired by #348. No writer can produce them again, but
+    # the ledger keeps 90 days of rows that carry them and this schema is `extra="forbid"` — dropping
+    # the fields would make every one of those rows a 500 instead of a readable historical answer.
+    limit: int | None = None
     since_close_ms: int | None = None
     cooldown_ms: int | None = None
     blacklist_reason: str = ""
@@ -105,9 +116,7 @@ class TradingGateConfigData(ExactApiSchema):
     version: str
     config_digest: str
     max_age_ms: int
-    max_rank_in_window: int
     min_oi_value_usd: int
-    symbol_cooldown_ms: int
     live_exchange_id: str
 
 
