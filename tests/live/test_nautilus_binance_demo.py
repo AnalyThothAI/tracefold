@@ -204,10 +204,10 @@ def _create_intent(
             """
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
-              strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+              strategy_config_digest, primary_source_key, supplemental_source_keys,
               manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, 'oi', 'oi_smart_money_momentum_v1',
-                      'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
+            ) VALUES (%s, %s, 'oi', 'binance_oi_smart_money_long_v2',
+                      'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
                       '{}'::jsonb, %s, 'INTENT_EMITTED', %s, %s, %s)
             """,
             (
