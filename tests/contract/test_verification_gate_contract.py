@@ -198,7 +198,7 @@ def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
 
 def test_make_complete_verification_uses_native_reports_and_strict_runner_policy() -> None:
     commands = subprocess.run(
-        ["make", "--dry-run", "test-evidence"],
+        ["make", "--dry-run", "test-ci"],
         cwd=ROOT,
         capture_output=True,
         check=True,

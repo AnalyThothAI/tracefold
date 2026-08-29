@@ -32,7 +32,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-results-prepare ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -121,7 +121,7 @@ ci-frontend:
 	@uv run python scripts/require_test_reports.py \
 		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
-test-evidence: ## complete local verification; merge/release authority is exact-SHA main CI
+test-ci: ## complete local verification; merge/release authority is exact-SHA main CI
 	@$(MAKE) --no-print-directory test-results-prepare
 	@$(MAKE) --no-print-directory ci-quality-static
 	@$(MAKE) --no-print-directory ci-python-hermetic
@@ -158,16 +158,16 @@ lint: ## run ruff
 	@uv run python -m ruff check .
 
 compile: ## compile Python files
-	@uv run python -m compileall src tests
+	@uv run python -m compileall tracefold tests
 
 check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff check .
 	@uv run ruff format --check .
-	@uv run mypy src
+	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
-	@uv run python -m compileall src tests
+	@uv run python -m compileall tracefold tests
 
 check: check-static ## static checks plus local architecture/contract regression
 	@uv run python -m pytest $(QUALITY_TEST_SELECTION)
@@ -430,7 +430,7 @@ _deploy-image-locked:
 		relevant_untracked=$$(git ls-files --others -- \
 			':(glob)compose*.yaml' ':(glob)compose*.yml' \
 			':(glob)docker-compose*.yaml' ':(glob)docker-compose*.yml' \
-			':(glob)src/tracefold/platform/postgres/alembic/versions/*.py'); \
+			':(glob)tracefold/platform/postgres/alembic/versions/*.py'); \
 		if [ -e .env ] || [ -n "$$relevant_untracked" ]; then \
 			echo "deploy-image refuses an untracked deployment input (.env, Compose override, or migration source)." >&2; \
 			exit 2; \
@@ -637,7 +637,7 @@ workers-shell: preflight ## open a shell in the Workers container
 
 clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__
-	@find src tests -type d -name __pycache__ -prune -exec rm -rf {} +
+	@find tracefold tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
 .PHONY: docs-generated docs-db-schema docs-cli-help
 

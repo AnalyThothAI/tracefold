@@ -188,7 +188,6 @@ def e2e_uvicorn(
         "TRACEFOLD_E2E_WS_TOKEN": e2e_ws_token,
         "TRACEFOLD_E2E_APP_HOME": str(e2e_app_home),
         "TRACEFOLD_FRONTEND_DIST": str(e2e_frontend_dist),
-        "PYTHONPATH": str(ROOT / "src"),
     }
     log_dir = tmp_path_factory.mktemp("e2e-uvicorn")
     log_path = log_dir / "uvicorn.log"

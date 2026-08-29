@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "tracefold"
+SRC = ROOT / "tracefold"
 BUSINESS_PACKAGES = ("news", "trading")
 ALLOWED_BUSINESS_DEPENDENCIES = {
     "news": {"news", "platform"},

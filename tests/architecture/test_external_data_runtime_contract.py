@@ -12,7 +12,7 @@ from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "tracefold"
+SRC = ROOT / "tracefold"
 SEMANTIC_CLASSES = {"capital_truth", "derived_work", "durable_event", "latest_state"}
 
 

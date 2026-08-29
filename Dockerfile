@@ -50,7 +50,7 @@ RUN set -eu; \
 RUN python -m pip install --no-cache-dir "uv==${UV_VERSION}"
 
 COPY pyproject.toml uv.lock README.md alembic.ini ./
-COPY src ./src
+COPY tracefold ./tracefold
 
 RUN --mount=type=secret,id=github_token \
     --mount=type=cache,target=/root/.cache/uv \
@@ -90,9 +90,20 @@ LABEL org.opencontainers.image.revision=${TRACEFOLD_BUILD_REVISION}
 WORKDIR /app
 
 COPY --from=python-deps /app /app
-COPY --from=web-builder /app/web/dist /app/src/tracefold/web/dist
+COPY --from=web-builder /app/web/dist /app/tracefold/web/dist
 
 ENV PATH="/app/.venv/bin:${PATH}"
+
+# The flat layout (#373) makes `/app` an importable package root in its own right, so a probe that
+# runs from `/app` cannot tell the installed distribution from the copied tree, and static assets
+# copied to the wrong destination would still be reached by a working-directory-relative lookup.
+# This probe therefore runs from `/`: it resolves the console script and the package off the image,
+# then asserts the frontend bundle sits exactly where `_frontend_dist_dir` walks the package parents
+# to find it.
+RUN cd / \
+    && tracefold --help > /dev/null \
+    && python -c \
+    'from pathlib import Path; import tracefold; root = Path(tracefold.__file__).resolve().parent; assert root == Path("/app/tracefold"), root; assert (root / "web" / "dist" / "index.html").is_file(), root'
 
 EXPOSE 8765 8766 8767
 

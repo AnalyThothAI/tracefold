@@ -522,7 +522,7 @@ Repository fast gate:
 - `make check`
 
 Focused development runs select integration, backend E2E, golden, browser and
-visual lanes from the changed seam per `DEVELOPMENT.md`. `make test-evidence`
+visual lanes from the changed seam per `DEVELOPMENT.md`. `make test-ci`
 is the complete local preflight; the successful fixed GitHub Actions workflow
 for the exact main SHA is merge/release evidence. The visual matrix and
 scheduled diagnostics remain explicit separate lanes.

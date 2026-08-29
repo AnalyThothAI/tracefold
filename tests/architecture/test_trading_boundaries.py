@@ -10,7 +10,7 @@ checking anything:
 * `_imported_roots` took the first segment of an absolute import, so `from tracefold.trading import
   TradeIntent` inside News yielded `tracefold` and the boundary test could never see it. Imports are
   now resolved to full dotted module paths, relative imports included.
-* the "no agent framework" test scanned all of `src/tracefold`, which made an unrelated offline News
+* the "no agent framework" test scanned all of `tracefold`, which made an unrelated offline News
   research module's dependency a capital-architecture failure. Capability tests now cover the
   reachable online capital path and nothing else.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-SRC = ROOT / "src" / "tracefold"
+SRC = ROOT / "tracefold"
 TRADING = SRC / "trading"
 NEWS = SRC / "news"
 

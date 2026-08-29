@@ -31,7 +31,7 @@ from tracefold.news.program.contracts import TriageContext
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 ROOT = Path(__file__).resolve().parents[2]
-OBJECTIVE_MODULE = ROOT / "src" / "tracefold" / "news" / "learning" / "objective.py"
+OBJECTIVE_MODULE = ROOT / "tracefold" / "news" / "learning" / "objective.py"
 
 _VERDICT: dict[str, Any] = {
     "decision": "push",

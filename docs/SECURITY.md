@@ -267,7 +267,7 @@ The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 
 PostgreSQL runtime roles are code-owned:
-`src/tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
+`tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
 `20260818_0275` baseline migration and extended by the #112 migrations,
 creates the non-login `tracefold_owner` plus `tracefold_serve`
 (`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control

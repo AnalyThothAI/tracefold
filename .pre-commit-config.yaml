@@ -1,6 +1,6 @@
 # .pre-commit-config.yaml
 # Hooks run on every commit. They are gate-1 only; `make check` is the canonical
-# hermetic static/drift entry and `make test-evidence` is the complete local
+# hermetic static/drift entry and `make test-ci` is the complete local
 # preflight. Only fixed CI for an exact SHA supplies merge/release evidence.
 repos:
   - repo: local

@@ -62,7 +62,7 @@ def main() -> int:
                 str(app_home),
             ],
             cwd=ROOT,
-            env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+            env=dict(os.environ),
             stdout=worker_fp,
             stderr=subprocess.STDOUT,
         )
@@ -75,7 +75,6 @@ def main() -> int:
                 "TRACEFOLD_E2E_WS_TOKEN": WS_TOKEN,
                 "TRACEFOLD_E2E_APP_HOME": str(app_home),
                 "TRACEFOLD_FRONTEND_DIST": str(ROOT / "web" / "dist"),
-                "PYTHONPATH": str(ROOT / "src"),
             },
             stdout=serve_fp,
             stderr=subprocess.STDOUT,

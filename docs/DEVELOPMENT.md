@@ -103,9 +103,9 @@ or historical file inventories into permanent architecture contracts.
 **Program identity.** Program identity has two halves and two authors, and both
 are release evidence rather than implementation detail. `program_sha256` covers
 the two Predictor instructions — what a human editing
-`src/tracefold/news/program/seed.py` or GEPA proposing a replacement may write.
+`tracefold/news/program/seed.py` or GEPA proposing a replacement may write.
 `envelope_sha256` (`compute_execution_identity()` in
-`src/tracefold/news/program/identity.py`) covers what the code decides about a
+`tracefold/news/program/identity.py`) covers what the code decides about a
 model call: the golden render of each Predictor's chat request in all three
 structured-output modes (`json_schema`, `json_object`, and prompt-only JSON),
 the single output contract and schema, the model-visible
@@ -152,7 +152,7 @@ their corrections remain in #319.
 | `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the default developer loop |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
-| `make test-evidence` | complete local preflight | the same six owner surfaces as fixed CI, run serially with native reports and fail-closed resources/outcomes | merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-ci` | complete local preflight | the same six owner surfaces as fixed CI, run serially with native reports and fail-closed resources/outcomes | merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -185,7 +185,7 @@ manifest, or evidence aggregate. Test frameworks own execution truth; GitHub
 Actions owns job truth. Native reports are diagnostic artifacts for the exact
 run, not a second release database.
 
-`make test-evidence` runs the same owner surfaces serially as a complete local
+`make test-ci` runs the same owner surfaces serially as a complete local
 preflight. It is useful before pushing, but a local result cannot authorize a
 merge, release, or deployment. The merge/release record is the successful fixed
 CI workflow associated with the exact commit SHA being evaluated; deployment
@@ -205,7 +205,7 @@ requires the successful `main` push workflow for that same SHA.
 4. **Targeted P2P.** The F2P does not replace adjacent public or persisted
    regression coverage, and the whole-repository suite does not replace the
    issue-specific reproducer. Record both.
-5. **Resources fail closed.** In fixed CI and `make test-evidence`, an
+5. **Resources fail closed.** In fixed CI and `make test-ci`, an
    unavailable required resource—PostgreSQL, RabbitMQ, Docker/Testcontainers,
    Chromium, or Node codegen dependencies—is a failure, never a skip. Local
    fast mode remains hermetic and starts none of them.
@@ -233,6 +233,16 @@ isolated job-local services rather than a shared schema or runtime. Each job
 checks out `TESTED_SHA` (`pull_request.head.sha` for a pull request,
 `github.sha` otherwise), installs with `uv sync --locked` and, where needed,
 `npm ci`, and keeps Actions SHA-pinned and service images digest-pinned.
+
+Two of those owners carry the evidence the flat package layout needs (#373).
+`python-hermetic` runs the installed-distribution smoke: it builds the wheel and
+sdist, installs the wheel into a throwaway environment pinned to the locked
+dependency versions outside the repository, and imports the product and its
+packaged resources there. `migration` walks every historical revision one at a
+time from an empty database and compares the reachable revision graph against
+the revision files on disk, so a migration tree that stops resolving from the
+package is a failure rather than a shorter chain. Neither adds a package runner,
+a manifest, or a second release record.
 
 Required pytest runs disable plugin autoload, load only the named plugins they
 need, use the deterministic Hypothesis `ci` profile, and emit JUnit XML under
@@ -319,7 +329,7 @@ green from the command the project defines.
 **A result binds to the exact commit and its isolated runner.** Editing the tree
 during a local run, sharing one destructive database across CI jobs, or
 borrowing the deployment checkout's Compose stack breaks that binding. Local
-`make test-evidence` therefore remains serial on a frozen tree. CI jobs may run
+`make test-ci` therefore remains serial on a frozen tree. CI jobs may run
 concurrently because each resource owner receives a separate job-local
 PostgreSQL/RabbitMQ service and checks out the same `TESTED_SHA`.
 
@@ -366,7 +376,7 @@ test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
 test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
 diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
 subset of the integration lane and never evidence on its own. `make test-all` remains a local
-complete-suite convenience. `make test-evidence` is the canonical local
+complete-suite convenience. `make test-ci` is the canonical local
 full-set entry, runs every deterministic owner with fail-closed resource and
 outcome checks, and includes frontend validation. It emits native reports but
 does not mint merge evidence. Pull requests, main, release, and manual runs all

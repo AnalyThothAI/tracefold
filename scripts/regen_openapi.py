@@ -15,8 +15,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "generated" / "openapi.json"
 
-sys.path.insert(0, str(ROOT / "src"))
-
 
 def main() -> int:
     from tracefold.app.http.app import create_app  # type: ignore[import-not-found]

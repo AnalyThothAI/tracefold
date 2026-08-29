@@ -164,7 +164,7 @@ def golden_runtime(
             str(app_home),
         ],
         cwd=ROOT,
-        env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+        env=dict(os.environ),
         stdout=worker_fp,
         stderr=subprocess.STDOUT,
     )
@@ -179,7 +179,6 @@ def golden_runtime(
             "TRACEFOLD_POSTGRES_DSN": golden_postgres_dsn,
             "TRACEFOLD_E2E_WS_TOKEN": GOLDEN_WS_TOKEN,
             "TRACEFOLD_E2E_APP_HOME": str(app_home),
-            "PYTHONPATH": str(ROOT / "src"),
         },
         stdout=serve_fp,
         stderr=subprocess.STDOUT,

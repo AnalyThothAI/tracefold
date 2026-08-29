@@ -332,6 +332,17 @@ table-count contract.
 
 ## Package map
 
+The production package is `tracefold/` at the repository root; there is no `src/` parent
+and no compatibility path back to one (#373). One consequence is worth stating, because
+it changes what a green test run means: the repository root is itself an import root, so
+any process whose working directory is the checkout can import `tracefold` off the working
+tree, and an ordinary pytest pass no longer says anything about what the wheel contains.
+`tests/package/test_installed_distribution.py` is the answer to that — it builds the real
+wheel and sdist, installs the wheel outside the repository, and reads the product and its
+packaged resources from there with the checkout absent from the working directory,
+`PYTHONPATH`, and `sys.path`. The image runs the same kind of check on itself from `/`,
+since `/app` is an import root for the same reason.
+
 ```text
 tracefold.news
   opennews.py         canonical OpenNews frame adapter (raw_text, provenance)

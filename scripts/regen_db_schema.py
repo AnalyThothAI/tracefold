@@ -4,7 +4,7 @@
 Requires Postgres reachable via the standard project config.
 
 Import note: the storage module uses psycopg directly (no SQLAlchemy engine).
-We follow the same pattern as src/tracefold/storage/alembic/env.py:
+We follow the same pattern as tracefold/platform/postgres/alembic/env.py:
 build a postgresql+psycopg URL via local_docker_host_dsn / with_password_from_file
 and pass it to sqlalchemy.create_engine for inspection-only access.
 """

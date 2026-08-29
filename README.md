@@ -34,7 +34,7 @@ The hard invariants are:
 The Python package is deliberately shallow:
 
 ```text
-src/tracefold/
+tracefold/
   news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
   integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, Telegram)
   platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives

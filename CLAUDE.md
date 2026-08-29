@@ -23,21 +23,26 @@ Tracefold is one Python service and CLI that persists audited News and Trading f
 - Program, envelope, policy, metric, commit, tree, lock, tool, and resource identities are release evidence; identity changes use their explicit contract pins.
 - Merge evidence belongs to the exact tested HEAD. Every PR, main push, release, and manual run executes the fixed complete CI job set; no path plan or omitted required job can manufacture green.
 - Tests cross the affected public, persistence, process, broker, browser, or order-adapter seam. A mock cannot replace the risk mechanism, and skip/xfail/rerun cannot manufacture required green.
+- Work focused first, then `make test-fast`, then `make test-ci` when the complete local preflight is needed. A bug or refactor records the smallest failing-to-passing reproducer, the seam it crosses, and the adjacent passing-to-passing regressions.
 - Use one task worktree and branch; keep the primary checkout clean. Follow `docs/agents/worktrees.md` for the single lifecycle policy.
 - Live data uses the operator-owned config reported by `uv run tracefold config`. Never print or copy secrets; report only redacted state and paths.
 - Internal migrations are hard cuts: update consumers and delete obsolete aliases, forwarding modules, dual reads, and compatibility paths in the same change.
 
 ## Task routing
 
-| Task surface | Must read | Bootstrap | Development tests | Completion plan |
-| --- | --- | --- | --- | --- |
-| docs-only | relevant document; issue tracker for planned work | none; Python only if its checker needs it | relevant docs/router checks | quality-static |
-| pure Python | relevant Architecture section; Development | `make sync` | focused pytest; `make test-fast` | quality + hermetic + owner PostgreSQL/runtime lanes |
-| PostgreSQL | Architecture DB section; Operations; Development | `make sync`; isolated PostgreSQL | focused real-PostgreSQL tests | quality + hermetic + postgres/migration/runtime lanes |
-| frontend | Frontend; Contracts | `npm ci` in `web/` | focused Vitest; affected lint/type/build | quality + frontend lanes |
-| test module | relevant production seam; Development | dependencies for its stable owner lane | focused module | quality + stable owner lane |
-| CI/evidence | Development Verification Contract | `make sync`; Node for affected frontend harness/toolchain | native-report guard and focused contract tests | fixed full CI |
-| deploy/capital | Operations; Security; relevant Architecture section and Issue | full task bootstrap | affected production seam | full plus live receipt |
+Completion never varies by surface: the fixed complete CI job set runs for every pushed
+SHA, so the table chooses reading and bootstrap, not which jobs get to run.
+
+| Task surface | Must read | Bootstrap | Development checks |
+| --- | --- | --- | --- |
+| docs-only | relevant document; issue tracker for planned work | none; Python only if its checker needs it | relevant docs/router checks |
+| pure Python | relevant Architecture section; Development | `make sync` | focused pytest; `make test-fast` |
+| PostgreSQL | Architecture DB section; Operations; Development | `make sync`; isolated PostgreSQL | focused real-PostgreSQL tests |
+| frontend | Frontend; Contracts | `npm ci` in `web/` | focused Vitest; affected lint/type/build |
+| test module | relevant production seam; Development | the resources that module's seam declares | focused module |
+| package/build | Architecture package boundaries; Setup | `make sync` | focused package and distribution tests |
+| CI/verification | Development Verification Contract | `make sync`; Node for affected frontend harness/toolchain | native-report guard and focused contract tests |
+| deploy/capital | Operations; Security; relevant Architecture section and Issue | full task bootstrap | affected production seam, plus a live receipt |
 
 ## Truth routes
 
@@ -45,7 +50,7 @@ Tracefold is one Python service and CLI that persists audited News and Trading f
 - Frontend and public surfaces: `docs/FRONTEND.md` and `docs/CONTRACTS.md`; operations, PostgreSQL, security, and deploy: `docs/OPERATIONS.md` and `docs/SECURITY.md`.
 - Install and generated artifacts: `docs/SETUP.md` and `docs/generated/`; notebooks: `notebooks/README.md`.
 - GitHub Issues are the PRD and acceptance tracker. Use `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md`.
-- During development run focused checks. `make test-evidence` is the complete local preflight; merge/release evidence is the fixed CI workflow and successful `ci-gate` for the exact final main SHA.
+- During development run focused checks. `make test-ci` is the complete local preflight; merge/release evidence is the fixed CI workflow and successful `ci-gate` for the exact final main SHA.
 
 <!-- END SHARED AGENT ROUTER -->
 
