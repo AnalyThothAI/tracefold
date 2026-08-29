@@ -8,7 +8,7 @@ import shutil
 import socket
 import subprocess
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from urllib.parse import urlsplit
 
 import psycopg
@@ -92,13 +92,6 @@ def postgres_server_dsn() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
-def postgres_dsn(postgres_clone_factory) -> Iterator[str]:
-    """Yield one run-private migrated database to legacy behavior owners."""
-    with _routed_postgres_clone(postgres_clone_factory) as dsn:
-        yield dsn
-
-
-@pytest.fixture(scope="session")
 def postgres_clone_factory(postgres_server_dsn: str):
     """Own one migrated baseline for behavior tests that require committed isolation."""
     from tests.postgres_test_utils import MigratedPostgresCloneFactory
@@ -129,22 +122,20 @@ def postgres_migration_dsn(postgres_server_dsn: str) -> Iterator[str]:
     """Give historical migration owners an empty database without the head shortcut."""
     from tests.postgres_test_utils import temporary_unmigrated_postgres_database
 
-    previous = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
-    with temporary_unmigrated_postgres_database(postgres_server_dsn) as dsn:
-        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
-        try:
-            yield dsn
-        finally:
-            if previous is None:
-                os.environ.pop("TRACEFOLD_TEST_POSTGRES_DSN", None)
-            else:
-                os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = previous
+    with _routed_postgres_database(temporary_unmigrated_postgres_database(postgres_server_dsn)) as dsn:
+        yield dsn
 
 
 @contextmanager
 def _routed_postgres_clone(postgres_clone_factory) -> Iterator[str]:
+    with _routed_postgres_database(postgres_clone_factory.clone()) as dsn:
+        yield dsn
+
+
+@contextmanager
+def _routed_postgres_database(database: AbstractContextManager[str]) -> Iterator[str]:
     previous = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
-    with postgres_clone_factory.clone() as dsn:
+    with database as dsn:
         os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
         try:
             yield dsn

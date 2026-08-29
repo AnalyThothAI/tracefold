@@ -12,7 +12,6 @@ POSTGRES_HELPERS = {
     "test_postgres_dsn",
 }
 POSTGRES_RESOURCE_FIXTURES = (
-    "postgres_dsn",
     "postgres_clone_dsn",
     "postgres_module_clone_dsn",
     "postgres_migration_dsn",

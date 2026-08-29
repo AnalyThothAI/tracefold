@@ -16,7 +16,9 @@ from typing import Any
 
 import pytest
 
-PROFILE_SCHEMA_VERSION = "tracefold_test_profile_v1"
+from tests.support.evidence import TEST_PROFILE_SCHEMA_VERSION
+
+PROFILE_SCHEMA_VERSION = TEST_PROFILE_SCHEMA_VERSION
 PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -272,7 +274,6 @@ def _collect_profiles(output_dir: Path) -> dict[str, dict[str, Any]]:
             **os.environ,
             _PROFILE_PATH_ENV: str(path),
             _PROFILE_LANE_ENV: lane,
-            "TRACEFOLD_TEST_PYTEST_EXTRA_ARGS": "--collect-only -q",
         }
         completed = subprocess.run(
             ("make", "--no-print-directory", make_target),

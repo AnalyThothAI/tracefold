@@ -18,7 +18,7 @@ from tracefold.app.workers.wiring.database import (
 from tracefold.platform.postgres.client import connect_postgres, create_pool
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
 def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> None:

@@ -10,7 +10,7 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.platform.postgres import client
 from tracefold.platform.postgres.client import create_pool
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
 def _worker_pool_bundle(pool: Any) -> WorkerDatabase:

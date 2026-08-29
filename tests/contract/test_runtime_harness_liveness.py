@@ -83,7 +83,6 @@ def test_golden_teardown_fails_when_serve_exited_after_the_assertions(
     worker = _Process()
     serve = _Process()
     monkeypatch.setattr(golden_conftest.subprocess, "Popen", _popen_pair(worker, serve))
-    monkeypatch.setattr(golden_conftest, "_reset_postgres", lambda *_args: None)
     monkeypatch.setattr(golden_conftest, "_unused_port", lambda: 43201)
     monkeypatch.setattr(golden_conftest, "_wait_for_http", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(golden_conftest, "_wait_for_logged_port", lambda *_args, **_kwargs: 43202)
@@ -157,7 +156,6 @@ def test_golden_teardown_fails_when_serve_readiness_regresses(
     worker = _Process()
     serve = _Process()
     monkeypatch.setattr(golden_conftest.subprocess, "Popen", _popen_pair(worker, serve))
-    monkeypatch.setattr(golden_conftest, "_reset_postgres", lambda *_args: None)
     monkeypatch.setattr(golden_conftest, "_unused_port", lambda: 43401)
     monkeypatch.setattr(golden_conftest, "_wait_for_http", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(golden_conftest, "_wait_for_logged_port", lambda *_args, **_kwargs: 43402)
@@ -195,7 +193,6 @@ def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
     worker_port = 43501
     serve_port = 43502
     monkeypatch.setattr(module.subprocess, "Popen", _popen_pair(worker, serve))
-    monkeypatch.setattr(module, "_reset_postgres", lambda *_args: None)
     monkeypatch.setattr(module, "_unused_port", lambda: worker_port)
     monkeypatch.setattr(module, "_wait_for_http", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "_wait_for_logged_port", lambda *_args, **_kwargs: serve_port)
@@ -212,6 +209,7 @@ def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
 
     monkeypatch.setattr(module.httpx, "get", readiness)
     if harness == "browser":
+        monkeypatch.setattr(module, "_reset_postgres", lambda *_args: None)
         monkeypatch.setattr(module, "_require_resources", lambda *_args: None)
         monkeypatch.setattr(module, "_publish_opennews", _async_noop)
         monkeypatch.setattr(module, "_wait_for_service_fact", lambda *_args: None)

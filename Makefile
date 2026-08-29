@@ -21,10 +21,13 @@ TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
 TEST_PROFILE_ARGS = $(if $(TRACEFOLD_TEST_PROFILE_PATH),-p tests.support.profile --test-profile="$(TRACEFOLD_TEST_PROFILE_PATH)" --test-profile-lane="$(TRACEFOLD_TEST_PROFILE_LANE)")
 TEST_PROFILE_HISTORY_ARGS = $(if $(TRACEFOLD_TEST_PROFILE_HISTORY_DIR),--history-dir "$(TRACEFOLD_TEST_PROFILE_HISTORY_DIR)")
-TRACEFOLD_TEST_PYTEST_EXTRA_ARGS ?=
 QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled"
 FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 DETERMINISTIC_TEST_SELECTION := tests -m "not live and not scheduled"
+
+define RUN_PROFILED_PYTEST
+uv run python -m pytest $(TEST_PROFILE_ARGS) $(1) $(2)
+endef
 
 .PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
@@ -46,16 +49,16 @@ tool-path: ## ensure uv tool executables are on PATH
 test: test-fast ## hermetic default regression (alias for test-fast)
 
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
-	@uv run python -m pytest $(TEST_PROFILE_ARGS) $(FAST_TEST_SELECTION) $(TRACEFOLD_TEST_PYTEST_EXTRA_ARGS)
+	@$(call RUN_PROFILED_PYTEST,$(FAST_TEST_SELECTION))
 
 _collect-profile-quality:
-	@uv run python -m pytest $(TEST_PROFILE_ARGS) $(QUALITY_TEST_SELECTION) $(TRACEFOLD_TEST_PYTEST_EXTRA_ARGS)
+	@$(call RUN_PROFILED_PYTEST,$(QUALITY_TEST_SELECTION),--collect-only -q)
 
 _collect-profile-fast:
-	@uv run python -m pytest $(TEST_PROFILE_ARGS) $(FAST_TEST_SELECTION) $(TRACEFOLD_TEST_PYTEST_EXTRA_ARGS)
+	@$(call RUN_PROFILED_PYTEST,$(FAST_TEST_SELECTION),--collect-only -q)
 
 _collect-profile-deterministic-full:
-	@uv run python -m pytest $(TEST_PROFILE_ARGS) $(DETERMINISTIC_TEST_SELECTION) $(TRACEFOLD_TEST_PYTEST_EXTRA_ARGS)
+	@$(call RUN_PROFILED_PYTEST,$(DETERMINISTIC_TEST_SELECTION),--collect-only -q)
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
@@ -179,7 +182,7 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
-	@uv run python -m pytest $(TEST_PROFILE_ARGS) $(QUALITY_TEST_SELECTION) $(TRACEFOLD_TEST_PYTEST_EXTRA_ARGS)
+	@$(call RUN_PROFILED_PYTEST,$(QUALITY_TEST_SELECTION))
 	@uv run python -m compileall src tests
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
