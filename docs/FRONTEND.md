@@ -101,7 +101,7 @@ the route components into the eager shell chunk.
   reading surfaces retain `PUSHED 24H / E2E P95`, while the OI
   monitor shows its own `PUSHED 24H / 今日成案 · 放行` while the capital ledger day key is current (otherwise the
   daily figure names its UTC date and turns caution), pipeline status shows `EVENTS 24H / QUEUE P95`, and Trading
-  shows `AUTHORITY / ENGINE / 今日入场`. No route starts an extra request for chrome and the browser does
+  shows `DECISION / CAPITAL / BINDINGS`. No route starts an extra request for chrome and the browser does
   not derive a rate, score, or readiness state. These figures leave the phone topbar; Trading repeats its
   three safety facts in the page header at that width.
 - **News routes.** `/news` is a decision-first scan surface over the flat
@@ -312,16 +312,20 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is the read-only `Case -> Intent -> Outcome` workbench for the
-  sole Binance USD-M Demo execution path. It reads `/api/trading/status` and
-  `/api/trading/intents`; the page has no action, mode switch, approval,
-  resend, resolve, or alternate backend affordance.
+  `/trading` is the read-only Decision/Capital observer. It reads
+  `/api/trading/status` and existing `/api/trading/intents`; the page has no
+  action, mode switch, approval, credential upload, resend, resolve, or
+  alternate backend affordance.
 
-  The header and five-cell mandate band state the exact execution authority,
-  environment, instrument, configured notional, today's entry fences, and
-  current nonterminal Intent count. The readiness stamp names UTC budget day,
-  runtime control, and whether Nautilus is ready; unexpected exposure or an
-  unready engine uses the caution tone without inventing a diagnosis.
+  The header names the independent Decision and Capital facts, configured
+  notional, both closed bindings, and current nonterminal Intent count. Each
+  binding shows redacted credential/runtime/account/catalog state, catalog
+  digest, heartbeat, and exact reason. The browser never derives an execution
+  readiness boolean from these orthogonal facts.
+
+  When Decision is RUNNING, Capital is PAUSED, and a binding is unconfigured,
+  the exact banner is “决策运行、资本暂停、凭证未配置，当前无法交易”. Catalog
+  stale/error is visibly non-ready and never rendered as zero instruments.
 
   The body has three ledger sections. Fresh/Active Intent contains
   `PENDING | IN_FLIGHT | OPEN_PROTECTED | MANUAL_REVIEW`; Terminal Outcome
@@ -332,8 +336,8 @@ the route components into the eager shell chunk.
   has been venue-proven. `MANUAL_REVIEW` is unresolved authority evidence, not
   a prompt for the browser to resend anything.
 
-  When Trading is disabled, empty ledger copy says the lane has no work; it
-  never rebrands the Demo contract as paper. Loading, cold failure, stale
+  When Decision is disabled, empty ledger copy says the lane has no work; it
+  never rebrands a binding as paper. Loading, cold failure, stale
   refresh, and a genuinely empty batch remain different page states. Legacy
   Orders and observations are absent by contract, not filtered in the browser.
 

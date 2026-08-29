@@ -1,8 +1,8 @@
-"""The production capital lane: one Binance OI Source to at most one immutable Intent.
+"""The Decision lane: one Binance OI Source to independent Policy and Capital facts (#350).
 
 **One business action.** `await lane.advance()` is the whole App-facing interface. The caller does not
 learn the admission order, the underlying de-duplication, the bar cutoff, the manifest construction,
-the capability resolution, the Case lease, the Intent identity or the transaction boundaries. It owns
+the catalog resolution, the Case lease, the Capital attribution or the transaction boundaries. It owns
 the poll interval, the stop event and the process lifecycle, and nothing else.
 
 **One fixed ordering, and it is the whole state machine.**
@@ -11,15 +11,13 @@ the poll interval, the stop event and the process lifecycle, and nothing else.
     -> normalize source
     -> Binance-live / research-only split
     -> deterministic admission
-    -> resolve the active Binance Demo capability
+    -> resolve the active credential-free Binance public catalog
     -> fetch closed Binance bars (outside every transaction)
     -> Case + CASE_CREATED admission row, atomically
     -> pure deterministic OI policy
-    -> NO_TRADE
-       or
-    -> final capability + deny-list + capacity + sizing recheck
-    -> Intent insert + Case INTENT_EMITTED, atomically
-    -> Nautilus takes its own independent entry fence
+    -> NO_TRADE + Capital NOT_APPLICABLE
+       or LONG + exact Capital BLOCKED reason
+    -> zero new Intent, entry fence, or provider economic write before #360
 
 **What replaced what (#331).** This module is the replacement for `TradingPipeline`, `CandidateRunner`,
 the News/OI trigger fusion, the strategy registry, the DSPy decision program and the liquidation shadow
@@ -29,8 +27,8 @@ the product decided it should be:
 * an editorial News verdict is not a Source of this lane and there is no code path that offers one;
 * a Hyperliquid frame is answered `RESEARCH_ONLY` at admission instead of being carried four stages
   further to fail as `intent_instrument_not_allowed`;
-* a live instrument is resolved from the active capability snapshot, which is the universe the Intent
-  writer checks, rather than from a second News catalogue that could disagree with it;
+* a live instrument is resolved from the active public catalog owned by Trading rather than a News
+  projection; the catalog states public truth and grants no execution permission;
 * the polling-driven funnel is gone: every number a product surface reports is a bounded aggregation
   over durable rows.
 
@@ -46,6 +44,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -179,7 +178,6 @@ class LaneTurn:
     cases_created: int = 0
     no_trade: int = 0
     blocked: int = 0
-    intents_emitted: int = 0
 
     def as_dict(self) -> dict[str, str | int]:
         return {
@@ -190,12 +188,11 @@ class LaneTurn:
             "cases_created": self.cases_created,
             "no_trade": self.no_trade,
             "blocked": self.blocked,
-            "intents_emitted": self.intents_emitted,
         }
 
 
 class CapitalLane:
-    """Scan, admit, freeze, decide, and atomically publish at most one immutable Intent."""
+    """Scan, admit, freeze, run Policy, and persist the independent Capital disposition."""
 
     work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("derived_work", "capital_truth")
 
@@ -221,6 +218,11 @@ class CapitalLane:
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
 
+    async def start(self) -> None:
+        """Publish the configured Decision Plane before the first provider or Source read."""
+
+        await self._record_runtime(state="STARTING", reason=None)
+
     # ------------------------------------------------------------------ the one business action
     async def advance(self) -> LaneTurn:
         """Move the capital lane forward by one turn.
@@ -230,6 +232,17 @@ class CapitalLane:
         Source is consumed and no Case is terminalised by an infrastructure fault.
         """
 
+        try:
+            turn = await self._advance_turn()
+        except Exception:
+            # Preserve the original fault if even the fault receipt cannot be written.
+            with suppress(Exception):
+                await self._record_runtime(state="FAULTED", reason="decision_turn_fault")
+            raise
+        await self._record_runtime(state="RUNNING", reason=None)
+        return turn
+
+    async def _advance_turn(self) -> LaneTurn:
         now = self._clock()
         authority = await self._db.read(
             "trading_capital_authority",
@@ -243,11 +256,6 @@ class CapitalLane:
             # No runtime authority row: no scan, no Case, no provider call, no Intent. This is
             # infrastructure state, not a business decision, and nothing durable records a refusal.
             return LaneTurn(outcome="HALTED", reason="runtime_state_missing")
-        if authority.control != "RUNNING":
-            # Reconciliation and safety closes keep running in the execution process; only new
-            # exposure stops here.
-            return LaneTurn(outcome="HALTED", reason=f"control_{authority.control.lower()}")
-
         rows = await self._db.read(
             "trading_oi_projection",
             lambda repos: list(
@@ -277,17 +285,17 @@ class CapitalLane:
         await self._flush_admission(results, now)
         await self._maintain_admission(now)
 
-        no_trade = blocked = emitted = 0
+        no_trade = blocked = 0
         for _ in range(_MAX_DECISIONS_PER_TURN):
             decided = await self._decide_one()
             if decided is None:
                 break
-            if decided is CaseState.INTENT_EMITTED:
-                emitted += 1
-            elif decided is CaseState.BLOCKED:
+            if decided is CaseState.BLOCKED:
                 blocked += 1
-            else:
+            elif decided is CaseState.NO_TRADE:
                 no_trade += 1
+            else:
+                raise RuntimeError(f"trading_decision_state_unexpected:{decided}")
         return LaneTurn(
             outcome="ADVANCED",
             reason="advanced",
@@ -296,8 +304,22 @@ class CapitalLane:
             cases_created=created,
             no_trade=no_trade,
             blocked=blocked,
-            intents_emitted=emitted,
         )
+
+    async def _record_runtime(self, *, state: str, reason: str | None) -> None:
+        now = self._clock()
+        updated = await self._db.tx(
+            "trading_decision_runtime",
+            lambda repos: _trading(repos).set_decision_runtime(
+                state=state,
+                heartbeat_at_ms=now,
+                reason=reason,
+                now_ms=now,
+            ),
+            timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
+        )
+        if not updated:
+            raise RuntimeError("trading_decision_runtime_missing")
 
     # ------------------------------------------------------------------ admit
     def _admit(
@@ -355,21 +377,9 @@ class CapitalLane:
             )
             admitted[winner.underlying_key] = winner
             results[loser.source_key] = defer(loser, stage="eligibility", reason="superseded_by_newer_trigger")
-
-        plans = sorted(admitted.values(), key=lambda item: item.observed_at_ms, reverse=True)
-        capacity = _capacity_reason(authority)
-        if capacity is None:
-            return plans
-        # The lane is full, not the Source unusable. Every admitted frame still gets its row, or a
-        # busy day would leave a hole in the one ledger that is supposed to explain the whole lane.
-        for candidate in plans:
-            results[candidate.source_key] = defer(
-                candidate,
-                stage="eligibility",
-                reason="lane_capacity_exhausted",
-                evidence={"lane_full": capacity},
-            )
-        return []
+        # A recovery obligation is a Capital fact, not a reason to stop Decision. The per-turn freeze
+        # bound below still meters work, while same-underlying duplicate theses remain an Admission fact.
+        return sorted(admitted.values(), key=lambda item: item.observed_at_ms, reverse=True)
 
     # ------------------------------------------------------------------ freeze
     async def _freeze(
@@ -380,7 +390,7 @@ class CapitalLane:
         now: int,
         results: dict[str, AdmissionResult],
     ) -> bool:
-        """Resolve the live capability, fetch closed bars, then write one immutable Case.
+        """Resolve the public catalog, fetch closed bars, then write one immutable Case.
 
         Everything refused here is refused because a *manifest could not be frozen* — no executable
         contract in the active universe, no candle, no mark at the cutoff. A valid but unfavourable
@@ -388,20 +398,20 @@ class CapitalLane:
         records what was rejected instead of the frame disappearing before anything durable saw it.
         """
 
-        snapshot = authority.capability
-        capability = None if snapshot is None else snapshot.resolve(candidate.underlying_key)
-        if snapshot is None or capability is None:
-            # Retryable: a cold capability refresh can list this issuer, and the expiry sweep closes
+        snapshot = authority.catalog
+        instrument_row = None if snapshot is None else snapshot.resolve(candidate.base_symbol)
+        if snapshot is None or instrument_row is None:
+            # Retryable: a public catalog refresh can list this issuer, and the expiry sweep closes
             # the row when the frame goes stale.
-            results[candidate.source_key] = defer(candidate, stage="capability", reason="capability_absent")
+            results[candidate.source_key] = defer(candidate, stage="catalog", reason="catalog_absent")
             return False
         instrument = InstrumentRef(
             exchange_id=LIVE_EXCHANGE_ID,
             venue=LIVE_VENUE,
-            provider_symbol=capability.native_symbol,
+            provider_symbol=instrument_row.provider_symbol,
             base_symbol=candidate.base_symbol,
             instrument_class="crypto",
-            quote_asset=capability.quote_currency,
+            quote_asset=instrument_row.settlement_asset,
             observed_at_ms=now,
         )
 
@@ -451,7 +461,7 @@ class CapitalLane:
             base_symbol=candidate.base_symbol,
             cutoff_ms=candidate.observed_at_ms,
             instrument=instrument,
-            execution_capability_snapshot_sha256=snapshot.snapshot_sha256,
+            venue_catalog_snapshot_sha256=snapshot.snapshot_sha256,
         )
         case_id = uuid.uuid4().hex
         linked = case_created(candidate, case_id=case_id)
@@ -540,6 +550,8 @@ class CapitalLane:
                     policy_decision="no_trade",
                     policy_reason=decision.rule,
                     policy_checks=evidence,
+                    capital_disposition="not_applicable",
+                    capital_reason=None,
                     now_ms=self._clock(),
                 ),
                 timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -551,14 +563,13 @@ class CapitalLane:
 
         commit_at = self._clock()
         commit = await self._db.tx(
-            "trading_intent_commit",
-            lambda repos: _trading(repos).commit_long_decision(
+            "trading_capital_disposition_commit",
+            lambda repos: _trading(repos).commit_capital_disposition(
                 case_id=case_id,
                 run_id=self._run_id,
                 manifest=manifest,
                 policy_reason=decision.rule,
                 policy_checks=evidence,
-                target_notional_usd=self._config.target_notional_usd,
                 now_ms=commit_at,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -572,9 +583,11 @@ class CapitalLane:
                 case_id=case_id,
                 run_id=self._run_id,
                 state=CaseState.BLOCKED,
-                policy_decision="no_trade",
+                policy_decision="not_run",
                 policy_reason=reason,
                 policy_checks=None,
+                capital_disposition="not_applicable",
+                capital_reason=None,
                 now_ms=now,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -627,22 +640,6 @@ def _source_key(row: OiCandidateRow, metric_version: str) -> str:
     return oi_source_key(row.get("event_id"), row.get("metric_version") or metric_version)
 
 
-def _capacity_reason(authority: CapitalAuthority) -> str | None:
-    """Whether the lane has room for another thesis at all. One live economic lifecycle, at a time.
-
-    The one-entry-per-UTC-day fence is gone (#348). It was a throughput cap wearing a safety costume:
-    measured over seven days it would have capped the busiest day at one of six qualifying frames while
-    the lane already serialises to a single live position held at most three minutes. What it actually
-    bought was a blind spot — after the day's first entry every later frame was refused *before* the
-    policy ran, so the lane could not say which of them it should have taken. Serialisation is what
-    bounds capital here, and it survives untouched, including inside the entry fence's own statement.
-    """
-
-    if authority.active_underlyings:
-        return "active_intent"
-    return None
-
-
 def _uses_current_news_generation(raw: object, *, news_generation: str) -> bool:
     """Whether an untrusted persisted manifest names the News generation Trading may still act on.
 
@@ -652,7 +649,7 @@ def _uses_current_news_generation(raw: object, *, news_generation: str) -> bool:
 
     The upstream projection joins the running bundle's epoch, so a stale row cannot become a *new*
     Case; but this runs on Cases already persisted. A Case frozen under one bundle and left undecided
-    across a deployment would otherwise advance to an Intent under a generation it was never reasoned
+    across a deployment would otherwise receive Capital attribution under a generation it was never reasoned
     under, because `program_version` and `policy_version` do not move when a prompt or a model slot
     does.
     """

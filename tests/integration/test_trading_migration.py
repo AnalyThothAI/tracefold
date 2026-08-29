@@ -22,6 +22,9 @@ from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
 from tracefold.platform.postgres.migrations import alembic_config
+from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
+from tracefold.trading.contracts import canonical_sha256
+from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
@@ -253,7 +256,9 @@ def test_0308_refuses_an_unusable_snapshot_at_the_database_boundary() -> None:
 
     conn: Any | None = None
     try:
-        _fresh_schema_at("head")
+        # Assert #0308 against its own schema. Later hard cuts intentionally add mandatory Case facts,
+        # so seeding a pre-#0308 row shape at head would test unrelated migrations instead.
+        _fresh_schema_at("20260825_0308")
         conn = connect_postgres_test(read_only=False)
         _seed_pre_snapshot_order(
             conn, order_id="guard", state="OPEN", position_opened_at_ms=NOW, must_close_at_ms=NOW + 1
@@ -772,6 +777,120 @@ def test_0325_drains_the_per_poll_counters_and_admits_the_new_admission_vocabula
             "AND privilege_type = 'UPDATE' ORDER BY column_name"
         ).fetchall()
         assert [row["column_name"] for row in granted] == ["control", "updated_at_ms"]
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260829_0326")
+        _upgrade("20260829_0327")
+        conn = connect_postgres_test(read_only=False)
+        repos = TradingRepository(conn)
+
+        assert repos.decision_runtime() == {
+            "state": "DISABLED",
+            "heartbeat_at_ms": None,
+            "reason": "trading_disabled",
+            "updated_at_ms": 0,
+        }
+        bindings = repos.binding_runtime_rows()
+        assert [row["binding"] for row in bindings] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
+        assert {row["credential_state"] for row in bindings} == {"unconfigured"}
+
+        conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+        assert repos.set_binding_runtime(
+            binding="BINANCE_USDM",
+            credential_state="configured",
+            credential_fingerprint="f" * 64,
+            runtime_state="stopped",
+            account_state="unknown",
+            heartbeat_at_ms=None,
+            reason="binding_adapter_unavailable",
+            now_ms=NOW,
+        )
+        assert conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()["control"] == "PAUSED"
+
+        entry = VenueInstrumentCatalogEntryV1(
+            provider_instrument_id="BTCUSDT",
+            provider_symbol="BTCUSDT",
+            venue="binance.usdm",
+            canonical_asset="BTC",
+            canonical_namespace="native",
+            product_kind="linear_perpetual",
+            active=True,
+            settlement_asset="USDT",
+            margin_asset="USDT",
+            multiplier="1",
+            price_increment="0.1",
+            size_increment="0.001",
+            raw_metadata_sha256=canonical_sha256({"symbol": "BTCUSDT"}),
+        )
+        snapshot = build_venue_catalog_snapshot(
+            binding="BINANCE_USDM", captured_at_ms=NOW, stale_after_ms=21_600_000, instruments=(entry,)
+        )
+        repos.store_venue_catalog_snapshot(snapshot=snapshot, now_ms=NOW)
+        conn.commit()
+        assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
+        with (
+            pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"),
+            conn.transaction(),
+        ):
+            conn.execute(
+                "UPDATE trading_venue_catalog_snapshots SET created_at_ms = created_at_ms + 1 "
+                "WHERE snapshot_sha256 = %s",
+                (snapshot.snapshot_sha256,),
+            )
+
+        repos.mark_venue_catalog_unavailable(binding="BINANCE_USDM", reason="venue_timeout", now_ms=NOW + 1)
+        conn.commit()
+        runtime = repos.binding_runtime(binding="BINANCE_USDM")
+        assert runtime is not None
+        assert runtime["catalog_state"] == "stale"
+        assert runtime["catalog_snapshot_sha256"] == snapshot.snapshot_sha256
+        assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
+
+        repos.store_venue_catalog_snapshot(snapshot=snapshot, now_ms=NOW + 2)
+        conn.commit()
+        recovered = repos.binding_runtime(binding="BINANCE_USDM")
+        assert recovered is not None
+        assert (recovered["catalog_state"], recovered["reason"]) == (
+            "ready",
+            "binding_adapter_unavailable",
+        )
+
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'trading_cases'"
+            ).fetchall()
+        }
+        assert {"capital_disposition", "capital_reason"} <= columns
+        privileges = conn.execute(
+            """
+            SELECT has_table_privilege('tracefold_serve', 'trading_venue_catalog_snapshots', 'SELECT') AS serve_read,
+                   has_table_privilege('tracefold_serve', 'trading_venue_catalog_snapshots', 'INSERT') AS serve_write,
+                   has_table_privilege(
+                     'tracefold_workers', 'trading_venue_catalog_snapshots', 'INSERT'
+                   ) AS worker_write,
+                   has_column_privilege('tracefold_nautilus', 'trading_binding_runtime', 'runtime_state', 'UPDATE')
+                     AS adapter_runtime_write,
+                   has_column_privilege('tracefold_nautilus', 'trading_binding_runtime', 'credential_state', 'UPDATE')
+                     AS adapter_credential_write,
+                   has_column_privilege('tracefold_nautilus', 'trading_binding_runtime', 'catalog_state', 'UPDATE')
+                     AS adapter_catalog_write
+            """
+        ).fetchone()
+        assert dict(privileges) == {
+            "serve_read": True,
+            "serve_write": False,
+            "worker_write": True,
+            "adapter_runtime_write": True,
+            "adapter_credential_write": False,
+            "adapter_catalog_write": False,
+        }
     finally:
         if conn is not None:
             conn.close()

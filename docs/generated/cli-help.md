@@ -765,15 +765,11 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,refresh-capabilities,cases,replay-oi,show,blacklist,control} ...
+                         {status,cases,replay-oi,show,blacklist,control} ...
 
 positional arguments:
-  {status,refresh-capabilities,cases,replay-oi,show,blacklist,control}
-    status              Nautilus readiness, intent outcomes, and the daily
-                        funnel
-    refresh-capabilities
-                        cold refresh of the Binance Demo execution capability
-                        snapshot; requires PAUSED
+  {status,cases,replay-oi,show,blacklist,control}
+    status              Decision, Capital, binding facts, and durable outcomes
     cases               list Trading cases newest first
     replay-oi           source-native BAR replay with an audited artifact and
                         immutable receipt (#286)
@@ -791,16 +787,6 @@ options:
 
 ```
 usage: tracefold trading status [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `trading refresh-capabilities`
-
-```
-usage: tracefold trading refresh-capabilities [-h]
 
 options:
   -h, --help  show this help message and exit

@@ -15,6 +15,12 @@ from .capabilities import (
     ProviderInstrumentCandidateV1,
     StableCapabilityExclusionV1,
 )
+from .catalog import (
+    VenueBinding,
+    VenueInstrumentCatalogEntryV1,
+    VenueInstrumentCatalogSnapshotV1,
+    build_venue_catalog_snapshot,
+)
 from .contracts import (
     Bar,
     CaseState,
@@ -64,5 +70,9 @@ __all__ = [
     "StableCapabilityExclusionV1",
     "TradeIntent",
     "TradingCaseManifest",
+    "VenueBinding",
+    "VenueInstrumentCatalogEntryV1",
+    "VenueInstrumentCatalogSnapshotV1",
+    "build_venue_catalog_snapshot",
     "deterministic_client_order_id",
 ]

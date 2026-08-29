@@ -211,9 +211,10 @@ unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
-`trading.*` is the whole Trading surface (#104, #331) and is `enabled: false`
-by default. A disabled Trading context constructs no capital lane and no
-adapter, and Compose does not start Nautilus. The accepted keys are only:
+`trading.*` is the whole Trading surface (#104, #331, #350) and is
+`enabled: false` by default. `trading.enabled` controls only the Decision
+Plane. Binding credential projection and the credential-free public venue
+catalog remain active Workers responsibilities. The accepted keys are only:
 
 - `enabled`;
 - `candidates.*`: `max_age_seconds`, `min_oi_value_usd` — a freshness budget and
@@ -223,8 +224,14 @@ adapter, and Compose does not start Nautilus. The accepted keys are only:
   is selectivity, which the policy already owns;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
-- `nautilus.api_key_file` and `nautilus.api_secret_file`, resolved relative
-  to the operator config directory unless absolute.
+- `bindings.binance_usdm.api_key_file` / `api_secret_file`;
+- `bindings.hyperliquid_perp.private_key_file` / `account_address`.
+
+Secret-file paths are resolved relative to the operator config directory
+unless absolute. Missing files are the legal `unconfigured` state. Partial,
+malformed, insecure, or unreadable inputs are `invalid`; neither state exposes
+secret contents. A configured binding is still `stopped/unknown` until its
+later adapter-owned read-only preflight exists (#356/#357).
 
 There is no mode, live symbol, account, venue, OpenTrade, approval, backend
 selector, or Intent-acceptance configuration, and since #331 no `regime.*`,
@@ -233,34 +240,40 @@ with no version and no frozen evidence. Unknown retired keys fail strict
 settings validation. The capital lane's poll cadence is App-owned and the
 Nautilus cadence is code-owned.
 
-The one production capital policy, `binance_oi_smart_money_long_v2`, is
+The one production policy, `binance_oi_smart_money_long_v2`, is
 code-owned and frozen onto every Case it decides, together with the per-check
 evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
 It answers `long` or `no_trade` only; it cannot express a permission, an
 execution environment or a venue. There is no Trading model call and no
 `llm.trading_decision_model` key.
 
-Execution permission is the active content-addressed Binance USD-M Demo
-capability snapshot minus the canonical underlying blacklist. It is not an
-operator target-symbol list. The code-owned contract remains NETTING/one-way,
-long-only, 1x, market entry, 60-second Intent TTL,
-200-bps native fixed-quantity reduce-only stop, 180-second maximum holding,
-25-bps entry drift, 30-bps spread, and one nonterminal Intent globally.
-Quantity is
-`floor_to_venue_precision(target_notional_usd / fresh_price)`; venue minimum,
-balance, quote, and ceiling failures refuse rather than resize or reroute.
+`VenueInstrumentCatalogSnapshotV1` is public instrument truth, collected
+without credentials for the closed `BINANCE_USDM` and `HYPERLIQUID_PERP`
+bindings. A content-addressed append-only snapshot conserves every provider
+row, including inactive, duplicate, and unnormalizable rows with an exact
+reason. Each binding owns an atomic active pointer plus
+`ready|stale|error|missing`; a failed refresh retains last-known-good and does
+not affect the other binding. Catalog presence is not execution permission.
+#355 uniquely owns compilation of `catalog + ExecutionBinding` into an
+execution capability partition.
 
-The Binance Demo secret files must be non-empty regular non-symlink files of at
-most 16 KiB with no group/other permission bits (normally `0600`). Only the
-Nautilus composition reads their contents. `tracefold config` reports resolved
-paths and a redacted `credentials_configured` boolean, never contents.
-`make up`, `make deploy-image`, and `make status` require credentials and
-exactly one healthy Nautilus replica whenever Trading is enabled.
+Decision, Capital, and binding runtime are orthogonal durable facts. Decision
+is `DISABLED|STARTING|RUNNING|FAULTED`; Capital control is
+`PAUSED|CLOSE_ONLY|RUNNING`; each binding separately records redacted
+credential fingerprint/state, runtime, account, catalog, heartbeat, and exact
+reason. A Worker start or credential projection forces Capital to `PAUSED`, so
+a restart or credential change never inherits an old activation.
 
-`storage.postgres.nautilus_dsn` and `nautilus_password_file` configure the
-least-privilege execution role. Workers can insert immutable Intent columns;
-Nautilus can read Intent columns and update only its execution projection;
-Serve is read-only. Legacy `trading_orders` and
+Before #360, a pure-policy LONG is always persisted as
+`policy_decision=long` plus `capital_disposition=blocked`; the exact earliest
+reason is control, credentials, catalog, exposure, binding readiness, or
+`promotion_authority_unavailable`. It is never rewritten as NO_TRADE and no
+new Intent is created. #360 is the sole future owner of grant, arm, daily risk,
+reservation, and Intent creation in one transaction.
+
+`storage.postgres.nautilus_dsn` and `nautilus_password_file` retain the
+least-privilege role for existing Intent recovery evidence. Serve is read-only.
+Legacy `trading_orders` and
 `trading_order_observations` are retained read-only for audit and have no
 product or writer surface.
 
@@ -275,16 +288,14 @@ The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
 initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. The dark Nautilus service is optional; when its Demo
-credentials are configured, `make up` stops, recreates, waits for, and verifies
-it with the same image. A repeated invocation preserves config, passwords, and
+console boundaries. Execution credentials are not a deployment prerequisite,
+and no execution adapter is started (#356/#357 pending). A repeated invocation preserves config, passwords, and
 named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
 required runtime readiness endpoint, or console HTML is missing or unhealthy.
-When the Demo credentials are configured it also requires that process and its
-readiness endpoint to be healthy; otherwise absence is reported as the expected
-dark/not-configured state. `make logs` follows the bounded startup services including Nautilus. `make down` stops the stack
+It reports execution adapters as not required while Capital is PAUSED.
+`make logs` follows the bounded startup services. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
@@ -298,9 +309,7 @@ database Alembic heads to match and requires the target image to parse the
 active config. It never builds, pulls, or downgrades. Success additionally
 requires the recreated migration, Serve, and Workers containers, Workers
 readiness identity, runtime manifest, and linked active/deployment receipt to
-prove that exact image. When the effective config reports Demo credentials
-configured, Nautilus is also recreated and its container image is checked
-against the same ID. `make up` and `make deploy-image` share one
+prove that exact image. `make up` and `make deploy-image` share one
 process-lifetime deployment lock; concurrent mutation is refused and process
 exit releases the lock.
 
@@ -932,18 +941,12 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
-- `tracefold trading refresh-capabilities` is a cold command. It loads the full
-  public News/provider candidate union without credentials, appends its stable
-  partition, and moves the active pointer only while already `PAUSED`, no
-  nonterminal Intent exists, and the account-wide zero proof is fresh. It never
-  changes Trading control. A replacement uses current green Nautilus readiness
-  or the separate account-wide proof from `nautilus run
-  --bootstrap-zero-claims`; initial activation uses that same zero-claim proof
-  while the process remains formally unready. Deployment invokes that bootstrap
-  only when no active pointer exists. Otherwise it reuses the active snapshot
-  and recreates normal Nautilus without refreshing capability or changing
-  control. The proof is valid for the bounded provider load, up to five minutes;
-  activation clears it and invalidates readiness.
+- Workers refresh both public venue catalogs without credentials. Each refresh
+  appends a content-addressed snapshot and atomically moves only that binding's
+  pointer. Provider error marks that binding `error` when no snapshot exists or
+  `stale` while retaining last-known-good; it never empties the catalog or
+  changes the other binding. There is no operator refresh command and no
+  execution authorization in this operation.
 - `tracefold trading replay-oi --days 7 --strategy
   binance_oi_smart_money_long_v2 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
@@ -951,24 +954,23 @@ reader/writer.
   gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
   response names an immutable artifact and PostgreSQL receipt by deterministic
   `run_id`; funding and portfolio drawdown remain `null`.
-**One HTTP owner per durable aggregate (#331).** Nothing crosses: a Case carries
-its own frozen evidence and no execution lifecycle; an Intent carries its
-lifecycle and a `case_id` back-reference; the status surface carries readiness
-and bounded durable totals and no threshold at all.
+**One HTTP owner per durable aggregate (#331, #350).** Nothing crosses: a Case
+carries frozen evidence plus independent Policy and Capital attribution; an
+Intent carries its lifecycle and a `case_id` back-reference; status carries
+orthogonal durable runtime facts and bounded totals.
 
-- `GET /api/trading/status` — runtime and execution readiness. `budget` exposes
-  target notional and nothing else: #348 retired the one-entry-per-UTC-day
-  ceiling, and publishing a ceiling nobody enforces is worse than publishing
-  none. The lane's bound is one live thesis, held by a unique index.
-  `readiness` exposes enabled/control, `nautilus`, `BINANCE_USDM_DEMO`, active
-  capability digest/count, canonical blacklist revision, redacted credential
-  availability, engine readiness/reason, heartbeat, and unexpected exposure.
+- `GET /api/trading/status` — `decision`, `capital`, and the two closed
+  `bindings`. Decision exposes state/heartbeat/reason; Capital exposes
+  control/blacklist revision; each binding exposes only durable redacted
+  credential/runtime/account/catalog/heartbeat/reason facts. Serve reads no
+  secret file and constructs no provider client.
   `policy` names the identity a *new* Case would be frozen under and is never
   applied to an existing one. `counts` is a bounded aggregation over durable
   rows — no funnel, no per-poll counter. Money is an exact decimal string.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
   — the Case/Decision aggregate. Each Case carries its raw `state`, its terminal
-  `policy_decision` / `policy_reason`, the frozen `policy_config` and
+  `policy_decision` / `policy_reason`, independent
+  `capital_disposition` / `capital_reason`, the frozen `policy_config` and
   `policy_checks` (check, operator, threshold, measured, passed) it was decided
   on, the frame's own measurements, and a nullable `intent_id` link. It is the
   replacement for the retired `intents.cases_without_intents`, and the two
@@ -1502,20 +1504,20 @@ and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
 peeks, republishes, or purges `news.dead`.
 
 The `trading` family is read-mostly and has no provider-execution write command.
-`trading status` reports the frozen Demo identity, target notional, control,
-Nautilus readiness, active/fenced/closed Intent counts, the day's funnel,
-durable admission counts, stage latency, Cases by trigger/strategy, and
-liquidation shadow research cohorts. Unknown outcome evidence remains unknown;
-the CLI does not infer flat, protection, PnL, or fees.
+`trading status` reports Decision state/heartbeat, Capital control, both
+bindings' durable redacted facts, target notional, durable admission counts,
+stage latency, Case policy/capital reasons, and Intent counts. Unknown outcome
+evidence remains unknown; the CLI does not infer readiness, flat, protection,
+PnL, or fees.
 
 `trading cases [--state] [--limit]` lists the Case ledger.
 `trading show <case-id>` returns exactly `case`, optional immutable `intent`,
 and optional current `outcome`. Operator control writes are
 `trading blacklist add|remove`, which manages the canonical deny-list, and
 `trading control running|close-only|paused`. `PAUSED` and `CLOSE_ONLY`
-block new entry fences but do not stop an already-fenced Nautilus lifecycle.
-`trading refresh-capabilities` appends and conditionally activates a capability
-snapshot. `trading replay-oi --days N` fetches public source-native BAR data,
+block new economic Intent; existing recovery obligations remain durable.
+The retired `trading refresh-capabilities` command is rejected. `trading
+replay-oi --days N` fetches public source-native BAR data,
 publishes one content-addressed artifact, materializes timed blacklist expiry
 through a short Workers transaction, and inserts one immutable replay receipt;
 it has no execution credentials and performs no provider order write.
@@ -1529,17 +1531,18 @@ Item retention cannot erase live/recovery provenance. Recovery rows are audit
 context and are not eligible triggers.
 
 Trading's editorial News projection contract is `program_v7` / policy v10
-only. `trading_manifest_v4` freezes the learning epoch, lane-specific Program
+only. `trading_manifest_v8` freezes the learning epoch, lane-specific Program
 version and SHA, policy version, editorial origin and SHA, scored-judgment SHA,
 and runtime-manifest SHA, plus the OI verdict's own persistence stamp (#211),
 the single primary trigger, point-in-time contexts, and strategy ID, version,
-the exact typed configuration values and their digest (#213). The serialized
+the exact typed configuration values and their digest (#213), and the public
+venue catalog digest used to resolve its instrument. The serialized
 manifest has one market fact at `contexts.market`; there is no serialized or
 accessor alias named `market_context`. A pending Case reconstructs its strategy from that frozen
 snapshot, so editing runtime thresholds affects only later Cases.
 Cases frozen under any earlier manifest version remain readable audit rows but
 cannot advance: an undecided case is terminalized as
-`BLOCKED/no_trade/news_generation_retired`; an already emitted Intent is not
+`BLOCKED/not_run/source_generation_retired`; an already emitted Intent is not
 rewritten and remains owned by Nautilus reconciliation.
 
 The HTTP shape uses `trigger_kind`, never the retired `case_kind`. Every Case

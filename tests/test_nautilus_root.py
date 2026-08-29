@@ -31,8 +31,8 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
 
     settings = Settings()
     settings.set_config_dir(tmp_path)
-    _secure_secret(tmp_path / "binance_demo_api_key", "demo-key")
-    _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
+    _secure_secret(tmp_path / "binance_usdm_api_key", "demo-key")
+    _secure_secret(tmp_path / "binance_usdm_api_secret", "demo-secret")
     calls: list[str] = []
     captured: dict[str, object] = {}
 
@@ -240,8 +240,8 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
 
     settings = Settings()
     settings.set_config_dir(tmp_path)
-    _secure_secret(tmp_path / "binance_demo_api_key", "demo-key")
-    _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
+    _secure_secret(tmp_path / "binance_usdm_api_key", "demo-key")
+    _secure_secret(tmp_path / "binance_usdm_api_secret", "demo-secret")
 
     @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):

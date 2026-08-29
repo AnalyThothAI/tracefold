@@ -16,7 +16,7 @@ are not admitted at all: they are not a Source of this lane and no code path off
     source          the row is a usable, current-generation, live OI fact at all
     venue           the frame's own venue carries live capital authority
     eligibility     liquidity floor, blacklist, freshness, idempotency, one live thesis per underlying
-    capability      the active Binance Demo snapshot lists an executable instrument for this issuer
+    catalog         the public Binance USD-M snapshot names an exact instrument for this issuer
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
 
@@ -51,11 +51,11 @@ from .sources import SourceRejected
 
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
 # so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
-# v2 is #331: `RESEARCH_ONLY` exists, News triggers do not, and capability replaced the catalogue.
-ADMISSION_VERSION: Final = "trading_admission_v3"
+# v4 is #350: credential-free public catalogue truth replaces execution capability at Decision freeze.
+ADMISSION_VERSION: Final = "trading_admission_v4"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
-AdmissionStage = Literal["source", "venue", "eligibility", "capability", "market_context", "freeze"]
+AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
 
 # The closed vocabulary. A reason outside this set is a bug, not a new rule: the read model aggregates
 # on it and an unbounded key set is exactly what the retired funnel's venue counter already failed at.
@@ -77,9 +77,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         # need when several positions can be open at once, and the lane serialises to one held at most
         # three minutes. It refused two frames in seven days.
         "underlying_busy",
-        # The active capability snapshot lists no executable Binance Demo instrument for this issuer.
-        # Retryable: a cold capability refresh can add one.
-        "capability_absent",
+        # The last-known-good public catalogue has no exact instrument for this issuer. Retryable: a
+        # later credential-free refresh can add one.
+        "catalog_absent",
         "market_data_unavailable",
         "market_data_invalid",
         "already_consumed",

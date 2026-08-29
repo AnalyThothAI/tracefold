@@ -7,7 +7,9 @@ type TradingSchemas = components["schemas"];
 
 export type TradingStatus = TradingSchemas["TradingStatusData"];
 export type TradingBudget = TradingSchemas["TradingBudgetData"];
-export type TradingReadiness = TradingSchemas["TradingReadinessData"];
+export type TradingDecisionRuntime = TradingSchemas["TradingDecisionRuntimeData"];
+export type TradingCapitalRuntime = TradingSchemas["TradingCapitalRuntimeData"];
+export type TradingBindingRuntime = TradingSchemas["TradingBindingRuntimeData"];
 export type TradingRuntimeCounts = TradingSchemas["TradingRuntimeCountsData"];
 export type TradingPolicyIdentity = TradingSchemas["TradingPolicyIdentityData"];
 export type TradingIntents = TradingSchemas["TradingIntentsData"];

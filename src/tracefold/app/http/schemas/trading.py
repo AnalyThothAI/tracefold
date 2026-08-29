@@ -3,11 +3,11 @@
     Source / Admission   `TradingGateData`, `TradingGateDecisionData`
     Case / Decision      `TradingCasesData`, `TradingCaseData`
     Intent / Outcome     `TradingIntentsData`, `TradingIntentData`
-    runtime readiness    `TradingStatusData`
+    orthogonal runtime   `TradingStatusData`
 
-Nothing crosses. A Case carries its own frozen policy checks and no execution lifecycle; an Intent
-carries its lifecycle and only a `case_id` back-reference; the status surface carries readiness and
-bounded durable totals and no threshold at all.
+Nothing crosses. A Case carries its own frozen policy and Capital attribution with no execution
+lifecycle; an Intent carries its lifecycle and only a `case_id` back-reference; status carries
+Decision, Capital, per-binding redacted facts, and bounded durable totals.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ from .common import ExactApiSchema
 
 GateStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
 # `routing` is retained for rows written before #331; the current stages are the other five.
-GateStage = Literal["source", "venue", "eligibility", "capability", "routing", "market_context", "freeze"]
+GateStage = Literal["source", "venue", "eligibility", "catalog", "routing", "market_context", "freeze"]
 
 
-# ---------------------------------------------------------------------------- runtime readiness
+# ---------------------------------------------------------------------------- Decision / Capital / binding runtime
 class TradingBudgetData(ExactApiSchema):
     """What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
 
@@ -34,19 +34,28 @@ class TradingBudgetData(ExactApiSchema):
     target_notional_usd: str
 
 
-class TradingReadinessData(ExactApiSchema):
-    enabled: bool
-    control: Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
-    execution_authority: Literal["nautilus"] = "nautilus"
-    execution_environment: Literal["BINANCE_USDM_DEMO"] = "BINANCE_USDM_DEMO"
-    active_capability_snapshot_sha256: str | None = None
-    active_capability_included_count: int = Field(ge=0)
-    blacklist_revision: int = Field(ge=0)
-    credentials_configured: bool
-    engine_ready: bool
-    engine_readiness_reason: str | None = None
-    unexpected_exposure: bool
+class TradingDecisionRuntimeData(ExactApiSchema):
+    state: Literal["DISABLED", "STARTING", "RUNNING", "FAULTED"]
     heartbeat_at_ms: int | None = None
+    reason: str | None = None
+
+
+class TradingCapitalRuntimeData(ExactApiSchema):
+    control: Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
+    blacklist_revision: int = Field(ge=0)
+
+
+class TradingBindingRuntimeData(ExactApiSchema):
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    credential_state: Literal["unconfigured", "configured", "invalid"]
+    credential_fingerprint: str | None = None
+    runtime_state: Literal["stopped", "starting", "ready", "stale", "faulted"]
+    account_state: Literal["unknown", "reconciled_flat", "exposure_present"]
+    catalog_state: Literal["missing", "ready", "stale", "error"]
+    catalog_snapshot_sha256: str | None = None
+    catalog_captured_at_ms: int | None = None
+    heartbeat_at_ms: int | None = None
+    reason: str | None = None
 
 
 class TradingRuntimeCountsData(ExactApiSchema):
@@ -76,7 +85,9 @@ class TradingPolicyIdentityData(ExactApiSchema):
 
 class TradingStatusData(ExactApiSchema):
     budget: TradingBudgetData
-    readiness: TradingReadinessData
+    decision: TradingDecisionRuntimeData
+    capital: TradingCapitalRuntimeData
+    bindings: list[TradingBindingRuntimeData]
     policy: TradingPolicyIdentityData
     counts: TradingRuntimeCountsData
     window_hours: int
@@ -191,8 +202,10 @@ class TradingCaseData(ExactApiSchema):
     policy_config: dict[str, str] = Field(default_factory=dict)
     policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
     state: str
-    policy_decision: str | None = None
+    policy_decision: Literal["long", "no_trade", "not_run"]
     policy_reason: str | None = None
+    capital_disposition: Literal["allowed", "blocked", "not_applicable"]
+    capital_reason: str | None = None
     mark_price: str | None = None
     pre_move_bps: int | None = None
     oi_change_bps: int | None = None
@@ -209,6 +222,7 @@ class TradingCasesData(ExactApiSchema):
     cases: list[TradingCaseData] = Field(default_factory=list)
     state_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
+    capital_reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     complete: bool
     window_hours: int
     measured_at_ms: int

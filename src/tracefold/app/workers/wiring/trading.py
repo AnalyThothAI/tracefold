@@ -4,7 +4,8 @@ The lane exposes exactly one business action, `advance()`. Polling, the stop eve
 lifecycle are App's (#331), which is why the loop lives here rather than inside the business package:
 a bounded context that owns its own scheduler is a service, and this system has one worker process.
 
-A disabled Trading context constructs nothing at all — no lane, no adapter, no client.
+A disabled Decision Plane constructs no lane, adapter, or execution client. The credential-free public
+catalog remains a Workers responsibility because `trading.enabled` controls only Decision.
 """
 
 from __future__ import annotations
@@ -22,18 +23,36 @@ from tracefold.app.trading_config import capital_lane_config
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
+from tracefold.integrations.trading_catalog import (
+    VenueExpectedError,
+    fetch_binance_usdm_catalog,
+    fetch_hyperliquid_perp_catalog,
+)
 from tracefold.integrations.venues import fetch_binance_candles
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
+from tracefold.trading import VenueBinding
 from tracefold.trading.capital_lane import CapitalLane
+from tracefold.trading.catalog import VenueCatalog
 from tracefold.trading.contracts import LIVE_VENUE
 from tracefold.trading.contracts import Bar as TradingBar
 
 CAPITAL_LANE_TASK_NAME = "trading-capital-lane"
+VENUE_CATALOG_TASK_NAME = "trading-venue-catalog"
 # The lane moves at the speed of a five-minute OI frame; two seconds is what makes a fresh frame reach
 # a Case well inside its own trigger budget without the scan becoming a busy loop.
 CAPITAL_LANE_POLL_SECONDS = 2.0
+VENUE_CATALOG_PERIOD_SECONDS = 6 * 3_600.0
+VENUE_CATALOG_RETRY_SECONDS = 15 * 60.0
+
+
+def _wire_venue_catalog(*, db: WorkerDatabase) -> VenueCatalog:
+    return VenueCatalog(
+        db=WorkerTradingDatabase(db),
+        clock=lambda: int(time.time() * 1_000),
+        stale_after_ms=int(VENUE_CATALOG_PERIOD_SECONDS * 1_000),
+    )
 
 
 def _wire_capital_lane(
@@ -51,21 +70,17 @@ def _wire_capital_lane(
 
     if not settings.trading.enabled:
         return None
-    try:
-        return CapitalLane(
-            db=WorkerTradingDatabase(db),
-            config=capital_lane_config(settings),
-            bars=_binance_bars,
-            oi_projection=news_oi_sources,
-            # The one place that may tell Trading which News generation is running (#314). Trading
-            # holds no News literal and reads no News table; this seam derives the label from the same
-            # stable arm the News workers appoint, so the two cannot drift.
-            news_generation=epoch_id_for_bundle(active_arm_manifest(settings).bundle_sha),
-            telemetry=telemetry,
-        )
-    except Exception:
-        logger.exception("capital lane wiring failed; Trading stays disabled for this process")
-        return None
+    return CapitalLane(
+        db=WorkerTradingDatabase(db),
+        config=capital_lane_config(settings),
+        bars=_binance_bars,
+        oi_projection=news_oi_sources,
+        # The one place that may tell Trading which News generation is running (#314). Trading
+        # holds no News literal and reads no News table; this seam derives the label from the same
+        # stable arm the News workers appoint, so the two cannot drift.
+        news_generation=epoch_id_for_bundle(active_arm_manifest(settings).bundle_sha),
+        telemetry=telemetry,
+    )
 
 
 async def _binance_bars(provider_symbol: str, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
@@ -78,6 +93,33 @@ async def _binance_bars(provider_symbol: str, start_ms: int, end_ms: int) -> Seq
 
     candles = await fetch_binance_candles(provider_symbol, venue=LIVE_VENUE, start_ms=start_ms, end_ms=end_ms)
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
+
+
+async def run_venue_catalog(
+    catalog: VenueCatalog,
+    *,
+    stop_event: asyncio.Event,
+    period_seconds: float = VENUE_CATALOG_PERIOD_SECONDS,
+) -> None:
+    """Refresh both public bindings independently; provider errors retain each binding's last-good."""
+
+    fetchers: tuple[tuple[VenueBinding, Any], ...] = (
+        ("BINANCE_USDM", fetch_binance_usdm_catalog),
+        ("HYPERLIQUID_PERP", fetch_hyperliquid_perp_catalog),
+    )
+    while not stop_event.is_set():
+        complete = True
+        for binding, fetch in fetchers:
+            try:
+                instruments = await fetch()
+            except VenueExpectedError as exc:
+                complete = False
+                await catalog.unavailable(binding=binding, reason=exc.code)
+            else:
+                await catalog.publish(binding=binding, instruments=instruments)
+        wait = period_seconds if complete else min(period_seconds, VENUE_CATALOG_RETRY_SECONDS)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(wait)))
 
 
 async def run_capital_lane(
@@ -115,5 +157,7 @@ async def run_capital_lane(
 __all__ = [
     "CAPITAL_LANE_POLL_SECONDS",
     "CAPITAL_LANE_TASK_NAME",
+    "VENUE_CATALOG_TASK_NAME",
     "run_capital_lane",
+    "run_venue_catalog",
 ]

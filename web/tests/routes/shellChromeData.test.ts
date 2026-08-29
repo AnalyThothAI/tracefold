@@ -62,15 +62,15 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("keeps the sole authority and today's entry count visible on the trading surface", () => {
+  it("keeps Decision, Capital and binding configuration visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
-      { label: "AUTHORITY", text: "nautilus" },
       {
-        label: "ENGINE",
-        text: "READY",
+        label: "DECISION",
+        text: "RUNNING",
         tone: undefined,
       },
-      { label: "今日入场", text: "1" },
+      { label: "CAPITAL", text: "PAUSED", tone: "caution" },
+      { label: "BINDINGS", text: "0 / 2" },
     ]);
   });
 });

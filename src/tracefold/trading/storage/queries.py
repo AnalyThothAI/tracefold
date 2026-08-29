@@ -37,6 +37,7 @@ _CASE_COLUMNS: Final = """
     c.case_id, c.underlying_key, c.primary_source_key,
     c.trigger_kind, c.strategy_id, c.strategy_version, c.strategy_config_digest,
     c.state, c.policy_decision, c.policy_reason, c.policy_checks,
+    c.capital_disposition, c.capital_reason,
     c.manifest -> 'policy_config' AS policy_config,
     (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::bigint AS pre_move_bps,
     (c.manifest -> 'contexts' -> 'market' ->> 'mark_price') AS mark_price,
@@ -142,6 +143,14 @@ class QueryStorage:
         rows = self.conn.execute(
             "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
             "FROM trading_cases WHERE created_at_ms >= %s GROUP BY 1",
+            (int(since_ms),),
+        ).fetchall()
+        return {str(row["reason"]): int(row["n"]) for row in rows}
+
+    def case_capital_reason_counts(self, *, since_ms: int) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT capital_reason AS reason, count(*) AS n FROM trading_cases "
+            "WHERE created_at_ms >= %s AND capital_reason IS NOT NULL GROUP BY capital_reason",
             (int(since_ms),),
         ).fetchall()
         return {str(row["reason"]): int(row["n"]) for row in rows}

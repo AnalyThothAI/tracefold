@@ -4,7 +4,7 @@
     GET /api/trading/gate/{event_id}   one Source's admission answer
     GET /api/trading/cases             Case / Decision
     GET /api/trading/intents           Intent / Outcome
-    GET /api/trading/status            runtime and execution readiness
+    GET /api/trading/status            Decision / Capital / binding runtime
 
 The split is the product's, and it is what the pages are built on. `/intents` used to return
 `cases_without_intents` beside its Intents, which put two durable objects behind one contract: a page
@@ -29,7 +29,6 @@ from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -62,37 +61,37 @@ _CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
 def get_trading_status(request: Request) -> Response:
-    """Control, execution readiness, active capability, and bounded durable totals. No thresholds."""
+    """Durable Decision, Capital and per-binding runtime facts. No secret or provider reads."""
 
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     settings = runtime.settings
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        state = repos.trading.runtime_state() or {}
+        decision = repos.trading.decision_runtime() or {
+            "state": "FAULTED",
+            "heartbeat_at_ms": None,
+            "reason": "decision_runtime_missing",
+        }
+        capital = repos.trading.runtime_state() or {}
+        bindings = repos.trading.binding_runtime_rows()
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
-    key_file = settings.trading_nautilus_api_key_file()
-    secret_file = settings.trading_nautilus_api_secret_file()
     policy = capital_lane_config(settings).policy
     return _etagged(
         {
             "budget": {
                 "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
             },
-            "readiness": {
-                "control": str(state.get("control") or "PAUSED"),
-                "enabled": settings.trading.enabled,
-                "execution_authority": "nautilus",
-                "execution_environment": "BINANCE_USDM_DEMO",
-                "active_capability_snapshot_sha256": state.get("active_capability_snapshot_sha256"),
-                "active_capability_included_count": int(state.get("active_capability_included_count") or 0),
-                "blacklist_revision": int(state.get("blacklist_revision") or 0),
-                "credentials_configured": secret_file_configured(key_file) and secret_file_configured(secret_file),
-                "engine_ready": bool(state.get("nautilus_ready")),
-                "engine_readiness_reason": state.get("nautilus_readiness_reason"),
-                "unexpected_exposure": bool(state.get("nautilus_unexpected_exposure")),
-                "heartbeat_at_ms": state.get("nautilus_heartbeat_at_ms"),
+            "decision": {
+                "state": str(decision["state"]),
+                "heartbeat_at_ms": decision.get("heartbeat_at_ms"),
+                "reason": decision.get("reason"),
             },
+            "capital": {
+                "control": str(capital.get("control") or "PAUSED"),
+                "blacklist_revision": int(capital.get("blacklist_revision") or 0),
+            },
+            "bindings": [_binding_runtime(row) for row in bindings],
             "policy": {
                 "policy_id": policy.policy_id,
                 "policy_version": policy.policy_version,
@@ -199,11 +198,13 @@ def get_trading_cases(
         )
         states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
         reasons = repos.trading.case_reason_counts(since_ms=now_ms - _WINDOW_MS)
+        capital_reasons = repos.trading.case_capital_reason_counts(since_ms=now_ms - _WINDOW_MS)
     return _etagged(
         {
             "cases": [_case(row) for row in rows[:_ROW_LIMIT]],
             "state_counts_24h": states,
             "reason_counts_24h": reasons,
+            "capital_reason_counts_24h": capital_reasons,
             "complete": len(rows) <= _ROW_LIMIT,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
@@ -266,6 +267,21 @@ def get_trading_intents(
         request,
         envelope=_IntentsEnvelope,
     )
+
+
+def _binding_runtime(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "binding": str(row["binding"]),
+        "credential_state": str(row["credential_state"]),
+        "credential_fingerprint": row.get("credential_fingerprint"),
+        "runtime_state": str(row["runtime_state"]),
+        "account_state": str(row["account_state"]),
+        "catalog_state": str(row["catalog_state"]),
+        "catalog_snapshot_sha256": row.get("catalog_snapshot_sha256"),
+        "catalog_captured_at_ms": row.get("catalog_captured_at_ms"),
+        "heartbeat_at_ms": row.get("heartbeat_at_ms"),
+        "reason": row.get("reason"),
+    }
 
 
 def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
@@ -345,6 +361,8 @@ def _case(row: dict[str, Any]) -> dict[str, Any]:
         "state": str(row["state"]),
         "policy_decision": row.get("policy_decision"),
         "policy_reason": row.get("policy_reason"),
+        "capital_disposition": str(row["capital_disposition"]),
+        "capital_reason": row.get("capital_reason"),
         "mark_price": _decimal(row.get("mark_price")),
         "pre_move_bps": _int(row.get("pre_move_bps")),
         "oi_change_bps": _int(row.get("oi_change_bps")),

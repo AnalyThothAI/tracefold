@@ -88,6 +88,9 @@ TRADING_TABLES = (
     "trading_intents",
     "trading_execution_capability_snapshots",
     "trading_replay_runs",
+    "trading_decision_runtime",
+    "trading_venue_catalog_snapshots",
+    "trading_binding_runtime",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

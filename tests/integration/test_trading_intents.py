@@ -3,22 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from decimal import Decimal
 from threading import Barrier, Event
-from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 from psycopg import OperationalError
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
-from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.platform.config.models import Settings
 from tracefold.trading import (
     BlacklistSnapshotV1,
     ExecutionCapabilitySnapshotV1,
@@ -30,6 +27,7 @@ from tracefold.trading import (
 )
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.capital_lane import CapitalLane, CapitalLaneConfig
+from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
 from tracefold.trading.contracts import (
     CaseState,
     FrozenMarketContext,
@@ -44,16 +42,6 @@ from tracefold.trading.policy import CAPITAL_POLICY
 pytestmark = pytest.mark.integration
 
 NOW = 1_900_000_000_000
-
-
-def _install_nautilus_test_module(
-    monkeypatch: pytest.MonkeyPatch,
-    provider_rows: Callable[[], Any],
-) -> None:
-    nautilus_module = ModuleType("tracefold.integrations.nautilus")
-    nautilus_module.load_binance_usdm_demo_capabilities = provider_rows  # type: ignore[attr-defined]
-    nautilus_module.installed_nautilus_wheel_identity = lambda: "test-wheel"  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "tracefold.integrations.nautilus", nautilus_module)
 
 
 # The bundle epoch the fixture Cases are frozen under, and the one the runner is composed with.
@@ -87,6 +75,29 @@ CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
     },
     excluded={},
 )
+CATALOG_SNAPSHOT = build_venue_catalog_snapshot(
+    binding="BINANCE_USDM",
+    captured_at_ms=NOW,
+    stale_after_ms=86_400_000,
+    instruments=tuple(
+        VenueInstrumentCatalogEntryV1(
+            provider_instrument_id=f"{symbol}USDT",
+            provider_symbol=f"{symbol}USDT",
+            venue="binance.usdm",
+            canonical_asset=symbol,
+            canonical_namespace="crypto",
+            product_kind="linear_perpetual",
+            active=True,
+            settlement_asset="USDT",
+            margin_asset="USDT",
+            price_increment="0.01",
+            size_increment="0.001",
+            min_quantity="0.001",
+            raw_metadata_sha256=(str(index) * 64),
+        )
+        for index, symbol in enumerate(("BTC", "DOGE", "ETH", "SOL"), start=1)
+    ),
+)
 
 
 @pytest.fixture(scope="module")
@@ -103,6 +114,7 @@ def conn(postgres_module_clone_dsn: str):
         CAPABILITY_SNAPSHOT,
         created_at_ms=NOW,
     )
+    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
     AUTHORITY["blacklist"] = repos.trading.blacklist_snapshot(now_ms=NOW, materialize_expiry=True)
     connection.commit()
     yield connection
@@ -117,10 +129,12 @@ def _case(connection: Any, *, case_id: str = "case-intent-1") -> None:
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
           strategy_config_digest, primary_source_key, supplemental_source_keys,
-          manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+          manifest, manifest_sha256, state, policy_decision, policy_reason,
+          capital_disposition, capital_reason, observed_at_ms, created_at_ms, updated_at_ms
         ) VALUES (%s, 'crypto:SOL', 'oi', 'binance_oi_smart_money_long_v2',
                   'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
-                  '{}'::jsonb, %s, 'RUNNING', %s, %s, %s)
+                  '{}'::jsonb, %s, 'RUNNING', 'not_run', 'not_run',
+                  'not_applicable', NULL, %s, %s, %s)
         """,
         (case_id, "0" * 64, f"source-{case_id}", "1" * 64, NOW, NOW, NOW),
     )
@@ -171,6 +185,20 @@ def _reset_authority(connection: Any) -> None:
         """,
         (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
     )
+    repositories_for_connection(connection).trading.store_venue_catalog_snapshot(
+        snapshot=CATALOG_SNAPSHOT,
+        now_ms=NOW,
+    )
+    connection.execute(
+        """
+        UPDATE trading_binding_runtime
+           SET credential_state = 'unconfigured', credential_fingerprint = NULL,
+               runtime_state = 'stopped', account_state = 'unknown',
+               heartbeat_at_ms = NULL, reason = 'credentials_unconfigured', updated_at_ms = %s
+         WHERE binding = 'BINANCE_USDM'
+        """,
+        (NOW,),
+    )
 
 
 def test_replay_success_receipt_is_idempotent_content_bound_and_append_only(conn: Any) -> None:
@@ -203,28 +231,27 @@ def test_replay_success_receipt_is_idempotent_content_bound_and_append_only(conn
 class _RunnerDb:
     """One bounded read and one bounded transaction over a real connection.
 
-    `fail_intent_settle` makes the Case's own terminal transition return `False` inside the commit,
-    which is the one failure the atomicity guarantee is about: the Intent insert has already happened
-    in that transaction and must be rolled back with it.
+    `fail_capital_settle` makes the Case's terminal capital transition return `False` inside the
+    commit, proving the policy and capital facts stay atomic.
     """
 
-    def __init__(self, connection: Any, *, fail_intent_settle: bool = False) -> None:
+    def __init__(self, connection: Any, *, fail_capital_settle: bool = False) -> None:
         self.connection = connection
-        self.fail_intent_settle = fail_intent_settle
+        self.fail_capital_settle = fail_capital_settle
 
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
         del timeout_seconds
         repos = repositories_for_connection(self.connection)
-        if name == "trading_intent_commit" and self.fail_intent_settle:
+        if name == "trading_capital_disposition_commit" and self.fail_capital_settle:
             trading = repos.trading
             original = trading.settle_case
 
-            def refuse_emission(**kwargs: Any) -> bool:
-                if kwargs.get("state") is CaseState.INTENT_EMITTED:
+            def refuse_capital_block(**kwargs: Any) -> bool:
+                if kwargs.get("capital_disposition") == "blocked":
                     return False
                 return bool(original(**kwargs))
 
-            trading.settle_case = refuse_emission  # type: ignore[method-assign]
+            trading.settle_case = refuse_capital_block  # type: ignore[method-assign]
         with self.connection.transaction():
             return fn(repos)
 
@@ -236,7 +263,7 @@ class _RunnerDb:
 def _executable_manifest(
     *,
     instrument: InstrumentRef | None = None,
-    capability_sha256: str | None = None,
+    catalog_sha256: str | None = None,
 ) -> TradingCaseManifest:
     selected = instrument or InstrumentRef(
         exchange_id="binance",
@@ -298,7 +325,7 @@ def _executable_manifest(
         base_symbol=selected.base_symbol,
         cutoff_ms=NOW,
         instrument=selected,
-        execution_capability_snapshot_sha256=capability_sha256 or CAPABILITY_SNAPSHOT.snapshot_sha256,
+        venue_catalog_snapshot_sha256=catalog_sha256 or CATALOG_SNAPSHOT.snapshot_sha256,
     )
 
 
@@ -335,12 +362,12 @@ def _admission_row(manifest: TradingCaseManifest) -> dict[str, Any]:
     }
 
 
-def _capital_lane(connection: Any, *, fail_intent_settle: bool = False) -> CapitalLane:
+def _capital_lane(connection: Any, *, fail_capital_settle: bool = False) -> CapitalLane:
     async def _bars(_symbol: str, _start: int, _end: int) -> tuple[()]:
         return ()
 
     return CapitalLane(
-        db=_RunnerDb(connection, fail_intent_settle=fail_intent_settle),
+        db=_RunnerDb(connection, fail_capital_settle=fail_capital_settle),
         config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
         bars=_bars,
         oi_projection=lambda *_args: (),
@@ -401,37 +428,38 @@ def test_the_lane_refuses_a_case_frozen_under_a_superseded_news_generation(conn:
     assert asyncio.run(lane._decide_one()) is CaseState.BLOCKED
 
     row = conn.execute(
-        "SELECT state, policy_decision, policy_reason FROM trading_cases WHERE case_id = 'case-sol'"
+        "SELECT state, policy_decision, policy_reason, capital_disposition, capital_reason "
+        "FROM trading_cases WHERE case_id = 'case-sol'"
     ).fetchone()
     assert dict(row) == {
         "state": "BLOCKED",
-        "policy_decision": "no_trade",
+        "policy_decision": "not_run",
         "policy_reason": "source_generation_retired",
+        "capital_disposition": "not_applicable",
+        "capital_reason": None,
     }
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
-def test_the_lane_commits_intent_and_case_transition_in_one_transaction(conn: Any) -> None:
-    """#331 P2P: a long decision hands the Case and one immutable Intent over atomically."""
+def test_no_key_lane_persists_long_and_capital_block_without_an_intent(conn: Any) -> None:
+    """#350 F2P: Decision runs under PAUSED Capital and preserves both independent answers."""
 
-    manifest = _pending_executable_case(conn)
+    _pending_executable_case(conn)
 
-    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.INTENT_EMITTED
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
 
     row = conn.execute(
-        "SELECT c.state, c.policy_decision, c.policy_reason, c.policy_checks, "
-        "       i.instrument_id, i.execution_state, i.target_notional_usd "
-        "FROM trading_cases c JOIN trading_intents i ON i.case_id = c.case_id "
-        "WHERE c.case_id = 'case-sol'"
+        "SELECT state, policy_decision, policy_reason, policy_checks, "
+        "       capital_disposition, capital_reason "
+        "FROM trading_cases WHERE case_id = 'case-sol'"
     ).fetchone()
     assert dict(row) | {"policy_checks": None} == {
-        "state": "INTENT_EMITTED",
+        "state": "BLOCKED",
         "policy_decision": "long",
         "policy_reason": "smart_money_momentum_long",
         "policy_checks": None,
-        "instrument_id": "SOLUSDT-PERP.BINANCE",
-        "execution_state": "PENDING",
-        "target_notional_usd": Decimal("7.5"),
+        "capital_disposition": "blocked",
+        "capital_reason": "capital_paused",
     }
     # The frozen evidence travels with the Case, so a console can explain it without today's config.
     checks = row["policy_checks"]["checks"]
@@ -444,12 +472,11 @@ def test_the_lane_commits_intent_and_case_transition_in_one_transaction(conn: An
         "pre_move_bps",
     }
     assert all(check["passed"] for check in checks)
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     assert conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"] == 0
-    stored = repositories_for_connection(conn).trading.intent_for_case(case_id="case-sol")
-    assert stored is not None and stored[0].case_manifest_sha256 == manifest.digest()
 
 
-def test_the_lane_emits_a_non_target_instrument_from_the_same_active_snapshot(conn: Any) -> None:
+def test_running_capital_still_blocks_no_key_long_as_credentials_unconfigured(conn: Any) -> None:
     doge = InstrumentRef(
         exchange_id="binance",
         venue="binance.perp",
@@ -460,25 +487,28 @@ def test_the_lane_emits_a_non_target_instrument_from_the_same_active_snapshot(co
         observed_at_ms=NOW,
     )
     _pending_executable_case(conn, manifest=_executable_manifest(instrument=doge))
+    conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+    conn.commit()
 
-    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.INTENT_EMITTED
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
     row = conn.execute(
-        "SELECT instrument_id, underlying_key, intent_version FROM trading_intents WHERE case_id = 'case-sol'"
+        "SELECT policy_decision, capital_disposition, capital_reason FROM trading_cases WHERE case_id = 'case-sol'"
     ).fetchone()
     assert dict(row) == {
-        "instrument_id": "DOGEUSDT-PERP.BINANCE",
-        "underlying_key": "crypto:DOGE",
-        "intent_version": "trade_intent_v2",
+        "policy_decision": "long",
+        "capital_disposition": "blocked",
+        "capital_reason": "credentials_unconfigured",
     }
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
-def test_a_failed_case_transition_rolls_the_intent_back_and_leaves_the_case_claimable(conn: Any) -> None:
-    """#331 F2P 7 and comment F2P 5: never a terminal business refusal, never an orphan Intent."""
+def test_a_failed_capital_transition_leaves_the_case_claimable(conn: Any) -> None:
+    """The LONG and capital block are one transition; neither may be partially persisted."""
 
     _pending_executable_case(conn)
 
-    with pytest.raises(RuntimeError, match="trading_intent_case_transition_failed"):
-        asyncio.run(_capital_lane(conn, fail_intent_settle=True)._decide_one())
+    with pytest.raises(RuntimeError, match="trading_case_block_transition_failed"):
+        asyncio.run(_capital_lane(conn, fail_capital_settle=True)._decide_one())
     conn.rollback()
 
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
@@ -486,7 +516,7 @@ def test_a_failed_case_transition_rolls_the_intent_back_and_leaves_the_case_clai
     # `RUNNING` with an expired lease is claimable again; it is emphatically not a terminal state, and
     # `intent_admission_blocked` — the catch-all this replaces — no longer exists to be written.
     assert case["state"] == "RUNNING"
-    assert case["policy_reason"] is None
+    assert case["policy_reason"] == "not_run"
 
 
 @pytest.mark.parametrize(
@@ -500,12 +530,12 @@ def test_a_failed_case_transition_rolls_the_intent_back_and_leaves_the_case_clai
         ("quote_asset", "USDC"),
     ),
 )
-def test_every_nonexact_instrument_identity_is_one_typed_capability_mismatch(
+def test_a_public_catalog_identity_never_grants_execution(
     conn: Any,
     field: str,
     value: str,
 ) -> None:
-    """One reason, because there is one fact: this Case's contract is not in the active universe."""
+    """The public catalog freezes evidence; it is not an execution permission or adapter registry."""
 
     exact = _executable_manifest().instrument
     altered = InstrumentRef.model_validate({**exact.model_dump(), field: value})
@@ -514,24 +544,35 @@ def test_every_nonexact_instrument_identity_is_one_typed_capability_mismatch(
     assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
 
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
-    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {"state": "BLOCKED", "policy_reason": "capability_mismatch"}
+    case = conn.execute(
+        "SELECT state, policy_decision, capital_reason FROM trading_cases WHERE case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(case) == {
+        "state": "BLOCKED",
+        "policy_decision": "long",
+        "capital_reason": "capital_paused",
+    }
 
 
-def test_a_capability_pointer_that_moves_after_the_freeze_blocks_the_case(conn: Any) -> None:
-    """#331 F2P 5. The Case was resolved from a universe that is no longer authoritative."""
+def test_a_catalog_pointer_that_moves_after_freeze_blocks_the_case(conn: Any) -> None:
+    """A Case must retain the exact public catalog evidence it was frozen against."""
 
-    _pending_executable_case(conn, manifest=_executable_manifest(capability_sha256="9" * 64))
+    _pending_executable_case(conn, manifest=_executable_manifest(catalog_sha256="9" * 64))
+    conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+    conn.execute(
+        "UPDATE trading_binding_runtime SET credential_state = 'configured', reason = NULL "
+        "WHERE binding = 'BINANCE_USDM'"
+    )
+    conn.commit()
 
     assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
 
-    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {"state": "BLOCKED", "policy_reason": "capability_mismatch"}
+    case = conn.execute("SELECT state, capital_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(case) == {"state": "BLOCKED", "capital_reason": "catalog_mismatch"}
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
-def test_a_deny_list_entry_added_after_the_decision_blocks_the_commit(conn: Any) -> None:
-    """#331 F2P 4. The deny-list is re-read inside the commit, not trusted from the scan."""
+def test_an_operator_deny_list_cannot_turn_paused_capital_into_execution(conn: Any) -> None:
 
     _pending_executable_case(conn)
     repos = repositories_for_connection(conn)
@@ -541,31 +582,37 @@ def test_a_deny_list_entry_added_after_the_decision_blocks_the_commit(conn: Any)
 
     assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
 
-    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {"state": "BLOCKED", "policy_reason": "blacklisted"}
+    case = conn.execute(
+        "SELECT state, policy_decision, capital_reason FROM trading_cases WHERE case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(case) == {
+        "state": "BLOCKED",
+        "policy_decision": "long",
+        "capital_reason": "capital_paused",
+    }
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     conn.execute("DELETE FROM trading_symbol_blacklist WHERE base_symbol = 'SOL'")
     conn.commit()
 
 
-def test_two_workers_deciding_the_same_case_produce_at_most_one_intent(conn: Any) -> None:
+def test_two_workers_deciding_the_same_case_produce_one_capital_block_and_no_intent(conn: Any) -> None:
     """#331 F2P 6. The claim is exclusive; the loser reads no Case and writes nothing."""
 
     _pending_executable_case(conn)
     first = _capital_lane(conn)
     second = _capital_lane(conn)
 
-    assert asyncio.run(first._decide_one()) is CaseState.INTENT_EMITTED
+    assert asyncio.run(first._decide_one()) is CaseState.BLOCKED
     assert asyncio.run(second._decide_one()) is None
-    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
-def test_two_concurrent_connections_claiming_one_case_emit_one_intent(conn: Any) -> None:
-    """#331 F2P 6 against real PostgreSQL concurrency, not two sequential turns.
+def test_two_concurrent_connections_claiming_one_case_write_one_block(conn: Any) -> None:
+    """The claim remains exclusive against real PostgreSQL concurrency.
 
     `FOR UPDATE SKIP LOCKED` is what makes the claim exclusive, and the loser's `SKIP LOCKED` returns no
     row rather than blocking — so the second worker does no work at all instead of racing to a second
-    Intent. The terminal receipt both of them would read afterwards is the one the winner committed.
+    terminal receipt. The terminal receipt both read afterwards is the one the winner committed.
     """
 
     _pending_executable_case(conn)
@@ -586,13 +633,13 @@ def test_two_concurrent_connections_claiming_one_case_emit_one_intent(conn: Any)
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(compete, ("run-a", "run-b")))
 
-    assert sorted(results, key=lambda item: item is None) == [CaseState.INTENT_EMITTED, None]
-    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 1
+    assert sorted(results, key=lambda item: item is None) == [CaseState.BLOCKED, None]
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     case = conn.execute("SELECT state FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert case["state"] == "INTENT_EMITTED"
+    assert case["state"] == "BLOCKED"
 
 
-def test_a_postgres_fault_inside_the_intent_commit_rolls_back_and_never_terminalises(conn: Any) -> None:
+def test_a_postgres_fault_inside_the_capital_commit_rolls_back_and_never_terminalises(conn: Any) -> None:
     """#331 comment F2P 5. A PostgreSQL fault is not a business refusal and must not consume the Case.
 
     The old writer caught every `Exception` from the emission transaction and wrote
@@ -605,7 +652,7 @@ def test_a_postgres_fault_inside_the_intent_commit_rolls_back_and_never_terminal
     original = lane._db.tx  # type: ignore[attr-defined]
 
     async def explode(name: str, fn: Any, *, timeout_seconds: float) -> Any:
-        if name == "trading_intent_commit":
+        if name == "trading_capital_disposition_commit":
             raise OperationalError("server closed the connection unexpectedly")
         return await original(name, fn, timeout_seconds=timeout_seconds)
 
@@ -618,7 +665,7 @@ def test_a_postgres_fault_inside_the_intent_commit_rolls_back_and_never_terminal
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
     assert case["state"] == "RUNNING"
-    assert case["policy_reason"] is None
+    assert case["policy_reason"] == "not_run"
     # And the retired catch-all is not written under any name.
     assert (
         conn.execute(
@@ -643,6 +690,8 @@ def test_a_case_that_settles_only_to_the_three_current_terminal_states(conn: Any
                 state=retired,
                 policy_decision="no_trade",
                 policy_reason="whatever",
+                capital_disposition="not_applicable",
+                capital_reason=None,
                 now_ms=NOW,
             )
     conn.rollback()
@@ -806,89 +855,6 @@ def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: An
     assert runtime["active_capability_snapshot_sha256"] == initial.snapshot_sha256
     assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
     _reset_authority(conn)
-
-
-def test_capability_refresh_requires_explicit_paused_control(
-    conn: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tracefold.app.cli.commands import trading as trading_cli
-    from tracefold.app.workers.wiring import news_to_trading
-
-    _case(conn)
-    conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
-    conn.commit()
-
-    calls = {"news": 0, "provider": 0}
-
-    async def provider_rows() -> list[object]:
-        calls["provider"] += 1
-        return []
-
-    def news_rows(_repos: object) -> list[object]:
-        calls["news"] += 1
-        return []
-
-    _install_nautilus_test_module(monkeypatch, provider_rows)
-    monkeypatch.setattr(news_to_trading, "news_execution_instruments", news_rows)
-    monkeypatch.setattr(
-        trading_cli,
-        "load_settings",
-        lambda **_kwargs: Settings(storage=postgres_settings_storage()),
-    )
-
-    code, payload = trading_cli.handle_trading(SimpleNamespace(trading_command="refresh-capabilities"))
-
-    assert code == 1
-    assert payload == {"ok": False, "error": "execution_capability_refresh_requires_paused"}
-    assert calls == {"news": 0, "provider": 0}
-    runtime = repositories_for_connection(conn).trading.runtime_state()
-    assert runtime is not None
-    assert runtime["control"] == "RUNNING"
-    assert runtime["active_capability_snapshot_sha256"] == CAPABILITY_SNAPSHOT.snapshot_sha256
-    _reset_authority(conn)
-    conn.commit()
-
-
-def test_capability_refresh_uses_post_provider_activation_time_for_freshness(
-    conn: Any,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from tracefold.app.cli.commands import trading as trading_cli
-    from tracefold.app.workers.wiring import news_to_trading
-
-    _case(conn)
-    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "provider-delayed-replacement"})
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
-    conn.commit()
-
-    async def provider_rows() -> list[object]:
-        return []
-
-    _install_nautilus_test_module(monkeypatch, provider_rows)
-    monkeypatch.setattr(news_to_trading, "news_execution_instruments", lambda _repos: [])
-    monkeypatch.setattr(trading_cli, "build_execution_capability_snapshot", lambda **_kwargs: replacement)
-    monkeypatch.setattr(trading_cli, "_now_ms", lambda: NOW + 15_001)
-    monkeypatch.setattr(
-        trading_cli,
-        "load_settings",
-        lambda **_kwargs: Settings(storage=postgres_settings_storage()),
-    )
-
-    code, payload = trading_cli.handle_trading(SimpleNamespace(trading_command="refresh-capabilities"))
-
-    assert code == 1
-    assert payload == {"ok": False, "error": "execution_capability_activation_blocked"}
-    assert (
-        repositories_for_connection(conn).trading.runtime_state()["active_capability_snapshot_sha256"]
-        == CAPABILITY_SNAPSHOT.snapshot_sha256
-    )
-    _reset_authority(conn)
-    conn.commit()
 
 
 def test_capability_activation_cannot_be_overwritten_by_old_engine_readiness(conn: Any) -> None:
@@ -1605,10 +1571,12 @@ def _case_without_reset(connection: Any, *, case_id: str) -> None:
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
           strategy_config_digest, primary_source_key, supplemental_source_keys,
-          manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
+          manifest, manifest_sha256, state, policy_decision, policy_reason,
+          capital_disposition, capital_reason, observed_at_ms, created_at_ms, updated_at_ms
         ) VALUES (%s, 'crypto:BTC', 'oi', 'binance_oi_smart_money_long_v2',
                   'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
-                  '{}'::jsonb, %s, 'RUNNING', %s, %s, %s)
+                  '{}'::jsonb, %s, 'RUNNING', 'not_run', 'not_run',
+                  'not_applicable', NULL, %s, %s, %s)
         """,
         (case_id, "0" * 64, f"source-{case_id}", "3" * 64, NOW, NOW, NOW),
     )

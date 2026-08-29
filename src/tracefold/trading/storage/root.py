@@ -6,6 +6,7 @@ from typing import Any
 
 from .capabilities import CapabilityStorage
 from .cases import CaseStorage
+from .catalog import CatalogStorage
 from .control import ControlStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
@@ -16,6 +17,7 @@ from .replay import ReplayStorage
 
 class TradingRepository(
     ControlStorage,
+    CatalogStorage,
     CapabilityStorage,
     CandidateGateStorage,
     CaseStorage,

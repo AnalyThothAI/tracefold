@@ -25,11 +25,14 @@ describe("TradingPage", () => {
 
   afterEach(cleanup);
 
-  it("renders the frozen execution authority and native intent state", async () => {
+  it("renders the no-key observer state and native historical intent state", async () => {
     renderTrading();
 
-    expect(await screen.findByRole("heading", { name: "执行与持仓" })).toBeVisible();
-    expect(screen.getByText(/Nautilus · Binance USD-M Demo/)).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Decision / Capital" })).toBeVisible();
+    expect(await screen.findByText("决策运行、资本暂停、凭证未配置，当前无法交易")).toBeVisible();
+    expect(await screen.findByText("BINANCE_USDM")).toBeVisible();
+    expect(await screen.findByText("HYPERLIQUID_PERP")).toBeVisible();
+    expect(screen.getAllByText("credentials unconfigured")).toHaveLength(2);
     expect(await screen.findByText("OPEN_PROTECTED")).toBeVisible();
     expect(screen.queryByText(/paper|OpenTrade|订单/i)).toBeNull();
   });
@@ -48,7 +51,7 @@ describe("TradingPage", () => {
 
     renderTrading();
 
-    expect(await screen.findByText(/Nautilus 不持有待执行工作/)).toBeVisible();
+    expect(await screen.findByText(/当前没有非终态 Intent/)).toBeVisible();
     expect(screen.getByRole("link", { name: "资本判定" })).toBeVisible();
     expect(screen.queryByText("Cases without Intent")).toBeNull();
   });
@@ -62,7 +65,7 @@ describe("TradingPage", () => {
 
     renderTrading();
 
-    expect(await screen.findByRole("heading", { name: "执行与持仓" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "Decision / Capital" })).toBeVisible();
     expect(await screen.findByText(/Intent 账本读取失败/)).toBeVisible();
   });
 

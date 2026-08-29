@@ -1,7 +1,7 @@
 """One route per durable aggregate, and no route that mixes two (#331).
 
 The shape these tests pin is the product's: Source/Admission at `/gate`, Case/Decision at `/cases`,
-Intent/Outcome at `/intents`, readiness at `/status`. What they refuse is the mixed contract that came
+Intent/Outcome at `/intents`, orthogonal runtime facts at `/status`. What they refuse is the mixed contract that came
 before — `/intents` returning `cases_without_intents` beside its Intents, so a page could not tell "no
 Intent" from "no Case", and a failed request fell through an empty array into a truthful-looking
 "nothing happened".
@@ -78,6 +78,8 @@ def _case(**overrides: Any) -> dict[str, Any]:
         "state": "NO_TRADE",
         "policy_decision": "no_trade",
         "policy_reason": "smart_money_ratio_below_or_equal_floor",
+        "capital_disposition": "not_applicable",
+        "capital_reason": None,
         # The Case's own frozen thresholds, deliberately different from today's configuration.
         "policy_config": {"min_whale_oi_ratio_bps": 8_000, "max_price_move_bps": 600},
         "policy_checks": {
@@ -94,7 +96,7 @@ def _case(**overrides: Any) -> dict[str, Any]:
                 }
             ],
         },
-        "manifest_version": "trading_manifest_v7",
+        "manifest_version": "trading_manifest_v8",
         "provider_symbol": "HYPEUSDT",
         "mark_price": "0.0950",
         "pre_move_bps": 731,
@@ -139,15 +141,30 @@ class _Trading:
 
     def runtime_state(self) -> dict[str, Any]:
         return {
-            "control": "RUNNING",
-            "nautilus_ready": True,
-            "nautilus_readiness_reason": "ready",
-            "nautilus_unexpected_exposure": False,
-            "nautilus_heartbeat_at_ms": NOW,
-            "active_capability_snapshot_sha256": "c" * 64,
-            "active_capability_included_count": 2,
+            "control": "PAUSED",
             "blacklist_revision": 3,
         }
+
+    def decision_runtime(self) -> dict[str, Any]:
+        return {"state": "RUNNING", "heartbeat_at_ms": NOW, "reason": None}
+
+    def binding_runtime_rows(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "binding": binding,
+                "credential_state": "unconfigured",
+                "credential_fingerprint": None,
+                "runtime_state": "stopped",
+                "account_state": "unknown",
+                "catalog_state": "ready",
+                "catalog_snapshot_sha256": digest,
+                "catalog_captured_at_ms": NOW - 1_000,
+                "heartbeat_at_ms": None,
+                "reason": "credentials_unconfigured",
+                "updated_at_ms": NOW,
+            }
+            for binding, digest in (("BINANCE_USDM", "b" * 64), ("HYPERLIQUID_PERP", "h" * 64))
+        ]
 
     def runtime_summary(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("runtime_summary", kwargs))
@@ -196,6 +213,10 @@ class _Trading:
         self.calls.append(("case_reason_counts", kwargs))
         return {"smart_money_ratio_below_or_equal_floor": 1}
 
+    def case_capital_reason_counts(self, **kwargs: Any) -> dict[str, int]:
+        self.calls.append(("case_capital_reason_counts", kwargs))
+        return {"credentials_unconfigured": 1}
+
     def gate_decisions_since(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("gate_decisions_since", kwargs))
         return [_gate_row()]
@@ -224,15 +245,17 @@ def client() -> tuple[TestClient, _Trading]:
     return TestClient(app), trading
 
 
-def test_status_publishes_readiness_and_a_policy_identity_but_no_threshold_to_compare_a_case_with(client) -> None:
+def test_status_publishes_orthogonal_durable_runtime_facts_and_policy_identity(client) -> None:
     api, _ = client
     response = api.get("/api/trading/status", params={"token": TOKEN})
 
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["budget"] == {"target_notional_usd": "10"}
-    assert data["readiness"]["engine_ready"] is True
-    assert data["readiness"]["execution_environment"] == "BINANCE_USDM_DEMO"
+    assert data["decision"] == {"state": "RUNNING", "heartbeat_at_ms": NOW, "reason": None}
+    assert data["capital"] == {"control": "PAUSED", "blacklist_revision": 3}
+    assert [row["binding"] for row in data["bindings"]] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    assert all(row["credential_state"] == "unconfigured" for row in data["bindings"])
     assert data["counts"]["active_intents"] == 1
     assert data["counts"]["cases_24h"] == 2
     # The identity of the policy a *new* Case would be frozen under. Never applied to an existing one.
@@ -240,9 +263,29 @@ def test_status_publishes_readiness_and_a_policy_identity_but_no_threshold_to_co
     assert data["policy"]["config"]["min_oi_change_bps"] == "500"
     for retired in ("floors", "strategies", "funnel_today", "gate"):
         assert retired not in data
-    for retired in ("mode", "execution_backend", "live_ready", "accept_intents"):
-        assert retired not in data["readiness"]
+    assert "readiness" not in data
     assert "funnel" not in data["counts"]
+
+
+def test_status_never_reads_credentials_or_calls_a_provider(
+    client: tuple[TestClient, _Trading],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.integrations import trading_catalog
+    from tracefold.platform.config import secret_file
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("serve_side_effect_forbidden")
+
+    monkeypatch.setattr(secret_file, "read_secure_secret_text", forbidden)
+    monkeypatch.setattr(trading_catalog, "fetch_binance_usdm_catalog", forbidden)
+    monkeypatch.setattr(trading_catalog, "fetch_hyperliquid_perp_catalog", forbidden)
+
+    api, _ = client
+    response = api.get("/api/trading/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["decision"]["state"] == "RUNNING"
 
 
 def test_intents_publish_execution_lifecycle_and_never_a_case_list(client) -> None:

@@ -93,7 +93,9 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
         oiFrames: newsStatusQuery.data?.pipeline?.telemetry_received_24h,
       },
       navBadges: {
-        tradingEnvironment: tradingStatusQuery.data?.readiness.execution_environment,
+        tradingEnvironment: tradingStatusQuery.data
+          ? `${tradingStatusQuery.data.decision.state} · ${tradingStatusQuery.data.capital.control}`
+          : undefined,
       },
       outletContext: routeContext,
       topbar: {
@@ -137,19 +139,25 @@ export function topbarFigures(
   nowMs = Date.now(),
 ): CockpitTopbarFigure[] {
   if (pathname === "/trading") {
-    const readiness = tradingStatus?.readiness;
+    const decision = tradingStatus?.decision;
+    const capital = tradingStatus?.capital;
+    const configured = tradingStatus?.bindings.filter(
+      (binding) => binding.credential_state === "configured",
+    ).length;
     return [
-      { label: "AUTHORITY", text: readiness?.execution_authority },
       {
-        label: "ENGINE",
-        text: readiness?.engine_ready
-          ? "READY"
-          : (readiness?.engine_readiness_reason ?? "NOT READY"),
-        tone: readiness?.engine_ready === false ? "caution" : undefined,
+        label: "DECISION",
+        text: decision?.state,
+        tone: decision?.state === "FAULTED" ? "caution" : undefined,
       },
       {
-        label: "今日入场",
-        text: tradingStatus ? `${tradingStatus.counts.entries_today}` : undefined,
+        label: "CAPITAL",
+        text: capital?.control,
+        tone: capital?.control === "PAUSED" ? "caution" : undefined,
+      },
+      {
+        label: "BINDINGS",
+        text: tradingStatus ? `${configured} / ${tradingStatus.bindings.length}` : undefined,
       },
     ];
   }
