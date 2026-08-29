@@ -33,8 +33,8 @@ def test_destructive_test_database_helpers_require_the_exact_test_identity() -> 
             postgres_test_utils.assert_dedicated_test_database(_DatabaseIdentityConnection(unsafe_name))
 
 
-def test_postgres_connection_failure_fails_in_evidence_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TRACEFOLD_TEST_EVIDENCE", "1")
+def test_postgres_connection_failure_fails_when_the_resource_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRACEFOLD_TEST_RESOURCES_REQUIRED", "1")
     monkeypatch.setattr(
         postgres_test_utils,
         "connect_postgres",
@@ -45,13 +45,13 @@ def test_postgres_connection_failure_fails_in_evidence_mode(monkeypatch: pytest.
         postgres_test_utils.connect_postgres_test()
     except BaseException as exc:
         assert isinstance(exc, pytest.fail.Exception)
-        assert "PostgreSQL test database is required in evidence mode" in str(exc)
+        assert "PostgreSQL test database is required for complete verification" in str(exc)
     else:
-        pytest.fail("evidence mode accepted an unavailable PostgreSQL resource")
+        pytest.fail("a required run accepted an unavailable PostgreSQL resource")
 
 
 def test_postgres_connection_failure_remains_a_local_convenience_skip(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("TRACEFOLD_TEST_EVIDENCE", raising=False)
+    monkeypatch.delenv("TRACEFOLD_TEST_RESOURCES_REQUIRED", raising=False)
     monkeypatch.setattr(
         postgres_test_utils,
         "connect_postgres",

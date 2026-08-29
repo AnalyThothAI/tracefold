@@ -6,6 +6,8 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+# Native test reports and other run diagnostics; exact-SHA CI uploads the
+# required contents rather than treating the working tree as an evidence store.
 artifacts/
 .hypothesis/
 *.log
@@ -35,7 +37,7 @@ web/test-results/
 .claude/worktrees/
 
 # Operator-owned experiment run directories (#193). Never repository content: a run is a
-# notebook on the operator's disk, and an untracked one must not fail the evidence drift check.
+# notebook on the operator's disk, and an untracked one must not fail source checks.
 .tracefold/
 
 # Jupyter's own autosave copies of the `notebooks/` research workspace (#274).

@@ -28,7 +28,6 @@ SERVICE_FACT = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Wh
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--playwright-json", required=True, type=Path)
-    parser.add_argument("--playwright-selection", required=True, type=Path)
     options = parser.parse_args()
     dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
     amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", DEFAULT_AMQP_URL)
@@ -89,9 +88,7 @@ def main() -> int:
             asyncio.run(_publish_opennews(amqp_url, name_prefix))
             _wait_for_service_fact(base_url)
             options.playwright_json.parent.mkdir(parents=True, exist_ok=True)
-            options.playwright_selection.parent.mkdir(parents=True, exist_ok=True)
             options.playwright_json.unlink(missing_ok=True)
-            options.playwright_selection.unlink(missing_ok=True)
             result = subprocess.run(
                 [
                     "node",
@@ -104,7 +101,6 @@ def main() -> int:
                     **os.environ,
                     "TRACEFOLD_FULL_STACK_URL": base_url,
                     "PLAYWRIGHT_JSON_OUTPUT_NAME": str(options.playwright_json.resolve()),
-                    "TRACEFOLD_PLAYWRIGHT_SELECTION_OUTPUT": str(options.playwright_selection.resolve()),
                 },
                 check=False,
             )

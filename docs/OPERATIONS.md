@@ -265,6 +265,14 @@ topology variables and pins Compose to this checkout's `compose.yaml` and the
 an old green local ref cannot authorize deployment, an untrusted check with the
 same name cannot authorize deployment, and missing GitHub status fails closed.
 
+This verifies a real deployment boundary; it does not claim current merge
+protection. As verified for #353 on 2026-08-30, the private repository's GitHub
+Free organization cannot configure branch protection or Rulesets through the
+available APIs. Until that platform constraint changes, the fixed CI workflow
+is observable exact-SHA verification and `ci-gate` is deployment authorization,
+not a GitHub-enforced pre-merge rule. A future platform change should require
+this one stable check name rather than introduce another project-owned planner.
+
 The target accepts no tag, short ID or registry reference. It never builds or pulls,
 and it checks the checkout, Compose inputs, active config, three migration heads,
 deployment lock, recreated container IDs, Workers readiness and durable deployment

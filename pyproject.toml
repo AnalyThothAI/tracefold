@@ -25,6 +25,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "defusedxml>=0.7.1",
     "hypothesis==6.165.10",
     "pytest>=8.3.0",
     "ruff>=0.8.6",
@@ -60,16 +61,17 @@ packages = ["src/tracefold"]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 empty_parameter_set_mark = "fail_at_collect"
+xfail_strict = true
 markers = [
   "integration: requires PostgreSQL, RabbitMQ, or an HTTP/worker integration resource",
   "deploy: deploy/operations subprocess, process, signal, or executable simulation",
   "e2e: cross-process; needs testcontainers + uvicorn subprocess (lives in tests/e2e/)",
   "architecture: hermetic semantic package/dependency/ownership invariants",
   "contract: front-back schema/contract drift checks (lives in tests/contract/)",
-  "generated: generated-artifact check with a separate canonical Make check entry",
   "external_codegen: release-only code generation requiring Node dependencies",
   "golden: deterministic corpus checks against real Postgres (lives in tests/golden/)",
   "live: opt-in tests that call external provider APIs",
+  "migration: historical PostgreSQL upgrade and downgrade contracts against an empty database",
   "scheduled: opt-in production-duration diagnostics excluded from merge evidence",
   "slow: deterministic process/meta tests using shortened injected deadlines (excluded from make test)",
   "property: bounded Hypothesis properties over pure state and typed boundaries",

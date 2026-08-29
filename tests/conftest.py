@@ -21,7 +21,4 @@ settings.register_profile(
 settings.register_profile(
     "nightly", max_examples=500, stateful_step_count=100, database=None, derandomize=False, print_blob=True
 )
-settings.load_profile(
-    os.environ.get("TRACEFOLD_HYPOTHESIS_PROFILE")
-    or ("ci" if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1" else "fast")
-)
+settings.load_profile(os.environ.get("TRACEFOLD_HYPOTHESIS_PROFILE") or "fast")
