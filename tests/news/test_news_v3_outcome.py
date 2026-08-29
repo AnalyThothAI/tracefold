@@ -511,6 +511,7 @@ def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
     technical panel, and the HTTP contract test uses a fake repository."""
 
     from tracefold.news.storage.feed import _feed_row, _triage_summary
+    from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256
 
     sentinel = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
     summary = _triage_summary(final_decision="push", verdict=sentinel)
@@ -519,6 +520,21 @@ def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
     condensed = {**sentinel, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
     filled = _triage_summary(final_decision="push", verdict=condensed)
     assert filled is not None and filled["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"
+
+    taxonomy = {
+        "subject_codes": ["medtop:20001279"],
+        "event_family": "market_access",
+        "change_state": "effective",
+        "assertion_status": "confirmed",
+        "taxonomy_version": "news_taxonomy_v1",
+        "source_authority": "issuer_first_party",
+        "codebook_sha256": IPTC_CODEBOOK_SHA256,
+    }
+    detailed = _triage_summary(final_decision="push", verdict=sentinel, taxonomy=taxonomy, full=True)
+    slim = _triage_summary(final_decision="push", verdict=sentinel, taxonomy=taxonomy)
+    assert detailed is not None and detailed["taxonomy"]["event_family_zh"] == "市场准入"
+    assert detailed["taxonomy"]["subject_labels_zh"] == ["加密货币"]
+    assert slim is not None and "taxonomy" not in slim
 
     # The feed row reads the flattened SQL columns, not the verdict blob — a separate path with the same rule.
     row = {

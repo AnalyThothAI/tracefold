@@ -446,7 +446,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
 
     from tracefold.news.learning.metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v5")
+    assert METRIC_ID.endswith("_v6")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 

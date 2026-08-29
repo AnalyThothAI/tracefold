@@ -4055,6 +4055,82 @@
         "title": "NewsSymbolNormalizationData",
         "type": "object"
       },
+      "NewsTaxonomyData": {
+        "additionalProperties": false,
+        "properties": {
+          "assertion_status": {
+            "title": "Assertion Status",
+            "type": "string"
+          },
+          "assertion_status_zh": {
+            "title": "Assertion Status Zh",
+            "type": "string"
+          },
+          "change_state": {
+            "title": "Change State",
+            "type": "string"
+          },
+          "change_state_zh": {
+            "title": "Change State Zh",
+            "type": "string"
+          },
+          "codebook_sha256": {
+            "title": "Codebook Sha256",
+            "type": "string"
+          },
+          "event_family": {
+            "title": "Event Family",
+            "type": "string"
+          },
+          "event_family_zh": {
+            "title": "Event Family Zh",
+            "type": "string"
+          },
+          "source_authority": {
+            "title": "Source Authority",
+            "type": "string"
+          },
+          "source_authority_zh": {
+            "title": "Source Authority Zh",
+            "type": "string"
+          },
+          "subject_codes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Subject Codes",
+            "type": "array"
+          },
+          "subject_labels_zh": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Subject Labels Zh",
+            "type": "array"
+          },
+          "taxonomy_version": {
+            "const": "news_taxonomy_v1",
+            "title": "Taxonomy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "taxonomy_version",
+          "codebook_sha256",
+          "event_family",
+          "event_family_zh",
+          "change_state",
+          "change_state_zh",
+          "source_authority",
+          "source_authority_zh",
+          "assertion_status",
+          "assertion_status_zh"
+        ],
+        "title": "NewsTaxonomyData",
+        "type": "object"
+      },
       "NewsTimelineStepData": {
         "additionalProperties": false,
         "properties": {
@@ -4307,6 +4383,16 @@
             "title": "Scope Zh",
             "type": "string"
           },
+          "taxonomy": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsTaxonomyData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "throttled_by": {
             "anyOf": [
               {
@@ -4358,6 +4444,18 @@
             "default": false,
             "title": "Degraded",
             "type": "boolean"
+          },
+          "editorial": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Editorial"
           },
           "error_code": {
             "anyOf": [

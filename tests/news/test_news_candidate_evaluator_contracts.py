@@ -7,6 +7,7 @@ import math
 import pytest
 
 import tracefold.news.learning.evaluate as candidate_evaluator_module
+from tests.support.news_judgment import news_taxonomy
 from tracefold.news.learning.evaluate import ArmManifest, development_coverage_blockers
 from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
@@ -524,7 +525,7 @@ def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "mode
         reader_value="realtime",
     )
     editorial = (
-        EditorialEnvelope.issue(editorial_origin="model", relevance=relevance)
+        EditorialEnvelope.issue(editorial_origin="model", relevance=relevance, taxonomy=news_taxonomy())
         if origin == "model"
         else EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None)
     )

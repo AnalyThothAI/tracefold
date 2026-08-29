@@ -66,6 +66,12 @@ _SEMANTICS = {
     "scope": "single_name",
     "confidence": 0.9,
     "relevance": trade_relevance().model_dump(mode="json"),
+    "taxonomy": {
+        "subject_codes": ["medtop:20000205"],
+        "event_family": "product_service_change",
+        "change_state": "announced",
+        "assertion_status": "confirmed",
+    },
 }
 _ADVISORY = "Prefer the stated accepted magnitude when the evidence names a concrete product."
 _CARD = {"headline_zh": "特斯拉发布 Cybercab", "why_zh": "新车型进入量产排程，改变该名字的交付预期"}
@@ -240,7 +246,7 @@ def _episode(
         },
         production_judgment=scored_judgment(
             {
-                **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
+                **{key: value for key, value in _SEMANTICS.items() if key not in {"relevance", "taxonomy"}},
                 **_CARD,
                 "magnitude": production_magnitude,
                 "actionable": True,

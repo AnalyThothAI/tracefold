@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 
@@ -34,6 +34,21 @@ def canonical_sha(value: Any) -> str:
     """Return the SHA-256 identity of ``canonical_json(value)``."""
 
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+
+
+def runtime_manifest_sha(
+    *, stable_bundle_sha: str, candidate_shas: Sequence[str], image_digest: str, runtime_revision: str
+) -> str:
+    """Address the exact runtime tuple persisted by worker startup."""
+
+    return canonical_sha(
+        {
+            "stable_bundle_sha": stable_bundle_sha,
+            "candidate_shas": sorted(candidate_shas),
+            "image_digest": image_digest,
+            "runtime_revision": runtime_revision,
+        }
+    )
 
 
 def reject_nonfinite_json(value: Any, *, path: str = "payload") -> None:
@@ -62,4 +77,5 @@ __all__ = [
     "canonical_json",
     "canonical_sha",
     "reject_nonfinite_json",
+    "runtime_manifest_sha",
 ]

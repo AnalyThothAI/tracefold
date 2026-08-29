@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from tracefold.app.learning_runtime import runtime_manifest_sha
+from tracefold.news.artifact_identity import runtime_manifest_sha
 from tracefold.platform.runtime_identity import (
     IMAGE_DIGEST_ENV,
     RUNTIME_REVISION_ENV,

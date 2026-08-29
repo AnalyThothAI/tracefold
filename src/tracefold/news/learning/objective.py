@@ -87,7 +87,8 @@ _DELIVERY_DIMENSIONS = ("timeliness",)
 
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
-# `news_review_v4` gold keys, per dimension. `why_support`/`why_value`/`headline_fidelity`/`factual_fidelity`/
+# `news_review_v5` non-taxonomy gold keys, per dimension. Taxonomy has its own evaluator; `why_support`/
+# `why_value`/`headline_fidelity`/`factual_fidelity`/
 # `timeliness` have no scalar gold. Failed typed fields without exact gold do not enter the score; free-text
 # retention and factual support use the sealed judge path instead.
 _GOLD_KEY = {

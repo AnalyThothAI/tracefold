@@ -45,11 +45,17 @@ _SEMANTICS: dict[str, Any] = {
     "scope": "single_name",
     "confidence": 0.9,
     "relevance": trade_relevance().model_dump(mode="json"),
+    "taxonomy": {
+        "subject_codes": ["medtop:20000205"],
+        "event_family": "product_service_change",
+        "change_state": "announced",
+        "assertion_status": "confirmed",
+    },
 }
 _CARD: dict[str, Any] = {"headline_zh": "特斯拉承诺新增产线", "why_zh": "新增产能改变该名字的交付预期"}
 
 _VERDICT: dict[str, Any] = {
-    **{key: value for key, value in _SEMANTICS.items() if key != "relevance"},
+    **{key: value for key, value in _SEMANTICS.items() if key not in {"relevance", "taxonomy"}},
     **_CARD,
     "actionable": True,
     "decision": "push",

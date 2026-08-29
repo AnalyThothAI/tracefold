@@ -73,7 +73,7 @@ PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 # DSPy, a schema parse can spend one JSON-format fallback, and physical-call
 # receipts use the typed LM contract.  Give old recordings a stable version to
 # reject instead of pretending they are requests from the same executor.
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v6"
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v7"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.

@@ -24,6 +24,12 @@ pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migrati
 
 BEFORE_EVENT_KIND = "20260827_0314"
 NOW = 1_900_000_000_000
+TAXONOMY_V1_PROGRAM_SHA256 = "0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24"
+TAXONOMY_V1_ENVELOPE_SHA256 = "4775cab09894b693fe825afdaec2b27aa2b76b2f206d9412bc790aea4935d90d"
+TAXONOMY_V1_CODEBOOK_SHA256 = "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac"
+TAXONOMY_V1_PROGRAM_VERSION = "news_semantic_program_v7"
+TAXONOMY_V1_VERSION = "news_taxonomy_v1"
+TAXONOMY_V1_REVIEW_RUBRIC_VERSION = "news_review_v5"
 
 
 def _upgrade(revision: str) -> None:
@@ -586,7 +592,7 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         _upgrade("head")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0327"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0328"
         assert {
             str(row["event_id"]): str(row["event_kind"])
             for row in conn.execute("SELECT event_id, event_kind FROM news_events ORDER BY event_id").fetchall()
@@ -877,6 +883,84 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
             "activation_disposition": "open_activations_tripped",
         }
         assert receipt["created_by"] == "migration_20260827_0315"
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
+def test_0328_limits_generic_taxonomy_review_to_ordinary_news() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260829_0326")
+        setup = connect_postgres_test(read_only=False)
+        try:
+            setup.execute(
+                """
+                INSERT INTO news_canary_activations (
+                  activation_id, baseline_bundle_sha, candidate_manifest_sha, candidate_bundle_sha,
+                  selector_version, exposure_bps, eligibility_profile_sha, rolling_profile_sha,
+                  state, revision, created_at_ms, activated_at_ms
+                ) VALUES (%s, %s, %s, %s, 'news_canary_selector_v2', 1000, %s, %s, 'active', 4, %s, %s)
+                """,
+                ("c" * 32, "1" * 64, "2" * 64, "3" * 64, "4" * 64, "5" * 64, NOW, NOW),
+            )
+            setup.commit()
+        finally:
+            setup.close()
+        _upgrade("20260829_0328")
+        conn = connect_postgres_test(read_only=False)
+
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0328"
+        columns = [
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='news_review_task_source_v1' "
+                "ORDER BY ordinal_position"
+            ).fetchall()
+        ]
+        definition = conn.execute(
+            "SELECT pg_get_viewdef('news_review_task_source_v1'::regclass, true) AS definition"
+        ).fetchone()["definition"]
+
+        assert columns[-1] == "event_kind"
+        assert "event_kind" in definition and "'news'" in definition
+        assert (
+            conn.execute(
+                "SELECT has_table_privilege('tracefold_serve', 'news_review_task_source_v1', 'SELECT') AS allowed"
+            ).fetchone()["allowed"]
+            is True
+        )
+        assert conn.execute(
+            "SELECT state, revision, trip_reason FROM news_canary_activations WHERE activation_id=%s",
+            ("c" * 32,),
+        ).fetchone() == {
+            "state": "tripped",
+            "revision": 5,
+            "trip_reason": "news_taxonomy_v1_hard_cut",
+        }
+        receipt = conn.execute(
+            "SELECT payload, created_by FROM news_learning_artifacts WHERE created_by='migration_20260829_0328'"
+        ).fetchone()
+        assert receipt["payload"] == {
+            "kind": "news_taxonomy_v1_hard_cut",
+            "source_issue": "https://github.com/AnalyThothAI/tracefold/issues/117",
+            "program_version": TAXONOMY_V1_PROGRAM_VERSION,
+            "program_sha256": TAXONOMY_V1_PROGRAM_SHA256,
+            "envelope_sha256": TAXONOMY_V1_ENVELOPE_SHA256,
+            "taxonomy_version": TAXONOMY_V1_VERSION,
+            "codebook_sha256": TAXONOMY_V1_CODEBOOK_SHA256,
+            "review_rubric_version": TAXONOMY_V1_REVIEW_RUBRIC_VERSION,
+            "prior_evidence_disposition": "news_review_v4_and_prior_program_evidence_audit_only",
+            "runtime_epoch_disposition": "new_bundle_epoch_opened_by_worker_startup",
+            "activation_disposition": "open_activations_tripped",
+        }
+        assert receipt["created_by"] == "migration_20260829_0328"
     finally:
         if conn is not None:
             conn.close()

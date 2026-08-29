@@ -15,13 +15,13 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "5d0494c627a58f03c1849efb46ffdbd6acf4728aa9c164cd4d2812f81decc185"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "4775cab09894b693fe825afdaec2b27aa2b76b2f206d9412bc790aea4935d90d"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "e1a1b65b061feabc6291760b74575c3e803ac2b0252aa527359e37f6a4b21dc5"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "a793a153ff68d07e72b4af20eec631ad7bed1c9c347fd435ec73b61da5fcc8e7"
 
-NEWS_STABLE_PROGRAM_SHA256 = "c71bd9041f26d8ee75f055dc0997a92a2b44c1fbdb0d00d1a2e9ecb18ee675a4"
+NEWS_STABLE_PROGRAM_SHA256 = "0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -56,10 +56,10 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v6",
+        "program_version": "news_semantic_program_v7",
         "policy_version": "news_triage_policy_v10",
-        "review_rubric_version": "news_review_v4",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v5",
+        "review_rubric_version": "news_review_v5",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v6",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 
@@ -67,9 +67,8 @@ def test_current_news_release_identity_is_byte_exact() -> None:
 def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> None:
     """The prompt the provider is sent, pinned.
 
-    Unchanged across #314 by construction: the artifact lost a `factory_id` field, which moved
-    `program_sha256`, and this hash covers only the two instruction texts — so its staying still is the
-    evidence that no seed byte moved with the identity.
+    #117 intentionally moves the EventSemantics instruction because taxonomy is now a required production
+    output. This separate pin proves later identity-only edits cannot silently move either instruction.
     """
 
     artifact = load_stable_program_artifact()
@@ -167,6 +166,10 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "routing.RoutedSemanticJudge",
         "signatures.EventSemantics",
         "signatures.ReaderCard",
+        "taxonomy.ModelTaxonomyV1",
+        "taxonomy.NewsTaxonomyV1",
+        "taxonomy.source_authority",
+        "taxonomy.source_authority_from_evidence",
     }
     for predictor, modes in envelope["requests"].items():
         assert set(modes) == {"json_schema", "json_object", "prompt_json"}, predictor
@@ -186,6 +189,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "normalize_restates",
         "trade_channel_order",
         "trade_affected_market_order",
+        "taxonomy",
     }
     assert set(envelope["route"]) == {
         "model_binding_slots",

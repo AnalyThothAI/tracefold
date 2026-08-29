@@ -7,8 +7,11 @@ import pytest
 from psycopg.errors import InsufficientPrivilege, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_judgment import news_taxonomy
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import epoch_id_for_bundle
+from tracefold.news.learning.taxonomy import verify_taxonomy_gold_receipts
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -100,7 +103,7 @@ def _open_event(
             {
                 "novelty": "new_fact",
                 "restates": -1,
-                "event_type": "macro",
+                "event_type": "regulation",
                 "assets": [],
                 "direction": "bullish",
                 "scope": "sector",
@@ -127,6 +130,12 @@ def _open_event(
         editorial = EditorialEnvelope.issue(
             editorial_origin="model",
             relevance=TradeRelevanceV1.model_validate(relevance),
+            taxonomy=news_taxonomy(
+                event_family="regulatory_legal",
+                change_state="reported",
+                assertion_status="claimed",
+                source_authority="reputable_secondary",
+            ),
         )
         judgment = ScoredJudgment.issue(verdict=verdict, editorial=editorial)
         assert repos.news.insert_verdict(
@@ -206,6 +215,11 @@ def _rubric(
         "why_support": why,
         "why_value": "pass",
         "timeliness": "pass",
+        "taxonomy_subject_codes": "pass",
+        "taxonomy_event_family": "pass",
+        "taxonomy_change_state": "pass",
+        "taxonomy_source_authority": "pass",
+        "taxonomy_assertion_status": "pass",
     }
     if magnitude is not None:
         dimensions["magnitude"] = magnitude
@@ -214,6 +228,12 @@ def _rubric(
         should_push=should_push,  # type: ignore[arg-type]
         dimensions=dimensions,
         novelty={"judgment": "new_fact"},
+        taxonomy=news_taxonomy(
+            event_family="regulatory_legal",
+            change_state="reported",
+            assertion_status="claimed",
+            source_authority="reputable_secondary",
+        ),
         first_bad_owner=first_bad_owner,  # type: ignore[arg-type]
         expected=ExpectedCorrection(magnitude=3) if magnitude == "fail" else None,
         evidence_refs=["source:sentence:1", "output:why"] if failed else [],
@@ -301,6 +321,167 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     conn.execute("ROLLBACK TO SAVEPOINT immutable_review")
     conn.execute("RELEASE SAVEPOINT immutable_review")
     conn.commit()
+
+
+def test_critical_taxonomy_requires_independent_adjudication(conn) -> None:
+    event_id = _open_event(conn, hit_id=112090)
+    epoch_start = int(
+        conn.execute(
+            "SELECT starts_at_ms FROM news_learning_epochs WHERE epoch_id=%s",
+            (ACTIVE_EPOCH,),
+        ).fetchone()["starts_at_ms"]
+    )
+    conn.execute("UPDATE news_events SET opened_at_ms=%s WHERE event_id=%s", (epoch_start + 1, event_id))
+    desk = ReviewDesk(conn, now_ms=epoch_start + 3_600_000)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
+    primary_payload = _rubric().model_dump(mode="json") | {
+        "taxonomy": news_taxonomy(
+            event_family="product_service_change",
+            change_state="effective",
+            assertion_status="confirmed",
+            source_authority="reputable_secondary",
+        ).model_dump(mode="json")
+    }
+    primary = EventRubricSubmission.model_validate(primary_payload)
+    mismatched = EventRubricSubmission.model_validate(
+        primary_payload
+        | {
+            "taxonomy": news_taxonomy(
+                event_family="product_service_change",
+                change_state="effective",
+                assertion_status="confirmed",
+                source_authority="unknown",
+            ).model_dump(mode="json")
+        }
+    )
+    with (
+        repositories_for_connection(conn).transaction(),
+        pytest.raises(ValueError, match="news_review_taxonomy_source_authority_code_mismatch"),
+    ):
+        desk.submit(ref, mismatched, principal=Principal(subject="reviewer-a"), idempotency_key=str(uuid.uuid4()))
+
+    self_draft = EventRubricSubmission.model_validate(
+        primary_payload
+        | {
+            "taxonomy_review": {
+                "label_source": "model_draft",
+                "draft_author": "reviewer-a",
+                "review_role": "primary",
+                "draft_taxonomy": primary_payload["taxonomy"],
+            }
+        }
+    )
+    with (
+        repositories_for_connection(conn).transaction(),
+        pytest.raises(ValueError, match="news_review_taxonomy_self_acceptance_forbidden"),
+    ):
+        desk.submit(ref, self_draft, principal=Principal(subject="reviewer-a"), idempotency_key=str(uuid.uuid4()))
+
+    with repositories_for_connection(conn).transaction():
+        first = desk.submit(
+            ref,
+            primary,
+            principal=Principal(subject="reviewer-a"),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    first_id = first["receipt"]["review_id"]
+    assert (
+        conn.execute(
+            "SELECT release_eligible FROM news_reviews WHERE review_id=%s",
+            (first_id,),
+        ).fetchone()["release_eligible"]
+        is False
+    )
+
+    adjudication = EventRubricSubmission.model_validate(
+        primary_payload
+        | {
+            "taxonomy_review": {
+                "label_source": "human",
+                "review_role": "adjudication",
+                "adjudicates_review_id": first_id,
+            }
+        }
+    )
+    with repositories_for_connection(conn).transaction():
+        second = desk.submit(
+            ref,
+            adjudication,
+            principal=Principal(subject="reviewer-b"),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    assert (
+        conn.execute(
+            "SELECT release_eligible FROM news_reviews WHERE review_id=%s",
+            (second["receipt"]["review_id"],),
+        ).fetchone()["release_eligible"]
+        is True
+    )
+    accepted_at_ms = int(
+        conn.execute(
+            "SELECT created_at_ms FROM news_reviews WHERE review_id=%s",
+            (second["receipt"]["acceptance_id"],),
+        ).fetchone()["created_at_ms"]
+    )
+    taxonomy_source = conn.execute(
+        "SELECT evidence_version, evidence_sha256, opened_at_ms, evidence_snapshot "
+        "FROM news_review_task_source_v1 WHERE event_id=%s",
+        (event_id,),
+    ).fetchone()
+    taxonomy_case_id = canonical_sha(
+        {
+            "subject_kind": "event",
+            "event_id": event_id,
+            "external_snapshot_id": None,
+            "evidence_sha256": str(taxonomy_source["evidence_sha256"]),
+            "review_id": second["receipt"]["review_id"],
+        }
+    )
+    from tracefold.news.learning.dataset import _fact_cluster
+
+    gold_case = {
+        "case_id": taxonomy_case_id,
+        "cluster_id": canonical_sha(
+            {
+                "fact_cluster_version": "news_fact_cluster_v1",
+                "members": [
+                    _fact_cluster(
+                        str((dict(taxonomy_source["evidence_snapshot"])["focus_fact"] or {}).get("text") or "")
+                    )
+                ],
+            }
+        ),
+        "event_id": event_id,
+        "evidence_version": int(taxonomy_source["evidence_version"]),
+        "opened_at_ms": int(taxonomy_source["opened_at_ms"]),
+        "gold": adjudication.taxonomy.model_dump(mode="json"),
+        "prediction": adjudication.taxonomy.model_dump(mode="json"),
+        "gold_receipt": {
+            "review_id": second["receipt"]["review_id"],
+            "acceptance_id": second["receipt"]["acceptance_id"],
+            "rubric_version": "news_review_v5",
+            "reviewer": "reviewer-b",
+            "accepted_at_ms": accepted_at_ms,
+            "release_eligible": True,
+        },
+    }
+    assert len(verify_taxonomy_gold_receipts(conn, [gold_case]).ledger_root_sha256) == 64
+    with pytest.raises(ValueError, match="news_taxonomy_gold_acceptance_mismatch"):
+        verify_taxonomy_gold_receipts(
+            conn,
+            [
+                gold_case
+                | {
+                    "gold": news_taxonomy(
+                        event_family="other",
+                        change_state="unknown",
+                        assertion_status="unknown",
+                        source_authority="reputable_secondary",
+                    ).model_dump(mode="json")
+                }
+            ],
+        )
 
 
 def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
@@ -496,7 +677,7 @@ def test_coverage_epoch_excludes_prior_events_reviews_and_external_misses(conn) 
     assert sum(row["events"] for row in coverage["strata"]) == 1
 
 
-def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonomy(conn) -> None:
+def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_sparse_families(conn) -> None:
     _open_event(conn)
     _open_event(
         conn,
@@ -511,7 +692,7 @@ def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_bad_taxonom
     assert market["reaction"]["meta"]["cohort_sha256"] == ACTIVE_BUNDLE
     assert market["reaction"]["meta"]["program_sha256"] == "d" * 64
     assert market["reaction"]["coverage"][0]["eligible_n"] == 1
-    assert market["reaction"]["event_types"] == []
+    assert market["reaction"]["event_families"] == []
     assert "不是新闻因果" in market["disclaimer_zh"]
     with pytest.raises(ValueError, match="news_review_market_hours_too_large"):
         ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market", hours=720), principal=PRINCIPAL)

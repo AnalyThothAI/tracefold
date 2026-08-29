@@ -1005,6 +1005,41 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
     assert set(context.event_semantics_payload()["event_status"]["told"][0]) == visible
 
 
+def test_prior_taxonomy_cannot_change_model_context_or_novelty_reask_identity() -> None:
+    from tracefold.news.program.contracts import TriageContext
+
+    card = {
+        "event_id": "self",
+        "evidence_version": 1,
+        "evidence_sha256": "e" * 64,
+        "focus_fact_id": "fact",
+        "leader_title": "current",
+        "opened_at_ms": _NOW,
+        "storyline_key": "theme:rates",
+    }
+    prior = _told_row(
+        "prior",
+        _NOW - 60_000,
+        storyline_key="theme:rates",
+        event_type="regulation",
+    )
+
+    contexts = [
+        TriageContext.from_card(
+            card,
+            watchlist=(),
+            told_rows=[{**prior, "event_family": event_family}],
+            now_ms=_NOW,
+            queue_lag_ms=0,
+        )
+        for event_family in ("regulatory_legal", "product_service_change")
+    ]
+
+    assert contexts[0].event_semantics_payload() == contexts[1].event_semantics_payload()
+    assert contexts[0].novelty_context_sha256() == contexts[1].novelty_context_sha256()
+    assert contexts[0].event_semantics_payload()["event_status"]["told"][0]["type"] == "regulation"
+
+
 def test_told_selector_keeps_a_targeted_canonical_alias_inside_a_dense_pool() -> None:
     alias_target = _told_row(
         "alias-target",

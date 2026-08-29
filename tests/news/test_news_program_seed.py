@@ -66,7 +66,8 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     card = seed_instruction("reader_card")
 
     for marker in (
-        "Choose exactly one event_type",
+        "Choose exactly one legacy event_type",
+        "## news_taxonomy_v1",
         "2: clearly tradable",
         "A product state change is magnitude 2, not a milestone",
         "a. The text says a level was crossed",

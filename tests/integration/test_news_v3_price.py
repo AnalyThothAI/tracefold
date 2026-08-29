@@ -665,7 +665,7 @@ def test_review_reports_coverage_and_potential_misses(conn) -> None:
 
     # #112 retires direction, magnitude, and taxonomy rankings: none is causal quality evidence.
     assert review["magnitudes"] == []
-    assert review["event_types"] == []
+    assert review["event_families"] == []
 
 
 def test_market_miss_queue_clusters_duplicate_events_into_one_fact(conn) -> None:

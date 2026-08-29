@@ -16,7 +16,9 @@ PUBLIC_NEWS_INTERFACE = {
     "EVENT_KINDS",
     "EditorialEnvelope",
     "EventKind",
+    "ModelTaxonomyV1",
     "NEWS_RETRIEVAL_SHA256",
+    "NewsTaxonomyV1",
     "OI_METRIC_VERSION",
     "NewsFeedEntry",
     "OpenNewsEvent",
@@ -42,12 +44,14 @@ PUBLIC_NEWS_INTERFACE = {
     "SemanticJudgeError",
     "SemanticJudgment",
     "SourceContractReason",
+    "SourceAuthority",
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",
     "TradabilityMatch",
     "TradabilityReview",
     "TradabilityVerifier",
+    "source_authority_from_evidence",
 }
 
 IO_MODULE_ROOTS = {"aio_pika", "psycopg", "httpx", "aiohttp", "websockets", "requests"}

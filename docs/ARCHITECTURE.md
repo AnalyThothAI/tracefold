@@ -313,9 +313,9 @@ covers the two instructions, the computed execution envelope, the four model
 slots, the retrieval contract and the policy, a deployment that changes what the
 model sees cannot go on accruing evidence into the previous cohort. Rows
 `program_v1`–`program_v9`, each opened by a hand-written migration, remain
-append-only audit history. Only accepted `news_review_v4` evidence created in
+append-only audit history. Only accepted `news_review_v5` evidence created in
 the running bundle's epoch and bound to that exact bundle is eligible for
-metric v5, compiler, replay or release gates.
+metric v6, compiler, replay or release gates.
 The operator fast loop that used to sit beside that plane
 (`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
 its on-disk run directories, snapshot/compare arm comparison and the
@@ -928,24 +928,29 @@ magnitude and audience without writing reader copy, and emits one nested typed
 `TradeRelevanceV1`: impact breadth, tradability, surprise, development delta,
 at most four canonical channels/affected markets, and the sole model delivery
 intent `reader_value` (`escalate|realtime|background|none`). It has no separate
-model-authored `decision` or `actionable` field.
+model-authored `decision` or `actionable` field. Issue #117 also makes it emit
+the four model-owned axes of `news_taxonomy_v1`: at most three pinned IPTC
+subject qcodes, event family, change state and assertion status. The assembler
+derives the fifth axis, source authority, from structured provenance; the model
+cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
+input to Gate, `decide()`, ReaderCard, Delivery or Trading.
 For `new_fact` and `progression`, the normalizer discards any stray non-negative
 `restates` index and records the raw and normalized values on the originating
 call trace; a real `restatement` still requires a valid told-ledger index. It
 also preserves raw relevance arrays in trace, then de-duplicates and sorts them
 by code-owned enum order. The normalizer makes no provider call.
 `ReaderCard.v2` receives the original evidence plus an explicit
-`ReaderCardSemanticView` containing only event type, assets, direction,
+`ReaderCardSemanticView` containing only legacy event type, assets, direction,
 magnitude, novelty/restates, scope, channels and affected markets. It produces
 only `headline_zh` and `why_zh`; it cannot read reader intent, tradability,
-surprise, development delta or ToldContext. The assembler makes no model call:
+surprise, development delta, taxonomy or ToldContext. The assembler makes no model call:
 it explicitly projects the compatibility `TriageVerdict`, derives `actionable`
 from normalized trade surfaces, maps `reader_value` to its legacy decision
 sentinel, and keeps public `title_zh` empty. Splitting semantic judgment from copy creates internal
 per-Predictor feedback, demonstration, routing and future fine-tuning seams;
 it does not add a second product stage or a second card.
 
-The only executable generation is `news_semantic_program_v6`. Issue #193
+The only executable generation is `news_semantic_program_v7`. Issue #193
 hard-cuts the artifact to one canonical JSON document; issue #306 keeps that
 shape and changes what the two instructions *are*, each becoming the complete
 prompt for its Predictor rather than a bounded advisory appended to a rendered
@@ -954,7 +959,9 @@ stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
 holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor, and `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`c71bd9041f26d8ee75f055dc0997a92a2b44c1fbdb0d00d1a2e9ecb18ee675a4`.
+`0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24`.
+Issue #117 changes the EventSemantics instruction and typed output while
+preserving the same two-Predictor graph and exact two-call common-success path.
 
 **Program identity has two halves, and they have two authors.**
 `program_sha256` addresses the write-set a human or GEPA may edit.
@@ -1437,8 +1444,9 @@ high-reaction and random strata. The operator sees the exact historical
 evidence, verdict, policy trace and real sent receipt, then records a
 multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
 entity grounding, novelty, direction, magnitude, copy value, timeliness and
-first bad owner). `news_review_v4` adds exact gold for the seven
-TradeRelevance fields, including `reader_value`; a failed scored dimension without
+first bad owner). Current `news_review_v5` retains exact gold for the seven
+TradeRelevance fields from v4 and adds exact taxonomy Gold, draft/reviewer/adjudicator
+provenance and mandatory independent adjudication for critical boundaries; a failed scored dimension without
 expected gold is not scored. A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
@@ -1459,7 +1467,7 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-current-epoch / `news_review_v4` evidence, compares stable with exactly one declared `program` or
+current-bundle / `news_review_v5` evidence, compares stable with exactly one declared `program` or
 `policy` variable, and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
@@ -1617,7 +1625,7 @@ run that proposed against it, and is the real *before*; the **future test**
 number is Stable on accepted examples that did not exist when the candidate was
 made, and only the release plane's holdout stage can produce one.
 
-Metric v5 (`tracefold.news.production_action_trade_relevance_v5`) uses the one
+Metric v6 (`tracefold.news.production_action_trade_relevance_v6`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
 selection and CandidateEvaluator. Its candidate scalar weights 45% final
 production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,
@@ -1672,7 +1680,7 @@ Program/policy/runtime-model cohort, uses horizon-mature coverage denominators,
 clusters similar withheld Events at fact grain, and never treats a 1 h/4 h move or a
 directional hit as causality, reward, or `should_push` truth. The former
 directional-hit, price-by-magnitude and price-by-event-type rankings are
-retired: ReviewDesk does not render them, the taxonomy is not reliable enough,
+retired: ReviewDesk does not render them, taxonomy has no price or delivery authority,
 and they consumed the 30-day read budget without producing release evidence.
 Coverage may span 30 days, while the operator discovery queue is explicitly
 bounded to the most recent seven days; the market view rejects a larger window,
@@ -1779,6 +1787,8 @@ cuts to orthogonal Decision/Capital/binding facts, append-only public catalog
 snapshots, and independent Case policy/capital attribution; its cutover requires
 Capital PAUSED with no undecided Case. A nonterminal Intent is preserved as an explicit recovery
 obligation; removing it would erase the exact state the no-key binding projection must report.
+`20260829_0328` then restricts Review v5 taxonomy Gold to ordinary News and trips open canaries for the
+Program v7/taxonomy-v1 epoch hard cut.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from ..artifact_identity import canonical_sha
 from ..models import TriageAsset, TriageVerdict
+from ..taxonomy import NewsTaxonomyV1
 from ..told_context import TOLD_MAX as _TOLD_MAX
 from ..told_context import TOLD_SYMBOLS_MAX as _TOLD_SYMBOLS_MAX
 from ..told_context import ToldLedgerSnapshot as _ToldLedgerSnapshot
@@ -99,7 +100,7 @@ TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
     "metals",
     "single_asset",
 )
-EDITORIAL_CONTRACT_VERSION: Final[str] = "news_editorial_v1"
+EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v2"]] = "news_editorial_v2"
 
 
 class _ExactContractModel(BaseModel):
@@ -177,9 +178,11 @@ class ReaderCardSemanticView(_ExactContractModel):
 class EditorialEnvelope(_ExactContractModel):
     """Versioned editorial sibling persisted atomically with one verdict."""
 
-    editorial_contract_version: Literal["news_editorial_v1"] = "news_editorial_v1"
+    # v1 remains an explicit historical reader. New writes are v2 only.
+    editorial_contract_version: Literal["news_editorial_v1", "news_editorial_v2"] = EDITORIAL_CONTRACT_VERSION
     editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"]
     relevance: TradeRelevanceV1 | None
+    taxonomy: NewsTaxonomyV1 | None = None
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
@@ -188,11 +191,13 @@ class EditorialEnvelope(_ExactContractModel):
         *,
         editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"],
         relevance: TradeRelevanceV1 | None,
+        taxonomy: NewsTaxonomyV1 | None = None,
     ) -> EditorialEnvelope:
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
             "editorial_origin": editorial_origin,
             "relevance": None if relevance is None else relevance.model_dump(mode="json"),
+            "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
         }
         return cls(**payload, editorial_sha256=canonical_sha(payload))
 
@@ -200,7 +205,18 @@ class EditorialEnvelope(_ExactContractModel):
     def _origin_and_identity_are_exact(self) -> EditorialEnvelope:
         if (self.editorial_origin == "model") != (self.relevance is not None):
             raise ValueError("news_editorial_origin_relevance_mismatch")
-        payload = self.model_dump(mode="json", exclude={"editorial_sha256"})
+        if self.editorial_contract_version == "news_editorial_v2" and (
+            (self.editorial_origin == "model") != (self.taxonomy is not None)
+        ):
+            raise ValueError("news_editorial_origin_taxonomy_mismatch")
+        if self.editorial_contract_version == "news_editorial_v1" and self.taxonomy is not None:
+            raise ValueError("news_editorial_v1_taxonomy_forbidden")
+        excluded = (
+            {"editorial_sha256", "taxonomy"}
+            if self.editorial_contract_version == "news_editorial_v1"
+            else {"editorial_sha256"}
+        )
+        payload = self.model_dump(mode="json", exclude=excluded)
         if self.editorial_sha256 != canonical_sha(payload):
             raise ValueError("news_editorial_hash_mismatch")
         return self
@@ -631,7 +647,7 @@ class ScoredJudgment(_ExactContractModel):
         verdict_sha256 = canonical_sha(verdict.model_dump(mode="json"))
         payload = {
             "verdict": verdict.model_dump(mode="json"),
-            "editorial": editorial.model_dump(mode="json"),
+            "editorial": _editorial_identity_payload(editorial),
             "verdict_sha256": verdict_sha256,
         }
         return cls(
@@ -644,10 +660,19 @@ class ScoredJudgment(_ExactContractModel):
     @model_validator(mode="after")
     def _projection_identity_is_exact(self) -> ScoredJudgment:
         expected_verdict = canonical_sha(self.verdict.model_dump(mode="json"))
-        payload = self.model_dump(mode="json", exclude={"scored_judgment_sha256"})
+        payload = {
+            "verdict": self.verdict.model_dump(mode="json"),
+            "editorial": _editorial_identity_payload(self.editorial),
+            "verdict_sha256": self.verdict_sha256,
+        }
         if self.verdict_sha256 != expected_verdict or self.scored_judgment_sha256 != canonical_sha(payload):
             raise ValueError("news_scored_judgment_identity_mismatch")
         return self
+
+
+def _editorial_identity_payload(editorial: EditorialEnvelope) -> dict[str, Any]:
+    excluded = {"taxonomy"} if editorial.editorial_contract_version == "news_editorial_v1" else set()
+    return editorial.model_dump(mode="json", exclude=excluded)
 
 
 class SemanticJudgment(_ExactContractModel):

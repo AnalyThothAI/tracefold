@@ -520,6 +520,21 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     }
     assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
+    assert set(news_common_schemas.NewsTaxonomyData.model_fields) == {
+        "taxonomy_version",
+        "codebook_sha256",
+        "subject_codes",
+        "subject_labels_zh",
+        "event_family",
+        "event_family_zh",
+        "change_state",
+        "change_state_zh",
+        "source_authority",
+        "source_authority_zh",
+        "assertion_status",
+        "assertion_status_zh",
+    }
+    assert "taxonomy" in news_common_schemas.NewsTriageSummaryData.model_fields
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
     assert set(status_schemas.NewsStatusData.model_fields) == {
         "state",

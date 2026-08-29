@@ -397,7 +397,7 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
 
 
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Propose `news_review_v4` rubrics with exact gold. The output is a file, never a review.
+    """Propose `news_review_v5` rubrics with exact taxonomy Gold. The output is a file, never a review.
 
     `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
     be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
@@ -412,6 +412,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     del stable
     from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
+    from tracefold.news import source_authority_from_evidence
     from tracefold.news.program.artifact import render_model_evidence_json
     from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
     from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch, build_drafter_lm
@@ -457,6 +458,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             verdict = dict(agent.get("verdict") or {})
             if not verdict:
                 continue  # degraded or unjudged: there is no card to review
+            context = _drafter_context(view)
             tasks.append(
                 {
                     "task_id": str(row["task_id"]),
@@ -469,18 +471,20 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                     # (6/6 empty on the first attempt). This is also the fairer question: judge the card
                     # against what the Program was actually shown.
                     "evidence_json": render_model_evidence_json(
-                        _drafter_context(view).event_semantics_payload(), predictor="event_semantics"
+                        context.event_semantics_payload(), predictor="event_semantics"
                     ),
                     "card_json": canonical_json(
                         {
                             "verdict": verdict,
                             "final_decision": agent.get("final_decision"),
                             "override_rule": agent.get("override_rule"),
+                            "taxonomy": agent.get("taxonomy"),
                         }
                     ),
                     # The ledger the model was shown when it judged, so the drafter can check novelty against
                     # the same history rather than against hindsight.
                     "told_json": canonical_json(list((agent.get("trace") or {}).get("told") or ())),
+                    "source_authority": source_authority_from_evidence(context.evidence),
                 }
             )
     if not tasks:

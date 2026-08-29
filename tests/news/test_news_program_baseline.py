@@ -20,6 +20,21 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.review.desk import EventRubricSubmission
 
+_TAXONOMY = {
+    "subject_codes": [],
+    "event_family": "other",
+    "change_state": "unknown",
+    "assertion_status": "unknown",
+    "source_authority": "unknown",
+}
+_TAXONOMY_DIMENSIONS = {
+    "taxonomy_subject_codes": "pass",
+    "taxonomy_event_family": "pass",
+    "taxonomy_change_state": "pass",
+    "taxonomy_source_authority": "pass",
+    "taxonomy_assertion_status": "pass",
+}
+
 
 def _frozen_policy_projection() -> dict[str, object]:
     """The exact-policy fields `_production_action` now requires of any policy-scored example.
@@ -297,33 +312,45 @@ def test_build_baseline_cases_drops_loader_only_keys() -> None:
     assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v4_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v5_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
         "novelty": {"judgment": "new_fact"},
         "evidence_refs": ["source:leader:title"],
+        "taxonomy": _TAXONOMY,
     }
     ok = EventRubricSubmission(
         **base,
-        dimensions={"factual_fidelity": "pass", "magnitude": "fail", "timeliness": "pass"},
+        dimensions={
+            "factual_fidelity": "pass",
+            "magnitude": "fail",
+            "timeliness": "pass",
+            **_TAXONOMY_DIMENSIONS,
+        },
         expected={"magnitude": 2},
     )
     assert ok.expected is not None and ok.expected.magnitude == 2
     with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:magnitude"):
         EventRubricSubmission(
             **base,
-            dimensions={"factual_fidelity": "pass", "magnitude": "pass", "timeliness": "pass"},
+            dimensions={
+                "factual_fidelity": "pass",
+                "magnitude": "pass",
+                "timeliness": "pass",
+                **_TAXONOMY_DIMENSIONS,
+            },
             expected={"magnitude": 2},
         )
 
 
-def test_rubric_v4_submission_without_optional_gold_validates() -> None:
+def test_rubric_v5_submission_without_optional_gold_validates() -> None:
 
     submission = EventRubricSubmission(
         kind="event_rubric",
         should_push="should_hold",
-        dimensions={"factual_fidelity": "pass"},
+        dimensions={"factual_fidelity": "pass", **_TAXONOMY_DIMENSIONS},
         novelty={"judgment": "new_fact"},
+        taxonomy=_TAXONOMY,
     )
     assert submission.expected is None

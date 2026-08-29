@@ -120,6 +120,7 @@ class NewsVerdictData(ExactApiSchema):
     override_rule: str | None = None
     throttled_by: str | None = None
     verdict: dict[str, Any] = Field(default_factory=dict)
+    editorial: dict[str, Any] | None = None
     model: str | None = None
     program_version: str | None = None
     program_sha256: str | None = None

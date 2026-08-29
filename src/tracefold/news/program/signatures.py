@@ -9,6 +9,7 @@ import dspy  # type: ignore[import-untyped]
 from pydantic import Field, PrivateAttr, model_validator
 
 from ..models import TriageAsset
+from ..taxonomy import ModelTaxonomyV1
 from .contracts import TradeRelevanceV1
 from .runtime import _ExactModel
 
@@ -50,6 +51,7 @@ class EventSemantics(_ExactModel):
     magnitude: int = Field(ge=0, le=3)
     confidence: float = Field(ge=0.0, le=1.0)
     audience: Literal["crypto", "us_equity", "macro", "none"] = "none"
+    taxonomy: ModelTaxonomyV1
     relevance: TradeRelevanceV1
 
     @model_validator(mode="wrap")

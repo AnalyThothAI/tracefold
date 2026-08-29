@@ -11,7 +11,7 @@ import dspy  # type: ignore[import-untyped]
 
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
 from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,
@@ -437,19 +437,6 @@ def _canonical_endpoint_sha256(value: str) -> str:
 
 def _optional_endpoint_identity(endpoint: ConfiguredLMEndpoint | None) -> dict[str, str] | None:
     return _endpoint_identity(endpoint) if endpoint is not None else None
-
-
-def runtime_manifest_sha(
-    *, stable_bundle_sha: str, candidate_shas: list[str], image_digest: str, runtime_revision: str
-) -> str:
-    return canonical_sha(
-        {
-            "stable_bundle_sha": stable_bundle_sha,
-            "candidate_shas": sorted(candidate_shas),
-            "image_digest": image_digest,
-            "runtime_revision": runtime_revision,
-        }
-    )
 
 
 __all__ = [

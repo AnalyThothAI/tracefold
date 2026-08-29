@@ -8,6 +8,7 @@ from typing import Any, ClassVar
 import dspy  # type: ignore[import-untyped]
 import pytest
 
+from tests.support.news_judgment import news_taxonomy
 from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.learning.contracts import (
     METRIC_JUDGE_MAX_TOKENS,
@@ -113,6 +114,7 @@ def _judgment(*, relevance: TradeRelevanceV1 | None = None, **verdict: Any) -> S
         editorial=EditorialEnvelope.issue(
             editorial_origin="model",
             relevance=relevance or _relevance(),
+            taxonomy=news_taxonomy(),
         ),
     )
 
@@ -244,6 +246,12 @@ def _semantics(**overrides: Any) -> dict[str, Any]:
         "confidence": 0.8,
         "audience": "us_equity",
         "relevance": _relevance().model_dump(mode="json"),
+        "taxonomy": {
+            "subject_codes": [],
+            "event_family": "other",
+            "change_state": "reported",
+            "assertion_status": "claimed",
+        },
     }
     values.update(overrides)
     return values
@@ -794,7 +802,11 @@ def _score(gold: Any, verdict: dict[str, Any], pred_name: str | None = None) -> 
         gold,
         CandidatePrediction(
             verdict=verdict,
-            editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
+            editorial=EditorialEnvelope.issue(
+                editorial_origin="model",
+                relevance=_relevance(),
+                taxonomy=news_taxonomy(),
+            ),
         ),
         pred_name=pred_name,
     )
@@ -884,7 +896,11 @@ def test_factual_failure_must_be_repaired_against_evidence_not_merely_reworded()
     changed = _metric_verdict(headline_zh="发行人已提交重大更新，交付时间表整体推迟一个季度")
     prediction = CandidatePrediction(
         verdict=changed,
-        editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance()),
+        editorial=EditorialEnvelope.issue(
+            editorial_origin="model",
+            relevance=_relevance(),
+            taxonomy=news_taxonomy(),
+        ),
     )
     rejecting = _EvidenceJudge(supported=False)
     accepting = _EvidenceJudge(supported=True)
@@ -1010,6 +1026,7 @@ def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback
             channels=[],
             affected_markets=[],
         ),
+        taxonomy=news_taxonomy(),
     )
     prediction = CandidatePrediction(verdict=_metric_verdict(), editorial=editorial)
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from argparse import Namespace
-from typing import Any
+from typing import Any, cast
 
 from tracefold.platform.config.loader import load_settings
 
@@ -94,8 +94,9 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     """
 
     from tracefold.app.repository_session import postgres_connection
+    from tracefold.news import SourceAuthority
     from tracefold.news.review.desk import EventRubricSubmission, Principal, ReviewDesk, TaskRef
-    from tracefold.news.review.drafter import DRAFT_SCHEMA, ReviewDraft, submission_payload
+    from tracefold.news.review.drafter import DRAFT_SCHEMA, DRAFTER_ID, ReviewDraft, submission_payload
     from tracefold.platform.postgres.client import transaction
 
     # A distinguishable author, on purpose. Measured against 25 Events a human had already judged, the drafter
@@ -134,7 +135,11 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
             skip("below_min_confidence")
             continue
         try:
-            payload = submission_payload(draft)
+            payload = submission_payload(
+                draft,
+                source_authority=cast(SourceAuthority, str(entry.get("source_authority") or "unknown")),
+                draft_author=str((batch.get("drafter") or {}).get("drafter_id") or DRAFTER_ID),
+            )
             EventRubricSubmission.model_validate(payload)
         except Exception:
             # The rubric refused it. Better skipped and reported than reshaped into something acceptable.
