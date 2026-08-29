@@ -4,6 +4,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from tests.support import evidence
+
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+)\)")
@@ -69,11 +71,16 @@ def test_evidence_target_selects_every_deterministic_lane_and_excludes_opt_in_di
     assert "-p tests.support.evidence" in commands
     assert '-m "not live and not scheduled"' in commands
     assert "--evidence-manifest=" in commands
-    assert "--resource-evidence-manifest=" in commands
+    assert "--resource-evidence-manifest=" not in commands
     assert "--junitxml=" in commands
     for lane in (
-        "python",
-        "resource",
+        "quality-static",
+        "python-hermetic",
+        "postgres-behavior",
+        "migration",
+        "runtime-process",
+        "frontend-python",
+        "trust-root",
         "frontend-typecheck",
         "frontend-lint",
         "frontend-architecture",
@@ -83,6 +90,8 @@ def test_evidence_target_selects_every_deterministic_lane_and_excludes_opt_in_di
         "browser",
     ):
         assert f"--required-lane {lane}" in commands
+    for lane in evidence.PYTHON_LANES:
+        assert f'--evidence-lane="{lane}"' in commands
 
 
 def test_current_documentation_links_resolve() -> None:

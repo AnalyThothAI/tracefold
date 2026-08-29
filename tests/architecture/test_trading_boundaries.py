@@ -378,7 +378,14 @@ def test_the_retired_lane_cluster_has_no_executable_reference() -> None:
         "tracefold/trading/research/event_study.py",
         "tracefold/trading/storage/evaluations.py",
     )
-    assert [name for name in retired if (SRC.parent / name).exists()] == []
+    executable_offenders: list[str] = []
+    for name in retired:
+        path = SRC.parent / name
+        if path.is_file():
+            executable_offenders.append(name)
+        elif path.is_dir():
+            executable_offenders.extend(str(candidate.relative_to(SRC.parent)) for candidate in path.rglob("*.py"))
+    assert executable_offenders == []
 
     names = (
         "CandidateRunner",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -263,7 +264,7 @@ def test_aggregate_fails_when_a_required_lane_manifest_is_missing(tmp_path: Path
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    output.write_text('{"schema_version":"tracefold_test_evidence_v2","overall":"success"}\n', encoding="utf-8")
+    output.write_text('{"schema_version":"tracefold_test_evidence_v3","overall":"success"}\n', encoding="utf-8")
 
     result = evidence.main(
         (
@@ -273,23 +274,26 @@ def test_aggregate_fails_when_a_required_lane_manifest_is_missing(tmp_path: Path
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
         )
     )
 
     assert result != 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == "tracefold_test_evidence_v2"
+    assert manifest["schema_version"] == "tracefold_test_evidence_v3"
     assert manifest["overall"] == "failure"
-    assert manifest["errors"] == ["required_lane_manifest_missing:python"]
+    assert {
+        "python_inventory_missing",
+        "required_lane_manifest_missing:python-hermetic",
+    } == set(manifest["errors"])
 
 
 def test_aggregate_replaces_stale_green_output_when_a_lane_is_invalid(tmp_path: Path) -> None:
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    (lane_dir / "python.json").write_text("not json\n", encoding="utf-8")
-    output.write_text('{"schema_version":"tracefold_test_evidence_v2","overall":"success"}\n', encoding="utf-8")
+    (lane_dir / "python-hermetic.json").write_text("not json\n", encoding="utf-8")
+    output.write_text('{"schema_version":"tracefold_test_evidence_v3","overall":"success"}\n', encoding="utf-8")
 
     result = evidence.main(
         (
@@ -299,38 +303,45 @@ def test_aggregate_replaces_stale_green_output_when_a_lane_is_invalid(tmp_path: 
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
         )
     )
 
     assert result != 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["overall"] == "failure"
-    assert manifest["errors"] == ["required_lane_manifest_invalid:python"]
+    assert {
+        "python_inventory_missing",
+        "required_lane_manifest_invalid:python-hermetic",
+    } == set(manifest["errors"])
 
 
 def _lane_payload(lane: str, *, selected: int = 1, passed: int = 1, **overrides: Any) -> dict[str, Any]:
+    root = Path(evidence.__file__).resolve().parents[2]
     commit_sha = subprocess.run(
         ["git", "rev-parse", "HEAD"],
-        cwd=Path(evidence.__file__).resolve().parents[2],
+        cwd=root,
         capture_output=True,
         check=True,
         text=True,
     ).stdout.strip()
     tree_sha = subprocess.run(
         ["git", "rev-parse", "HEAD^{tree}"],
-        cwd=Path(evidence.__file__).resolve().parents[2],
+        cwd=root,
         capture_output=True,
         check=True,
         text=True,
     ).stdout.strip()
     payload: dict[str, Any] = {
-        "schema_version": "tracefold_test_lane_v2",
+        "schema_version": "tracefold_test_lane_v3",
         "lane": lane,
         "required": True,
         "status": "success",
         "commit_sha": commit_sha,
         "git_tree_sha": tree_sha,
+        "uv_lock_sha256": hashlib.sha256((root / "uv.lock").read_bytes()).hexdigest(),
+        "package_lock_sha256": hashlib.sha256((root / "web" / "package-lock.json").read_bytes()).hexdigest(),
+        "plan_sha256": evidence._plan_sha256(),
         "selected": selected,
         "passed": passed,
         "failed": 0,
@@ -341,7 +352,19 @@ def _lane_payload(lane: str, *, selected: int = 1, passed: int = 1, **overrides:
         "unhandled": 0,
         "errors": [],
         "tool_versions": {"fixture": "1"},
+        "worktree": {"sealed": True, "clean": True, "changes": []},
     }
+    if lane in evidence.PYTHON_LANES:
+        nodeids = [f"tests/test_fixture.py::test_{index}" for index in range(selected)]
+        payload.update(
+            {
+                "selected_nodeids": nodeids,
+                "inventory_nodeids": nodeids,
+                "inventory_count": len(nodeids),
+                "inventory_sha256": evidence._nodeids_sha256(nodeids),
+                "migration_head": evidence._migration_head(),
+            }
+        )
     payload.update(overrides)
     return payload
 
@@ -380,7 +403,9 @@ def test_aggregate_fails_when_a_required_lane_is_empty(tmp_path: Path) -> None:
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    (lane_dir / "python.json").write_text(json.dumps(_lane_payload("python", selected=0, passed=0)), encoding="utf-8")
+    (lane_dir / "python-hermetic.json").write_text(
+        json.dumps(_lane_payload("python-hermetic", selected=0, passed=0)), encoding="utf-8"
+    )
 
     result = evidence.main(
         (
@@ -390,14 +415,14 @@ def test_aggregate_fails_when_a_required_lane_is_empty(tmp_path: Path) -> None:
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
         )
     )
 
     assert result != 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["overall"] == "failure"
-    assert "required_lane_empty:python" in manifest["errors"]
+    assert "required_lane_empty:python-hermetic" in manifest["errors"]
 
 
 @pytest.mark.parametrize("field", ["failed", "skipped", "xfailed", "xpassed", "rerun", "unhandled"])
@@ -405,7 +430,9 @@ def test_aggregate_fails_on_every_non_green_required_lane_outcome(tmp_path: Path
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    (lane_dir / "python.json").write_text(json.dumps(_lane_payload("python", **{field: 1})), encoding="utf-8")
+    (lane_dir / "python-hermetic.json").write_text(
+        json.dumps(_lane_payload("python-hermetic", **{field: 1})), encoding="utf-8"
+    )
 
     result = evidence.main(
         (
@@ -415,14 +442,14 @@ def test_aggregate_fails_on_every_non_green_required_lane_outcome(tmp_path: Path
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
         )
     )
 
     assert result != 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["overall"] == "failure"
-    assert f"required_lane_not_green:python:{field}=1" in manifest["errors"]
+    assert f"required_lane_not_green:python-hermetic:{field}=1" in manifest["errors"]
 
 
 def test_aggregate_rejects_not_applicable_required_lane(tmp_path: Path) -> None:
@@ -471,12 +498,92 @@ def test_record_command_writes_a_green_nonempty_lane(tmp_path: Path) -> None:
 
     assert result == 0
     manifest = json.loads(output.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == "tracefold_test_lane_v2"
+    assert manifest["schema_version"] == "tracefold_test_lane_v3"
     assert manifest["lane"] == "typecheck"
     assert manifest["status"] == "success"
     assert manifest["selected"] == manifest["passed"] == 1
     assert manifest["failed"] == manifest["skipped"] == manifest["unhandled"] == 0
     assert manifest["tool_versions"]["fixture"] == "1.0"
+    assert manifest["worktree"] == {"sealed": False, "clean": False, "changes": []}
+
+
+def test_lane_manifest_is_accepted_only_after_the_exact_tree_is_sealed(tmp_path: Path) -> None:
+    output = tmp_path / "lane.json"
+    unsealed = _lane_payload("frontend-unit", worktree={"sealed": False, "clean": False, "changes": []})
+    output.write_text(json.dumps(unsealed), encoding="utf-8")
+
+    assert evidence.main(("seal-clean", "--manifest", str(output))) == 0
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "success"
+    assert manifest["worktree"] == {"sealed": True, "clean": True, "changes": []}
+
+
+def test_aggregate_rejects_an_unsealed_green_lane(tmp_path: Path) -> None:
+    lane_dir = tmp_path / "lanes"
+    lane_dir.mkdir()
+    payload = _lane_payload(
+        "frontend-unit",
+        worktree={"sealed": False, "clean": False, "changes": []},
+    )
+    (lane_dir / "frontend-unit.json").write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "manifest.json"
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--required-lane",
+            "frontend-unit",
+        )
+    )
+
+    assert result != 0
+    assert "required_lane_worktree_not_clean:frontend-unit" in json.loads(output.read_text(encoding="utf-8"))["errors"]
+
+
+def test_seal_clean_persists_dirty_state_and_invalidates_the_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repository"
+    (root / "web").mkdir(parents=True)
+    (root / "uv.lock").write_text("uv\n", encoding="utf-8")
+    (root / "web" / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    monkeypatch.setattr(evidence, "_REPO_ROOT", root)
+    output = root / "lane.json"
+    output.write_text(
+        json.dumps(evidence._lane_payload(lane="fixture", selected=1, passed=1, root=root)), encoding="utf-8"
+    )
+    (root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+    assert evidence.main(("seal-clean", "--manifest", str(output))) != 0
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failure"
+    assert manifest["worktree"]["sealed"] is True
+    assert manifest["worktree"]["clean"] is False
+    assert " M tracked.txt" in manifest["worktree"]["changes"]
+    assert "evidence_tested_head_dirty" in manifest["errors"]
 
 
 def test_record_command_persists_failure_and_returns_the_command_status(tmp_path: Path) -> None:
@@ -502,6 +609,30 @@ def test_record_command_persists_failure_and_returns_the_command_status(tmp_path
     assert manifest["selected"] == manifest["failed"] == 1
     assert manifest["passed"] == 0
     assert manifest["errors"] == ["command_exit_nonzero:7"]
+
+
+def test_record_command_rejects_a_cross_revision_github_sha(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output = tmp_path / "quality-static.json"
+    monkeypatch.setenv("GITHUB_SHA", "0" * 40)
+
+    result = evidence.main(
+        (
+            "record-command",
+            "--lane",
+            "quality-static",
+            "--output",
+            str(output),
+            "--",
+            sys.executable,
+            "-c",
+            "raise SystemExit(0)",
+        )
+    )
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 1
+    assert manifest["status"] == "failure"
+    assert manifest["errors"] == ["evidence_github_sha_mismatch"]
 
 
 def _vitest_plain_test(case_id: str) -> dict[str, Any]:
@@ -723,12 +854,23 @@ def _playwright_plain_report(selected: int) -> dict[str, Any]:
     }
 
 
-def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) -> None:
+def test_record_playwright_uses_the_reporters_actual_outcomes_and_resource_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     report = tmp_path / "playwright.json"
     selection = tmp_path / "playwright-selection.json"
     output = tmp_path / "browser.json"
     report.write_text(json.dumps(_playwright_plain_report(2)), encoding="utf-8")
     selection.write_text(json.dumps(_playwright_selection(2)), encoding="utf-8")
+    monkeypatch.setattr(
+        evidence,
+        "_resource_identity",
+        lambda required: (
+            {"postgresql-server": "17", "rabbitmq-server": "4.1"},
+            {name: {"fixture": True} for name in required},
+            [],
+        ),
+    )
 
     result = evidence.main(
         (
@@ -750,6 +892,7 @@ def test_record_playwright_uses_the_reporters_actual_outcomes(tmp_path: Path) ->
     assert manifest["failed"] == manifest["skipped"] == manifest["rerun"] == 0
     assert manifest["status"] == "success"
     assert manifest["tool_versions"]["playwright"] == "1.60.0"
+    assert set(manifest["metadata"]["resources"]) == {"postgresql", "rabbitmq"}
 
 
 @pytest.mark.parametrize("tool", ["vitest", "playwright"])
@@ -904,7 +1047,7 @@ def test_aggregate_rejects_malformed_or_cross_revision_lane(tmp_path: Path) -> N
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    (lane_dir / "python.json").write_text(
+    (lane_dir / "python-hermetic.json").write_text(
         json.dumps(
             _lane_payload(
                 "different-name",
@@ -928,7 +1071,7 @@ def test_aggregate_rejects_malformed_or_cross_revision_lane(tmp_path: Path) -> N
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
         )
     )
 
@@ -936,22 +1079,54 @@ def test_aggregate_rejects_malformed_or_cross_revision_lane(tmp_path: Path) -> N
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["overall"] == "failure"
     assert {
-        "required_lane_schema_invalid:python",
-        "required_lane_name_mismatch:python",
-        "required_lane_not_required:python",
-        "required_lane_pass_count_mismatch:python",
-        "required_lane_has_errors:python",
-        "required_lane_tool_versions_missing:python",
-        "required_lane_commit_mismatch:python",
-        "required_lane_tree_mismatch:python",
+        "required_lane_schema_invalid:python-hermetic",
+        "required_lane_name_mismatch:python-hermetic",
+        "required_lane_not_required:python-hermetic",
+        "required_lane_pass_count_mismatch:python-hermetic",
+        "required_lane_has_errors:python-hermetic",
+        "required_lane_tool_versions_missing:python-hermetic",
+        "required_lane_commit_mismatch:python-hermetic",
+        "required_lane_tree_mismatch:python-hermetic",
     } <= set(manifest["errors"])
+
+
+@pytest.mark.parametrize(
+    ("field", "error"),
+    [
+        ("uv_lock_sha256", "required_lane_uv_lock_mismatch:frontend-unit"),
+        ("package_lock_sha256", "required_lane_package_lock_mismatch:frontend-unit"),
+        ("plan_sha256", "required_lane_plan_mismatch:frontend-unit"),
+    ],
+)
+def test_aggregate_rejects_cross_lock_or_plan_lane(tmp_path: Path, field: str, error: str) -> None:
+    lane_dir = tmp_path / "lanes"
+    output = tmp_path / "manifest.json"
+    lane_dir.mkdir()
+    payload = _lane_payload("frontend-unit", **{field: "0" * 64})
+    (lane_dir / "frontend-unit.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--required-lane",
+            "frontend-unit",
+        )
+    )
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert result != 0
+    assert error in manifest["errors"]
 
 
 def test_aggregate_succeeds_only_after_every_required_lane_is_green(tmp_path: Path) -> None:
     lane_dir = tmp_path / "lanes"
     output = tmp_path / "manifest.json"
     lane_dir.mkdir()
-    for lane, selected in (("python", 3), ("frontend-unit", 2)):
+    for lane, selected in (("python-hermetic", 3), ("frontend-unit", 2)):
         (lane_dir / f"{lane}.json").write_text(
             json.dumps(_lane_payload(lane, selected=selected, passed=selected)), encoding="utf-8"
         )
@@ -964,7 +1139,7 @@ def test_aggregate_succeeds_only_after_every_required_lane_is_green(tmp_path: Pa
             "--output",
             str(output),
             "--required-lane",
-            "python",
+            "python-hermetic",
             "--required-lane",
             "frontend-unit",
         )
@@ -974,10 +1149,100 @@ def test_aggregate_succeeds_only_after_every_required_lane_is_green(tmp_path: Pa
     manifest = json.loads(output.read_text(encoding="utf-8"))
     assert manifest["overall"] == "success"
     assert manifest["errors"] == []
-    assert set(manifest["lanes"]) == {"python", "frontend-unit"}
+    assert set(manifest["lanes"]) == {"python-hermetic", "frontend-unit"}
 
 
-def test_canonical_aggregate_requires_an_independent_resource_lane() -> None:
+@pytest.mark.parametrize(
+    ("second_selection", "expected_error", "inventory_field"),
+    [
+        (["tests/test_fixture.py::test_1"], "python_inventory_missing_nodeids:1", "missing"),
+        (
+            ["tests/test_fixture.py::test_0", "tests/test_fixture.py::test_1", "tests/test_fixture.py::test_2"],
+            "python_inventory_duplicate_nodeids:1",
+            "duplicates",
+        ),
+    ],
+)
+def test_v3_union_fails_closed_on_missing_or_duplicate_nodeids(
+    tmp_path: Path,
+    second_selection: list[str],
+    expected_error: str,
+    inventory_field: str,
+) -> None:
+    lane_dir = tmp_path / "lanes"
+    output = tmp_path / "manifest.json"
+    lane_dir.mkdir()
+    inventory = [f"tests/test_fixture.py::test_{index}" for index in range(3)]
+    selections = {
+        "python-hermetic": [inventory[0]],
+        "trust-root": second_selection,
+    }
+    for lane, selected_nodeids in selections.items():
+        payload = _lane_payload(lane, selected=len(selected_nodeids), passed=len(selected_nodeids))
+        payload.update(
+            {
+                "selected_nodeids": selected_nodeids,
+                "inventory_nodeids": inventory,
+                "inventory_count": len(inventory),
+                "inventory_sha256": evidence._nodeids_sha256(inventory),
+            }
+        )
+        (lane_dir / f"{lane}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--required-lane",
+            "python-hermetic",
+            "--required-lane",
+            "trust-root",
+        )
+    )
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert result != 0
+    assert expected_error in manifest["errors"]
+    assert manifest["inventory"][inventory_field]
+
+
+@pytest.mark.parametrize(
+    ("path", "markers", "owner"),
+    [
+        ("tests/news/test_news_v3_pure.py", set(), "python-hermetic"),
+        ("tests/contract/test_cli.py", {"contract"}, "python-hermetic"),
+        ("tests/contract/test_evidence_v3_contract.py", {"contract", "slow"}, "trust-root"),
+        ("tests/deploy/test_main_ci_gate.py", {"deploy"}, "trust-root"),
+        ("tests/contract/test_openapi_codegen.py", {"contract", "external_codegen"}, "frontend-python"),
+        ("tests/integration/test_news_v3_pipeline.py", {"integration"}, "postgres-behavior"),
+        ("tests/integration/test_cli_resources.py", {"integration"}, "runtime-process"),
+        ("tests/integration/test_trading_migration.py", {"integration"}, "migration"),
+        ("tests/integration/test_workers_runtime_v2.py", {"integration", "slow"}, "runtime-process"),
+        ("tests/integration/test_news_bus_rabbitmq.py", {"integration"}, "runtime-process"),
+        ("tests/e2e/test_serve_process_smoke.py", set(), "runtime-process"),
+        ("tests/golden/test_news_production_pipeline.py", set(), "runtime-process"),
+        ("tests/slow/test_frontend_harness_fail_closed.py", {"slow"}, "trust-root"),
+    ],
+)
+def test_phase_one_ownership_has_one_explicit_primary_lane(path: str, markers: set[str], owner: str) -> None:
+    assert evidence.primary_lane_owner(path, markers) == owner
+    assert owner in evidence.PYTHON_LANES
+
+
+def test_plan_identity_binds_every_required_lane_and_its_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = evidence._plan_sha256()
+    commands = dict(evidence._FULL_PLAN_COMMANDS)
+    commands["frontend-build"] = ("npm --prefix web run build:mutated",)
+    monkeypatch.setattr(evidence, "_FULL_PLAN_COMMANDS", commands)
+
+    assert set(commands) == set(evidence.REQUIRED_LANES)
+    assert evidence._plan_sha256() != original
+
+
+def test_canonical_aggregate_requires_every_primary_resource_owner() -> None:
     result = subprocess.run(
         ["make", "--dry-run", "test-evidence"],
         cwd=Path(evidence.__file__).resolve().parents[2],
@@ -986,8 +1251,10 @@ def test_canonical_aggregate_requires_an_independent_resource_lane() -> None:
         text=True,
     )
 
-    assert "--required-lane resource" in result.stdout
-    assert "resource.json" in result.stdout
+    assert "--required-lane postgres-behavior" in result.stdout
+    assert "--required-lane migration" in result.stdout
+    assert "--required-lane runtime-process" in result.stdout
+    assert "--required-lane resource" not in result.stdout
 
 
 def test_ci_hypothesis_profile_is_deterministic_and_replayable() -> None:
@@ -1003,7 +1270,7 @@ def test_python_lane_records_replay_and_tool_identity(evidence_repository: _Evid
     result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert manifest["schema_version"] == "tracefold_test_lane_v2"
+    assert manifest["schema_version"] == "tracefold_test_lane_v3"
     assert manifest["lane"] == "python"
     assert manifest["status"] == "success"
     assert manifest["selected"] == manifest["passed"] == 2
@@ -1365,7 +1632,7 @@ def test_python_lane_keeps_recording_after_a_test_installs_an_asyncio_handler(
     assert any("evidence_python_unhandled:asyncio_callback" in error for error in manifest["errors"])
 
 
-def test_python_lane_rejects_an_empty_declared_required_marker(
+def test_split_python_lane_records_an_empty_cross_lane_marker_without_failing(
     evidence_repository: _EvidenceRepository,
 ) -> None:
     pyproject = evidence_repository.root / "pyproject.toml"
@@ -1380,10 +1647,10 @@ def test_python_lane_rejects_an_empty_declared_required_marker(
 
     result, manifest = evidence_repository.run(env={"TRACEFOLD_FIXTURE_FAIL": "0"})
 
-    assert result.returncode != 0
-    assert "evidence_required_marker_lane_empty:golden" in manifest["errors"]
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "evidence_required_marker_lane_empty:golden" not in manifest["errors"]
     assert manifest["marker_lanes"]["golden"] == {
-        "status": "failure",
+        "status": "not_owned",
         "selected": 0,
         "passed": 0,
         "failed": 0,

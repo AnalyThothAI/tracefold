@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.evidence import TEST_PROFILE_SCHEMA_VERSION
+from tests.support.evidence import PYTHON_LANES, TEST_PROFILE_SCHEMA_VERSION, primary_lane_owner
 
 PROFILE_SCHEMA_VERSION = TEST_PROFILE_SCHEMA_VERSION
 PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
@@ -24,17 +24,14 @@ PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PATH_ENV = "TRACEFOLD_TEST_PROFILE_PATH"
 _PROFILE_LANE_ENV = "TRACEFOLD_TEST_PROFILE_LANE"
-_ENTRYPOINTS = {
-    "quality": "_collect-profile-quality",
-    "fast": "_collect-profile-fast",
-    "deterministic-full": "_collect-profile-deterministic-full",
-}
+_ENTRYPOINTS = {lane: f"_collect-profile-{lane}" for lane in PYTHON_LANES}
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("tracefold test profile")
     group.addoption("--test-profile", help="write a tracefold_test_profile_v1 JSON document")
     group.addoption("--test-profile-lane", help="stable name of the profiled test lane")
+    group.addoption("--test-profile-owner-lane", help="collect only the code-owned V3 primary lane")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -52,6 +49,32 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     recorder = _recorder(session.config)
     if recorder is not None:
         recorder.selected_nodeids = sorted(item.nodeid for item in session.items)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    recorder = _recorder(config)
+    if recorder is not None:
+        recorder.deterministic_inventory_nodeids = sorted(
+            item.nodeid
+            for item in items
+            if item.get_closest_marker("live") is None and item.get_closest_marker("scheduled") is None
+        )
+    owner_lane = config.getoption("--test-profile-owner-lane")
+    if not owner_lane:
+        return
+    if owner_lane not in PYTHON_LANES:
+        raise pytest.UsageError(f"unknown test profile owner lane: {owner_lane}")
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    root = Path(str(config.rootpath)).resolve()
+    for item in items:
+        path = item.path.resolve().relative_to(root).as_posix()
+        owner = primary_lane_owner(path, {marker.name for marker in item.iter_markers()})
+        (selected if owner == owner_lane else deselected).append(item)
+    items[:] = selected
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -86,6 +109,7 @@ class _ProfileRecorder:
     lane: str
     started: float
     selected_nodeids: list[str] = field(default_factory=list)
+    deterministic_inventory_nodeids: list[str] = field(default_factory=list)
     phases: dict[str, dict[str, float]] = field(default_factory=lambda: defaultdict(lambda: defaultdict(float)))
     outcomes: dict[str, str] = field(default_factory=dict)
 
@@ -134,6 +158,9 @@ class _ProfileRecorder:
             "selected": len(self.selected_nodeids),
             "selected_nodeids": self.selected_nodeids,
             "inventory_sha256": _digest_lines(self.selected_nodeids),
+            "deterministic_inventory_nodeids": self.deterministic_inventory_nodeids,
+            "deterministic_inventory_sha256": _digest_lines(self.deterministic_inventory_nodeids),
+            "deterministic_inventory_count": len(self.deterministic_inventory_nodeids),
             "wall_seconds": time.monotonic() - self.started,
             "phase_seconds": phase_seconds,
             "cases": sorted(cases, key=lambda row: (-float(row["total_seconds"]), str(row["nodeid"]))),
@@ -160,8 +187,40 @@ def build_report(
     history: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     inventories = {lane: set(_strings(profile.get("selected_nodeids"))) for lane, profile in profiles.items()}
-    full = inventories.get("deterministic-full", set())
     all_selected = set().union(*inventories.values()) if inventories else set()
+    profile_lanes = set(profiles)
+    v3_mode = "deterministic-full" not in profile_lanes
+    completeness_errors: list[str] = []
+    missing_owner_lanes: list[str] = []
+    unexpected_owner_lanes: list[str] = []
+    if v3_mode:
+        missing_owner_lanes = sorted(set(PYTHON_LANES) - profile_lanes)
+        unexpected_owner_lanes = sorted(profile_lanes - set(PYTHON_LANES))
+        completeness_errors.extend(f"profile_owner_lane_missing:{lane}" for lane in missing_owner_lanes)
+        completeness_errors.extend(f"profile_owner_lane_unexpected:{lane}" for lane in unexpected_owner_lanes)
+        expected_by_lane: dict[str, set[str]] = {}
+        for lane, profile in profiles.items():
+            raw_expected = profile.get("deterministic_inventory_nodeids")
+            if not isinstance(raw_expected, list) or any(not isinstance(value, str) for value in raw_expected):
+                completeness_errors.append(f"profile_deterministic_inventory_missing:{lane}")
+                continue
+            expected_by_lane[lane] = set(raw_expected)
+        full = next(iter(expected_by_lane.values()), set())
+        for lane, expected in expected_by_lane.items():
+            if expected != full:
+                completeness_errors.append(f"profile_deterministic_inventory_mismatch:{lane}")
+        missing_from_full = sorted(full - all_selected)
+        unexpected_from_full = sorted(all_selected - full)
+        if missing_from_full:
+            completeness_errors.append(f"profile_deterministic_inventory_missing_nodeids:{len(missing_from_full)}")
+        if unexpected_from_full:
+            completeness_errors.append(
+                f"profile_deterministic_inventory_unexpected_nodeids:{len(unexpected_from_full)}"
+            )
+    else:
+        full = inventories.get("deterministic-full", set())
+        missing_from_full = sorted(all_selected - full)
+        unexpected_from_full = []
     owners = {
         nodeid: sorted(lane for lane, inventory in inventories.items() if nodeid in inventory)
         for nodeid in sorted(all_selected)
@@ -193,12 +252,19 @@ def build_report(
             }
             for lane, profile in sorted(profiles.items())
         },
+        "completeness": {
+            "status": "failure" if completeness_errors else "success",
+            "errors": sorted(set(completeness_errors)),
+            "missing_owner_lanes": missing_owner_lanes,
+            "unexpected_owner_lanes": unexpected_owner_lanes,
+        },
         "inventory": {
             "unique_deterministic_nodeids": len(full),
             "total_entrypoint_executions": total_executions,
             "duplicate_executions": total_executions - len(all_selected),
             "duplicate_nodeids": duplicates,
-            "missing_from_deterministic_full": sorted(all_selected - full),
+            "missing_from_deterministic_full": missing_from_full,
+            "unexpected_from_deterministic_full": unexpected_from_full,
             "baseline_delta": {
                 "unique_deterministic_nodeids": len(full)
                 - int(baseline_inventory.get("unique_deterministic_nodeids", 0)),
@@ -227,10 +293,14 @@ def _duration_observations(profiles: dict[str, dict[str, Any]]) -> dict[str, flo
     for lane, profile in profiles.items():
         if not any(case.get("outcome") != "not_run" for case in profile.get("cases", [])):
             continue
-        phase_seconds = profile.get("phase_seconds", {})
-        observations[f"lane:{lane}"] = sum(float(phase_seconds.get(name, 0.0)) for name in _PHASE_FIELDS)
+        wall_seconds = profile.get("wall_seconds")
+        if isinstance(wall_seconds, (int, float)) and float(wall_seconds) >= 0.0:
+            observations[f"lane:{lane}"] = float(wall_seconds)
         for module in profile.get("modules", []):
             observations[f"module:{module['module']}"] = float(module.get("total_seconds", 0.0))
+    lane_keys = [f"lane:{lane}" for lane in PYTHON_LANES]
+    if all(key in observations for key in lane_keys):
+        observations["plan:python-v3-critical-path"] = max(observations[key] for key in lane_keys)
     return observations
 
 
@@ -303,12 +373,29 @@ def _aggregate_command(arguments: Sequence[str]) -> int:
     history_paths = list(options.history)
     if options.history_dir is not None and options.history_dir.exists():
         history_paths.extend(sorted(options.history_dir.glob("*.json")))
-    profiles = {lane: _read_json(options.profile_dir / f"{lane}.json") for lane in _ENTRYPOINTS}
+    profiles = {
+        str(profile["lane"]): profile
+        for path in sorted(options.profile_dir.glob("*.json"))
+        if isinstance((profile := _read_json(path)).get("lane"), str)
+    }
+    if not profiles:
+        raise ValueError(f"test_profile_directory_empty:{options.profile_dir}")
     report = build_report(
         profiles,
         baseline=_read_json(options.baseline),
         history=[_read_json(path) for path in history_paths],
     )
+    cli_errors = [
+        *(f"profile_owner_lane_missing:{lane}" for lane in sorted(set(PYTHON_LANES) - set(profiles))),
+        *(f"profile_owner_lane_unexpected:{lane}" for lane in sorted(set(profiles) - set(PYTHON_LANES))),
+    ]
+    if cli_errors:
+        report["completeness"] = {
+            "status": "failure",
+            "errors": sorted(set([*report["completeness"]["errors"], *cli_errors])),
+            "missing_owner_lanes": sorted(set(PYTHON_LANES) - set(profiles)),
+            "unexpected_owner_lanes": sorted(set(profiles) - set(PYTHON_LANES)),
+        }
     _write_json(options.output, report, root=_REPO_ROOT)
     inventory = report["inventory"]
     print(
@@ -320,6 +407,7 @@ def _aggregate_command(arguments: Sequence[str]) -> int:
                 "total_entrypoint_executions": inventory["total_entrypoint_executions"],
                 "duplicate_executions": inventory["duplicate_executions"],
                 "missing_from_deterministic_full": len(inventory["missing_from_deterministic_full"]),
+                "completeness": report["completeness"],
                 "baseline_delta": inventory["baseline_delta"],
                 "duration_ratchets": {key: value["status"] for key, value in report["duration_ratchets"].items()},
             },
@@ -328,6 +416,8 @@ def _aggregate_command(arguments: Sequence[str]) -> int:
             sort_keys=True,
         )
     )
+    if report["completeness"]["status"] != "success":
+        return 1
     if options.enforce_ratchets and any(
         value["status"] == "regression" for value in report["duration_ratchets"].values()
     ):

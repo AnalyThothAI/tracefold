@@ -7,6 +7,7 @@ import asyncio
 import gc
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import os
 import platform
@@ -15,6 +16,7 @@ import sys
 import threading
 import tomllib
 import warnings
+from collections import Counter
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,12 +27,56 @@ from _pytest.config import parse_warning_filter
 from hypothesis import __version__ as hypothesis_version
 from hypothesis import settings
 
-LANE_SCHEMA_VERSION = "tracefold_test_lane_v2"
-AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v2"
+LANE_SCHEMA_VERSION = "tracefold_test_lane_v3"
+AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v3"
 SCHEMA_VERSION = LANE_SCHEMA_VERSION
 TEST_PROFILE_SCHEMA_VERSION = "tracefold_test_profile_v1"
 _ALLOWED_DESELECTED_MARKERS = ("live", "scheduled")
-_RESOURCE_MARKERS = ("deploy", "e2e", "external_codegen", "golden", "integration", "slow")
+PYTHON_LANES = (
+    "python-hermetic",
+    "postgres-behavior",
+    "migration",
+    "runtime-process",
+    "frontend-python",
+    "trust-root",
+)
+REQUIRED_LANES = (
+    "quality-static",
+    *PYTHON_LANES,
+    "frontend-typecheck",
+    "frontend-lint",
+    "frontend-architecture",
+    "frontend-unit",
+    "frontend-format",
+    "frontend-build",
+    "browser",
+)
+_TRUST_ROOT_MODULES = frozenset(
+    {
+        "tests/architecture/test_docs_surface.py",
+        "tests/architecture/test_test_resource_declarations.py",
+        "tests/contract/test_evidence_v3_contract.py",
+        "tests/contract/test_evidence_v2_v3_shadow_contract.py",
+        "tests/contract/test_test_profile.py",
+        "tests/contract/test_test_resources_contract.py",
+        "tests/contract/test_verification_gate_contract.py",
+        "tests/deploy/test_main_ci_gate.py",
+        "tests/slow/test_frontend_harness_fail_closed.py",
+    }
+)
+_OWNERSHIP_RULES = (
+    "external_codegen=>frontend-python",
+    "verification self-test modules=>trust-root",
+    "tests/integration/*_migration.py|tests/integration/test_postgres_schema_runtime.py=>migration",
+    "tests/deploy|e2e|golden|slow and RabbitMQ integration modules=>runtime-process",
+    "integration=>postgres-behavior",
+    "default=>python-hermetic",
+)
+_RESOURCE_REQUIREMENTS = {
+    "postgres-behavior": ("postgresql",),
+    "migration": ("postgresql",),
+    "runtime-process": ("postgresql", "rabbitmq"),
+}
 _REQUIRED_MARKER_LANES = (
     "architecture",
     "contract",
@@ -80,6 +126,23 @@ _REQUIRED_VITEST_ROOTS = {
     "frontend-unit": ("web/tests/unit", "web/tests/component", "web/tests/routes"),
 }
 _REQUIRED_PLAYWRIGHT_ROOTS = {"browser": ("web/tests/e2e/full-stack",)}
+_FULL_PLAN_COMMANDS = {
+    "quality-static": ("make check-static",),
+    **{
+        lane: (
+            f'--evidence-lane="{lane}"',
+            f'--evidence-manifest="artifacts/test-evidence/lanes/{lane}.json"',
+        )
+        for lane in PYTHON_LANES
+    },
+    "frontend-typecheck": ("npm --prefix web run typecheck",),
+    "frontend-lint": ("npm --prefix web run lint:eslint",),
+    "frontend-architecture": ("npm run test:architecture -- --allowOnly=false",),
+    "frontend-unit": ("npm run test:unit -- --allowOnly=false",),
+    "frontend-format": ("npm --prefix web run format:check",),
+    "frontend-build": ("npm --prefix web run build",),
+    "browser": ("uv run python -m tests.browser.run_full_stack_smoke",),
+}
 _VITEST_TEST_FILE_SUFFIXES = tuple(
     f".{kind}.{extension}"
     for kind in ("test", "spec")
@@ -118,13 +181,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--evidence-manifest",
         action="store",
         default=None,
-        help="write the tracefold_test_lane_v2 JSON manifest",
+        help="write the tracefold_test_lane_v3 JSON manifest",
     )
     parser.addoption(
-        "--resource-evidence-manifest",
+        "--evidence-lane",
         action="store",
         default=None,
-        help="write the independently aggregated resource lane manifest",
+        help="run the code-owned Tracefold V3 primary lane",
     )
 
 
@@ -141,6 +204,14 @@ def pytest_configure(config: pytest.Config) -> None:
         config.add_cleanup(lambda: _finalize_evidence(config, recorder))
     recorder.original_event_loop_policy = asyncio.get_event_loop_policy()
     asyncio.set_event_loop_policy(_EvidenceEventLoopPolicy(recorder.original_event_loop_policy, recorder))
+    requested_lane = config.getoption("--evidence-lane")
+    if _is_tracefold_project(_REPO_ROOT):
+        if requested_lane not in PYTHON_LANES:
+            recorder.errors.append(f"evidence_lane_invalid:{requested_lane}")
+        else:
+            recorder.lane = str(requested_lane)
+    else:
+        recorder.lane = str(requested_lane or "python")
     if os.environ.get("PYTEST_ADDOPTS", "").strip():
         recorder.errors.append("evidence_pytest_addopts_forbidden")
     if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") != "1":
@@ -248,6 +319,8 @@ def pytest_deselected(items: list[pytest.Item]) -> None:
     if recorder is None:
         return
     for item in items:
+        if item.nodeid in recorder.owned_deselected:
+            continue
         if not any(item.get_closest_marker(marker) is not None for marker in _ALLOWED_DESELECTED_MARKERS):
             recorder.errors.append(f"evidence_unexpected_deselection:{item.nodeid}")
             continue
@@ -256,24 +329,85 @@ def pytest_deselected(items: list[pytest.Item]) -> None:
             recorder.allowed_deselected_modules.add(path.relative_to(recorder.root.resolve()).as_posix())
 
 
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    recorder = _recorder(config)
+    if recorder is None:
+        return
+    recorder.inventory_nodeids = sorted(item.nodeid for item in items)
+    recorder.collected_modules.update(
+        item.path.resolve().relative_to(recorder.root.resolve()).as_posix()
+        for item in items
+        if item.path.resolve().is_relative_to(recorder.root.resolve())
+    )
+    if not _is_tracefold_project(recorder.root):
+        recorder.assigned_nodeids = set(recorder.inventory_nodeids)
+        return
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    for item in items:
+        owner = primary_lane_owner(
+            item.path.resolve().relative_to(recorder.root.resolve()).as_posix(),
+            {marker.name for marker in item.iter_markers()},
+        )
+        recorder.owner_by_nodeid[item.nodeid] = owner
+        if owner == recorder.lane:
+            selected.append(item)
+        else:
+            deselected.append(item)
+    recorder.assigned_nodeids = {item.nodeid for item in selected}
+    recorder.owned_deselected = {item.nodeid for item in deselected}
+    items[:] = selected
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+
+
+def primary_lane_owner(path: str, markers: set[str]) -> str:
+    """Return the one Phase-1 owner for a deterministic Python test item."""
+
+    if "external_codegen" in markers:
+        return "frontend-python"
+    if path in _TRUST_ROOT_MODULES:
+        return "trust-root"
+    if path.startswith("tests/integration/") and (
+        path.endswith("_migration.py") or path == "tests/integration/test_postgres_schema_runtime.py"
+    ):
+        return "migration"
+    if (
+        path.startswith(("tests/deploy/", "tests/e2e/", "tests/golden/", "tests/slow/"))
+        or markers & {"deploy", "e2e", "golden", "slow"}
+        or path
+        in {
+            "tests/integration/test_cli_resources.py",
+            "tests/integration/test_news_bus_rabbitmq.py",
+        }
+    ):
+        return "runtime-process"
+    if "integration" in markers:
+        return "postgres-behavior"
+    return "python-hermetic"
+
+
 def pytest_collection_finish(session: pytest.Session) -> None:
     recorder = _recorder(session.config)
     if recorder is None:
         return
     recorder.selected = len(session.items)
-    collected_modules = {
-        item.path.resolve().relative_to(recorder.root.resolve()).as_posix()
-        for item in session.items
-        if item.path.resolve().is_relative_to(recorder.root.resolve())
-    } | recorder.allowed_deselected_modules
+    collected_modules = (
+        recorder.collected_modules
+        | {
+            item.path.resolve().relative_to(recorder.root.resolve()).as_posix()
+            for item in session.items
+            if item.path.resolve().is_relative_to(recorder.root.resolve())
+        }
+        | recorder.allowed_deselected_modules
+    )
     for module in sorted(_tracked_test_modules(recorder.root) - collected_modules):
         recorder.errors.append(f"evidence_tracked_test_module_not_collected:{module}")
     for marker in recorder.required_markers:
         recorder.marker_items[marker] = {
             item.nodeid for item in session.items if item.get_closest_marker(marker) is not None
         }
-        if not recorder.marker_items[marker]:
-            recorder.errors.append(f"evidence_required_marker_lane_empty:{marker}")
     for item in session.items:
         for marker in _ALLOWED_DESELECTED_MARKERS:
             if item.get_closest_marker(marker) is not None:
@@ -372,11 +506,7 @@ def _finalize_evidence(config: pytest.Config, recorder: _EvidenceRecorder) -> No
         if not manifest_path:
             recorder.errors.append("evidence_manifest_path_required")
             manifest_path = "artifacts/test-evidence/manifest.json"
-        resource_manifest = config.getoption("--resource-evidence-manifest")
-        resource_path = Path(str(resource_manifest)) if resource_manifest else None
-        if _is_tracefold_project(recorder.root) and resource_path is None:
-            recorder.errors.append("evidence_resource_manifest_path_required")
-        recorder.write(Path(str(manifest_path)), resource_path=resource_path)
+        recorder.write(Path(str(manifest_path)))
         if recorder.not_green and int(session.exitstatus) == int(pytest.ExitCode.OK):
             session.exitstatus = pytest.ExitCode.TESTS_FAILED
     finally:
@@ -575,6 +705,7 @@ def _recorder(config: pytest.Config | None) -> _EvidenceRecorder | None:
 @dataclass
 class _EvidenceRecorder:
     root: Path
+    lane: str = "python"
     selected: int = 0
     passed: set[str] = field(default_factory=set)
     failed: set[str] = field(default_factory=set)
@@ -591,6 +722,11 @@ class _EvidenceRecorder:
     required_markers: list[str] = field(default_factory=list)
     marker_items: dict[str, set[str]] = field(default_factory=dict)
     allowed_deselected_modules: set[str] = field(default_factory=set)
+    collected_modules: set[str] = field(default_factory=set)
+    inventory_nodeids: list[str] = field(default_factory=list)
+    assigned_nodeids: set[str] = field(default_factory=set)
+    owned_deselected: set[str] = field(default_factory=set)
+    owner_by_nodeid: dict[str, str] = field(default_factory=dict)
     current_nodeid: str = ""
     original_event_loop_policy: Any = None
     session: pytest.Session | None = None
@@ -619,25 +755,27 @@ class _EvidenceRecorder:
             or self.errors
         )
 
-    def write(self, path: Path, *, resource_path: Path | None) -> None:
+    def write(self, path: Path) -> None:
         commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=self.root)
         github_sha = os.environ.get("GITHUB_SHA")
         if github_sha and github_sha != commit_sha:
             self.errors.append("evidence_github_sha_mismatch")
         node_version = _capture(("node", "--version"), cwd=self.root, required=False)
-        if node_version == "unavailable":
+        if self.lane == "frontend-python" and node_version == "unavailable":
             self.errors.append("evidence_node_unavailable")
         uv_version = _capture(("uv", "--version"), cwd=self.root, required=False)
         if uv_version == "unavailable":
             self.errors.append("evidence_uv_unavailable")
-        resource_payload: dict[str, Any] | None = None
+        resource_metadata: dict[str, Any] = {}
+        resource_tool_versions: dict[str, str] = {}
         if _is_tracefold_project(self.root):
-            resource_payload, resource_errors = self._resource_lane()
+            requirements = _RESOURCE_REQUIREMENTS.get(self.lane, ())
+            resource_tool_versions, resource_metadata, resource_errors = _resource_identity(requirements)
             self.errors.extend(f"evidence_resource:{error}" for error in resource_errors)
         failed_count = max(len(self.failed), self.session_failures)
         passed_count = len(self.passed - self.failed - self.skipped - self.xfailed - self.xpassed - self.rerun)
         manifest = _lane_payload(
-            lane="python",
+            lane=self.lane,
             selected=self.selected,
             passed=passed_count,
             failed=failed_count,
@@ -653,8 +791,16 @@ class _EvidenceRecorder:
                 "hypothesis": hypothesis_version,
                 "uv": uv_version,
                 "node": node_version,
+                **resource_tool_versions,
             },
+            root=self.root,
         )
+        selected_nodeids = sorted(self.assigned_nodeids)
+        inventory_nodeids = sorted(self.inventory_nodeids)
+        if selected_nodeids != sorted(self.observed):
+            self.errors.append("evidence_selected_nodeids_outcome_mismatch")
+            manifest["status"] = "failure"
+            manifest["errors"] = sorted(set(self.errors))
         manifest.update(
             {
                 "commit_sha": commit_sha,
@@ -665,11 +811,18 @@ class _EvidenceRecorder:
                 "pytest_plugins": self.pytest_plugins,
                 "hypothesis": self.hypothesis,
                 "marker_lanes": {marker: self._marker_lane(marker) for marker in self.required_markers},
+                "selected_nodeids": selected_nodeids,
+                "inventory_nodeids": inventory_nodeids,
+                "inventory_sha256": _nodeids_sha256(inventory_nodeids),
+                "inventory_count": len(inventory_nodeids),
+                "plan_sha256": _plan_sha256(),
+                "lane_counts": {
+                    lane: sum(owner == lane for owner in self.owner_by_nodeid.values()) for lane in PYTHON_LANES
+                },
+                "resources": resource_metadata,
             }
         )
         _write_json(path, manifest)
-        if resource_payload is not None and resource_path is not None:
-            _write_json(resource_path, resource_payload)
 
     def _marker_lane(self, marker: str) -> dict[str, int | str]:
         return self._outcomes(self.marker_items.get(marker, set()))
@@ -685,11 +838,9 @@ class _EvidenceRecorder:
             (selected_items & self.passed) - self.failed - self.skipped - self.xfailed - self.xpassed - self.rerun
         )
         selected = len(selected_items)
-        not_green = bool(
-            selected <= 0 or passed != selected or failed or skipped or xfailed or xpassed or rerun or unhandled
-        )
+        not_green = bool(passed != selected or failed or skipped or xfailed or xpassed or rerun or unhandled)
         return {
-            "status": "failure" if not_green else "success",
+            "status": "not_owned" if selected <= 0 else ("failure" if not_green else "success"),
             "selected": selected,
             "passed": passed,
             "failed": failed,
@@ -699,28 +850,6 @@ class _EvidenceRecorder:
             "rerun": rerun,
             "unhandled": unhandled,
         }
-
-    def _resource_lane(self) -> tuple[dict[str, Any], list[str]]:
-        selected_items: set[str] = set()
-        for marker in _RESOURCE_MARKERS:
-            selected_items.update(self.marker_items.get(marker, set()))
-        outcomes = self._outcomes(selected_items)
-        tool_versions, resources, errors = _resource_identity()
-        payload = _lane_payload(
-            lane="resource",
-            selected=int(outcomes["selected"]),
-            passed=int(outcomes["passed"]),
-            failed=int(outcomes["failed"]),
-            skipped=int(outcomes["skipped"]),
-            xfailed=int(outcomes["xfailed"]),
-            xpassed=int(outcomes["xpassed"]),
-            rerun=int(outcomes["rerun"]),
-            unhandled=int(outcomes["unhandled"]),
-            errors=errors,
-            tool_versions=tool_versions,
-            metadata={"markers": list(_RESOURCE_MARKERS), "resources": resources},
-        )
-        return payload, errors
 
 
 def _capture(command: tuple[str, ...], *, cwd: Path, required: bool = True) -> str:
@@ -734,7 +863,7 @@ def _capture(command: tuple[str, ...], *, cwd: Path, required: bool = True) -> s
     return value if result.returncode == 0 and value else "unavailable"
 
 
-def _resource_identity() -> tuple[dict[str, str], dict[str, Any], list[str]]:
+def _resource_identity(required: Sequence[str]) -> tuple[dict[str, str], dict[str, Any], list[str]]:
     tool_versions = {
         "python": platform.python_version(),
         "pytest": pytest.__version__,
@@ -746,41 +875,43 @@ def _resource_identity() -> tuple[dict[str, str], dict[str, Any], list[str]]:
     resources: dict[str, Any] = {}
     errors: list[str] = []
 
-    dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", "")
-    if not dsn:
-        errors.append("postgresql_dsn_missing")
-    else:
-        try:
-            import psycopg
+    if "postgresql" in required:
+        dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", "")
+        if not dsn:
+            errors.append("postgresql_dsn_missing")
+        else:
+            try:
+                import psycopg
 
-            with psycopg.connect(dsn, connect_timeout=5) as connection:
-                database, server_version = connection.execute(
-                    "SELECT current_database(), current_setting('server_version')"
-                ).fetchone()
-            resources["postgresql"] = {
-                "database": str(database),
-                "server_version": str(server_version),
-            }
-            tool_versions["postgresql-server"] = str(server_version)
-            if database != "tracefold_test":
-                errors.append("postgresql_database_identity_invalid")
-        except Exception as exc:  # pragma: no cover - exercised by the canonical resource lane
-            errors.append(f"postgresql_identity_unavailable:{type(exc).__name__}")
+                with psycopg.connect(dsn, connect_timeout=5) as connection:
+                    database, server_version = connection.execute(
+                        "SELECT current_database(), current_setting('server_version')"
+                    ).fetchone()
+                resources["postgresql"] = {
+                    "database": str(database),
+                    "server_version": str(server_version),
+                }
+                tool_versions["postgresql-server"] = str(server_version)
+                if database != "tracefold_test":
+                    errors.append("postgresql_database_identity_invalid")
+            except Exception as exc:  # pragma: no cover - exercised by canonical resource lanes
+                errors.append(f"postgresql_identity_unavailable:{type(exc).__name__}")
 
-    amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "")
-    if not amqp_url:
-        errors.append("rabbitmq_url_missing")
-    else:
-        try:
-            properties = asyncio.run(_rabbitmq_server_properties(amqp_url))
-            product = str(properties.get("product", ""))
-            server_version = str(properties.get("version", ""))
-            resources["rabbitmq"] = {"product": product, "server_version": server_version}
-            tool_versions["rabbitmq-server"] = server_version or "unavailable"
-            if product != "RabbitMQ" or not server_version:
-                errors.append("rabbitmq_identity_invalid")
-        except Exception as exc:  # pragma: no cover - exercised by the canonical resource lane
-            errors.append(f"rabbitmq_identity_unavailable:{type(exc).__name__}")
+    if "rabbitmq" in required:
+        amqp_url = os.environ.get("TRACEFOLD_TEST_AMQP_URL", "")
+        if not amqp_url:
+            errors.append("rabbitmq_url_missing")
+        else:
+            try:
+                properties = asyncio.run(_rabbitmq_server_properties(amqp_url))
+                product = str(properties.get("product", ""))
+                server_version = str(properties.get("version", ""))
+                resources["rabbitmq"] = {"product": product, "server_version": server_version}
+                tool_versions["rabbitmq-server"] = server_version or "unavailable"
+                if product != "RabbitMQ" or not server_version:
+                    errors.append("rabbitmq_identity_invalid")
+            except Exception as exc:  # pragma: no cover - exercised by canonical resource lanes
+                errors.append(f"rabbitmq_identity_unavailable:{type(exc).__name__}")
 
     return tool_versions, resources, errors
 
@@ -840,6 +971,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     if arguments and arguments[0] == "aggregate":
         return _aggregate(arguments[1:])
+    if arguments and arguments[0] == "seal-clean":
+        return _seal_clean(arguments[1:])
     if arguments and arguments[0] == "record-command":
         return _record_command(arguments[1:])
     if arguments and arguments[0] == "record-vitest":
@@ -848,6 +981,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _record_playwright(arguments[1:])
     sys.stderr.write(
         "usage: python -m tests.support.evidence --assert-clean | "
+        "seal-clean --manifest PATH | "
         "aggregate --lane-dir DIR --output PATH --required-lane NAME [...]\n"
     )
     return 2
@@ -930,6 +1064,11 @@ def _record_playwright(arguments: Sequence[str]) -> int:
         errors.append("playwright_report_empty")
     if unhandled:
         errors.append(f"playwright_unhandled_errors:{unhandled}")
+    resource_versions: dict[str, str] = {}
+    resource_metadata: dict[str, Any] = {}
+    if options.lane == "browser":
+        resource_versions, resource_metadata, resource_errors = _resource_identity(("postgresql", "rabbitmq"))
+        errors.extend(f"evidence_resource:{error}" for error in resource_errors)
     payload = _lane_payload(
         lane=options.lane,
         selected=selected,
@@ -941,7 +1080,8 @@ def _record_playwright(arguments: Sequence[str]) -> int:
         rerun=rerun,
         unhandled=unhandled,
         errors=errors,
-        tool_versions={**_parse_tool_versions(()), "playwright": playwright_version},
+        tool_versions={**_parse_tool_versions(()), "playwright": playwright_version, **resource_versions},
+        metadata={"resources": resource_metadata},
     )
     _write_json(options.output, payload)
     return int(payload["status"] != "success")
@@ -1307,7 +1447,7 @@ def _record_command(arguments: Sequence[str]) -> int:
         tool_versions=tool_versions,
     )
     _write_json(options.output, payload)
-    return returncode
+    return returncode if returncode != 0 else int(payload["status"] != "success")
 
 
 def _parse_tool_versions(values: Sequence[str]) -> dict[str, str]:
@@ -1337,17 +1477,34 @@ def _lane_payload(
     errors: Sequence[str] = (),
     tool_versions: dict[str, str] | None = None,
     metadata: dict[str, Any] | None = None,
+    root: Path = _REPO_ROOT,
 ) -> dict[str, Any]:
+    commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=root)
+    payload_errors = list(errors)
+    github_sha = os.environ.get("GITHUB_SHA")
+    if github_sha and github_sha != commit_sha:
+        payload_errors.append("evidence_github_sha_mismatch")
     not_green = bool(
-        selected <= 0 or passed != selected or failed or skipped or xfailed or xpassed or rerun or unhandled or errors
+        selected <= 0
+        or passed != selected
+        or failed
+        or skipped
+        or xfailed
+        or xpassed
+        or rerun
+        or unhandled
+        or payload_errors
     )
     payload: dict[str, Any] = {
         "schema_version": LANE_SCHEMA_VERSION,
         "lane": lane,
         "required": True,
         "status": "failure" if not_green else "success",
-        "commit_sha": _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT),
-        "git_tree_sha": _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT),
+        "commit_sha": commit_sha,
+        "git_tree_sha": _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=root),
+        "uv_lock_sha256": _sha256(root / "uv.lock"),
+        "package_lock_sha256": _sha256(root / "web" / "package-lock.json"),
+        "plan_sha256": _plan_sha256(),
         "selected": selected,
         "passed": passed,
         "failed": failed,
@@ -1356,12 +1513,68 @@ def _lane_payload(
         "xpassed": xpassed,
         "rerun": rerun,
         "unhandled": unhandled,
-        "errors": sorted(set(errors)),
+        "errors": sorted(set(payload_errors)),
         "tool_versions": tool_versions or _parse_tool_versions(()),
+        "worktree": {"sealed": False, "clean": False, "changes": []},
     }
     if metadata:
         payload["metadata"] = metadata
     return payload
+
+
+def _nodeids_sha256(nodeids: Sequence[str]) -> str:
+    canonical = "\n".join(sorted(nodeids)) + "\n"
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _plan_sha256() -> str:
+    payload = {
+        "schema_version": AGGREGATE_SCHEMA_VERSION,
+        "required_lanes": list(REQUIRED_LANES),
+        "commands": {lane: list(commands) for lane, commands in _FULL_PLAN_COMMANDS.items()},
+        "python_lanes": list(PYTHON_LANES),
+        "ownership_rules": list(_OWNERSHIP_RULES),
+        "trust_root_modules": sorted(_TRUST_ROOT_MODULES),
+        "ownership_function": inspect.getsource(primary_lane_owner),
+        "resource_requirements": {lane: list(resources) for lane, resources in _RESOURCE_REQUIREMENTS.items()},
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _seal_clean(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence seal-clean")
+    parser.add_argument("--manifest", required=True, type=Path)
+    options = parser.parse_args(arguments)
+    manifest = _read_json_report(options.manifest)
+    if manifest is None:
+        sys.stderr.write(f"evidence_lane_manifest_invalid:{options.manifest}\n")
+        return 1
+    changes = list(tested_head_changes(_REPO_ROOT))
+    binding_errors: list[str] = []
+    expected = {
+        "commit_sha": _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT),
+        "git_tree_sha": _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT),
+        "uv_lock_sha256": _sha256(_REPO_ROOT / "uv.lock"),
+        "package_lock_sha256": _sha256(_REPO_ROOT / "web" / "package-lock.json"),
+        "plan_sha256": _plan_sha256(),
+    }
+    for field_name, expected_value in expected.items():
+        if manifest.get(field_name) != expected_value:
+            binding_errors.append(f"evidence_seal_{field_name}_mismatch")
+    if changes:
+        binding_errors.append("evidence_tested_head_dirty")
+    raw_errors = manifest.get("errors")
+    prior_errors = [str(value) for value in raw_errors] if isinstance(raw_errors, list) else []
+    errors = sorted(set([*prior_errors, *binding_errors]))
+    clean = not changes and not binding_errors
+    manifest["worktree"] = {"sealed": True, "clean": clean, "changes": changes}
+    manifest["errors"] = errors
+    if errors:
+        manifest["status"] = "failure"
+    _write_json(options.manifest, manifest)
+    if changes:
+        sys.stderr.write("evidence_tested_head_dirty:\n" + "\n".join(changes) + "\n")
+    return int(not clean or manifest.get("status") != "success")
 
 
 def _aggregate(arguments: Sequence[str]) -> int:
@@ -1372,9 +1585,21 @@ def _aggregate(arguments: Sequence[str]) -> int:
     options = parser.parse_args(arguments)
     required_lanes = tuple(dict.fromkeys(options.required_lane))
     errors: list[str] = []
+    worktree_changes = list(tested_head_changes(_REPO_ROOT))
+    if worktree_changes:
+        errors.append("evidence_tested_head_dirty")
     lanes: dict[str, Any] = {}
     commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT)
     git_tree_sha = _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT)
+    github_sha = os.environ.get("GITHUB_SHA")
+    if github_sha and github_sha != commit_sha:
+        errors.append("evidence_github_sha_mismatch")
+    uv_lock_sha256 = _sha256(_REPO_ROOT / "uv.lock")
+    package_lock_sha256 = _sha256(_REPO_ROOT / "web" / "package-lock.json")
+    plan_sha256 = _plan_sha256()
+    migration_head = _migration_head()
+    expected_inventory: list[str] | None = None
+    executed_nodeids: list[str] = []
     for lane in required_lanes:
         path = options.lane_dir / f"{lane}.json"
         if not path.is_file():
@@ -1398,6 +1623,11 @@ def _aggregate(arguments: Sequence[str]) -> int:
         status = lane_manifest.get("status")
         if status != "success":
             errors.append(f"required_lane_status_not_success:{lane}:{status}")
+        worktree = lane_manifest.get("worktree")
+        if not isinstance(worktree, dict) or worktree.get("sealed") is not True or worktree.get("clean") is not True:
+            errors.append(f"required_lane_worktree_not_clean:{lane}")
+        elif worktree.get("changes") != []:
+            errors.append(f"required_lane_worktree_changes_invalid:{lane}")
         for field_name in _NON_GREEN_OUTCOME_FIELDS:
             value = lane_manifest.get(field_name, 0)
             if value != 0:
@@ -1410,17 +1640,84 @@ def _aggregate(arguments: Sequence[str]) -> int:
             errors.append(f"required_lane_commit_mismatch:{lane}")
         if lane_manifest.get("git_tree_sha") != git_tree_sha:
             errors.append(f"required_lane_tree_mismatch:{lane}")
+        if lane_manifest.get("uv_lock_sha256") != uv_lock_sha256:
+            errors.append(f"required_lane_uv_lock_mismatch:{lane}")
+        if lane_manifest.get("package_lock_sha256") != package_lock_sha256:
+            errors.append(f"required_lane_package_lock_mismatch:{lane}")
+        if lane_manifest.get("plan_sha256") != plan_sha256:
+            errors.append(f"required_lane_plan_mismatch:{lane}")
+        if lane not in PYTHON_LANES:
+            continue
+        if lane_manifest.get("migration_head") != migration_head:
+            errors.append(f"required_lane_migration_head_mismatch:{lane}")
+        raw_selected = lane_manifest.get("selected_nodeids")
+        raw_inventory = lane_manifest.get("inventory_nodeids")
+        if not _is_sorted_unique_strings(raw_selected):
+            errors.append(f"required_lane_selected_nodeids_invalid:{lane}")
+            selected_nodeids: list[str] = []
+        else:
+            selected_nodeids = list(raw_selected)
+        if not _is_sorted_unique_strings(raw_inventory):
+            errors.append(f"required_lane_inventory_nodeids_invalid:{lane}")
+            inventory_nodeids: list[str] = []
+        else:
+            inventory_nodeids = list(raw_inventory)
+        if len(selected_nodeids) != lane_manifest.get("selected"):
+            errors.append(f"required_lane_selected_nodeids_count_mismatch:{lane}")
+        if len(inventory_nodeids) != lane_manifest.get("inventory_count"):
+            errors.append(f"required_lane_inventory_count_mismatch:{lane}")
+        if _nodeids_sha256(inventory_nodeids) != lane_manifest.get("inventory_sha256"):
+            errors.append(f"required_lane_inventory_digest_mismatch:{lane}")
+        if expected_inventory is None:
+            expected_inventory = inventory_nodeids
+        elif inventory_nodeids != expected_inventory:
+            errors.append(f"required_lane_inventory_mismatch:{lane}")
+        executed_nodeids.extend(selected_nodeids)
+
+    expected = set(expected_inventory or [])
+    nodeid_counts = Counter(executed_nodeids)
+    executed = set(nodeid_counts)
+    missing = sorted(expected - executed)
+    unexpected = sorted(executed - expected)
+    duplicates = sorted(nodeid for nodeid, count in nodeid_counts.items() if count > 1)
+    if expected_inventory is None:
+        errors.append("python_inventory_missing")
+    if missing:
+        errors.append(f"python_inventory_missing_nodeids:{len(missing)}")
+    if unexpected:
+        errors.append(f"python_inventory_unexpected_nodeids:{len(unexpected)}")
+    if duplicates:
+        errors.append(f"python_inventory_duplicate_nodeids:{len(duplicates)}")
     manifest = {
         "schema_version": AGGREGATE_SCHEMA_VERSION,
         "commit_sha": commit_sha,
         "git_tree_sha": git_tree_sha,
+        "uv_lock_sha256": uv_lock_sha256,
+        "package_lock_sha256": package_lock_sha256,
+        "plan_sha256": plan_sha256,
+        "migration_head": migration_head,
         "required_lanes": list(required_lanes),
+        "worktree": {"clean": not worktree_changes, "changes": worktree_changes},
         "overall": "failure" if errors else "success",
         "errors": sorted(set(errors)),
+        "inventory": {
+            "expected": len(expected),
+            "executed": len(executed),
+            "executions": len(executed_nodeids),
+            "sha256": _nodeids_sha256(expected_inventory or []),
+            "missing": missing,
+            "unexpected": unexpected,
+            "duplicates": duplicates,
+            "unclassified": missing,
+        },
         "lanes": lanes,
     }
     _write_json(options.output, manifest)
     return int(bool(errors))
+
+
+def _is_sorted_unique_strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value) and value == sorted(set(value))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

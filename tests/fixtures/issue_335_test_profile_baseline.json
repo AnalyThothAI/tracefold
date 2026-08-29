@@ -2,11 +2,20 @@
   "ci_run": 33234381220,
   "commit_sha": "0e2c515f8f4bc5309362f306593e11f9bb1447e3",
   "duration_ratchets": {
-    "lane:deterministic-full": {
-      "baseline_seconds": 537.7,
+    "plan:python-v3-critical-path": {
+      "baseline_seconds": 112.50985768800001,
       "regression_multiplier": 1.25,
       "required_consecutive_samples": 3,
-      "target_seconds": 300.0
+      "source": {
+        "commit_sha": "4351e703fae3a808c1980b52b2b8c80baef8f51b",
+        "github_run_id": 33242349219,
+        "artifact_id": 9711757225,
+        "lane": "runtime-process",
+        "profile_path": "profiles/runtime-process.json",
+        "field": "wall_seconds",
+        "wall_seconds": 112.50985768800001
+      },
+      "target_seconds": 120.0
     },
     "module:tests/integration/test_news_candidate_evaluator.py": {
       "baseline_seconds": 102.9,
