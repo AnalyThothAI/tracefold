@@ -163,16 +163,6 @@ export function caseClock(value: number | null | undefined): string {
   return `${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
 }
 
-/*
- * `+212 bps` / `−34 bps` — a realised result in the unit the ledger measured it in, which is also the unit
- * 今日已了结 prints on the execution workbench.
- */
-export function realizedLabel(bps: number | null | undefined): string {
-  if (bps == null) return "—";
-  const sign = bps > 0 ? "+" : bps < 0 ? "−" : "";
-  return `${sign}${Math.abs(bps)} bps`;
-}
-
 /** `+1.87%` — a basis-point measurement as a percentage, sign preserved. */
 export function bpsPercent(bps: number | null | undefined): string {
   if (bps == null) return "—";
