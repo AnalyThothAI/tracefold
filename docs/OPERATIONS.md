@@ -100,7 +100,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260829_0327`
+5. Deploy the exact reviewed image at the current Alembic head (`20260829_0328`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -733,7 +733,7 @@ Diagnose News in this order:
    full Program was executed again because a card landed while it was thinking
    (expect a handful per day; a surge means same-key floods);
    `pipeline.novelty_defaulted_24h` remains a historical-series diagnostic.
-   Native Program v6 fails closed on missing `novelty`, so new v6 rows must not
+   Native Program v7 fails closed on missing `novelty` or taxonomy, so new v7 rows must not
    increment it; a nonzero current-cohort value is an identity or audit defect.
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
@@ -745,13 +745,23 @@ created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
 news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
 newest agent *before* the join, not after: joining the whole appointment history
 and then taking one row reports the previous deployment's epoch when the current
-agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v4` rows from that
-epoch, bound to that exact bundle, enter metric v5, GEPA or release evidence. Every earlier Prompt/Program
+agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v5` rows from that
+epoch, bound to that exact bundle, enter metric v6, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality; that claim begins only after
 post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
+Issue #117 deliberately lands the production persistence/read/UI seam before
+those quality denominators exist, by operator sequencing decision. New ordinary
+News judgments therefore carry taxonomy immediately, while taxonomy quality
+stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
+registration derives its exact Git/image/bundle identity from the active
+Workers deployment receipt. `taxonomy-evaluate` then accepts only that
+PostgreSQL-clock registration, database-verified current regression evidence,
+accepted Review v5 Gold and replayable shadow artifacts, and still requires
+complete development and post-registration holdout denominators. Do not use taxonomy to alter Gate,
+delivery or Trading, and do not describe schema deployment as a model-quality PASS.
 The immediate cost is the normal 1 -> 2 provider-call increase. The intended
 future benefit is per-Predictor feedback, demonstrations, routing and
 fine-tuning without widening the consumer's `SemanticJudge.judge()` Interface.

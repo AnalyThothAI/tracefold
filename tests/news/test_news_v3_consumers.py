@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 import pytest
 
-from tests.support.news_judgment import trade_relevance
+from tests.support.news_judgment import news_taxonomy, trade_relevance
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerNewsDatabase
 from tracefold.news.artifact_identity import canonical_sha
@@ -715,7 +715,11 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(editorial_origin="model", relevance=trade_relevance())
+    editorial = EditorialEnvelope.issue(
+        editorial_origin="model",
+        relevance=trade_relevance(),
+        taxonomy=news_taxonomy(),
+    )
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -3039,6 +3043,8 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
+    assert inserted["editorial"]["editorial_contract_version"] == "news_editorial_v2"
+    assert inserted["editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
         "arm": "candidate",

@@ -28,6 +28,12 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "magnitude": 2,
         "confidence": 0.8,
         "audience": "crypto",
+        "taxonomy": {
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "confirmed",
+        },
         "relevance": {
             "impact_breadth": "single_instrument",
             "tradability": "direct",

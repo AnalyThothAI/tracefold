@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v4 rubrics with exact gold for a human to accept (writes a file, never the DB)",
+        help="propose news_review_v5 rubrics with exact taxonomy Gold (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an
@@ -221,6 +221,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
+    learning_taxonomy_register = learning_subcommands.add_parser(
+        "taxonomy-register",
+        help="register one frozen taxonomy shadow candidate before opening its future holdout",
+    )
+    learning_taxonomy_register.add_argument("--taxonomy-program-sha", required=True)
+    learning_taxonomy_register.add_argument("--taxonomy-model-binding-sha", required=True)
+    learning_taxonomy = learning_subcommands.add_parser(
+        "taxonomy-evaluate",
+        help="seal a news_taxonomy_v1 evaluation over frozen Gold/shadow cases",
+    )
+    learning_taxonomy.add_argument("--file", required=True, help="JSON/YAML mapping with a cases array")
+    learning_taxonomy.add_argument("--out", required=True, help="write TaxonomyEvaluationReportV1 JSON")
     # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
     # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
     # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,

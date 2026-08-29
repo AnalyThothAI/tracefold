@@ -14,6 +14,7 @@ import pytest
 
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_judgment import news_taxonomy
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import dataset as dataset_module
@@ -278,7 +279,7 @@ def _verdict() -> dict[str, object]:
     return {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "macro",
+        "event_type": "regulation",
         "assets": [],
         "direction": "bullish",
         "scope": "sector",
@@ -307,7 +308,16 @@ def _relevance() -> TradeRelevanceV1:
 
 def _editorial(*, origin: str = "model") -> EditorialEnvelope:
     if origin == "model":
-        return EditorialEnvelope.issue(editorial_origin="model", relevance=_relevance())
+        return EditorialEnvelope.issue(
+            editorial_origin="model",
+            relevance=_relevance(),
+            taxonomy=news_taxonomy(
+                event_family="regulatory_legal",
+                change_state="reported",
+                assertion_status="claimed",
+                source_authority="reputable_secondary",
+            ),
+        )
     return EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None)
 
 
@@ -882,7 +892,20 @@ def _open_event(
         }
         semantics["relevance"] = effective_relevance.model_dump(mode="json")
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
-        editorial = EditorialEnvelope.issue(editorial_origin="model", relevance=effective_relevance)
+        editorial = EditorialEnvelope.issue(
+            editorial_origin="model",
+            relevance=effective_relevance,
+            taxonomy=news_taxonomy(
+                event_family="regulatory_legal",
+                change_state="reported",
+                assertion_status="claimed",
+                source_authority="reputable_secondary",
+            ),
+        )
+        semantics["taxonomy"] = editorial.taxonomy.model_dump(
+            mode="json",
+            exclude={"taxonomy_version", "source_authority", "codebook_sha256"},
+        )
         scored = ScoredJudgment.issue(
             verdict=TriageVerdict.model_validate(verdict),
             editorial=editorial,
@@ -2237,6 +2260,11 @@ def test_k3_stability_reports_each_trial_and_pass_k(conn) -> None:
             )
         )
     )
+
+    regression_gates = report.evidence["regression_gates"]
+    assert set(regression_gates) == {"production_action", "asset_grounding", "novelty", "trade_relevance"}
+    assert {gate["gate"] for gate in regression_gates.values()} == set(regression_gates)
+    assert {gate["metric_sha256"] for gate in regression_gates.values()} == {report.evidence["metric_sha256"]}
 
     candidate_stability = report.evidence["stability"]["candidate"]
     assert len(candidate_stability) == len(development.cases) == len(_COMPILABLE_CORPUS)

@@ -19,6 +19,35 @@ from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
 
 
+def test_taxonomy_evaluate_has_one_frozen_input_and_one_report_output() -> None:
+    args = build_parser().parse_args(
+        ["news", "learning", "taxonomy-evaluate", "--file", "gold.json", "--out", "report.json"]
+    )
+
+    assert args.learning_command == "taxonomy-evaluate"
+    assert args.file == "gold.json"
+    assert args.out == "report.json"
+
+
+def test_taxonomy_register_pins_candidate_code_and_model_before_holdout() -> None:
+    args = build_parser().parse_args(
+        [
+            "news",
+            "learning",
+            "taxonomy-register",
+            "--taxonomy-program-sha",
+            "b" * 64,
+            "--taxonomy-model-binding-sha",
+            "c" * 64,
+        ]
+    )
+
+    assert args.learning_command == "taxonomy-register"
+    assert not hasattr(args, "tested_git_sha")
+    assert args.taxonomy_program_sha == "b" * 64
+    assert args.taxonomy_model_binding_sha == "c" * 64
+
+
 def test_learning_optimize_requires_every_budget_and_takes_no_model_flags() -> None:
     """The one optimization entry point (#202 §7).
 

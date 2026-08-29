@@ -31,6 +31,7 @@ from ..release.candidate import CandidateRegistry
 from ..review.desk import (
     READER_CONTRACT_SHA256,
     READER_CONTRACT_VERSION,
+    REVIEW_RUBRIC_VERSION,
 )
 from ..storage.root import NewsRepository
 from .contracts import (
@@ -49,6 +50,13 @@ from .dataset import (
 from .dataset import _fact_cluster as _dataset_fact_cluster
 from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt, receipt_from_output
 from .ledger import LearningLedger
+from .metric import (
+    METRIC_ID,
+    PRODUCTION_REGRESSION_GATES,
+    ProductionRegressionGateEvidenceV1,
+    metric_contract_sha256,
+    production_regression_measurements,
+)
 from .objective import (
     _expected_delivery,
     production_decision,
@@ -179,6 +187,7 @@ class CandidateEvaluator:
             catalog=self._candidates,
         )
         self._trusted_root_sha = trusted_root_sha
+        self._metric_sha256 = metric_contract_sha256(review_rubric_version=REVIEW_RUBRIC_VERSION)
 
     async def evaluate(self, request: EvaluationRequest) -> EvaluationReport:
         # Reject a stale constructor arm before loading data or spending one
@@ -1104,11 +1113,29 @@ class CandidateEvaluator:
         provider_cost_any_priced: dict[str, bool] = {"stable": False, "candidate": False}
         program_call_provenance_incomplete = False
         stability: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
+        regression_totals: dict[str, dict[str, Any]] = {
+            name: {
+                "denominator_n": 0,
+                "stable_failure_n": 0,
+                "candidate_failure_n": 0,
+                "candidate_only_regression_n": 0,
+                "candidate_only_case_ids": set(),
+            }
+            for name in PRODUCTION_REGRESSION_GATES
+        }
         for item in observations:
             review = reviews.get(str(item["case_ref"]["review_id"]), {})
             expected = _expected_delivery(str(review.get("should_push") or "uncertain"))
             stable_out = item["stable"]
             candidate_out = item["candidate"]
+            for gate, measurement in production_regression_measurements(review, stable_out, candidate_out).items():
+                totals = regression_totals[gate]
+                totals["denominator_n"] += measurement.denominator_n
+                totals["stable_failure_n"] += measurement.stable_failure_n
+                totals["candidate_failure_n"] += measurement.candidate_failure_n
+                totals["candidate_only_regression_n"] += measurement.candidate_only_regression_n
+                if measurement.candidate_only_regression_n:
+                    totals["candidate_only_case_ids"].add(str(item["case_ref"]["case_id"]))
             for arm_name, output in (("stable", stable_out), ("candidate", candidate_out)):
                 if output.get("stability"):
                     stability[arm_name].append(
@@ -1314,10 +1341,33 @@ class CandidateEvaluator:
             outcome = "unknown"
         else:
             outcome = "pass"
+        regression_gates = {}
+        for gate in PRODUCTION_REGRESSION_GATES:
+            totals = regression_totals[gate]
+            gate_outcome = (
+                "unknown"
+                if not totals["denominator_n"]
+                else "fail"
+                if totals["candidate_only_regression_n"]
+                else "pass"
+            )
+            regression_gates[gate] = ProductionRegressionGateEvidenceV1(
+                gate=gate,
+                metric_sha256=self._metric_sha256,
+                denominator_n=totals["denominator_n"],
+                stable_failure_n=totals["stable_failure_n"],
+                candidate_failure_n=totals["candidate_failure_n"],
+                candidate_only_regression_n=totals["candidate_only_regression_n"],
+                candidate_only_case_ids=tuple(sorted(totals["candidate_only_case_ids"])),
+                outcome=gate_outcome,
+            ).model_dump(mode="json")
         return {
             "evaluator_version": EVALUATOR_VERSION,
             "profile": _PROFILE,
             "trusted_root_sha": self._trusted_root_sha,
+            "metric_id": METRIC_ID,
+            "metric_sha256": self._metric_sha256,
+            "regression_gates": regression_gates,
             "stable_sha": self._stable.bundle_sha,
             "candidate_sha": candidate.candidate_sha,
             "candidate_kind": "prompt",

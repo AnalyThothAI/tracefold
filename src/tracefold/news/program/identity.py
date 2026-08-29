@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..artifact_identity import canonical_json, canonical_sha
+from ..taxonomy import IPTC_CODEBOOK_SHA256, IPTC_SUBJECT_CODES, source_authority_from_evidence
 from .assembly import READER_VALUE_DECISION, is_actionable, normalize_restates, restatement_index_error
 from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
 from .lm import (
@@ -72,6 +73,12 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
             "magnitude": 0,
             "confidence": 1.0,
             "audience": "none",
+            "taxonomy": {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            },
             "relevance": {
                 "impact_breadth": "none",
                 "tradability": "none",
@@ -142,6 +149,12 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     ),
     "routing.py": ("RoutedSemanticJudge",),
     "signatures.py": ("EventSemantics", "ReaderCard"),
+    "taxonomy.py": (
+        "ModelTaxonomyV1",
+        "NewsTaxonomyV1",
+        "source_authority",
+        "source_authority_from_evidence",
+    ),
 }
 
 
@@ -258,6 +271,11 @@ def _assembly_surface() -> dict[str, Any]:
         },
         "trade_channel_order": list(TRADE_CHANNEL_ORDER),
         "trade_affected_market_order": list(TRADE_AFFECTED_MARKET_ORDER),
+        "taxonomy": {
+            "codebook_sha256": IPTC_CODEBOOK_SHA256,
+            "subject_codes": list(IPTC_SUBJECT_CODES),
+            "source_authority_golden": source_authority_from_evidence({"source": "wire", "strategies": ["golden"]}),
+        },
     }
 
 
@@ -291,13 +309,17 @@ class _WithoutDocstrings(ast.NodeTransformer):
 
 
 def _implementation_ast_identities() -> dict[str, str]:
-    root = Path(__file__).resolve().parent
+    program_root = Path(__file__).resolve().parent
     identities: dict[str, str] = {}
     for filename, symbols in _MATERIAL_IMPLEMENTATION_SYMBOLS.items():
+        in_program = filename != "taxonomy.py"
         module = filename.removesuffix(".py")
-        source = (root / filename).read_text()
+        source = ((program_root if in_program else program_root.parent) / filename).read_text()
+        identity_module = module
         for symbol in symbols:
-            identities[f"{module}.{symbol}"] = _material_symbol_ast_sha(source, module=module, symbol=symbol)
+            identities[f"{identity_module}.{symbol}"] = _material_symbol_ast_sha(
+                source, module=identity_module, symbol=symbol
+            )
     return dict(sorted(identities.items()))
 
 
@@ -316,7 +338,7 @@ def _material_symbol_ast_sha(source: str, *, module: str, symbol: str) -> str:
     normalized = _WithoutDocstrings().visit(copy.deepcopy(node))
     return canonical_sha(
         {
-            "module": f"tracefold.news.program.{module}",
+            "module": (f"tracefold.news.{module}" if module == "taxonomy" else f"tracefold.news.program.{module}"),
             "symbol": symbol,
             "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
         }

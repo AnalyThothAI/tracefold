@@ -32,6 +32,21 @@ class NewsTriageAssetData(ExactApiSchema):
     role: str
 
 
+class NewsTaxonomyData(ExactApiSchema):
+    taxonomy_version: Literal["news_taxonomy_v1"]
+    codebook_sha256: str
+    subject_codes: list[str] = Field(default_factory=list, max_length=3)
+    subject_labels_zh: list[str] = Field(default_factory=list, max_length=3)
+    event_family: str
+    event_family_zh: str
+    change_state: str
+    change_state_zh: str
+    source_authority: str
+    source_authority_zh: str
+    assertion_status: str
+    assertion_status_zh: str
+
+
 class NewsAssetRefData(ExactApiSchema):
     """One durable Event asset, resolved against the #75 instrument universe (#87/#287).
 
@@ -66,6 +81,7 @@ class NewsTriageSummaryData(ExactApiSchema):
     direction: str | None = None
     magnitude: int | None = None
     event_type: str | None = None
+    taxonomy: NewsTaxonomyData | None = None
     scope: str | None = None
     novelty: str | None = None
     audience: str | None = None
@@ -97,6 +113,7 @@ __all__ = [
     "NewsDeliverySummaryData",
     "NewsOutcomeData",
     "NewsSymbolNormalizationData",
+    "NewsTaxonomyData",
     "NewsTriageAssetData",
     "NewsTriageSummaryData",
 ]

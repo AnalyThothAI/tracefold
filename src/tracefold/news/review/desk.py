@@ -15,7 +15,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
@@ -33,10 +33,18 @@ from ..program.contracts import (
     TradeSurprise,
     TradeTradability,
 )
+from ..taxonomy import (
+    IPTC_CODEBOOK_SHA256,
+    IPTC_MEDIA_TOPICS_VERSION,
+    IPTC_SUBJECT_CODEBOOK,
+    TAXONOMY_VERSION,
+    NewsTaxonomyV1,
+    source_authority_from_evidence,
+)
 
-REVIEW_RUBRIC_VERSION = "news_review_v4"
-# v2/v3 rows remain append-only audit history, but the v6 optimizer accepts
-# only the exact TradeRelevance gold introduced by v4.
+REVIEW_RUBRIC_VERSION = "news_review_v5"
+# v2-v4 rows remain append-only audit history. Current datasets accept only
+# v5 because taxonomy denominators must never mix versions.
 REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
 READER_CONTRACT_VERSION = "reader_contract_v2"
 # This is product truth, not prompt advice.  v2 is the operator-approved
@@ -95,6 +103,11 @@ _DIMENSIONS = {
     "trade_channels",
     "trade_affected_markets",
     "reader_value",
+    "taxonomy_subject_codes",
+    "taxonomy_event_family",
+    "taxonomy_change_state",
+    "taxonomy_source_authority",
+    "taxonomy_assertion_status",
 }
 _NOVELTY = {"new_fact", "progression", "restatement", "uncertain"}
 _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
@@ -113,7 +126,22 @@ _OWNER_BY_DIMENSION: dict[str, FirstBadOwner] = {
     "trade_channels": "triage_prompt",
     "trade_affected_markets": "triage_prompt",
     "reader_value": "triage_prompt",
+    "taxonomy_subject_codes": "taxonomy",
+    "taxonomy_event_family": "taxonomy",
+    "taxonomy_change_state": "taxonomy",
+    "taxonomy_source_authority": "taxonomy",
+    "taxonomy_assertion_status": "taxonomy",
 }
+
+_TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = (
+    "taxonomy_subject_codes",
+    "taxonomy_event_family",
+    "taxonomy_change_state",
+    "taxonomy_source_authority",
+    "taxonomy_assertion_status",
+)
+_TAXONOMY_CRITICAL_FAMILIES = frozenset({"product_service_change", "financial_results", "guidance_outlook"})
+_TAXONOMY_COLLISION_EVENT_TYPES = frozenset({"filing", "partnership", "funding", "macro", "whale", "rumor", "noise"})
 
 _STRATUM_ZH = {
     "local_macro_false_interrupt": "局部宏观误打断",
@@ -189,6 +217,11 @@ _DIMENSION_ZH = {
     "trade_channels": "传导渠道",
     "trade_affected_markets": "受影响市场",
     "reader_value": "读者时效价值",
+    "taxonomy_subject_codes": "新闻主题",
+    "taxonomy_event_family": "事件家族",
+    "taxonomy_change_state": "变化状态",
+    "taxonomy_source_authority": "来源权威",
+    "taxonomy_assertion_status": "断言状态",
 }
 _RELEASE_CODE_ZH = {
     "active_stable_changed": "运行期间稳定版已变化",
@@ -273,7 +306,7 @@ class ExpectedAsset(BaseModel):
 
 
 class ExpectedCorrection(BaseModel):
-    """The reviewer's stated correct values — `news_review_v4` exact gold.
+    """The reviewer's stated correct values — `news_review_v5` exact gold.
 
     Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
     scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
@@ -318,6 +351,30 @@ class ExpectedCorrection(BaseModel):
     # the must/should distinction the hard gates depend on.
 
 
+class TaxonomyReviewProvenanceV1(BaseModel):
+    """Who proposed, reviewed, and when needed adjudicated one taxonomy label."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    label_source: Literal["human", "model_draft"] = "human"
+    draft_author: str = Field(default="", max_length=128)
+    review_role: Literal["primary", "adjudication"] = "primary"
+    adjudicates_review_id: str = Field(default="", max_length=64)
+    draft_taxonomy: NewsTaxonomyV1 | None = None
+
+    @model_validator(mode="after")
+    def identities_match_role(self) -> TaxonomyReviewProvenanceV1:
+        if self.label_source == "model_draft" and not self.draft_author.strip():
+            raise ValueError("news_review_taxonomy_draft_author_required")
+        if self.label_source == "human" and (self.draft_author.strip() or self.draft_taxonomy is not None):
+            raise ValueError("news_review_taxonomy_human_draft_forbidden")
+        if self.review_role == "adjudication" and not self.adjudicates_review_id:
+            raise ValueError("news_review_taxonomy_adjudicated_review_required")
+        if self.review_role == "primary" and self.adjudicates_review_id:
+            raise ValueError("news_review_taxonomy_primary_adjudication_forbidden")
+        return self
+
+
 class EventRubricSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -328,6 +385,8 @@ class EventRubricSubmission(BaseModel):
     first_bad_owner: FirstBadOwner | None = None
     evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=32)
     expected: ExpectedCorrection | None = None
+    taxonomy: NewsTaxonomyV1
+    taxonomy_review: TaxonomyReviewProvenanceV1 = Field(default_factory=TaxonomyReviewProvenanceV1)
     expected_correction: str = Field(default="", max_length=2_000)
     note: str = Field(default="", max_length=2_000)
 
@@ -357,6 +416,9 @@ class EventRubricSubmission(BaseModel):
                 raise ValueError("news_review_expected_must_state_a_value")
         if "factual_fidelity" not in self.dimensions:
             raise ValueError("news_review_factual_fidelity_required")
+        missing_taxonomy = set(_TAXONOMY_DIMENSIONS) - set(self.dimensions)
+        if missing_taxonomy:
+            raise ValueError(f"news_review_taxonomy_dimension_required:{sorted(missing_taxonomy)[0]}")
         if self.should_push in {"must_push", "should_push"} and "timeliness" not in self.dimensions:
             raise ValueError("news_review_timeliness_required_for_push")
         if any(value == "fail" for value in self.dimensions.values()) and not self.evidence_refs:
@@ -669,6 +731,7 @@ class ReviewDesk:
             accepted = self._latest_accepted(virtual)
             reactions = PriceRepository(self._conn).event_reactions(event_id)
             trace = dict(row.get("trace") or {})
+            editorial = dict(row.get("editorial") or {})
             return {
                 "task": _task_public(virtual, accepted=accepted),
                 "disclosure": {
@@ -680,6 +743,7 @@ class ReviewDesk:
                 "evidence": row["evidence_snapshot"],
                 "agent": {
                     "verdict": row.get("verdict"),
+                    "taxonomy": editorial.get("taxonomy"),
                     "final_decision": row.get("final_decision"),
                     "override_rule": row.get("override_rule"),
                     "throttled_by": row.get("throttled_by"),
@@ -1263,9 +1327,8 @@ class ReviewDesk:
             now_ms=self._now_ms,
             cohort=cohort,
         )
-        # Taxonomy v1 is demonstrably overloaded (for example regulation/whale/funding).  Keep the diagnostic
-        # adapter intact, but do not expose a quality ranking that operators could mistake for learning truth.
-        review["event_types"] = []
+        # Price is discovery evidence, so even the versioned taxonomy is never ranked as quality here.
+        review["event_families"] = []
         return {
             "view": "market",
             "status": "ready" if cohort else "insufficient_evidence",
@@ -1357,6 +1420,18 @@ class ReviewDesk:
         if task.task_version != task_ref.task_version:
             raise ValueError("news_review_task_version_conflict")
         previous = self._latest_accepted(task)
+        card = dict(dict(task.row.get("evidence_snapshot") or {}).get("card") or {})
+        expected_authority = source_authority_from_evidence(card)
+        if submission.taxonomy.source_authority != expected_authority:
+            raise ValueError("news_review_taxonomy_source_authority_code_mismatch")
+        provenance = submission.taxonomy_review
+        if provenance.draft_author and provenance.draft_author == principal.subject:
+            raise ValueError("news_review_taxonomy_self_acceptance_forbidden")
+        if provenance.review_role == "adjudication":
+            if previous is None or provenance.adjudicates_review_id != previous["review_id"]:
+                raise ValueError("news_review_taxonomy_adjudication_target_invalid")
+            if previous["reviewer"] == principal.subject:
+                raise ValueError("news_review_taxonomy_adjudicator_not_independent")
         owner = submission.first_bad_owner or _derive_owner(submission)
         created_at = self._db_now_ms()
         payload = submission.model_dump(mode="json")
@@ -1371,10 +1446,12 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
+        critical = _taxonomy_review_requires_adjudication(submission, task.row)
         release_eligible = (
             bool(task.row.get("evidence_release_eligible"))
             and str(task.selection.get("stratum")) != "high_reaction"
             and self._event_matches_current_release(task)
+            and (not critical or provenance.review_role == "adjudication")
         )
         self._conn.execute(
             """
@@ -2120,6 +2197,7 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     if verdict.get("direction") in {"bullish", "bearish"}:
         dimensions.extend(["direction", "magnitude"])
     dimensions.append("timeliness")
+    dimensions.extend(_TAXONOMY_DIMENSIONS)
     editorial = dict(row.get("editorial") or {})
     if editorial.get("editorial_origin") == "model" and editorial.get("relevance") is not None:
         dimensions.extend(
@@ -2139,7 +2217,45 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
         "dimension_values": ["pass", "fail", "uncertain", "not_applicable"],
         "novelty_values": sorted(_NOVELTY),
         "first_bad_owner_values": list(FirstBadOwner.__args__),  # type: ignore[attr-defined]
+        "taxonomy": {
+            "taxonomy_version": TAXONOMY_VERSION,
+            "iptc_upstream_version": IPTC_MEDIA_TOPICS_VERSION,
+            "codebook_sha256": IPTC_CODEBOOK_SHA256,
+            "subject_codes": [code for code, _label in IPTC_SUBJECT_CODEBOOK],
+            "source_authority_owner": "code",
+        },
     }
+
+
+def _taxonomy_review_requires_adjudication(
+    submission: EventRubricSubmission,
+    row: Mapping[str, Any],
+) -> bool:
+    verdict = dict(row.get("verdict") or {})
+    return taxonomy_requires_independent_adjudication(
+        submission.taxonomy,
+        legacy_event_type=str(verdict.get("event_type") or ""),
+        draft_taxonomy=submission.taxonomy_review.draft_taxonomy,
+    )
+
+
+def taxonomy_requires_independent_adjudication(
+    taxonomy: NewsTaxonomyV1,
+    *,
+    legacy_event_type: str = "",
+    draft_taxonomy: NewsTaxonomyV1 | None = None,
+) -> bool:
+    """The one code-owned predicate for taxonomy-critical review and evaluation."""
+
+    return bool(
+        taxonomy.event_family in _TAXONOMY_CRITICAL_FAMILIES
+        or taxonomy.event_family == "other"
+        or taxonomy.change_state == "unknown"
+        or taxonomy.assertion_status in {"confirmed", "rumor", "unknown"}
+        or taxonomy.source_authority == "unknown"
+        or legacy_event_type in _TAXONOMY_COLLISION_EVENT_TYPES
+        or (draft_taxonomy is not None and draft_taxonomy != taxonomy)
+    )
 
 
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -2495,4 +2611,5 @@ __all__ = [
     "ReviewSubmission",
     "TaskRef",
     "review_read_statements",
+    "taxonomy_requires_independent_adjudication",
 ]

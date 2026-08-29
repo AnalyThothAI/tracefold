@@ -409,7 +409,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260829_0327` head; schema tests also run against that migrated head.
+current `20260829_0328` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -537,9 +537,11 @@ source route and factory-v7 hard cut without rewriting or appending the
 history, but exact current-bundle acceptance makes factory-v6 evidence
 audit-only and starts the factory-v7 eligible cohort at zero.
 
-Review v4 uses exact gold for `trade_impact_breadth`, `trade_tradability`,
+Current Review v5 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
-`trade_affected_markets` and `reader_value`. Work the fixed targeted strata
+`trade_affected_markets` and `reader_value`, and adds exact Gold for all five
+`news_taxonomy_v1` axes. Critical taxonomy cases require an independent
+adjudication receipt before they enter release denominators. Work the fixed targeted strata
 `local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
 `regional_direct_exception`, `scheduled_or_in_line_macro`,
 `color_only_progression` and `macro_random_control`. Model drafts remain files;
@@ -751,7 +753,7 @@ Hard gates come first and are not averaged with anything: `must_push` miss,
 `must_hold` send, background sent realtime (objective guards separated), schema
 invalidity, ungrounded primary, factual contradiction, relevance inconsistency,
 a card carrying a URL or describing its writer as a model, or known duplicate
-leak scores the example zero. What survives is metric v5: 45% final production
+leak scores the example zero. What survives is metric v6: 45% final production
 action, 35% exact TradeRelevance dimensions, 10% semantics/novelty, 10%
 ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint.
 Every failed scored dimension needs exact expected gold; without it the field is

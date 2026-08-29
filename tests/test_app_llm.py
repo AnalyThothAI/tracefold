@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
 from tracefold.app.workers.wiring import news as workers
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
 from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, ProposalReceipt
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
@@ -149,6 +149,12 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
             "channels": ["exchange_access"],
             "affected_markets": ["single_asset"],
             "reader_value": "realtime",
+        },
+        "taxonomy": {
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "confirmed",
         },
     }
     delegate_kwargs: dict[str, Any] = {
@@ -608,6 +614,12 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
             "affected_markets": ["single_asset"],
             "reader_value": "realtime",
         },
+        "taxonomy": {
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "confirmed",
+        },
     }
     card = {"headline_zh": "比特币将在新交易所上线", "why_zh": "新增交易渠道可扩大现货流动性。"}
 
@@ -926,7 +938,7 @@ def _wire_startup_test(
     manifest = pipeline.triage.runtime_manifest
     assert manifest["image_digest"] == "image"
     assert manifest["runtime_revision"] == "revision"
-    assert manifest["manifest_sha"] == learning_runtime.runtime_manifest_sha(
+    assert manifest["manifest_sha"] == runtime_manifest_sha(
         stable_bundle_sha=stable_arm.bundle_sha,
         candidate_shas=manifest["candidate_shas"],
         image_digest=manifest["image_digest"],

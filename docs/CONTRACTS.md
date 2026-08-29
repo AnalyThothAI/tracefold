@@ -631,6 +631,23 @@ owner: the sibling editorial envelope's `TradeRelevanceV1.reader_value`.
   `crypto_broad|us_equity_broad|rates|fx|energy|metals|single_asset`;
 - `reader_value`: `escalate|realtime|background|none`.
 
+The sibling `news_taxonomy_v1` is a fact projection, not delivery intent:
+
+- `subject_codes`: zero to three qcodes from the 35-node IPTC Media Topics
+  subset pinned at upstream version `2026-01-05` and codebook SHA
+  `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`;
+- `event_family`: one of the 13 event families defined in
+  [`docs/NEWS_TAXONOMY.md`](NEWS_TAXONOMY.md);
+- `change_state`: `announced|scheduled|effective|reported|updated|delayed|cancelled|recalled|unknown`;
+- `assertion_status`: `confirmed|claimed|rumor|conflicted|unknown`;
+- `source_authority`: `regulatory_filing|issuer_first_party|reputable_secondary|unknown`,
+  derived by code from structured source/provenance and absent from model output.
+
+`other` and `unknown` are valid abstentions. Unknown qcodes, more than three
+qcodes, and a pinned parent together with one of its pinned descendants fail
+schema validation. Legacy `event_type` remains a diagnostic field; it is not
+taxonomy Gold, routing authority or a release score.
+
 Empty channels/markets are valid only for contextual/none tradability with a
 background/none reader value. The normalizer records the raw arrays, then
 de-duplicates and orders them before exact gold, hashing and replay.
@@ -642,9 +659,11 @@ second model opinion.
 
 `SemanticJudgment` atomically carries verdict, an `EditorialEnvelope`, trace,
 usage and runtime identities. The envelope is
-`{editorial_contract_version=news_editorial_v1, editorial_origin,
-relevance, editorial_sha256}`: model origin requires relevance;
-`telemetry_deterministic` and `degraded_unavailable` require null relevance.
+`{editorial_contract_version=news_editorial_v2, editorial_origin,
+relevance, taxonomy, editorial_sha256}`: model origin requires both relevance
+and taxonomy; `telemetry_deterministic` and `degraded_unavailable` require both
+to be null. The explicit v1 reader excludes taxonomy from its historical hash,
+so old rows remain readable and are never rewritten.
 An admitted listing still runs the normal Program and uses `model` origin;
 listing admission is an objective policy fact, not synthetic relevance.
 `ScoredJudgment` is the only projection accepted by policy, baseline, compiler,
@@ -666,7 +685,7 @@ demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
-`news_semantic_program_v6` (or `news_oi_signal_v1` for deterministic OI),
+`news_semantic_program_v7` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
 `opennews_source_classifier_v1`. The epoch is the running bundle's
@@ -694,7 +713,7 @@ image as `<program_sha256>.json` and selected by the code-owned registry. Since
 than an advisory appended to a rendered stack, and the reviewed seed text lives
 in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
 code identity is computed rather than declared. The stable root is
-`c71bd9041f26d8ee75f055dc0997a92a2b44c1fbdb0d00d1a2e9ecb18ee675a4`.
+`0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -1036,7 +1055,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260829_0327`). Since
+append without rewrite access (current at migration `20260829_0328`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
@@ -1182,7 +1201,7 @@ gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v5` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v6` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
 ReaderCard copy lint, normalized over the components a case carries. The lint
@@ -1275,7 +1294,7 @@ Reviews whose `evidence_version` has been superseded are not replayable and are
 excluded, the same rule `_load_case` already enforced.
 
 The recorded metric audit/replay is pinned to a checked-in corpus
-(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v5), not to the live
+(`tests/fixtures/news_audit_replay_corpus_v2.json` for metric v6), not to the live
 database, so it proves metric wiring rather than tracking corpus growth. The v1
 fixture remains frozen metric-v3 audit evidence. The
 expected values are held only by `tests/news/test_news_audit_replay_corpus.py`;
@@ -1287,15 +1306,16 @@ equality-preserving map, which keeps every comparison the recorded metric makes
 and is why the fixture is valid for `--mode recorded` only. The allowlist is the
 design: a key nobody thought of is redacted rather than published.
 
-Reviews are accepted under `news_review_v4`. Its exact optional `expected` gold
-includes magnitude, direction, assets and the seven TradeRelevance fields
+Reviews are accepted under `news_review_v5`. Its exact Gold includes the five
+taxonomy axes; its optional `expected` block continues to cover magnitude,
+direction, assets and the seven TradeRelevance fields
 (`trade_impact_breadth`, `trade_tradability`, `trade_surprise`,
 `trade_development_delta`, `trade_channels`, `trade_affected_markets`, and
 `reader_value`). Accepted `novelty` and `should_push` are already their own
 typed truth rather than duplicate `expected` fields. Every failed scored
 dimension must have expected gold; otherwise it is not scored, with no
 any-change fallback. Channels/markets canonicalize before exact comparison. Historical
-v2/v3 rows remain readable audit history but cannot enter v7 metric/GEPA/release
+v2-v4 rows remain readable audit history but cannot enter current metric/GEPA/release
 evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
@@ -1377,7 +1397,7 @@ not by itself evidence that a dataset identity is wrong. Exit `0` is `ADVANCE`;
 `1` is `NO_OP` or `REJECTED`, both complete answers.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
-[--include-reviewed]` proposes `news_review_v4` rubrics for
+[--include-reviewed]` proposes `news_review_v5` rubrics for
 a human to accept and writes a file, never a review. It drafts from the
 ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
 that drafted the Events a #193 experiment run had frozen went with that loop in
@@ -1441,13 +1461,27 @@ audit history and a new experiment re-freezes.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
-the deployment-time `program_v7` epoch and accepts only `news_review_v4`;
+the running bundle's runtime-owned epoch and accepts only `news_review_v5`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
 dataset or metric-v4 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `optimize`, `freeze` — and none of them can ship anything.
+`draft-reviews`, `taxonomy-register`, `taxonomy-evaluate`, `optimize`, `freeze` — and none of them can ship anything.
+`taxonomy-register` seals the exact tested code, taxonomy shadow Program/model
+binding and active production identities at a PostgreSQL-clock timestamp before
+the future holdout opens. `tested_git_sha` is derived from the current
+content-addressed Workers deployment receipt, never accepted as operator input;
+an unversioned image/revision or mismatched active bundle is rejected.
+`taxonomy-evaluate --file CASES --out REPORT` seals a cluster-deduplicated
+`TaxonomyEvaluationReportV1` and writes it through the existing append-only
+learning artifact ledger. The command accepts only database-verified Review v5
+Gold and exact replayable `shadow_observation` artifacts under that durable
+registration; it reports every preregistered denominator and gate. Insufficient
+development or future holdout evidence forces `UNKNOWN`. The four existing
+regression gates are re-read from PostgreSQL release evidence and must bind one
+exact current candidate, dataset and metric; a file cannot declare their
+outcomes.
 `run` is the recommended composition of `readiness`, `baseline` and
 `optimize`; the rest stay callable one at a time. `news release` admits a
 candidate and moves it: `register`,

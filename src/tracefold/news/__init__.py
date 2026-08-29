@@ -41,6 +41,12 @@ from .progression_review import (
     ProgressionVerifier,
 )
 from .source_contracts import EVENT_KINDS, EventKind, SourceContractReason
+from .taxonomy import (
+    ModelTaxonomyV1,
+    NewsTaxonomyV1,
+    SourceAuthority,
+    source_authority_from_evidence,
+)
 from .told_context import NEWS_RETRIEVAL_SHA256
 from .tradability import (
     REQUIRED_TRADABILITY_VENUES,
@@ -60,7 +66,9 @@ __all__ = [
     "TRADABILITY_REVIEW_TIMEOUT_SECONDS",
     "EditorialEnvelope",
     "EventKind",
+    "ModelTaxonomyV1",
     "NewsFeedEntry",
+    "NewsTaxonomyV1",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
@@ -78,6 +86,7 @@ __all__ = [
     "SemanticJudge",
     "SemanticJudgeError",
     "SemanticJudgment",
+    "SourceAuthority",
     "SourceContractReason",
     "TelegramDeliveryReceipt",
     "TradabilityMatch",
@@ -86,4 +95,5 @@ __all__ = [
     "TradeRelevanceV1",
     "TriageContext",
     "TriageVerdict",
+    "source_authority_from_evidence",
 ]

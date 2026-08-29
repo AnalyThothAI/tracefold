@@ -118,6 +118,42 @@ def test_progression_verifier_compacts_a_long_multiline_reason_before_it_reaches
     assert review.reason_zh.endswith("…")
 
 
+def test_taxonomy_cannot_change_the_progression_review_request() -> None:
+    response = {"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}
+    rendered: list[str] = []
+    for event_family in ("regulatory_legal", "product_service_change"):
+        lm = ScriptedLM([response])
+        asyncio.run(
+            _program(lm).review(
+                event={"leader_title": "Current"},
+                verdict={
+                    "headline_zh": "当前新闻",
+                    "why_zh": "当前影响",
+                    "event_type": "regulation",
+                    "taxonomy": {"event_family": event_family},
+                },
+                candidates=[
+                    {
+                        "i": 0,
+                        "headline_zh": "候选新闻",
+                        "event_type": "regulation",
+                        "event_family": event_family,
+                        "symbols": [],
+                    }
+                ],
+            )
+        )
+        rendered.append(
+            "\n".join(
+                part.text for message in lm.requests[0].messages for part in message.parts if hasattr(part, "text")
+            )
+        )
+
+    assert rendered[0] == rendered[1]
+    assert '"event_type":"regulation"' in rendered[0]
+    assert "event_family" not in rendered[0]
+
+
 def test_identity_names_native_dspy_render_capability_and_two_call_ceiling() -> None:
     schema = _program(ScriptedLM([], structured_output="json_schema"))
     object_mode = _program(ScriptedLM([], structured_output="json_object"))

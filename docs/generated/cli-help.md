@@ -331,16 +331,20 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,optimize,run,freeze} ...
+                               {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-evaluate,optimize,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,optimize,run,freeze}
+  {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-evaluate,optimize,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
-    draft-reviews       propose news_review_v4 rubrics with exact gold for a
-                        human to accept (writes a file, never the DB)
+    draft-reviews       propose news_review_v5 rubrics with exact taxonomy
+                        Gold (writes a file, never the DB)
+    taxonomy-register   register one frozen taxonomy shadow candidate before
+                        opening its future holdout
+    taxonomy-evaluate   seal a news_taxonomy_v1 evaluation over frozen
+                        Gold/shadow cases
     optimize            run the one bounded GEPA optimization over a frozen
                         development dataset; ADVANCE is not a release
     run                 the recommended path: readiness -> standalone baseline
@@ -433,6 +437,32 @@ options:
   --include-reviewed  also draft Events that already carry an accepted review
                       (default: only unjudged ones)
   --out OUT           write the draft batch JSON for human review
+
+```
+
+## `news learning taxonomy-register`
+
+```
+usage: tracefold news learning taxonomy-register [-h]
+                                                 --taxonomy-program-sha TAXONOMY_PROGRAM_SHA
+                                                 --taxonomy-model-binding-sha TAXONOMY_MODEL_BINDING_SHA
+
+options:
+  -h, --help            show this help message and exit
+  --taxonomy-program-sha TAXONOMY_PROGRAM_SHA
+  --taxonomy-model-binding-sha TAXONOMY_MODEL_BINDING_SHA
+
+```
+
+## `news learning taxonomy-evaluate`
+
+```
+usage: tracefold news learning taxonomy-evaluate [-h] --file FILE --out OUT
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE  JSON/YAML mapping with a cases array
+  --out OUT    write TaxonomyEvaluationReportV1 JSON
 
 ```
 

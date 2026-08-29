@@ -83,7 +83,12 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # below is untouched.
 # #344 moves the execution identity and Program display version to the native DSPy v6 hard cut. Recorded
 # mode still makes no provider call; every score and case result above remains unchanged.
-_EXPECTED_REPORT_SHA256 = "003240e97645f3b58032661461bca2c1fcb350f515ee641cecc1174e5d271150"
+# #117 moves the current Program identity to v7 and the metric receipt to v6 so its gold source names the
+# exact review rubric instead of always claiming v4. This recorded corpus remains v1 historical data: no
+# taxonomy is backfilled and every score/case result above stays unchanged. The taxonomy regression verifier
+# also exposes the exact code-owned metric receipt SHA from this same source module, so its helper-source root
+# moves once more while the pinned case and cluster scores remain unchanged.
+_EXPECTED_REPORT_SHA256 = "24b505f7bab868329b725fb80c62501aeea635352668e004eb69eae82dd6a07b"
 
 
 @pytest.fixture(scope="module")
@@ -199,7 +204,7 @@ def test_audit_corpus_keeps_its_original_program_identity_and_recorded_mode_uses
     assert report.identity["program_sha256"] == shipped
     assert corpus["program_sha256"] == _V6_AUDIT_CORPUS_PROGRAM_SHA256
     assert shipped != corpus["program_sha256"], "re-point this test once a current-epoch corpus is recorded"
-    assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v5"
+    assert report.identity["metric_id"] == "tracefold.news.production_action_trade_relevance_v6"
     # Recorded mode uses the persisted complete DecisionResult and never replays today's policy.
     assert report.identity["policy_sha256"] is None
     assert report.identity["policy_values"] is None

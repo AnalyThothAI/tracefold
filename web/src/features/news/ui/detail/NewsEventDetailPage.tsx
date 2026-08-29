@@ -317,11 +317,17 @@ function EventReactions({
  * dash when the server has nothing for it, so a macro Event with no assets does not show a row of dashes.
  */
 function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
+  const taxonomy = triage.taxonomy;
   return (
     <FactGrid
       className="news-detail-fact-grid"
       facts={[
-        { label: "类型", value: triage.event_type_zh },
+        { label: "事件族", value: taxonomy?.event_family_zh ?? "" },
+        { label: "变化状态", value: taxonomy?.change_state_zh ?? "" },
+        { label: "来源权威", value: taxonomy?.source_authority_zh ?? "" },
+        { label: "断言状态", value: taxonomy?.assertion_status_zh ?? "" },
+        { label: "主题", value: taxonomy?.subject_labels_zh?.join("、") ?? "" },
+        { label: "旧分类", value: triage.event_type_zh },
         { label: "范围", value: triage.scope_zh },
         // Confidence used to sit beside the direction, where it competed with the one number that matters
         // there. It is a judgment detail like the rest, so it reads as one (#87).

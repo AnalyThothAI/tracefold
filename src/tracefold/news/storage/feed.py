@@ -28,6 +28,7 @@ from ..source_contracts import (
     SOURCE_CONTRACT_FAMILIES,
     EventKind,
 )
+from ..taxonomy import taxonomy_public
 from ..timeline import event_timeline
 from .feed_sql import (
     ADMITTED_SQL,
@@ -262,6 +263,7 @@ class FeedStorage:
                 error_code=(latest_triage or {}).get("error_code"),
                 model_decision=(latest_triage or {}).get("model_decision"),
                 verdict=(latest_triage or {}).get("verdict") or {},
+                taxonomy=dict((latest_triage or {}).get("editorial") or {}).get("taxonomy"),
                 full=True,
             ),
             "timeline": timeline,
@@ -836,6 +838,7 @@ def _triage_summary(
     error_code: Any = None,
     model_decision: Any = None,
     verdict: Mapping[str, Any] | None = None,
+    taxonomy: Mapping[str, Any] | None = None,
     full: bool = False,
 ) -> dict[str, Any] | None:
     """The reader-facing Triage summary shared by the feed row and the Event detail.
@@ -880,6 +883,7 @@ def _triage_summary(
         "confidence": _optional_float(v.get("confidence")),
         "actionable": _optional_bool(v.get("actionable")),
         "model_decision": model_decision,
+        "taxonomy": taxonomy_public(taxonomy),
         "why_zh": v.get("why_zh"),
         "assets": _triage_assets(v.get("assets")),
         "scope_zh": scope_zh(scope),
@@ -1007,6 +1011,7 @@ def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
         "override_rule": row.get("override_rule"),
         "throttled_by": row.get("throttled_by"),
         "verdict": dict(row.get("verdict") or {}),
+        "editorial": dict(row.get("editorial") or {}) if row.get("editorial") is not None else None,
         "model": row.get("model"),
         "program_version": row.get("program_version"),
         "program_sha256": row.get("program_sha256"),

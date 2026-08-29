@@ -36,6 +36,12 @@ def _semantics(**updates: Any) -> dict[str, Any]:
         "magnitude": 1,
         "confidence": 0.8,
         "audience": "crypto",
+        "taxonomy": {
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "announced",
+            "assertion_status": "confirmed",
+        },
         "relevance": {
             "impact_breadth": "single_instrument",
             "tradability": "direct",
@@ -61,7 +67,7 @@ def _context() -> TriageContext:
             "evidence_version": 2,
             "evidence_sha256": "a" * 64,
             "focus_fact_id": "fact-secret",
-            "reporting_origin": "wire",
+            "reporting_origin": "Reuters",
             "provenance": ["1018"],
             "leader_title": "BTC listed on Example Exchange",
             "raw_first_line": "$BTC listing",
@@ -82,7 +88,7 @@ def _context() -> TriageContext:
                 "event_id": "old-event",
                 "at_ms": 900_000,
                 "storyline_key": "asset:BTC",
-                "event_type": "listing",
+                "event_family": "market_access",
                 "magnitude": 1,
                 "direction": "bullish",
                 "headline_zh": "这条历史卡片只允许第一个 Predictor 看到",
@@ -150,6 +156,9 @@ def test_two_named_predictors_use_exact_artifact_instructions_and_bounded_reader
     assert result.semantics.relevance.channels == ("rates", "security_incident")
     assert result.semantics.relevance.affected_markets == ("fx", "single_asset")
     assert result.verdict is not None
+    assert result.editorial is not None and result.editorial.taxonomy is not None
+    assert result.editorial.taxonomy.event_family == "market_access"
+    assert result.editorial.taxonomy.source_authority == "reputable_secondary"
     assert result.verdict.headline_zh == "比特币出现新进展"
     assert result.verdict.why_zh == "值得关注。"
     assert result.verdict.actionable is True and result.verdict.decision == "push"
@@ -260,7 +269,7 @@ def test_direct_native_scope_marks_post_predictor_domain_failure_terminal(async_
 
     with (
         pytest.raises(ValueError, match="news_program_restatement_index_invalid"),
-        ledger.scope(LMCallContext("news_semantic_program_v6", "a" * 64, "b" * 64)),
+        ledger.scope(LMCallContext("news_semantic_program_v7", "a" * 64, "b" * 64)),
     ):
         if async_entry:
             asyncio.run(program.acall(context=_context(), event_lm=event_lm, card_lm=card_lm))

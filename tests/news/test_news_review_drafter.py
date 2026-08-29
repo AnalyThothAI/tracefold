@@ -27,6 +27,17 @@ _GOOD = {
         "headline_fidelity": "pass",
         "magnitude": "fail",
         "timeliness": "not_applicable",
+        "taxonomy_subject_codes": "pass",
+        "taxonomy_event_family": "pass",
+        "taxonomy_change_state": "pass",
+        "taxonomy_source_authority": "pass",
+        "taxonomy_assertion_status": "pass",
+    },
+    "taxonomy": {
+        "subject_codes": ["medtop:20000199"],
+        "event_family": "product_service_change",
+        "change_state": "announced",
+        "assertion_status": "confirmed",
     },
     "novelty": {"judgment": "new_fact", "duplicate_of": ""},
     "expected": {"magnitude": 2},
@@ -91,7 +102,11 @@ def test_gold_on_a_passed_dimension_is_refused_by_the_rubric_not_by_the_drafter(
     """The safety property lives in one place. A draft that violates it simply cannot be submitted."""
 
     draft = ReviewDraft.model_validate(
-        {**_GOOD, "dimensions": {"factual_fidelity": "pass", "magnitude": "pass"}, "expected": {"magnitude": 2}}
+        {
+            **_GOOD,
+            "dimensions": {**_GOOD["dimensions"], "magnitude": "pass"},
+            "expected": {"magnitude": 2},
+        }
     )
     with pytest.raises(ValueError, match="news_review_expected_requires_failed_dimension:magnitude"):
         EventRubricSubmission(**submission_payload(draft))
@@ -103,7 +118,17 @@ def test_a_failed_dimension_carries_evidence_refs() -> None:
     payload = submission_payload(ReviewDraft.model_validate(_GOOD))
     assert f"draft:{DRAFTER_ID}" in payload["evidence_refs"]
     payload_all_pass = submission_payload(
-        ReviewDraft.model_validate({**_GOOD, "dimensions": {"factual_fidelity": "pass"}, "expected": None})
+        ReviewDraft.model_validate(
+            {
+                **_GOOD,
+                "dimensions": {
+                    name: "pass" if name.startswith("taxonomy_") else label
+                    for name, label in _GOOD["dimensions"].items()
+                    if name == "factual_fidelity" or name.startswith("taxonomy_")
+                },
+                "expected": None,
+            }
+        )
     )
     assert "evidence_refs" not in payload_all_pass
 

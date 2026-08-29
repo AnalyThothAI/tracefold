@@ -869,7 +869,7 @@ def _build_report(
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
             "policy_source": policy["policy_source"],
-            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v4"),
+            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v5"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             # `current` is the release-plane population (this Program, this policy, this epoch); `all`

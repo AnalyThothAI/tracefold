@@ -51,6 +51,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
         "tracefold.news.learning.objective",
+        "tracefold.news.learning.taxonomy",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.review.desk",

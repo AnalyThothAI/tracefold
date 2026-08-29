@@ -72,6 +72,125 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 )
             return 0, {"ok": True, "data": result}
 
+        if action == "taxonomy-register":
+            from tracefold.news.learning.taxonomy import (
+                TaxonomyCandidateRegistrationV1,
+                taxonomy_code_identity,
+                verify_taxonomy_active_deployment,
+            )
+            from tracefold.platform.postgres.client import transaction
+
+            stable = active_arm_manifest(settings)
+            code_identity = taxonomy_code_identity()
+            with postgres_connection(settings, role="workers") as conn, transaction(conn):
+                registered_at_ms = int(
+                    conn.execute(
+                        "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
+                    ).fetchone()["now_ms"]
+                )
+                deployment = verify_taxonomy_active_deployment(
+                    conn,
+                    stable_bundle_sha256=stable.bundle_sha,
+                )
+                registration = TaxonomyCandidateRegistrationV1.issue(
+                    code_identity=code_identity,
+                    deployment=deployment,
+                    policy_sha256=stable.policy_sha256,
+                    runtime_model_bindings_sha256=stable.runtime_model_bindings_sha256,
+                    taxonomy_program_sha256=str(args.taxonomy_program_sha),
+                    taxonomy_model_binding_sha256=str(args.taxonomy_model_binding_sha),
+                    registered_at_ms=registered_at_ms,
+                )
+                artifact_sha = _insert_learning_artifact(
+                    conn,
+                    kind="candidate_registration",
+                    payload=registration.model_dump(mode="json"),
+                    parent_sha=None,
+                    created_at_ms=registered_at_ms,
+                )
+                if artifact_sha != registration.artifact_sha256:
+                    raise ValueError("news_taxonomy_candidate_registration_identity_mismatch")
+            return 0, {
+                "ok": True,
+                "data": {
+                    "candidate_registration_sha256": artifact_sha,
+                    "registered_at_ms": registration.registered_at_ms,
+                    "tested_git_sha": registration.tested_git_sha,
+                    "taxonomy_program_sha256": registration.taxonomy_program_sha256,
+                    "taxonomy_model_binding_sha256": registration.taxonomy_model_binding_sha256,
+                },
+            }
+
+        if action == "taxonomy-evaluate":
+            from tracefold.news.learning.taxonomy import (
+                TaxonomyEvaluationContextV1,
+                build_taxonomy_evaluation_report,
+                taxonomy_code_identity,
+                verify_taxonomy_candidate_registration,
+                verify_taxonomy_evaluation_cases,
+                verify_taxonomy_regression_gates,
+            )
+            from tracefold.platform.postgres.client import transaction
+
+            document = _read_json_or_yaml(str(args.file))
+            cases = document.get("cases")
+            if not isinstance(cases, list):
+                raise ValueError("news_taxonomy_evaluation_cases_required")
+            stable = active_arm_manifest(settings)
+            code_identity = taxonomy_code_identity()
+            stamp = int(time.time() * 1000)
+            with postgres_connection(settings, role="workers") as conn, transaction(conn):
+                candidate_registration_sha256 = str(document.get("candidate_registration_sha256") or "")
+                registration = verify_taxonomy_candidate_registration(
+                    conn,
+                    candidate_registration_sha256,
+                    code_identity=code_identity,
+                    stable_bundle_sha256=stable.bundle_sha,
+                    runtime_model_bindings_sha256=stable.runtime_model_bindings_sha256,
+                    policy_sha256=stable.policy_sha256,
+                )
+                regression_gates = verify_taxonomy_regression_gates(
+                    conn,
+                    document.get("regression_gates") or {},
+                    code_identity=code_identity,
+                    registration=registration,
+                )
+                gold_verification = verify_taxonomy_evaluation_cases(
+                    conn,
+                    cases,
+                    registration=registration,
+                )
+                taxonomy_report = build_taxonomy_evaluation_report(
+                    gold_verification.cases,
+                    context=TaxonomyEvaluationContextV1(
+                        candidate_registration_sha256=candidate_registration_sha256,
+                        candidate_registration=registration,
+                        gold_ledger_root_sha256=gold_verification.ledger_root_sha256,
+                        regression_gates=regression_gates,
+                    ),
+                )
+                payload = taxonomy_report.model_dump(mode="json")
+                payload["report_sha256"] = taxonomy_report.report_sha256
+                artifact_sha = _insert_learning_artifact(
+                    conn,
+                    kind="evaluation_report",
+                    payload=payload,
+                    parent_sha=None,
+                    created_at_ms=stamp,
+                )
+            _write_json(str(args.out), payload)
+            return 0, {
+                "ok": True,
+                "data": {
+                    "artifact_sha": artifact_sha,
+                    "report_sha256": taxonomy_report.report_sha256,
+                    "outcome": taxonomy_report.outcome,
+                    "case_n": taxonomy_report.case_n,
+                    "cluster_n": taxonomy_report.cluster_n,
+                    "report_written_to": str(args.out),
+                },
+            }
+
         stable = active_arm_manifest(settings)
         if action == "readiness":
             return _handle_learning_readiness(args, settings, stable)

@@ -1859,6 +1859,36 @@ export interface components {
             /** Sources */
             sources?: string[];
         };
+        /** NewsTaxonomyData */
+        NewsTaxonomyData: {
+            /** Assertion Status */
+            assertion_status: string;
+            /** Assertion Status Zh */
+            assertion_status_zh: string;
+            /** Change State */
+            change_state: string;
+            /** Change State Zh */
+            change_state_zh: string;
+            /** Codebook Sha256 */
+            codebook_sha256: string;
+            /** Event Family */
+            event_family: string;
+            /** Event Family Zh */
+            event_family_zh: string;
+            /** Source Authority */
+            source_authority: string;
+            /** Source Authority Zh */
+            source_authority_zh: string;
+            /** Subject Codes */
+            subject_codes?: string[];
+            /** Subject Labels Zh */
+            subject_labels_zh?: string[];
+            /**
+             * Taxonomy Version
+             * @constant
+             */
+            taxonomy_version: "news_taxonomy_v1";
+        };
         /** NewsTimelineStepData */
         NewsTimelineStepData: {
             /** At Ms */
@@ -1963,6 +1993,7 @@ export interface components {
              * @default
              */
             scope_zh: string;
+            taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
             /** Throttled By */
             throttled_by?: string | null;
             /** Title Zh */
@@ -1979,6 +2010,10 @@ export interface components {
              * @default false
              */
             degraded: boolean;
+            /** Editorial */
+            editorial?: {
+                [key: string]: unknown;
+            } | null;
             /** Error Code */
             error_code?: string | null;
             /** Evidence Sha256 */

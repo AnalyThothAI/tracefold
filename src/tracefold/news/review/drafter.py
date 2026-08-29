@@ -1,4 +1,4 @@
-"""Model-drafted `news_review_v4` rubrics, for a human to accept or reject (#148, #160).
+"""Model-drafted `news_review_v5` rubrics, for a human to accept or reject (#117, #148).
 
 Two facts set the whole shape of this module.
 
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import importlib.metadata
 from collections.abc import Mapping, Sequence
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field
@@ -37,6 +37,7 @@ from ..program.contracts import (
     TradeTradability,
 )
 from ..program.lm import StructuredOutputMode, structured_output_capability
+from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, SourceAuthority
 
 
 class ConfiguredDrafterLM(dspy.LM):  # type: ignore[misc]
@@ -92,10 +93,10 @@ def build_drafter_lm(
     return lm_type(str(model_name), structured_output=structured_output, **request)
 
 
-DRAFTER_ID = "tracefold.news.review_drafter_v3"
+DRAFTER_ID = "tracefold.news.review_drafter_v4"
 # `Final` is what makes mypy infer the literal type rather than `str`, which is what the
 # `Literal[...]` field below needs as its default.
-DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v2"
+DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v3"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. A human will accept or reject your draft; never assume it is final.
@@ -137,6 +138,11 @@ novelty: new_fact / progression / restatement, judged against the told ledger yo
 expected: ONLY for dimensions you marked fail, state the exact correct value — including every failed typed
 trade-relevance dimension. Leave a field out when you are not confident.
 This is the most valuable part of the draft: "wrong" without "and the answer is X" teaches nothing.
+
+taxonomy: state the exact `news_taxonomy_v1` model-owned labels for every Event: at most three allowed IPTC
+subject qcodes, event_family, change_state, and assertion_status. Also judge all five taxonomy dimensions;
+source_authority is computed by code and appears in card_json, so copy that exact value rather than guessing.
+`filing`, `rumor`, `whale`, and `noise` are not event families. Use other/unknown as honest abstentions.
 
 confidence: 0.0-1.0, how sure you are a human would agree with this draft.
 reasoning: one short sentence a reviewer can check quickly."""
@@ -194,6 +200,11 @@ DRAFTABLE_DIMENSIONS = frozenset(
         "trade_channels",
         "trade_affected_markets",
         "reader_value",
+        "taxonomy_subject_codes",
+        "taxonomy_event_family",
+        "taxonomy_change_state",
+        "taxonomy_source_authority",
+        "taxonomy_assertion_status",
     }
 )
 
@@ -207,6 +218,7 @@ class ReviewDraft(BaseModel):
     dimensions: dict[str, Literal["pass", "fail", "not_applicable"]]
     novelty: DraftNovelty
     expected: DraftExpected | None = None
+    taxonomy: ModelTaxonomyV1
     expected_correction: str = Field(default="", max_length=2_000)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = Field(default="", max_length=1_000)
@@ -228,6 +240,7 @@ class DraftedReview(BaseModel):
     task_version: str
     event_id: str
     headline_zh: str
+    source_authority: SourceAuthority
     draft: ReviewDraft
     error: str | None = None
 
@@ -235,7 +248,7 @@ class DraftedReview(BaseModel):
 class ReviewDraftBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.review_draft_batch.v2"] = DRAFT_SCHEMA
+    schema_id: Literal["tracefold.news.review_draft_batch.v3"] = DRAFT_SCHEMA
     drafter: dict[str, Any]
     drafts: tuple[DraftedReview, ...]
 
@@ -304,7 +317,12 @@ class ReviewDrafter:
             return f"{type(exc).__name__}: {str(exc)[:200]}"
 
 
-def submission_payload(draft: ReviewDraft) -> dict[str, Any]:
+def submission_payload(
+    draft: ReviewDraft,
+    *,
+    source_authority: SourceAuthority = "unknown",
+    draft_author: str = DRAFTER_ID,
+) -> dict[str, Any]:
     """The `EventRubricSubmission` a human would send after accepting this draft, unchanged.
 
     Built here so the accept step never has to reshape model output by hand, and so the rubric's own
@@ -328,12 +346,20 @@ def submission_payload(draft: ReviewDraft) -> dict[str, Any]:
         # The claim cannot be checked without a target, so it is downgraded rather than dropped: a reviewer
         # still sees the model thought this was a repeat, in the one field they will read.
         novelty = {"judgment": "uncertain", "duplicate_of": ""}
+    taxonomy = NewsTaxonomyV1.issue(draft.taxonomy, source_authority=source_authority)
     payload: dict[str, Any] = {
         "kind": "event_rubric",
         "should_push": draft.should_push,
         "dimensions": dimensions,
         "novelty": novelty,
         "expected_correction": draft.expected_correction,
+        "taxonomy": taxonomy.model_dump(mode="json"),
+        "taxonomy_review": {
+            "label_source": "model_draft",
+            "draft_author": draft_author,
+            "review_role": "primary",
+            "draft_taxonomy": taxonomy.model_dump(mode="json"),
+        },
     }
     if expected:
         payload["expected"] = expected
@@ -366,6 +392,7 @@ def build_draft_batch(
                 task_version=str(task["task_version"]),
                 event_id=str(task["event_id"]),
                 headline_zh=str(task.get("headline_zh") or ""),
+                source_authority=cast(SourceAuthority, str(task.get("source_authority") or "unknown")),
                 draft=outcome if isinstance(outcome, ReviewDraft) else _EMPTY_DRAFT,
                 error=None if isinstance(outcome, ReviewDraft) else outcome,
             )
@@ -380,6 +407,9 @@ _EMPTY_DRAFT = ReviewDraft(
     should_push="uncertain",
     dimensions={},
     novelty=DraftNovelty(judgment="uncertain"),
+    taxonomy=ModelTaxonomyV1(
+        subject_codes=(), event_family="other", change_state="unknown", assertion_status="unknown"
+    ),
     confidence=0.0,
     reasoning="drafting failed",
 )

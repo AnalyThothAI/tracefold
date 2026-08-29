@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
+from ..taxonomy import NewsTaxonomyV1, source_authority_from_evidence
 from .artifact import ProgramStrategyArtifactV1, render_model_evidence_json, validate_program_instruction
 from .assembly import decision_for, is_actionable, normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
@@ -132,6 +133,7 @@ def _assemble(
     semantics: EventSemantics,
     raw_card: Any,
     *,
+    context: TriageContext,
     told_count: int,
     normalizations: tuple[ProgramNormalizationTrace, ...],
 ) -> NativeProgramResult:
@@ -167,12 +169,16 @@ def _assemble(
                 "why_zh": card.why_zh.strip(),
             }
         )
+        taxonomy = NewsTaxonomyV1.issue(
+            semantics.taxonomy,
+            source_authority=source_authority_from_evidence(context.evidence),
+        )
         return NativeProgramResult(
             instruction_rejected=None,
             semantics=semantics,
             card=card,
             verdict=verdict,
-            editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=relevance),
+            editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=relevance, taxonomy=taxonomy),
             normalizations=normalizations,
         )
     except ValueError as exc:
@@ -253,6 +259,7 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         return _assemble(
             semantics,
             prediction.card,
+            context=prepared.context,
             told_count=len(prepared.context.told.entries),
             normalizations=normalizations,
         )

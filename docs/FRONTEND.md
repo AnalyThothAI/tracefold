@@ -566,7 +566,8 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
     direction chip (利多 filled red / 利空 filled green / 中性 quiet text, each
     with its own arrow). On `/news/events/:eventId`, verify hero (outcome +
     reason, headline, direction + magnitude + 把握, why, the
-    `TYPE/SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
+    taxonomy `事件族/变化状态/来源权威/断言状态/主题` followed by the diagnostic
+    `旧分类` and `SCOPE/NOVELTY/ACTIONABLE/AUDIENCE/MEMBERS` grid with framed cells,
     主要标的 vs 提及), the timeline with `+Δ` and an end-to-end figure,
     同类报道 and a collapsed 技术详情 appear in that order
     with no market-mark table — the two #88 market blocks (`当前报价` and

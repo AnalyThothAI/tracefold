@@ -8,8 +8,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
-from ..outcome import decision_zh, direction_zh, event_type_zh, magnitude_zh, override_rule_zh, throttled_by_zh
+from ..outcome import decision_zh, direction_zh, magnitude_zh, override_rule_zh, throttled_by_zh
 from ..similarity import similarity
+from ..taxonomy import event_family_zh
 from .pricing import (
     REACTION_HISTORY_MAX_AGE_MS,
     REACTION_METRIC_VERSION,
@@ -51,7 +52,7 @@ _REVIEW_FACTS_CTE: Final = """
              v.final_decision, v.degraded, v.override_rule, v.throttled_by,
              v.verdict ->> 'direction' AS direction,
              COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
-             COALESCE(v.verdict ->> 'event_type', 'other') AS event_type,
+             COALESCE(v.editorial #>> '{{taxonomy,event_family}}', 'unknown') AS event_family,
              (d.state = 'sent') AS delivered
         FROM news_verdicts v
         JOIN news_events e ON e.event_id = v.event_id
@@ -81,7 +82,7 @@ _REVIEW_FACTS_CTE: Final = """
     fact AS (
       SELECT ev.event_id, ev.opened_at_ms, ev.mature_1h, ev.mature_4h,
              ev.final_decision, ev.degraded, ev.override_rule, ev.throttled_by,
-             ev.direction, ev.magnitude, ev.event_type, ev.delivered,
+             ev.direction, ev.magnitude, ev.event_family, ev.delivered,
              a.event_id IS NOT NULL AS has_primary,
              COALESCE(a.asset_n, 0) AS asset_n,
              COALESCE(a.priced_1h, 0) AS priced_1h,
@@ -135,7 +136,7 @@ class ReviewStorage:
             # Retired from the product surface in #112: these post-event price rankings were not causal
             # quality evidence, and their ordered aggregates dominated the 30-day query budget.
             "magnitudes": [],
-            "event_types": [],
+            "event_families": [],
             "potential_misses": self._miss_rows(sections["miss"]),
             "summary": {
                 "hit_1h_pct": None,
@@ -203,7 +204,7 @@ class ReviewStorage:
         sql = f"""
             WITH {facts_cte},
             -- One coverage aggregate and one bounded discovery queue over one materialized fact set.  #112
-            -- retired the direction/magnitude/event-type price rankings: they were neither causal quality
+            -- retired the direction/magnitude/event-family price rankings: they were neither causal quality
             -- evidence nor rendered by ReviewDesk, and they consumed the 30-day query budget.
             coverage AS (
               SELECT count(*) FILTER (WHERE mature_1h) AS eligible_1h,
@@ -230,7 +231,7 @@ class ReviewStorage:
             ),
             miss AS (
               SELECT event_id, opened_at_ms, final_decision, override_rule, throttled_by, direction,
-                     magnitude, event_type, bps_1h, bps_4h, asset_n
+                     magnitude, event_family, bps_1h, bps_4h, asset_n
                 FROM fact
                WHERE COALESCE(delivered, false) IS NOT TRUE AND NOT degraded AND bps_1h IS NOT NULL
                ORDER BY abs(bps_1h) DESC, opened_at_ms DESC
@@ -273,8 +274,8 @@ class ReviewStorage:
                 "direction_zh": direction_zh(data.get("direction")),
                 "magnitude": _optional_int(data.get("magnitude")),
                 "magnitude_zh": magnitude_zh(_optional_int(data.get("magnitude"))),
-                "event_type": data.get("event_type"),
-                "event_type_zh": event_type_zh(data.get("event_type")),
+                "event_family": data.get("event_family"),
+                "event_family_zh": event_family_zh(data.get("event_family")),
                 "return_1h_bps": _optional_int(data.get("bps_1h")),
                 "return_4h_bps": median_bps(
                     [
