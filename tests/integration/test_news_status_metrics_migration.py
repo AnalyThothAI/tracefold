@@ -13,7 +13,7 @@ from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 BEFORE_METRIC_PROMOTION = "20260826_0310"
 NOW = 1_900_000_000_000

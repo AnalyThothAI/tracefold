@@ -1023,11 +1023,11 @@ def test_python_lane_records_replay_and_tool_identity(evidence_repository: _Evid
 
 
 def test_python_lane_allows_the_code_owned_profile_recorder(evidence_repository: _EvidenceRepository) -> None:
-    profile = evidence_repository.root.parent / "profile.json"
+    profile_path = evidence_repository.root.parent / "profile.json"
     result, manifest = evidence_repository.run(
         "-p",
         "tests.support.profile",
-        f"--test-profile={profile}",
+        f"--test-profile={profile_path}",
         "--test-profile-lane=python",
         env={"TRACEFOLD_FIXTURE_FAIL": "0"},
     )
@@ -1038,8 +1038,8 @@ def test_python_lane_allows_the_code_owned_profile_recorder(evidence_repository:
         "tracefold-evidence",
         "tracefold-test-profile",
     }
-    profile_manifest = json.loads(profile.read_text(encoding="utf-8"))
-    assert profile_manifest["schema_version"] == "tracefold_test_profile_v1"
+    profile_manifest = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert profile_manifest["schema_version"] == profile.PROFILE_SCHEMA_VERSION
     assert profile_manifest["selected"] == 2
 
 

@@ -20,7 +20,6 @@ from psycopg.errors import InsufficientPrivilege, ReadOnlySqlTransaction
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
-    prepare_postgres_database,
 )
 from tests.postgres_test_utils import (
     test_postgres_dsn as _test_postgres_dsn,
@@ -39,7 +38,7 @@ from tracefold.platform.postgres.runtime_roles import (
     runtime_role_contract,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 RUNTIME_ID = "00000000-0000-0000-0000-000000000099"
 SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"
@@ -49,7 +48,6 @@ _LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
-    prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
     try:
         conn.execute("SET ROLE tracefold_serve")
@@ -87,7 +85,6 @@ def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
 
 
 def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None:
-    prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
     try:
         event = parse_opennews_message(
@@ -148,7 +145,6 @@ def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None
 
 
 def test_role_password_provisioning_and_legacy_revoke_are_transactional(tmp_path: Path) -> None:
-    prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
     password_files: dict[str, Path] = {}
     for role in RUNTIME_LOGIN_ROLES:
@@ -179,7 +175,6 @@ def test_role_password_provisioning_and_legacy_revoke_are_transactional(tmp_path
 
 
 def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(tmp_path) -> None:
-    prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
     try:
         with conn.transaction():
@@ -214,7 +209,6 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
 
 @pytest.mark.slow
 def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_path: Path) -> None:
-    prepare_postgres_database()
     port = _free_port()
     release_gate = tmp_path / "release-runtime-manifest"
     entered_gate = Path(f"{release_gate}.entered")
@@ -283,7 +277,6 @@ def test_real_workers_readiness_waits_for_the_persisted_runtime_manifest(tmp_pat
 
 
 def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtimes(tmp_path) -> None:
-    prepare_postgres_database()
     settings = Settings(storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "app-home")
     first = WorkerDatabase.create(settings)
@@ -323,7 +316,6 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
 ) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        prepare_postgres_database()
         repository = WorkersRuntimeRepository(conn)
         with conn.transaction():
             assert repository.begin(
@@ -371,7 +363,6 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
 
 @pytest.mark.slow
 def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("inert", port)
     try:
@@ -388,7 +379,6 @@ def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
 
 @pytest.mark.slow
 def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("control_transient_startup", port)
     try:
@@ -405,7 +395,6 @@ def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> 
 
 @pytest.mark.slow
 def test_sigterm_interrupts_persistent_startup_heartbeat_retries() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("control_transient_startup_persistent", port)
     try:
@@ -428,7 +417,6 @@ def test_sigterm_interrupts_persistent_startup_heartbeat_retries() -> None:
 
 @pytest.mark.slow
 def test_real_workers_startup_native_control_timeouts_recover_in_the_same_runtime() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("control_native_timeout", port)
     try:
@@ -462,7 +450,6 @@ def test_real_workers_startup_native_control_timeouts_recover_in_the_same_runtim
 
 @pytest.mark.slow
 def test_real_workers_runtime_heartbeat_stale_degrades_readiness_without_killing_root() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("control_transient_runtime", port)
     try:
@@ -484,7 +471,6 @@ def test_real_workers_runtime_heartbeat_stale_degrades_readiness_without_killing
 
 @pytest.mark.slow
 def test_real_workers_child_failure_closes_probe_and_persists_fatal_state() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("child_failure", port)
     try:
@@ -501,7 +487,6 @@ def test_real_workers_child_failure_closes_probe_and_persists_fatal_state() -> N
 
 @pytest.mark.slow
 def test_real_workers_pinned_session_loss_closes_probe_and_persists_fatal_state() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("inert", port)
     try:
@@ -542,7 +527,6 @@ def test_real_workers_pinned_session_loss_closes_probe_and_persists_fatal_state(
 
 @pytest.mark.slow
 def test_real_workers_never_returning_finite_operation_is_fatal() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("finite_overrun", port)
     try:
@@ -559,7 +543,6 @@ def test_real_workers_never_returning_finite_operation_is_fatal() -> None:
 
 @pytest.mark.slow
 def test_real_workers_never_returning_control_operation_is_fatal() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("control_overrun", port)
     try:
@@ -581,7 +564,6 @@ def test_real_workers_never_returning_control_operation_is_fatal() -> None:
 
 @pytest.mark.slow
 def test_sigterm_after_provider_completion_preserves_inflight_publication() -> None:
-    prepare_postgres_database()
     conn = connect_postgres_test(read_only=False)
     try:
         conn.execute("CREATE TABLE worker_runtime_test_publications(id integer PRIMARY KEY)")
@@ -612,7 +594,6 @@ def test_sigterm_after_provider_completion_preserves_inflight_publication() -> N
 
 @pytest.mark.slow
 def test_workers_absolute_graceful_deadline_covers_never_returning_future() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("finite_never_returns", port, graceful_timeout_seconds=0.5)
     try:
@@ -630,7 +611,6 @@ def test_workers_absolute_graceful_deadline_covers_never_returning_future() -> N
 
 @pytest.mark.slow
 def test_fatal_transition_retries_one_transient_control_write_within_the_watchdog() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("finite_never_returns_failed_transition_once", port)
     try:
@@ -648,7 +628,6 @@ def test_fatal_transition_retries_one_transient_control_write_within_the_watchdo
 
 @pytest.mark.slow
 def test_shutdown_never_returning_control_write_obeys_absolute_graceful_deadline() -> None:
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("shutdown_stopping_control_never_returns", port)
     try:
@@ -665,7 +644,6 @@ def test_shutdown_never_returning_control_write_obeys_absolute_graceful_deadline
 def test_production_graceful_deadline_terminates_a_never_returning_future() -> None:
     """Exercise the unmodified 30-second production deadline outside the merge gate."""
 
-    prepare_postgres_database()
     port = _free_port()
     process = _start_workers_process("finite_never_returns", port)
     try:

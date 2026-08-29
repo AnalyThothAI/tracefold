@@ -29,5 +29,19 @@
     "total_entrypoint_executions": 3918,
     "unique_deterministic_nodeids": 2109
   },
+  "lane_inventories": {
+    "deterministic-full": {
+      "inventory_sha256": "5e0c3dc1c8d6c991be32176de45d26e38b557f877281bc490283b12091cdd44b",
+      "selected": 2109
+    },
+    "fast": {
+      "inventory_sha256": "43c69583b67c6b14b8e1dd4ccbc15bb0dec8fa02fb64d0a34a433144cc90a16b",
+      "selected": 1609
+    },
+    "quality": {
+      "inventory_sha256": "7e48669d61b1314ebb65d63620a8a7ce2b25b3b79a3e0130cf7195ae20704d6c",
+      "selected": 200
+    }
+  },
   "issue": 335
 }

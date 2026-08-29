@@ -93,7 +93,7 @@ def postgres_server_dsn() -> Iterator[str]:
 
 @pytest.fixture(scope="session")
 def postgres_dsn(postgres_clone_factory) -> Iterator[str]:
-    """Yield one run-private migrated database to migration and legacy integration owners."""
+    """Yield one run-private migrated database to legacy behavior owners."""
     with _routed_postgres_clone(postgres_clone_factory) as dsn:
         yield dsn
 
@@ -122,6 +122,23 @@ def postgres_module_clone_dsn(postgres_clone_factory) -> Iterator[str]:
     """Give one behavior-test module a private migrated database."""
     with _routed_postgres_clone(postgres_clone_factory) as dsn:
         yield dsn
+
+
+@pytest.fixture(scope="module")
+def postgres_migration_dsn(postgres_server_dsn: str) -> Iterator[str]:
+    """Give historical migration owners an empty database without the head shortcut."""
+    from tests.postgres_test_utils import temporary_unmigrated_postgres_database
+
+    previous = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
+    with temporary_unmigrated_postgres_database(postgres_server_dsn) as dsn:
+        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
+        try:
+            yield dsn
+        finally:
+            if previous is None:
+                os.environ.pop("TRACEFOLD_TEST_POSTGRES_DSN", None)
+            else:
+                os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = previous
 
 
 @contextmanager

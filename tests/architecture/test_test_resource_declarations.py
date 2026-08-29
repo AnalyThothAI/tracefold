@@ -8,7 +8,6 @@ INTEGRATION = ROOT / "tests" / "integration"
 POSTGRES_HELPERS = {
     "connect_postgres_test",
     "postgres_settings_storage",
-    "prepare_postgres_database",
     "reset_postgres_schema",
     "test_postgres_dsn",
 }
@@ -16,6 +15,7 @@ POSTGRES_RESOURCE_FIXTURES = (
     "postgres_dsn",
     "postgres_clone_dsn",
     "postgres_module_clone_dsn",
+    "postgres_migration_dsn",
     "postgres_clone_factory",
 )
 

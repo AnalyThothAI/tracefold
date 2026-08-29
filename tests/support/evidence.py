@@ -25,6 +25,8 @@ from _pytest.config import parse_warning_filter
 from hypothesis import __version__ as hypothesis_version
 from hypothesis import settings
 
+from tests.support.profile import PROFILE_SCHEMA_VERSION
+
 LANE_SCHEMA_VERSION = "tracefold_test_lane_v2"
 AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v2"
 SCHEMA_VERSION = LANE_SCHEMA_VERSION
@@ -46,7 +48,7 @@ _NON_GREEN_OUTCOME_FIELDS = ("failed", "skipped", "xfailed", "xpassed", "rerun",
 _ALLOWED_MODULE_PLUGINS = {
     "_hypothesis_pytestplugin": ("hypothesis", hypothesis_version),
     "tests.support.evidence": ("tracefold-evidence", LANE_SCHEMA_VERSION),
-    "tests.support.profile": ("tracefold-test-profile", "tracefold_test_profile_v1"),
+    "tests.support.profile": ("tracefold-test-profile", PROFILE_SCHEMA_VERSION),
 }
 _REQUIRED_PYTEST_CORE_MODULES = (
     "_pytest.threadexception",

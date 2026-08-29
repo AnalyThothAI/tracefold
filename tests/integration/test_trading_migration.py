@@ -23,7 +23,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 NOW = 1_900_000_000_000
 BEFORE_SNAPSHOT = "20260825_0307"

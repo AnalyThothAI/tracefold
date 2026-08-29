@@ -22,20 +22,10 @@ PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PATH_ENV = "TRACEFOLD_TEST_PROFILE_PATH"
 _PROFILE_LANE_ENV = "TRACEFOLD_TEST_PROFILE_LANE"
-_ENTRYPOINTS: dict[str, tuple[str, ...]] = {
-    "quality": (
-        "tests/architecture",
-        "tests/contract",
-        "-m",
-        "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled",
-    ),
-    "fast": (
-        "tests",
-        "-m",
-        "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled "
-        "and not external_codegen",
-    ),
-    "deterministic-full": ("tests", "-m", "not live and not scheduled"),
+_ENTRYPOINTS = {
+    "quality": "_collect-profile-quality",
+    "fast": "_collect-profile-fast",
+    "deterministic-full": "_collect-profile-deterministic-full",
 }
 
 
@@ -70,7 +60,13 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]):
     if recorder is None or report.when not in {"setup", "call", "teardown"}:
         return
     recorder.phases[report.nodeid][report.when] += float(report.duration)
-    recorder.outcomes[report.nodeid] = str(report.outcome)
+    previous = recorder.outcomes.get(report.nodeid)
+    if report.failed or previous == "failed":
+        recorder.outcomes[report.nodeid] = "failed"
+    elif report.skipped or previous == "skipped":
+        recorder.outcomes[report.nodeid] = "skipped"
+    elif report.when == "call" or previous is None:
+        recorder.outcomes[report.nodeid] = str(report.outcome)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
@@ -171,6 +167,7 @@ def build_report(
     duplicates = {nodeid: lanes for nodeid, lanes in owners.items() if len(lanes) > 1}
     total_executions = sum(len(inventory) for inventory in inventories.values())
     baseline_inventory = baseline.get("inventory", {})
+    baseline_lanes = baseline.get("lane_inventories", {})
     duration_observations = _duration_observations(profiles)
     ratchets = _evaluate_ratchets(
         baseline.get("duration_ratchets", {}),
@@ -208,6 +205,14 @@ def build_report(
                 "duplicate_executions": total_executions
                 - len(all_selected)
                 - int(baseline_inventory.get("duplicate_executions", 0)),
+            },
+            "baseline_lane_changes": {
+                lane: {
+                    "selected_delta": len(inventories[lane]) - int(baseline_lanes.get(lane, {}).get("selected", 0)),
+                    "inventory_changed": profile.get("inventory_sha256")
+                    != baseline_lanes.get(lane, {}).get("inventory_sha256"),
+                }
+                for lane, profile in sorted(profiles.items())
             },
         },
         "duration_observations": duration_observations,
@@ -261,21 +266,22 @@ def _evaluate_ratchets(
 def _collect_profiles(output_dir: Path) -> dict[str, dict[str, Any]]:
     output_dir.mkdir(parents=True, exist_ok=True)
     profiles: dict[str, dict[str, Any]] = {}
-    for lane, selection in _ENTRYPOINTS.items():
+    for lane, make_target in _ENTRYPOINTS.items():
         path = output_dir / f"{lane}.json"
-        command = (
-            sys.executable,
-            "-m",
-            "pytest",
-            *selection,
-            "--collect-only",
-            "-q",
-            "-p",
-            "tests.support.profile",
-            f"--test-profile={path}",
-            f"--test-profile-lane={lane}",
+        env = {
+            **os.environ,
+            _PROFILE_PATH_ENV: str(path),
+            _PROFILE_LANE_ENV: lane,
+            "TRACEFOLD_TEST_PYTEST_EXTRA_ARGS": "--collect-only -q",
+        }
+        completed = subprocess.run(
+            ("make", "--no-print-directory", make_target),
+            cwd=_REPO_ROOT,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
         )
-        completed = subprocess.run(command, cwd=_REPO_ROOT, text=True, capture_output=True, check=False)
         if completed.returncode != 0:
             raise RuntimeError(
                 f"test_profile_collection_failed:{lane}:{completed.returncode}\n{completed.stdout}\n{completed.stderr}"
@@ -290,13 +296,17 @@ def _aggregate_command(arguments: Sequence[str]) -> int:
     parser.add_argument("--baseline", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--history", action="append", default=[], type=Path)
+    parser.add_argument("--history-dir", type=Path)
     parser.add_argument("--enforce-ratchets", action="store_true")
     options = parser.parse_args(arguments)
+    history_paths = list(options.history)
+    if options.history_dir is not None and options.history_dir.exists():
+        history_paths.extend(sorted(options.history_dir.glob("*.json")))
     profiles = {lane: _read_json(options.profile_dir / f"{lane}.json") for lane in _ENTRYPOINTS}
     report = build_report(
         profiles,
         baseline=_read_json(options.baseline),
-        history=[_read_json(path) for path in options.history],
+        history=[_read_json(path) for path in history_paths],
     )
     _write_json(options.output, report, root=_REPO_ROOT)
     inventory = report["inventory"]

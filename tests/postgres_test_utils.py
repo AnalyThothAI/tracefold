@@ -21,7 +21,7 @@ from tracefold.platform.postgres.migrations import upgrade_head
 
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 TEST_DATABASE_NAME = "tracefold_test"
-_CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case)_[0-9a-f]{12}(?:_[0-9]+)?")
+_CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case|migration)_[0-9a-f]{12}(?:_[0-9]+)?")
 
 
 def test_postgres_dsn() -> str:
@@ -71,14 +71,6 @@ def postgres_settings_storage() -> dict[str, Any]:
     }
 
 
-def prepare_postgres_database() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        reset_postgres_schema(conn)
-    finally:
-        conn.close()
-
-
 def reset_postgres_schema(conn) -> None:
     if _read_only(conn):
         return
@@ -119,7 +111,6 @@ class MigratedPostgresCloneFactory:
 
     server_dsn: str
     run_token: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
-    head_migration_count: int = field(default=0, init=False)
     clone_count: int = field(default=0, init=False)
     _baseline_database: str = field(init=False)
     _created: set[str] = field(default_factory=set, init=False)
@@ -132,7 +123,6 @@ class MigratedPostgresCloneFactory:
         self._create_database(self._baseline_database, template="template0")
         try:
             upgrade_head(_database_dsn(self.server_dsn, self._baseline_database))
-            self.head_migration_count += 1
         except BaseException:
             self._drop_database(self._baseline_database)
             raise
@@ -168,6 +158,24 @@ class MigratedPostgresCloneFactory:
     def _drop_database(self, database: str) -> None:
         _require_owned_clone_name(database)
         with connect_postgres(_database_dsn(self.server_dsn, "postgres")) as admin:
+            admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database)))
+
+
+@contextmanager
+def temporary_unmigrated_postgres_database(server_dsn: str) -> Iterator[str]:
+    """Yield one empty, run-private database for historical migration owners."""
+
+    if _database_name(server_dsn) != TEST_DATABASE_NAME:
+        raise RuntimeError("postgres_migration_source_must_be_tracefold_test")
+    database = f"{TEST_DATABASE_NAME}_migration_{uuid.uuid4().hex[:12]}"
+    _require_owned_clone_name(database)
+    admin_dsn = _database_dsn(server_dsn, "postgres")
+    with connect_postgres(admin_dsn) as admin:
+        admin.execute(sql.SQL("CREATE DATABASE {} TEMPLATE template0").format(sql.Identifier(database)))
+    try:
+        yield _database_dsn(server_dsn, database)
+    finally:
+        with connect_postgres(admin_dsn) as admin:
             admin.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(database)))
 
 

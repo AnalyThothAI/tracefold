@@ -368,8 +368,14 @@ nodeid inventories without executing tests, then writes
 selection, phase-aware durations when run profiles are supplied, and the
 Issue #335 duration ratchets. A duration ratchet needs three consecutive samples
 above 125% of its pinned baseline before it can fail; a single shared-runner
-outlier is diagnostic data, not a gate failure.
-Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
+outlier is diagnostic data, not a gate failure. CI uploads one real profile from
+each current lane. To evaluate those profiles against prior reports, run
+`make test-profile-ratchet TRACEFOLD_TEST_PROFILE_DIR=<lane-profile-directory>
+TRACEFOLD_TEST_PROFILE_HISTORY_DIR=<prior-report-directory>`; this enforcing
+consumer returns non-zero only when the required consecutive regressions exist.
+PR-A records the evidence without changing the required gate; the Evidence V3
+migration owns any later CI-plan enforcement.
+Tests that need PostgreSQL declare an explicit PostgreSQL resource fixture; their
 directory is not a resource trigger. `make test-integration`, `make
 test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
 test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
@@ -384,8 +390,10 @@ head, then receive a private function- or module-scoped clone. A test that
 drops a schema, commits across connections, exercises roles, or takes locks
 therefore keeps the real PostgreSQL seam without rerunning the Alembic chain or
 sharing `public` with another behavior test. Destructive schema reset remains
-only in the explicit migration-owner modules. Historical migration-path tests
-do not use the head clone shortcut: they are narrow and explicit, and cover the
+only in the explicit migration-owner modules, which receive an empty private
+database; the retired behavior reset helper has no caller. Historical
+migration-path tests do not use the head clone shortcut: they are narrow and
+explicit, and cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the

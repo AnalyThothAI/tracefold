@@ -9,7 +9,6 @@ from fastapi.testclient import TestClient
 from tests.postgres_test_utils import (
     connect_postgres_test,
     postgres_settings_storage,
-    prepare_postgres_database,
 )
 from tracefold.app import serve_database as serve_database_module
 from tracefold.app.http.app import create_app
@@ -19,7 +18,7 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import NewsSettings, Settings
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 NEWS_V3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 
@@ -97,7 +96,6 @@ def _seed_news_v3_events(*, now_ms: int) -> list[str]:
 
 
 def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
-    prepare_postgres_database()
     settings = make_settings(tmp_path)
     app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)
@@ -217,7 +215,6 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
 def test_api_projects_deterministic_event_assets_from_postgres_to_feed_and_detail(tmp_path, monkeypatch):
     """The public asset comes from `news_event_assets`, not the provider/Gate evidence (#287)."""
 
-    prepare_postgres_database()
     settings = make_settings(tmp_path)
     app = create_app(settings=settings)
     now_ms = int(time.time() * 1000)

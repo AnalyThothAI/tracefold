@@ -9,11 +9,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage, prepare_postgres_database
+from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import NewsSettings, Settings
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 VERDICTS = 1_948
 TRACE_CHUNKS = 400
@@ -88,7 +88,6 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
 def test_news_status_serves_a_production_sized_corpus_within_the_native_timeout(tmp_path: Path) -> None:
     """Exercise the real query; shared-runner wall time is diagnostic, not correctness."""
 
-    prepare_postgres_database()
     now_ms = int(time.time() * 1_000)
     _seed_production_sized_trace_corpus(now_ms=now_ms)
     app = create_app(settings=_settings(tmp_path))
