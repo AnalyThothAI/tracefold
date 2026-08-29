@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 from collections.abc import Iterator
+from contextlib import contextmanager
 from urllib.parse import urlsplit
 
 import psycopg
@@ -51,14 +52,11 @@ def rabbitmq_url() -> str:
 
 
 @pytest.fixture(scope="session")
-def postgres_dsn() -> Iterator[str]:
-    """Yield a migrated PostgreSQL DSN only to tests that declare this resource."""
+def postgres_server_dsn() -> Iterator[str]:
+    """Yield one reachable dedicated server database without choosing a test isolation policy."""
     existing = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
 
     if _dsn_reachable(existing):
-        from tests.postgres_test_utils import ensure_migrated_postgres_resource
-
-        ensure_migrated_postgres_resource(existing, resource_name="PostgreSQL integration resource")
         os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = existing
         yield existing
         return
@@ -85,11 +83,56 @@ def postgres_dsn() -> Iterator[str]:
     # Spin testcontainers
     from testcontainers.postgres import PostgresContainer
 
-    from tests.postgres_test_utils import ensure_migrated_postgres_resource
     from tests.tracefold_postgres_container import tracefold_postgres_container
 
     with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
-        ensure_migrated_postgres_resource(dsn, resource_name="testcontainers PostgreSQL integration resource")
         os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
         yield dsn
+
+
+@pytest.fixture(scope="session")
+def postgres_dsn(postgres_clone_factory) -> Iterator[str]:
+    """Yield one run-private migrated database to migration and legacy integration owners."""
+    with _routed_postgres_clone(postgres_clone_factory) as dsn:
+        yield dsn
+
+
+@pytest.fixture(scope="session")
+def postgres_clone_factory(postgres_server_dsn: str):
+    """Own one migrated baseline for behavior tests that require committed isolation."""
+    from tests.postgres_test_utils import MigratedPostgresCloneFactory
+
+    factory = MigratedPostgresCloneFactory(postgres_server_dsn)
+    try:
+        yield factory
+    finally:
+        factory.close()
+
+
+@pytest.fixture()
+def postgres_clone_dsn(postgres_clone_factory) -> Iterator[str]:
+    """Give one test an isolated clone and route helper-based connections to it."""
+    with _routed_postgres_clone(postgres_clone_factory) as dsn:
+        yield dsn
+
+
+@pytest.fixture(scope="module")
+def postgres_module_clone_dsn(postgres_clone_factory) -> Iterator[str]:
+    """Give one behavior-test module a private migrated database."""
+    with _routed_postgres_clone(postgres_clone_factory) as dsn:
+        yield dsn
+
+
+@contextmanager
+def _routed_postgres_clone(postgres_clone_factory) -> Iterator[str]:
+    previous = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
+    with postgres_clone_factory.clone() as dsn:
+        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
+        try:
+            yield dsn
+        finally:
+            if previous is None:
+                os.environ.pop("TRACEFOLD_TEST_POSTGRES_DSN", None)
+            else:
+                os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = previous

@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
+from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.source_contracts import (
     EVENT_KINDS,
@@ -15,15 +15,14 @@ from tracefold.news.source_contracts import (
     SourceContractReason,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 NOW = 1_900_000_000_000
 
 
 @pytest.fixture()
-def conn():
+def conn(postgres_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    reset_postgres_schema(connection)
     yield connection
     connection.close()
 

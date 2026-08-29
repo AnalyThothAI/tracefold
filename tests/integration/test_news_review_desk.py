@@ -7,7 +7,6 @@ import pytest
 from psycopg.errors import InsufficientPrivilege, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.news.models import TriageVerdict
@@ -27,7 +26,7 @@ from tracefold.news.review.desk import (
     TaskRef,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 NOW = 1_787_287_000_000
 PRINCIPAL = Principal(subject="operator")
@@ -41,9 +40,8 @@ SUPERSEDED_EPOCH = epoch_id_for_bundle(SUPERSEDED_BUNDLE)
 
 
 @pytest.fixture()
-def conn():
+def conn(postgres_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     with repositories_for_connection(connection).transaction():
         repositories_for_connection(connection).news.register_agent_runtime_manifest(
             manifest_sha="a" * 64,

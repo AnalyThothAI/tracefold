@@ -8,7 +8,6 @@ import pytest
 
 from tests.integration.test_news_review_desk import NOW, _open_event
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 from tracefold.app import learning_runtime
 from tracefold.app.repository_session import repositories_for_connection
@@ -24,13 +23,12 @@ from tracefold.news.release.canary import (
 )
 from tracefold.platform.postgres.client import create_pool
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture()
-def conn():
+def conn(postgres_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     yield connection
     connection.close()
 

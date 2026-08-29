@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.delivery import _quote_line
 from tracefold.news.market_review.instruments import Instrument
@@ -23,16 +22,15 @@ from tracefold.news.market_review.pricing import (
     Quote,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 NOW = 1_787_000_000_000
 HOUR = 3_600_000
 
 
 @pytest.fixture(scope="module")
-def conn():
+def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     yield connection
     connection.close()
 

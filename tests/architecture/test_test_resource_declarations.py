@@ -12,6 +12,12 @@ POSTGRES_HELPERS = {
     "reset_postgres_schema",
     "test_postgres_dsn",
 }
+POSTGRES_RESOURCE_FIXTURES = (
+    "postgres_dsn",
+    "postgres_clone_dsn",
+    "postgres_module_clone_dsn",
+    "postgres_clone_factory",
+)
 
 
 def _fixture_is_declared(node: ast.AST, tree: ast.Module, fixture: str) -> bool:
@@ -29,6 +35,15 @@ def _fixture_is_declared(node: ast.AST, tree: ast.Module, fixture: str) -> bool:
     for statement in tree.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)) and fixture in ast.unparse(statement):
             return True
+    return False
+
+
+def _scope_declares_postgres_resource(node: ast.AST, parents: dict[ast.AST, ast.AST], tree: ast.Module) -> bool:
+    owner: ast.AST | None = node
+    while owner is not None:
+        if any(_fixture_is_declared(owner, tree, fixture) for fixture in POSTGRES_RESOURCE_FIXTURES):
+            return True
+        owner = parents.get(owner)
     return False
 
 
@@ -53,7 +68,7 @@ def test_postgres_helpers_are_used_only_beneath_an_explicit_resource_fixture() -
             owner: ast.AST = call
             while owner in parents and not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 owner = parents[owner]
-            if not _fixture_is_declared(owner, tree, "postgres_dsn"):
+            if not _scope_declares_postgres_resource(owner, parents, tree):
                 violations.append(f"{path.relative_to(ROOT)}:{call.lineno}")
 
     assert violations == []

@@ -379,9 +379,13 @@ complete-suite convenience. `make test-evidence` is the canonical
 merge/release entry, runs every deterministic lane with fail-closed resource
 and outcome checks, and includes frontend validation.
 
-Integration tests reset the schema only when they seed data; validation/auth-only
-API tests reuse the migrated head. Historical migration-path tests are narrow
-and explicit: they cover the
+PostgreSQL behavior tests use a run-scoped baseline database migrated once to
+head, then receive a private function- or module-scoped clone. A test that
+drops a schema, commits across connections, exercises roles, or takes locks
+therefore keeps the real PostgreSQL seam without rerunning the Alembic chain or
+sharing `public` with another behavior test. Destructive schema reset remains
+only in the explicit migration-owner modules. Historical migration-path tests
+do not use the head clone shortcut: they are narrow and explicit, and cover the
 preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the

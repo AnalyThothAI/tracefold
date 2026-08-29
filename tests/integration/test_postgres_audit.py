@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.query_audit import query_audit_catalog
 from tracefold.platform.postgres.audit import (
     NEWS_TABLES,
@@ -15,18 +14,16 @@ from tracefold.platform.postgres.audit import (
 )
 from tracefold.platform.postgres.migrations import latest_migration_version
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 
 def _composed_catalog(*, now_ms: int = 0) -> QueryAuditCatalog:
     return query_audit_catalog(now_ms=now_ms)
 
 
-def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
+def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path, postgres_clone_dsn: str):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        migrate(conn)
-
         payload = PostgresOperationalAudit(conn).run()
     finally:
         conn.close()
@@ -55,10 +52,9 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path):
     assert "foreign_key_checks" not in payload
 
 
-def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path):
+def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path, postgres_clone_dsn: str):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        migrate(conn)
         conn.execute("REVOKE INSERT ON news_event_evidence_snapshots FROM tracefold_workers")
         conn.commit()
 
@@ -71,11 +67,9 @@ def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path):
     assert "workers_evidence_append" in payload["runtime_roles"]["failures"]
 
 
-def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
+def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path, postgres_clone_dsn: str):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        migrate(conn)
-
         payload = PostgresQueryAudit(conn, catalog=_composed_catalog()).run(analyze=False)
     finally:
         conn.close()
@@ -89,10 +83,9 @@ def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path):
     assert all(item["plan"] for item in payload["queries"])
 
 
-def test_projection_validation_checks_bounded_public_models(tmp_path):
+def test_projection_validation_checks_bounded_public_models(tmp_path, postgres_clone_dsn: str):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        migrate(conn)
         initial = ProjectionValidationAudit(conn).run(sample=100)
         conn.execute("DELETE FROM news_ingest_state")
         stale = ProjectionValidationAudit(conn).run(sample=100)
@@ -111,11 +104,10 @@ def test_projection_validation_checks_bounded_public_models(tmp_path):
 
 def test_query_audit_analyzes_all_route_query_families_on_empty_schema(
     tmp_path,
+    postgres_clone_dsn: str,
 ):
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
-        migrate(conn)
-
         payload = PostgresQueryAudit(conn, catalog=_composed_catalog()).run(analyze=True)
     finally:
         conn.close()

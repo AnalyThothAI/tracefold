@@ -17,7 +17,6 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
@@ -33,7 +32,7 @@ from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
@@ -103,9 +102,8 @@ class InlineFiniteOperations:
 
 
 @pytest.fixture(scope="module")
-def conn():
+def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     yield connection
     connection.close()
 

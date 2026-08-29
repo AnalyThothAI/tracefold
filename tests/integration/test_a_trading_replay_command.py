@@ -14,17 +14,15 @@ import yaml
 from psycopg import conninfo, sql
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading import ExecutionCapabilitySnapshotV1, ExecutionInstrumentCapabilityV1
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture(scope="module")
-def conn():
+def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     now_ms = _db_now_ms(connection)
     connection.execute(
         "UPDATE trading_runtime_state SET nautilus_ready = false, "

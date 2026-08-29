@@ -14,7 +14,6 @@ import pytest
 
 from tests.integration.test_news_review_desk import PRINCIPAL, _rubric
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning import dataset as dataset_module
@@ -79,7 +78,7 @@ from tracefold.news.review.desk import (
 )
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 NOW = 1_800_000_000_000
 
@@ -112,9 +111,8 @@ class ReviewDesk(_ReviewDesk):
 
 
 @pytest.fixture()
-def conn():
+def conn(postgres_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     stable = _arm()
     with repositories_for_connection(connection).transaction():
         repositories_for_connection(connection).news.register_agent_runtime_manifest(
