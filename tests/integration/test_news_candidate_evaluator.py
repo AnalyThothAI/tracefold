@@ -639,7 +639,7 @@ def _prompt_candidate(
             if objective_summary is not None
             else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
         ),
-        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v2"},
+        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v3"},
         "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
         "budget": {"max_metric_calls": 12},
         "usage": {"metric_calls": 12},
