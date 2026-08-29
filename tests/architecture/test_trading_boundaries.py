@@ -445,6 +445,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "IntentOutcome",
         "IntentReasonCode",
         "ProviderInstrumentCandidateV1",
+        "RejectedReason",
         "ReplayArtifactV1",
         "ReplayBarV1",
         "ReplayExecutionIntentV1",
