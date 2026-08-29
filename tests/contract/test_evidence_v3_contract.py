@@ -1393,6 +1393,7 @@ def test_phase_one_ownership_has_one_explicit_primary_lane(path: str, markers: s
 
 
 def test_plan_identity_binds_every_required_lane_and_its_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACEFOLD_CI_PLAN_SHA256", raising=False)
     original = evidence._plan_sha256()
     commands = dict(evidence._FULL_PLAN_COMMANDS)
     commands["frontend-build"] = ("npm --prefix web run build:mutated",)
