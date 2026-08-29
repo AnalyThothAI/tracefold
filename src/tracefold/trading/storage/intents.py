@@ -556,7 +556,7 @@ class IntentStorage:
                AND execution_phase = 'ENTRY'
                AND submission_fence_version = 'submission_fence_v1'
                AND entry_client_order_id = %(client_id)s
-               AND entry_quote_q2 IS NULL
+               AND (entry_quote_q2 IS NULL OR entry_quote_q2 ->> 'reason' = 'accepted')
                AND entry_submitted_at_ms IS NULL
                AND actual_quantity IS NULL
          RETURNING {_OUTCOME_COLUMNS}

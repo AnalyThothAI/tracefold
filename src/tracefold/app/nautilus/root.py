@@ -8,9 +8,10 @@ import json
 import signal
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from queue import Full
+from threading import Lock
 from typing import Any, cast
 
 import uvicorn
@@ -90,6 +91,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             loop=loop,
         )
         queues = strategy_queues()
+        quote_stream = _QuoteStreamGeneration()
         bridge = NautilusDatabaseBridge(
             settings,
             queues,
@@ -103,6 +105,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             instrument_ids=instrument_ids,
             capabilities=capabilities,
             queues=queues,
+            quote_stream_generation=quote_stream.current,
             request_venue_flat=lambda request: _schedule_venue_flat_proof(
                 node=node,
                 queues=queues,
@@ -119,7 +122,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             ),
         )
         node.trader.add_strategy(strategy)
-        node.add_data_client_factory(BINANCE, _quote_stream_data_client_factory(queues))
+        node.add_data_client_factory(BINANCE, _quote_stream_data_client_factory(queues, quote_stream))
         node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
         node.build()
         server = _probe_server(bridge.readiness)
@@ -195,15 +198,23 @@ async def _supervise(
 @dataclass(slots=True)
 class _QuoteStreamGeneration:
     generation: int = 0
+    lock: Lock = field(default_factory=Lock)
+
+    def current(self) -> int:
+        with self.lock:
+            return self.generation
 
     def reconnected(self) -> QuoteStreamChanged:
-        self.generation += 1
-        return QuoteStreamChanged(connected=True, generation=self.generation)
+        with self.lock:
+            self.generation += 1
+            generation = self.generation
+        return QuoteStreamChanged(connected=True, generation=generation)
 
 
-def _quote_stream_data_client_factory(queues: StrategyQueues) -> type[BinanceLiveDataClientFactory]:
-    generation = _QuoteStreamGeneration()
-
+def _quote_stream_data_client_factory(
+    queues: StrategyQueues,
+    generation: _QuoteStreamGeneration,
+) -> type[BinanceLiveDataClientFactory]:
     async def on_reconnect() -> None:
         await _enqueue_strategy_command(queues, generation.reconnected())
 

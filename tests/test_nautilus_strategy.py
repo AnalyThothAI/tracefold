@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
 from decimal import Decimal
 from queue import Full, Queue
 from threading import Event, Thread
@@ -180,6 +182,7 @@ class RecordingStrategy(TracefoldNautilusStrategy):
         *,
         queues: StrategyQueues,
         capability: ExecutionInstrumentCapabilityV1 | None = None,
+        quote_stream_generation: Callable[[], int] = lambda: 0,
     ) -> None:
         self.flat_requests: list[VenueFlatProofRequested] = []
         super().__init__(
@@ -187,6 +190,7 @@ class RecordingStrategy(TracefoldNautilusStrategy):
             instrument_ids=[SOLUSDT_PERP],
             capabilities={SOLUSDT_PERP.value: capability or _capability()},
             queues=queues,
+            quote_stream_generation=quote_stream_generation,
             request_venue_flat=self.flat_requests.append,
             request_startup_account_reconciliation=lambda: None,
         )
@@ -212,6 +216,7 @@ def _registered_strategy(
     with_quote: bool = True,
     startup_reconciled: bool = True,
     events: Queue[StrategyEvent] | None = None,
+    quote_stream_generation: Callable[[], int] = lambda: 0,
 ) -> tuple[RecordingStrategy, StrategyQueues]:
     queues = StrategyQueues(
         commands=Queue(maxsize=queue_maxsize),
@@ -237,7 +242,11 @@ def _registered_strategy(
     account.set_leverage(SOLUSDT_PERP, Decimal(leverage))
     cache.add_account(account)
     portfolio = Portfolio(msgbus, cache, clock)
-    strategy = RecordingStrategy(queues=queues, capability=_capability(instrument))
+    strategy = RecordingStrategy(
+        queues=queues,
+        capability=_capability(instrument),
+        quote_stream_generation=quote_stream_generation,
+    )
     strategy.register(TraderId("TRACEFOLD-001"), portfolio, msgbus, cache, clock)
     if startup_reconciled:
         queues.commands.put_nowait(
@@ -375,6 +384,7 @@ def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
             instrument_ids=[SOLUSDT_PERP],
             capabilities={SOLUSDT_PERP.value: _capability()},
             queues=strategy_queues(),
+            quote_stream_generation=lambda: 0,
             request_venue_flat=lambda _request: None,
             request_startup_account_reconciliation=lambda: None,
             config=StrategyConfig(
@@ -406,6 +416,7 @@ def test_zero_claim_bootstrap_projects_fresh_zero_proof_but_never_claims_readine
         instrument_ids=[],
         capabilities={},
         queues=queues,
+        quote_stream_generation=lambda: 0,
         request_venue_flat=lambda _request: None,
         request_startup_account_reconciliation=lambda: requests.append(None),
     )
@@ -513,6 +524,30 @@ def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -
     )
 
 
+def test_reconnect_after_q2_commit_revokes_submission_before_the_provider_write() -> None:
+    from tracefold.app.nautilus.root import _QuoteStreamGeneration
+
+    generation = _QuoteStreamGeneration()
+    strategy, queues = _registered_strategy(quote_stream_generation=generation.current)
+    intent = _intent(case_id="case-q2-reconnect")
+    request = _adopt_and_request_fence(strategy, queues, intent)
+    fenced = _fenced_outcome(intent, request)
+    queues.commands.put_nowait(EntryFenceGranted(outcome=fenced))
+    strategy.on_timer(None)
+    q2 = queues.events.get_nowait()
+    assert isinstance(q2, EntrySubmissionRequested)
+    authorized = fenced.model_copy(update={"entry_quote_q2": q2.q2_evidence})
+    queues.commands.put_nowait(EntrySubmissionGranted(outcome=authorized))
+    generation.reconnected()
+
+    strategy.on_timer(None)
+
+    no_submit = queues.events.get_nowait()
+    assert isinstance(no_submit, EntryNoSubmitRequested)
+    assert no_submit.reason_code == "quote_missing"
+    assert strategy.submitted == []
+
+
 @pytest.mark.parametrize(
     ("bid", "ask", "advance_ms", "reason"),
     [
@@ -555,10 +590,12 @@ def test_q2_quote_rejection_is_typed_and_never_submits(
 
 
 def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick() -> None:
-    strategy, queues = _registered_strategy()
+    generation = {"value": 0}
+    strategy, queues = _registered_strategy(quote_stream_generation=lambda: generation["value"])
     intent = _intent()
     request = _adopt_and_request_fence(strategy, queues, intent)
 
+    generation["value"] = 1
     queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
     strategy.on_timer(None)
     queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
@@ -569,15 +606,59 @@ def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick(
     assert rejected.reason_code == "quote_missing"
     assert strategy.submitted == []
 
-    fresh_strategy, fresh_queues = _registered_strategy()
+    fresh_generation = {"value": 0}
+    fresh_strategy, fresh_queues = _registered_strategy(quote_stream_generation=lambda: fresh_generation["value"])
     fresh_intent = _intent(case_id="case-new-generation")
     fresh_queues.commands.put_nowait(AdoptIntent(intent=fresh_intent, outcome=_outcome(fresh_intent)))
+    fresh_generation["value"] = 1
     fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
     fresh_strategy.on_timer(None)
     _deliver_current_quote(fresh_strategy)
     fresh_request = fresh_queues.events.get_nowait()
     assert isinstance(fresh_request, EntryFenceRequested)
     assert fresh_request.q1_evidence.stream_generation == 1
+
+
+def test_actual_reconnect_callback_beats_a_previously_queued_fence_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.app.nautilus import root
+
+    generation = root._QuoteStreamGeneration()
+    strategy, queues = _registered_strategy(quote_stream_generation=generation.current)
+    intent = _intent(case_id="case-reconnect-race")
+    request = _adopt_and_request_fence(strategy, queues, intent)
+    queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
+
+    async def original() -> None:
+        return None
+
+    market = SimpleNamespace(_handler_reconnect=original)
+    public = SimpleNamespace(_handler_reconnect=original)
+    client = SimpleNamespace(_ws_client=market, _ws_public_client=public)
+    monkeypatch.setattr(root.BinanceLiveDataClientFactory, "create", lambda **_kwargs: client)
+    factory = root._quote_stream_data_client_factory(queues, generation)
+    callback_loop = asyncio.new_event_loop()
+    try:
+        factory.create(
+            loop=callback_loop,
+            name="BINANCE",
+            config=object(),
+            msgbus=object(),
+            cache=object(),
+            clock=object(),
+        )
+    finally:
+        callback_loop.close()
+    asyncio.run(market._handler_reconnect())
+
+    strategy.on_timer(None)
+
+    no_submit = queues.events.get_nowait()
+    assert isinstance(no_submit, EntryNoSubmitRequested)
+    assert no_submit.reason_code == "quote_missing"
+    assert no_submit.q2_evidence.stage == "Q2"
+    assert strategy.submitted == []
 
 
 def test_dynamic_subscription_waits_for_its_first_quote_before_requesting_the_fence() -> None:

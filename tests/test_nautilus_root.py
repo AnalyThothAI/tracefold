@@ -226,7 +226,8 @@ def test_binance_reconnect_callbacks_advance_quote_generation_before_resnapshot(
     client = SimpleNamespace(_ws_client=market, _ws_public_client=public)
     monkeypatch.setattr(root.BinanceLiveDataClientFactory, "create", lambda **_kwargs: client)
     queues = root.strategy_queues()
-    factory = root._quote_stream_data_client_factory(queues)
+    generation = root._QuoteStreamGeneration()
+    factory = root._quote_stream_data_client_factory(queues, generation)
     callback_loop = asyncio.new_event_loop()
     try:
         assert (
@@ -252,6 +253,7 @@ def test_binance_reconnect_callbacks_advance_quote_generation_before_resnapshot(
 
     assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=1)
     assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=2)
+    assert generation.current() == 2
     assert calls == ["resnapshot", "market-returned", "resnapshot"]
 
 

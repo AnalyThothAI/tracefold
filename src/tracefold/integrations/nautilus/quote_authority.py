@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from nautilus_trader.model.data import QuoteTick
 
-from tracefold.trading.quote_authority import ExecutionQuote
+from tracefold.trading import ExecutionQuote
 
 
 def execution_quote_from_nautilus(quote: QuoteTick, *, stream_generation: int) -> ExecutionQuote:

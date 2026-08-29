@@ -7,11 +7,14 @@ from decimal import Decimal
 from queue import Queue
 from typing import Literal
 
-from tracefold.trading import IntentOutcome, IntentReasonCode, RejectedReason, TradeIntent
-from tracefold.trading.quote_authority import (
+from tracefold.trading import (
     ExecutionQuoteAuditV1,
     ExecutionQuoteRejectionV1,
     ExecutionQuoteSnapshotV1,
+    IntentOutcome,
+    IntentReasonCode,
+    RejectedReason,
+    TradeIntent,
 )
 
 OrderLeg = Literal["entry", "stop", "close"]

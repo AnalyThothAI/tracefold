@@ -1094,6 +1094,48 @@ def test_q2_acceptance_preserves_the_fenced_quantity_before_submit(conn: Any) ->
     assert latency["entry_submitted_to_entry_accepted"] == {"n": 1, "p50": 100, "p95": 100}
 
 
+def test_reconnect_can_replace_an_unspent_q2_authorization_with_durable_no_submit(conn: Any) -> None:
+    case_id = "case-q2-reconnect"
+    _case(conn, case_id=case_id)
+    intent = _intent(case_id=case_id)
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    accepted_q2 = _accepted_q1(intent, evaluated_at_ms=NOW + 2_000, stage="Q2")
+    assert (
+        repos.trading.authorize_entry_submission(
+            intent.intent_id,
+            entry_client_order_id=fenced.entry_client_order_id,
+            q2_evidence=accepted_q2,
+            now_ms=NOW + 2_000,
+        )
+        is not None
+    )
+    rejected_q2 = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_missing",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 2_001) * 1_000_000,
+    )
+
+    rejected = repos.trading.record_fenced_quote_no_submit(
+        intent.intent_id,
+        entry_client_order_id=fenced.entry_client_order_id,
+        reason_code="quote_missing",
+        q2_evidence=rejected_q2,
+        now_ms=NOW + 2_001,
+    )
+    conn.commit()
+
+    assert rejected is not None
+    assert rejected.entry_quote_q2 == rejected_q2
+    assert (rejected.terminal_outcome, rejected.entry_submitted_at_ms) == ("REJECTED", None)
+
+
 def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
     _case(conn)
     intent = _intent()

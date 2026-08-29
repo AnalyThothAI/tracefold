@@ -39,6 +39,15 @@ from .intent import (
     TradeIntent,
     deterministic_client_order_id,
 )
+from .quote_authority import (
+    MAX_RECEIVE_AGE_NS,
+    ExecutionQuote,
+    ExecutionQuoteAuditV1,
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
+    SubmissionFenceV1,
+    validate_entry_quote,
+)
 from .replay import (
     BAR_FIDELITY_VERSION,
     ReplayArtifactV1,
@@ -54,6 +63,7 @@ __all__ = [
     "ACTIVE_INTENT_STATES",
     "BAR_FIDELITY_VERSION",
     "INTENT_POLICY_SHA256",
+    "MAX_RECEIVE_AGE_NS",
     "Bar",
     "BlacklistSnapshotV1",
     "CapitalRuntimeV1",
@@ -61,6 +71,10 @@ __all__ = [
     "DecisionRuntimeV1",
     "ExecutionCapabilitySnapshotV1",
     "ExecutionInstrumentCapabilityV1",
+    "ExecutionQuote",
+    "ExecutionQuoteAuditV1",
+    "ExecutionQuoteRejectionV1",
+    "ExecutionQuoteSnapshotV1",
     "ExecutionUniverseCandidateRow",
     "InstrumentRef",
     "IntentOutcome",
@@ -75,6 +89,7 @@ __all__ = [
     "ReplaySpecV1",
     "ReplayTerminalOutcomeV1",
     "StableCapabilityExclusionV1",
+    "SubmissionFenceV1",
     "TradeIntent",
     "TradingCaseManifest",
     "VenueBinding",
@@ -83,4 +98,5 @@ __all__ = [
     "VenueInstrumentCatalogSnapshotV1",
     "build_venue_catalog_snapshot",
     "deterministic_client_order_id",
+    "validate_entry_quote",
 ]

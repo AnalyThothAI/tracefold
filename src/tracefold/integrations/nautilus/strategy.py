@@ -17,21 +17,19 @@ from nautilus_trader.model.identifiers import ClientId, ClientOrderId, Instrumen
 from nautilus_trader.trading.strategy import Strategy
 
 from tracefold.trading import (
-    ExecutionInstrumentCapabilityV1,
-    IntentOutcome,
-    IntentReasonCode,
-    TradeIntent,
-    deterministic_client_order_id,
-)
-from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
-from tracefold.trading.quote_authority import (
     MAX_RECEIVE_AGE_NS,
+    ExecutionInstrumentCapabilityV1,
     ExecutionQuote,
     ExecutionQuoteRejectionV1,
     ExecutionQuoteSnapshotV1,
+    IntentOutcome,
+    IntentReasonCode,
     SubmissionFenceV1,
+    TradeIntent,
+    deterministic_client_order_id,
     validate_entry_quote,
 )
+from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
 
 from .capabilities import instrument_matches_capability
 from .messages import (
@@ -96,6 +94,7 @@ class TracefoldNautilusStrategy(Strategy):
         instrument_ids: Sequence[InstrumentId],
         capabilities: Mapping[str, ExecutionInstrumentCapabilityV1],
         queues: StrategyQueues,
+        quote_stream_generation: Callable[[], int],
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
         request_startup_account_reconciliation: Callable[[], None],
         config: StrategyConfig | None = None,
@@ -113,6 +112,9 @@ class TracefoldNautilusStrategy(Strategy):
             raise ValueError("nautilus_capability_claims_mismatch")
         self._capabilities = dict(capabilities)
         self._queues = queues
+        self._quote_stream_generation_authority = quote_stream_generation
+        if int(self._quote_stream_generation_authority()) < 0:
+            raise ValueError("nautilus_quote_stream_generation_invalid")
         self._request_venue_flat = request_venue_flat
         self._request_startup_account_reconciliation = request_startup_account_reconciliation
         self._bootstrap_mode = not claims
@@ -381,7 +383,7 @@ class TracefoldNautilusStrategy(Strategy):
             return
         self._latest_entry_quote = execution_quote_from_nautilus(
             tick,
-            stream_generation=self._quote_stream_generation,
+            stream_generation=self._authoritative_quote_generation(),
         )
 
     def _entry_preflight(self, intent: TradeIntent) -> tuple[Decimal, ExecutionQuoteSnapshotV1] | None:
@@ -404,7 +406,7 @@ class TracefoldNautilusStrategy(Strategy):
             self._refuse_intent(intent, "runtime_not_ready")
             return None
         now_ns = int(self.clock.timestamp_ns())
-        quote = self._latest_entry_quote
+        quote = self._authoritative_entry_quote()
         if quote is None:
             wait_started_at_ns = self._quote_wait_started_at_ns
             if wait_started_at_ns is not None and now_ns < min(
@@ -505,7 +507,7 @@ class TracefoldNautilusStrategy(Strategy):
         now_ns = int(self.clock.timestamp_ns())
         validation = validate_entry_quote(
             intent=intent,
-            quote=self._latest_entry_quote,
+            quote=self._authoritative_entry_quote(),
             stage="Q2",
             now_ns=now_ns,
             last_accepted_ts_event_ns=q1.ts_event_ns,
@@ -545,13 +547,34 @@ class TracefoldNautilusStrategy(Strategy):
             or outcome.intent_id != intent.intent_id
             or fence.client_order_id != expected_id
             or outcome.entry_quote_q2 is None
-            or outcome.entry_quote_q2.reason != "accepted"
+            or not isinstance(outcome.entry_quote_q2, ExecutionQuoteSnapshotV1)
             or outcome.entry_submitted_at_ms is not None
             or outcome.execution_state != "IN_FLIGHT"
             or outcome.execution_phase != "ENTRY"
         ):
             raise ValueError("nautilus_entry_submission_grant_invalid")
         if expected_id in self._orders:
+            return
+        if outcome.entry_quote_q2.stream_generation != self._authoritative_quote_generation():
+            now_ns = int(self.clock.timestamp_ns())
+            rejection = validate_entry_quote(
+                intent=intent,
+                quote=None,
+                stage="Q2",
+                now_ns=now_ns,
+                last_accepted_ts_event_ns=outcome.entry_quote_q2.ts_event_ns,
+            )
+            if not isinstance(rejection, ExecutionQuoteRejectionV1):
+                raise AssertionError("quote_generation_rejection_invalid")
+            self._active_outcome = outcome
+            self._emit(
+                EntryNoSubmitRequested(
+                    intent_id=intent.intent_id,
+                    client_order_id=expected_id,
+                    reason_code=rejection.reason,
+                    q2_evidence=rejection,
+                )
+            )
             return
 
         instrument_id = self._instrument_id()
@@ -577,16 +600,31 @@ class TracefoldNautilusStrategy(Strategy):
         )
 
     def _change_quote_stream(self, command: QuoteStreamChanged) -> None:
+        if command.generation > self._authoritative_quote_generation():
+            raise ValueError("nautilus_quote_stream_generation_unowned")
         if command.generation < self._quote_stream_generation:
             raise ValueError("nautilus_quote_stream_generation_regressed")
         if command.connected and command.generation == self._quote_stream_generation and self._quote_stream_connected:
             return
         self._quote_stream_generation = command.generation
         self._quote_stream_connected = command.connected
-        self._latest_entry_quote = None
+        if self._latest_entry_quote is None or self._latest_entry_quote.stream_generation < command.generation:
+            self._latest_entry_quote = None
         self._last_accepted_quote_ts_event_ns = None
         if self._active_intent is not None and self._active_outcome is not None:
             self._quote_wait_started_at_ns = int(self.clock.timestamp_ns())
+
+    def _authoritative_quote_generation(self) -> int:
+        generation = int(self._quote_stream_generation_authority())
+        if generation < 0:
+            raise RuntimeError("nautilus_quote_stream_generation_invalid")
+        return generation
+
+    def _authoritative_entry_quote(self) -> ExecutionQuote | None:
+        quote = self._latest_entry_quote
+        if quote is None or quote.stream_generation != self._authoritative_quote_generation():
+            return None
+        return quote
 
     def _finalize_fenced_no_submit(self, command: EntryNoSubmitFinalized) -> None:
         intent = self._active_intent

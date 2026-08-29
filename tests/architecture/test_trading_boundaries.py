@@ -434,6 +434,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ACTIVE_INTENT_STATES",
         "BAR_FIDELITY_VERSION",
         "INTENT_POLICY_SHA256",
+        "MAX_RECEIVE_AGE_NS",
         "Bar",
         "BlacklistSnapshotV1",
         "CapitalRuntimeV1",
@@ -441,6 +442,10 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "DecisionRuntimeV1",
         "ExecutionCapabilitySnapshotV1",
         "ExecutionInstrumentCapabilityV1",
+        "ExecutionQuote",
+        "ExecutionQuoteAuditV1",
+        "ExecutionQuoteRejectionV1",
+        "ExecutionQuoteSnapshotV1",
         "ExecutionUniverseCandidateRow",
         "InstrumentRef",
         "IntentOutcome",
@@ -455,6 +460,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ReplaySpecV1",
         "ReplayTerminalOutcomeV1",
         "StableCapabilityExclusionV1",
+        "SubmissionFenceV1",
         "TradeIntent",
         "TradingCaseManifest",
         "VenueBinding",
@@ -463,6 +469,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "VenueInstrumentCatalogSnapshotV1",
         "build_venue_catalog_snapshot",
         "deterministic_client_order_id",
+        "validate_entry_quote",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__
