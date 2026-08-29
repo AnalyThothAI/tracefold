@@ -49,6 +49,7 @@ TRADING_MANIFEST_VERSION: Final = "trading_manifest_v8"
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
 VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +66,7 @@ class DecisionRuntimeV1:
 class CapitalRuntimeV1:
     """The narrow durable Capital control projected across the App seam."""
 
-    control: Literal["CLOSE_ONLY", "PAUSED", "RUNNING"]
+    control: ControlState
     blacklist_revision: int
     updated_at_ms: int
 
@@ -168,7 +169,6 @@ class InstrumentCandidateRow(TypedDict):
     last_seen_ms: int
 
 
-ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 # One live trigger kind. The column keeps its name and its historical `news` / `liquidation` values;
 # the writer only ever produces `oi`.
 TriggerKind = Literal["oi"]
