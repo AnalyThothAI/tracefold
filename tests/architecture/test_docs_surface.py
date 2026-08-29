@@ -60,7 +60,7 @@ def test_default_test_target_selects_only_hermetic_lanes() -> None:
 
 def test_complete_verification_uses_fixed_native_runner_contracts() -> None:
     result = subprocess.run(
-        ["make", "--dry-run", "test-evidence"],
+        ["make", "--dry-run", "test-ci"],
         cwd=ROOT,
         capture_output=True,
         check=True,
