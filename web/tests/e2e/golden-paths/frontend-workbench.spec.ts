@@ -30,9 +30,9 @@ const tradingArchetype = {
 } as const;
 
 const symbolArchetype = {
-  // #207 PR-W1: the token page composes four endpoints into one column, and since #282 two of them are
-  // the capital lane's. The baseline is what keeps the identity band, the rank window, 交易视角, 交易复盘
-  // and the mixed events table from drifting apart at a viewport.
+  // #207 PR-W1: the token page composes several endpoints into one column, and since #282 two of them
+  // are the capital lane's. The baseline is what keeps the identity band, the rank window, 资本复盘 and
+  // the mixed events table from drifting apart at a viewport.
   name: "symbol",
   path: "/news/symbols/WIF",
   ready: (page: Page) => page.locator(".news-symbol-row").first(),
@@ -135,8 +135,8 @@ async function freezeArchetypes(
 /**
  * The case list is a bounded nested scroller (#280), which `docs/FRONTEND.md` allows only with a
  * reachability assertion behind it. Two things have to stay true and neither is visible in a screenshot:
- * the last card must be reachable inside the list, and the funnel below the whole body must be reachable
- * on the page — the second is what `overscroll-behavior: contain` would have quietly broken.
+ * the last card must be reachable inside the list, and the provenance line below the whole body must be
+ * reachable on the page — the second is what `overscroll-behavior: contain` would have quietly broken.
  */
 async function expectLeverageScrollContract(page: Page) {
   const list = ".news-leverage-list";
@@ -156,11 +156,7 @@ async function expectLeverageScrollContract(page: Page) {
   if ((page.viewportSize()?.width ?? 0) >= 1280) expect(bounded?.sticky).toBe(true);
 
   await expectScrollableToLastMeaningfulElement(page, list, `${list} > *:last-child`);
-  await expectScrollableToLastMeaningfulElement(
-    page,
-    ".center-column",
-    ".news-leverage-funnel .news-source-line",
-  );
+  await expectScrollableToLastMeaningfulElement(page, ".center-column", ".news-leverage-source");
   // Both scrollers, not just the page: reaching the last card scrolls the list itself, and a baseline
   // taken from there would freeze a half-cropped first card as the intended look.
   await page.evaluate(() => {

@@ -8,23 +8,31 @@ type TradingSchemas = components["schemas"];
 export type TradingStatus = TradingSchemas["TradingStatusData"];
 export type TradingBudget = TradingSchemas["TradingBudgetData"];
 export type TradingReadiness = TradingSchemas["TradingReadinessData"];
-export type TradingFloors = TradingSchemas["TradingFloorsData"];
-export type TradingCounts = TradingSchemas["TradingCountsData"];
+export type TradingRuntimeCounts = TradingSchemas["TradingRuntimeCountsData"];
+export type TradingPolicyIdentity = TradingSchemas["TradingPolicyIdentityData"];
 export type TradingIntents = TradingSchemas["TradingIntentsData"];
 export type TradingIntent = TradingSchemas["TradingIntentData"];
+export type TradingCases = TradingSchemas["TradingCasesData"];
 export type TradingCase = TradingSchemas["TradingCaseData"];
-export type TradingEventCase = TradingSchemas["TradingEventCaseData"];
+export type TradingPolicyCheck = TradingSchemas["TradingPolicyCheckData"];
 export type TradingGate = TradingSchemas["TradingGateData"];
+export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
 export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
 export type TradingGateConfig = TradingSchemas["TradingGateConfigData"];
-export type TradingStrategyConfig = TradingSchemas["TradingStrategyConfigData"];
 
 /**
  * The capital lane moves at the speed of a frame, not of a price feed. 15 s is the same rhythm the status
- * route uses, and there is nothing on this surface that changes faster than an intent does.
+ * route uses, and nothing on this surface changes faster than an Intent does.
  */
 export const TRADING_REFETCH_MS = 15_000;
 
+/**
+ * One hook per durable aggregate (#331), because one route per durable aggregate.
+ *
+ * The mixed hook these replace fetched Intents and got Cases back in the same payload, so a page could
+ * not tell "no Intent" from "no Case" — and a failed request fell through an empty array into a state
+ * that reads as "the system had nothing to do".
+ */
 export const useTradingStatusWithToken = (token: string) =>
   useQuery({
     enabled: Boolean(token),
@@ -40,25 +48,33 @@ export const useTradingStatusWithToken = (token: string) =>
     staleTime: 5_000,
   });
 
-export const useTradingIntentsWithToken = (
-  token: string,
-  underlying?: string,
-  budgetDay?: string | null,
-) =>
+/** Immutable capital requests and their execution outcomes. Never Cases. */
+export const useTradingIntentsWithToken = (token: string, underlying?: string) =>
   useQuery({
-    enabled: Boolean(token) && budgetDay !== null,
-    queryKey: queryKeys.tradingIntents(underlying ?? "", budgetDay ?? ""),
+    enabled: Boolean(token),
+    queryKey: queryKeys.tradingIntents(underlying ?? ""),
     queryFn: async () =>
       (
         await getApi<TradingIntents>("/api/trading/intents", {
           etagKey: `trading-intents:${underlying ?? "all"}`,
-          params:
-            underlying || budgetDay
-              ? {
-                  ...(budgetDay ? { day: budgetDay } : {}),
-                  ...(underlying ? { underlying } : {}),
-                }
-              : undefined,
+          params: underlying ? { underlying } : undefined,
+          token,
+        })
+      ).data,
+    refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+/** Frozen Cases and the frozen evidence each was decided on. */
+export const useTradingCasesWithToken = (token: string, underlying?: string) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.tradingCases(underlying ?? ""),
+    queryFn: async () =>
+      (
+        await getApi<TradingCases>("/api/trading/cases", {
+          etagKey: `trading-cases:${underlying ?? "all"}`,
+          params: underlying ? { underlying } : undefined,
           token,
         })
       ).data,
@@ -69,9 +85,9 @@ export const useTradingIntentsWithToken = (
 /**
  * Every admission answer in the window, in one read (#269).
  *
- * The per-Event endpoint below answers the same question for one Event, which is what the Event detail
- * asks. A frame table asks it for a page of frames at once, and a hundred round trips to render one screen
- * is why the column said 未成案 with no reason for every row while the ledger held one for each.
+ * The per-Source endpoint below answers the same question for one Event, which is what an Event detail
+ * asks. A frame table asks it for a page of frames at once, and a hundred round trips to render one
+ * screen is why the column said 未成案 with no reason for every row while the ledger held one for each.
  */
 export const useTradingGateWithToken = (token: string) =>
   useQuery({
@@ -89,25 +105,24 @@ export const useTradingGateWithToken = (token: string) =>
   });
 
 /**
- * Whether one Event became a case (#207 PR-W4).
+ * What admission decided about one Event's Source.
  *
- * `lane` is required rather than inferred, and only `oi` is a real question. The deterministic lane's source
- * key is `oi:{event_id}:{metric_version}`; the model lane's is a content hash of an artifact and a
- * fingerprint (#154), which no Event id reconstructs. The server answers `joinable: false` for anything
- * else, and the badge renders that as "cannot be asked" rather than as "no".
+ * `lane` is required rather than inferred, and only `oi` is a real question. The deterministic lane's
+ * source key is `oi:{event_id}:{metric_version}`; nothing else is reconstructible from an Event id, and
+ * the server answers `joinable: false` for those rather than reporting a refusal that never happened.
  */
-export const useTradingEventCaseWithToken = (
+export const useTradingGateSourceWithToken = (
   token: string,
   eventId: string | null | undefined,
   lane: "oi" | "news",
 ) =>
   useQuery({
     enabled: Boolean(token && eventId && lane === "oi"),
-    queryKey: queryKeys.tradingEventCase(eventId ?? ""),
+    queryKey: queryKeys.tradingGateSource(eventId ?? ""),
     queryFn: async () =>
       (
-        await getApi<TradingEventCase>(`/api/trading/events/${encodeURIComponent(eventId ?? "")}`, {
-          etagKey: `trading-event-case:${eventId}`,
+        await getApi<TradingGateSource>(`/api/trading/gate/${encodeURIComponent(eventId ?? "")}`, {
+          etagKey: `trading-gate-source:${eventId}`,
           params: { lane: "oi" },
           token,
         })

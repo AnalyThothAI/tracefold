@@ -6,7 +6,7 @@ from decimal import Decimal
 import pytest
 
 from tracefold.app.cli.commands import trading_replay as trading_replay_command
-from tracefold.app.trading_config import trading_config_from_settings, trading_settings_strategies
+from tracefold.app.trading_config import capital_lane_config
 from tracefold.integrations.nautilus.replay import run_bar_episode
 from tracefold.integrations.venues import VenueBar
 from tracefold.platform.config.models import Settings
@@ -18,9 +18,10 @@ from tracefold.trading import (
     ReplayBarV1,
     replay,
 )
-from tracefold.trading.candidate.blacklist import CanonicalBlacklistEntryV1
+from tracefold.trading.blacklist import CanonicalBlacklistEntryV1
 from tracefold.trading.contracts import OiTradeCandidate
-from tracefold.trading.decision.regime import RegimePolicy
+from tracefold.trading.market_context import PriceWindow
+from tracefold.trading.policy import CapitalPolicy, CapitalPolicyConfig
 from tracefold.trading.replay import DirectionalReplayPlan, ReplayMarketSlice
 
 NOW = 1_900_000_000_000
@@ -106,12 +107,12 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
 
     monkeypatch.setattr(trading_replay_command, "fetch_binance_bars", fetched)
 
-    regime = RegimePolicy(lookback_ms=7_200_000)
-    market_slice = asyncio.run(trading_replay_command._fetch_market_slices([plan], now_ms=NOW, regime_policy=regime))[0]
+    window = PriceWindow(lookback_ms=7_200_000)
+    market_slice = asyncio.run(trading_replay_command._fetch_market_slices([plan], now_ms=NOW, price_window=window))[0]
 
     assert market_slice.end_ms > NOW
     assert [bar.close_at_ms for bar in market_slice.bars] == [NOW]
-    assert market_slice.start_ms == NOW - regime.lookback_ms - regime.bar_gap_tolerance_ms
+    assert market_slice.start_ms == NOW - window.lookback_ms - window.bar_gap_tolerance_ms
 
 
 def _directional_market_slice() -> ReplayMarketSlice:
@@ -167,23 +168,19 @@ def _directional_market_slice() -> ReplayMarketSlice:
     return ReplayMarketSlice(plan, bars, None, NOW - 7_530_000, NOW + 1_500_000)
 
 
-def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() -> None:
+def test_the_operator_notional_and_the_policy_band_drive_a_real_replay_outcome() -> None:
+    """The two knobs that remain, and they are owned by different things (#331).
+
+    `fixed_notional_usd` is the operator's and sizes the scenario. The price band is the *policy's* and
+    is frozen into its identity, so a replay of a tightened band is a replay of a different policy —
+    which is exactly why an operator cannot reach it from settings.
+    """
+
     market_slice = _directional_market_slice()
-    configured_settings = Settings.model_validate(
-        {
-            "trading": {
-                "regime": {"lookback_seconds": 7_200, "min_price_move_bps": 75, "max_price_move_bps": 800},
-                "order": {"fixed_notional_usd": "7.5"},
-            }
-        }
-    )
-    configured = trading_config_from_settings(configured_settings)
-    default = trading_config_from_settings(Settings())
-    strategy = next(
-        item
-        for item in trading_settings_strategies(configured_settings)
-        if item.strategy_id == "oi_smart_money_momentum_v1"
-    )
+    configured = capital_lane_config(Settings.model_validate({"trading": {"order": {"fixed_notional_usd": "7.5"}}}))
+    default = capital_lane_config(Settings())
+    assert configured.target_notional_usd == Decimal("7.5")
+    assert default.target_notional_usd == Decimal("10")
 
     blacklist = BlacklistSnapshotV1(
         revision=1,
@@ -196,51 +193,39 @@ def test_nondefault_settings_drive_real_regime_notional_and_blacklist_outcome() 
         ),
     )
 
-    configured_outcome = replay.evaluate_replay_market_slices(
-        [market_slice],
-        strategy=strategy,
-        snapshot=_snapshot(),
-        blacklist=blacklist,
-        run_episode=run_bar_episode,
-        regime_policy=configured.regime,
-        target_notional=configured.fixed_notional_usd,
-    )[0]
-    default_outcome = replay.evaluate_replay_market_slices(
-        [market_slice],
-        strategy=strategy,
-        snapshot=_snapshot(),
-        blacklist=blacklist,
-        run_episode=run_bar_episode,
-        regime_policy=default.regime,
-        target_notional=default.fixed_notional_usd,
-    )[0]
+    def evaluate(policy: CapitalPolicy, notional: Decimal) -> replay.ReplayTerminalOutcomeV1:
+        return replay.evaluate_replay_market_slices(
+            [market_slice],
+            policy=policy,
+            snapshot=_snapshot(),
+            blacklist=blacklist,
+            run_episode=run_bar_episode,
+            price_window=PriceWindow(lookback_ms=7_200_000),
+            target_notional=notional,
+        )[0]
 
-    assert (configured_outcome.decision, configured_outcome.execution) == ("DIRECTIONAL", "CLOSED")
-    assert configured_outcome.quantity == Decimal("75")
-    assert (configured_outcome.capital_admission, configured_outcome.capital_reason) == ("DENIED", "blacklisted")
-    assert configured_outcome.replay_intent is not None
-    assert (default_outcome.decision, default_outcome.decision_reason) == ("NO_TRADE", "move_above_band_chasing")
+    shipped = evaluate(configured.policy, configured.target_notional_usd)
+    assert (shipped.decision, shipped.execution) == ("DIRECTIONAL", "CLOSED")
+    assert shipped.quantity == Decimal("75")
+    # The deny-list is recorded as a capital-admission observation and never edits the Alpha result.
+    assert (shipped.capital_admission, shipped.capital_reason) == ("DENIED", "blacklisted")
+    assert shipped.replay_intent is not None
+
+    tightened = evaluate(CapitalPolicy(config=CapitalPolicyConfig(max_price_move_bps=100)), Decimal("10"))
+    assert (tightened.decision, tightened.decision_reason) == ("NO_TRADE", "move_above_band_chasing")
 
 
 def test_replay_engine_failure_aborts_without_a_policy_outcome() -> None:
-    settings = Settings.model_validate(
-        {"trading": {"regime": {"lookback_seconds": 7_200, "min_price_move_bps": 75, "max_price_move_bps": 800}}}
-    )
-    configured = trading_config_from_settings(settings)
-    strategy = next(
-        item for item in trading_settings_strategies(settings) if item.strategy_id == "oi_smart_money_momentum_v1"
-    )
-
     def failed_episode(**_kwargs):
         raise RuntimeError("replay_instrument_unavailable")
 
     with pytest.raises(RuntimeError, match="replay_instrument_unavailable"):
         replay.evaluate_replay_market_slices(
             [_directional_market_slice()],
-            strategy=strategy,
+            policy=CapitalPolicy(),
             snapshot=_snapshot(),
             blacklist=BlacklistSnapshotV1(revision=0, active_rows=()),
             run_episode=failed_episode,
-            regime_policy=configured.regime,
-            target_notional=configured.fixed_notional_usd,
+            price_window=PriceWindow(lookback_ms=7_200_000),
+            target_notional=Decimal("10"),
         )

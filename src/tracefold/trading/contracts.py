@@ -9,6 +9,22 @@ Two conventions carried over from News on purpose:
 * thresholds are integer basis points, so a stored number and the comparison against it cannot
   disagree because of a float;
 * money and quantities are `Decimal`, never `float`.
+
+**The #331 vocabulary.** One word, one meaning, and the writer and every read surface use the same
+one:
+
+    Source        a persisted, citable market fact. The live trigger is a Binance OI frame and
+                  nothing else.
+    Admission     the durable Gate answer taken *before* a Case exists.
+    RESEARCH_ONLY a legitimate research source with no live capital authority (Hyperliquid).
+    Case          a frozen candidate that passed live Admission and may run the capital policy.
+    Decision      the one terminal business answer about a Case: NO_TRADE, BLOCKED, INTENT_EMITTED.
+    Intent        the immutable capital request handed to Nautilus. Not an order.
+    Outcome       the durable result of execution and the position lifecycle.
+
+`POLICY_REJECTED` and `ORDER_PREPARED` survive here for one reason only: production holds rows in
+both states and they must stay readable. `CURRENT_TERMINAL_STATES` is what the writer may reach, and
+`settle_case` refuses anything outside it.
 """
 
 from __future__ import annotations
@@ -19,16 +35,17 @@ from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Any, Final, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# Bumped whenever the manifest layout, the regime arithmetic or the pure policy changes shape: a case
-# frozen under one version is not comparable with a case frozen under another.
-TRADING_MANIFEST_VERSION = "trading_manifest_v6"
-TRADING_POLICY_VERSION = "trading_strategy_policy_v1"
-TRADING_PROGRAM_VERSION = "trading_news_oi_decision_v1"
-# Code-owned execution timing shared by the pipeline and the one-attempt protocol.
+# Bumped whenever the manifest layout or the pure policy changes shape: a Case frozen under one
+# version is not comparable with a Case frozen under another. v7 is #331's hard cut — the manifest
+# lost `mode`, the News counterpart, the liquidation contexts and the OI/price quadrant, and gained
+# nothing, because a Case is now one Binance OI frame plus the price window it was frozen against.
+TRADING_MANIFEST_VERSION: Final = "trading_manifest_v7"
+TRADING_POLICY_VERSION = "trading_capital_policy_v2"
+# Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
 # No `NewsLearningEpoch` literal (#314). Trading pins the two upstream contracts it actually reasons
@@ -41,18 +58,18 @@ TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 # they are *its* requirements, not News's SELECT lists: News may add a column, rename one, or publish a
 # second projection without this file moving, and the App-side mapper is where the two meet.
 #
-# They are `TypedDict`s rather than validating models on purpose. Eligibility fails closed on a named
-# rejection for every value it cannot use — an unparseable rank, an unknown direction, a verdict that is
-# not a mapping — and a model that raised on the same row would turn a counted funnel entry into an
-# exception the funnel never sees. Deliberately loose where the source is loose: `verdict` is a jsonb
-# document and `venue` is provider text that may be absent.
+# They are `TypedDict`s rather than validating models on purpose. Source normalization fails closed on
+# a named rejection for every value it cannot use — an unparseable rank, an unknown direction — and a
+# model that raised on the same row would turn a counted admission answer into an exception nothing
+# durable sees. Deliberately loose where the source is loose: `venue` is provider text that may be
+# absent.
 
 
 def oi_source_key(event_id: object, metric_version: object) -> str:
     """The deterministic OI lane's source identity, from either a raw row or a typed candidate.
 
     A row rejected at the source stage never becomes an `OiTradeCandidate`, and its admission decision
-    still has to be filed under the same key the case would have used — so the construction lives here
+    still has to be filed under the same key the Case would have used — so the construction lives here
     rather than only on the model.
     """
 
@@ -60,13 +77,13 @@ def oi_source_key(event_id: object, metric_version: object) -> str:
 
 
 class OiCandidateRow(TypedDict):
-    """One parsed deterministic OI telemetry fact offered to the candidate scanner."""
+    """One parsed deterministic OI telemetry fact offered to the capital lane."""
 
     event_id: str
     verdict_created_at_ms: int
     # The reader's own judgment of this frame, and the named rule behind it. Audit, not admission: since
-    # #264 the Candidate Gate decides whether the fact may trigger, and a reader policy change must not
-    # silently open or close the capital lane.
+    # #264 the Gate decides whether the fact may trigger, and a reader policy change must not silently
+    # open or close the capital lane.
     final_decision: str
     source_rule: str | None
     # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
@@ -94,66 +111,14 @@ class OiCandidateRow(TypedDict):
     venue: str | None
 
 
-class NewsCandidateRow(TypedDict):
-    """One editorial Triage verdict offered to the candidate scanner."""
-
-    event_id: str
-    verdict_created_at_ms: int
-    final_decision: str
-    # Optional upstream, so optional here: the eligibility rules already read all three through their
-    # fail-closed accessors, and a contract that promised `int` would make the next reader trust it.
-    evidence_version: int | None
-    evidence_sha256: str | None
-    focus_fact_id: str | None
-    verdict: Any
-    learning_epoch: str
-    program_version: str
-    program_sha256: str
-    policy_version: str
-    editorial_origin: str
-    editorial_sha256: str
-    scored_judgment_sha256: str
-    runtime_manifest_sha: str
-    opened_at_ms: int
-    comparison_fingerprint: str
-    asset_class: str
-    grounded_assets: Any
-    ingest_mode: str
-    source_artifact_id: str | None
-    source_published_at_ms: int | None
-
-
-class LiquidationCandidateRow(TypedDict):
-    """One admission-time deterministic liquidation fact offered through the App mapping seam."""
-
-    source_key: str
-    item_id: str
-    fact_id: str
-    symbol: str
-    venue: str
-    liquidated_position_side: str
-    forced_order_side: str
-    notional_usd: Decimal
-    quantity: Decimal | None
-    price: Decimal
-    event_at_ms: int
-    received_at_ms: int
-    parser_version: str
-    provider_record_identity: str
-    symbol_contract_identity: str
-    position_side_semantics: str
-    quantity_semantics: str
-    notional_semantics: str
-    price_semantics: str
-    completeness_assumption: str
-    throttle_assumption: str
-    source_contract_version: str
-    source_contract_complete: bool
-    ingest_mode: str
-
-
 class InstrumentCandidateRow(TypedDict):
-    """One catalogue row offered to the venue resolver."""
+    """One catalogue row offered to the research venue resolver.
+
+    Live routing does **not** read this (#331). The active execution capability snapshot is the live
+    instrument universe, and resolving from a second catalogue is how a Case came to be frozen against
+    an instrument the Intent writer would later refuse. Replay still resolves both venues from here,
+    because research is allowed to look at books this lane may not trade.
+    """
 
     venue: str
     venue_symbol: str
@@ -165,29 +130,16 @@ class InstrumentCandidateRow(TypedDict):
 
 
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
-TriggerKind = Literal["oi", "liquidation", "news"]
-StrategyPermission = Literal["shadow", "paper", "live_reviewed"]
-StrategyId = Literal[
-    "oi_smart_money_momentum_v1",
-    # Retained as an identity `strategy_from_manifest` still rebuilds; `capital_strategy_id` no longer
-    # routes a new Case to it (#265 §5.1). Its rules — a 95% whale-profit floor inside the shared 1-6%
-    # band — are not the ones the smart-money template describes, and reusing the id would make every
-    # Case frozen under it replay under rules it was never decided by.
-    #
-    # A Case frozen before `trading_manifest_v6` is *not* replayable, and that is what the version bump
-    # means rather than an oversight: `min_oi_value_usd` left both OI strategy configs when the floor
-    # got its single owner, so an older `strategy_config` no longer satisfies `_exact_keys` and its
-    # digest no longer matches. `_uses_current_news_generation` refuses those manifests first, so the
-    # runner never mis-decodes one. Production holds no `oi_momentum_v1` case at all, and every
-    # `news_oi_alignment_v1` case predating the cut is already terminal.
-    "oi_momentum_v1",
-    "news_oi_alignment_v1",
-    "liquidation_continuation_shadow_v1",
-    "liquidation_exhaustion_shadow_v1",
-]
+# One live trigger kind. The column keeps its name and its historical `news` / `liquidation` values;
+# the writer only ever produces `oi`.
+TriggerKind = Literal["oi"]
 ExchangeId = Literal["binance", "hyperliquid"]
-LiveExchangeId = ExchangeId
-PolicyDecision = Literal["no_trade", "long", "short"]
+# The one venue that may carry live capital. Hyperliquid is `RESEARCH_ONLY`: a legitimate source of
+# facts with no capital authority, and the Gate says so before a Case exists rather than letting the
+# Intent writer discover it four stages later.
+LIVE_EXCHANGE_ID: Final[ExchangeId] = "binance"
+LIVE_VENUE: Final = "binance.perp"
+PolicyDecision = Literal["no_trade", "long"]
 
 
 def utc_day_key(now_ms: int) -> str:
@@ -200,25 +152,40 @@ class CaseState(StrEnum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
     NO_TRADE = "NO_TRADE"
-    POLICY_REJECTED = "POLICY_REJECTED"
     INTENT_EMITTED = "INTENT_EMITTED"
-    # Audit-only history from the retired Paper/OpenTrade writer.
-    ORDER_PREPARED = "ORDER_PREPARED"
     BLOCKED = "BLOCKED"
+    # Read-only history. `POLICY_REJECTED` was the old writer's word for both "the policy said no" and
+    # "the lane could not decide"; `ORDER_PREPARED` belonged to the retired Paper/OpenTrade writer.
+    # Production holds 225 rows in the first and 2 in the second, so both stay readable — and neither
+    # is reachable from `CURRENT_TERMINAL_STATES`.
+    POLICY_REJECTED = "POLICY_REJECTED"
+    ORDER_PREPARED = "ORDER_PREPARED"
 
 
-class OiRegime(StrEnum):
-    """The OI/price quadrant. OI direction alone is never a price direction (#104).
+# Exactly three answers a new Case may end in (#331). `NO_TRADE` means the policy ran to completion and
+# declined; `BLOCKED` means a system fact, a capital authority or an invariant stopped the decision from
+# completing safely; `INTENT_EMITTED` means the Case and one immutable Intent were handed over in the
+# same transaction.
+CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
+    {CaseState.NO_TRADE, CaseState.BLOCKED, CaseState.INTENT_EMITTED}
+)
 
-    The reader card maps `OI rise -> bullish` to fit the News delivery vocabulary. That mapping exists
-    so a Chinese card reads naturally; it is not a market claim, and Trading must not inherit it.
-    """
-
-    BUILDUP_UP = "buildup_up"
-    BUILDUP_DOWN = "buildup_down"
-    DELEVERAGING_UP = "deleveraging_up"
-    DELEVERAGING_DOWN = "deleveraging_down"
-    UNCLEAR = "unclear"
+# Why a Case that ran could not reach a decision. Closed on purpose: `BLOCKED` used to carry
+# `intent_admission_blocked`, a catch-all that a PostgreSQL timeout, a serialization failure and a
+# genuine capability change all arrived under — which made an infrastructure fault indistinguishable
+# from a business refusal and consumed the source forever. An unknown repository error is now an
+# exception that rolls back and leaves the Case claimable, never one of these.
+BlockedReason = Literal[
+    "capability_absent",
+    "capability_mismatch",
+    "blacklisted",
+    "capacity_exhausted",
+    "quantity_unexecutable",
+    "case_stale",
+    "manifest_invalid",
+    "policy_identity_retired",
+    "source_generation_retired",
+]
 
 
 def canonical_base_symbol(value: object) -> str:
@@ -233,7 +200,12 @@ def canonical_base_symbol(value: object) -> str:
 
 
 def underlying_key(base_symbol: object) -> str:
-    """Venue-independent identity. One issuer, one bucket, whether it trades on Binance or Hyperliquid."""
+    """Venue-independent identity. One issuer, one bucket, on whichever book it is listed.
+
+    The single owner of the construction (#331 §3). It was being hand-assembled as `'crypto:' || x` in
+    the capability builder, in SQL and on the candidate at once, so the three could drift apart one
+    canonicalisation rule at a time.
+    """
 
     canonical = canonical_base_symbol(base_symbol)
     return f"crypto:{canonical}" if canonical else ""
@@ -253,8 +225,9 @@ class _Frozen(BaseModel):
 class Bar(_Frozen):
     """One closed interval from a public venue REST catalogue.
 
-    Trading keeps its own shape rather than importing `tracefold.news.market_review.pricing.Candle`: the dependency
-    rule is `trading -> platform`, and the composition root converts. `close_at_ms` is the exclusive end.
+    Trading keeps its own shape rather than importing `tracefold.news.market_review.pricing.Candle`: the
+    dependency rule is `trading -> platform`, and the composition root converts. `close_at_ms` is the
+    exclusive end.
     """
 
     open_at_ms: int
@@ -305,7 +278,7 @@ class OiTradeCandidate(_Frozen):
     metric_version: str
     # The provider's own measurement contract, frozen into the manifest so a Case is a claim about a
     # *specific* interval rather than about "OI rose". `None` means the interval could not be proven —
-    # the frame is still a usable fact, and a strategy that reads the interval must refuse it by name.
+    # the frame is still a usable fact, and the policy refuses it by name (#265).
     source_strategy_id: str | None = None
     source_contract_version: str | None = None
     measurement_window_ms: int | None = None
@@ -322,133 +295,57 @@ class OiTradeCandidate(_Frozen):
     def source_key(self) -> str:
         return oi_source_key(self.event_id, self.metric_version)
 
+    @property
+    def underlying_key(self) -> str:
+        return underlying_key(self.base_symbol)
 
-class NewsTradeCandidate(_Frozen):
-    """The public projection of one persisted model Triage verdict, frozen at the verdict cutoff.
 
-    Everything here was knowable when the verdict was written. No reaction, no review, no later member:
-    a manifest that can see the future is a backtest that proves nothing.
+PolicyOperator = Literal[">=", ">", "<=", "<", "==", "!="]
+
+
+class PolicyCheck(_Frozen):
+    """One condition the capital policy executed, frozen with everything needed to re-read it.
+
+    The threshold, the measured value and the operator all travel with the Case (#331). A console that
+    holds only today's configuration cannot explain yesterday's Case — it reads a floor that has since
+    moved and prints a conflict on a row that passed — so the evidence is written down at decision time
+    and every surface renders what is stored.
     """
 
-    event_id: str
-    verdict_created_at_ms: int
-    opened_at_ms: int
-
-    base_symbol: str
-    evidence_version: int
-    evidence_sha256: str
-    focus_fact_id: str
-    comparison_fingerprint: str
-    source_artifact_id: str | None
-    source_published_at_ms: int | None
-
-    final_decision: Literal["push", "escalate"]
-    event_type: str
-    # `direction` is the News vocabulary's sign — the rule reads "the named assets **or** risk assets",
-    # so it is a risk-sentiment field as often as an instrument field. It is context for the model, and
-    # the pure policy never turns it into a side on its own.
-    risk_direction: str
-    scope: str
-    magnitude: int
-    novelty: str
-    headline_zh: str
-    why_zh: str
-
-    learning_epoch: str = Field(min_length=1, max_length=64)
-    program_version: Literal["news_semantic_program_v5"]
-    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    policy_version: Literal["news_triage_policy_v10"]
-    editorial_origin: Literal["model"]
-    editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    runtime_manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
-
-    @property
-    def source_key(self) -> str:
-        """`source_fact_key` (#154/#157): one artifact can carry several numbered facts."""
-
-        artifact = self.source_artifact_id or f"event:{self.event_id}"
-        return canonical_sha256({"artifact": artifact, "fingerprint": self.comparison_fingerprint})
+    check: str
+    operator: PolicyOperator
+    threshold: str
+    measured: str | None
+    passed: bool
 
 
-class LiquidationSourceContract(_Frozen):
-    """What the upstream feed proves about one normalized liquidation record."""
+class CapitalDecision(_Frozen):
+    """The pure policy's whole answer. LONG or NO_TRADE, and the evidence for it.
 
-    provider_record_identity: str
-    symbol_contract_identity: str
-    position_side_semantics: str
-    quantity_semantics: str
-    notional_semantics: str
-    price_semantics: str
-    completeness_assumption: str
-    throttle_assumption: str
-    source_contract_version: str
-    complete: bool
-
-
-class LiquidationTradeCandidate(_Frozen):
-    """One normalized forced-flow fact. Its side fields describe the fill, never a forecast."""
-
-    source_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    item_id: str
-    fact_id: str
-    base_symbol: str
-    venue: Literal["binance", "hyperliquid"]
-    liquidated_position_side: Literal["long", "short"]
-    forced_order_side: Literal["buy", "sell"]
-    notional_usd: Decimal = Field(gt=0)
-    quantity: Decimal | None = Field(default=None, gt=0)
-    price: Decimal = Field(gt=0)
-    event_at_ms: int = Field(gt=0)
-    received_at_ms: int = Field(gt=0)
-    parser_version: str
-    source_contract: LiquidationSourceContract
-
-    @property
-    def source_latency_ms(self) -> int:
-        return max(0, self.received_at_ms - self.event_at_ms)
-
-
-class RegimeAssessment(_Frozen):
-    regime: OiRegime
-    reason: str
-    pre_move_bps: int | None
-    oi_direction: str | None
-
-
-class TradeDecision(_Frozen):
-    """What one `dspy.Predict` call returned, normalised. Never an order — an input to a pure policy."""
-
-    decision: PolicyDecision
-    directness: Literal["direct", "indirect", "broad"]
-    surprise: int = Field(ge=0, le=3)
-    price_in: int = Field(ge=0, le=3)
-    alignment: Literal["aligned", "contradictory", "insufficient"]
-    horizon: Literal["minutes", "hours", "none"]
-    reason_code: str
-    thesis_zh: str
-    invalidation_zh: str
-
-
-NO_TRADE_DECISION = TradeDecision(
-    decision="no_trade",
-    directness="broad",
-    surprise=0,
-    price_in=3,
-    alignment="insufficient",
-    horizon="none",
-    reason_code="weak_evidence",
-    thesis_zh="",
-    invalidation_zh="",
-)
-
-
-class PolicyOutcome(_Frozen):
-    """The pure mapping's answer. Every path names its rule, exactly as `news.decide()` does."""
+    No permission, no execution environment, no venue. Capital authority belongs to the lane and to the
+    durable capability snapshot; a strategy string was never the place to keep it.
+    """
 
     decision: PolicyDecision
     rule: str
+    setup: str
+    invalidation: str
+    checks: tuple[PolicyCheck, ...]
+    policy_id: str
     policy_version: str = TRADING_POLICY_VERSION
+
+    def evidence(self) -> dict[str, Any]:
+        """The document persisted beside the Case, and the one the read model renders."""
+
+        return {
+            "policy_id": self.policy_id,
+            "policy_version": self.policy_version,
+            "decision": self.decision,
+            "rule": self.rule,
+            "setup": self.setup,
+            "invalidation": self.invalidation,
+            "checks": [check.model_dump(mode="json") for check in self.checks],
+        }
 
 
 class OiMarketTrigger(_Frozen):
@@ -459,121 +356,54 @@ class OiMarketTrigger(_Frozen):
     venue: str
 
 
-class NewsMarketTrigger(_Frozen):
-    kind: Literal["news"] = "news"
-    source_key: str
-    observed_at_ms: int
-    persisted_at_ms: int
-    venue: None = None
-
-
-class LiquidationMarketTrigger(_Frozen):
-    kind: Literal["liquidation"] = "liquidation"
-    source_key: str = Field(pattern=r"^[0-9a-f]{64}$")
-    observed_at_ms: int
-    persisted_at_ms: int
-    venue: Literal["binance", "hyperliquid"]
-
-
-MarketTrigger = Annotated[
-    OiMarketTrigger | NewsMarketTrigger | LiquidationMarketTrigger,
-    Field(discriminator="kind"),
-]
-
-
-class LiquidationAggregate(_Frozen):
-    window_ms: int = Field(gt=0)
-    count: int = Field(ge=1)
-    notional_usd: Decimal = Field(gt=0)
-    long_notional_usd: Decimal = Field(ge=0)
-    short_notional_usd: Decimal = Field(ge=0)
-    long_count: int = Field(ge=0)
-    short_count: int = Field(ge=0)
-    dominant_liquidated_side: Literal["long", "short"] | None
-    dominant_share_bps: int = Field(ge=0, le=10_000)
-    dominant_count: int = Field(ge=0)
-    dominant_notional_usd: Decimal = Field(ge=0)
-    dominant_acceleration_bps: int | None = None
-    source_refs: tuple[str, ...] = ()
-
-
 class FrozenMarketContext(_Frozen):
+    """The price window the Case was frozen against. Nothing later than `observed_at_ms` entered it."""
+
     mark_price: Decimal = Field(gt=0)
     observed_at_ms: int
     pre_move_bps: int | None
     pre_move_lookback_ms: int = Field(gt=0)
-    price_momentum_bps: int | None = None
-    price_momentum_window_ms: int | None = Field(default=None, gt=0)
-    displacement_bps: int | None = None
-    displacement_window_ms: int | None = Field(default=None, gt=0)
-    spread_bps: int | None = None
-    depth_notional_usd: Decimal | None = None
-    funding_bps: int | None = None
 
 
-class FrozenStrategyContext(_Frozen):
-    """Only point-in-time facts visible at the primary trigger's cutoff."""
+class FrozenPolicyContext(_Frozen):
+    """Only point-in-time facts visible at the trigger's cutoff, and only what the policy reads."""
 
-    mode: Literal["paper"]
-    oi: OiTradeCandidate | None = None
-    news: NewsTradeCandidate | None = None
-    liquidation: LiquidationTradeCandidate | None = None
-    liquidation_aggregate: LiquidationAggregate | None = None
-    regime: RegimeAssessment
+    oi: OiTradeCandidate
     market: FrozenMarketContext
-    news_decision: TradeDecision | None = None
-    intensity_decelerating: bool | None = None
-    oi_collapsing: bool | None = None
-    price_stopped_extreme: bool | None = None
-    liquidity_recovered: bool | None = None
-
-
-class StrategyOutcome(_Frozen):
-    decision: PolicyDecision
-    rule: str
-    setup: str
-    invalidation: str
-    expected_horizon: Literal["minutes", "hours", "none"]
-    permission: StrategyPermission
-    policy_version: str = TRADING_POLICY_VERSION
 
 
 class TradingCaseManifest(_Frozen):
     """The frozen, content-addressed input to one decision. Nothing later than `cutoff_ms` may enter."""
 
-    manifest_version: str = TRADING_MANIFEST_VERSION
-    primary_trigger: MarketTrigger
-    contexts: FrozenStrategyContext
-    strategy_id: StrategyId
-    strategy_version: str
-    strategy_config: dict[str, bool | int | str]
-    strategy_config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    manifest_version: Literal["trading_manifest_v7"] = TRADING_MANIFEST_VERSION
+    primary_trigger: OiMarketTrigger
+    contexts: FrozenPolicyContext
+    policy_id: str
+    policy_version: str
+    policy_config: dict[str, bool | int | str]
+    policy_config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     underlying_key: str
     base_symbol: str
     cutoff_ms: int
     instrument: InstrumentRef
+    # The capability snapshot the instrument was resolved from. A Case whose Intent is later refused
+    # for `capability_mismatch` can then be read against the exact universe that admitted it, instead
+    # of against whichever snapshot happens to be active when someone asks.
+    execution_capability_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _config_digest_matches_snapshot(self) -> TradingCaseManifest:
-        if canonical_sha256(self.strategy_config) != self.strategy_config_digest:
-            raise ValueError("trading_strategy_config_digest_mismatch")
+        if canonical_sha256(self.policy_config) != self.policy_config_digest:
+            raise ValueError("trading_policy_config_digest_mismatch")
         return self
 
     @property
     def trigger_kind(self) -> TriggerKind:
-        return self.primary_trigger.kind
+        return "oi"
 
     @property
-    def oi(self) -> OiTradeCandidate | None:
+    def oi(self) -> OiTradeCandidate:
         return self.contexts.oi
-
-    @property
-    def news(self) -> NewsTradeCandidate | None:
-        return self.contexts.news
-
-    @property
-    def regime(self) -> RegimeAssessment:
-        return self.contexts.regime
 
     @property
     def mark_price(self) -> Decimal:
@@ -588,39 +418,28 @@ class TradingCaseManifest(_Frozen):
 
 
 __all__ = [
-    "NO_TRADE_DECISION",
+    "CURRENT_TERMINAL_STATES",
+    "LIVE_EXCHANGE_ID",
+    "LIVE_VENUE",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "TRADING_POLICY_VERSION",
-    "TRADING_PROGRAM_VERSION",
     "Bar",
+    "BlockedReason",
+    "CapitalDecision",
     "CaseState",
     "ControlState",
     "ExchangeId",
     "FrozenMarketContext",
-    "FrozenStrategyContext",
+    "FrozenPolicyContext",
     "InstrumentCandidateRow",
     "InstrumentRef",
-    "LiquidationAggregate",
-    "LiquidationCandidateRow",
-    "LiquidationMarketTrigger",
-    "LiquidationTradeCandidate",
-    "LiveExchangeId",
-    "MarketTrigger",
-    "NewsCandidateRow",
-    "NewsMarketTrigger",
-    "NewsTradeCandidate",
     "OiCandidateRow",
     "OiMarketTrigger",
-    "OiRegime",
     "OiTradeCandidate",
+    "PolicyCheck",
     "PolicyDecision",
-    "PolicyOutcome",
-    "RegimeAssessment",
-    "StrategyId",
-    "StrategyOutcome",
-    "StrategyPermission",
-    "TradeDecision",
+    "PolicyOperator",
     "TradingCaseManifest",
     "TriggerKind",
     "canonical_base_symbol",

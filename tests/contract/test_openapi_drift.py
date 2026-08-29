@@ -49,9 +49,9 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
 def test_public_api_is_status_news_trading_and_macro_only() -> None:
     """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain.
 
-    `/api/trading/*` joined the surface in #207 PR-W4 as two reads. They are named here individually rather
-    than by prefix: the capital lane's one hard rule is that no browser can place, amend or cancel an order,
-    and a prefix wildcard would let a third route join without anyone reading this line.
+    `/api/trading/*` is one route per durable aggregate (#331), named individually rather than by prefix:
+    the capital lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix
+    wildcard would let a fifth route join without anyone reading this line.
     """
 
     from tracefold.app.http.app import create_app
@@ -65,20 +65,23 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/bootstrap",
         "/api/status",
         "/api/trading/status",
+        # One route per durable aggregate (#331). `/cases` is the replacement for the retired
+        # `intents.cases_without_intents`, not a second synonym beside it.
+        "/api/trading/cases",
         "/api/trading/intents",
-        "/api/trading/events/{event_id}",
-        # #269: the admission ledger for a window of frames at once. The per-Event endpoint above answers
-        # the same question one row at a time, which is a hundred round trips to render one table.
+        # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",
+        "/api/trading/gate/{event_id}",
     }
     # Reads only. `trading` has three operator mutations and every one of them stays on the CLI, where it
     # runs as `workers` — `tracefold_serve` carries `default_transaction_read_only = on` precisely so the
     # internet-facing role cannot reach them.
     for path in (
         "/api/trading/status",
+        "/api/trading/cases",
         "/api/trading/intents",
-        "/api/trading/events/{event_id}",
         "/api/trading/gate",
+        "/api/trading/gate/{event_id}",
     ):
         assert set(schema["paths"][path]) == {"get"}, path
     for retired in (
@@ -148,7 +151,6 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsFeedOiData",
         "NewsOiStatusData",
         "NewsOiPolicyData",
-        "NewsOiTradeFloorsData",
         "NewsOiWindowSymbolData",
         "NewsOutcomeData",
         "NewsTimelineStepData",
@@ -200,27 +202,17 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
     }
     assert set(components["NewsOiStatusData"]["properties"]) == {
         "policy",
-        "trade_floors",
         "by_rule_24h",
         "window_occupancy",
     }
-    # #207 principle 4: the News gates and the capital lane's floors are two threshold sets shown side by
-    # side. Keeping them in separate objects is what stops either being read as the other.
+    # The News gates only (#331). The capital lane's thresholds are no longer republished here; a Case's
+    # own frozen checks are the only thing a reader may compare it against.
+    assert "NewsOiTradeFloorsData" not in components
     assert set(components["NewsOiPolicyData"]["properties"]) == {
         "window_ms",
         "max_rank_in_window",
         "whale_oi_ratio_above_bps",
         "oi_change_at_least_bps",
-    }
-    assert set(components["NewsOiTradeFloorsData"]["properties"]) == {
-        "enabled",
-        "execution_environment",
-        "allow_short",
-        "min_whale_long_profit_bps",
-        "min_oi_value_usd",
-        "min_price_move_bps",
-        "max_price_move_bps",
-        "pre_move_lookback_ms",
     }
     state = components["NewsStatusData"]["properties"]["state"]
     assert state["enum"] == ["ready", "degraded", "warming", "unavailable"]

@@ -54,10 +54,24 @@ async def load_binance_usdm_demo_capabilities() -> list[ProviderInstrumentCandid
                 size_increment=str(instrument.size_increment.as_decimal()),
                 min_quantity=None if instrument.min_quantity is None else str(instrument.min_quantity.as_decimal()),
                 min_notional=None if instrument.min_notional is None else str(instrument.min_notional.as_decimal()),
+                # Proved from the venue's own product contract, never defaulted (#331 §3). Binance
+                # USD-M publishes the order types each symbol accepts; a native stop is the only
+                # protection this lane has, so an instrument the exchange has not said accepts
+                # `STOP_MARKET` must be excluded rather than admitted on a model default.
+                supports_native_stop=_supports_native_stop(info),
                 load_error="provider_parse_failed" if base_currency is None else None,
             )
         )
     return rows
+
+
+def _supports_native_stop(info: dict[str, Any]) -> bool:
+    """Whether Binance's own `orderTypes` for this product names a venue-native stop."""
+
+    order_types = info.get("orderTypes")
+    if not isinstance(order_types, list | tuple):
+        return False
+    return "STOP_MARKET" in {str(value) for value in order_types}
 
 
 def instrument_matches_capability(
@@ -81,6 +95,7 @@ def instrument_matches_capability(
         and str(instrument.size_increment.as_decimal()) == capability.size_increment
         and _optional_decimal(instrument.min_quantity) == capability.min_quantity
         and _optional_decimal(instrument.min_notional) == capability.min_notional
+        and _supports_native_stop(info) == capability.supports_native_stop
     )
 
 

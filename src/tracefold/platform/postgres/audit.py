@@ -83,8 +83,6 @@ TRADING_TABLES = (
     "trading_runtime_state",
     "trading_candidate_gate_decisions",
     "trading_cases",
-    "trading_strategy_registrations",
-    "trading_strategy_evaluations",
     "trading_orders",
     "trading_order_observations",
     "trading_intents",

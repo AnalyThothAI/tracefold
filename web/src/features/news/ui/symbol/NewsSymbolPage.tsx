@@ -1,9 +1,4 @@
-import {
-  TradingSymbolSection,
-  tradingLedgerEntries,
-  useTradingIntentsWithToken,
-  type TradingOiLedgerEntry,
-} from "@features/trading";
+import { TradingSymbolSection } from "@features/trading";
 import { newsOiPath } from "@shared/routing/paths";
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
 import * as PageState from "@shared/ui/PageState";
@@ -21,13 +16,11 @@ import {
   type NewsFeedFilters,
 } from "../../api/newsQueries";
 import { parseSymbolLane } from "../../model/symbolLanes";
-import { symbolPerspective } from "../../model/symbolPerspective";
 import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
 import { NewsSymbolIdentity } from "./NewsSymbolIdentity";
-import { NewsSymbolPerspective } from "./NewsSymbolPerspective";
 import { NewsSymbolWindow } from "./NewsSymbolWindow";
 
 import "./newsSymbol.css";
@@ -75,7 +68,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   const feedQuery = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
   /* One batch for both capital sections: `交易视角` reads its newest case and `交易复盘` lists them all. */
-  const tradingQuery = useTradingIntentsWithToken(token, normalized);
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
   /*
@@ -103,25 +95,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
 
   const occupancy = (statusQuery.data?.oi?.window_occupancy ?? []).find(
     (row) => row.symbol === normalized,
-  );
-
-  /*
-   * The capital lane's reading of this token's newest frame. Same query key as 交易复盘 below, so React
-   * Query serves both from one poll, and the frame is matched by the `event_id` the ledger itself
-   * published — never by symbol and time, which is the join the OI audit refuses to guess at.
-   */
-  const ledger = tradingLedgerEntries(tradingQuery.data);
-  const newestCase = [...ledger.values()].sort(
-    (a, b) => caseObservedAtMs(b) - caseObservedAtMs(a),
-  )[0];
-  /*
-   * Only when the case named a frame. `event_id` is null by design for a case the deterministic OI trigger
-   * did not author, and `=== ""` would have matched any row that carried an empty id rather than none.
-   */
-  const caseEventId = newestCase?.value.event_id ?? null;
-  const perspective = symbolPerspective(
-    caseEventId == null ? undefined : rows.find((row) => row.event_id === caseEventId),
-    newestCase,
   );
 
   return (
@@ -181,21 +154,14 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
         />
 
         {/*
-         * 交易视角 and 交易复盘 sit above the event list, as the artifact draws them (#282). The list is
-         * the long tail; these two are the answer a reader arriving from a frame came for, and they were
-         * both below a table that can run to a hundred rows.
+         * 资本复盘 sits above the event list, as the artifact draws 交易视角 (#282). The list is the long
+         * tail; this is the answer a reader arriving from a frame came for.
+         *
+         * The separate 交易视角 quadrant panel is gone with the quadrant itself (#331). It re-derived a
+         * verdict from a Case's frozen `strategy_config` in the browser — a second interpretation of the
+         * same numbers — and the OI/price quadrant it led with was `oi_momentum_v1`'s entry rule, which
+         * no policy reads any more. The Case's own frozen checks are rendered where the Case lives.
          */}
-        <NewsSymbolPerspective
-          perspective={perspective}
-          read={
-            tradingQuery.isError && !tradingQuery.data
-              ? "failed"
-              : tradingQuery.data == null
-                ? "loading"
-                : "ready"
-          }
-        />
-
         <TradingSymbolSection base={normalized} token={token} />
 
         <NewsSymbolEvents
@@ -227,12 +193,3 @@ function count(value: number | undefined): string {
   return value == null ? "—" : String(value);
 }
 
-/**
- * When the case observed its source fact. Both halves of the ledger batch answer it, under different names:
- * an intent carries the case's own `case_observed_at_ms`, a case row carries `observed_at_ms`.
- */
-function caseObservedAtMs(entry: TradingOiLedgerEntry): number {
-  return entry.kind === "intent"
-    ? (entry.value.case_observed_at_ms ?? entry.value.created_at_ms)
-    : entry.value.observed_at_ms;
-}

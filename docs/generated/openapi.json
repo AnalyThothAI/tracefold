@@ -323,13 +323,13 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
-      "ApiEnvelope_TradingEventCaseData_": {
+      "ApiEnvelope_TradingCasesData_": {
         "additionalProperties": false,
         "properties": {
           "data": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TradingEventCaseData"
+                "$ref": "#/components/schemas/TradingCasesData"
               },
               {
                 "type": "null"
@@ -366,7 +366,7 @@
         "required": [
           "ok"
         ],
-        "title": "ApiEnvelope[TradingEventCaseData]",
+        "title": "ApiEnvelope[TradingCasesData]",
         "type": "object"
       },
       "ApiEnvelope_TradingGateData_": {
@@ -413,6 +413,52 @@
           "ok"
         ],
         "title": "ApiEnvelope[TradingGateData]",
+        "type": "object"
+      },
+      "ApiEnvelope_TradingGateSourceData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingGateSourceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingGateSourceData]",
         "type": "object"
       },
       "ApiEnvelope_TradingIntentsData_": {
@@ -2731,9 +2777,6 @@
               }
             ]
           },
-          "trade_floors": {
-            "$ref": "#/components/schemas/NewsOiTradeFloorsData"
-          },
           "window_occupancy": {
             "items": {
               "$ref": "#/components/schemas/NewsOiWindowSymbolData"
@@ -2743,55 +2786,6 @@
           }
         },
         "title": "NewsOiStatusData",
-        "type": "object"
-      },
-      "NewsOiTradeFloorsData": {
-        "additionalProperties": false,
-        "description": "The capital lane's own floors, shown beside the News gates and never mixed with them (#207).\n\nTwo different questions read the same frame: News asks whether a reader should be told, Trading asks\nwhether the lane may open exposure. Their thresholds are separate config and reaching either number is no\nevidence about the other, so the monitor renders both and labels which is which.\n\n`enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a\npublished research band, not a gate anything is currently passing. Read from platform configuration \u2014\n`tracefold.news` never imports `tracefold.trading` and this endpoint does not either.",
-        "properties": {
-          "allow_short": {
-            "default": false,
-            "title": "Allow Short",
-            "type": "boolean"
-          },
-          "enabled": {
-            "default": false,
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "execution_environment": {
-            "const": "BINANCE_USDM_DEMO",
-            "default": "BINANCE_USDM_DEMO",
-            "title": "Execution Environment",
-            "type": "string"
-          },
-          "max_price_move_bps": {
-            "default": 0,
-            "title": "Max Price Move Bps",
-            "type": "integer"
-          },
-          "min_oi_value_usd": {
-            "default": 0,
-            "title": "Min Oi Value Usd",
-            "type": "integer"
-          },
-          "min_price_move_bps": {
-            "default": 0,
-            "title": "Min Price Move Bps",
-            "type": "integer"
-          },
-          "min_whale_long_profit_bps": {
-            "default": 0,
-            "title": "Min Whale Long Profit Bps",
-            "type": "integer"
-          },
-          "pre_move_lookback_ms": {
-            "default": 0,
-            "title": "Pre Move Lookback Ms",
-            "type": "integer"
-          }
-        },
-        "title": "NewsOiTradeFloorsData",
         "type": "object"
       },
       "NewsOiWindowSymbolData": {
@@ -4643,30 +4637,6 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
-      "TradingBootstrapData": {
-        "additionalProperties": false,
-        "properties": {
-          "lower_95_bps": {
-            "title": "Lower 95 Bps",
-            "type": "integer"
-          },
-          "mean_bps": {
-            "title": "Mean Bps",
-            "type": "integer"
-          },
-          "upper_95_bps": {
-            "title": "Upper 95 Bps",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "mean_bps",
-          "lower_95_bps",
-          "upper_95_bps"
-        ],
-        "title": "TradingBootstrapData",
-        "type": "object"
-      },
       "TradingBudgetData": {
         "additionalProperties": false,
         "properties": {
@@ -4724,9 +4694,82 @@
             ],
             "title": "Event Id"
           },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Id"
+          },
+          "manifest_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Version"
+          },
+          "mark_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mark Price"
+          },
           "observed_at_ms": {
             "title": "Observed At Ms",
             "type": "integer"
+          },
+          "oi_change_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Change Bps"
+          },
+          "oi_value_usd": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oi Value Usd"
+          },
+          "policy_checks": {
+            "items": {
+              "$ref": "#/components/schemas/TradingPolicyCheckData"
+            },
+            "title": "Policy Checks",
+            "type": "array"
+          },
+          "policy_config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Policy Config",
+            "type": "object"
+          },
+          "policy_config_digest": {
+            "title": "Policy Config Digest",
+            "type": "string"
           },
           "policy_decision": {
             "anyOf": [
@@ -4739,6 +4782,10 @@
             ],
             "title": "Policy Decision"
           },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
           "policy_reason": {
             "anyOf": [
               {
@@ -4749,6 +4796,10 @@
               }
             ],
             "title": "Policy Reason"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
           },
           "pre_move_bps": {
             "anyOf": [
@@ -4761,7 +4812,7 @@
             ],
             "title": "Pre Move Bps"
           },
-          "regime": {
+          "provider_symbol": {
             "anyOf": [
               {
                 "type": "string"
@@ -4770,36 +4821,10 @@
                 "type": "null"
               }
             ],
-            "title": "Regime"
-          },
-          "regime_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Regime Reason"
+            "title": "Provider Symbol"
           },
           "state": {
             "title": "State",
-            "type": "string"
-          },
-          "strategy_config": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Strategy Config",
-            "type": "object"
-          },
-          "strategy_id": {
-            "title": "Strategy Id",
-            "type": "string"
-          },
-          "strategy_version": {
-            "title": "Strategy Version",
             "type": "string"
           },
           "trigger_kind": {
@@ -4809,6 +4834,28 @@
           "underlying_key": {
             "title": "Underlying Key",
             "type": "string"
+          },
+          "whale_long_profit_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Long Profit Bps"
+          },
+          "whale_oi_ratio_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Whale Oi Ratio Bps"
           }
         },
         "required": [
@@ -4816,8 +4863,9 @@
           "underlying_key",
           "base_symbol",
           "trigger_kind",
-          "strategy_id",
-          "strategy_version",
+          "policy_id",
+          "policy_version",
+          "policy_config_digest",
           "state",
           "observed_at_ms",
           "created_at_ms"
@@ -4825,580 +4873,49 @@
         "title": "TradingCaseData",
         "type": "object"
       },
-      "TradingCountsData": {
+      "TradingCasesData": {
         "additionalProperties": false,
         "properties": {
-          "active_intents": {
-            "default": 0,
-            "title": "Active Intents",
-            "type": "integer"
-          },
-          "candidate_counts_24h": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Candidate Counts 24H",
-            "type": "object"
-          },
-          "candidate_counts_7d": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Candidate Counts 7D",
-            "type": "object"
-          },
-          "candidate_reasons_24h": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Candidate Reasons 24H",
-            "type": "object"
-          },
-          "candidate_reasons_7d": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Candidate Reasons 7D",
-            "type": "object"
-          },
-          "cases_by_state": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases By State",
-            "type": "object"
-          },
-          "cases_by_strategy": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases By Strategy",
-            "type": "object"
-          },
-          "cases_by_trigger": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases By Trigger",
-            "type": "object"
-          },
-          "cases_today_by_state": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Cases Today By State",
-            "type": "object"
-          },
-          "closed_intents_today": {
-            "default": 0,
-            "title": "Closed Intents Today",
-            "type": "integer"
-          },
-          "entries_today": {
-            "default": 0,
-            "title": "Entries Today",
-            "type": "integer"
-          },
-          "event_study_cohorts": {
+          "cases": {
             "items": {
-              "$ref": "#/components/schemas/TradingEventStudyCohortData"
+              "$ref": "#/components/schemas/TradingCaseData"
             },
-            "title": "Event Study Cohorts",
+            "title": "Cases",
             "type": "array"
           },
-          "funnel_day_key": {
-            "default": "",
-            "title": "Funnel Day Key",
-            "type": "string"
-          },
-          "funnel_today": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Funnel Today",
-            "type": "object"
-          },
-          "intents_by_state": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Intents By State",
-            "type": "object"
-          },
-          "latest_case_created_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Case Created At Ms"
-          },
-          "latest_entry_fenced_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Entry Fenced At Ms"
-          },
-          "latest_gate_eligible_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Gate Eligible At Ms"
-          },
-          "latest_intent_emitted_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Intent Emitted At Ms"
-          },
-          "latest_position_closed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Position Closed At Ms"
-          },
-          "latest_position_opened_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Position Opened At Ms"
-          },
-          "latest_source_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Latest Source At Ms"
-          },
-          "liquidation_promotion_ready": {
-            "default": false,
-            "title": "Liquidation Promotion Ready",
+          "complete": {
+            "title": "Complete",
             "type": "boolean"
           },
-          "liquidation_promotion_reason": {
-            "default": "",
-            "title": "Liquidation Promotion Reason",
-            "type": "string"
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
           },
-          "outcomes_by_state": {
+          "reason_counts_24h": {
             "additionalProperties": {
               "type": "integer"
             },
-            "title": "Outcomes By State",
+            "title": "Reason Counts 24H",
             "type": "object"
           },
-          "policy_allowed_24h": {
-            "default": 0,
-            "title": "Policy Allowed 24H",
-            "type": "integer"
-          },
-          "policy_allowed_today": {
-            "default": 0,
-            "title": "Policy Allowed Today",
-            "type": "integer"
-          },
-          "shadow_by_rule": {
+          "state_counts_24h": {
             "additionalProperties": {
               "type": "integer"
             },
-            "title": "Shadow By Rule",
+            "title": "State Counts 24H",
             "type": "object"
           },
-          "shadow_by_strategy": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Shadow By Strategy",
-            "type": "object"
-          },
-          "shadow_cohorts": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TradingShadowCohortData"
-            },
-            "title": "Shadow Cohorts",
-            "type": "object"
-          }
-        },
-        "title": "TradingCountsData",
-        "type": "object"
-      },
-      "TradingEventCaseData": {
-        "additionalProperties": false,
-        "properties": {
-          "case": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingCaseData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "event_id": {
-            "title": "Event Id",
-            "type": "string"
-          },
-          "gate_attempt_count": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Attempt Count"
-          },
-          "gate_config_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Config Digest"
-          },
-          "gate_evidence": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingGateEvidenceData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "gate_first_evaluated_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate First Evaluated At Ms"
-          },
-          "gate_last_evaluated_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Last Evaluated At Ms"
-          },
-          "gate_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Reason"
-          },
-          "gate_retryable": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Retryable"
-          },
-          "gate_stage": {
-            "anyOf": [
-              {
-                "enum": [
-                  "source",
-                  "eligibility",
-                  "routing",
-                  "market_context",
-                  "freeze"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Stage"
-          },
-          "gate_status": {
-            "anyOf": [
-              {
-                "enum": [
-                  "DEFERRED",
-                  "REJECTED",
-                  "CASE_CREATED",
-                  "EXPIRED"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Status"
-          },
-          "gate_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Gate Version"
-          },
-          "intent": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingIntentData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "joinable": {
-            "title": "Joinable",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "event_id",
-          "joinable"
-        ],
-        "title": "TradingEventCaseData",
-        "type": "object"
-      },
-      "TradingEventStudyCohortData": {
-        "additionalProperties": false,
-        "properties": {
-          "cohort_key": {
-            "title": "Cohort Key",
-            "type": "string"
-          },
-          "completed": {
-            "title": "Completed",
-            "type": "integer"
-          },
-          "coverage_bps": {
-            "default": 0,
-            "title": "Coverage Bps",
-            "type": "integer"
-          },
-          "duplicate_rate_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Duplicate Rate Bps"
-          },
-          "evaluated": {
-            "title": "Evaluated",
-            "type": "integer"
-          },
-          "exit_by_reason": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Exit By Reason",
-            "type": "object"
-          },
-          "holdout": {
-            "default": 0,
-            "title": "Holdout",
-            "type": "integer"
-          },
-          "horizons": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TradingHorizonData"
-            },
-            "title": "Horizons",
-            "type": "object"
-          },
-          "liquidity_bucket": {
-            "title": "Liquidity Bucket",
-            "type": "string"
-          },
-          "mae_mean_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mae Mean Bps"
-          },
-          "mean_return_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mean Return Bps"
-          },
-          "mean_source_latency_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mean Source Latency Ms"
-          },
-          "mfe_mean_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mfe Mean Bps"
-          },
-          "missing_data": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Missing Data",
-            "type": "object"
-          },
-          "net_ex_funding_bootstrap": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingBootstrapData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "promotion_ready": {
-            "default": false,
-            "title": "Promotion Ready",
-            "type": "boolean"
-          },
-          "promotion_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Promotion Reasons",
-            "type": "array"
-          },
-          "source_contract_complete": {
-            "default": 0,
-            "title": "Source Contract Complete",
-            "type": "integer"
-          },
-          "strategy_id": {
-            "title": "Strategy Id",
-            "type": "string"
-          },
-          "venue": {
-            "title": "Venue",
-            "type": "string"
-          }
-        },
-        "required": [
-          "evaluated",
-          "completed",
-          "cohort_key",
-          "strategy_id",
-          "venue",
-          "liquidity_bucket"
-        ],
-        "title": "TradingEventStudyCohortData",
-        "type": "object"
-      },
-      "TradingFloorsData": {
-        "additionalProperties": false,
-        "properties": {
-          "lookback_ms": {
-            "title": "Lookback Ms",
-            "type": "integer"
-          },
-          "max_price_move_bps": {
-            "title": "Max Price Move Bps",
-            "type": "integer"
-          },
-          "min_oi_value_usd": {
-            "title": "Min Oi Value Usd",
-            "type": "string"
-          },
-          "min_price_move_bps": {
-            "title": "Min Price Move Bps",
-            "type": "integer"
-          },
-          "min_whale_long_profit_bps": {
-            "title": "Min Whale Long Profit Bps",
+          "window_hours": {
+            "title": "Window Hours",
             "type": "integer"
           }
         },
         "required": [
-          "min_whale_long_profit_bps",
-          "min_oi_value_usd",
-          "min_price_move_bps",
-          "max_price_move_bps",
-          "lookback_ms"
+          "complete",
+          "window_hours",
+          "measured_at_ms"
         ],
-        "title": "TradingFloorsData",
+        "title": "TradingCasesData",
         "type": "object"
       },
       "TradingGateConfigData": {
@@ -5406,6 +4923,10 @@
         "properties": {
           "config_digest": {
             "title": "Config Digest",
+            "type": "string"
+          },
+          "live_exchange_id": {
+            "title": "Live Exchange Id",
             "type": "string"
           },
           "max_age_ms": {
@@ -5424,13 +4945,6 @@
             "title": "Symbol Cooldown Ms",
             "type": "integer"
           },
-          "venue_priority": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Venue Priority",
-            "type": "array"
-          },
           "version": {
             "title": "Version",
             "type": "string"
@@ -5442,7 +4956,8 @@
           "max_age_ms",
           "max_rank_in_window",
           "min_oi_value_usd",
-          "symbol_cooldown_ms"
+          "symbol_cooldown_ms",
+          "live_exchange_id"
         ],
         "title": "TradingGateConfigData",
         "type": "object"
@@ -5454,6 +4969,9 @@
             "title": "Complete",
             "type": "boolean"
           },
+          "config": {
+            "$ref": "#/components/schemas/TradingGateConfigData"
+          },
           "decisions": {
             "items": {
               "$ref": "#/components/schemas/TradingGateDecisionData"
@@ -5461,9 +4979,45 @@
             "title": "Decisions",
             "type": "array"
           },
+          "latest_gate_eligible_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Gate Eligible At Ms"
+          },
+          "latest_source_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Source At Ms"
+          },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
+          },
+          "reason_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Reason Counts 24H",
+            "type": "object"
+          },
+          "status_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Status Counts 24H",
+            "type": "object"
           },
           "window_hours": {
             "title": "Window Hours",
@@ -5471,6 +5025,7 @@
           }
         },
         "required": [
+          "config",
           "complete",
           "window_hours",
           "measured_at_ms"
@@ -5589,7 +5144,9 @@
               {
                 "enum": [
                   "source",
+                  "venue",
                   "eligibility",
+                  "capability",
                   "routing",
                   "market_context",
                   "freeze"
@@ -5608,6 +5165,7 @@
                 "enum": [
                   "DEFERRED",
                   "REJECTED",
+                  "RESEARCH_ONLY",
                   "CASE_CREATED",
                   "EXPIRED"
                 ],
@@ -5629,6 +5187,11 @@
               }
             ],
             "title": "Gate Version"
+          },
+          "research_only": {
+            "default": false,
+            "title": "Research Only",
+            "type": "boolean"
           },
           "source_key": {
             "title": "Source Key",
@@ -5681,6 +5244,17 @@
             "title": "Blacklist Reason",
             "type": "string"
           },
+          "cooldown_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cooldown Ms"
+          },
           "enabled": {
             "items": {
               "type": "string"
@@ -5699,6 +5273,11 @@
             ],
             "title": "Floor"
           },
+          "lane_full": {
+            "default": "",
+            "title": "Lane Full",
+            "type": "string"
+          },
           "limit": {
             "anyOf": [
               {
@@ -5709,6 +5288,11 @@
               }
             ],
             "title": "Limit"
+          },
+          "live_exchange_id": {
+            "default": "",
+            "title": "Live Exchange Id",
+            "type": "string"
           },
           "max_age_ms": {
             "anyOf": [
@@ -5759,6 +5343,17 @@
             "title": "Rule",
             "type": "string"
           },
+          "since_close_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since Close Ms"
+          },
           "source_decision": {
             "default": "",
             "title": "Source Decision",
@@ -5800,31 +5395,34 @@
         "title": "TradingGateEvidenceData",
         "type": "object"
       },
-      "TradingHorizonData": {
+      "TradingGateSourceData": {
         "additionalProperties": false,
+        "description": "One Source's admission answer, plus the Case it authored if it authored one.\n\n`joinable` is `false` when the question cannot be asked at all: only the deterministic OI lane's\nsource key is reconstructible from an Event id.",
         "properties": {
-          "bootstrap": {
+          "decision": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/TradingBootstrapData"
+                "$ref": "#/components/schemas/TradingGateDecisionData"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "measured": {
-            "default": 0,
-            "title": "Measured",
-            "type": "integer"
+          "event_id": {
+            "title": "Event Id",
+            "type": "string"
           },
-          "missing": {
-            "default": 0,
-            "title": "Missing",
-            "type": "integer"
+          "joinable": {
+            "title": "Joinable",
+            "type": "boolean"
           }
         },
-        "title": "TradingHorizonData",
+        "required": [
+          "event_id",
+          "joinable"
+        ],
+        "title": "TradingGateSourceData",
         "type": "object"
       },
       "TradingIntentData": {
@@ -5893,21 +5491,6 @@
             "title": "Case Id",
             "type": "string"
           },
-          "case_observed_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Case Observed At Ms"
-          },
-          "case_state": {
-            "title": "Case State",
-            "type": "string"
-          },
           "closed_at_ms": {
             "anyOf": [
               {
@@ -5936,6 +5519,17 @@
           "created_at_ms": {
             "title": "Created At Ms",
             "type": "integer"
+          },
+          "entry_fenced_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Fenced At Ms"
           },
           "event_id": {
             "anyOf": [
@@ -6029,38 +5623,13 @@
             ],
             "title": "Opened At Ms"
           },
-          "policy_decision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Decision"
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
           },
-          "policy_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Reason"
-          },
-          "pre_move_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pre Move Bps"
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
           },
           "protected_at_ms": {
             "anyOf": [
@@ -6121,28 +5690,6 @@
             "title": "Reference Price",
             "type": "string"
           },
-          "regime": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Regime"
-          },
-          "regime_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Regime Reason"
-          },
           "side": {
             "const": "long",
             "title": "Side",
@@ -6158,21 +5705,6 @@
               }
             ],
             "title": "Stop Price"
-          },
-          "strategy_config": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Strategy Config",
-            "type": "object"
-          },
-          "strategy_id": {
-            "title": "Strategy Id",
-            "type": "string"
-          },
-          "strategy_version": {
-            "title": "Strategy Version",
-            "type": "string"
           },
           "target_notional_usd": {
             "title": "Target Notional Usd",
@@ -6193,10 +5725,6 @@
               }
             ],
             "title": "Terminal Outcome"
-          },
-          "trigger_kind": {
-            "title": "Trigger Kind",
-            "type": "string"
           },
           "underlying_key": {
             "title": "Underlying Key",
@@ -6226,10 +5754,8 @@
           "execution_state",
           "created_at_ms",
           "updated_at_ms",
-          "trigger_kind",
-          "strategy_id",
-          "strategy_version",
-          "case_state"
+          "policy_id",
+          "policy_version"
         ],
         "title": "TradingIntentData",
         "type": "object"
@@ -6237,13 +5763,6 @@
       "TradingIntentsData": {
         "additionalProperties": false,
         "properties": {
-          "cases_without_intents": {
-            "items": {
-              "$ref": "#/components/schemas/TradingCaseData"
-            },
-            "title": "Cases Without Intents",
-            "type": "array"
-          },
           "complete": {
             "title": "Complete",
             "type": "boolean"
@@ -6259,6 +5778,27 @@
             "title": "Measured At Ms",
             "type": "integer"
           },
+          "outcome_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Outcome Counts 24H",
+            "type": "object"
+          },
+          "reason_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Reason Counts 24H",
+            "type": "object"
+          },
+          "state_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "State Counts 24H",
+            "type": "object"
+          },
           "window_hours": {
             "title": "Window Hours",
             "type": "integer"
@@ -6270,6 +5810,79 @@
           "measured_at_ms"
         ],
         "title": "TradingIntentsData",
+        "type": "object"
+      },
+      "TradingPolicyCheckData": {
+        "additionalProperties": false,
+        "description": "One frozen condition: what was required, what was measured, and whether it passed.",
+        "properties": {
+          "check": {
+            "title": "Check",
+            "type": "string"
+          },
+          "measured": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured"
+          },
+          "operator": {
+            "title": "Operator",
+            "type": "string"
+          },
+          "passed": {
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "threshold": {
+            "title": "Threshold",
+            "type": "string"
+          }
+        },
+        "required": [
+          "check",
+          "operator",
+          "threshold",
+          "passed"
+        ],
+        "title": "TradingPolicyCheckData",
+        "type": "object"
+      },
+      "TradingPolicyIdentityData": {
+        "additionalProperties": false,
+        "description": "Which policy the lane would freeze onto a *new* Case. Never applied to an existing one.",
+        "properties": {
+          "config": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Config",
+            "type": "object"
+          },
+          "config_digest": {
+            "title": "Config Digest",
+            "type": "string"
+          },
+          "policy_id": {
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy_id",
+          "policy_version",
+          "config_digest"
+        ],
+        "title": "TradingPolicyIdentityData",
         "type": "object"
       },
       "TradingReadinessData": {
@@ -6368,136 +5981,97 @@
         "title": "TradingReadinessData",
         "type": "object"
       },
-      "TradingShadowCohortData": {
+      "TradingRuntimeCountsData": {
         "additionalProperties": false,
+        "description": "Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold.",
         "properties": {
-          "completed": {
-            "title": "Completed",
-            "type": "integer"
-          },
-          "coverage_bps": {
+          "active_intents": {
             "default": 0,
-            "title": "Coverage Bps",
+            "title": "Active Intents",
             "type": "integer"
           },
-          "duplicate_rate_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Duplicate Rate Bps"
-          },
-          "evaluated": {
-            "title": "Evaluated",
-            "type": "integer"
-          },
-          "exit_by_reason": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Exit By Reason",
-            "type": "object"
-          },
-          "holdout": {
+          "cases_24h": {
             "default": 0,
-            "title": "Holdout",
+            "title": "Cases 24H",
             "type": "integer"
           },
-          "horizons": {
-            "additionalProperties": {
-              "$ref": "#/components/schemas/TradingHorizonData"
-            },
-            "title": "Horizons",
-            "type": "object"
-          },
-          "mae_mean_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mae Mean Bps"
-          },
-          "mean_return_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mean Return Bps"
-          },
-          "mean_source_latency_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mean Source Latency Ms"
-          },
-          "mfe_mean_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Mfe Mean Bps"
-          },
-          "missing_data": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Missing Data",
-            "type": "object"
-          },
-          "net_ex_funding_bootstrap": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TradingBootstrapData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "promotion_ready": {
-            "default": false,
-            "title": "Promotion Ready",
-            "type": "boolean"
-          },
-          "promotion_reasons": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Promotion Reasons",
-            "type": "array"
-          },
-          "source_contract_complete": {
+          "closed_intents_today": {
             "default": 0,
-            "title": "Source Contract Complete",
+            "title": "Closed Intents Today",
             "type": "integer"
+          },
+          "day_key": {
+            "default": "",
+            "title": "Day Key",
+            "type": "string"
+          },
+          "entries_today": {
+            "default": 0,
+            "title": "Entries Today",
+            "type": "integer"
+          },
+          "intents_24h": {
+            "default": 0,
+            "title": "Intents 24H",
+            "type": "integer"
+          },
+          "latest_case_created_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Case Created At Ms"
+          },
+          "latest_entry_fenced_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Entry Fenced At Ms"
+          },
+          "latest_intent_emitted_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Intent Emitted At Ms"
+          },
+          "latest_position_closed_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Position Closed At Ms"
+          },
+          "latest_position_opened_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Position Opened At Ms"
           }
         },
-        "required": [
-          "evaluated",
-          "completed"
-        ],
-        "title": "TradingShadowCohortData",
+        "title": "TradingRuntimeCountsData",
         "type": "object"
       },
       "TradingStatusData": {
@@ -6507,27 +6081,17 @@
             "$ref": "#/components/schemas/TradingBudgetData"
           },
           "counts": {
-            "$ref": "#/components/schemas/TradingCountsData"
-          },
-          "floors": {
-            "$ref": "#/components/schemas/TradingFloorsData"
-          },
-          "gate": {
-            "$ref": "#/components/schemas/TradingGateConfigData"
+            "$ref": "#/components/schemas/TradingRuntimeCountsData"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",
             "type": "integer"
           },
+          "policy": {
+            "$ref": "#/components/schemas/TradingPolicyIdentityData"
+          },
           "readiness": {
             "$ref": "#/components/schemas/TradingReadinessData"
-          },
-          "strategies": {
-            "items": {
-              "$ref": "#/components/schemas/TradingStrategyConfigData"
-            },
-            "title": "Strategies",
-            "type": "array"
           },
           "window_hours": {
             "title": "Window Hours",
@@ -6537,56 +6101,12 @@
         "required": [
           "budget",
           "readiness",
-          "floors",
-          "gate",
+          "policy",
           "counts",
           "window_hours",
           "measured_at_ms"
         ],
         "title": "TradingStatusData",
-        "type": "object"
-      },
-      "TradingStrategyConfigData": {
-        "additionalProperties": false,
-        "properties": {
-          "config": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Config",
-            "type": "object"
-          },
-          "config_digest": {
-            "title": "Config Digest",
-            "type": "string"
-          },
-          "permission": {
-            "title": "Permission",
-            "type": "string"
-          },
-          "strategy_id": {
-            "title": "Strategy Id",
-            "type": "string"
-          },
-          "strategy_version": {
-            "title": "Strategy Version",
-            "type": "string"
-          },
-          "trigger_kinds": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Trigger Kinds",
-            "type": "array"
-          }
-        },
-        "required": [
-          "strategy_id",
-          "strategy_version",
-          "config_digest",
-          "permission"
-        ],
-        "title": "TradingStrategyConfigData",
         "type": "object"
       },
       "ValidationError": {
@@ -7117,16 +6637,30 @@
         ]
       }
     },
-    "/api/trading/events/{event_id}": {
+    "/api/trading/cases": {
       "get": {
-        "operationId": "get_trading_event_case_api_trading_events__event_id__get",
+        "description": "Frozen Cases and the frozen evidence each was decided on.",
+        "operationId": "get_trading_cases_api_trading_cases_get",
         "parameters": [
           {
-            "in": "path",
-            "name": "event_id",
-            "required": true,
+            "in": "query",
+            "name": "underlying",
+            "required": false,
             "schema": {
-              "title": "Event Id",
+              "default": "",
+              "maxLength": 32,
+              "title": "Underlying",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 16,
+              "title": "State",
               "type": "string"
             }
           }
@@ -7136,7 +6670,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_TradingEventCaseData_"
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingCasesData_"
                 }
               }
             },
@@ -7153,7 +6687,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Get Trading Event Case",
+        "summary": "Get Trading Cases",
         "tags": [
           "api"
         ]
@@ -7161,6 +6695,7 @@
     },
     "/api/trading/gate": {
       "get": {
+        "description": "Every Source the lane saw in the window, and the one durable answer each received.",
         "operationId": "get_trading_gate_api_trading_gate_get",
         "responses": {
           "200": {
@@ -7180,9 +6715,52 @@
         ]
       }
     },
+    "/api/trading/gate/{event_id}": {
+      "get": {
+        "description": "One Source's admission answer. `joinable=false` when the question cannot be asked at all.\n\nOnly the deterministic OI lane's source key is reconstructible from an Event id\n(`oi:{event_id}:{metric_version}`), so a caller asking about anything else is told the question is\nunanswerable rather than shown a refusal that never happened.",
+        "operationId": "get_trading_gate_source_api_trading_gate__event_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "event_id",
+            "required": true,
+            "schema": {
+              "title": "Event Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingGateSourceData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trading Gate Source",
+        "tags": [
+          "api"
+        ]
+      }
+    },
     "/api/trading/intents": {
       "get": {
-        "description": "Intent outcomes plus cases that did not emit an intent; legacy orders are excluded.",
+        "description": "Immutable capital requests and their execution outcomes. Cases live at `/trading/cases`.",
         "operationId": "get_trading_intents_api_trading_intents_get",
         "parameters": [
           {
@@ -7249,6 +6827,7 @@
     },
     "/api/trading/status": {
       "get": {
+        "description": "Control, execution readiness, active capability, and bounded durable totals. No thresholds.",
         "operationId": "get_trading_status_api_trading_status_get",
         "responses": {
           "200": {

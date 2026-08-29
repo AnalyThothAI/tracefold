@@ -140,28 +140,6 @@ class NewsOiPolicyData(ExactApiSchema):
     oi_change_at_least_bps: int
 
 
-class NewsOiTradeFloorsData(ExactApiSchema):
-    """The capital lane's own floors, shown beside the News gates and never mixed with them (#207).
-
-    Two different questions read the same frame: News asks whether a reader should be told, Trading asks
-    whether the lane may open exposure. Their thresholds are separate config and reaching either number is no
-    evidence about the other, so the monitor renders both and labels which is which.
-
-    `enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a
-    published research band, not a gate anything is currently passing. Read from platform configuration —
-    `tracefold.news` never imports `tracefold.trading` and this endpoint does not either.
-    """
-
-    enabled: bool = False
-    execution_environment: Literal["BINANCE_USDM_DEMO"] = "BINANCE_USDM_DEMO"
-    allow_short: bool = False
-    min_whale_long_profit_bps: int = 0
-    min_oi_value_usd: int = 0
-    min_price_move_bps: int = 0
-    max_price_move_bps: int = 0
-    pre_move_lookback_ms: int = 0
-
-
 class NewsOiWindowSymbolData(ExactApiSchema):
     """One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling."""
 
@@ -180,7 +158,6 @@ class NewsOiStatusData(ExactApiSchema):
     """
 
     policy: NewsOiPolicyData | None = None
-    trade_floors: NewsOiTradeFloorsData = Field(default_factory=NewsOiTradeFloorsData)
     by_rule_24h: dict[str, int] = Field(default_factory=dict)
     # Measured over `policy.window_ms` ending at `measured_at_ms`. The window's start is deliberately not a
     # field: it moves with every read and would churn the status ETag on a 15 s poll for every reader, while
@@ -301,7 +278,6 @@ __all__ = [
     "NewsLearningRetentionStatusData",
     "NewsOiPolicyData",
     "NewsOiStatusData",
-    "NewsOiTradeFloorsData",
     "NewsOiWindowSymbolData",
     "NewsPipelineStatusData",
     "NewsPriceStatusData",

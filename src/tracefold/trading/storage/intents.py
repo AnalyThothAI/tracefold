@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from ..intent import (
     ACTIVE_INTENT_STATES,
@@ -33,6 +33,44 @@ position_id, protection_order_id,
 stop_price, opened_at_ms, protected_at_ms, closed_at_ms, flat_verified_at_ms,
 realized_pnl_amount, realized_pnl_currency, commissions_by_currency, updated_at_ms
 """
+
+
+EntryFenceDisposition = Literal["GRANTED", "REFUSED", "UNAVAILABLE"]
+# Why the fence could not be taken, when nothing terminal was written. Closed, because the execution
+# authority branches on it and `None` used to mean all four of these at once.
+EntryFenceUnavailable = Literal[
+    "intent_not_claimable",
+    "runtime_not_ready",
+    "daily_entry_fence_taken",
+    "intent_expired",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class EntryFence:
+    """The one typed answer to "may this Intent send an economic entry now?" (#331).
+
+    Three dispositions, never mixed:
+
+        GRANTED      the fence is committed. `outcome` is the durable `IN_FLIGHT` projection, and only
+                     after this row commits may a provider entry be sent.
+        REFUSED      a terminal `REJECTED` was written at zero exposure, with a durable reason.
+        UNAVAILABLE  nothing was written. The Intent is not claimable *now* — a stale dispatch, a
+                     runtime that is not ready, the day's entry already taken, or an expired TTL.
+
+    `fence_entry` used to return `IntentOutcome | None`, and `None` carried every one of the
+    `UNAVAILABLE` cases plus the race where another engine already fenced. The caller could only
+    release the Intent and had nothing to record, so a lane that was refusing every entry because
+    `nautilus_ready` was false looked exactly like one with nothing to do.
+    """
+
+    disposition: EntryFenceDisposition
+    reason: str
+    outcome: IntentOutcome | None = None
+
+    @property
+    def granted(self) -> bool:
+        return self.disposition == "GRANTED"
 
 
 class IntentStorage:
@@ -91,42 +129,6 @@ class IntentStorage:
             IntentOutcome.model_validate({name: values[name] for name in IntentOutcome.model_fields}),
         )
 
-    def active_intent_underlyings(self) -> list[str]:
-        rows = self.conn.execute(
-            """
-            SELECT DISTINCT COALESCE(i.underlying_key, c.underlying_key) AS underlying_key
-              FROM trading_intents i JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE i.execution_state = ANY(%s)
-            """,
-            (list(ACTIVE_INTENT_STATES),),
-        ).fetchall()
-        return [str(row["underlying_key"]) for row in rows]
-
-    def entry_fences_today(self, *, day_key: str) -> int:
-        try:
-            start_ms = int(datetime.fromisoformat(day_key).replace(tzinfo=UTC).timestamp() * 1000)
-        except ValueError:
-            return 0
-        row = self.conn.execute(
-            "SELECT count(*) AS n FROM trading_intents WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s",
-            (start_ms, start_ms + 86_400_000),
-        ).fetchone()
-        return 0 if row is None else int(row["n"])
-
-    def last_intent_close_at_ms(self, *, underlying_key: str) -> int | None:
-        row = self.conn.execute(
-            """
-            SELECT max(i.closed_at_ms) AS closed_at_ms
-              FROM trading_intents i
-              JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE c.underlying_key = %s
-               AND i.terminal_outcome = 'CLOSED_FLAT'
-            """,
-            (underlying_key,),
-        ).fetchone()
-        value = None if row is None else row["closed_at_ms"]
-        return None if value is None else int(value)
-
     def active_intent(self) -> tuple[TradeIntent, IntentOutcome] | None:
         """Return the single non-terminal handoff, if one exists."""
 
@@ -148,12 +150,22 @@ class IntentStorage:
         outcome_values = {name: values[name] for name in IntentOutcome.model_fields}
         return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
 
-    def fence_entry(self, intent_id: str, *, engine_identity: str, now_ms: int) -> IntentOutcome | None:
+    def fence_entry(self, intent_id: str, *, engine_identity: str, now_ms: int) -> EntryFence:
+        """Take the durable entry fence, or say in one closed word why it was not taken.
+
+        The order is: prove the two capital-authority facts that must terminate the Intent at zero
+        exposure (capability, deny-list), then attempt the fence itself under the runtime row's own
+        lock. A `GRANTED` fence is committed before the caller may send anything to the venue; that is
+        the whole at-most-once guarantee, and it is why this returns a disposition rather than a
+        nullable outcome the caller has to guess at.
+        """
+
         blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         observation = blacklist.model_dump(mode="json")
         permission = self.conn.execute(
             """
             SELECT intent.underlying_key,
+                   intent.valid_until_ms,
                    intent.execution_capability_snapshot_sha256,
                    runtime.active_capability_snapshot_sha256,
                    (snapshot.payload -> 'included' ? intent.instrument_id) AS instrument_in_snapshot
@@ -168,7 +180,8 @@ class IntentStorage:
             (intent_id,),
         ).fetchone()
         if permission is None:
-            return None
+            # Not PENDING, already fenced, or gone. Nothing was written and nothing should be sent.
+            return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
         reason: str | None = None
         if (
             permission["execution_capability_snapshot_sha256"] != permission["active_capability_snapshot_sha256"]
@@ -201,7 +214,13 @@ class IntentStorage:
                     "now": int(now_ms),
                 },
             ).fetchone()
-            return None if row is None else IntentOutcome.model_validate(dict(row))
+            if row is None:
+                return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
+            return EntryFence(
+                disposition="REFUSED",
+                reason=reason,
+                outcome=IntentOutcome.model_validate(dict(row)),
+            )
         row = self.conn.execute(
             f"""
             UPDATE trading_intents intent
@@ -255,7 +274,31 @@ class IntentStorage:
                 "day_end": (int(now_ms) // 86_400_000 + 1) * 86_400_000,
             },
         ).fetchone()
-        return None if row is None else IntentOutcome.model_validate(dict(row))
+        if row is not None:
+            return EntryFence(
+                disposition="GRANTED",
+                reason="entry_fence_granted",
+                outcome=IntentOutcome.model_validate(dict(row)),
+            )
+        # The UPDATE matched nothing. Say which of the guard clauses refused, from the same statement
+        # snapshot, so a lane held back by an unready engine is distinguishable from one that has
+        # already spent the day's single entry.
+        if int(permission["valid_until_ms"]) <= int(now_ms):
+            return EntryFence(disposition="UNAVAILABLE", reason="intent_expired")
+        if self._daily_entry_fence_taken(now_ms=now_ms):
+            return EntryFence(disposition="UNAVAILABLE", reason="daily_entry_fence_taken")
+        return EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready")
+
+    def _daily_entry_fence_taken(self, *, now_ms: int) -> bool:
+        row = self.conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM trading_intents "
+            "WHERE entry_fenced_at_ms >= %(day_start)s AND entry_fenced_at_ms < %(day_end)s) AS taken",
+            {
+                "day_start": int(now_ms) // 86_400_000 * 86_400_000,
+                "day_end": (int(now_ms) // 86_400_000 + 1) * 86_400_000,
+            },
+        ).fetchone()
+        return bool(row is not None and row["taken"])
 
     def expire_unfenced_intent(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
         return self._outcome_update(
@@ -715,4 +758,4 @@ class IntentStorage:
         return None if row is None else IntentOutcome.model_validate(dict(row))
 
 
-__all__ = ["IntentStorage"]
+__all__ = ["EntryFence", "EntryFenceDisposition", "EntryFenceUnavailable", "IntentStorage"]

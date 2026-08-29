@@ -545,7 +545,6 @@
 | `case_id` | `TEXT` | False | `None` |
 | `underlying_key` | `TEXT` | False | `None` |
 | `trigger_kind` | `TEXT` | False | `None` |
-| `mode` | `TEXT` | False | `None` |
 | `primary_source_key` | `TEXT` | False | `None` |
 | `supplemental_source_keys` | `JSONB` | False | `'[]'::jsonb` |
 | `manifest` | `JSONB` | False | `None` |
@@ -569,6 +568,7 @@
 | `strategy_id` | `TEXT` | False | `None` |
 | `strategy_version` | `TEXT` | False | `None` |
 | `strategy_config_digest` | `TEXT` | False | `None` |
+| `policy_checks` | `JSONB` | True | `None` |
 
 ## `trading_execution_capability_snapshots`
 
@@ -709,10 +709,7 @@
 |--------|------|----------|---------|
 | `id` | `SMALLINT` | False | `None` |
 | `control` | `TEXT` | False | `None` |
-| `day_key` | `TEXT` | False | `None` |
 | `orders_today` | `INTEGER` | False | `0` |
-| `dspy_calls_today` | `INTEGER` | False | `0` |
-| `funnel` | `JSONB` | False | `'{}'::jsonb` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 | `nautilus_heartbeat_at_ms` | `BIGINT` | True | `None` |
 | `nautilus_ready` | `BOOLEAN` | False | `false` |
@@ -722,47 +719,6 @@
 | `active_capability_included_count` | `INTEGER` | False | `0` |
 | `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
 | `blacklist_revision` | `BIGINT` | False | `0` |
-
-## `trading_strategy_evaluations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `evaluation_id` | `TEXT` | False | `None` |
-| `trigger_source_key` | `TEXT` | False | `None` |
-| `underlying_key` | `TEXT` | False | `None` |
-| `trigger_kind` | `TEXT` | False | `None` |
-| `strategy_id` | `TEXT` | False | `None` |
-| `strategy_version` | `TEXT` | False | `None` |
-| `strategy_config_digest` | `TEXT` | False | `None` |
-| `manifest` | `JSONB` | False | `None` |
-| `manifest_sha256` | `TEXT` | False | `None` |
-| `decision` | `TEXT` | False | `None` |
-| `rule` | `TEXT` | False | `None` |
-| `setup` | `TEXT` | False | `None` |
-| `invalidation` | `TEXT` | False | `None` |
-| `expected_horizon` | `TEXT` | False | `None` |
-| `permission` | `TEXT` | False | `None` |
-| `strategy_registered_at_ms` | `BIGINT` | False | `None` |
-| `research_partition` | `TEXT` | False | `None` |
-| `cutoff_ms` | `BIGINT` | False | `None` |
-| `created_at_ms` | `BIGINT` | False | `None` |
-| `market_outcome` | `JSONB` | True | `None` |
-| `market_outcome_version` | `TEXT` | True | `None` |
-| `completed_at_ms` | `BIGINT` | True | `None` |
-| `outcome_attempt_count` | `INTEGER` | False | `0` |
-| `outcome_next_attempt_at_ms` | `BIGINT` | False | `0` |
-| `outcome_last_error` | `TEXT` | True | `None` |
-
-## `trading_strategy_registrations`
-
-| Column | Type | Nullable | Default |
-|--------|------|----------|---------|
-| `strategy_id` | `TEXT` | False | `None` |
-| `strategy_version` | `TEXT` | False | `None` |
-| `strategy_config_digest` | `TEXT` | False | `None` |
-| `strategy_config` | `JSONB` | False | `None` |
-| `permission` | `TEXT` | False | `None` |
-| `registered_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_symbol_blacklist`
 

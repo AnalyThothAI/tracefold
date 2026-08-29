@@ -47,7 +47,6 @@ export type NewsPriceStatus = NewsSchemas["NewsPriceStatusData"];
 export type NewsFeedOi = NewsSchemas["NewsFeedOiData"];
 export type NewsOiStatus = NewsSchemas["NewsOiStatusData"];
 export type NewsOiPolicy = NewsSchemas["NewsOiPolicyData"];
-export type NewsOiTradeFloors = NewsSchemas["NewsOiTradeFloorsData"];
 export type NewsOiWindowSymbol = NewsSchemas["NewsOiWindowSymbolData"];
 export type NewsSymbol = NewsSchemas["NewsSymbolData"];
 export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];

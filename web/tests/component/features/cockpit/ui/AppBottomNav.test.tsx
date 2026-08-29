@@ -19,11 +19,11 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
-      "杠杆异动",
+      "资本判定",
       // The phone bar shows the label alone: the sidebar's Demo chip is secondary to the 48px thumb
       // target has no room for it. The page states the mode in a labelled figure either way.
       "交易",
-      "OI 遥测审计",
+      "OI 来源与准入审计",
     ]);
   });
 
@@ -33,14 +33,14 @@ describe("AppBottomNav", () => {
     // The same `isActive` predicate the sidebar uses, so the two presentations cannot disagree about where
     // the reader is. `NavLink` would decide by prefix and light up both.
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByRole("link", { name: "OI 遥测审计" })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).not.toHaveAttribute("aria-current");
     expect(screen.getAllByRole("link", { current: "page" })).toHaveLength(1);
   });
 
   it("marks the telemetry audit current on the OI route", () => {
     renderBottomNav("/news/oi");
 
-    expect(screen.getByRole("link", { name: "OI 遥测审计" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
       "aria-current",
       "page",
     );

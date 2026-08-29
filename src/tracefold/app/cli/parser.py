@@ -460,8 +460,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trading_replay.add_argument(
         "--strategy",
-        choices=("oi_smart_money_momentum_v1",),
-        default="oi_smart_money_momentum_v1",
+        choices=("binance_oi_smart_money_long_v2",),
+        default="binance_oi_smart_money_long_v2",
+        help="the one production capital policy; a replay may only run the identity the lane runs",
     )
     trading_replay.add_argument(
         "--venues",

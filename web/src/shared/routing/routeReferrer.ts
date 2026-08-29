@@ -16,10 +16,10 @@ export type RouteReferrer = { label: string; to: string };
 const REFERRER_LABELS: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
-  [/^\/news\/oi$/, "OI 遥测审计"],
-  [/^\/news\/leverage$/, "杠杆异动"],
+  [/^\/news\/oi$/, "OI 来源与准入审计"],
+  [/^\/news\/leverage$/, "资本判定"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "交易 · Demo"],
+  [/^\/trading$/, "执行与持仓"],
 ];
 
 const FEED_REFERRER: RouteReferrer = { label: "事件流", to: "/news" };

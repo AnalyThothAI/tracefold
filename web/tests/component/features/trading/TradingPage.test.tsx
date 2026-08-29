@@ -28,10 +28,40 @@ describe("TradingPage", () => {
   it("renders the frozen execution authority and native intent state", async () => {
     renderTrading();
 
-    expect(await screen.findByRole("heading", { name: "Case → Intent → Outcome" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "执行与持仓" })).toBeVisible();
     expect(screen.getByText(/Nautilus · Binance USD-M Demo/)).toBeVisible();
     expect(await screen.findByText("OPEN_PROTECTED")).toBeVisible();
     expect(screen.queryByText(/paper|OpenTrade|订单/i)).toBeNull();
+  });
+
+  it("carries no Case list, and names the upstream totals when there is no Intent", async () => {
+    /*
+     * #331: `/intents` no longer returns `cases_without_intents`, so the page cannot restate decisions.
+     * `0 Intent` is a truthful empty that says what the lane *did* do, with a link to where it did it —
+     * never a blank panel that reads as "the system had no data".
+     */
+    server.use(
+      http.get(/.*\/api\/trading\/intents$/, () =>
+        HttpResponse.json({ ok: true, data: tradingIntentsFixture({ intents: [] }) }),
+      ),
+    );
+
+    renderTrading();
+
+    expect(await screen.findByText(/Nautilus 不持有待执行工作/)).toBeVisible();
+    expect(screen.getByRole("link", { name: "资本判定" })).toBeVisible();
+    expect(screen.queryByText("Cases without Intent")).toBeNull();
+  });
+
+  it("keeps the readiness answer and says the Intent ledger failed", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/intents$/, () => HttpResponse.json({ ok: false }, { status: 503 })),
+    );
+
+    renderTrading();
+
+    expect(await screen.findByRole("heading", { name: "执行与持仓" })).toBeVisible();
+    expect(await screen.findByText(/Intent 账本读取失败/)).toBeVisible();
   });
 
   it("renders terminal outcome from the intent ledger", async () => {
@@ -40,7 +70,6 @@ describe("TradingPage", () => {
         HttpResponse.json({
           ok: true,
           data: tradingIntentsFixture({
-            cases_without_intents: [],
             intents: [
               tradingIntentFixture({
                 closed_at_ms: Date.now(),
@@ -58,7 +87,8 @@ describe("TradingPage", () => {
 
     renderTrading();
 
-    expect(await screen.findByText("CLOSED_FLAT")).toBeVisible();
+    // The row and the 24 h outcome distribution both name it; the realised amount appears once.
+    expect((await screen.findAllByText("CLOSED_FLAT")).length).toBeGreaterThan(0);
     expect(screen.getByText("0.25 USDT")).toBeVisible();
   });
 });

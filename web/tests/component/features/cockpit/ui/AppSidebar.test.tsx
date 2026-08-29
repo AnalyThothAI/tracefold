@@ -41,14 +41,14 @@ describe("AppSidebar", () => {
     // Both News lanes carry their own 24 h intake, compacted to fit beside the label.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
-    // 杠杆异动 carries no count at all: the honest figure — how many cases are live — is in none of the
+    // 资本判定 carries no count at all: the honest figure — how many cases are live — is in none of the
     // reads the frame already makes, and a fourth poll to decorate a link is the wrong trade.
-    expect(links[1].textContent?.trim()).toBe("杠杆异动");
+    expect(links[1].textContent?.trim()).toBe("资本判定");
     // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before opening
     // it, and a count of orders would not answer that.
     expect(links[2].textContent).toContain("交易");
     expect(links[2].textContent).toContain("Demo");
-    expect(links[3].textContent).toContain("OI 遥测审计");
+    expect(links[3].textContent).toContain("OI 来源与准入审计");
     expect(links[3].textContent).toContain("188");
   });
 
@@ -76,7 +76,7 @@ describe("AppSidebar", () => {
     renderSidebar({ counts: { events: 1463, oiFrames: 188 } });
 
     expect(screen.getByRole("link", { name: "事件流" })).toHaveAttribute("href", "/news");
-    expect(screen.getByRole("link", { name: "OI 遥测审计" })).toHaveAttribute("href", "/news/oi");
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute("href", "/news/oi");
   });
 
   it("carries no health chrome of its own", () => {
@@ -102,7 +102,7 @@ describe("AppSidebar", () => {
     // destinations announcing themselves as the current page.
     renderSidebar({ route: "/news/oi" });
 
-    expect(screen.getByRole("link", { name: "OI 遥测审计" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "OI 来源与准入审计" })).toHaveAttribute(
       "aria-current",
       "page",
     );

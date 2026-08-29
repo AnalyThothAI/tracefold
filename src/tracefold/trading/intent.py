@@ -8,9 +8,13 @@ from typing import Any, Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .candidate.blacklist import BlacklistSnapshotV1
-from .capabilities import ExecutionCapabilitySnapshotV1
-from .contracts import InstrumentRef, canonical_sha256, underlying_key
+from .blacklist import BlacklistSnapshotV1
+from .capabilities import (
+    SUPPORTED_QUOTE_CURRENCIES,
+    ExecutionCapabilitySnapshotV1,
+    capability_instrument_id,
+)
+from .contracts import LIVE_EXCHANGE_ID, LIVE_VENUE, InstrumentRef, canonical_sha256, underlying_key
 from .execution_policy import (
     ENTRY_TTL_MS,
     MAX_ENTRY_DRIFT_BPS,
@@ -78,21 +82,33 @@ RejectedReason = Literal[
 ]
 
 
-def capability_instrument_id(instrument: InstrumentRef) -> str:
-    """The exact legacy Binance instrument identity for a frozen News projection row."""
+def executable_instrument_id(instrument: InstrumentRef) -> str:
+    """The Binance Demo instrument identity a frozen Case's contract maps to, or `""`.
+
+    The construction itself has one owner in `capabilities.capability_instrument_id` (#331 §3); what
+    this adds is the live-venue predicate, which is the reason a Hyperliquid contract can never
+    produce an identity here even if something upstream let one through.
+    """
 
     if (
-        instrument.exchange_id != "binance"
-        or instrument.venue != "binance.perp"
+        instrument.exchange_id != LIVE_EXCHANGE_ID
+        or instrument.venue != LIVE_VENUE
         or instrument.instrument_class != "crypto"
-        or instrument.quote_asset not in {"USDT", "USDC"}
+        or instrument.quote_asset not in SUPPORTED_QUOTE_CURRENCIES
     ):
         return ""
-    return f"{instrument.provider_symbol}-PERP.BINANCE"
+    return capability_instrument_id(instrument.provider_symbol)
 
 
 def is_executable_instrument(instrument: InstrumentRef, snapshot: ExecutionCapabilitySnapshotV1) -> bool:
-    instrument_id = capability_instrument_id(instrument)
+    """Re-prove the frozen contract against the snapshot that is active *now*.
+
+    The lane resolves an instrument from the active snapshot before it freezes a Case, so this is a
+    second read of the same question at commit time: the pointer can move while the Case waits, and an
+    Intent must never pin a capability the runtime has since replaced.
+    """
+
+    instrument_id = executable_instrument_id(instrument)
     capability = snapshot.included.get(instrument_id)
     return bool(
         capability is not None
@@ -292,7 +308,7 @@ __all__ = [
     "ManualReviewReason",
     "RejectedReason",
     "TradeIntent",
-    "capability_instrument_id",
     "deterministic_client_order_id",
+    "executable_instrument_id",
     "is_executable_instrument",
 ]

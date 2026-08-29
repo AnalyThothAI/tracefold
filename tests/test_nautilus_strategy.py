@@ -81,7 +81,14 @@ def _solusdt_perp_binance() -> CryptoPerpetual:
         raw_symbol="SOLUSDT",
         base_currency="SOL",
         min_notional="5.00000000 USDT",
-        info={"status": "TRADING", "contractType": "PERPETUAL"},
+        # `orderTypes` is Binance's own product contract, and it is what proves this instrument can
+        # carry a venue-native stop (#331 §3). Without it the capability is not executable, which is
+        # the point: a native stop is the only protection this lane has.
+        info={
+            "status": "TRADING",
+            "contractType": "PERPETUAL",
+            "orderTypes": ["LIMIT", "MARKET", "STOP", "STOP_MARKET", "TRAILING_STOP_MARKET"],
+        },
     )
     return CryptoPerpetual.from_dict(values)
 
@@ -524,6 +531,56 @@ def test_startup_rejects_a_provider_instrument_that_is_no_longer_trading() -> No
         reason="capability_snapshot_mismatch",
         unexpected_exposure=False,
     )
+
+
+def test_startup_rejects_an_instrument_whose_venue_contract_dropped_the_native_stop() -> None:
+    """#331 comment F2P 9. The frozen capability claimed a native stop; the venue no longer offers one.
+
+    Every other frozen provider fact was already revalidated at startup. `supports_native_stop` was
+    not, because nothing produced it — the model defaulted it to `True` — so an instrument that could
+    not carry the lane's only protection would have been adopted as ready.
+    """
+
+    values = CryptoPerpetual.to_dict(_solusdt_perp_binance())
+    values["info"] = {"status": "TRADING", "contractType": "PERPETUAL", "orderTypes": ["LIMIT", "MARKET"]}
+    strategy, queues = _registered_strategy(instrument=CryptoPerpetual.from_dict(values))
+
+    strategy.on_start()
+
+    assert queues.events.get_nowait() == ReadinessChanged(
+        ready=False,
+        reason="capability_snapshot_mismatch",
+        unexpected_exposure=False,
+    )
+
+
+def test_no_provider_entry_is_sent_without_a_committed_entry_grant() -> None:
+    """#331 F2P 11. The fence is the whole at-most-once guarantee, and it commits first.
+
+    The strategy asks for a fence and stops. Nothing reaches the venue until an `EntryFenceGranted`
+    carrying a committed `IN_FLIGHT` outcome comes back — a released Intent, an unavailable fence and a
+    refused one all leave the provider call count at exactly zero.
+    """
+
+    strategy, queues = _registered_strategy()
+    intent = _intent()
+
+    queues.commands.put_nowait(AdoptIntent(intent=intent, outcome=_outcome(intent)))
+    strategy.on_timer(None)
+
+    request = queues.events.get_nowait()
+    assert isinstance(request, EntryFenceRequested)
+    assert strategy.submitted == []
+
+    # The database answered "released" rather than "granted": still nothing sent.
+    queues.commands.put_nowait(IntentReleased(intent_id=intent.intent_id))
+    strategy.on_timer(None)
+    assert strategy.submitted == []
+
+    # And several more turns without a grant change nothing.
+    for _ in range(3):
+        strategy.on_timer(None)
+    assert strategy.submitted == []
 
 
 def test_non_one_x_account_cannot_request_an_entry_fence() -> None:

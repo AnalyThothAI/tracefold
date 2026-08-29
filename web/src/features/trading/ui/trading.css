@@ -62,10 +62,12 @@
 
   .trading-exposure-row {
     display: grid;
-    grid-template-columns: 84px 220px 128px 156px minmax(220px, 1fr) 120px;
+    /* Eight tracks since #331: the policy identity and the emission clock join the row, because an
+       Intent no longer arrives beside a Case that could have carried them. */
+    grid-template-columns: 84px 200px 120px 124px minmax(200px, 1fr) 110px 176px 104px;
     gap: 10px;
     align-items: center;
-    min-width: 1020px;
+    min-width: 1240px;
     min-height: 50px;
     padding: 0 14px;
     border-bottom: 1px solid var(--border-faint);

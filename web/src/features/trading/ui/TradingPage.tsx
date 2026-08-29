@@ -1,42 +1,50 @@
+import { newsLeveragePath } from "@shared/routing/paths";
 import { Card } from "@shared/ui/Card";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
+import { Link } from "react-router-dom";
 
 import {
   useTradingIntentsWithToken,
   useTradingStatusWithToken,
   type TradingIntent,
 } from "../api/tradingQueries";
-import { CASE_STATE_ZH, INTENT_STATE_NOTE, isActiveIntent } from "../model/tradingLabels";
+import { INTENT_STATE_NOTE, caseClock, isActiveIntent, policyLabel } from "../model/tradingLabels";
 
 import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChrome";
 
 import "./trading.css";
 
-/** Read-only Case → Intent → Outcome workbench for the sole execution authority. */
+/**
+ * 执行与持仓 — runtime readiness, immutable Intents, and what execution did with them (#331).
+ *
+ * Two reads, two aggregates, and no third. The Case list this page used to carry came from
+ * `/api/trading/intents.cases_without_intents`, which meant a page about execution was also the page
+ * about decisions — and an empty array from a failed request rendered as "the lane produced nothing".
+ * Decisions live at 资本判定; this page links there rather than restating them.
+ *
+ * The four states are explicit. A cold failure is an error with a retry, a failed refresh keeps the last
+ * answer and says so, and 0 Intent is a *truthful* empty that names the upstream figures beside it.
+ */
 export function TradingPage({ token }: { token: string }) {
   const statusQuery = useTradingStatusWithToken(token);
+  const intentsQuery = useTradingIntentsWithToken(token);
   const status = statusQuery.data;
-  const intentsQuery = useTradingIntentsWithToken(
-    token,
-    undefined,
-    status?.counts.funnel_day_key ?? null,
-  );
   const intents = intentsQuery.data?.intents ?? [];
   const active = intents.filter(isActiveIntent);
   const terminal = intents.filter((intent) => intent.execution_state === "TERMINAL");
-  const cases = intentsQuery.data?.cases_without_intents ?? [];
 
+  const coldFailure = statusQuery.isError && !status;
   return (
-    <TradingShell label="交易 · Binance USD-M Demo">
+    <TradingShell label="执行与持仓 · Binance USD-M Demo">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <h1>Case → Intent → Outcome</h1>
+          <h1>执行与持仓</h1>
           <p>唯一执行权威：Nautilus · Binance USD-M Demo · capability snapshot − blacklist</p>
         </div>
         {status ? (
           <div className="trading-heading-aside" data-tone={readinessTone(status.readiness)}>
-            <span>{status.counts.funnel_day_key || "日期未知"} · UTC 预算日</span>
+            <span>{status.counts.day_key || "日期未知"} · UTC 预算日</span>
             <small>
               {status.readiness.control} ·{" "}
               {status.readiness.engine_ready ? "ENGINE READY" : "ENGINE NOT READY"}
@@ -48,12 +56,20 @@ export function TradingPage({ token }: { token: string }) {
       {statusQuery.isLoading && !status ? (
         <PageState.Loading label="正在读取资本通道状态" layout="panel" rows={3} />
       ) : null}
-      {statusQuery.isError && !status ? (
+      {coldFailure ? (
         <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />
       ) : null}
 
       {status ? (
-        <PageState.Stale updating={statusQuery.isFetching || intentsQuery.isFetching}>
+        <PageState.Stale
+          failedRefresh={
+            intentsQuery.isError && !intentsQuery.data
+              ? "Intent 账本读取失败，其余内容仍是上次读取。"
+              : undefined
+          }
+          onRetry={() => void intentsQuery.refetch()}
+          updating={statusQuery.isFetching || intentsQuery.isFetching}
+        >
           <div className="trading-body">
             <MetricRow className="trading-mandate" columns={5} label="冻结执行契约">
               <Metric eyebrow="VENUE" value="Binance" caption="USD-M Demo" />
@@ -85,36 +101,53 @@ export function TradingPage({ token }: { token: string }) {
             </MetricRow>
 
             <IntentList
-              empty="当前没有非终态 Intent；Nautilus 不持有待执行工作。"
+              empty={
+                <>
+                  当前没有非终态 Intent；Nautilus 不持有待执行工作。过去 24 小时资本通道成案{" "}
+                  <b>{status.counts.cases_24h}</b> 个、形成 Intent <b>{status.counts.intents_24h}</b>{" "}
+                  个；判定过程在 <Link to={newsLeveragePath()}>资本判定</Link>。
+                </>
+              }
+              loading={intentsQuery.isPending}
               rows={active}
               title="Fresh / Active Intent"
             />
             <IntentList
-              empty="当前窗口没有终态 Outcome。"
+              empty={<>当前窗口没有终态 Outcome。</>}
+              loading={intentsQuery.isPending}
               rows={terminal}
               title="Terminal Outcome"
             />
 
             <Card
               flush
-              hint="已决但未形成 Intent 的案例保留明确终态与规则"
-              title="Cases without Intent"
+              hint="执行阶段的终局分布，来自 durable 行的有界聚合"
+              title="24h Outcome 分布"
             >
-              {cases.length ? (
-                <div className="trading-table">
-                  {cases.map((record) => (
-                    <article className="trading-case-row" key={record.case_id}>
-                      <code>{record.case_id}</code>
-                      <b>{record.base_symbol}</b>
-                      <span>{CASE_STATE_ZH[record.state] ?? record.state}</span>
-                      <span>{record.policy_reason ?? "—"}</span>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <TradingEmptyNote>当前窗口的案例均已形成 Intent，或尚无案例。</TradingEmptyNote>
-              )}
-              <TradingSourceLine path="GET /api/trading/intents → cases_without_intents[]" />
+              <div className="trading-table">
+                {Object.entries(intentsQuery.data?.outcome_counts_24h ?? {}).length ? (
+                  Object.entries(intentsQuery.data?.outcome_counts_24h ?? {}).map(
+                    ([outcome, count]) => (
+                      <article className="trading-case-row" key={outcome}>
+                        <b>{outcome}</b>
+                        <span>{count}</span>
+                        <span>
+                          {Object.entries(intentsQuery.data?.reason_counts_24h ?? {})
+                            .map(([reason, n]) => `${reason} ${n}`)
+                            .join(" · ") || "—"}
+                        </span>
+                      </article>
+                    ),
+                  )
+                ) : (
+                  <TradingEmptyNote>
+                    {intentsQuery.isError && !intentsQuery.data
+                      ? "Intent 账本本轮不可用；不能据此断言没有终局。"
+                      : "过去 24 小时没有终局 Outcome。"}
+                  </TradingEmptyNote>
+                )}
+              </div>
+              <TradingSourceLine path="GET /api/trading/intents → outcome_counts_24h · reason_counts_24h" />
             </Card>
           </div>
         </PageState.Stale>
@@ -125,16 +158,20 @@ export function TradingPage({ token }: { token: string }) {
 
 function IntentList({
   empty,
+  loading,
   rows,
   title,
 }: {
-  empty: string;
+  empty: React.ReactNode;
+  loading: boolean;
   rows: readonly TradingIntent[];
   title: string;
 }) {
   return (
-    <Card flush hint="同一行只陈述账本已证明的 Case、Intent 与 Outcome" title={title}>
-      {rows.length ? (
+    <Card flush hint="同一行只陈述账本已证明的 Intent 与 Outcome" title={title}>
+      {loading ? (
+        <PageState.Loading label="正在读取 Intent" layout="inline" rows={2} />
+      ) : rows.length ? (
         <div className="trading-table">
           {rows.map((intent) => (
             <article className="trading-exposure-row" key={intent.intent_id}>
@@ -144,6 +181,8 @@ function IntentList({
               <span>{intent.execution_phase ?? "等待领取"}</span>
               <span>{intent.terminal_outcome ?? INTENT_STATE_NOTE[intent.execution_state]}</span>
               <span>{outcome(intent)}</span>
+              <span>{policyLabel(intent.policy_id)}</span>
+              <span>{caseClock(intent.created_at_ms)}</span>
             </article>
           ))}
         </div>

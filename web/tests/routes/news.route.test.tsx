@@ -53,7 +53,7 @@ describe("news route", () => {
 
   it.each([
     ["/news/status", "流水线状态", "/api/news/status"],
-    ["/news/oi", "OI 遥测审计", "/api/news/status"],
+    ["/news/oi", "OI 来源与准入审计", "/api/news/status"],
     [
       "/news/events/evt-global-policy",
       "央行政策转向，风险资产承压",
@@ -196,8 +196,8 @@ describe("news route", () => {
     renderAppRoute("/news");
     await screen.findByRole("heading", { name: "新闻事件流" });
 
-    fireEvent.click(screen.getByRole("link", { name: "OI 遥测审计" }));
-    expect(await screen.findByRole("heading", { name: "OI 遥测审计" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "OI 来源与准入审计" }));
+    expect(await screen.findByRole("heading", { name: "OI 来源与准入审计" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("link", { name: "事件流" }));
     expect(await screen.findByRole("heading", { name: "新闻事件流" })).toBeInTheDocument();

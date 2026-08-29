@@ -1,4 +1,20 @@
-"""Case -> Intent -> Outcome projections for CLI, HTTP, and the operator console."""
+"""Read projections for the three product surfaces, one durable aggregate each.
+
+The split is the product's (#331):
+
+    Source / Admission   `gate.py` — every OI fact and the admission answer it received
+    Case / Decision      `console_cases` and `case_counts` — frozen manifests and frozen policy checks
+    Intent / Outcome     `console_intents` and `intent_counts` — execution lifecycle and exposure
+    runtime readiness    `runtime_summary` — control, engine, capability, and bounded durable totals
+
+Nothing here re-interprets a Case against today's configuration, and nothing mixes the aggregates:
+`console_intents` used to return `cases_without_intents` beside its Intents, which put two different
+durable objects behind one contract and made the console's "no data" state ambiguous.
+
+Every count is a bounded aggregation over durable rows. The polling-driven funnel it replaced counted
+one entry per *re-read* of the same frame, so its magnitudes were a function of the poll interval and
+its document reset at UTC midnight — which left a question about yesterday with no evidence at all.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +22,6 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from ..intent import ACTIVE_INTENT_STATES
-from ..research.event_study import summarize_evaluation_rows
 
 _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("source_observed_to_verdict_persisted", "c.trigger_persisted_at_ms - c.source_observed_at_ms"),
@@ -18,107 +33,57 @@ _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("position_opened_to_closed_flat", "i.flat_verified_at_ms - i.opened_at_ms"),
 )
 
+_CASE_COLUMNS: Final = """
+    c.case_id, c.underlying_key, c.primary_source_key,
+    c.trigger_kind, c.strategy_id, c.strategy_version, c.strategy_config_digest,
+    c.state, c.policy_decision, c.policy_reason, c.policy_checks,
+    c.manifest -> 'policy_config' AS policy_config,
+    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::bigint AS pre_move_bps,
+    (c.manifest -> 'contexts' -> 'market' ->> 'mark_price') AS mark_price,
+    (c.manifest -> 'contexts' -> 'oi' ->> 'oi_change_bps')::bigint AS oi_change_bps,
+    (c.manifest -> 'contexts' -> 'oi' ->> 'oi_value_usd')::bigint AS oi_value_usd,
+    (c.manifest -> 'contexts' -> 'oi' ->> 'whale_oi_ratio_bps')::bigint AS whale_oi_ratio_bps,
+    (c.manifest -> 'contexts' -> 'oi' ->> 'whale_long_profit_bps')::bigint AS whale_long_profit_bps,
+    (c.manifest -> 'instrument' ->> 'provider_symbol') AS provider_symbol,
+    (c.manifest ->> 'manifest_version') AS manifest_version,
+    c.observed_at_ms, c.created_at_ms AS case_created_at_ms, c.decided_at_ms
+"""
+
 
 class QueryStorage:
     conn: Any
 
-    def status_counts(
-        self,
-        *,
-        since_ms: int,
-        now_ms: int,
-        day_key: str | None,
-    ) -> dict[str, Any]:
-        day_start_ms, resolved_day_key = _day_start(day_key, now_ms=now_ms)
-        day_end_ms = day_start_ms + 86_400_000
-        cases = self.conn.execute(
-            "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state",
-            (int(since_ms),),
-        ).fetchall()
-        intents = self.conn.execute(
-            "SELECT execution_state, count(*) AS n FROM trading_intents "
-            "WHERE created_at_ms >= %s GROUP BY execution_state",
-            (int(since_ms),),
-        ).fetchall()
-        outcomes = self.conn.execute(
-            "SELECT terminal_outcome, count(*) AS n FROM trading_intents "
-            "WHERE terminal_outcome IS NOT NULL AND updated_at_ms >= %s GROUP BY terminal_outcome",
-            (int(since_ms),),
-        ).fetchall()
-        triggers = self.conn.execute(
-            "SELECT trigger_kind, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY trigger_kind",
-            (int(since_ms),),
-        ).fetchall()
-        strategies = self.conn.execute(
-            "SELECT strategy_id, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY strategy_id",
-            (int(since_ms),),
-        ).fetchall()
-        shadow_strategies = self.conn.execute(
-            "SELECT strategy_id, count(*) AS n FROM trading_strategy_evaluations "
-            "WHERE created_at_ms >= %s GROUP BY strategy_id",
-            (int(since_ms),),
-        ).fetchall()
-        shadow_rules = self.conn.execute(
-            "SELECT rule, count(*) AS n FROM trading_strategy_evaluations WHERE created_at_ms >= %s GROUP BY rule",
-            (int(since_ms),),
-        ).fetchall()
-        evaluation_rows = self.conn.execute(
-            """
-            SELECT strategy_id, underlying_key, research_partition, manifest,
-                   market_outcome, completed_at_ms
-              FROM trading_strategy_evaluations
-             WHERE created_at_ms >= %s
-            """,
-            (int(since_ms),),
-        ).fetchall()
-        shadow_cohorts, event_study_cohorts = summarize_evaluation_rows([dict(row) for row in evaluation_rows])
-        policy_allowed_window = self.conn.execute(
-            "SELECT count(*) AS n FROM trading_cases WHERE created_at_ms >= %s AND policy_decision = 'long'",
-            (int(since_ms),),
-        ).fetchone()
-        cases_today = self.conn.execute(
-            "SELECT state, count(*) AS n FROM trading_cases "
-            "WHERE created_at_ms >= %s AND created_at_ms < %s GROUP BY state",
-            (day_start_ms, day_end_ms),
-        ).fetchall()
-        policy_allowed_today = self.conn.execute(
-            "SELECT count(*) AS n FROM trading_cases "
-            "WHERE created_at_ms >= %s AND created_at_ms < %s AND policy_decision = 'long'",
-            (day_start_ms, day_end_ms),
-        ).fetchone()
-        entries_today = self.conn.execute(
-            "SELECT count(*) AS n FROM trading_intents WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s",
-            (day_start_ms, day_end_ms),
-        ).fetchone()
-        closed_today = self.conn.execute(
-            "SELECT count(*) AS n FROM trading_intents "
-            "WHERE terminal_outcome = 'CLOSED_FLAT' AND closed_at_ms >= %s AND closed_at_ms < %s",
-            (day_start_ms, day_end_ms),
-        ).fetchone()
+    # ------------------------------------------------------------------ runtime / execution readiness
+    def runtime_summary(self, *, since_ms: int, now_ms: int) -> dict[str, Any]:
+        """The bounded durable totals the readiness surface may show, and nothing about a policy.
+
+        Deliberately small. The status route used to publish every operator floor and every strategy
+        config beside these, which invited a console to compare a Case frozen last week against a
+        threshold edited yesterday — and print a conflict on a row that passed.
+        """
+
+        day_start_ms = int(now_ms) // 86_400_000 * 86_400_000
         active = self.conn.execute(
             "SELECT count(*) AS n FROM trading_intents WHERE execution_state = ANY(%s)",
             (list(ACTIVE_INTENT_STATES),),
         ).fetchone()
+        entries_today = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_intents WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s",
+            (day_start_ms, day_start_ms + 86_400_000),
+        ).fetchone()
+        closed_today = self.conn.execute(
+            "SELECT count(*) AS n FROM trading_intents "
+            "WHERE terminal_outcome = 'CLOSED_FLAT' AND closed_at_ms >= %s AND closed_at_ms < %s",
+            (day_start_ms, day_start_ms + 86_400_000),
+        ).fetchone()
         return {
             **self.latest_lifecycle_milestones(),
-            "cases_by_state": {str(row["state"]): int(row["n"]) for row in cases},
-            "cases_by_trigger": {str(row["trigger_kind"]): int(row["n"]) for row in triggers},
-            "cases_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in strategies},
-            "shadow_by_strategy": {str(row["strategy_id"]): int(row["n"]) for row in shadow_strategies},
-            "shadow_by_rule": {str(row["rule"]): int(row["n"]) for row in shadow_rules},
-            "shadow_cohorts": shadow_cohorts,
-            "event_study_cohorts": event_study_cohorts,
-            "liquidation_promotion_ready": False,
-            "liquidation_promotion_reason": "source_contract_incomplete",
-            "intents_by_state": {str(row["execution_state"]): int(row["n"]) for row in intents},
-            "outcomes_by_state": {str(row["terminal_outcome"]): int(row["n"]) for row in outcomes},
-            "cases_today_by_state": {str(row["state"]): int(row["n"]) for row in cases_today},
-            "policy_allowed_today": _count(policy_allowed_today),
-            "policy_allowed_24h": _count(policy_allowed_window),
+            "day_key": datetime.fromtimestamp(day_start_ms / 1000, tz=UTC).strftime("%Y-%m-%d"),
+            "active_intents": _count(active),
             "entries_today": _count(entries_today),
             "closed_intents_today": _count(closed_today),
-            "active_intents": _count(active),
-            "funnel_day_key": resolved_day_key,
+            "cases_24h": sum(self.case_counts(since_ms=since_ms).values()),
+            "intents_24h": sum(self.intent_counts(since_ms=since_ms)["by_state"].values()),
         }
 
     def latest_lifecycle_milestones(self) -> dict[str, int | None]:
@@ -163,6 +128,84 @@ class QueryStorage:
             report[name] = stage
         return report
 
+    # ------------------------------------------------------------------ Case / Decision
+    def case_counts(self, *, since_ms: int) -> dict[str, int]:
+        """Raw `state` distribution over the window. Historical states are reported as they are stored."""
+
+        rows = self.conn.execute(
+            "SELECT state, count(*) AS n FROM trading_cases WHERE created_at_ms >= %s GROUP BY state",
+            (int(since_ms),),
+        ).fetchall()
+        return {str(row["state"]): int(row["n"]) for row in rows}
+
+    def case_reason_counts(self, *, since_ms: int) -> dict[str, int]:
+        rows = self.conn.execute(
+            "SELECT coalesce(policy_reason, 'undecided') AS reason, count(*) AS n "
+            "FROM trading_cases WHERE created_at_ms >= %s GROUP BY 1",
+            (int(since_ms),),
+        ).fetchall()
+        return {str(row["reason"]): int(row["n"]) for row in rows}
+
+    def console_cases(
+        self,
+        *,
+        since_ms: int,
+        underlying_key: str | None = None,
+        states: tuple[str, ...] = (),
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Frozen Cases with their frozen policy evidence, newest first.
+
+        The Intent link is a single id, never a joined lifecycle: an execution state belongs to the
+        Intent aggregate, and duplicating it here is how two surfaces came to render the same row with
+        two different vocabularies.
+        """
+
+        where = ["c.created_at_ms >= %s"]
+        params: list[Any] = [int(since_ms)]
+        if underlying_key:
+            where.append("c.underlying_key = %s")
+            params.append(underlying_key)
+        if states:
+            where.append("c.state = ANY(%s)")
+            params.append(list(states))
+        params.append(int(limit))
+        rows = self.conn.execute(
+            f"""
+            SELECT {_CASE_COLUMNS}, i.intent_id
+              FROM trading_cases c
+              LEFT JOIN trading_intents i ON i.case_id = c.case_id
+             WHERE {" AND ".join(where)}
+             ORDER BY c.created_at_ms DESC, c.case_id
+             LIMIT %s
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------ Intent / Outcome
+    def intent_counts(self, *, since_ms: int) -> dict[str, dict[str, int]]:
+        states = self.conn.execute(
+            "SELECT execution_state, count(*) AS n FROM trading_intents "
+            "WHERE created_at_ms >= %s GROUP BY execution_state",
+            (int(since_ms),),
+        ).fetchall()
+        outcomes = self.conn.execute(
+            "SELECT terminal_outcome, count(*) AS n FROM trading_intents "
+            "WHERE terminal_outcome IS NOT NULL AND updated_at_ms >= %s GROUP BY terminal_outcome",
+            (int(since_ms),),
+        ).fetchall()
+        reasons = self.conn.execute(
+            "SELECT reason_code, count(*) AS n FROM trading_intents "
+            "WHERE reason_code IS NOT NULL AND updated_at_ms >= %s GROUP BY reason_code",
+            (int(since_ms),),
+        ).fetchall()
+        return {
+            "by_state": {str(row["execution_state"]): int(row["n"]) for row in states},
+            "by_outcome": {str(row["terminal_outcome"]): int(row["n"]) for row in outcomes},
+            "by_reason": {str(row["reason_code"]): int(row["n"]) for row in reasons},
+        }
+
     def console_intents(
         self,
         *,
@@ -195,13 +238,7 @@ class QueryStorage:
         params.append(int(limit))
         rows = self.conn.execute(
             f"""
-            SELECT i.*, c.underlying_key, c.primary_source_key, c.trigger_kind,
-                   c.strategy_id, c.strategy_version, c.regime,
-                   c.policy_decision, c.policy_reason, c.state AS case_state,
-                   c.observed_at_ms AS case_observed_at_ms,
-                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
-                   c.manifest -> 'strategy_config' AS strategy_config,
-                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason
+            SELECT i.*, c.underlying_key, c.primary_source_key, c.strategy_id, c.strategy_version
               FROM trading_intents i
               JOIN trading_cases c ON c.case_id = i.case_id
              WHERE {" AND ".join(where)}
@@ -211,82 +248,6 @@ class QueryStorage:
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]
-
-    def console_case_for_source_key(self, *, primary_source_key: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT c.case_id, c.underlying_key, c.primary_source_key,
-                   c.trigger_kind, c.strategy_id, c.strategy_version,
-                   c.mode, c.state, c.regime,
-                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
-                   c.manifest -> 'strategy_config' AS strategy_config,
-                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason,
-                   c.policy_decision, c.policy_reason, c.observed_at_ms,
-                   c.created_at_ms AS case_created_at_ms, c.decided_at_ms,
-                   i.intent_id, i.intent_version, i.execution_environment,
-                   i.execution_capability_snapshot_sha256,
-                   i.blacklist_revision_at_emission,
-                   i.blacklist_snapshot_sha256_at_emission,
-                   i.instrument_id, i.side,
-                   i.target_notional_usd, i.reference_price, i.valid_until_ms,
-                   i.execution_state,
-                   i.execution_phase, i.terminal_outcome, i.reason_code,
-                   i.entry_fenced_at_ms, i.actual_quantity, i.protected_quantity,
-                   i.avg_entry_price, i.avg_exit_price, i.stop_price,
-                   i.opened_at_ms, i.protected_at_ms, i.closed_at_ms,
-                   i.flat_verified_at_ms, i.realized_pnl_amount, i.realized_pnl_currency,
-                   i.commissions_by_currency, i.created_at_ms, i.updated_at_ms,
-                   c.state AS case_state, c.observed_at_ms AS case_observed_at_ms
-              FROM trading_cases c
-              LEFT JOIN trading_intents i ON i.case_id = c.case_id
-             WHERE c.primary_source_key = %s
-            """,
-            (primary_source_key,),
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def console_cases_without_intents(
-        self, *, since_ms: int, underlying_key: str | None = None, limit: int = 100
-    ) -> list[dict[str, Any]]:
-        where = [
-            "c.created_at_ms >= %s",
-            "NOT EXISTS (SELECT 1 FROM trading_intents i WHERE i.case_id = c.case_id)",
-        ]
-        params: list[Any] = [int(since_ms)]
-        if underlying_key:
-            where.append("c.underlying_key = %s")
-            params.append(underlying_key)
-        params.append(int(limit))
-        rows = self.conn.execute(
-            f"""
-            SELECT c.case_id, c.underlying_key, c.primary_source_key,
-                   c.trigger_kind, c.strategy_id, c.strategy_version,
-                   c.mode, c.state, c.regime,
-                   (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
-                   c.manifest -> 'strategy_config' AS strategy_config,
-                   (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason,
-                   c.policy_decision, c.policy_reason, c.observed_at_ms, c.created_at_ms, c.decided_at_ms
-              FROM trading_cases c
-             WHERE {" AND ".join(where)}
-             ORDER BY c.created_at_ms DESC
-             LIMIT %s
-            """,
-            tuple(params),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def _day_start(day_key: str | None, *, now_ms: int) -> tuple[int, str]:
-    try:
-        resolved = str(day_key or "")
-        if len(resolved) != 10:
-            raise ValueError
-        start = int(datetime.fromisoformat(resolved).replace(tzinfo=UTC).timestamp() * 1000)
-    except ValueError:
-        current = datetime.fromtimestamp(now_ms / 1000, tz=UTC)
-        resolved = current.strftime("%Y-%m-%d")
-        start = int(datetime.fromisoformat(resolved).replace(tzinfo=UTC).timestamp() * 1000)
-    return start, resolved
 
 
 def _count(row: Any) -> int:

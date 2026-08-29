@@ -76,22 +76,13 @@ def get_news_status(request: Request) -> Response:
         **snapshot["delivery"],
         "delivery_available": push.delivery_available and workers_state == "running",
     }
-    trading = settings.trading
+    # No `trade_floors` here (#331). News republished the capital lane's thresholds beside its own
+    # gates, which invited a console to compare a Case frozen last week against a floor edited
+    # yesterday. The capital lane's rules belong to `/api/trading/*`, and the ones that decided a Case
+    # travel with that Case as frozen evidence.
     oi = {
         **snapshot["oi"],
         "policy": oi_policy.model_dump(),
-        # The capital lane's floors, from its own configuration, so the monitor can show them beside the News
-        # gates without either pretending to be the other (#207). Nothing here is applied by News.
-        "trade_floors": {
-            "enabled": bool(trading.enabled),
-            "execution_environment": "BINANCE_USDM_DEMO",
-            "allow_short": False,
-            "min_whale_long_profit_bps": int(trading.policy.min_whale_long_profit_bps),
-            "min_oi_value_usd": int(trading.candidates.min_oi_value_usd),
-            "min_price_move_bps": int(trading.regime.min_price_move_bps),
-            "max_price_move_bps": int(trading.regime.max_price_move_bps),
-            "pre_move_lookback_ms": int(trading.regime.lookback_seconds) * 1000,
-        },
         "window_occupancy": [
             {
                 "symbol": row["symbol"],

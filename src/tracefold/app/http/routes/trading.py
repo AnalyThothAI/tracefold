@@ -1,4 +1,21 @@
-"""Read-only Case -> Intent -> Outcome surface for the capital lane."""
+"""Read-only capital-lane surface, one route per durable aggregate (#331).
+
+    GET /api/trading/gate              Source / Admission
+    GET /api/trading/gate/{event_id}   one Source's admission answer
+    GET /api/trading/cases             Case / Decision
+    GET /api/trading/intents           Intent / Outcome
+    GET /api/trading/status            runtime and execution readiness
+
+The split is the product's, and it is what the pages are built on. `/intents` used to return
+`cases_without_intents` beside its Intents, which put two durable objects behind one contract: a page
+could not tell "no Intent" from "no Case", and a request failure fell back to an empty array that
+rendered as "the system has no data". `/cases` is the replacement, and the mixed shape is gone in the
+same change rather than kept as a second synonym.
+
+Nothing here re-derives a decision. Every threshold a Case was decided by travels with that Case as
+frozen evidence; the status surface publishes the identity of the policy a *new* Case would be frozen
+under, and never applies it to an existing one.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +27,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.app.trading_config import CANDIDATE_GATE_VERSION, trading_settings_gate, trading_settings_strategies
+from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.platform.config.secret_file import secret_file_configured
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
@@ -24,8 +41,9 @@ from ..schemas import trading as trading_schemas
 router = APIRouter()
 _StatusEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingStatusData]
 _IntentsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingIntentsData]
-_EventCaseEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingEventCaseData]
+_CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _GateEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateData]
+_GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ROW_LIMIT: Final = 100
@@ -33,25 +51,29 @@ _GATE_LIMIT: Final = 400
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
 _BASE_SYMBOL: Final = re.compile(r"^[A-Z0-9._-]{1,24}$")
 _DAY_KEY: Final = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_STATE_FILTERS: Final[frozenset[str]] = frozenset({"active", "closed", "all"})
+_INTENT_STATE_FILTERS: Final[frozenset[str]] = frozenset({"active", "closed", "all"})
+_CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
+    "open": ("PENDING", "RUNNING"),
+    "no_trade": ("NO_TRADE",),
+    "blocked": ("BLOCKED",),
+    "emitted": ("INTENT_EMITTED",),
+}
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
 def get_trading_status(request: Request) -> Response:
+    """Control, execution readiness, active capability, and bounded durable totals. No thresholds."""
+
     _validate_query_params(request, supported={"token"})
     runtime = _authenticated_runtime(request)
     settings = runtime.settings
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
         state = repos.trading.runtime_state() or {}
-        counts = repos.trading.status_counts(
-            since_ms=now_ms - _WINDOW_MS,
-            now_ms=now_ms,
-            day_key=state.get("day_key"),
-        )
-        admission = repos.trading.candidate_admission_report(now_ms=now_ms)
+        counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
     key_file = settings.trading_nautilus_api_key_file()
     secret_file = settings.trading_nautilus_api_secret_file()
+    policy = capital_lane_config(settings).policy
     return _etagged(
         {
             "budget": {
@@ -72,21 +94,123 @@ def get_trading_status(request: Request) -> Response:
                 "unexpected_exposure": bool(state.get("nautilus_unexpected_exposure")),
                 "heartbeat_at_ms": state.get("nautilus_heartbeat_at_ms"),
             },
-            "floors": {
-                "lookback_ms": settings.trading.regime.lookback_seconds * 1000,
-                "max_price_move_bps": settings.trading.regime.max_price_move_bps,
-                "min_oi_value_usd": str(settings.trading.candidates.min_oi_value_usd),
-                "min_price_move_bps": settings.trading.regime.min_price_move_bps,
-                "min_whale_long_profit_bps": settings.trading.policy.min_whale_long_profit_bps,
+            "policy": {
+                "policy_id": policy.policy_id,
+                "policy_version": policy.policy_version,
+                "config_digest": policy.config_digest,
+                "config": {key: str(value) for key, value in sorted(policy.config_snapshot.items())},
             },
-            "gate": _gate_config(settings),
-            "strategies": _strategy_configs(settings),
-            "counts": {**counts, **admission, "funnel_today": _int_map(state.get("funnel"))},
+            "counts": counts,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
         request,
         envelope=_StatusEnvelope,
+    )
+
+
+@router.get("/trading/gate", response_model=_GateEnvelope)
+def get_trading_gate(request: Request) -> Response:
+    """Every Source the lane saw in the window, and the one durable answer each received."""
+
+    _validate_query_params(request, supported={"token"})
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    with runtime.repositories() as repos:
+        rows = repos.trading.gate_decisions_since(since_ms=now_ms - _WINDOW_MS, limit=_GATE_LIMIT + 1)
+        report = repos.trading.candidate_admission_report(now_ms=now_ms)
+    admission = capital_lane_config(runtime.settings).admission
+    return _etagged(
+        {
+            "config": {
+                "version": ADMISSION_VERSION,
+                "config_digest": admission.digest,
+                **admission.snapshot,
+            },
+            "decisions": [_gate_decision(row) for row in rows[:_GATE_LIMIT]],
+            "status_counts_24h": report["candidate_counts_24h"],
+            "reason_counts_24h": report["candidate_reasons_24h"],
+            "latest_source_at_ms": report["latest_source_at_ms"],
+            "latest_gate_eligible_at_ms": report["latest_gate_eligible_at_ms"],
+            "complete": len(rows) <= _GATE_LIMIT,
+            "window_hours": _WINDOW_MS // 3_600_000,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_GateEnvelope,
+    )
+
+
+@router.get("/trading/gate/{event_id}", response_model=_GateSourceEnvelope)
+def get_trading_gate_source(request: Request, event_id: str) -> Response:
+    """One Source's admission answer. `joinable=false` when the question cannot be asked at all.
+
+    Only the deterministic OI lane's source key is reconstructible from an Event id
+    (`oi:{event_id}:{metric_version}`), so a caller asking about anything else is told the question is
+    unanswerable rather than shown a refusal that never happened.
+    """
+
+    _validate_query_params(request, supported={"lane", "token"})
+    if not event_id or len(event_id) > 128:
+        raise ApiBadRequest("trading_event_id_invalid", field="event_id")
+    lane = request.query_params.get("lane", "")
+    if lane and lane != "oi":
+        raise ApiBadRequest("trading_event_lane_invalid", field="lane")
+    runtime = _authenticated_runtime(request)
+    if lane != "oi":
+        return _etagged(
+            {"event_id": event_id, "joinable": False, "decision": None},
+            request,
+            envelope=_GateSourceEnvelope,
+        )
+    source_key = f"oi:{event_id}:{_OI_METRIC_VERSION}"
+    with runtime.repositories() as repos:
+        row = repos.trading.gate_decision_for_source_key(source_key=source_key)
+    return _etagged(
+        {
+            "event_id": event_id,
+            "joinable": True,
+            "decision": None if row is None else _gate_decision(row),
+        },
+        request,
+        envelope=_GateSourceEnvelope,
+    )
+
+
+@router.get("/trading/cases", response_model=_CasesEnvelope)
+def get_trading_cases(
+    request: Request,
+    underlying: Annotated[str, Query(max_length=32)] = "",
+    state: Annotated[str, Query(max_length=16)] = "",
+) -> Response:
+    """Frozen Cases and the frozen evidence each was decided on."""
+
+    _validate_query_params(request, supported={"state", "token", "underlying"})
+    if state and state not in _CASE_STATE_FILTERS:
+        raise ApiBadRequest("trading_cases_state_invalid", field="state")
+    underlying_key = _underlying_key(underlying, error="trading_cases_underlying_invalid")
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    with runtime.repositories() as repos:
+        rows = repos.trading.console_cases(
+            since_ms=now_ms - _WINDOW_MS,
+            underlying_key=underlying_key,
+            states=_CASE_STATE_FILTERS.get(state, ()),
+            limit=_ROW_LIMIT + 1,
+        )
+        states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
+        reasons = repos.trading.case_reason_counts(since_ms=now_ms - _WINDOW_MS)
+    return _etagged(
+        {
+            "cases": [_case(row) for row in rows[:_ROW_LIMIT]],
+            "state_counts_24h": states,
+            "reason_counts_24h": reasons,
+            "complete": len(rows) <= _ROW_LIMIT,
+            "window_hours": _WINDOW_MS // 3_600_000,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_CasesEnvelope,
     )
 
 
@@ -97,12 +221,12 @@ def get_trading_intents(
     underlying: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=16)] = "",
 ) -> Response:
-    """Intent outcomes plus cases that did not emit an intent; legacy orders are excluded."""
+    """Immutable capital requests and their execution outcomes. Cases live at `/trading/cases`."""
 
     _validate_query_params(request, supported={"day", "state", "token", "underlying"})
-    if state and state not in _STATE_FILTERS:
+    if state and state not in _INTENT_STATE_FILTERS:
         raise ApiBadRequest("trading_intents_state_invalid", field="state")
-    underlying_key = _underlying_key(underlying)
+    underlying_key = _underlying_key(underlying, error="trading_intents_underlying_invalid")
     closed_from_ms: int | None = None
     closed_until_ms: int | None = None
     if day:
@@ -129,20 +253,14 @@ def get_trading_intents(
             states=states,
             limit=_ROW_LIMIT + 1,
         )
-        cases = (
-            []
-            if state
-            else repos.trading.console_cases_without_intents(
-                since_ms=now_ms - _WINDOW_MS,
-                underlying_key=underlying_key,
-                limit=_ROW_LIMIT + 1,
-            )
-        )
+        counts = repos.trading.intent_counts(since_ms=now_ms - _WINDOW_MS)
     return _etagged(
         {
             "intents": [_intent(row) for row in intents[:_ROW_LIMIT]],
-            "cases_without_intents": [_case(row) for row in cases[:_ROW_LIMIT]],
-            "complete": len(intents) <= _ROW_LIMIT and len(cases) <= _ROW_LIMIT,
+            "state_counts_24h": counts["by_state"],
+            "outcome_counts_24h": counts["by_outcome"],
+            "reason_counts_24h": counts["by_reason"],
+            "complete": len(intents) <= _ROW_LIMIT,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
@@ -151,79 +269,8 @@ def get_trading_intents(
     )
 
 
-@router.get("/trading/gate", response_model=_GateEnvelope)
-def get_trading_gate(request: Request) -> Response:
-    _validate_query_params(request, supported={"token"})
-    runtime = _authenticated_runtime(request)
-    now_ms = int(time.time() * 1000)
-    with runtime.repositories() as repos:
-        rows = repos.trading.gate_decisions_since(since_ms=now_ms - _WINDOW_MS, limit=_GATE_LIMIT + 1)
-    return _etagged(
-        {
-            "decisions": [_gate_decision(row) for row in rows[:_GATE_LIMIT]],
-            "complete": len(rows) <= _GATE_LIMIT,
-            "window_hours": _WINDOW_MS // 3_600_000,
-            "measured_at_ms": now_ms,
-        },
-        request,
-        envelope=_GateEnvelope,
-    )
-
-
-@router.get("/trading/events/{event_id}", response_model=_EventCaseEnvelope)
-def get_trading_event_case(request: Request, event_id: str) -> Response:
-    _validate_query_params(request, supported={"lane", "token"})
-    if not event_id or len(event_id) > 128:
-        raise ApiBadRequest("trading_event_id_invalid", field="event_id")
-    lane = request.query_params.get("lane", "")
-    if lane and lane != "oi":
-        raise ApiBadRequest("trading_event_lane_invalid", field="lane")
-    runtime = _authenticated_runtime(request)
-    if lane != "oi":
-        return _etagged({"event_id": event_id, "joinable": False}, request, envelope=_EventCaseEnvelope)
-    source_key = f"oi:{event_id}:{_OI_METRIC_VERSION}"
-    with runtime.repositories() as repos:
-        row = repos.trading.console_case_for_source_key(primary_source_key=source_key)
-        gate = repos.trading.gate_decision_for_source_key(source_key=source_key)
-    if row is None:
-        return _etagged(
-            {"event_id": event_id, "joinable": True, **_gate(gate)},
-            request,
-            envelope=_EventCaseEnvelope,
-        )
-    return _etagged(
-        {
-            "event_id": event_id,
-            "joinable": True,
-            "case": _case(row),
-            "intent": _intent(row) if row.get("intent_id") is not None else None,
-            **_gate(gate),
-        },
-        request,
-        envelope=_EventCaseEnvelope,
-    )
-
-
-def _gate_config(settings: Any) -> dict[str, Any]:
-    config = trading_settings_gate(settings)
-    return {"version": CANDIDATE_GATE_VERSION, "config_digest": config.digest, **config.snapshot}
-
-
-def _strategy_configs(settings: Any) -> list[dict[str, Any]]:
-    return [
-        {
-            "strategy_id": strategy.strategy_id,
-            "strategy_version": strategy.strategy_version,
-            "config_digest": strategy.config_digest,
-            "permission": strategy.permission,
-            "trigger_kinds": sorted(strategy.trigger_kinds),
-            "config": {key: str(value) for key, value in sorted(strategy.config_snapshot.items())},
-        }
-        for strategy in trading_settings_strategies(settings)
-    ]
-
-
 def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row["status"])
     return {
         "source_key": str(row["source_key"]),
         "event_id": _oi_event_id(row.get("source_key")),
@@ -231,16 +278,9 @@ def _gate_decision(row: dict[str, Any]) -> dict[str, Any]:
         "base_symbol": _base_symbol(row.get("underlying_key")),
         "trigger_kind": str(row["trigger_kind"]),
         "source_observed_at_ms": int(row["source_observed_at_ms"]),
+        "research_only": status == "RESEARCH_ONLY",
         "case_id": row.get("case_id"),
-        **_gate(row),
-    }
-
-
-def _gate(row: dict[str, Any] | None) -> dict[str, Any]:
-    if row is None:
-        return {"gate_status": None}
-    return {
-        "gate_status": str(row["status"]),
+        "gate_status": status,
         "gate_stage": str(row["stage"]),
         "gate_reason": str(row["reason"]),
         "gate_retryable": bool(row["retryable"]),
@@ -253,13 +293,13 @@ def _gate(row: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _underlying_key(value: str) -> str | None:
+def _underlying_key(value: str, *, error: str) -> str | None:
     raw = str(value or "").strip().upper().removeprefix("XYZ-")
     if not raw:
         return None
     base = raw.removeprefix("CRYPTO:")
     if not _BASE_SYMBOL.fullmatch(base):
-        raise ApiBadRequest("trading_intents_underlying_invalid", field="underlying")
+        raise ApiBadRequest(error, field="underlying")
     return f"crypto:{base}"
 
 
@@ -281,16 +321,69 @@ def _oi_event_id(primary_source_key: object) -> str | None:
     return event_id if event_id and raw == f"oi:{event_id}:{_OI_METRIC_VERSION}" else None
 
 
-def _int_map(value: object) -> dict[str, int]:
+def _int(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _case(row: dict[str, Any]) -> dict[str, Any]:
+    """One frozen Case. Every threshold shown here is the one the Case itself carries."""
+
+    return {
+        "case_id": str(row["case_id"]),
+        "event_id": _oi_event_id(row.get("primary_source_key")),
+        "underlying_key": str(row["underlying_key"]),
+        "base_symbol": _base_symbol(row.get("underlying_key")),
+        "provider_symbol": row.get("provider_symbol"),
+        "trigger_kind": str(row["trigger_kind"]),
+        "manifest_version": row.get("manifest_version"),
+        # `strategy_*` are the storage column names; the product word is `policy`, and the read model
+        # is where the two meet rather than in a rename migration over 228 historical rows.
+        "policy_id": str(row["strategy_id"]),
+        "policy_version": str(row["strategy_version"]),
+        "policy_config_digest": str(row["strategy_config_digest"]),
+        "policy_config": _frozen_config(row.get("policy_config")),
+        "policy_checks": _policy_checks(row.get("policy_checks")),
+        "state": str(row["state"]),
+        "policy_decision": row.get("policy_decision"),
+        "policy_reason": row.get("policy_reason"),
+        "mark_price": _decimal(row.get("mark_price")),
+        "pre_move_bps": _int(row.get("pre_move_bps")),
+        "oi_change_bps": _int(row.get("oi_change_bps")),
+        "oi_value_usd": _int(row.get("oi_value_usd")),
+        "whale_oi_ratio_bps": _int(row.get("whale_oi_ratio_bps")),
+        "whale_long_profit_bps": _int(row.get("whale_long_profit_bps")),
+        "observed_at_ms": int(row["observed_at_ms"]),
+        "created_at_ms": int(row["case_created_at_ms"]),
+        "decided_at_ms": _int(row.get("decided_at_ms")),
+        "intent_id": row.get("intent_id"),
+    }
+
+
+def _policy_checks(value: Any) -> list[dict[str, Any]]:
+    """The frozen per-check evidence, or an empty list for a Case written before it existed."""
+
+    if not isinstance(value, dict):
+        return []
+    checks = value.get("checks")
+    if not isinstance(checks, list):
+        return []
+    return [
+        {
+            "check": str(item.get("check") or ""),
+            "operator": str(item.get("operator") or ""),
+            "threshold": str(item.get("threshold") or ""),
+            "measured": None if item.get("measured") is None else str(item.get("measured")),
+            "passed": bool(item.get("passed")),
+        }
+        for item in checks
+        if isinstance(item, dict)
+    ]
+
+
+def _frozen_config(value: Any) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}
-    out: dict[str, int] = {}
-    for key, count in value.items():
-        try:
-            out[str(key)] = int(count)
-        except (TypeError, ValueError):
-            continue
-    return out
+    return {str(key): str(item) for key, item in sorted(value.items())}
 
 
 def _intent(row: dict[str, Any]) -> dict[str, Any]:
@@ -321,6 +414,7 @@ def _intent(row: dict[str, Any]) -> dict[str, Any]:
             "execution_phase",
             "terminal_outcome",
             "reason_code",
+            "entry_fenced_at_ms",
             "opened_at_ms",
             "protected_at_ms",
             "closed_at_ms",
@@ -329,16 +423,6 @@ def _intent(row: dict[str, Any]) -> dict[str, Any]:
             "commissions_by_currency",
             "created_at_ms",
             "updated_at_ms",
-            "trigger_kind",
-            "strategy_id",
-            "strategy_version",
-            "case_state",
-            "regime",
-            "policy_decision",
-            "policy_reason",
-            "pre_move_bps",
-            "regime_reason",
-            "case_observed_at_ms",
         )
     }
     result.update({key: _decimal(row.get(key)) for key in decimal_fields})
@@ -347,38 +431,11 @@ def _intent(row: dict[str, Any]) -> dict[str, Any]:
             "event_id": _oi_event_id(row.get("primary_source_key")),
             "underlying_key": str(row["underlying_key"]),
             "base_symbol": _base_symbol(row.get("underlying_key")),
-            "strategy_config": _frozen_config(row.get("strategy_config")),
+            "policy_id": str(row["strategy_id"]),
+            "policy_version": str(row["strategy_version"]),
         }
     )
     return result
-
-
-def _case(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "base_symbol": _base_symbol(row.get("underlying_key")),
-        "case_id": str(row["case_id"]),
-        "event_id": _oi_event_id(row.get("primary_source_key")),
-        "strategy_id": str(row["strategy_id"]),
-        "strategy_version": str(row["strategy_version"]),
-        "trigger_kind": str(row["trigger_kind"]),
-        "created_at_ms": int(row["case_created_at_ms"] if "case_created_at_ms" in row else row["created_at_ms"]),
-        "decided_at_ms": row.get("decided_at_ms"),
-        "observed_at_ms": int(row["observed_at_ms"]),
-        "policy_decision": row.get("policy_decision"),
-        "policy_reason": row.get("policy_reason"),
-        "pre_move_bps": row.get("pre_move_bps"),
-        "regime": row.get("regime"),
-        "regime_reason": row.get("regime_reason"),
-        "state": str(row["state"]),
-        "strategy_config": _frozen_config(row.get("strategy_config")),
-        "underlying_key": str(row["underlying_key"]),
-    }
-
-
-def _frozen_config(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    return {str(key): str(item) for key, item in sorted(value.items())}
 
 
 __all__ = ["router"]

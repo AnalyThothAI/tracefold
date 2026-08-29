@@ -1,8 +1,4 @@
-import {
-  useTradingGateWithToken,
-  useTradingIntentsWithToken,
-  useTradingStatusWithToken,
-} from "@features/trading";
+import { useTradingGateWithToken } from "@features/trading";
 import { newsLeveragePath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
@@ -28,39 +24,37 @@ import { NewsOiGates } from "./NewsOiGates";
 import "./newsOi.css";
 
 /**
- * OI 遥测审计 — #137's deterministic open-interest lane, audited frame by frame (#207, #256).
+ * OI 来源与准入审计 — the deterministic open-interest lane, frame by frame (#207, #256, #331).
  *
- * The v7 artifact moved this page out of the workbench and into 数据健康, and the rename is the point: the
- * question here is whether the telemetry itself parsed, cleared the push gates and occupied a window slot.
- * "Is there a trade in this" is a different question with different thresholds, and it is not asked here.
+ * Two questions, and this page asks both about the *Source*: did the telemetry parse and clear the push
+ * gates, and did the capital lane admit it. Whether the capital lane then decided to trade is a third
+ * question with its own frozen evidence, and it is answered on 资本判定 — this page links there rather
+ * than restating it.
  *
- * Bounded reads: `/api/news/status` for thresholds and 24 h counts, `/api/news/feed` filtered to the
+ * Bounded reads: `/api/news/status` for the push gates and 24 h counts, `/api/news/feed` filtered to the
  * deterministic lane for frames, one current-quote batch for the visible assets, and one
- * `/api/trading/intents` batch for exact Event-to-ledger joins.
+ * `/api/trading/gate` batch — which carries the admission configuration as well as the answers, so the
+ * panel prints the digest the ledger's rows were actually filed under.
  *
- * What this page deliberately does not do: it draws no open-interest curve (the provider emits a frame only
- * when its own trigger fires, so there are no samples between them and a line through them would be
- * invented), and it does not let anyone change a threshold here — `news.oi` is operator configuration and
- * this page only reports what it currently is. Current quote and fixed Event price are separate columns.
+ * **No Intent read (#331).** The trailing column used to load `/api/trading/intents` to show a Case
+ * state and an execution state beside each frame, which is three aggregates in one cell and made a failed
+ * Intent read render every row as 未成案.
+ *
+ * What this page deliberately does not do: it draws no open-interest curve (the provider emits a frame
+ * only when its own trigger fires, so a line through them would be invented), and it changes no
+ * threshold — `news.oi` is operator configuration and this page reports what it currently is.
  */
 export function NewsOiPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = parseOiTab(searchParams.get("oi"));
   const statusQuery = useNewsStatusWithToken(token);
   const feedQuery = useNewsOiFeedWithToken(token, tab);
-  const tradingQuery = useTradingIntentsWithToken(token);
   /*
-   * The admission ledger for the same window (#269). Its own read rather than a field on the orders
-   * batch: it is a different population — every source the lane saw, not the ones that became a case —
-   * and it is the only thing that can tell a reader *why* a frame has no case.
+   * The admission ledger for the same window (#269), and the configuration its rows are filed under.
+   * One read for both, because they are one aggregate: the panel used to print the operator settings
+   * document's 持仓规模 ≥2000 万 while admission actually ran at 500 万.
    */
   const gateQuery = useTradingGateWithToken(token);
-  /*
-   * And the rules that ledger's rows are filed under. `oi.trade_floors` is News republishing the
-   * operator's `trading` settings document; since #264 admission has one owner with its own digest, and
-   * the panel was printing 持仓规模 ≥2000 万 while the gate admitted at 500 万.
-   */
-  const tradingStatusQuery = useTradingStatusWithToken(token);
   /*
    * Pages behind the first are frozen and only fetched on request; switching tabs drops back to page one,
    * which is what the reader means by switching tabs.
@@ -119,21 +113,17 @@ export function NewsOiPage({ token }: { token: string }) {
    * it visible above the fold and gives the reader a retry — `PageState.Stale` only offers one when
    * there is a message to attach it to.
    */
-  const supportingReadFailures = [
-    tradingQuery.isError ? "交易账本" : "",
-    gateQuery.isError ? "准入台账" : "",
-    tradingStatusQuery.isError ? "准入规则" : "",
-  ].filter(Boolean);
+  const supportingReadFailures = [gateQuery.isError ? "准入台账" : ""].filter(Boolean);
   return (
-    <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 遥测审计">
+    <NewsPageShell archetype="scan" className="news-oi-shell" label="OI 来源与准入审计">
       <NewsPageHeader
         subtitle={
           <>
-            遥测帧、解析、闸门与推送窗口占用——推送答「读者看什么」；交易判断在{" "}
-            <Link to={newsLeveragePath()}>杠杆异动</Link>
+            遥测帧、解析、推送闸门与资本准入——这一页只答「来源发生了什么」；判定与冻结证据在{" "}
+            <Link to={newsLeveragePath()}>资本判定</Link>
           </>
         }
-        title="OI 遥测审计"
+        title="OI 来源与准入审计"
       />
 
       {/*
@@ -159,17 +149,9 @@ export function NewsOiPage({ token }: { token: string }) {
           }
           onRetry={() => {
             void quotesQuery.refetch();
-            void tradingQuery.refetch();
             void gateQuery.refetch();
-            void tradingStatusQuery.refetch();
           }}
-          updating={
-            statusQuery.isFetching ||
-            feedQuery.isFetching ||
-            tradingQuery.isFetching ||
-            gateQuery.isFetching ||
-            tradingStatusQuery.isFetching
-          }
+          updating={statusQuery.isFetching || feedQuery.isFetching || gateQuery.isFetching}
         >
           <div className="news-oi-body">
             <MetricRow className="news-oi-metrics" columns={5} label="过去 24 小时的遥测帧">
@@ -198,16 +180,14 @@ export function NewsOiPage({ token }: { token: string }) {
             <div className="news-oi-columns">
               <NewsOiGates
                 byRule={byRule ?? {}}
-                floors={oi?.trade_floors ?? EMPTY_FLOORS}
-                gate={tradingStatusQuery.data?.gate}
+                gate={gateQuery.data?.config}
                 /*
-                 * Whether the admission rules were read at all. Four `—` tiles beside 已启用 read as
-                 * "no admission rule is configured", which is the failure mode this page must never
-                 * present: an unread threshold and an absent one are different facts.
+                 * Whether the admission rules were read at all. Four `—` tiles read as "no admission
+                 * rule is configured", which is the failure mode this page must never present: an
+                 * unread threshold and an absent one are different facts.
                  */
-                gateUnread={!tradingStatusQuery.data}
+                gateUnread={!gateQuery.data}
                 policy={oi?.policy ?? null}
-                strategies={tradingStatusQuery.data?.strategies ?? []}
               />
             </div>
 
@@ -219,8 +199,8 @@ export function NewsOiPage({ token }: { token: string }) {
               <NewsOiFrameTable
                 counts={counts}
                 error={feedQuery.isError && !feedQuery.data ? feedQuery.error : null}
-                floors={oi?.trade_floors ?? EMPTY_FLOORS}
                 gate={gateQuery.data}
+                gateError={gateQuery.isError && !gateQuery.data}
                 hasMore={hasMore}
                 loadingMore={
                   historyQuery.isFetchingNextPage || (moreRequested && historyQuery.isLoading)
@@ -234,13 +214,6 @@ export function NewsOiPage({ token }: { token: string }) {
                 rows={rows}
                 quotes={quotes}
                 tab={tab}
-                trading={tradingQuery.data}
-                /*
-                 * Only the order batch failing makes the whole column unanswerable. A failed admission
-                 * read costs the *reason* a frame has no case, which the cell reports on its own — a row
-                 * that does have an order or a case can still be answered exactly.
-                 */
-                tradingError={tradingQuery.isError && !tradingQuery.data}
               />
             </NewsQuoteReadState>
           </div>
@@ -249,21 +222,6 @@ export function NewsOiPage({ token }: { token: string }) {
     </NewsPageShell>
   );
 }
-
-/**
- * A console older than the API it is talking to still has to render. Zeroes here are honest: they are the
- * defaults the schema itself declares, and every threshold they feed is shown beside its own source line.
- */
-const EMPTY_FLOORS = {
-  allow_short: false,
-  enabled: false,
-  execution_environment: "BINANCE_USDM_DEMO" as const,
-  max_price_move_bps: 0,
-  min_oi_value_usd: 0,
-  min_price_move_bps: 0,
-  min_whale_long_profit_bps: 0,
-  pre_move_lookback_ms: 0,
-};
 
 function count(value: number | undefined): string {
   return value == null ? "—" : formatCount(value);

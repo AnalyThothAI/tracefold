@@ -29,7 +29,7 @@ describe("route-aware shell figures", () => {
     const today = Date.parse("2026-08-25T12:00:00Z");
     expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
       { label: "PUSHED 24H", tone: "accent", value: 3 },
-      { label: "今日成案 · 放行", text: "5 · 1" },
+      { label: "24h 成案 · 今日放行", text: "7 · 1" },
     ]);
 
     expect(
@@ -37,18 +37,18 @@ describe("route-aware shell figures", () => {
         "/news/oi",
         news,
         tradingStatusFixture({
-          counts: { ...trading.counts, funnel_today: {} },
+          counts: { ...trading.counts, cases_24h: 0 },
         }),
         today,
       )[1],
-    ).toEqual({ label: "今日成案 · 放行", text: "0 · 1" });
+    ).toEqual({ label: "24h 成案 · 今日放行", text: "0 · 1" });
   });
 
   it("dates an OI case count when the capital ledger stopped before today", () => {
     expect(topbarFigures("/news/oi", news, trading, Date.parse("2026-08-26T00:01:00Z"))[1]).toEqual(
       {
         label: "成案 · 放行 · 08-25",
-        text: "5 · 1",
+        text: "7 · 1",
         title: "UTC 2026-08-25",
         tone: "caution",
       },

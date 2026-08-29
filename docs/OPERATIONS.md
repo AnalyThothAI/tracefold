@@ -56,7 +56,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260828_0324`
+5. Deploy the exact reviewed image at the current Alembic head (`20260829_0325`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
@@ -66,7 +66,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    healthy Nautilus replica, `execution_authority=nautilus`,
    `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current
    heartbeat, `engine_ready=true`, and `unexpected_exposure=false`.
-7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
+7. Set control to `RUNNING`. The capital lane can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
 For the first V2 capability activation, keep Trading `PAUSED` and require zero
@@ -266,12 +266,12 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-candidate;
+     when Trading is enabled, trading-capital-lane;
      workers-control
 ```
 
 Quote plan/store uses an existing ordinary business permit. Event Reaction,
-Janitor and #104's CandidateRunner keep the one-slot heavy-business gate over
+Janitor and #104's capital lane keep the one-slot heavy-business gate over
 the same pool, so heavy work is serialized without blocking display quote
 progress or consuming the four News hot-path slots. Quote provider calls are
 bounded to 12 mandatory current source groups (concurrency 4, 10 s deadline)
@@ -706,23 +706,26 @@ remaining eligible count, last-turn deletes, oldest retained age and error.
 Feed shows Events from the first frame after deployment; there is no backfill
 of pre-V3 history.
 
-### Why an OI frame produced no case (#264)
+### Why an OI frame produced no case (#264, #331)
 
-`trading_candidate_gate_decisions` holds one row per
+`trading_candidate_gate_decisions` — the admission ledger — holds one row per
 `(source_key, gate_version, gate_config_digest)` and answers this without a
-replay. It is the ledger that replaced reading
-`trading_runtime_state.funnel`, which is one JSONB document reset on the UTC day
-key — the reason a question about yesterday's frame used to have no evidence at
-all.
+replay. It replaced `trading_runtime_state.funnel`, a JSONB document reset on
+the UTC day key that counted one entry per *re-read* of the same frame; #331
+dropped the column, so this ledger is now the only answer and there is no
+second number to disagree with it.
 
 Start from `uv run tracefold trading status`:
 
 - `candidate_counts_24h` / `candidate_counts_7d` — how many source frames the
-  lane saw and what happened to them, by `DEFERRED | REJECTED | CASE_CREATED |
-  EXPIRED`. Counted on the frame's own observation time, so a runner restart that
-  re-reads a backlog cannot move yesterday's frames into today.
+  lane saw and what happened to them, by `DEFERRED | REJECTED | RESEARCH_ONLY |
+  CASE_CREATED | EXPIRED`. Counted on the frame's own observation time, so a
+  runner restart that re-reads a backlog cannot move yesterday's frames into
+  today. `RESEARCH_ONLY` is a Hyperliquid frame: a real market fact this lane may
+  study and never trade, and not a refusal.
 - `candidate_reasons_24h` — the same population by `stage:reason`. The stages run
-  `source -> eligibility -> routing -> market_context -> freeze`, and the reason
+  `source -> venue -> eligibility -> capability -> market_context -> freeze`
+  (`routing` still appears on rows written before #331), and the reason
   vocabulary is closed; anything outside it is a bug, not a new rule.
 - `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of
   admission. A recent source with no recent `CASE_CREATED` is an admission
@@ -731,7 +734,7 @@ Start from `uv run tracefold trading status`:
   `latest_position_opened_at_ms`, and `latest_position_closed_at_ms` only after
   an Intent exists.
 
-For one frame, `GET /api/trading/events/{event_id}?lane=oi` returns the decision
+For one frame, `GET /api/trading/gate/{event_id}?lane=oi` returns the decision
 with its `gate_evidence` — the measurement it failed on and the threshold it
 failed against — or read the row directly:
 
@@ -746,14 +749,14 @@ SELECT status, stage, reason, retryable, attempt_count, evidence, case_id
 times the answer changed: a terminal row keeps its status, stage, reason and
 evidence, and only the two evaluation counters move. `DEFERRED` is the only
 non-terminal state and means a later scan could genuinely answer differently
-(`market_data_unavailable`, `no_native_perp`, `cooldown`); the runner's own sweep
+(`market_data_unavailable`, `capability_absent`, `cooldown`); the lane's own sweep
 turns one `EXPIRED` with `trigger_stale` once the frame is past the trigger
 budget, so an open row that never resolved reads as the clock's answer rather
 than as pending work. Retention is 90 days, purged in bounded batches by the
 same turn.
 
 Two adjacent situations are *not* refusals and read as such:
-`gate_status: null` on the HTTP surface means no row under any `gate_version` —
+`decision: null` on the HTTP surface means no row under any `gate_version` —
 after a gate version bump that is the honest state — and a source whose case was
 already created reports `CASE_CREATED` with the `case_id`, which is the link to
 `trading_cases`.

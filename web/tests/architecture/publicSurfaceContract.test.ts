@@ -49,8 +49,9 @@ describe("public browser surface", () => {
       "/api/news/status",
       "/api/news/symbols/{base}",
       "/api/status",
-      "/api/trading/events/{event_id}",
+      "/api/trading/cases",
       "/api/trading/gate",
+      "/api/trading/gate/{event_id}",
       "/api/trading/intents",
       "/api/trading/status",
     ]);

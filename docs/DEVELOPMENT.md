@@ -135,38 +135,6 @@ rows, which no search for the identity could ever have found. If you cannot
 `rg` the name, the next person maintaining the value cannot find your copy of
 it.
 
-**Deleting a guard.** Removing a check is a judgment about what it carries, so
-it is made per check, against the code rather than against the comment above it.
-Four failure modes have cost real defects here (#319):
-
-*The stated reason must be what the code does.* `_write_exclusive` kept `O_EXCL`
-under a docstring claiming it stops two concurrent compilers corrupting one
-artifact. It does not: every caller passes a uuid-unique temporary that cannot
-collide, and the destination is published by `os.rename`, which overwrites. The
-property belonged to the collision and write-verification checks deleted in the
-same commit. Verify the mechanism before you write down why something stays —
-in a review that judges each guard on its stated justification, a false
-justification is more expensive than a bug, because the next person inherits it
-as a premise.
-
-*Correcting a reason means chasing every record.* That wrong rationale reached
-the code, a commit message, an issue body and a memory note. Fixing the docstring
-alone leaves the others authoritative, and a record contradicting itself is worse
-than one that is simply wrong — a later reader has no way to tell which half to
-believe.
-
-*A delete list will miss things; the acceptance grep will not.* #319 named one
-credential scanner and there were two — `artifact_identity.reject_secret_material`
-surfaced only from running the grep the acceptance criteria specify. Write the
-grep first and let it, not the prose list, decide when the cut is complete.
-
-*Ask what else the check was quietly guaranteeing.* Path armouring around artifact
-loading also converted `OSError` into a coded `ValueError`, which is what the CLI
-catches to render a named failure. Removing the armour removed the error contract,
-and an absent artifact — an ordinary operational state — began arriving as an
-unhandled traceback. A guard often supplies a second property nobody wrote down;
-find it before deleting the first.
-
 ## Tests
 
 | Entry | Purpose | Allowed | Excluded |
@@ -308,28 +276,7 @@ is the positive example: it parses the real import graph of
 
 `make check` is a hermetic static/architecture/contract bundle, not a universal
 completion mandate. Run the additional lanes that cross the changed seam and
-report omitted evidence honestly. It is also the gate: `ruff check` alone is a
-narrower check that passes while `make check` fails, because the bundle runs the
-formatter and the architecture harness too. Green from a command you chose is not
-green from the command the project defines.
-
-**A lane's result binds to the tree and the machine it ran on.** Evidence is
-bound to the exact tested HEAD, and three things break that binding in practice:
-editing the working tree while a lane reads it, two lanes sharing one test
-database (both call `reset_postgres_schema`, so each destroys the other's schema
-mid-run), and lanes running concurrently on a machine that is also serving the
-compose stack. The last one is the dangerous one, because it fails as
-`psycopg_pool.PoolTimeout` and `database_unavailable` — indistinguishable from a
-real regression until you re-run alone. A lane that took 4:39 by itself took
-16:41 and produced two false failures under contention. Run verification lanes
-serially, on a frozen tree, each with its own database; a long lane belongs in a
-detached process whose output survives the runner.
-
-**On a pull request, "no checks reported" is not "checks passed".** CI here
-triggers on `pull_request` for PRs targeting `main` with the default activity
-types, so a PR based on a feature branch runs nothing, and re-targeting its base
-does not trigger a run — reopening it does. Read the check list before calling a
-branch ready.
+report omitted evidence honestly.
 
 ### Operator onboarding acceptance
 
@@ -398,7 +345,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260828_0324` head; schema tests also run against that migrated head.
+current `20260829_0325` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL

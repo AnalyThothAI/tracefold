@@ -47,7 +47,7 @@ export function NewsSymbolWindow({
             这个标的在当前窗口里没有合格帧——不是被拦，是没有。
           </span>
         )}
-        <Link to={oiPath}>OI 遥测审计 →</Link>
+        <Link to={oiPath}>OI 来源与准入审计 →</Link>
       </p>
       <NewsSourceLine path="GET /api/news/status → oi.window_occupancy · oi.policy" />
     </Card>

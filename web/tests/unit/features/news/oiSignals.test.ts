@@ -1,4 +1,4 @@
-import type { NewsFeedOi, NewsOiTradeFloors } from "@features/news/api/newsQueries";
+import type { NewsFeedOi } from "@features/news/api/newsQueries";
 import {
   oiBuckets,
   oiChangeLabel,
@@ -101,43 +101,32 @@ describe("oiSignals", () => {
   });
 
   describe("oiBuckets", () => {
-    const floors: NewsOiTradeFloors = {
-      allow_short: false,
-      enabled: false,
-      execution_environment: "BINANCE_USDM_DEMO",
-      max_price_move_bps: 600,
-      min_oi_value_usd: 20_000_000,
-      min_price_move_bps: 100,
-      min_whale_long_profit_bps: 9_500,
-      pre_move_lookback_ms: 3_600_000,
-    };
-
     it("marks the measured buckets a frame falls in", () => {
-      const best = oiBuckets(
-        frame({ oi_value_usd: 240_000_000, whale_long_profit_bps: 9_600 }),
-        floors,
-      );
+      const best = oiBuckets(frame({ oi_value_usd: 240_000_000, whale_long_profit_bps: 9_600 }));
       expect(best.map((bucket) => bucket.label)).toEqual(["盈利正桶", "持仓最优桶"]);
 
-      const worst = oiBuckets(
-        frame({ oi_value_usd: 11_030_000, whale_long_profit_bps: 8_840 }),
-        floors,
-      );
+      const worst = oiBuckets(frame({ oi_value_usd: 11_030_000, whale_long_profit_bps: 8_840 }));
       expect(worst.map((bucket) => bucket.label)).toEqual(["持仓最差桶"]);
     });
 
-    it("marks nothing when the capital lane sent no floor", () => {
-      // A zero floor is not a floor: `profit >= 0` would stamp "研究里唯一均值为正的分桶" on every frame.
-      const none = oiBuckets(frame({ whale_long_profit_bps: 10 }), {
-        ...floors,
-        min_whale_long_profit_bps: 0,
-      });
-      expect(none.map((bucket) => bucket.label)).not.toContain("盈利正桶");
+    it("reads the research boundary, never a lane threshold", () => {
+      /*
+       * #331: the 95% boundary is a *measurement* from `oi-agent-design-2026-08-22.md` §1.5, not the
+       * capital lane's floor. It used to be read off the lane's republished settings, which made a
+       * research fact move whenever an operator edited a threshold — and the lane no longer publishes a
+       * whale-profit floor at all, because its policy freezes that number onto each Case.
+       */
+      expect(oiBuckets(frame({ whale_long_profit_bps: 9_500 })).map((b) => b.label)).toContain(
+        "盈利正桶",
+      );
+      expect(oiBuckets(frame({ whale_long_profit_bps: 9_499 })).map((b) => b.label)).not.toContain(
+        "盈利正桶",
+      );
     });
 
     it("marks nothing on a frame that never parsed", () => {
-      expect(oiBuckets(frame({ parsed: false }), floors)).toEqual([]);
-      expect(oiBuckets(null, floors)).toEqual([]);
+      expect(oiBuckets(frame({ parsed: false }))).toEqual([]);
+      expect(oiBuckets(null)).toEqual([]);
     });
   });
 

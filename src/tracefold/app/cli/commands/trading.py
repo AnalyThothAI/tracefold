@@ -39,17 +39,11 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
 
         if command == "status":
             runtime = trading.runtime_state() or {}
-            counts = trading.status_counts(
-                since_ms=now - _STATUS_WINDOW_MS,
-                now_ms=now,
-                day_key=runtime.get("day_key"),
-            )
             return 0, {
                 "ok": True,
                 "data": {
                     "enabled": settings.trading.enabled,
                     "control": runtime.get("control", "RUNNING"),
-                    "dspy_calls_today": int(runtime.get("dspy_calls_today") or 0),
                     "execution_authority": "nautilus",
                     "execution_environment": "BINANCE_USDM_DEMO",
                     "active_capability_snapshot_sha256": runtime.get("active_capability_snapshot_sha256"),
@@ -60,16 +54,17 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "nautilus_ready": bool(runtime.get("nautilus_ready")),
                     "nautilus_readiness_reason": runtime.get("nautilus_readiness_reason"),
                     "nautilus_unexpected_exposure": bool(runtime.get("nautilus_unexpected_exposure")),
-                    "funnel_today": runtime.get("funnel") or {},
-                    # #211: where the 24 h of work actually spent its time, stage by stage, read off
-                    # the same rows the funnel counts. `n` per stage says how much evidence each
-                    # number rests on.
+                    # #211: where the 24 h of work actually spent its time, stage by stage. `n` per
+                    # stage says how much evidence each number rests on.
                     "stage_latency_ms": trading.stage_latency_ms(since_ms=now - _STATUS_WINDOW_MS),
-                    # #264: the durable admission ledger. `funnel_24h` above is the day's in-memory
-                    # document and is overwritten at UTC midnight; this survives it, and is the only
-                    # part of this report a lane with zero cases and zero intents can still answer from.
+                    # The durable admission ledger and the durable Case/Intent aggregates. Every
+                    # number here survives a restart and a UTC midnight, which is what the retired
+                    # in-memory funnel could not do (#331).
                     **trading.candidate_admission_report(now_ms=now),
-                    **counts,
+                    **trading.runtime_summary(since_ms=now - _STATUS_WINDOW_MS, now_ms=now),
+                    "cases_by_state_24h": trading.case_counts(since_ms=now - _STATUS_WINDOW_MS),
+                    "case_reasons_24h": trading.case_reason_counts(since_ms=now - _STATUS_WINDOW_MS),
+                    "intents_24h": trading.intent_counts(since_ms=now - _STATUS_WINDOW_MS),
                 },
             }
 
@@ -86,7 +81,6 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                         "strategy_id": row["strategy_id"],
                         "strategy_version": row["strategy_version"],
                         "state": row["state"],
-                        "regime": row["regime"],
                         "policy_decision": row["policy_decision"],
                         "policy_reason": row["policy_reason"],
                         "created_at_ms": row["created_at_ms"],

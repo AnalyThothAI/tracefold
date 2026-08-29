@@ -4,8 +4,12 @@ The whole point of canonicalising first is that the operator writes `CL` once an
 `XYZ-CL` and any other prefix the provider invents, on both venues. Storing raw spellings would make
 the list a guessing game that silently stops covering the case it was added for.
 
-A read failure is not an empty list. `Blacklist.unavailable()` is a distinct value and every caller
-treats it as "block everything": the deny-list is the last thing that should fail open.
+**A read failure is not a value here (#331).** `Blacklist.unavailable()` used to be a distinct
+"block everything" snapshot the scanner reached for when the read raised, which turned a PostgreSQL
+fault into a business refusal filed against every frame in the window. The read now runs inside the
+lane's one bounded transaction and an exception propagates: the turn ends, nothing durable is written,
+and the next turn re-reads. Fail-closed is still what happens — no Case, no Intent — but it is
+recorded as infrastructure rather than as a deny-list decision.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..contracts import canonical_base_symbol, canonical_sha256, underlying_key
+from .contracts import canonical_base_symbol, canonical_sha256, underlying_key
 
 
 class CanonicalBlacklistEntryV1(BaseModel):
@@ -60,14 +64,9 @@ class BlacklistEntry:
 
 @dataclass(frozen=True, slots=True)
 class Blacklist:
-    """An immutable snapshot. `available=False` means the read failed, which blocks every symbol."""
+    """An immutable snapshot of the deny-list as one statement saw it."""
 
     entries: Mapping[str, BlacklistEntry]
-    available: bool = True
-
-    @classmethod
-    def unavailable(cls) -> Blacklist:
-        return cls(entries={}, available=False)
 
     @classmethod
     def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> Blacklist:
@@ -86,10 +85,8 @@ class Blacklist:
         return cls(entries=entries)
 
     def blocked(self, symbol: object, *, now_ms: int) -> BlacklistEntry | None:
-        """The entry that blocks this symbol, or None. A failed read blocks everything."""
+        """The entry that blocks this symbol, or None."""
 
-        if not self.available:
-            return BlacklistEntry(base_symbol=canonical_base_symbol(symbol), reason="blacklist_unavailable")
         canonical = canonical_base_symbol(symbol)
         if not canonical:
             return BlacklistEntry(base_symbol="", reason="symbol_not_canonicalisable")
@@ -99,8 +96,6 @@ class Blacklist:
         return entry
 
     def snapshot(self, *, revision: int, now_ms: int) -> BlacklistSnapshotV1:
-        if not self.available:
-            raise ValueError("blacklist_unavailable")
         rows = tuple(
             CanonicalBlacklistEntryV1(
                 underlying_key=underlying_key(entry.base_symbol),

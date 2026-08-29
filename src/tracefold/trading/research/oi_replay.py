@@ -1,14 +1,18 @@
 """Replay every parsed OI fact through the exact rules the runner applies (#265 PR-C).
 
-The report and the scanner must be the same code, or the report eventually describes a funnel the lane
-no longer has. So this module owns no rule at all: it drives `oi_candidate`, the Candidate Gate and the
-strategy, in the order `CandidateRunner` drives them, and counts what each one answered.
+The report and the lane must be the same code, or the report eventually describes a funnel the lane
+no longer has. So this module owns no rule at all: it drives source normalization, Admission and the
+capital policy, in the order `CapitalLane` drives them, and counts what each one answered.
 
 **What it deliberately cannot answer.** Two stages need market data — the pre-move band and any
 outcome — and this is a read-only report, not a second runner. Every fact that survives the
 deterministic stages is reported as `pending_market_context`, with its measurements attached, so an
 operator can see the population the price rules would have judged rather than a number this module
 invented for them.
+
+**Both venues are in scope.** A Hyperliquid frame is `RESEARCH_ONLY` for capital and a perfectly good
+research subject; the split is recorded per fact, and nothing this module produces can be consumed by
+the live Intent writer.
 
 **It never proposes a threshold.** Survivor counts per rule are the point: they say which condition is
 binding. Reading a better number off the same seven days that produced the counts is how a lane ends up
@@ -19,13 +23,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
-from ..candidate.blacklist import Blacklist
-from ..candidate.eligibility import Rejected, oi_candidate
-from ..candidate.gate import GateConfig, admit_route, admit_trigger
-from ..contracts import OiCandidateRow, OiTradeCandidate, oi_source_key
-from ..strategy.oi_smart_money_momentum import OiSmartMoneyMomentumConfig, OiSmartMoneyMomentumStrategy
+from ..admission import AdmissionConfig, admit_trigger, admit_venue
+from ..blacklist import Blacklist
+from ..contracts import (
+    FrozenMarketContext,
+    FrozenPolicyContext,
+    OiCandidateRow,
+    OiTradeCandidate,
+    oi_source_key,
+)
+from ..market_context import DEFAULT_PRE_MOVE_LOOKBACK_MS
+from ..policy import CapitalPolicy, CapitalPolicyConfig
+from ..sources import SourceRejected, normalize_oi_source
 
 # The stage a surviving fact stops at. Not a gate reason: nothing refused it, and calling it one would
 # put a refusal in the ledger's vocabulary that no rule produced.
@@ -147,7 +159,7 @@ def _outcome(
 def meets_target_template(
     candidate: OiTradeCandidate,
     *,
-    config: OiSmartMoneyMomentumConfig,
+    config: CapitalPolicyConfig,
 ) -> bool:
     """The three conditions the NewsLiquid template names, and only those.
 
@@ -155,7 +167,7 @@ def meets_target_template(
     shape this lane was built for actually occur" — and the funnel answers a different one: "of the
     frames that occurred, where did each stop". Liquidity, rank and routing are not in this test.
 
-    The three numbers come from the running strategy's own config, never from a constant here. The
+    The three numbers come from the running policy's own config, never from a constant here. The
     template was written as ">= 10%" and the lane executes ">= 5%" (#273); a cohort report that kept
     the literal would describe a population no Case is decided by, which is the one thing a replay
     must never do.
@@ -178,9 +190,8 @@ def meets_target_template(
 def replay_oi_facts(
     rows: Sequence[OiCandidateRow],
     *,
-    gate: GateConfig,
-    strategy: OiSmartMoneyMomentumStrategy,
-    blacklist: Blacklist,
+    admission: AdmissionConfig,
+    policy: CapitalPolicy,
     now_ms: int,
 ) -> OiReplayReport:
     """Every fact in, one named stop each out. Pure; the caller owns every read.
@@ -191,13 +202,13 @@ def replay_oi_facts(
     """
 
     report = OiReplayReport()
-    # Research evaluates Alpha before capital policy. The caller records the supplied blacklist as a
-    # separate capital-admission observation; applying it here would silently remove the very cohort
-    # the replay is meant to measure.
+    # Research evaluates Alpha before capital admission. The live deny-list is deliberately not applied
+    # here: the caller records it as a separate capital-admission observation, and applying it would
+    # silently remove the very cohort the replay is meant to measure.
     alpha_blacklist = Blacklist.from_rows([])
     for row in rows:
-        parsed = oi_candidate(row)
-        if isinstance(parsed, Rejected):
+        parsed = normalize_oi_source(row)
+        if isinstance(parsed, SourceRejected):
             report.record(
                 OiReplayOutcome(
                     source_key=oi_source_key(row.get("event_id"), row.get("metric_version")),
@@ -218,61 +229,54 @@ def replay_oi_facts(
             )
             continue
 
-        routing = admit_route(parsed, config=gate)
-        routable = routing is None
-        if meets_target_template(parsed, config=strategy.config):
+        venue = admit_venue(parsed)
+        # `routable` means "this venue may carry live capital". A `RESEARCH_ONLY` frame is still
+        # replayed in full; what it can never do is produce something the live Intent writer consumes.
+        routable = venue is None
+        if meets_target_template(parsed, config=policy.config):
             report.target_cohort.append(_outcome(parsed, stage="target", reason="template", routable=routable))
         if routable:
             report.routable_symbols.add(parsed.base_symbol)
 
-        # Same order as the runner: eligibility, then routing. `now_ms` is the fact's own observation
-        # time so the freshness rule is satisfied by construction and cannot mask the rules under test.
-        refused = admit_trigger(parsed, now_ms=parsed.observed_at_ms, config=gate, blacklist=alpha_blacklist) or routing
-        if refused is not None:
+        # Same order as the lane: venue, then eligibility. `now_ms` is the fact's own observation time
+        # so the freshness rule is satisfied by construction and cannot mask the rules under test.
+        refused = venue or admit_trigger(
+            parsed, now_ms=parsed.observed_at_ms, config=admission, blacklist=alpha_blacklist
+        )
+        if refused is not None and refused.reason != "research_only_venue":
             report.record(_outcome(parsed, stage=refused.stage, reason=refused.reason, routable=routable))
             continue
 
-        # The strategy, minus the two rules that need a price. A surviving fact is one the deterministic
+        # The policy, minus the two rules that need a price. A surviving fact is one the deterministic
         # half admits; whether it would have entered is the market context's answer, not this report's.
-        outcome = strategy.evaluate(_alpha_only_context(parsed))
-        if outcome.decision == "no_trade" and outcome.rule not in _PRICE_RULES:
-            report.record(_outcome(parsed, stage="strategy", reason=outcome.rule, routable=routable))
+        decision = policy.decide(_alpha_only_context(parsed))
+        if decision.decision == "no_trade" and decision.rule not in _PRICE_RULES:
+            report.record(_outcome(parsed, stage="policy", reason=decision.rule, routable=routable))
             continue
-        report.record(_outcome(parsed, stage=PENDING_MARKET_CONTEXT, reason=outcome.rule, routable=routable))
+        report.record(_outcome(parsed, stage=PENDING_MARKET_CONTEXT, reason=decision.rule, routable=routable))
     return report
 
 
-# The two strategy rules a replay cannot reach, because both read a price this module does not fetch.
+# The two policy rules a replay cannot reach, because both read a price this module does not fetch.
 _PRICE_RULES = frozenset({"price_direction_not_confirmed", "move_above_band_chasing"})
 
 
-def _alpha_only_context(candidate: OiTradeCandidate) -> Any:
+def _alpha_only_context(candidate: OiTradeCandidate) -> FrozenPolicyContext:
     """A frozen context carrying the fact and a pre-move that satisfies the band by construction.
 
-    The strategy is a pure function and this module wants its *Alpha* answer, so the price input is set
+    The policy is a pure function and this module wants its *Alpha* answer, so the price input is set
     to a value inside the band rather than left absent — an absent one would return
     `price_direction_not_confirmed` for every row and report the price rule as universally binding when
     it was never evaluated. The two price rules are excluded from the funnel above for the same reason.
     """
 
-    from decimal import Decimal
-
-    from ..contracts import FrozenMarketContext, FrozenStrategyContext, OiRegime, RegimeAssessment
-
-    return FrozenStrategyContext(
-        mode="paper",
+    return FrozenPolicyContext(
         oi=candidate,
-        regime=RegimeAssessment(
-            regime=OiRegime.UNCLEAR,
-            reason="replay_no_price",
-            pre_move_bps=0,
-            oi_direction=candidate.oi_direction,
-        ),
         market=FrozenMarketContext(
             mark_price=Decimal("1"),
             observed_at_ms=candidate.observed_at_ms,
             pre_move_bps=0,
-            pre_move_lookback_ms=3_600_000,
+            pre_move_lookback_ms=DEFAULT_PRE_MOVE_LOOKBACK_MS,
         ),
     )
 

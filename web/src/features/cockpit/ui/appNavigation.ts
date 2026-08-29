@@ -43,7 +43,7 @@ export type AppNavigationGroup = {
  * fronted is a CLI lane — `tracefold news review queue / evidence / submit` — writing the same
  * `news_reviews` rows the learning lane reads. One path in, not two.
  *
- * 杠杆异动 takes a workbench slot beside it. It and OI 遥测审计 read the same deterministic lane and answer
+ * 资本判定 takes a workbench slot beside it. It and OI 来源与准入审计 read the same deterministic lane and answer
  * different questions with different thresholds: what the capital lane decided, versus whether the telemetry
  * itself parsed and cleared the push gates.
  *
@@ -79,7 +79,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         countTitle: "资本通道成案 · 账本滚动窗口",
         icon: LeverageGaugeIcon,
         isActive: (pathname) => pathname === "/news/leverage",
-        label: "杠杆异动",
+        label: "资本判定",
         to: newsLeveragePath(),
       },
       {
@@ -99,7 +99,7 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
         countTitle: "过去 24 小时收到",
         icon: TelemetryPulseIcon,
         isActive: (pathname) => pathname === "/news/oi",
-        label: "OI 遥测审计",
+        label: "OI 来源与准入审计",
         to: newsOiPath(),
       },
     ],

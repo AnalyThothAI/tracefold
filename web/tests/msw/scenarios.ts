@@ -9,6 +9,7 @@ import {
 import {
   TRADING_NOW_MS,
   tradingGateFixture,
+  tradingCasesForUnderlying,
   tradingIntentsForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -56,9 +57,13 @@ export function mockAppRoutes(apiMock: ApiMock) {
     if (path.startsWith("/api/trading/intents")) {
       return ok(tradingIntentsForUnderlying(param("underlying")));
     }
-    // #269: the durable admission ledger, read by the OI audit's capital column.
+    if (path.startsWith("/api/trading/cases")) {
+      return ok(tradingCasesForUnderlying(param("underlying")));
+    }
+    // #269: the durable admission ledger, read by the OI audit's admission column.
     if (path === "/api/trading/gate") return ok(tradingGateFixture());
-    if (path.startsWith("/api/trading/events/")) return ok({ event_id: "evt", joinable: false });
+    if (path.startsWith("/api/trading/gate/"))
+      return ok({ decision: null, event_id: "evt", joinable: false });
     if (path.startsWith("/api/news/symbols/"))
       return ok(
         newsSymbolFixture({ base_symbol: decodeURIComponent(path.split("/").pop() ?? "WIF") }),

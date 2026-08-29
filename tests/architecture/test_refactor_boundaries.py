@@ -362,7 +362,7 @@ CROSS_CONTEXT_BOUNDARY_MODULES = (
     "app/workers/wiring/news_to_trading.py",
     "news/pipeline/runtime.py",
     "news/storage/trade_projection.py",
-    "trading/pipeline/runtime.py",
+    "trading/capital_lane.py",
 )
 
 

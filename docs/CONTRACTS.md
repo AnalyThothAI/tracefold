@@ -211,28 +211,32 @@ unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
-`trading.*` is the whole Trading surface (#104) and is `enabled: false` by
-default. A disabled Trading context constructs no Program and no CandidateRunner,
-and Compose does not start Nautilus. The accepted keys are only:
+`trading.*` is the whole Trading surface (#104, #331) and is `enabled: false`
+by default. A disabled Trading context constructs no capital lane and no
+adapter, and Compose does not start Nautilus. The accepted keys are only:
 
 - `enabled`;
-- `candidates.*`: source age, counterpart lookbacks, cooldown, OI rank/value,
-  and daily decision-model budget;
-- `regime.*`: the frozen OI/price measurement band;
-- `policy.min_whale_long_profit_bps`;
+- `candidates.*`: `max_age_seconds`, `symbol_cooldown_seconds`,
+  `max_rank_in_window`, `min_oi_value_usd` — universe and timing filters, never
+  sizing and never Alpha;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
 - `nautilus.api_key_file` and `nautilus.api_secret_file`, resolved relative
   to the operator config directory unless absolute.
 
 There is no mode, live symbol, account, venue, OpenTrade, approval, backend
-selector, or Intent-acceptance configuration. Unknown retired keys fail strict
-settings validation. CandidateRunner and Nautilus polling cadence are code-owned.
+selector, or Intent-acceptance configuration, and since #331 no `regime.*`,
+no `policy.*` and no model budget: a capital threshold in a YAML file is a rule
+with no version and no frozen evidence. Unknown retired keys fail strict
+settings validation. The capital lane's poll cadence is App-owned and the
+Nautilus cadence is code-owned.
 
-The strategy set and its thresholds remain code-owned/frozen into each Case.
-`llm.trading_decision_model` selects the one bounded Trading Program used by a
-News-bearing Case; without it that Case settles
-`no_trade/program_unconfigured`. The OI arithmetic lane makes no model call.
+The one production capital policy, `binance_oi_smart_money_long_v2`, is
+code-owned and frozen onto every Case it decides, together with the per-check
+evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
+It answers `long` or `no_trade` only; it cannot express a permission, an
+execution environment or a venue. There is no Trading model call and no
+`llm.trading_decision_model` key.
 
 Execution permission is the active content-addressed Binance USD-M Demo
 capability snapshot minus the canonical underlying blacklist. It is not an
@@ -329,7 +333,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/intents`, `/api/trading/events/{event_id}` | the Demo execution contract/readiness, Case → Intent → Outcome ledger, source-admission decisions, and whether one News Event became a Case. Reads only — there is no HTTP write on this surface |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/intents`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate (#331): runtime readiness, frozen Case decisions, immutable Intents and their Outcomes, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -519,10 +523,11 @@ title alone selects a deterministic route.
   pushed or withheld; `window_occupancy`, per-symbol spent rank slots inside
   the live window measured with the judge's eligibility predicate, ending at
   `measured_at_ms` — the window's start is deliberately not a field because it
-  would move on every read and churn the ETag; and `trade_floors`, the capital
-  lane's own configured floors plus its `enabled`/`mode`, shown beside the News
-  gates and never merged with them, read from platform configuration so this
-  endpoint imports nothing from `tracefold.trading`),
+  would move on every read and churn the ETag. There is no `trade_floors`
+  (#331): News republished the capital lane's thresholds here, which invited a
+  console to compare a Case frozen last week against a floor edited yesterday.
+  Admission's own configuration is published by `/api/trading/gate`, and the
+  thresholds that decided a Case travel with that Case),
   and `delivery` (sent/terminal
   counts, last error, end-to-end p50/p95, availability; availability requires
   both a complete declared provider and a running Workers runtime), plus
@@ -924,51 +929,54 @@ reader/writer.
   control. The proof is valid for the bounded provider load, up to five minutes;
   activation clears it and invalidates readiness.
 - `tracefold trading replay-oi --days 7 --strategy
-  oi_smart_money_momentum_v1 --venues binance.perp,hl.perp --fidelity bar_v1`
+  binance_oi_smart_money_long_v2 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
   reports decision, independent capital admission, execution/coverage,
   gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
   response names an immutable artifact and PostgreSQL receipt by deterministic
   `run_id`; funding and portfolio drawdown remain `null`.
-- `GET /api/trading/status` returns the exact Demo execution contract and
-  current readiness. `budget` exposes only target notional and the code-owned
-  one-entry-per-UTC-day ceiling. `readiness` exposes enabled/control,
-  `nautilus`, `BINANCE_USDM_DEMO`, active capability digest/count, canonical
-  blacklist revision, redacted
-  credential availability, engine readiness/reason, heartbeat, and unexpected
-  exposure. `floors`, Gate identity, frozen strategy configs/permissions,
-  Case/Intent/Outcome counts, entry/close milestones, admission counts, shadow
-  research cohorts, and the day's funnel come from the current native ledgers.
-  Money is an exact decimal string.
+**One HTTP owner per durable aggregate (#331).** Nothing crosses: a Case carries
+its own frozen evidence and no execution lifecycle; an Intent carries its
+lifecycle and a `case_id` back-reference; the status surface carries readiness
+and bounded durable totals and no threshold at all.
+
+- `GET /api/trading/status` — runtime and execution readiness. `budget` exposes
+  only target notional and the code-owned one-entry-per-UTC-day ceiling.
+  `readiness` exposes enabled/control, `nautilus`, `BINANCE_USDM_DEMO`, active
+  capability digest/count, canonical blacklist revision, redacted credential
+  availability, engine readiness/reason, heartbeat, and unexpected exposure.
+  `policy` names the identity a *new* Case would be frozen under and is never
+  applied to an existing one. `counts` is a bounded aggregation over durable
+  rows — no funnel, no per-poll counter. Money is an exact decimal string.
+- `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
+  — the Case/Decision aggregate. Each Case carries its raw `state`, its terminal
+  `policy_decision` / `policy_reason`, the frozen `policy_config` and
+  `policy_checks` (check, operator, threshold, measured, passed) it was decided
+  on, the frame's own measurements, and a nullable `intent_id` link. It is the
+  replacement for the retired `intents.cases_without_intents`, and the two
+  never coexisted. Bounded to 100 rows; the response says whether it is complete.
 - `GET /api/trading/intents?underlying={base|crypto:BASE}&state={active|closed|all}&day={YYYY-MM-DD}`
-  returns `intents[]` with their authoring Case and current Outcome, plus
-  `cases_without_intents[]` when no explicit state filter is present.
-  `active` means `PENDING | IN_FLIGHT | OPEN_PROTECTED | MANUAL_REVIEW`;
-  `closed` means `TERMINAL`. A day filter keeps every active row and selects
-  terminal rows by authoritative `closed_at_ms` within that UTC day.
-  The response carries immutable Demo identity/policy values, execution
-  state/phase/outcome, authoritative quantity/price/protection/flat timestamps,
-  and PnL/fees when known. It never returns a Case manifest, provider payload,
-  account identity, or legacy Order/observation. The batch is bounded to 100
-  rows and says whether it is complete.
-- `GET /api/trading/gate` returns the bounded 24-hour source-admission ledger
-  used by the OI and symbol views: status, stage, named reason, retryability,
-  version/config digest, frozen evidence, timestamps, attempt count, and linked
-  Case when one exists.
-- `GET /api/trading/events/{event_id}?lane=oi` answers whether one News Event
-  became a Case and, when present, returns its Intent/Outcome. `joinable` is the honest half: only the deterministic OI lane's
-  source key (`oi:{event_id}:{metric_version}`) is reconstructible from an Event
-  id, the model lane's is a content hash of an artifact and a fingerprint (#154),
-  and for anything but `lane=oi` the answer is `joinable: false` — "this cannot
-  be asked", which is a different fact from `case: null`, "it was asked and the
-  answer is no". Joining by symbol and time instead would record a link the
+  — the Intent/Outcome aggregate. `active` means
+  `PENDING | IN_FLIGHT | OPEN_PROTECTED | MANUAL_REVIEW`; `closed` means
+  `TERMINAL`. A day filter keeps every active row and selects terminal rows by
+  authoritative `closed_at_ms` within that UTC day. The response carries
+  immutable Demo identity/policy values, execution state/phase/outcome,
+  authoritative quantity/price/protection/flat timestamps, and PnL/fees when
+  known. It never returns a Case list, a Case manifest, a provider payload, an
+  account identity, or a legacy Order/observation.
+- `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
+  24-hour window: the admission `config` its rows were filed under, then per
+  Source the status, stage, named reason, retryability, version/config digest,
+  frozen evidence, timestamps, attempt count, `research_only`, and the linked
+  `case_id` when one exists. It publishes no Case state and no execution state.
+- `GET /api/trading/gate/{event_id}?lane=oi` — one Source's admission answer.
+  `joinable` is the honest half: only the deterministic OI lane's source key
+  (`oi:{event_id}:{metric_version}`) is reconstructible from an Event id, the
+  model lane's is a content hash of an artifact and a fingerprint (#154), and
+  for anything but `lane=oi` the answer is `joinable: false` — "this cannot be
+  asked", which is a different fact from `decision: null`, "it was asked and the
+  lane has no row". Joining by symbol and time instead would record a link the
   ledger does not have.
-  Whether or not there is a case, the response carries the admission decision:
-  `gate_status`, `gate_stage`, `gate_reason`, `gate_retryable`, `gate_version`,
-  `gate_config_digest`, `gate_evidence` (the measurements the decision was taken
-  on, plus the threshold it failed against), and the three evaluation counters.
-  A `gate_status` of `null` means the lane has not evaluated this source under any
-  gate version — an absence, not a refusal, and a different fact from a rejection.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`
@@ -1008,7 +1016,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260828_0324`). Since
+append without rewrite access (current at migration `20260829_0325`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
@@ -1575,17 +1583,11 @@ cannot advance: an undecided case is terminalized as
 rewritten and remains owned by Nautilus reconciliation.
 
 The HTTP shape uses `trigger_kind`, never the retired `case_kind`. Every Case
-and Intent projection carries `strategy_id` and `strategy_version`. `/api/trading/status`
-adds `counts.cases_by_strategy`, `counts.shadow_by_strategy`,
-`counts.shadow_by_rule`, `counts.shadow_cohorts`,
-`counts.event_study_cohorts`,
-`counts.liquidation_promotion_ready`, and
-`counts.liquidation_promotion_reason`. The two liquidation shadow strategies
-write only `trading_strategy_evaluations`; they cannot produce a Case or Intent.
-Event-study cohorts expose `duplicate_rate_bps=null` and the named missing fact
-`source:duplicate_rate_unavailable` until the upstream source publishes a
-durable duplicate/replay denominator; surviving ledger rows are not treated as
-evidence of a zero duplicate rate.
+and Intent projection carries `policy_id` and `policy_version` — the read model
+is where the storage columns `strategy_id` / `strategy_version` meet the
+product word, rather than a rename migration over 228 historical rows. The
+shadow strategy ledgers and their status projections are gone with their
+writers (#331, migration `20260829_0325`).
 The typed liquidation ledger is not cascade-owned by `news_items`; raw Item
 retention cannot delete the normalized replay fact.
 

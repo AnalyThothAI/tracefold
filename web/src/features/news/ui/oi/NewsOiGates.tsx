@@ -1,33 +1,31 @@
-import type { TradingGateConfig, TradingStrategyConfig } from "@features/trading";
+import type { TradingGateConfig } from "@features/trading";
 
-import type { NewsOiPolicy, NewsOiTradeFloors } from "../../api/newsQueries";
+import type { NewsOiPolicy } from "../../api/newsQueries";
 import { formatCount } from "../../model/newsLabels";
 import { oiValueZh } from "../../model/oiSignals";
 
 /**
- * The two independent policy sets, condensed to the approved at-a-glance comparison.
+ * The two independent gates, side by side and never merged.
  *
- * The capital half is the Candidate Gate's, not the operator's settings document (#269). After #264 the
- * lane has exactly one admission owner and `trading.candidates.min_oi_value_usd` is only one of its
- * inputs; the console was printing the settings figure — 2000 万 — while admission actually ran at 500 万,
- * and 鲸鱼盈利 ≥95% was a *strategy* threshold shown as though it were the lane's. Alpha thresholds
- * belong to whichever versioned strategy answers a Case and are not a property of the lane, so this
- * panel names the admission rules and links out rather than picking one strategy's numbers to display.
+ * Left: what decides whether a reader is told. Right: what decides whether a Source may be admitted to
+ * the capital lane. They read the same frame and answer different questions, and the panel's whole job is
+ * keeping that visible.
+ *
+ * **Neither half shows an Alpha threshold (#331).** The capital policy's numbers are frozen onto each
+ * Case and are shown beside the Case that executed them, on 资本判定. A panel that printed today's
+ * configuration here invited a reader to measure last week's Case with it — which is exactly what
+ * produced 冲突 on rows that had passed.
  */
 export function NewsOiGates({
   byRule,
-  floors,
   gate,
   gateUnread,
   policy,
-  strategies,
 }: {
   byRule: Record<string, number>;
-  floors: NewsOiTradeFloors;
   gate: TradingGateConfig | undefined;
   gateUnread: boolean;
   policy: NewsOiPolicy | null;
-  strategies: readonly TradingStrategyConfig[];
 }) {
   const windowLabel = compactDuration(policy?.window_ms);
   const changeFloor = policy?.oi_change_at_least_bps ?? 0;
@@ -62,18 +60,10 @@ export function NewsOiGates({
 
       <PolicyPanel
         className="news-oi-policy-trading"
-        /*
-         * The strategy count rides in the hint rather than as a fifth tile: the tile row is a fixed
-         * four-column band of a fixed height, and a fifth wrapped into a second row the panel clips.
-         * Naming where the Alpha floors live is the whole job here anyway — the numbers themselves are
-         * per-strategy and belong beside the case that a strategy decided, on 杠杆异动.
-         */
         hint={
           gateUnread
-            ? `${floors.execution_environment} · 准入规则未读到`
-            : `${floors.execution_environment} · ${floors.enabled ? "已启用" : "资本通道关闭"}${
-                strategies.length ? ` · Alpha 地板在 ${strategies.length} 条策略各自` : ""
-              }`
+            ? "BINANCE_USDM_DEMO · 准入规则未读到"
+            : `BINANCE_USDM_DEMO · ${gate?.version ?? "—"} · Alpha 阈值随案例冻结，在资本判定`
         }
         title="准入闸 · TRADING"
       >
@@ -85,9 +75,13 @@ export function NewsOiGates({
         />
         <PolicyTile label="帧时效" value={gate ? compactDuration(gate.max_age_ms) : "—"} />
         <PolicyTile
-          label="可路由场所"
-          note={gate ? `冷却 ${compactDuration(gate.symbol_cooldown_ms)}` : undefined}
-          value={gate?.venue_priority?.length ? gate.venue_priority.join(" / ") : "—"}
+          /*
+           * One live venue, code-owned (#331). Everything else is `RESEARCH_ONLY`: a real market fact
+           * this lane may study and never trade, and the frame table says so per row.
+           */
+          label="资本场所"
+          note={gate ? `冷却 ${compactDuration(gate.symbol_cooldown_ms)} · 其余仅研究` : undefined}
+          value={gate?.live_exchange_id ?? "—"}
         />
       </PolicyPanel>
     </>

@@ -2,7 +2,6 @@ import {
   NEWS_OI_TABS,
   type NewsFeedOi,
   type NewsOiTab,
-  type NewsOiTradeFloors,
 } from "../api/newsQueries";
 
 /**
@@ -176,27 +175,28 @@ export type OiBucketTone = "positive" | "best" | "worst";
 export type OiBucket = { label: string; title: string; tone: OiBucketTone };
 
 /** §1.5: >200M is the best-performing open-interest bucket, 10–50M the worst. */
+/*
+ * The research bucket boundaries, and they are research facts rather than lane rules (#331).
+ *
+ * `oi-agent-design-2026-08-22.md` §1.5 measured the 95-100% whale-profit bucket as the only one with a
+ * positive mean (+1.42% at 4 h, N=219) while 85-95% was -0.60% at N=298. It used to be read off the
+ * capital lane's republished floors, which made a *measurement* move whenever an operator edited a
+ * threshold — and the capital lane no longer publishes a whale-profit floor at all, because its policy
+ * owns that number and freezes it onto each Case.
+ */
+const WHALE_PROFIT_POSITIVE_BUCKET_BPS = 9_500;
 const OI_VALUE_BEST_USD = 200_000_000;
 const OI_VALUE_WORST_MAX_USD = 50_000_000;
 const OI_VALUE_WORST_MIN_USD = 10_000_000;
 
-export function oiBuckets(
-  oi: NewsFeedOi | null | undefined,
-  floors: NewsOiTradeFloors,
-): OiBucket[] {
+export function oiBuckets(oi: NewsFeedOi | null | undefined): OiBucket[] {
   if (!oi?.parsed) return [];
   const buckets: OiBucket[] = [];
   const profit = oi.whale_long_profit_bps;
-  // A zero floor is not a floor. It arrives when the console is newer than the API, and `profit >= 0` would
-  // stamp "研究里唯一均值为正的分桶" on every frame with a tooltip claiming a 0.00% threshold.
-  if (
-    floors.min_whale_long_profit_bps > 0 &&
-    profit != null &&
-    profit >= floors.min_whale_long_profit_bps
-  ) {
+  if (profit != null && profit >= WHALE_PROFIT_POSITIVE_BUCKET_BPS) {
     buckets.push({
       label: "盈利正桶",
-      title: `鲸鱼多头盈利 ≥ ${oiPercent(floors.min_whale_long_profit_bps)}：研究里唯一均值为正的分桶`,
+      title: `鲸鱼多头盈利 ≥ ${oiPercent(WHALE_PROFIT_POSITIVE_BUCKET_BPS)}：研究里唯一均值为正的分桶`,
       tone: "positive",
     });
   }

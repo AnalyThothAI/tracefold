@@ -13,6 +13,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from psycopg import OperationalError
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
@@ -27,19 +28,18 @@ from tracefold.trading import (
     TradeIntent,
     deterministic_client_order_id,
 )
-from tracefold.trading.candidate.eligibility import Funnel
+from tracefold.trading.admission import ADMISSION_VERSION
+from tracefold.trading.capital_lane import CapitalLane, CapitalLaneConfig
 from tracefold.trading.contracts import (
+    CaseState,
     FrozenMarketContext,
-    FrozenStrategyContext,
+    FrozenPolicyContext,
     InstrumentRef,
     OiMarketTrigger,
     OiTradeCandidate,
-    RegimeAssessment,
     TradingCaseManifest,
 )
-from tracefold.trading.pipeline.candidate import CandidateRunner
-from tracefold.trading.pipeline.runtime import TradingConfig
-from tracefold.trading.strategy.root import strategies
+from tracefold.trading.policy import CAPITAL_POLICY
 
 pytestmark = pytest.mark.integration
 
@@ -116,10 +116,10 @@ def _case(connection: Any, *, case_id: str = "case-intent-1") -> None:
         """
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
-          strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+          strategy_config_digest, primary_source_key, supplemental_source_keys,
           manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, 'crypto:SOL', 'oi', 'oi_smart_money_momentum_v1',
-                  'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
+        ) VALUES (%s, 'crypto:SOL', 'oi', 'binance_oi_smart_money_long_v2',
+                  'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
                   '{}'::jsonb, %s, 'RUNNING', %s, %s, %s)
         """,
         (case_id, "0" * 64, f"source-{case_id}", "1" * 64, NOW, NOW, NOW),
@@ -201,6 +201,13 @@ def test_replay_success_receipt_is_idempotent_content_bound_and_append_only(conn
 
 
 class _RunnerDb:
+    """One bounded read and one bounded transaction over a real connection.
+
+    `fail_intent_settle` makes the Case's own terminal transition return `False` inside the commit,
+    which is the one failure the atomicity guarantee is about: the Intent insert has already happened
+    in that transaction and must be rolled back with it.
+    """
+
     def __init__(self, connection: Any, *, fail_intent_settle: bool = False) -> None:
         self.connection = connection
         self.fail_intent_settle = fail_intent_settle
@@ -208,32 +215,29 @@ class _RunnerDb:
     async def tx(self, name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
         del timeout_seconds
         repos = repositories_for_connection(self.connection)
-        target: Any = repos
-        if name == "trading_intent_emit" and self.fail_intent_settle:
+        if name == "trading_intent_commit" and self.fail_intent_settle:
             trading = repos.trading
+            original = trading.settle_case
 
-            class _TradingProxy:
-                def __getattr__(self, attr: str) -> Any:
-                    return getattr(trading, attr)
-
-                def settle_case(self, **_kwargs: Any) -> bool:
+            def refuse_emission(**kwargs: Any) -> bool:
+                if kwargs.get("state") is CaseState.INTENT_EMITTED:
                     return False
+                return bool(original(**kwargs))
 
-            class _ReposProxy:
-                conn = repos.conn
-                trading = _TradingProxy()
-
-            target = _ReposProxy()
+            trading.settle_case = refuse_emission  # type: ignore[method-assign]
         with self.connection.transaction():
-            return fn(target)
+            return fn(repos)
 
     async def read(self, _name: str, fn: Callable[[Any], Any], *, timeout_seconds: float) -> Any:
         del timeout_seconds
         return fn(repositories_for_connection(self.connection))
 
 
-def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingCaseManifest:
-    strategy = strategies()["oi_smart_money_momentum_v1"]
+def _executable_manifest(
+    *,
+    instrument: InstrumentRef | None = None,
+    capability_sha256: str | None = None,
+) -> TradingCaseManifest:
     selected = instrument or InstrumentRef(
         exchange_id="binance",
         venue="binance.perp",
@@ -277,15 +281,8 @@ def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingC
             persisted_at_ms=NOW,
             venue="binance",
         ),
-        contexts=FrozenStrategyContext(
-            mode="paper",
+        contexts=FrozenPolicyContext(
             oi=oi,
-            regime=RegimeAssessment(
-                regime="buildup_up",
-                reason="buildup_up",
-                pre_move_bps=200,
-                oi_direction="rise",
-            ),
             market=FrozenMarketContext(
                 mark_price=Decimal("100"),
                 observed_at_ms=NOW,
@@ -293,14 +290,15 @@ def _executable_manifest(*, instrument: InstrumentRef | None = None) -> TradingC
                 pre_move_lookback_ms=3_600_000,
             ),
         ),
-        strategy_id=strategy.strategy_id,
-        strategy_version=strategy.strategy_version,
-        strategy_config=strategy.config_snapshot,
-        strategy_config_digest=strategy.config_digest,
+        policy_id=CAPITAL_POLICY.policy_id,
+        policy_version=CAPITAL_POLICY.policy_version,
+        policy_config=CAPITAL_POLICY.config_snapshot,
+        policy_config_digest=CAPITAL_POLICY.config_digest,
         underlying_key=f"crypto:{selected.base_symbol}",
         base_symbol=selected.base_symbol,
         cutoff_ms=NOW,
         instrument=selected,
+        execution_capability_snapshot_sha256=capability_sha256 or CAPABILITY_SNAPSHOT.snapshot_sha256,
     )
 
 
@@ -308,46 +306,46 @@ def _pending_executable_case(
     connection: Any,
     *,
     manifest: TradingCaseManifest | None = None,
+    case_id: str = "case-sol",
 ) -> TradingCaseManifest:
     connection.execute("TRUNCATE trading_intents, trading_orders, trading_cases CASCADE")
     _reset_authority(connection)
     manifest = manifest or _executable_manifest()
     repos = repositories_for_connection(connection)
-    assert repos.trading.insert_case(
-        case_id="case-sol",
-        underlying_key=manifest.underlying_key,
-        trigger_kind=manifest.trigger_kind,
-        strategy_id=manifest.strategy_id,
-        strategy_version=manifest.strategy_version,
-        strategy_config_digest=manifest.strategy_config_digest,
-        mode="paper",
-        primary_source_key=manifest.primary_trigger.source_key,
-        supplemental_source_keys=(),
-        manifest=manifest.model_dump(mode="json"),
-        manifest_sha256=manifest.digest(),
-        regime=manifest.regime.regime.value,
-        observed_at_ms=NOW,
-        source_observed_at_ms=NOW,
-        trigger_persisted_at_ms=NOW,
-        now_ms=NOW,
-    )
+    admission = _admission_row(manifest)
+    assert repos.trading.create_case(case_id=case_id, manifest=manifest, admission=admission, now_ms=NOW)
     connection.commit()
     return manifest
 
 
-def _candidate_runner(connection: Any, *, fail_intent_settle: bool = False) -> CandidateRunner:
+def _admission_row(manifest: TradingCaseManifest) -> dict[str, Any]:
+    return {
+        "source_key": manifest.primary_trigger.source_key,
+        "gate_version": ADMISSION_VERSION,
+        "gate_config_digest": "0" * 64,
+        "trigger_kind": "oi",
+        "underlying_key": manifest.underlying_key,
+        "source_observed_at_ms": NOW,
+        "status": "CASE_CREATED",
+        "stage": "freeze",
+        "reason": "case_created",
+        "retryable": False,
+        "evidence": {},
+        "case_id": None,
+    }
+
+
+def _capital_lane(connection: Any, *, fail_intent_settle: bool = False) -> CapitalLane:
     async def _bars(_symbol: str, _start: int, _end: int) -> tuple[()]:
         return ()
 
-    return CandidateRunner(
+    return CapitalLane(
         db=_RunnerDb(connection, fail_intent_settle=fail_intent_settle),
-        config=TradingConfig(fixed_notional_usd=Decimal("7.5")),
-        bars=lambda _venue: _bars,
-        candidate_projection=lambda *_args: ((), (), ()),
-        instrument_projection=lambda *_args: (),
-        # The News generation this runner may advance a Case under (#314 review). It matches the epoch the
-        # fixture manifests are frozen with; `test_candidate_runner_refuses_a_superseded_news_generation`
-        # is where they deliberately disagree.
+        config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
+        bars=_bars,
+        oi_projection=lambda *_args: (),
+        # The News generation this lane may advance a Case under (#314 review). It matches the epoch the
+        # fixture manifests are frozen with; the superseded-generation test is where they disagree.
         news_generation=NEWS_GENERATION,
         clock=lambda: NOW + 1_000,
     )
@@ -386,7 +384,7 @@ def _observe_close(
     return observed
 
 
-def test_candidate_runner_refuses_a_case_frozen_under_a_superseded_news_generation(conn: Any) -> None:
+def test_the_lane_refuses_a_case_frozen_under_a_superseded_news_generation(conn: Any) -> None:
     """A Case that outlived the News bundle it was reasoned under must not become an Intent (#314 review).
 
     The sequence is ordinary rather than exotic: a Case is frozen, left undecided, and a deployment moves
@@ -397,41 +395,61 @@ def test_candidate_runner_refuses_a_case_frozen_under_a_superseded_news_generati
     """
 
     _pending_executable_case(conn)
-    runner = _candidate_runner(conn)
-    runner._news_generation = "bundle_deadbeef"
+    lane = _capital_lane(conn)
+    lane._news_generation = "bundle_deadbeef"
 
-    result = asyncio.run(runner._advance(funnel=Funnel()))
+    assert asyncio.run(lane._decide_one()) is CaseState.BLOCKED
 
-    assert result == "news_generation_retired"
-    row = conn.execute("SELECT state, policy_decision FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(row) == {"state": "BLOCKED", "policy_decision": "no_trade"}
+    row = conn.execute(
+        "SELECT state, policy_decision, policy_reason FROM trading_cases WHERE case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(row) == {
+        "state": "BLOCKED",
+        "policy_decision": "no_trade",
+        "policy_reason": "source_generation_retired",
+    }
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
 
 
-def test_candidate_runner_atomically_emits_intent_and_advances_case(conn: Any) -> None:
+def test_the_lane_commits_intent_and_case_transition_in_one_transaction(conn: Any) -> None:
+    """#331 P2P: a long decision hands the Case and one immutable Intent over atomically."""
+
     manifest = _pending_executable_case(conn)
 
-    result = asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel()))
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.INTENT_EMITTED
 
-    assert result == "smart_money_momentum_long"
     row = conn.execute(
-        "SELECT c.state, c.policy_decision, i.instrument_id, i.execution_state, i.target_notional_usd "
+        "SELECT c.state, c.policy_decision, c.policy_reason, c.policy_checks, "
+        "       i.instrument_id, i.execution_state, i.target_notional_usd "
         "FROM trading_cases c JOIN trading_intents i ON i.case_id = c.case_id "
         "WHERE c.case_id = 'case-sol'"
     ).fetchone()
-    assert dict(row) == {
+    assert dict(row) | {"policy_checks": None} == {
         "state": "INTENT_EMITTED",
         "policy_decision": "long",
+        "policy_reason": "smart_money_momentum_long",
+        "policy_checks": None,
         "instrument_id": "SOLUSDT-PERP.BINANCE",
         "execution_state": "PENDING",
         "target_notional_usd": Decimal("7.5"),
     }
+    # The frozen evidence travels with the Case, so a console can explain it without today's config.
+    checks = row["policy_checks"]["checks"]
+    assert {check["check"] for check in checks} == {
+        "source_measurement_window_ms",
+        "oi_direction",
+        "oi_change_bps",
+        "whale_oi_ratio_bps",
+        "whale_long_profit_bps",
+        "pre_move_bps",
+    }
+    assert all(check["passed"] for check in checks)
     assert conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"] == 0
     stored = repositories_for_connection(conn).trading.intent_for_case(case_id="case-sol")
     assert stored is not None and stored[0].case_manifest_sha256 == manifest.digest()
 
 
-def test_candidate_runner_emits_a_non_target_instrument_from_the_same_active_snapshot(conn: Any) -> None:
+def test_the_lane_emits_a_non_target_instrument_from_the_same_active_snapshot(conn: Any) -> None:
     doge = InstrumentRef(
         exchange_id="binance",
         venue="binance.perp",
@@ -443,7 +461,7 @@ def test_candidate_runner_emits_a_non_target_instrument_from_the_same_active_sna
     )
     _pending_executable_case(conn, manifest=_executable_manifest(instrument=doge))
 
-    assert asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel())) == "smart_money_momentum_long"
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.INTENT_EMITTED
     row = conn.execute(
         "SELECT instrument_id, underlying_key, intent_version FROM trading_intents WHERE case_id = 'case-sol'"
     ).fetchone()
@@ -454,47 +472,180 @@ def test_candidate_runner_emits_a_non_target_instrument_from_the_same_active_sna
     }
 
 
-def test_candidate_runner_rolls_back_intent_when_case_transition_fails(conn: Any) -> None:
+def test_a_failed_case_transition_rolls_the_intent_back_and_leaves_the_case_claimable(conn: Any) -> None:
+    """#331 F2P 7 and comment F2P 5: never a terminal business refusal, never an orphan Intent."""
+
     _pending_executable_case(conn)
 
-    result = asyncio.run(_candidate_runner(conn, fail_intent_settle=True)._advance(funnel=Funnel()))
+    with pytest.raises(RuntimeError, match="trading_intent_case_transition_failed"):
+        asyncio.run(_capital_lane(conn, fail_intent_settle=True)._decide_one())
+    conn.rollback()
 
-    assert result == "intent_admission_blocked"
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {"state": "BLOCKED", "policy_reason": "intent_admission_blocked"}
+    # `RUNNING` with an expired lease is claimable again; it is emphatically not a terminal state, and
+    # `intent_admission_blocked` — the catch-all this replaces — no longer exists to be written.
+    assert case["state"] == "RUNNING"
+    assert case["policy_reason"] is None
 
 
 @pytest.mark.parametrize(
-    ("field", "value", "expected"),
+    ("field", "value"),
     (
-        ("exchange_id", "hyperliquid", "intent_instrument_not_allowed"),
-        ("venue", "hl.perp", "intent_instrument_not_allowed"),
-        ("instrument_class", "equity", "intent_instrument_not_allowed"),
-        ("provider_symbol", "SOL", "intent_admission_blocked"),
-        ("base_symbol", "ETH", "intent_admission_blocked"),
-        ("quote_asset", "USDC", "intent_admission_blocked"),
+        ("exchange_id", "hyperliquid"),
+        ("venue", "hl.perp"),
+        ("instrument_class", "equity"),
+        ("provider_symbol", "SOL"),
+        ("base_symbol", "ETH"),
+        ("quote_asset", "USDC"),
     ),
 )
-def test_candidate_runner_refuses_every_nonexact_instrument_identity(
+def test_every_nonexact_instrument_identity_is_one_typed_capability_mismatch(
     conn: Any,
     field: str,
     value: str,
-    expected: str,
 ) -> None:
+    """One reason, because there is one fact: this Case's contract is not in the active universe."""
+
     exact = _executable_manifest().instrument
     altered = InstrumentRef.model_validate({**exact.model_dump(), field: value})
     _pending_executable_case(conn, manifest=_executable_manifest(instrument=altered))
 
-    result = asyncio.run(_candidate_runner(conn)._advance(funnel=Funnel()))
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
 
-    assert result == expected
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
-    assert dict(case) == {
-        "state": "POLICY_REJECTED" if expected == "intent_instrument_not_allowed" else "BLOCKED",
-        "policy_reason": expected,
-    }
+    assert dict(case) == {"state": "BLOCKED", "policy_reason": "capability_mismatch"}
+
+
+def test_a_capability_pointer_that_moves_after_the_freeze_blocks_the_case(conn: Any) -> None:
+    """#331 F2P 5. The Case was resolved from a universe that is no longer authoritative."""
+
+    _pending_executable_case(conn, manifest=_executable_manifest(capability_sha256="9" * 64))
+
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
+
+    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(case) == {"state": "BLOCKED", "policy_reason": "capability_mismatch"}
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
+
+
+def test_a_deny_list_entry_added_after_the_decision_blocks_the_commit(conn: Any) -> None:
+    """#331 F2P 4. The deny-list is re-read inside the commit, not trusted from the scan."""
+
+    _pending_executable_case(conn)
+    repos = repositories_for_connection(conn)
+    with conn.transaction():
+        repos.trading.blacklist_upsert(base_symbol="SOL", reason="operator", expires_at_ms=None, now_ms=NOW)
+    conn.commit()
+
+    assert asyncio.run(_capital_lane(conn)._decide_one()) is CaseState.BLOCKED
+
+    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert dict(case) == {"state": "BLOCKED", "policy_reason": "blacklisted"}
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
+    conn.execute("DELETE FROM trading_symbol_blacklist WHERE base_symbol = 'SOL'")
+    conn.commit()
+
+
+def test_two_workers_deciding_the_same_case_produce_at_most_one_intent(conn: Any) -> None:
+    """#331 F2P 6. The claim is exclusive; the loser reads no Case and writes nothing."""
+
+    _pending_executable_case(conn)
+    first = _capital_lane(conn)
+    second = _capital_lane(conn)
+
+    assert asyncio.run(first._decide_one()) is CaseState.INTENT_EMITTED
+    assert asyncio.run(second._decide_one()) is None
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 1
+
+
+def test_two_concurrent_connections_claiming_one_case_emit_one_intent(conn: Any) -> None:
+    """#331 F2P 6 against real PostgreSQL concurrency, not two sequential turns.
+
+    `FOR UPDATE SKIP LOCKED` is what makes the claim exclusive, and the loser's `SKIP LOCKED` returns no
+    row rather than blocking — so the second worker does no work at all instead of racing to a second
+    Intent. The terminal receipt both of them would read afterwards is the one the winner committed.
+    """
+
+    _pending_executable_case(conn)
+    barrier = Barrier(2)
+
+    def compete(run_id: str) -> CaseState | None:
+        contender = connect_postgres_test(read_only=False)
+        try:
+            lane = _capital_lane(contender)
+            lane._run_id = run_id
+            barrier.wait(timeout=5)
+            decided = asyncio.run(lane._decide_one())
+            contender.commit()
+            return decided
+        finally:
+            contender.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(compete, ("run-a", "run-b")))
+
+    assert sorted(results, key=lambda item: item is None) == [CaseState.INTENT_EMITTED, None]
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 1
+    case = conn.execute("SELECT state FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert case["state"] == "INTENT_EMITTED"
+
+
+def test_a_postgres_fault_inside_the_intent_commit_rolls_back_and_never_terminalises(conn: Any) -> None:
+    """#331 comment F2P 5. A PostgreSQL fault is not a business refusal and must not consume the Case.
+
+    The old writer caught every `Exception` from the emission transaction and wrote
+    `BLOCKED / intent_admission_blocked` — so a timeout, a serialization failure and a genuine capability
+    change were one statistic, and the Source that caused it was consumed forever.
+    """
+
+    _pending_executable_case(conn)
+    lane = _capital_lane(conn)
+    original = lane._db.tx  # type: ignore[attr-defined]
+
+    async def explode(name: str, fn: Any, *, timeout_seconds: float) -> Any:
+        if name == "trading_intent_commit":
+            raise OperationalError("server closed the connection unexpectedly")
+        return await original(name, fn, timeout_seconds=timeout_seconds)
+
+    lane._db.tx = explode  # type: ignore[attr-defined, method-assign]
+
+    with pytest.raises(OperationalError):
+        asyncio.run(lane._decide_one())
+    conn.rollback()
+
+    assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
+    case = conn.execute("SELECT state, policy_reason FROM trading_cases WHERE case_id = 'case-sol'").fetchone()
+    assert case["state"] == "RUNNING"
+    assert case["policy_reason"] is None
+    # And the retired catch-all is not written under any name.
+    assert (
+        conn.execute(
+            "SELECT count(*) AS n FROM trading_cases WHERE policy_reason = 'intent_admission_blocked'"
+        ).fetchone()["n"]
+        == 0
+    )
+
+
+def test_a_case_that_settles_only_to_the_three_current_terminal_states(conn: Any) -> None:
+    """The two historical states stay readable and have no path back into the table (#331)."""
+
+    _pending_executable_case(conn)
+    repos = repositories_for_connection(conn)
+    claimed = repos.trading.claim_case(run_id="run-1", lease_ms=60_000, now_ms=NOW)
+    assert claimed is not None
+    for retired in (CaseState.POLICY_REJECTED, CaseState.ORDER_PREPARED, CaseState.PENDING):
+        with pytest.raises(ValueError, match="trading_case_terminal_state_retired"):
+            repos.trading.settle_case(
+                case_id="case-sol",
+                run_id="run-1",
+                state=retired,
+                policy_decision="no_trade",
+                policy_reason="whatever",
+                now_ms=NOW,
+            )
+    conn.rollback()
 
 
 def test_capability_replacement_requires_a_fresh_zero_proof_and_no_nonterminal_intent(conn: Any) -> None:
@@ -849,19 +1000,26 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false WHERE id = 1")
     conn.commit()
 
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000) is None
+    # `UNAVAILABLE`, and it says why (#331). The old `None` meant this, a stale dispatch, an expired
+    # TTL and a spent daily fence at once, so an engine held back by readiness looked exactly like one
+    # with nothing to do.
+    paused = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert (paused.disposition, paused.reason, paused.outcome) == ("UNAVAILABLE", "runtime_not_ready", None)
     conn.commit()
 
     conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
     conn.commit()
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_500) is None
+    not_ready = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_500)
+    assert (not_ready.disposition, not_ready.reason) == ("UNAVAILABLE", "runtime_not_ready")
     conn.commit()
 
     _allow_entry(conn)
     conn.commit()
-    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 2_000)
+    fence = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 2_000)
     conn.commit()
 
+    assert (fence.disposition, fence.reason) == ("GRANTED", "entry_fence_granted")
+    fenced = fence.outcome
     assert fenced is not None
     assert fenced.execution_state == "IN_FLIGHT"
     assert fenced.execution_phase == "ENTRY"
@@ -869,7 +1027,8 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     assert fenced.entry_fenced_at_ms == NOW + 2_000
 
     # A duplicate scan or restart can read this projection, but cannot acquire a second submit fence.
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000) is None
+    again = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000)
+    assert (again.disposition, again.reason) == ("UNAVAILABLE", "intent_not_claimable")
     conn.commit()
     recovered = repos.trading.intent_outcome(intent.intent_id)
     assert recovered == fenced
@@ -889,9 +1048,11 @@ def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fe
     _allow_entry(conn)
     conn.commit()
 
-    refused = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    fence = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
     conn.commit()
 
+    assert fence.disposition == "REFUSED"
+    refused = fence.outcome
     assert refused is not None
     assert (refused.execution_state, refused.terminal_outcome, refused.reason_code) == (
         "TERMINAL",
@@ -935,7 +1096,7 @@ def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> Non
     conn.commit()
 
     conn.execute("SET ROLE tracefold_nautilus")
-    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=db_now_ms)
+    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=db_now_ms).outcome
     conn.commit()
     conn.execute("RESET ROLE")
     conn.commit()
@@ -971,7 +1132,7 @@ def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner
                 intent.intent_id,
                 engine_identity=engine_identity,
                 now_ms=NOW + 2_000,
-            )
+            ).outcome
             contender.commit()
             return result
         finally:
@@ -993,7 +1154,7 @@ def test_entry_fence_enforces_the_code_owned_one_entry_per_utc_day(conn: Any) ->
     first = _intent()
     assert repos.trading.insert_intent(first) is True
     _allow_entry(conn)
-    assert repos.trading.fence_entry(first.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(first.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         first.intent_id,
         actual_quantity=Decimal("0.0001"),
@@ -1034,7 +1195,8 @@ def test_entry_fence_enforces_the_code_owned_one_entry_per_utc_day(conn: Any) ->
     assert repos.trading.insert_intent(second) is True
     conn.commit()
 
-    assert repos.trading.fence_entry(second.intent_id, engine_identity="nt-1", now_ms=NOW + 5_000) is None
+    spent = repos.trading.fence_entry(second.intent_id, engine_identity="nt-1", now_ms=NOW + 5_000)
+    assert (spent.disposition, spent.reason) == ("UNAVAILABLE", "daily_entry_fence_taken")
     conn.commit()
     with pytest.raises(UniqueViolation):
         conn.execute(
@@ -1144,7 +1306,7 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     conn.execute("SET ROLE tracefold_nautilus")
     active = repos.trading.active_intent()
     assert active is not None and active[0] == intent
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     repos.trading.set_nautilus_runtime(
         heartbeat_at_ms=NOW + 1_000,
         ready=True,
@@ -1221,7 +1383,7 @@ def test_fenced_authoritative_rejection_requires_the_exact_entry_and_zero_exposu
     intent = _intent()
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
-    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    fenced = repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     conn.commit()
     assert fenced is not None and fenced.entry_client_order_id is not None
 
@@ -1256,7 +1418,7 @@ def test_unknown_entry_outcome_becomes_manual_review_and_never_a_rejection(conn:
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
     conn.commit()
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     conn.commit()
 
     review = repos.trading.mark_manual_review(
@@ -1286,7 +1448,7 @@ def test_manual_review_only_follows_a_fence_and_authoritative_facts_resume_autom
         is None
     )
     _allow_entry(conn)
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.mark_manual_review(
         intent.intent_id,
         reason_code="entry_outcome_unknown",
@@ -1314,7 +1476,7 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
     intent = _intent()
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         intent.intent_id,
         actual_quantity=Decimal("0.0001"),
@@ -1419,24 +1581,23 @@ def test_nautilus_poll_and_runtime_heartbeat_share_the_business_row(conn: Any) -
     assert runtime["nautilus_unexpected_exposure"] is False
 
 
-def test_event_projection_selects_the_complete_intent(conn: Any) -> None:
+def test_the_case_projection_links_its_intent_without_joining_the_execution_lifecycle(conn: Any) -> None:
+    """#331: the Case aggregate answers with one nullable `intent_id`, never with an execution state."""
+
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
     assert repos.trading.insert_intent(intent) is True
     conn.commit()
 
-    row = repos.trading.console_case_for_source_key(primary_source_key="source-case-intent-1")
+    rows = repos.trading.console_cases(since_ms=NOW - 1, limit=10)
 
-    assert row is not None
-    assert row["intent_version"] == "trade_intent_v2"
-    assert row["execution_capability_snapshot_sha256"] == CAPABILITY_SNAPSHOT.snapshot_sha256
-    assert row["blacklist_revision_at_emission"] == 0
-    assert len(row["blacklist_snapshot_sha256_at_emission"]) == 64
-    assert row["valid_until_ms"] == intent.valid_until_ms
-    assert row["created_at_ms"] == intent.created_at_ms
-    assert isinstance(row["updated_at_ms"], int)
-    assert row["case_state"] == "RUNNING"
+    row = next(item for item in rows if item["case_id"] == "case-intent-1")
+    assert row["intent_id"] == intent.intent_id
+    assert row["state"] == "RUNNING"
+    assert row["strategy_id"] == "binance_oi_smart_money_long_v2"
+    for retired in ("execution_state", "terminal_outcome", "reason_code", "intent_version", "mode", "regime"):
+        assert retired not in row
 
 
 def _case_without_reset(connection: Any, *, case_id: str) -> None:
@@ -1445,10 +1606,10 @@ def _case_without_reset(connection: Any, *, case_id: str) -> None:
         """
         INSERT INTO trading_cases (
           case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
-          strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+          strategy_config_digest, primary_source_key, supplemental_source_keys,
           manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, 'crypto:BTC', 'oi', 'oi_smart_money_momentum_v1',
-                  'oi_smart_money_momentum_v1', %s, 'paper', %s, '[]'::jsonb,
+        ) VALUES (%s, 'crypto:BTC', 'oi', 'binance_oi_smart_money_long_v2',
+                  'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
                   '{}'::jsonb, %s, 'RUNNING', %s, %s, %s)
         """,
         (case_id, "0" * 64, f"source-{case_id}", "3" * 64, NOW, NOW, NOW),
@@ -1464,7 +1625,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     _allow_entry(conn)
     conn.commit()
 
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     conn.commit()
     protection = repos.trading.record_entry_fill(
         intent.intent_id,
@@ -1598,7 +1759,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     assert closed.commissions_by_currency == {"USDT": "0.02"}
     verified_latency = repos.trading.stage_latency_ms(since_ms=NOW - 1)
     assert verified_latency["position_opened_to_closed_flat"] == {"n": 1, "p50": 1_100, "p95": 1_100}
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000) is None
+    assert not repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 3_000).granted
 
 
 def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> None:
@@ -1608,7 +1769,7 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
     assert repos.trading.insert_intent(intent) is True
     _allow_entry(conn)
     conn.commit()
-    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000)
+    assert repos.trading.fence_entry(intent.intent_id, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
         intent.intent_id,
         actual_quantity=Decimal("100"),

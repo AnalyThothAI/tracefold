@@ -489,16 +489,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
         whale_oi_ratio_above_bps: 8_000,
         window_ms: 14_400_000,
       },
-      trade_floors: {
-        allow_short: false,
-        enabled: false,
-        execution_environment: "BINANCE_USDM_DEMO",
-        max_price_move_bps: 600,
-        min_oi_value_usd: 20_000_000,
-        min_price_move_bps: 100,
-        min_whale_long_profit_bps: 9_500,
-        pre_move_lookback_ms: 3_600_000,
-      },
       window_occupancy: [
         { full: true, max_rank_in_window: 2, symbol: "WIF", used: 2 },
         { full: false, max_rank_in_window: 2, symbol: "DOGE", used: 1 },
