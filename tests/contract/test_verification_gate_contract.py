@@ -219,6 +219,15 @@ def test_make_required_lanes_match_the_code_owned_full_plan() -> None:
     expanded = required_match.group(1).replace("$(PYTHON_EVIDENCE_LANES)", python_match.group(1))
     assert tuple(expanded.split()) == evidence.REQUIRED_LANES
     assert set(evidence._FULL_PLAN_COMMANDS) == set(evidence.REQUIRED_LANES)
+    dry_run = subprocess.run(
+        ["make", "-n", "test-evidence"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    for lane, command_tokens in evidence._FULL_PLAN_COMMANDS.items():
+        assert all(token in dry_run for token in command_tokens), lane
 
 
 def test_tested_head_changes_include_tracked_and_untracked_files(tmp_path: Path) -> None:

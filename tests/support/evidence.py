@@ -129,16 +129,19 @@ _REQUIRED_PLAYWRIGHT_ROOTS = {"browser": ("web/tests/e2e/full-stack",)}
 _FULL_PLAN_COMMANDS = {
     "quality-static": ("make check-static",),
     **{
-        lane: (f"pytest tests -m 'not live and not scheduled' --evidence-lane={lane} --evidence-manifest=<lane>.json",)
+        lane: (
+            f'--evidence-lane="{lane}"',
+            f'--evidence-manifest="artifacts/test-evidence/lanes/{lane}.json"',
+        )
         for lane in PYTHON_LANES
     },
     "frontend-typecheck": ("npm --prefix web run typecheck",),
     "frontend-lint": ("npm --prefix web run lint:eslint",),
-    "frontend-architecture": ("npm --prefix web run test:architecture -- --allowOnly=false",),
-    "frontend-unit": ("npm --prefix web run test:unit -- --allowOnly=false",),
+    "frontend-architecture": ("npm run test:architecture -- --allowOnly=false",),
+    "frontend-unit": ("npm run test:unit -- --allowOnly=false",),
     "frontend-format": ("npm --prefix web run format:check",),
     "frontend-build": ("npm --prefix web run build",),
-    "browser": ("python -m tests.browser.run_full_stack_smoke",),
+    "browser": ("uv run python -m tests.browser.run_full_stack_smoke",),
 }
 _VITEST_TEST_FILE_SUFFIXES = tuple(
     f".{kind}.{extension}"
