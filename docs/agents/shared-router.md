@@ -1,12 +1,12 @@
 # Shared agent router
 
-Canonical source for the block that `AGENTS.md` and `CLAUDE.md` both carry.
+Canonical source for the compact invariant summary and task routes that
+`AGENTS.md` and `CLAUDE.md` both carry. Detailed normative rules live in the
+linked documents; this generated block intentionally keeps only the few
+cross-task invariants needed before an agent can choose those documents.
+
 Edit it here, then run `uv run python scripts/sync_agent_router.py --write`;
 `make check` fails if either router has drifted from this file.
-
-Keep it a router. Anything that is a substantive rule belongs in `docs/`, and
-anything that describes the system belongs in `docs/ARCHITECTURE.md` — a copy
-here is a second source that goes stale without anyone noticing.
 
 <!-- BEGIN SHARED AGENT ROUTER -->
 

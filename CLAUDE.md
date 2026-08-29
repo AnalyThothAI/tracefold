@@ -1,7 +1,8 @@
 # CLAUDE.md
 
-Claude-specific router. Substantive rules live under `docs/`; this file routes
-to them and adds the Claude-only Skills / Plan-mode / Worktree protocol below.
+Claude-specific router. Detailed rules live under `docs/`; the generated block
+keeps only a compact invariant summary and task routes, followed by the
+Claude-only Skills / Plan-mode / Worktree protocol.
 
 The block between the two markers below is generated from
 `docs/agents/shared-router.md`, which `AGENTS.md` also carries. Edit that file

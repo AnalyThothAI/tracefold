@@ -7,7 +7,6 @@ import asyncio
 import gc
 import hashlib
 import importlib.metadata
-import inspect
 import json
 import os
 import platform
@@ -28,52 +27,18 @@ from _pytest.config import parse_warning_filter
 from hypothesis import __version__ as hypothesis_version
 from hypothesis import settings
 
+from scripts import verification_topology
+
 LANE_SCHEMA_VERSION = "tracefold_test_lane_v3"
 AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v3"
 SCHEMA_VERSION = LANE_SCHEMA_VERSION
 TEST_PROFILE_SCHEMA_VERSION = "tracefold_test_profile_v1"
 _ALLOWED_DESELECTED_MARKERS = ("live", "scheduled")
-PYTHON_LANES = (
-    "python-hermetic",
-    "postgres-behavior",
-    "migration",
-    "runtime-process",
-    "frontend-python",
-    "trust-root",
-)
-REQUIRED_LANES = (
-    "quality-static",
-    *PYTHON_LANES,
-    "frontend-typecheck",
-    "frontend-lint",
-    "frontend-architecture",
-    "frontend-unit",
-    "frontend-format",
-    "frontend-build",
-    "browser",
-)
-_TRUST_ROOT_MODULES = frozenset(
-    {
-        "tests/architecture/test_docs_surface.py",
-        "tests/architecture/test_test_resource_declarations.py",
-        "tests/contract/test_ci_impact_plan.py",
-        "tests/contract/test_evidence_v3_contract.py",
-        "tests/contract/test_evidence_v2_v3_shadow_contract.py",
-        "tests/contract/test_test_profile.py",
-        "tests/contract/test_test_resources_contract.py",
-        "tests/contract/test_verification_gate_contract.py",
-        "tests/deploy/test_main_ci_gate.py",
-        "tests/slow/test_frontend_harness_fail_closed.py",
-    }
-)
-_OWNERSHIP_RULES = (
-    "external_codegen=>frontend-python",
-    "verification self-test modules=>trust-root",
-    "tests/integration/*_migration.py|tests/integration/test_postgres_schema_runtime.py=>migration",
-    "tests/deploy|e2e|golden|slow and RabbitMQ integration modules=>runtime-process",
-    "integration=>postgres-behavior",
-    "default=>python-hermetic",
-)
+PYTHON_LANES = verification_topology.PYTHON_LANES
+REQUIRED_LANES = verification_topology.REQUIRED_LANES
+_TRUST_ROOT_MODULES = verification_topology.TRUST_ROOT_MODULES
+_OWNERSHIP_RULES = verification_topology.OWNERSHIP_RULES
+primary_lane_owner = verification_topology.primary_lane_owner
 _RESOURCE_REQUIREMENTS = {
     "postgres-behavior": ("postgresql",),
     "migration": ("postgresql",),
@@ -362,32 +327,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     items[:] = selected
     if deselected:
         config.hook.pytest_deselected(items=deselected)
-
-
-def primary_lane_owner(path: str, markers: set[str]) -> str:
-    """Return the one Phase-1 owner for a deterministic Python test item."""
-
-    if "external_codegen" in markers:
-        return "frontend-python"
-    if path in _TRUST_ROOT_MODULES:
-        return "trust-root"
-    if path.startswith("tests/integration/") and (
-        path.endswith("_migration.py") or path == "tests/integration/test_postgres_schema_runtime.py"
-    ):
-        return "migration"
-    if (
-        path.startswith(("tests/deploy/", "tests/e2e/", "tests/golden/", "tests/slow/"))
-        or markers & {"deploy", "e2e", "golden", "slow"}
-        or path
-        in {
-            "tests/integration/test_cli_resources.py",
-            "tests/integration/test_news_bus_rabbitmq.py",
-        }
-    ):
-        return "runtime-process"
-    if "integration" in markers:
-        return "postgres-behavior"
-    return "python-hermetic"
 
 
 def pytest_collection_finish(session: pytest.Session) -> None:
@@ -1542,13 +1481,14 @@ def _plan_sha256() -> str:
     impact_planner = _REPO_ROOT / "scripts" / "ci_plan.py"
     payload = {
         "schema_version": AGGREGATE_SCHEMA_VERSION,
-        "impact_policy_sha256": _sha256(impact_planner) if impact_planner.is_file() else "not-applicable",
+        "impact_policy_sha256": (
+            verification_topology.impact_policy_sha256(_REPO_ROOT) if impact_planner.is_file() else "not-applicable"
+        ),
         "required_lanes": list(REQUIRED_LANES),
         "commands": {lane: list(commands) for lane, commands in _FULL_PLAN_COMMANDS.items()},
         "python_lanes": list(PYTHON_LANES),
         "ownership_rules": list(_OWNERSHIP_RULES),
         "trust_root_modules": sorted(_TRUST_ROOT_MODULES),
-        "ownership_function": inspect.getsource(primary_lane_owner),
         "resource_requirements": {lane: list(resources) for lane, resources in _RESOURCE_REQUIREMENTS.items()},
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()

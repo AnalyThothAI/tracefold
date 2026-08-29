@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -87,6 +89,9 @@ def test_known_task_surface_selects_its_conservative_owner_lanes(path: str, expe
         "src/tracefold/trading/domain.py",
         "unknown/new_surface.py",
         "tests/new_surface/test_unclassified.py",
+        "tests/news/test_news_v3_pure.py",
+        "tests/contract/test_openapi_codegen.py",
+        "tests/contract/test_hook_installer.py",
     ],
 )
 def test_governance_capital_runtime_and_unknown_paths_fail_closed_to_full(path: str) -> None:
@@ -155,6 +160,44 @@ def test_plan_verification_survives_the_canonical_sorted_json_round_trip() -> No
     reloaded = json.loads(json.dumps(plan, sort_keys=True))
 
     ci_plan.verify_plan(reloaded)
+
+
+def test_git_change_discovery_keeps_both_sides_of_a_cross_surface_rename(tmp_path: Path) -> None:
+    def git(*arguments: str) -> str:
+        result = subprocess.run(
+            ("git", *arguments),
+            cwd=tmp_path,
+            capture_output=True,
+            check=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.email", "ci-plan@example.invalid")
+    git("config", "user.name", "CI Plan Test")
+    source = tmp_path / "src" / "tracefold" / "trading" / "capital.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("CAPITAL_AUTHORITY = True\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "add capital authority")
+    base_sha = git("rev-parse", "HEAD")
+    target = tmp_path / "docs" / "capital.md"
+    target.parent.mkdir()
+    git("mv", source.relative_to(tmp_path).as_posix(), target.relative_to(tmp_path).as_posix())
+    git("commit", "-qam", "move capital authority")
+    head_sha = git("rev-parse", "HEAD")
+
+    changed_paths = ci_plan.discover_changed_paths(tmp_path, base_sha=base_sha, head_sha=head_sha)
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=changed_paths,
+        tested_sha=head_sha,
+        base_sha=base_sha,
+    )
+
+    assert changed_paths == ("docs/capital.md", "src/tracefold/trading/capital.py")
+    assert plan["full"] is True
 
 
 def test_gate_requires_planned_jobs_and_rejects_unplanned_execution() -> None:

@@ -243,6 +243,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
+	@uv run python scripts/check_docs_links.py
 	@uv run python -m compileall src tests
 
 check: check-static ## static checks plus local architecture/contract regression

@@ -14,48 +14,24 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+if __package__:
+    from scripts.verification_topology import (
+        FRONTEND_LANES,
+        PYTHON_LANES,
+        REQUIRED_LANES,
+        impact_policy_sha256,
+    )
+else:
+    from verification_topology import (  # type: ignore[import-not-found]
+        FRONTEND_LANES,
+        PYTHON_LANES,
+        REQUIRED_LANES,
+        impact_policy_sha256,
+    )
+
 SCHEMA_VERSION = "tracefold_ci_plan_v1"
 POLICY_VERSION = "tracefold_ci_impact_policy_v1"
-
-PYTHON_LANES = frozenset(
-    {
-        "python-hermetic",
-        "postgres-behavior",
-        "migration",
-        "runtime-process",
-        "frontend-python",
-        "trust-root",
-    }
-)
-FRONTEND_LANES = frozenset(
-    {
-        "frontend-python",
-        "frontend-typecheck",
-        "frontend-lint",
-        "frontend-architecture",
-        "frontend-unit",
-        "frontend-format",
-        "frontend-build",
-        "browser",
-    }
-)
 RESOURCE_LANES = frozenset({"postgres-behavior", "migration", "runtime-process", "browser"})
-REQUIRED_LANES = (
-    "quality-static",
-    "python-hermetic",
-    "postgres-behavior",
-    "migration",
-    "runtime-process",
-    "frontend-python",
-    "trust-root",
-    "frontend-typecheck",
-    "frontend-lint",
-    "frontend-architecture",
-    "frontend-unit",
-    "frontend-format",
-    "frontend-build",
-    "browser",
-)
 JOB_LANES: dict[str, frozenset[str]] = {
     "quality-static": frozenset({"quality-static"}),
     "python-hermetic": frozenset({"python-hermetic"}),
@@ -88,6 +64,9 @@ _GOVERNANCE_PATHS = frozenset(
         "web/package.json",
         "web/package-lock.json",
         "scripts/ci_plan.py",
+        "scripts/verification_topology.py",
+        "scripts/check_docs_links.py",
+        "scripts/agent_task_dry_run.py",
         "scripts/require_main_ci.py",
         "scripts/sync_agent_router.py",
         "docs/agents/shared-router.md",
@@ -110,7 +89,7 @@ _HEX_SHA = re.compile(r"^[0-9a-f]{40}$")
 def policy_sha256() -> str:
     """Bind plans to the exact code-owned planner implementation."""
 
-    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    return impact_policy_sha256(Path(__file__).resolve().parents[1])
 
 
 def build_plan(
@@ -243,7 +222,7 @@ def full_plan_receipt(plan: Mapping[str, Any]) -> str:
 
 def discover_changed_paths(root: Path, *, base_sha: str, head_sha: str) -> tuple[str, ...]:
     result = subprocess.run(
-        ("git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", f"{base_sha}...{head_sha}"),
+        ("git", "diff", "--no-renames", "--name-only", "--diff-filter=ACDMRTUXB", f"{base_sha}...{head_sha}"),
         cwd=root,
         capture_output=True,
         check=True,
@@ -269,6 +248,8 @@ def _classify_path(path: str) -> tuple[frozenset[str], str, bool]:
         return frozenset(), f"wiring_capital_or_runtime:{path}", True
     if path.startswith(("src/tracefold/platform/config/", "src/tracefold/platform/observability/")):
         return frozenset(), f"config_security_or_runtime:{path}", True
+    if path.startswith("tests/") and path.endswith(".py"):
+        return frozenset(), f"acceptance_test_surface:{path}", True
     if path.startswith("src/tracefold/platform/postgres/"):
         return (
             frozenset({"quality-static", "python-hermetic", "postgres-behavior", "migration", "runtime-process"}),
@@ -283,17 +264,6 @@ def _classify_path(path: str) -> tuple[frozenset[str], str, bool]:
         )
     if path.startswith("web/"):
         return frozenset({"quality-static", *FRONTEND_LANES}), f"frontend_surface:{path}", False
-    if path.startswith("tests/trading/") or path.startswith("tests/test_"):
-        return frozenset(), f"capital_or_runtime_test:{path}", True
-    if path.startswith("tests/integration/"):
-        lanes = {"quality-static", "python-hermetic", "postgres-behavior", "runtime-process"}
-        if "migration" in PurePosixPath(path).name or "schema_runtime" in path:
-            lanes.add("migration")
-        return frozenset(lanes), f"resource_test_surface:{path}", False
-    if path.startswith(("tests/deploy/", "tests/e2e/", "tests/golden/", "tests/slow/")):
-        return frozenset({"quality-static", "runtime-process"}), f"runtime_test_surface:{path}", False
-    if path.startswith(("tests/news/", "tests/architecture/", "tests/contract/")):
-        return frozenset({"quality-static", "python-hermetic"}), f"hermetic_test_surface:{path}", False
     if path.startswith("web/tests/"):
         return frozenset({"quality-static", *FRONTEND_LANES}), f"frontend_test_surface:{path}", False
     if path.startswith("tests/"):

@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
+from scripts import verification_topology
 from tests.support import evidence
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -284,12 +285,18 @@ def _run_evidence_case(
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     repository = tmp_path / "repository"
     (repository / "tests" / "support").mkdir(parents=True)
+    (repository / "scripts").mkdir()
     (repository / "tracefold" / "platform" / "postgres").mkdir(parents=True)
     (repository / "web").mkdir()
     shutil.copy2(Path(evidence.__file__).resolve(), repository / "tests" / "support" / "evidence.py")
+    shutil.copy2(
+        Path(verification_topology.__file__).resolve(),
+        repository / "scripts" / "verification_topology.py",
+    )
     for package in (
         repository / "tests",
         repository / "tests" / "support",
+        repository / "scripts",
         repository / "tracefold",
         repository / "tracefold" / "platform",
         repository / "tracefold" / "platform" / "postgres",

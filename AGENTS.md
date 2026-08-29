@@ -1,7 +1,8 @@
 # AGENTS.md
 
-Router for coding agents (Codex, Cursor, generic LLM tooling). Substantive
-rules live under `docs/`; this file routes to them and does not duplicate them.
+Router for coding agents (Codex, Cursor, generic LLM tooling). Detailed rules
+live under `docs/`; the generated block keeps only a compact invariant summary
+and task routes, followed by Codex-specific invocation rules.
 
 The block between the two markers below is generated from
 `docs/agents/shared-router.md`, which `CLAUDE.md` also carries. Edit that file

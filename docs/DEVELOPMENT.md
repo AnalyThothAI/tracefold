@@ -139,7 +139,7 @@ their corrections remain in #319.
 
 | Entry | Purpose | Allowed | Excluded |
 |---|---|---|---|
-| `make check-static` | CI static quality owner | Ruff, format, mypy, generated/router drift, compileall | Pytest, Docker, DB, RabbitMQ, Node |
+| `make check-static` | CI static quality owner | Ruff, format, mypy, generated/router drift, local documentation links, compileall | Pytest, Docker, DB, RabbitMQ, Node |
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
@@ -252,9 +252,12 @@ The code-owned `scripts/ci_plan.py` classifies the complete PR diff and writes a
 content-addressed plan before any verification job starts. Ordinary docs,
 Python, PostgreSQL and frontend changes select the conservative owners in the
 root task matrix. CI/evidence, toolchain, deployment-verifier, router, runtime
-root, config/security, capital, and unknown surfaces expand to full. Planner
-errors and empty or unclassified change sets also expand to full. Main pushes
-and manual release runs always use full.
+root, config/security, capital, Python acceptance tests, and unknown surfaces
+expand to full. Test-file changes are deliberately full because a marker edit
+can move an item between primary owners. Planner errors and empty or
+unclassified change sets also expand to full. Main pushes and manual release
+runs always use full. Rename discovery disables rename folding so both the old
+and new paths participate in classification.
 
 Full CI runs `quality-static`, four backend Python owner jobs, `trust-root`, and
 `frontend` concurrently. Stable architecture and product contracts belong to
@@ -891,8 +894,8 @@ Each generated artifact has one source of truth and one update command:
 - OpenAPI and TypeScript: the Python app schema, updated with
   `make regen-contract`.
 
-`make check` executes the database-free CLI-help and agent-router canonical
-checker exactly once each. Its Python OpenAPI check is
+`make check` executes the database-free CLI-help, agent-router canonical, and
+local documentation-link checkers exactly once each. Its Python OpenAPI check is
 hermetic; Node-backed TypeScript codegen runs in the external-codegen/full
 lane. Generated outputs change in the same commit as their source. Regenerate
 the owning output only through its generator and inspect its diff before

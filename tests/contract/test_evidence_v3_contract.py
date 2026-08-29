@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from hypothesis import settings
 
-from scripts import ci_plan
+from scripts import ci_plan, verification_topology
 from tests.support import evidence, profile
 
 pytestmark = pytest.mark.slow
@@ -58,13 +58,16 @@ class _EvidenceRepository:
 def evidence_repository(tmp_path: Path) -> _EvidenceRepository:
     root = tmp_path / "repository"
     (root / "tests" / "support").mkdir(parents=True)
+    (root / "scripts").mkdir()
     (root / "tracefold" / "platform" / "postgres").mkdir(parents=True)
     (root / "web").mkdir()
     shutil.copy2(Path(evidence.__file__).resolve(), root / "tests" / "support" / "evidence.py")
     shutil.copy2(Path(profile.__file__).resolve(), root / "tests" / "support" / "profile.py")
+    shutil.copy2(Path(verification_topology.__file__).resolve(), root / "scripts" / "verification_topology.py")
     for package in (
         root / "tests",
         root / "tests" / "support",
+        root / "scripts",
         root / "tracefold",
         root / "tracefold" / "platform",
         root / "tracefold" / "platform" / "postgres",
