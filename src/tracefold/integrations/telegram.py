@@ -19,7 +19,6 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from tracefold.news import (
-    PROGRESSION_REVIEW_REASON_MAX_CHARS,
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
     ReaderTradeTarget,
@@ -490,19 +489,18 @@ def _telegram_message(
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
     displayed_novelty = novelty or facts.novelty
     displayed_review_state = progression_review_state
-    displayed_review_reason = progression_review_reason
     displayed_parent_headline = progression_from_headline
     displayed_parent_age = progression_review_parent_age_minutes
     displayed_parent_url = progression_review_parent_url
     if displayed_review_state in {"rejected", "unavailable"}:
         displayed_novelty = "new_fact"
+        displayed_review_state = None
         displayed_parent_headline = None
         displayed_parent_age = None
         displayed_parent_url = None
     elif displayed_review_state == "confirmed" and not displayed_parent_url:
         displayed_novelty = "new_fact"
-        displayed_review_state = "unavailable"
-        displayed_review_reason = "未找到可引用的历史推送。"
+        displayed_review_state = None
         displayed_parent_headline = None
         displayed_parent_age = None
 
@@ -513,7 +511,6 @@ def _telegram_message(
     progression_review_line = _telegram_progression_review_html(
         displayed_review_state,
         parent_headline=displayed_parent_headline,
-        reason=displayed_review_reason,
         parent_age_minutes=displayed_parent_age,
         parent_url=displayed_parent_url,
     )
@@ -580,11 +577,9 @@ def _telegram_progression_review_html(
     value: str | None,
     *,
     parent_headline: str | None,
-    reason: str | None,
     parent_age_minutes: int | None,
     parent_url: str | None,
 ) -> str:
-    bounded_reason = _escape_html(_telegram_compact_progression_reason(reason))
     if value == "pending":
         return "<blockquote>⏳ <b>关联确认中</b></blockquote>"
     if value == "confirmed":
@@ -592,28 +587,8 @@ def _telegram_progression_review_html(
         age_suffix = f" · {age} 前" if age else ""
         headline = _escape_html(_clip(str(parent_headline or "").strip(), 72)) or "上一条消息"
         parent = f'<a href="{parent_url}">此前：{headline}</a>' if parent_url else f"此前：{headline}"
-        detail = bounded_reason or "同一事件链出现了新的状态变化。"
-        return f"<blockquote>✅ <b>已确认关联</b>\n↳ {parent}{age_suffix}\n现进展：{detail}</blockquote>"
-    if value == "rejected":
-        detail = bounded_reason or "未找到同一事件链的充分证据。"
-        return f"<blockquote>↩️ <b>未确认关联:</b> {detail}</blockquote>"
-    if value == "unavailable":
-        detail = bounded_reason or "后台复核暂未完成。"
-        return f"<blockquote>⚠️ <b>关联待确认:</b> {detail}</blockquote>"
+        return f"<blockquote>✅ <b>已确认关联</b>\n↳ {parent}{age_suffix}</blockquote>"
     return ""
-
-
-def _telegram_compact_progression_reason(value: object) -> str:
-    text = " ".join(str(value or "").split())
-    if not text:
-        return ""
-    if len(text) > PROGRESSION_REVIEW_REASON_MAX_CHARS:
-        return f"{text[: PROGRESSION_REVIEW_REASON_MAX_CHARS - 1].rstrip()}…"
-    if text.endswith(("。", "！", "？", "…", ".", "!", "?")):
-        return text
-    if len(text) == PROGRESSION_REVIEW_REASON_MAX_CHARS:
-        return f"{text[:-1].rstrip()}…"
-    return f"{text}。"
 
 
 def _telegram_parent_age(value: int | None) -> str:

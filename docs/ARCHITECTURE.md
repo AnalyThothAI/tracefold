@@ -1336,12 +1336,11 @@ concrete subject and event chain with a material new action, result, number, con
 change; a shared topic, sector, ticker, country, or storyline bucket is insufficient. Price reads and this review
 run concurrently and settle through one edit of the original Telegram message. A confirmation replaces the
 pending child block with a nested `✅ 已确认关联` block that links the stored prior Telegram receipt as
-`此前：<parent headline>`, shows the age calculated from the two actual push timestamps, and gives one concise
-`现进展：<reason>` line; a rejection shows
-`↩️ 未确认关联: <concise reason>`; timeout or invalid output shows an explicit unavailable child block. Rejection,
+`此前：<parent headline>` and shows the age calculated from the two actual push timestamps. Rejection,
 unavailability, or a model confirmation without a sent, undeleted, same-target parent receipt changes the edited
-message to `🆕 新事实`; it never retains `🔄 新进展`, invents an unlinked parent, or derives age from candidate
-event time. The exact
+message to `🆕 新事实` and removes the complete association child block; it never retains `🔄 新进展`,
+exposes a failed-review explanation to readers, invents an unlinked parent, or derives age from candidate event
+time. The exact
 verifier result and its content-addressed verifier identity are stored inside the desired durable card before the
 edit intent. Broad zero-similarity storyline buckets therefore never become an unaudited “上一条”. If a macro or sector verdict has no
 code-verified ticker, Telegram explicitly renders its scope and `暂无直接标的`. It turns
