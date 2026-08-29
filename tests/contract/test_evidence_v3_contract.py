@@ -1222,6 +1222,8 @@ def test_v3_union_fails_closed_on_missing_or_duplicate_nodeids(
         ("tests/integration/test_trading_migration.py", {"integration"}, "migration"),
         ("tests/integration/test_workers_runtime_v2.py", {"integration", "slow"}, "runtime-process"),
         ("tests/integration/test_news_bus_rabbitmq.py", {"integration"}, "runtime-process"),
+        ("tests/e2e/test_serve_process_smoke.py", set(), "runtime-process"),
+        ("tests/golden/test_news_production_pipeline.py", set(), "runtime-process"),
         ("tests/slow/test_frontend_harness_fail_closed.py", {"slow"}, "trust-root"),
     ],
 )

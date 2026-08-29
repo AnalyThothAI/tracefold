@@ -68,7 +68,7 @@ _OWNERSHIP_RULES = (
     "external_codegen=>frontend-python",
     "verification self-test modules=>trust-root",
     "tests/integration/*_migration.py|tests/integration/test_postgres_schema_runtime.py=>migration",
-    "deploy|e2e|golden|slow|RabbitMQ integration modules=>runtime-process",
+    "tests/deploy|e2e|golden|slow and RabbitMQ integration modules=>runtime-process",
     "integration=>postgres-behavior",
     "default=>python-hermetic",
 )
@@ -373,10 +373,15 @@ def primary_lane_owner(path: str, markers: set[str]) -> str:
         path.endswith("_migration.py") or path == "tests/integration/test_postgres_schema_runtime.py"
     ):
         return "migration"
-    if markers & {"deploy", "e2e", "golden", "slow"} or path in {
-        "tests/integration/test_cli_resources.py",
-        "tests/integration/test_news_bus_rabbitmq.py",
-    }:
+    if (
+        path.startswith(("tests/deploy/", "tests/e2e/", "tests/golden/", "tests/slow/"))
+        or markers & {"deploy", "e2e", "golden", "slow"}
+        or path
+        in {
+            "tests/integration/test_cli_resources.py",
+            "tests/integration/test_news_bus_rabbitmq.py",
+        }
+    ):
         return "runtime-process"
     if "integration" in markers:
         return "postgres-behavior"
