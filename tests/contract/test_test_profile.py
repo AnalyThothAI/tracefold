@@ -20,6 +20,7 @@ def _profile(lane: str, nodeids: list[str]) -> dict[str, object]:
         "lane": lane,
         "selected_nodeids": nodeids,
         "inventory_sha256": _inventory_sha(nodeids),
+        "wall_seconds": 7.0,
         "phase_seconds": {"setup_seconds": 1.0, "call_seconds": 2.0, "teardown_seconds": 0.5},
         "modules": [],
         "cases": [{"nodeid": nodeid, "outcome": "passed"} for nodeid in nodeids],
@@ -142,7 +143,7 @@ def test_v3_profile_proves_the_full_owner_union_and_critical_path_observation() 
     assert report["inventory"]["unique_deterministic_nodeids"] == len(PYTHON_LANES)
     assert report["inventory"]["duplicate_executions"] == 0
     assert report["inventory"]["missing_from_deterministic_full"] == []
-    assert report["duration_observations"]["plan:python-v3-critical-path"] == 3.5
+    assert report["duration_observations"]["plan:python-v3-critical-path"] == 7.0
 
 
 def test_v3_profile_fails_closed_on_a_missing_owner_lane_or_nodeid() -> None:
@@ -167,6 +168,7 @@ def test_duration_ratchet_needs_three_consecutive_significant_regressions() -> N
         "call_seconds": 9.0,
         "teardown_seconds": 0.0,
     }
+    profiles["deterministic-full"]["wall_seconds"] = 13.0
     two_prior_regressions = [
         {"duration_observations": {"lane:deterministic-full": 13.0}},
         {"duration_observations": {"lane:deterministic-full": 13.5}},
@@ -188,6 +190,7 @@ def test_ratchet_command_blocks_only_after_two_historical_and_one_current_regres
     profiles = _v3_profiles()
     for profile_data in profiles.values():
         profile_data["phase_seconds"] = {"setup_seconds": 4.0, "call_seconds": 9.0, "teardown_seconds": 0.0}
+        profile_data["wall_seconds"] = 13.0
     for lane, profile_data in profiles.items():
         (profile_dir / f"{lane}.json").write_text(json.dumps(profile_data), encoding="utf-8")
     for index, duration in enumerate((13.0, 13.5), start=1):

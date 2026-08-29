@@ -386,10 +386,10 @@ each current lane. To evaluate those profiles against prior reports, run
 `make test-profile-ratchet TRACEFOLD_TEST_PROFILE_DIR=<lane-profile-directory>
 TRACEFOLD_TEST_PROFILE_HISTORY_DIR=<prior-report-directory>`; this enforcing
 consumer returns non-zero only when the required consecutive regressions exist.
-The pinned PR 1 baseline remains in the report as the before-state; current CI
+The pinned PR 1 inventory remains in the report as the before-state; current CI
 uploads one real execution profile for every V3 Python owner. The V3 whole-Python
-trend is `plan:python-v3-critical-path`, the maximum owner duration under the
-parallel plan; a missing/unknown owner or mismatched deterministic inventory
+trend is `plan:python-v3-critical-path`, the maximum recorded owner
+`wall_seconds` under the parallel plan; a missing/unknown owner or mismatched deterministic inventory
 makes the profile report fail closed rather than silently shrinking the sample.
 The bounded V2/V3 shadow receipt is
 `tests/fixtures/issue_335_evidence_v2_v3_shadow.json`: it pins the final V2

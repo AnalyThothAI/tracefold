@@ -293,8 +293,9 @@ def _duration_observations(profiles: dict[str, dict[str, Any]]) -> dict[str, flo
     for lane, profile in profiles.items():
         if not any(case.get("outcome") != "not_run" for case in profile.get("cases", [])):
             continue
-        phase_seconds = profile.get("phase_seconds", {})
-        observations[f"lane:{lane}"] = sum(float(phase_seconds.get(name, 0.0)) for name in _PHASE_FIELDS)
+        wall_seconds = profile.get("wall_seconds")
+        if isinstance(wall_seconds, (int, float)) and float(wall_seconds) >= 0.0:
+            observations[f"lane:{lane}"] = float(wall_seconds)
         for module in profile.get("modules", []):
             observations[f"module:{module['module']}"] = float(module.get("total_seconds", 0.0))
     lane_keys = [f"lane:{lane}" for lane in PYTHON_LANES]

@@ -1218,6 +1218,7 @@ def test_v3_union_fails_closed_on_missing_or_duplicate_nodeids(
         ("tests/deploy/test_main_ci_gate.py", {"deploy"}, "trust-root"),
         ("tests/contract/test_openapi_codegen.py", {"contract", "external_codegen"}, "frontend-python"),
         ("tests/integration/test_news_v3_pipeline.py", {"integration"}, "postgres-behavior"),
+        ("tests/integration/test_cli_resources.py", {"integration"}, "runtime-process"),
         ("tests/integration/test_trading_migration.py", {"integration"}, "migration"),
         ("tests/integration/test_workers_runtime_v2.py", {"integration", "slow"}, "runtime-process"),
         ("tests/integration/test_news_bus_rabbitmq.py", {"integration"}, "runtime-process"),

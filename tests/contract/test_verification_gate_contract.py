@@ -165,6 +165,11 @@ def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> No
     for job_name in ("runtime-process", "frontend"):
         image = workflow["jobs"][job_name]["services"]["rabbitmq"]["image"]
         assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
+    runtime_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["runtime-process"]["steps"])
+    assert any(
+        step.get("uses", "").startswith("actions/setup-node@") for step in workflow["jobs"]["runtime-process"]["steps"]
+    )
+    assert "npm ci --prefix web" in runtime_commands
     frontend_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["frontend"]["steps"])
     assert "playwright install --with-deps chromium" in frontend_commands
 
