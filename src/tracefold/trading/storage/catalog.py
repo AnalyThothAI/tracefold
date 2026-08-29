@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..catalog import VenueBinding, VenueInstrumentCatalogSnapshotV1
+from ..catalog import VenueBinding, VenueBindingRuntime, VenueInstrumentCatalogSnapshotV1
 from .sql_values import _dumps
 
 
@@ -46,30 +46,51 @@ class CatalogStorage:
         return row is not None
 
     # ---------------------------------------------------------------- bindings
-    def binding_runtime_rows(self) -> list[dict[str, Any]]:
+    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntime]:
         rows = self.conn.execute(
             """
-            SELECT binding, credential_state, credential_fingerprint, runtime_state, account_state,
-                   catalog_state, catalog_snapshot_sha256, catalog_captured_at_ms,
-                   heartbeat_at_ms, reason, updated_at_ms
-              FROM trading_binding_runtime
-             ORDER BY binding
-            """
+            SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
+                   runtime.runtime_state, runtime.account_state,
+                   CASE
+                     WHEN runtime.catalog_state = 'ready'
+                      AND snapshot.stale_after_ms IS NOT NULL
+                      AND runtime.catalog_captured_at_ms + snapshot.stale_after_ms <= %(now)s
+                     THEN 'stale'
+                     ELSE runtime.catalog_state
+                   END AS catalog_state,
+                   runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
+                   runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
+              FROM trading_binding_runtime runtime
+              LEFT JOIN trading_venue_catalog_snapshots snapshot
+                ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+             ORDER BY runtime.binding
+            """,
+            {"now": int(now_ms)},
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [VenueBindingRuntime.model_validate(dict(row)) for row in rows]
 
-    def binding_runtime(self, *, binding: VenueBinding) -> dict[str, Any] | None:
+    def binding_runtime(self, *, binding: VenueBinding, now_ms: int) -> VenueBindingRuntime | None:
         row = self.conn.execute(
             """
-            SELECT binding, credential_state, credential_fingerprint, runtime_state, account_state,
-                   catalog_state, catalog_snapshot_sha256, catalog_captured_at_ms,
-                   heartbeat_at_ms, reason, updated_at_ms
-              FROM trading_binding_runtime
-             WHERE binding = %s
+            SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
+                   runtime.runtime_state, runtime.account_state,
+                   CASE
+                     WHEN runtime.catalog_state = 'ready'
+                      AND snapshot.stale_after_ms IS NOT NULL
+                      AND runtime.catalog_captured_at_ms + snapshot.stale_after_ms <= %(now)s
+                     THEN 'stale'
+                     ELSE runtime.catalog_state
+                   END AS catalog_state,
+                   runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
+                   runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
+              FROM trading_binding_runtime runtime
+              LEFT JOIN trading_venue_catalog_snapshots snapshot
+                ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+             WHERE runtime.binding = %(binding)s
             """,
-            (binding,),
+            {"binding": binding, "now": int(now_ms)},
         ).fetchone()
-        return dict(row) if row is not None else None
+        return VenueBindingRuntime.model_validate(dict(row)) if row is not None else None
 
     def set_binding_runtime(
         self,

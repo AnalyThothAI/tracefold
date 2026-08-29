@@ -537,8 +537,9 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 (`news-receiver`, `news-recovery`, `news-deduper`, `news-triage`,
 `news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
-`news-reactions`), the one Trading loop when Trading is enabled
-(`trading-capital-lane`), and `workers-control` (singleton
+`news-reactions`), the one Decision loop when Trading is enabled
+(`trading-capital-lane`), the always-on public venue-catalog loop
+(`trading-venue-catalog`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
 sync task. The polling loops read public catalogues and prices on code-owned
@@ -1776,7 +1777,8 @@ repair and roll-forward plan.
 deterministic lane; `0326` removes the daily entry fence. `20260829_0327` hard
 cuts to orthogonal Decision/Capital/binding facts, append-only public catalog
 snapshots, and independent Case policy/capital attribution; its cutover requires
-Capital PAUSED with no undecided Case or nonterminal Intent.
+Capital PAUSED with no undecided Case. A nonterminal Intent is preserved as an explicit recovery
+obligation; removing it would erase the exact state the no-key binding projection must report.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -2031,8 +2033,8 @@ legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy active/unknown
 Orders are all zero. Migration `20260828_0317` repeats the database predicates
 inside the authority-changing transaction, adds `INTENT_EMITTED`, and revokes
 legacy order/observation and retired runtime-counter mutations from Workers.
-Migration `20260829_0327` requires PAUSED with no undecided Case or nonterminal
-Intent, then installs the orthogonal Decision/binding/catalog owners. Every
+Migration `20260829_0327` requires PAUSED with no undecided Case, preserves any nonterminal Intent as
+a recovery obligation, then installs the orthogonal Decision/binding/catalog owners. Every
 Workers credential projection forces PAUSED. Changing control alone cannot
 emit an Intent, and there is no `accept_intents` rollout flag.
 

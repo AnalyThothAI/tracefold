@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
+from tracefold.trading.catalog import VenueBindingRuntime
 
 TOKEN = "trading-contract-token"
 NOW = 1_790_000_000_000
@@ -148,22 +149,23 @@ class _Trading:
     def decision_runtime(self) -> dict[str, Any]:
         return {"state": "RUNNING", "heartbeat_at_ms": NOW, "reason": None}
 
-    def binding_runtime_rows(self) -> list[dict[str, Any]]:
+    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntime]:
+        del now_ms
         return [
-            {
-                "binding": binding,
-                "credential_state": "unconfigured",
-                "credential_fingerprint": None,
-                "runtime_state": "stopped",
-                "account_state": "unknown",
-                "catalog_state": "ready",
-                "catalog_snapshot_sha256": digest,
-                "catalog_captured_at_ms": NOW - 1_000,
-                "heartbeat_at_ms": None,
-                "reason": "credentials_unconfigured",
-                "updated_at_ms": NOW,
-            }
-            for binding, digest in (("BINANCE_USDM", "b" * 64), ("HYPERLIQUID_PERP", "h" * 64))
+            VenueBindingRuntime(
+                binding=binding,
+                credential_state="unconfigured",
+                credential_fingerprint=None,
+                runtime_state="stopped",
+                account_state="unknown",
+                catalog_state="ready",
+                catalog_snapshot_sha256=digest,
+                catalog_captured_at_ms=NOW - 1_000,
+                heartbeat_at_ms=None,
+                reason="credentials_unconfigured",
+                updated_at_ms=NOW,
+            )
+            for binding, digest in (("BINANCE_USDM", "b" * 64), ("HYPERLIQUID_PERP", "c" * 64))
         ]
 
     def runtime_summary(self, **kwargs: Any) -> dict[str, Any]:

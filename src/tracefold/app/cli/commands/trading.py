@@ -47,7 +47,9 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                         "control": runtime.get("control", "PAUSED"),
                         "blacklist_revision": int(runtime.get("blacklist_revision") or 0),
                     },
-                    "bindings": trading.binding_runtime_rows(),
+                    "bindings": [
+                        binding.model_dump(mode="json") for binding in trading.binding_runtime_rows(now_ms=now)
+                    ],
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     # #211: where the 24 h of work actually spent its time, stage by stage. `n` per
                     # stage says how much evidence each number rests on.

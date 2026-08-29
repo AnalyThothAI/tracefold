@@ -51,9 +51,7 @@ async def _wire_components(
     trading_db = WorkerTradingDatabase(db)
     await project_binding_credentials(settings, trading_db)
     capital_lane = _wire_capital_lane(settings=settings, db=db, telemetry=telemetry)
-    if capital_lane is not None:
-        await capital_lane.start()
-    else:
+    if capital_lane is None:
         now_ms = int(time.time() * 1_000)
         updated = await trading_db.tx(
             "trading_decision_disabled",
@@ -67,7 +65,7 @@ async def _wire_components(
         )
         if not updated:
             raise RuntimeError("trading_decision_runtime_missing")
-    venue_catalog = _wire_venue_catalog(db=db)
+    venue_catalog = _wire_venue_catalog(db=db, telemetry=telemetry)
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,

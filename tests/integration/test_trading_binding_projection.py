@@ -77,15 +77,15 @@ def test_workers_projects_each_closed_binding_and_forces_capital_paused(
 
         asyncio.run(project_binding_credentials(_settings(tmp_path, variant), _Database(connection)))
 
-        rows = repositories_for_connection(connection).trading.binding_runtime_rows()
-        assert tuple(row["credential_state"] for row in rows) == expected
+        rows = repositories_for_connection(connection).trading.binding_runtime_rows(now_ms=1_900_000_000_000)
+        assert tuple(row.credential_state for row in rows) == expected
         assert connection.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()["control"] == (
             "PAUSED"
         )
-        assert all(row["credential_fingerprint"] is None or len(row["credential_fingerprint"]) == 64 for row in rows)
+        assert all(row.credential_fingerprint is None or len(row.credential_fingerprint) == 64 for row in rows)
         assert "binance-key-value" not in repr(rows)
         assert "binance-secret-value" not in repr(rows)
-        assert [row["runtime_state"] for row in rows] == [
+        assert [row.runtime_state for row in rows] == [
             "faulted" if state == "invalid" else "stopped" for state in expected
         ]
     finally:

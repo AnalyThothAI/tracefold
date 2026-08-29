@@ -17,6 +17,7 @@ from .capabilities import (
 )
 from .catalog import (
     VenueBinding,
+    VenueBindingRuntime,
     VenueInstrumentCatalogEntryV1,
     VenueInstrumentCatalogSnapshotV1,
     build_venue_catalog_snapshot,
@@ -71,6 +72,7 @@ __all__ = [
     "TradeIntent",
     "TradingCaseManifest",
     "VenueBinding",
+    "VenueBindingRuntime",
     "VenueInstrumentCatalogEntryV1",
     "VenueInstrumentCatalogSnapshotV1",
     "build_venue_catalog_snapshot",

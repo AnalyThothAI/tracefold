@@ -35,7 +35,7 @@ class CapitalAuthority:
     """Everything one turn plans against, read in a single bounded transaction.
 
     A missing `trading_runtime_state` row is not represented here at all: `capital_authority` returns
-    `None`, and the lane halts without scanning, without a Case and without a provider call. The old
+    `None`, and the lane faults without scanning, without a Case and without a provider call. The old
     reader defaulted the absent row to `{"control": "RUNNING"}`, which let a lane with no runtime
     authority create Cases and spend budget on the strength of a dictionary literal.
     """
@@ -60,12 +60,11 @@ class BindingAuthority:
 
 
 @dataclass(frozen=True, slots=True)
-class DecisionCommit:
+class CapitalDispositionCommit:
     """The one terminal answer `commit_capital_disposition` reached, and what it wrote."""
 
     state: CaseState
     reason: str
-    intent_id: str | None = None
 
 
 class LaneStorage:
@@ -102,7 +101,7 @@ class LaneStorage:
             "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
             "FROM trading_symbol_blacklist ORDER BY base_symbol"
         ).fetchall()
-        binding_row = cast(Any, self).binding_runtime(binding="BINANCE_USDM")
+        binding_row = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
         if binding_row is None:
             raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
         catalog = cast(Any, self).active_venue_catalog(binding="BINANCE_USDM")
@@ -113,12 +112,12 @@ class LaneStorage:
             underlyings_in_flight=frozenset(str(row["underlying_key"]) for row in in_flight),
             cased_source_keys=frozenset(str(row["primary_source_key"]) for row in cased),
             binding=BindingAuthority(
-                credential_state=str(binding_row["credential_state"]),
-                runtime_state=str(binding_row["runtime_state"]),
-                account_state=str(binding_row["account_state"]),
-                catalog_state=str(binding_row["catalog_state"]),
-                catalog_snapshot_sha256=binding_row["catalog_snapshot_sha256"],
-                reason=binding_row["reason"],
+                credential_state=binding_row.credential_state,
+                runtime_state=binding_row.runtime_state,
+                account_state=binding_row.account_state,
+                catalog_state=binding_row.catalog_state,
+                catalog_snapshot_sha256=binding_row.catalog_snapshot_sha256,
+                reason=binding_row.reason,
             ),
             catalog=catalog,
         )
@@ -244,7 +243,7 @@ class LaneStorage:
         policy_reason: str,
         policy_checks: Mapping[str, Any],
         now_ms: int,
-    ) -> DecisionCommit:
+    ) -> CapitalDispositionCommit:
         """Re-prove authority and preserve a Policy LONG beside the exact capital refusal.
 
         #360 uniquely owns grant, arm, risk reservation and Intent creation. Until it lands there is
@@ -253,24 +252,24 @@ class LaneStorage:
         runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
         if runtime is None:
             raise RuntimeError("trading_runtime_state_missing")
-        binding = cast(Any, self).binding_runtime(binding="BINANCE_USDM")
+        binding = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
         if binding is None:
             raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
         if runtime["control"] == "PAUSED":
             reason = "capital_paused"
         elif runtime["control"] == "CLOSE_ONLY":
             reason = "capital_close_only"
-        elif binding["credential_state"] == "unconfigured":
+        elif binding.credential_state == "unconfigured":
             reason = "credentials_unconfigured"
-        elif binding["credential_state"] == "invalid":
+        elif binding.credential_state == "invalid":
             reason = "credentials_invalid"
-        elif binding["catalog_snapshot_sha256"] != manifest.venue_catalog_snapshot_sha256:
+        elif binding.catalog_snapshot_sha256 != manifest.venue_catalog_snapshot_sha256:
             reason = "catalog_mismatch"
-        elif binding["catalog_state"] != "ready":
+        elif binding.catalog_state != "ready":
             reason = "catalog_stale"
-        elif binding["account_state"] == "exposure_present":
+        elif binding.account_state == "exposure_present":
             reason = "unexpected_exposure"
-        elif binding["runtime_state"] != "ready" or binding["account_state"] != "reconciled_flat":
+        elif binding.runtime_state != "ready" or binding.account_state != "reconciled_flat":
             reason = "binding_unready"
         else:
             reason = "promotion_authority_unavailable"
@@ -284,7 +283,7 @@ class LaneStorage:
         capital_reason: str,
         policy_checks: Mapping[str, Any],
         now_ms: int,
-    ) -> DecisionCommit:
+    ) -> CapitalDispositionCommit:
         if not self.settle_case(
             case_id=case_id,
             run_id=run_id,
@@ -297,7 +296,7 @@ class LaneStorage:
             now_ms=now_ms,
         ):
             raise RuntimeError("trading_case_block_transition_failed")
-        return DecisionCommit(state=CaseState.BLOCKED, reason=capital_reason)
+        return CapitalDispositionCommit(state=CaseState.BLOCKED, reason=capital_reason)
 
 
-__all__ = ["BindingAuthority", "CapitalAuthority", "DecisionCommit", "LaneStorage"]
+__all__ = ["BindingAuthority", "CapitalAuthority", "CapitalDispositionCommit", "LaneStorage"]

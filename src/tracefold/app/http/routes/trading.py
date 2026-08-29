@@ -29,6 +29,7 @@ from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from tracefold.trading import VenueBindingRuntime
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -74,7 +75,7 @@ def get_trading_status(request: Request) -> Response:
             "reason": "decision_runtime_missing",
         }
         capital = repos.trading.runtime_state() or {}
-        bindings = repos.trading.binding_runtime_rows()
+        bindings = repos.trading.binding_runtime_rows(now_ms=now_ms)
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
     policy = capital_lane_config(settings).policy
     return _etagged(
@@ -269,18 +270,18 @@ def get_trading_intents(
     )
 
 
-def _binding_runtime(row: dict[str, Any]) -> dict[str, Any]:
+def _binding_runtime(row: VenueBindingRuntime) -> dict[str, Any]:
     return {
-        "binding": str(row["binding"]),
-        "credential_state": str(row["credential_state"]),
-        "credential_fingerprint": row.get("credential_fingerprint"),
-        "runtime_state": str(row["runtime_state"]),
-        "account_state": str(row["account_state"]),
-        "catalog_state": str(row["catalog_state"]),
-        "catalog_snapshot_sha256": row.get("catalog_snapshot_sha256"),
-        "catalog_captured_at_ms": row.get("catalog_captured_at_ms"),
-        "heartbeat_at_ms": row.get("heartbeat_at_ms"),
-        "reason": row.get("reason"),
+        "binding": row.binding,
+        "credential_state": row.credential_state,
+        "credential_fingerprint": row.credential_fingerprint,
+        "runtime_state": row.runtime_state,
+        "account_state": row.account_state,
+        "catalog_state": row.catalog_state,
+        "catalog_snapshot_sha256": row.catalog_snapshot_sha256,
+        "catalog_captured_at_ms": row.catalog_captured_at_ms,
+        "heartbeat_at_ms": row.heartbeat_at_ms,
+        "reason": row.reason,
     }
 
 

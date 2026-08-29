@@ -8,14 +8,24 @@ an instrument disappear by failing to normalise it.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
-from typing import Any, Final, Literal, Protocol, Self
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, ClassVar, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import canonical_sha256, underlying_key
+from .telemetry import (
+    TradingExternalDataSource,
+    TradingExternalDataTelemetryPort,
+    TradingWorkSemantics,
+    observe_provider_call,
+)
 
 VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+CredentialState = Literal["configured", "invalid", "unconfigured"]
+BindingRuntimeState = Literal["faulted", "ready", "stale", "starting", "stopped"]
+BindingAccountState = Literal["exposure_present", "reconciled_flat", "unknown"]
+CatalogState = Literal["error", "missing", "ready", "stale"]
 ProductKind = Literal["linear_perpetual", "inverse_perpetual", "delivery_future", "spot", "option", "unknown"]
 
 CATALOG_SNAPSHOT_VERSION: Final[Literal["venue_instrument_catalog_snapshot_v1"]] = (
@@ -29,6 +39,22 @@ _BINDING_VENUE: Final[dict[VenueBinding, str]] = {
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class VenueBindingRuntime(_Frozen):
+    """The public, secret-free runtime facts for one closed execution binding."""
+
+    binding: VenueBinding
+    credential_state: CredentialState
+    credential_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    runtime_state: BindingRuntimeState
+    account_state: BindingAccountState
+    catalog_state: CatalogState
+    catalog_snapshot_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    catalog_captured_at_ms: int | None
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
 
 
 class VenueInstrumentCatalogEntryV1(_Frozen):
@@ -151,10 +177,49 @@ class CatalogDatabasePort(Protocol):
 class VenueCatalog:
     """The catalogue's whole write interface: publish public truth or retain last-good as stale."""
 
-    def __init__(self, *, db: CatalogDatabasePort, clock: Callable[[], int], stale_after_ms: int) -> None:
+    work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("latest_state",)
+
+    def __init__(
+        self,
+        *,
+        db: CatalogDatabasePort,
+        clock: Callable[[], int],
+        stale_after_ms: int,
+        telemetry: TradingExternalDataTelemetryPort | None = None,
+    ) -> None:
         self._db = db
         self._clock = clock
         self._stale_after_ms = int(stale_after_ms)
+        self._telemetry = telemetry
+
+    async def observe_provider[T](
+        self,
+        *,
+        source: TradingExternalDataSource,
+        call: Awaitable[T],
+    ) -> T:
+        return await observe_provider_call(
+            self._telemetry,
+            name="trading_venue_catalog",
+            source=source,
+            call=call,
+        )
+
+    def record_turn(
+        self,
+        outcome: Literal["error", "partial", "success"],
+        seconds: float,
+        *,
+        source_count: int,
+    ) -> None:
+        if self._telemetry is not None:
+            self._telemetry.record_external_data_turn(
+                "trading_venue_catalog",
+                outcome,
+                seconds,
+                target_count=2,
+                source_count=source_count,
+            )
 
     async def publish(
         self,
@@ -194,6 +259,7 @@ __all__ = [
     "CatalogDatabasePort",
     "ProductKind",
     "VenueBinding",
+    "VenueBindingRuntime",
     "VenueCatalog",
     "VenueInstrumentCatalogEntryV1",
     "VenueInstrumentCatalogSnapshotV1",

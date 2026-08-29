@@ -25,12 +25,6 @@ def upgrade() -> None:
           IF EXISTS (SELECT 1 FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')) THEN
             RAISE EXCEPTION 'no_key_authority_undecided_case';
           END IF;
-          IF EXISTS (
-            SELECT 1 FROM trading_intents
-             WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
-          ) THEN
-            RAISE EXCEPTION 'no_key_authority_nonterminal_intent';
-          END IF;
         END
         $cutover$
         """

@@ -217,11 +217,7 @@ class CapitalLane:
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
-
-    async def start(self) -> None:
-        """Publish the configured Decision Plane before the first provider or Source read."""
-
-        await self._record_runtime(state="STARTING", reason=None)
+        self._started = False
 
     # ------------------------------------------------------------------ the one business action
     async def advance(self) -> LaneTurn:
@@ -233,6 +229,9 @@ class CapitalLane:
         """
 
         try:
+            if not self._started:
+                await self._record_runtime(state="STARTING", reason=None)
+                self._started = True
             turn = await self._advance_turn()
         except Exception:
             # Preserve the original fault if even the fault receipt cannot be written.
@@ -255,7 +254,7 @@ class CapitalLane:
         if authority is None:
             # No runtime authority row: no scan, no Case, no provider call, no Intent. This is
             # infrastructure state, not a business decision, and nothing durable records a refusal.
-            return LaneTurn(outcome="HALTED", reason="runtime_state_missing")
+            raise RuntimeError("trading_runtime_state_missing")
         rows = await self._db.read(
             "trading_oi_projection",
             lambda repos: list(

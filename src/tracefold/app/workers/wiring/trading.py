@@ -14,7 +14,7 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -47,11 +47,12 @@ VENUE_CATALOG_PERIOD_SECONDS = 6 * 3_600.0
 VENUE_CATALOG_RETRY_SECONDS = 15 * 60.0
 
 
-def _wire_venue_catalog(*, db: WorkerDatabase) -> VenueCatalog:
+def _wire_venue_catalog(*, db: WorkerDatabase, telemetry: TelemetryRegistry | None = None) -> VenueCatalog:
     return VenueCatalog(
         db=WorkerTradingDatabase(db),
         clock=lambda: int(time.time() * 1_000),
         stale_after_ms=int(VENUE_CATALOG_PERIOD_SECONDS * 1_000),
+        telemetry=telemetry,
     )
 
 
@@ -108,15 +109,28 @@ async def run_venue_catalog(
         ("HYPERLIQUID_PERP", fetch_hyperliquid_perp_catalog),
     )
     while not stop_event.is_set():
+        started = time.perf_counter()
         complete = True
-        for binding, fetch in fetchers:
-            try:
-                instruments = await fetch()
-            except VenueExpectedError as exc:
-                complete = False
-                await catalog.unavailable(binding=binding, reason=exc.code)
-            else:
-                await catalog.publish(binding=binding, instruments=instruments)
+        published = 0
+        try:
+            for binding, fetch in fetchers:
+                source: Literal["binance", "hyperliquid"] = "binance" if binding == "BINANCE_USDM" else "hyperliquid"
+                try:
+                    instruments = await catalog.observe_provider(source=source, call=fetch())
+                except VenueExpectedError as exc:
+                    complete = False
+                    await catalog.unavailable(binding=binding, reason=exc.code)
+                else:
+                    await catalog.publish(binding=binding, instruments=instruments)
+                    published += 1
+        except BaseException:
+            catalog.record_turn("error", time.perf_counter() - started, source_count=published)
+            raise
+        catalog.record_turn(
+            "success" if complete else "partial",
+            time.perf_counter() - started,
+            source_count=published,
+        )
         wait = period_seconds if complete else min(period_seconds, VENUE_CATALOG_RETRY_SECONDS)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(wait)))
@@ -139,11 +153,11 @@ async def run_capital_lane(
         started = time.perf_counter()
         outcome = "error"
         try:
-            turn = await lane.advance()
+            await lane.advance()
         except Exception:
             logger.exception("capital lane turn failed")
         else:
-            outcome = "error" if turn.outcome == "HALTED" and turn.reason == "runtime_state_missing" else "success"
+            outcome = "success"
         if telemetry is not None:
             telemetry.record_external_data_turn(
                 "trading_capital_lane",

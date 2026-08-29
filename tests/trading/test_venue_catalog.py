@@ -1,6 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
+import pytest
+
+from tracefold.app.workers.wiring import trading as trading_wiring
+from tracefold.integrations.trading_catalog import VenueExpectedError
+from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.catalog import (
+    VenueCatalog,
     VenueInstrumentCatalogEntryV1,
     build_venue_catalog_snapshot,
 )
@@ -42,3 +51,57 @@ def test_catalog_digest_is_order_independent_and_preserves_every_provider_row() 
     assert first.normalised_count == 2
     assert [row.raw_metadata_sha256 for row in first.instruments].count(rows[0].raw_metadata_sha256) == 1
     assert first.resolve("BTC") is not None
+
+
+def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_other_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshots: list[Any] = []
+    unavailable: list[tuple[str, str]] = []
+
+    class Trading:
+        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
+            snapshots.append((snapshot, now_ms))
+
+        def mark_venue_catalog_unavailable(self, *, binding: str, reason: str, now_ms: int) -> None:
+            unavailable.append((binding, reason))
+
+    class Database:
+        async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
+            del timeout_seconds
+            return fn(type("Repositories", (), {"trading": Trading()})())
+
+    stop = asyncio.Event()
+
+    async def binance() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        return (_row("BTCUSDT", raw="first"),)
+
+    async def hyperliquid() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        stop.set()
+        raise VenueExpectedError("venue_timeout", venue="hyperliquid.perp")
+
+    monkeypatch.setattr(trading_wiring, "fetch_binance_usdm_catalog", binance)
+    monkeypatch.setattr(trading_wiring, "fetch_hyperliquid_perp_catalog", hyperliquid)
+    telemetry = TelemetryRegistry()
+    catalog = VenueCatalog(
+        db=Database(),  # type: ignore[arg-type]
+        clock=lambda: 1_900_000_000_000,
+        stale_after_ms=21_600_000,
+        telemetry=telemetry,
+    )
+
+    asyncio.run(trading_wiring.run_venue_catalog(catalog, stop_event=stop, period_seconds=0.05))
+
+    assert snapshots[0][0].binding == "BINANCE_USDM"
+    assert unavailable == [("HYPERLIQUID_PERP", "venue_timeout")]
+    metrics = telemetry.render_prometheus_text()
+    assert (
+        'tracefold_external_data_provider_call_total{name="trading_venue_catalog",outcome="success",'
+        'source="binance"} 1.0' in metrics
+    )
+    assert (
+        'tracefold_external_data_provider_call_total{name="trading_venue_catalog",outcome="error",'
+        'source="hyperliquid"} 1.0' in metrics
+    )
+    assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in metrics
+    assert 'tracefold_external_data_source_count{name="trading_venue_catalog"} 1.0' in metrics

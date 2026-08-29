@@ -454,6 +454,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "TradeIntent",
         "TradingCaseManifest",
         "VenueBinding",
+        "VenueBindingRuntime",
         "VenueInstrumentCatalogEntryV1",
         "VenueInstrumentCatalogSnapshotV1",
         "build_venue_catalog_snapshot",

@@ -35,7 +35,7 @@ from tracefold.trading.catalog import (
 )
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest
 from tracefold.trading.policy import CAPITAL_POLICY
-from tracefold.trading.storage.lane import BindingAuthority, CapitalAuthority, DecisionCommit
+from tracefold.trading.storage.lane import BindingAuthority, CapitalAuthority, CapitalDispositionCommit
 
 NOW = 1_787_000_000_000
 DIGEST = "a" * 64
@@ -127,7 +127,7 @@ class FakeTrading:
         self.cases: dict[str, dict[str, Any]] = {}
         self.settled: list[tuple[str, CaseState, str]] = []
         self.commits: list[str] = []
-        self.commit_result: Callable[[str], DecisionCommit] | None = None
+        self.commit_result: Callable[[str], CapitalDispositionCommit] | None = None
         self.claimable: list[str] = []
         self.maintained = 0
         self.runtime_states: list[tuple[str, str | None]] = []
@@ -204,11 +204,11 @@ class FakeTrading:
         self.cases[case_id]["state"] = state
         return True
 
-    def commit_capital_disposition(self, *, case_id: str, **_: Any) -> DecisionCommit:
+    def commit_capital_disposition(self, *, case_id: str, **_: Any) -> CapitalDispositionCommit:
         self.commits.append(case_id)
         if self.commit_result is not None:
             return self.commit_result(case_id)
-        return DecisionCommit(state=CaseState.BLOCKED, reason="credentials_unconfigured")
+        return CapitalDispositionCommit(state=CaseState.BLOCKED, reason="credentials_unconfigured")
 
 
 class FakeRepos:
@@ -357,18 +357,25 @@ def test_an_unrecognised_venue_tag_is_rejected_rather_than_routed() -> None:
 
 
 # ---------------------------------------------------------------------------- F2P: infrastructure
-def test_a_missing_runtime_authority_row_halts_before_any_scan_case_or_provider_call() -> None:
+def test_a_missing_runtime_authority_row_faults_before_any_scan_case_or_provider_call() -> None:
     """#331 comment F2P 4. The old reader defaulted the absent row to `control = RUNNING`."""
 
     trading = FakeTrading(authority=None, rows=[_row()])
     calls: list[tuple[str, int, int]] = []
     lane, db = _lane(trading, provider_calls=calls)
 
-    turn = _advance(lane)
-
-    assert (turn.outcome, turn.reason) == ("HALTED", "runtime_state_missing")
+    with pytest.raises(RuntimeError, match="trading_runtime_state_missing"):
+        _advance(lane)
     assert (trading.cases, trading.admission, calls) == ({}, [], [])
-    assert db.names == ["trading_capital_authority", "trading_decision_runtime"]
+    assert db.names == [
+        "trading_decision_runtime",
+        "trading_capital_authority",
+        "trading_decision_runtime",
+    ]
+    assert trading.runtime_states == [
+        ("STARTING", None),
+        ("FAULTED", "decision_turn_fault"),
+    ]
 
 
 def test_a_paused_capital_plane_still_runs_policy_but_emits_no_intent() -> None:
@@ -392,14 +399,17 @@ def test_an_unknown_repository_error_propagates_and_terminalises_nothing() -> No
     trading = FakeTrading(authority=_authority(), rows=[_row()])
     lane, _ = _lane(trading)
 
-    def explode(**_: Any) -> DecisionCommit:
+    def explode(**_: Any) -> CapitalDispositionCommit:
         raise RuntimeError("deadlock detected")
 
     trading.commit_result = lambda case_id: explode()
 
     with pytest.raises(RuntimeError, match="deadlock detected"):
         _advance(lane)
-    assert trading.runtime_states == [("FAULTED", "decision_turn_fault")]
+    assert trading.runtime_states == [
+        ("STARTING", None),
+        ("FAULTED", "decision_turn_fault"),
+    ]
     assert trading.settled == []
     assert [row["reason"] for row in trading.admission] == ["case_created"]
 
@@ -620,7 +630,7 @@ def test_a_commit_time_denial_is_a_typed_blocked_reason_and_emits_no_intent() ->
     """#350: a changed public catalog is named, not `intent_admission_blocked`."""
 
     trading = FakeTrading(authority=_authority(), rows=[_row()])
-    trading.commit_result = lambda case_id: DecisionCommit(state=CaseState.BLOCKED, reason="catalog_mismatch")
+    trading.commit_result = lambda case_id: CapitalDispositionCommit(state=CaseState.BLOCKED, reason="catalog_mismatch")
     lane, _ = _lane(trading)
 
     turn = _advance(lane)
@@ -642,7 +652,9 @@ def test_a_backlog_case_that_loses_the_fence_at_commit_is_blocked_by_name() -> N
     lane, _ = _lane(trading)
     _advance(lane)
     trading.claimable.append(next(iter(trading.cases)))
-    trading.commit_result = lambda case_id: DecisionCommit(state=CaseState.BLOCKED, reason="capacity_exhausted")
+    trading.commit_result = lambda case_id: CapitalDispositionCommit(
+        state=CaseState.BLOCKED, reason="capacity_exhausted"
+    )
 
     state = asyncio.run(lane._decide_one())
 
