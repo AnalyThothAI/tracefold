@@ -361,6 +361,20 @@ async def _main() -> None:
 
         return _components(workers, due_turns=((provider_publication, 1.0),))
 
+    if arguments.mode in {
+        "manifest_barrier",
+        "trading_bindings",
+        "trading_missing_authority",
+        "trading_wiring_fault",
+    }:
+        from tracefold.app.workers.wiring import trading as trading_wiring
+
+        async def empty_catalog() -> tuple[()]:
+            return ()
+
+        trading_wiring.fetch_binance_usdm_catalog = empty_catalog
+        trading_wiring.fetch_hyperliquid_perp_catalog = empty_catalog
+
     if arguments.mode == "manifest_barrier":
         release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
 
@@ -369,13 +383,6 @@ async def _main() -> None:
 
         workers_wiring._wire_news_pipeline = wire_news_pipeline
     elif arguments.mode in {"trading_bindings", "trading_missing_authority", "trading_wiring_fault"}:
-        from tracefold.app.workers.wiring import trading as trading_wiring
-
-        async def empty_catalog() -> tuple[()]:
-            return ()
-
-        trading_wiring.fetch_binance_usdm_catalog = empty_catalog
-        trading_wiring.fetch_hyperliquid_perp_catalog = empty_catalog
         if arguments.mode == "trading_wiring_fault":
 
             def fail_trading_wiring(**_kwargs: Any) -> None:
