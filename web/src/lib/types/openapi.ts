@@ -137,15 +137,18 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/events/{event_id}": {
+    "/api/trading/cases": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get Trading Event Case */
-        get: operations["get_trading_event_case_api_trading_events__event_id__get"];
+        /**
+         * Get Trading Cases
+         * @description Frozen Cases and the frozen evidence each was decided on.
+         */
+        get: operations["get_trading_cases_api_trading_cases_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -161,8 +164,35 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Trading Gate */
+        /**
+         * Get Trading Gate
+         * @description Every Source the lane saw in the window, and the one durable answer each received.
+         */
         get: operations["get_trading_gate_api_trading_gate_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trading/gate/{event_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Gate Source
+         * @description One Source's admission answer. `joinable=false` when the question cannot be asked at all.
+         *
+         *     Only the deterministic OI lane's source key is reconstructible from an Event id
+         *     (`oi:{event_id}:{metric_version}`), so a caller asking about anything else is told the question is
+         *     unanswerable rather than shown a refusal that never happened.
+         */
+        get: operations["get_trading_gate_source_api_trading_gate__event_id__get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -180,7 +210,7 @@ export interface paths {
         };
         /**
          * Get Trading Intents
-         * @description Intent outcomes plus cases that did not emit an intent; legacy orders are excluded.
+         * @description Immutable capital requests and their execution outcomes. Cases live at `/trading/cases`.
          */
         get: operations["get_trading_intents_api_trading_intents_get"];
         put?: never;
@@ -198,7 +228,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get Trading Status */
+        /**
+         * Get Trading Status
+         * @description Control, execution readiness, active capability, and bounded durable totals. No thresholds.
+         */
         get: operations["get_trading_status_api_trading_status_get"];
         put?: never;
         post?: never;
@@ -333,9 +366,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingEventCaseData] */
-        ApiEnvelope_TradingEventCaseData_: {
-            data?: components["schemas"]["TradingEventCaseData"] | null;
+        /** ApiEnvelope[TradingCasesData] */
+        ApiEnvelope_TradingCasesData_: {
+            data?: components["schemas"]["TradingCasesData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -346,6 +379,16 @@ export interface components {
         /** ApiEnvelope[TradingGateData] */
         ApiEnvelope_TradingGateData_: {
             data?: components["schemas"]["TradingGateData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingGateSourceData] */
+        ApiEnvelope_TradingGateSourceData_: {
+            data?: components["schemas"]["TradingGateSourceData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -1240,64 +1283,8 @@ export interface components {
                 [key: string]: number;
             };
             policy?: components["schemas"]["NewsOiPolicyData"] | null;
-            trade_floors?: components["schemas"]["NewsOiTradeFloorsData"];
             /** Window Occupancy */
             window_occupancy?: components["schemas"]["NewsOiWindowSymbolData"][];
-        };
-        /**
-         * NewsOiTradeFloorsData
-         * @description The capital lane's own floors, shown beside the News gates and never mixed with them (#207).
-         *
-         *     Two different questions read the same frame: News asks whether a reader should be told, Trading asks
-         *     whether the lane may open exposure. Their thresholds are separate config and reaching either number is no
-         *     evidence about the other, so the monitor renders both and labels which is which.
-         *
-         *     `enabled` is here because `tracefold.trading` ships disabled: a floor from a lane that is not running is a
-         *     published research band, not a gate anything is currently passing. Read from platform configuration —
-         *     `tracefold.news` never imports `tracefold.trading` and this endpoint does not either.
-         */
-        NewsOiTradeFloorsData: {
-            /**
-             * Allow Short
-             * @default false
-             */
-            allow_short: boolean;
-            /**
-             * Enabled
-             * @default false
-             */
-            enabled: boolean;
-            /**
-             * Execution Environment
-             * @default BINANCE_USDM_DEMO
-             * @constant
-             */
-            execution_environment: "BINANCE_USDM_DEMO";
-            /**
-             * Max Price Move Bps
-             * @default 0
-             */
-            max_price_move_bps: number;
-            /**
-             * Min Oi Value Usd
-             * @default 0
-             */
-            min_oi_value_usd: number;
-            /**
-             * Min Price Move Bps
-             * @default 0
-             */
-            min_price_move_bps: number;
-            /**
-             * Min Whale Long Profit Bps
-             * @default 0
-             */
-            min_whale_long_profit_bps: number;
-            /**
-             * Pre Move Lookback Ms
-             * @default 0
-             */
-            pre_move_lookback_ms: number;
         };
         /**
          * NewsOiWindowSymbolData
@@ -2068,15 +2055,6 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** TradingBootstrapData */
-        TradingBootstrapData: {
-            /** Lower 95 Bps */
-            lower_95_bps: number;
-            /** Mean Bps */
-            mean_bps: number;
-            /** Upper 95 Bps */
-            upper_95_bps: number;
-        };
         /** TradingBudgetData */
         TradingBudgetData: {
             /**
@@ -2100,253 +2078,74 @@ export interface components {
             decided_at_ms?: number | null;
             /** Event Id */
             event_id?: string | null;
+            /** Intent Id */
+            intent_id?: string | null;
+            /** Manifest Version */
+            manifest_version?: string | null;
+            /** Mark Price */
+            mark_price?: string | null;
             /** Observed At Ms */
             observed_at_ms: number;
-            /** Policy Decision */
-            policy_decision?: string | null;
-            /** Policy Reason */
-            policy_reason?: string | null;
-            /** Pre Move Bps */
-            pre_move_bps?: number | null;
-            /** Regime */
-            regime?: string | null;
-            /** Regime Reason */
-            regime_reason?: string | null;
-            /** State */
-            state: string;
-            /** Strategy Config */
-            strategy_config?: {
+            /** Oi Change Bps */
+            oi_change_bps?: number | null;
+            /** Oi Value Usd */
+            oi_value_usd?: number | null;
+            /** Policy Checks */
+            policy_checks?: components["schemas"]["TradingPolicyCheckData"][];
+            /** Policy Config */
+            policy_config?: {
                 [key: string]: string;
             };
-            /** Strategy Id */
-            strategy_id: string;
-            /** Strategy Version */
-            strategy_version: string;
+            /** Policy Config Digest */
+            policy_config_digest: string;
+            /** Policy Decision */
+            policy_decision?: string | null;
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Reason */
+            policy_reason?: string | null;
+            /** Policy Version */
+            policy_version: string;
+            /** Pre Move Bps */
+            pre_move_bps?: number | null;
+            /** Provider Symbol */
+            provider_symbol?: string | null;
+            /** State */
+            state: string;
             /** Trigger Kind */
             trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
+            /** Whale Long Profit Bps */
+            whale_long_profit_bps?: number | null;
+            /** Whale Oi Ratio Bps */
+            whale_oi_ratio_bps?: number | null;
         };
-        /** TradingCountsData */
-        TradingCountsData: {
-            /**
-             * Active Intents
-             * @default 0
-             */
-            active_intents: number;
-            /** Candidate Counts 24H */
-            candidate_counts_24h?: {
+        /** TradingCasesData */
+        TradingCasesData: {
+            /** Cases */
+            cases?: components["schemas"]["TradingCaseData"][];
+            /** Complete */
+            complete: boolean;
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Reason Counts 24H */
+            reason_counts_24h?: {
                 [key: string]: number;
             };
-            /** Candidate Counts 7D */
-            candidate_counts_7d?: {
+            /** State Counts 24H */
+            state_counts_24h?: {
                 [key: string]: number;
             };
-            /** Candidate Reasons 24H */
-            candidate_reasons_24h?: {
-                [key: string]: number;
-            };
-            /** Candidate Reasons 7D */
-            candidate_reasons_7d?: {
-                [key: string]: number;
-            };
-            /** Cases By State */
-            cases_by_state?: {
-                [key: string]: number;
-            };
-            /** Cases By Strategy */
-            cases_by_strategy?: {
-                [key: string]: number;
-            };
-            /** Cases By Trigger */
-            cases_by_trigger?: {
-                [key: string]: number;
-            };
-            /** Cases Today By State */
-            cases_today_by_state?: {
-                [key: string]: number;
-            };
-            /**
-             * Closed Intents Today
-             * @default 0
-             */
-            closed_intents_today: number;
-            /**
-             * Entries Today
-             * @default 0
-             */
-            entries_today: number;
-            /** Event Study Cohorts */
-            event_study_cohorts?: components["schemas"]["TradingEventStudyCohortData"][];
-            /**
-             * Funnel Day Key
-             * @default
-             */
-            funnel_day_key: string;
-            /** Funnel Today */
-            funnel_today?: {
-                [key: string]: number;
-            };
-            /** Intents By State */
-            intents_by_state?: {
-                [key: string]: number;
-            };
-            /** Latest Case Created At Ms */
-            latest_case_created_at_ms?: number | null;
-            /** Latest Entry Fenced At Ms */
-            latest_entry_fenced_at_ms?: number | null;
-            /** Latest Gate Eligible At Ms */
-            latest_gate_eligible_at_ms?: number | null;
-            /** Latest Intent Emitted At Ms */
-            latest_intent_emitted_at_ms?: number | null;
-            /** Latest Position Closed At Ms */
-            latest_position_closed_at_ms?: number | null;
-            /** Latest Position Opened At Ms */
-            latest_position_opened_at_ms?: number | null;
-            /** Latest Source At Ms */
-            latest_source_at_ms?: number | null;
-            /**
-             * Liquidation Promotion Ready
-             * @default false
-             */
-            liquidation_promotion_ready: boolean;
-            /**
-             * Liquidation Promotion Reason
-             * @default
-             */
-            liquidation_promotion_reason: string;
-            /** Outcomes By State */
-            outcomes_by_state?: {
-                [key: string]: number;
-            };
-            /**
-             * Policy Allowed 24H
-             * @default 0
-             */
-            policy_allowed_24h: number;
-            /**
-             * Policy Allowed Today
-             * @default 0
-             */
-            policy_allowed_today: number;
-            /** Shadow By Rule */
-            shadow_by_rule?: {
-                [key: string]: number;
-            };
-            /** Shadow By Strategy */
-            shadow_by_strategy?: {
-                [key: string]: number;
-            };
-            /** Shadow Cohorts */
-            shadow_cohorts?: {
-                [key: string]: components["schemas"]["TradingShadowCohortData"];
-            };
-        };
-        /** TradingEventCaseData */
-        TradingEventCaseData: {
-            case?: components["schemas"]["TradingCaseData"] | null;
-            /** Event Id */
-            event_id: string;
-            /** Gate Attempt Count */
-            gate_attempt_count?: number | null;
-            /** Gate Config Digest */
-            gate_config_digest?: string | null;
-            gate_evidence?: components["schemas"]["TradingGateEvidenceData"] | null;
-            /** Gate First Evaluated At Ms */
-            gate_first_evaluated_at_ms?: number | null;
-            /** Gate Last Evaluated At Ms */
-            gate_last_evaluated_at_ms?: number | null;
-            /** Gate Reason */
-            gate_reason?: string | null;
-            /** Gate Retryable */
-            gate_retryable?: boolean | null;
-            /** Gate Stage */
-            gate_stage?: ("source" | "eligibility" | "routing" | "market_context" | "freeze") | null;
-            /** Gate Status */
-            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
-            /** Gate Version */
-            gate_version?: string | null;
-            intent?: components["schemas"]["TradingIntentData"] | null;
-            /** Joinable */
-            joinable: boolean;
-        };
-        /** TradingEventStudyCohortData */
-        TradingEventStudyCohortData: {
-            /** Cohort Key */
-            cohort_key: string;
-            /** Completed */
-            completed: number;
-            /**
-             * Coverage Bps
-             * @default 0
-             */
-            coverage_bps: number;
-            /** Duplicate Rate Bps */
-            duplicate_rate_bps?: number | null;
-            /** Evaluated */
-            evaluated: number;
-            /** Exit By Reason */
-            exit_by_reason?: {
-                [key: string]: number;
-            };
-            /**
-             * Holdout
-             * @default 0
-             */
-            holdout: number;
-            /** Horizons */
-            horizons?: {
-                [key: string]: components["schemas"]["TradingHorizonData"];
-            };
-            /** Liquidity Bucket */
-            liquidity_bucket: string;
-            /** Mae Mean Bps */
-            mae_mean_bps?: number | null;
-            /** Mean Return Bps */
-            mean_return_bps?: number | null;
-            /** Mean Source Latency Ms */
-            mean_source_latency_ms?: number | null;
-            /** Mfe Mean Bps */
-            mfe_mean_bps?: number | null;
-            /** Missing Data */
-            missing_data?: {
-                [key: string]: number;
-            };
-            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
-            /**
-             * Promotion Ready
-             * @default false
-             */
-            promotion_ready: boolean;
-            /** Promotion Reasons */
-            promotion_reasons?: string[];
-            /**
-             * Source Contract Complete
-             * @default 0
-             */
-            source_contract_complete: number;
-            /** Strategy Id */
-            strategy_id: string;
-            /** Venue */
-            venue: string;
-        };
-        /** TradingFloorsData */
-        TradingFloorsData: {
-            /** Lookback Ms */
-            lookback_ms: number;
-            /** Max Price Move Bps */
-            max_price_move_bps: number;
-            /** Min Oi Value Usd */
-            min_oi_value_usd: string;
-            /** Min Price Move Bps */
-            min_price_move_bps: number;
-            /** Min Whale Long Profit Bps */
-            min_whale_long_profit_bps: number;
+            /** Window Hours */
+            window_hours: number;
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {
             /** Config Digest */
             config_digest: string;
+            /** Live Exchange Id */
+            live_exchange_id: string;
             /** Max Age Ms */
             max_age_ms: number;
             /** Max Rank In Window */
@@ -2355,8 +2154,6 @@ export interface components {
             min_oi_value_usd: number;
             /** Symbol Cooldown Ms */
             symbol_cooldown_ms: number;
-            /** Venue Priority */
-            venue_priority?: string[];
             /** Version */
             version: string;
         };
@@ -2364,10 +2161,23 @@ export interface components {
         TradingGateData: {
             /** Complete */
             complete: boolean;
+            config: components["schemas"]["TradingGateConfigData"];
             /** Decisions */
             decisions?: components["schemas"]["TradingGateDecisionData"][];
+            /** Latest Gate Eligible At Ms */
+            latest_gate_eligible_at_ms?: number | null;
+            /** Latest Source At Ms */
+            latest_source_at_ms?: number | null;
             /** Measured At Ms */
             measured_at_ms: number;
+            /** Reason Counts 24H */
+            reason_counts_24h?: {
+                [key: string]: number;
+            };
+            /** Status Counts 24H */
+            status_counts_24h?: {
+                [key: string]: number;
+            };
             /** Window Hours */
             window_hours: number;
         };
@@ -2396,11 +2206,16 @@ export interface components {
             /** Gate Retryable */
             gate_retryable?: boolean | null;
             /** Gate Stage */
-            gate_stage?: ("source" | "eligibility" | "routing" | "market_context" | "freeze") | null;
+            gate_stage?: ("source" | "venue" | "eligibility" | "capability" | "routing" | "market_context" | "freeze") | null;
             /** Gate Status */
-            gate_status?: ("DEFERRED" | "REJECTED" | "CASE_CREATED" | "EXPIRED") | null;
+            gate_status?: ("DEFERRED" | "REJECTED" | "RESEARCH_ONLY" | "CASE_CREATED" | "EXPIRED") | null;
             /** Gate Version */
             gate_version?: string | null;
+            /**
+             * Research Only
+             * @default false
+             */
+            research_only: boolean;
             /** Source Key */
             source_key: string;
             /** Source Observed At Ms */
@@ -2419,12 +2234,24 @@ export interface components {
              * @default
              */
             blacklist_reason: string;
+            /** Cooldown Ms */
+            cooldown_ms?: number | null;
             /** Enabled */
             enabled?: string[];
             /** Floor */
             floor?: number | null;
+            /**
+             * Lane Full
+             * @default
+             */
+            lane_full: string;
             /** Limit */
             limit?: number | null;
+            /**
+             * Live Exchange Id
+             * @default
+             */
+            live_exchange_id: string;
             /** Max Age Ms */
             max_age_ms?: number | null;
             /** Oi Change Bps */
@@ -2438,6 +2265,8 @@ export interface components {
              * @default
              */
             rule: string;
+            /** Since Close Ms */
+            since_close_ms?: number | null;
             /**
              * Source Decision
              * @default
@@ -2458,19 +2287,19 @@ export interface components {
             /** Whale Oi Ratio Bps */
             whale_oi_ratio_bps?: number | null;
         };
-        /** TradingHorizonData */
-        TradingHorizonData: {
-            bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
-            /**
-             * Measured
-             * @default 0
-             */
-            measured: number;
-            /**
-             * Missing
-             * @default 0
-             */
-            missing: number;
+        /**
+         * TradingGateSourceData
+         * @description One Source's admission answer, plus the Case it authored if it authored one.
+         *
+         *     `joinable` is `false` when the question cannot be asked at all: only the deterministic OI lane's
+         *     source key is reconstructible from an Event id.
+         */
+        TradingGateSourceData: {
+            decision?: components["schemas"]["TradingGateDecisionData"] | null;
+            /** Event Id */
+            event_id: string;
+            /** Joinable */
+            joinable: boolean;
         };
         /** TradingIntentData */
         TradingIntentData: {
@@ -2488,10 +2317,6 @@ export interface components {
             blacklist_snapshot_sha256_at_emission?: string | null;
             /** Case Id */
             case_id: string;
-            /** Case Observed At Ms */
-            case_observed_at_ms?: number | null;
-            /** Case State */
-            case_state: string;
             /** Closed At Ms */
             closed_at_ms?: number | null;
             /** Commissions By Currency */
@@ -2500,6 +2325,8 @@ export interface components {
             } | null;
             /** Created At Ms */
             created_at_ms: number;
+            /** Entry Fenced At Ms */
+            entry_fenced_at_ms?: number | null;
             /** Event Id */
             event_id?: string | null;
             /** Execution Capability Snapshot Sha256 */
@@ -2529,12 +2356,10 @@ export interface components {
             intent_version: "trade_intent_v1" | "trade_intent_v2";
             /** Opened At Ms */
             opened_at_ms?: number | null;
-            /** Policy Decision */
-            policy_decision?: string | null;
-            /** Policy Reason */
-            policy_reason?: string | null;
-            /** Pre Move Bps */
-            pre_move_bps?: number | null;
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Version */
+            policy_version: string;
             /** Protected At Ms */
             protected_at_ms?: number | null;
             /** Protected Quantity */
@@ -2547,10 +2372,6 @@ export interface components {
             reason_code?: string | null;
             /** Reference Price */
             reference_price: string;
-            /** Regime */
-            regime?: string | null;
-            /** Regime Reason */
-            regime_reason?: string | null;
             /**
              * Side
              * @constant
@@ -2558,20 +2379,10 @@ export interface components {
             side: "long";
             /** Stop Price */
             stop_price?: string | null;
-            /** Strategy Config */
-            strategy_config?: {
-                [key: string]: string;
-            };
-            /** Strategy Id */
-            strategy_id: string;
-            /** Strategy Version */
-            strategy_version: string;
             /** Target Notional Usd */
             target_notional_usd: string;
             /** Terminal Outcome */
             terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
-            /** Trigger Kind */
-            trigger_kind: string;
             /** Underlying Key */
             underlying_key: string;
             /** Updated At Ms */
@@ -2581,16 +2392,58 @@ export interface components {
         };
         /** TradingIntentsData */
         TradingIntentsData: {
-            /** Cases Without Intents */
-            cases_without_intents?: components["schemas"]["TradingCaseData"][];
             /** Complete */
             complete: boolean;
             /** Intents */
             intents?: components["schemas"]["TradingIntentData"][];
             /** Measured At Ms */
             measured_at_ms: number;
+            /** Outcome Counts 24H */
+            outcome_counts_24h?: {
+                [key: string]: number;
+            };
+            /** Reason Counts 24H */
+            reason_counts_24h?: {
+                [key: string]: number;
+            };
+            /** State Counts 24H */
+            state_counts_24h?: {
+                [key: string]: number;
+            };
             /** Window Hours */
             window_hours: number;
+        };
+        /**
+         * TradingPolicyCheckData
+         * @description One frozen condition: what was required, what was measured, and whether it passed.
+         */
+        TradingPolicyCheckData: {
+            /** Check */
+            check: string;
+            /** Measured */
+            measured?: string | null;
+            /** Operator */
+            operator: string;
+            /** Passed */
+            passed: boolean;
+            /** Threshold */
+            threshold: string;
+        };
+        /**
+         * TradingPolicyIdentityData
+         * @description Which policy the lane would freeze onto a *new* Case. Never applied to an existing one.
+         */
+        TradingPolicyIdentityData: {
+            /** Config */
+            config?: {
+                [key: string]: string;
+            };
+            /** Config Digest */
+            config_digest: string;
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Version */
+            policy_version: string;
         };
         /** TradingReadinessData */
         TradingReadinessData: {
@@ -2630,88 +2483,62 @@ export interface components {
             /** Unexpected Exposure */
             unexpected_exposure: boolean;
         };
-        /** TradingShadowCohortData */
-        TradingShadowCohortData: {
-            /** Completed */
-            completed: number;
+        /**
+         * TradingRuntimeCountsData
+         * @description Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold.
+         */
+        TradingRuntimeCountsData: {
             /**
-             * Coverage Bps
+             * Active Intents
              * @default 0
              */
-            coverage_bps: number;
-            /** Duplicate Rate Bps */
-            duplicate_rate_bps?: number | null;
-            /** Evaluated */
-            evaluated: number;
-            /** Exit By Reason */
-            exit_by_reason?: {
-                [key: string]: number;
-            };
+            active_intents: number;
             /**
-             * Holdout
+             * Cases 24H
              * @default 0
              */
-            holdout: number;
-            /** Horizons */
-            horizons?: {
-                [key: string]: components["schemas"]["TradingHorizonData"];
-            };
-            /** Mae Mean Bps */
-            mae_mean_bps?: number | null;
-            /** Mean Return Bps */
-            mean_return_bps?: number | null;
-            /** Mean Source Latency Ms */
-            mean_source_latency_ms?: number | null;
-            /** Mfe Mean Bps */
-            mfe_mean_bps?: number | null;
-            /** Missing Data */
-            missing_data?: {
-                [key: string]: number;
-            };
-            net_ex_funding_bootstrap?: components["schemas"]["TradingBootstrapData"] | null;
+            cases_24h: number;
             /**
-             * Promotion Ready
-             * @default false
-             */
-            promotion_ready: boolean;
-            /** Promotion Reasons */
-            promotion_reasons?: string[];
-            /**
-             * Source Contract Complete
+             * Closed Intents Today
              * @default 0
              */
-            source_contract_complete: number;
+            closed_intents_today: number;
+            /**
+             * Day Key
+             * @default
+             */
+            day_key: string;
+            /**
+             * Entries Today
+             * @default 0
+             */
+            entries_today: number;
+            /**
+             * Intents 24H
+             * @default 0
+             */
+            intents_24h: number;
+            /** Latest Case Created At Ms */
+            latest_case_created_at_ms?: number | null;
+            /** Latest Entry Fenced At Ms */
+            latest_entry_fenced_at_ms?: number | null;
+            /** Latest Intent Emitted At Ms */
+            latest_intent_emitted_at_ms?: number | null;
+            /** Latest Position Closed At Ms */
+            latest_position_closed_at_ms?: number | null;
+            /** Latest Position Opened At Ms */
+            latest_position_opened_at_ms?: number | null;
         };
         /** TradingStatusData */
         TradingStatusData: {
             budget: components["schemas"]["TradingBudgetData"];
-            counts: components["schemas"]["TradingCountsData"];
-            floors: components["schemas"]["TradingFloorsData"];
-            gate: components["schemas"]["TradingGateConfigData"];
+            counts: components["schemas"]["TradingRuntimeCountsData"];
             /** Measured At Ms */
             measured_at_ms: number;
+            policy: components["schemas"]["TradingPolicyIdentityData"];
             readiness: components["schemas"]["TradingReadinessData"];
-            /** Strategies */
-            strategies?: components["schemas"]["TradingStrategyConfigData"][];
             /** Window Hours */
             window_hours: number;
-        };
-        /** TradingStrategyConfigData */
-        TradingStrategyConfigData: {
-            /** Config */
-            config?: {
-                [key: string]: string;
-            };
-            /** Config Digest */
-            config_digest: string;
-            /** Permission */
-            permission: string;
-            /** Strategy Id */
-            strategy_id: string;
-            /** Strategy Version */
-            strategy_version: string;
-            /** Trigger Kinds */
-            trigger_kinds?: string[];
         };
         /** ValidationError */
         ValidationError: {
@@ -2955,13 +2782,14 @@ export interface operations {
             };
         };
     };
-    get_trading_event_case_api_trading_events__event_id__get: {
+    get_trading_cases_api_trading_cases_get: {
         parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                event_id: string;
+            query?: {
+                underlying?: string;
+                state?: string;
             };
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
@@ -2972,7 +2800,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingEventCaseData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_TradingCasesData_"];
                 };
             };
             /** @description Validation Error */
@@ -3002,6 +2830,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingGateData_"];
+                };
+            };
+        };
+    };
+    get_trading_gate_source_api_trading_gate__event_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingGateSourceData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

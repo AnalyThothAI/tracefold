@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..candidate.blacklist import Blacklist, BlacklistSnapshotV1
+from ..blacklist import Blacklist, BlacklistSnapshotV1
 from ..capabilities import ExecutionCapabilitySnapshotV1
 from .sql_values import _dumps
 
@@ -154,24 +154,6 @@ class CapabilityStorage:
             (digest, len(snapshot.included), int(created_at_ms)),
         )
         return True
-
-    def intent_admission_evidence(
-        self,
-        *,
-        instrument_id: str,
-        underlying_key: str,
-        now_ms: int,
-    ) -> tuple[ExecutionCapabilitySnapshotV1, BlacklistSnapshotV1] | None:
-        snapshot = self.active_execution_capability_snapshot(for_update=True)
-        if snapshot is None:
-            return None
-        capability = snapshot.included.get(instrument_id)
-        if capability is None or capability.underlying_key != underlying_key or not capability.executable:
-            return None
-        blacklist = self.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
-        if any(row.underlying_key == underlying_key for row in blacklist.active_rows):
-            return None
-        return snapshot, blacklist
 
     def blacklist_snapshot(self, *, now_ms: int, materialize_expiry: bool) -> BlacklistSnapshotV1:
         runtime = self.conn.execute(

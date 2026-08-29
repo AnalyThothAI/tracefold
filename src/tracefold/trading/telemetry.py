@@ -7,8 +7,10 @@ from collections.abc import Awaitable
 from typing import Literal, Protocol
 
 TradingWorkSemantics = Literal["capital_truth", "derived_work", "durable_event", "latest_state"]
-TradingExternalDataName = Literal["trading_candidate", "trading_reconcile"]
-TradingExternalDataSource = Literal["binance", "hyperliquid", "model", "other"]
+TradingExternalDataName = Literal["trading_capital_lane", "trading_reconcile"]
+# One live provider. Hyperliquid stays in the vocabulary because the research replay measures it;
+# `model` is gone with the Trading DSPy program (#331), which no longer exists to be measured.
+TradingExternalDataSource = Literal["binance", "hyperliquid", "other"]
 TradingExternalDataOutcome = Literal["error", "partial", "success"]
 TradingExternalDataProviderOutcome = Literal["error", "success"]
 

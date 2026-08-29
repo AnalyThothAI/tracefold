@@ -174,14 +174,13 @@ class LlmConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = Field(default=None, repr=False)
     news_triage_model: str | None = None
-    trading_decision_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
     news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
     news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
     news_compiler_reflection: LlmCompilerReflectionConfig = Field(default_factory=LlmCompilerReflectionConfig)
 
-    @field_validator("api_key", "news_triage_model", "trading_decision_model", mode="before")
+    @field_validator("api_key", "news_triage_model", mode="before")
     @classmethod
     def parse_optional_string(cls, value: Any) -> str | None:
         if value is None:
@@ -445,71 +444,31 @@ class NewsSettings(BaseModel):
 
 
 class TradingCandidateSettings(BaseModel):
-    """What may become a Trading case at all (#104). Every bound here is a universe filter, not sizing."""
+    """What may be admitted to the capital lane at all (#104/#331).
+
+    Every bound here is a universe or timing filter, never sizing and never Alpha. The policy's own
+    thresholds are code-owned and frozen onto each Case, so an operator cannot move a capital rule
+    without a versioned identity moving with it.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     max_age_seconds: int = 300
-    news_lookback_seconds: int = 3_600
-    oi_lookback_seconds: int = 1_800
     symbol_cooldown_seconds: int = 1_800
     max_rank_in_window: int = 2
     # 20M, not the 1M a "universe-quality floor" suggests. `docs/research/oi-agent-design-2026-08-22.md`
     # §1.5 measured the 10-50M OI bucket as the *worst* (+4h -0.77%, 48% win) and >200M as the best; a
     # one-million floor admits the losing bucket wholesale.
     min_oi_value_usd: int = 20_000_000
-    max_dspy_cases_per_day: int = 12
 
     @model_validator(mode="after")
     def validate_bounds(self) -> TradingCandidateSettings:
         if not 30 <= self.max_age_seconds <= 3_600:
             raise ValueError("trading_candidate_max_age_invalid")
-        # #211 made the scan window `max_age + max(lookback)`, so these two are no longer only fusion
-        # rules — they size the query the candidate runner issues every `poll_seconds` against the same
-        # PostgreSQL the News plane runs on. Six hours is well past any point-in-time context a trade
-        # decision can use, and it keeps the widest reachable horizon inside the read's row ceiling.
-        if not 60 <= self.news_lookback_seconds <= 21_600:
-            raise ValueError("trading_candidate_news_lookback_invalid")
-        if not 60 <= self.oi_lookback_seconds <= 21_600:
-            raise ValueError("trading_candidate_oi_lookback_invalid")
         if not 0 <= self.symbol_cooldown_seconds <= 86_400:
             raise ValueError("trading_candidate_symbol_cooldown_invalid")
         if not 1 <= self.max_rank_in_window <= 10:
             raise ValueError("trading_candidate_rank_invalid")
-        if not 0 <= self.max_dspy_cases_per_day <= 500:
-            raise ValueError("trading_candidate_dspy_budget_invalid")
-        return self
-
-
-class TradingRegimeSettings(BaseModel):
-    """The OI/price quadrant band. See `tracefold.trading.decision.regime` for the measured defaults."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    lookback_seconds: int = 3_600
-    min_price_move_bps: int = 100
-    max_price_move_bps: int = 600
-
-    @model_validator(mode="after")
-    def validate_band(self) -> TradingRegimeSettings:
-        if not 300 <= self.lookback_seconds <= 86_400:
-            raise ValueError("trading_regime_lookback_invalid")
-        if self.min_price_move_bps < 0 or self.max_price_move_bps <= self.min_price_move_bps:
-            # A maximum is mandatory: with only a floor the rule keeps exactly the chasing trades the
-            # measured inverted-U rejects.
-            raise ValueError("trading_regime_band_invalid")
-        return self
-
-
-class TradingPolicySettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    min_whale_long_profit_bps: int = 9_500
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> TradingPolicySettings:
-        if not 0 <= self.min_whale_long_profit_bps <= 100_000:
-            raise ValueError("trading_policy_whale_profit_invalid")
         return self
 
 
@@ -559,8 +518,6 @@ class TradingSettings(BaseModel):
 
     enabled: bool = False
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
-    regime: TradingRegimeSettings = Field(default_factory=TradingRegimeSettings)
-    policy: TradingPolicySettings = Field(default_factory=TradingPolicySettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
     nautilus: TradingNautilusSettings = Field(default_factory=TradingNautilusSettings)
 

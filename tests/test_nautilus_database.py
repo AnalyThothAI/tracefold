@@ -29,6 +29,7 @@ from tracefold.integrations.nautilus.messages import (
     strategy_queues,
 )
 from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading.storage.intents import EntryFence
 
 NOW_MS = 1_900_000_000_000
 
@@ -189,9 +190,9 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         entry_fenced_at_ms=NOW_MS,
     )
 
-    def fence(*_args: object, **_kwargs: object) -> IntentOutcome:
+    def fence(*_args: object, **_kwargs: object) -> EntryFence:
         repos.order.append("fence")
-        return fenced
+        return EntryFence(disposition="GRANTED", reason="entry_fence_granted", outcome=fenced)
 
     repos.trading.fence_entry.side_effect = fence
     repos.trading.intent.return_value = intent
@@ -206,17 +207,53 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
     repos.trading.intent.assert_not_called()
 
 
-def test_denied_entry_fence_releases_the_strategy_owned_pending_intent() -> None:
+@pytest.mark.parametrize(
+    "fence",
+    (
+        EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready"),
+        EntryFence(disposition="UNAVAILABLE", reason="daily_entry_fence_taken"),
+        EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
+        EntryFence(disposition="UNAVAILABLE", reason="intent_expired"),
+    ),
+)
+def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence: EntryFence) -> None:
+    """#331: nothing was written, nothing may be sent, and the reason is no longer a bare `None`."""
+
     intent = _intent()
     quantity = Decimal("0.001")
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.fence_entry.return_value = None
+    repos.trading.fence_entry.return_value = fence
 
     bridge._handle_event(
         repos,
         EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=quantity),
+    )
+
+    assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
+
+
+def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_rejection() -> None:
+    intent = _intent()
+    queues = strategy_queues()
+    bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
+    repos = _Repositories()
+    rejected = _outcome(
+        intent,
+        execution_state="TERMINAL",
+        terminal_outcome="REJECTED",
+        reason_code="capability_mismatch",
+    )
+    repos.trading.fence_entry.return_value = EntryFence(
+        disposition="REFUSED",
+        reason="capability_mismatch",
+        outcome=rejected,
+    )
+
+    bridge._handle_event(
+        repos,
+        EntryFenceRequested(intent_id=intent.intent_id, engine_identity="nt-v1", quantity=Decimal("0.001")),
     )
 
     assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)

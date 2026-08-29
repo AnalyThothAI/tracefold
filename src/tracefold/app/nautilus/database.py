@@ -231,20 +231,24 @@ class NautilusDatabaseBridge:
 
         if isinstance(event, EntryFenceRequested):
             with repos.transaction():
-                outcome = repos.trading.fence_entry(
+                fence = repos.trading.fence_entry(
                     event.intent_id,
                     engine_identity=event.engine_identity,
                     now_ms=self._now_ms(),
                 )
-            if outcome is None:
+            # Three dispositions, three different facts (#331). `GRANTED` is the only one that may
+            # precede a provider entry, and it is committed before this line runs. `REFUSED` wrote a
+            # terminal rejection at zero exposure; `UNAVAILABLE` wrote nothing at all and names why —
+            # a stale dispatch, an unready runtime, the day's entry already taken, or an expired TTL.
+            # The old `None` carried every one of those, so an engine held back by readiness looked
+            # exactly like one with nothing to do.
+            if not fence.granted or fence.outcome is None:
+                if fence.disposition == "UNAVAILABLE":
+                    logger.info("entry fence unavailable intent_id={} reason={}", event.intent_id, fence.reason)
                 self._dispatched_intent_id = None
                 self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
                 return True
-            if outcome.execution_state == "TERMINAL":
-                self._dispatched_intent_id = None
-                self._queues.commands.put_nowait(IntentReleased(intent_id=event.intent_id))
-                return True
-            self._queues.commands.put_nowait(EntryFenceGranted(outcome=outcome, quantity=event.quantity))
+            self._queues.commands.put_nowait(EntryFenceGranted(outcome=fence.outcome, quantity=event.quantity))
             return True
 
         if isinstance(event, OrderOutcomeUnknown) and event.intent_id is None:

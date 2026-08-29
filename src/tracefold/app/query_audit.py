@@ -50,8 +50,10 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     # #207 PR-W4. `trading_runtime_state` is a single row and needs no spec of its own; the two that scan
     # do, and both are bounded by a 24 h window plus a hard limit.
     "/api/trading/status": ("trading_status_counts",),
-    "/api/trading/intents": ("trading_console_intents", "trading_console_cases"),
-    "/api/trading/events/{event_id}": ("trading_case_for_source_key",),
+    "/api/trading/intents": ("trading_console_intents",),
+    # One route per durable aggregate (#331): Cases no longer ride along on the Intent read.
+    "/api/trading/cases": ("trading_console_cases",),
+    "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
     "/api/trading/gate": ("trading_gate_decisions_since",),
@@ -116,7 +118,7 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
 
 def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """The capital lane's two console reads, with the predicates they actually run (#207 PR-W4).
+    """The capital lane's console reads, with the predicates they actually run (#207 PR-W4/#331).
 
     Declared here rather than in `tracefold.trading`: the specs describe an *app* surface — which HTTP route
     runs which statement — and the package that owns the tables does not know an HTTP layer exists.
@@ -135,10 +137,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_console_intents",
             sql="""
-                SELECT i.intent_id, i.execution_state, c.trigger_kind, c.strategy_id,
-                       (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::int AS pre_move_bps,
-                       c.manifest -> 'strategy_config' AS strategy_config,
-                       (c.manifest -> 'contexts' -> 'regime' ->> 'reason') AS regime_reason
+                SELECT i.intent_id, i.execution_state, c.underlying_key, c.strategy_id
                   FROM trading_intents i
                   JOIN trading_cases c ON c.case_id = i.case_id
                  WHERE i.created_at_ms >= %s
@@ -148,12 +147,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=(since_ms,),
         ),
         ReadQuerySpec(
-            name="trading_case_for_source_key",
+            name="trading_gate_decision_for_source_key",
             sql="""
-                SELECT c.case_id, i.intent_id
-                  FROM trading_cases c
-                  LEFT JOIN trading_intents i ON i.case_id = c.case_id
-                 WHERE c.primary_source_key = %s
+                SELECT source_key, status, stage, reason, case_id
+                  FROM trading_candidate_gate_decisions
+                 WHERE source_key = %s
+                 ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
+                 LIMIT 1
             """,
             params=("oi:not-a-real-event:oi_signal_v1",),
         ),
@@ -182,14 +182,17 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             params=("oi", since_ms),
         ),
         ReadQuerySpec(
+            # The Case aggregate on its own axis. The Intent link is one nullable id, never a joined
+            # lifecycle: `NOT EXISTS (... trading_intents ...)` used to make "no Intent" a property of
+            # the Case read, which is how one contract came to answer two different questions.
             name="trading_console_cases",
             sql="""
-                SELECT c.case_id, c.state
+                SELECT c.case_id, c.state, c.policy_reason, c.policy_checks, i.intent_id
                   FROM trading_cases c
+                  LEFT JOIN trading_intents i ON i.case_id = c.case_id
                  WHERE c.created_at_ms >= %s
-                   AND NOT EXISTS (SELECT 1 FROM trading_intents i WHERE i.case_id = c.case_id)
-                 ORDER BY c.created_at_ms DESC
-                 LIMIT 100
+                 ORDER BY c.created_at_ms DESC, c.case_id
+                 LIMIT 101
             """,
             params=(since_ms,),
         ),

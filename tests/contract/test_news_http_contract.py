@@ -1091,18 +1091,10 @@ def test_status_reports_the_oi_lane_with_both_threshold_sets(client) -> None:
         "whale_oi_ratio_above_bps": 8_000,
         "oi_change_at_least_bps": 0,
     }
-    # The capital lane's own floors, side by side and never merged (#207 principle 4). `enabled` is part of
-    # the answer: a floor from a lane that is switched off is a published band, not a gate.
-    assert data["oi"]["trade_floors"] == {
-        "enabled": False,
-        "execution_environment": "BINANCE_USDM_DEMO",
-        "allow_short": False,
-        "min_whale_long_profit_bps": 9_500,
-        "min_oi_value_usd": 20_000_000,
-        "min_price_move_bps": 100,
-        "max_price_move_bps": 600,
-        "pre_move_lookback_ms": 3_600_000,
-    }
+    # No `trade_floors` (#331). News republished the capital lane's thresholds here, which invited a
+    # console to compare a Case frozen last week against a floor edited yesterday. The lane's rules
+    # belong to `/api/trading/*`, and the ones that decided a Case travel with that Case.
+    assert "trade_floors" not in data["oi"]
 
     # The live window, read under the running thresholds and folded against the rank ceiling here.
     assert data["oi"]["window_occupancy"] == [

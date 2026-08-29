@@ -7,7 +7,7 @@ import { forwardRef, type ReactNode } from "react";
  * Generic actions — Search, RefreshCw, PanelLeft, Chevron, Check, X, ExternalLink, SlidersHorizontal —
  * stay on lucide and are never redrawn here: they are already at this spec, and a second hand-drawn copy
  * only introduces drift. What lucide cannot supply is the vocabulary this console is read in. A newspaper
- * and a heartbeat say "news" and "activity"; the destinations are 事件流 and OI 遥测审计, and neither glyph
+ * and a heartbeat say "news" and "activity"; the destinations are 事件流 and OI 来源与准入审计, and neither glyph
  * draws the word it stands for.
  *
  * Every icon here is on the same 24 grid with a 2px round-capped stroke and takes its colour from
@@ -60,7 +60,7 @@ export const EventStreamIcon = forwardRef<SVGSVGElement, LucideProps>((props, re
 EventStreamIcon.displayName = "EventStreamIcon";
 
 /**
- * 杠杆异动. A dial with a mark at its centre: the market's leverage *structure*, read at one instant.
+ * 资本判定. A dial with a mark at its centre: the market's leverage *structure*, read at one instant.
  *
  * Deliberately not an arrow. The page is about open-interest buildup and what the capital lane decided
  * about it, and an arrow would state a price direction that a single case may or may not have (#104).
@@ -78,7 +78,7 @@ export const LeverageGaugeIcon = forwardRef<SVGSVGElement, LucideProps>((props, 
 LeverageGaugeIcon.displayName = "LeverageGaugeIcon";
 
 /**
- * OI 遥测审计. A trace with one spike in it: the provider emits a frame when its own trigger fires, and this
+ * OI 来源与准入审计. A trace with one spike in it: the provider emits a frame when its own trigger fires, and this
  * page is where a reader checks that the trace itself parsed, passed the gates and occupied a push slot.
  *
  * A flat line would say "monitoring"; the spike is the frame. The glyph never leans up or down as a price

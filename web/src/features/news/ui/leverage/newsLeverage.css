@@ -1,6 +1,7 @@
 @layer app.features {
   /*
-   * 杠杆异动 (#256, geometry re-cut to the v8 artifact in #280). A list of cases beside one case in full.
+   * 资本判定 (#256, geometry re-cut to the v8 artifact in #280, renamed and cut back in #331).
+   * A list of Cases beside one Case in full.
    *
    * The measure is deliberately lopsided — the pane is far wider than the list — because the list is a set
    * of five-line summaries and the pane is a document. It was `1fr / 1.22fr` until #280 measured the
@@ -120,21 +121,101 @@
       max-height: none;
       overflow-y: visible;
     }
+  }
 
-    .news-leverage-thesis,
-    .news-leverage-columns,
-    .news-leverage-detail .news-technical > div {
-      grid-template-columns: minmax(0, 1fr);
-    }
+  /* One Case in full, beside the list. */
+  .news-leverage-detail {
+    display: grid;
+    gap: 12px;
+    align-content: start;
+    min-width: 0;
+  }
+
+  /* One Case's row in the list: verdict, issuer, and the clock it was frozen at. */
+  .news-leverage-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 8px;
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    background: var(--surface-raised);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .news-leverage-row[data-selected="true"] {
+    border-color: var(--accent-primary);
+  }
+
+  .news-leverage-row b {
+    font: 640 var(--font-size-meta)/1.3 var(--font-mono);
+  }
+
+  .news-leverage-row time,
+  .news-leverage-row span {
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-leverage-row code {
+    grid-column: 1 / -1;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+    overflow-wrap: anywhere;
+  }
+
+  /* The frozen check table: what was required, what was measured, and whether it passed. */
+  .news-leverage-checks {
+    display: grid;
+    gap: 4px;
+  }
+
+  .news-leverage-check {
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) auto minmax(0, 1fr) minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: baseline;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: var(--font-size-mono-meta);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .news-leverage-check:last-child {
+    border-bottom: none;
+  }
+
+  .news-leverage-check[data-passed="false"] {
+    color: var(--signal-caution);
+  }
+
+  /* The page's provenance line: where the frames and the execution ledger live. */
+  .news-leverage-source {
+    margin: 0;
+    color: var(--text-subtle);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-leverage-reasons {
+    display: grid;
+    gap: 3px;
+    margin: 0;
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .news-leverage-reason {
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+    color: var(--text-subtle);
   }
 
   @media (max-width: 767px) {
-    .news-leverage-evidence > div {
-      grid-template-columns: 48px 56px minmax(0, 1fr);
-    }
-
-    .news-leverage-detail-verdict {
-      margin-left: 0;
+    .news-leverage-check {
+      grid-template-columns: minmax(0, 1fr) auto;
     }
   }
 }

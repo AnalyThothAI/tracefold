@@ -1,1 +1,0 @@
-"""Versioned pure Trading strategies."""

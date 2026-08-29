@@ -1,26 +1,27 @@
-import { useTradingEventCaseWithToken } from "../api/tradingQueries";
-import { CASE_STATE_ZH, gateReasonLabel, GATE_STATUS_ZH } from "../model/tradingLabels";
+import { newsLeveragePath } from "@shared/routing/paths";
+import { Link } from "react-router-dom";
+
+import { useTradingGateSourceWithToken } from "../api/tradingQueries";
+import { GATE_STATUS_ZH, gateReasonLabel } from "../model/tradingLabels";
 
 import "./tradingCaseBadge.css";
 
 /**
- * Did the capital lane take this Event, and where did it stop? (#207 PR-W4)
+ * What admission decided about this Event's Source, and a link to the Case if it authored one (#331).
  *
  * Three outcomes, and keeping them apart is the whole job.
  *
- * `joinable: false` — this cannot be asked. Only the deterministic OI lane's source key is reconstructible
- * from an `event_id` (`oi:{event_id}:{metric_version}`); the model lane's is a content hash of an artifact
- * and a fingerprint (#154), which no Event id rebuilds. The badge renders nothing at all, because a 未成案
- * chip here would tell a reader the lane declined an Event it never saw.
+ * `joinable: false` — this cannot be asked. Only the deterministic OI lane's source key is
+ * reconstructible from an `event_id`; the badge renders nothing at all, because a 未成案 chip here would
+ * tell a reader the lane declined an Event it never saw.
  *
- * No case — asked, and the lane never opened one. Since #264 that answer carries *why*: the admission
- * ledger's stage and reason, verbatim beside their Chinese. 未成案 on its own was the same chip for "below
- * the liquidity floor", "no perp at the venue whose OI moved" and "the lane never evaluated it", and the
- * three are different operational facts. A frame with no ledger row at all keeps the bare chip, because
- * "not evaluated under any gate version" is not a refusal and must not be drawn as one.
+ * No admission row — asked, and the lane never evaluated it under any gate version. That is not a
+ * refusal and is not drawn as one.
  *
- * A case — the state and, when it stopped, the rule key verbatim. `policy_reason` has no Chinese synonym; it
- * is the string an operator greps for.
+ * An admission row — the status and the `stage:reason` verbatim beside its Chinese, and a Case link when
+ * the frame authored one. The badge deliberately does not render the Case's decision or the Intent's
+ * execution state: those belong to other aggregates, and a chip that carried all three taught readers
+ * that a gate refusal and a policy refusal were the same kind of fact.
  */
 export function TradingCaseBadge({
   eventId,
@@ -31,34 +32,35 @@ export function TradingCaseBadge({
   lane: "oi" | "news";
   token: string;
 }) {
-  const query = useTradingEventCaseWithToken(token, eventId, lane);
+  const query = useTradingGateSourceWithToken(token, eventId, lane);
   if (lane !== "oi") return null;
   const data = query.data;
   if (!data || !data.joinable) return null;
-  if (!data.case) {
-    const reason =
-      data.gate_stage && data.gate_reason ? `${data.gate_stage}:${data.gate_reason}` : "";
+  const decision = data.decision;
+  if (!decision) {
     return (
-      <span
-        className="trading-case-badge"
-        data-gate={data.gate_status ?? undefined}
-        title={
-          reason
-            ? `${GATE_STATUS_ZH[data.gate_status ?? ""] ?? data.gate_status} · ${gateReasonLabel(reason)}`
-            : "资本通道尚未在任何 gate 版本下评估过这一帧"
-        }
-      >
-        未成案
-        {reason ? <code>{reason}</code> : null}
+      <span className="trading-case-badge" title="资本通道尚未在任何 gate 版本下评估过这一帧">
+        未评估
       </span>
     );
   }
-  const caseRow = data.case;
+  const key =
+    decision.gate_stage && decision.gate_reason
+      ? `${decision.gate_stage}:${decision.gate_reason}`
+      : "";
+  const status = decision.gate_status ?? "";
+  const label = GATE_STATUS_ZH[status] ?? status;
   return (
-    <span className="trading-case-badge" data-state={caseRow.state}>
-      {CASE_STATE_ZH[caseRow.state] ?? caseRow.state}
-      {caseRow.policy_reason ? <code>{caseRow.policy_reason}</code> : null}
-      {data.intent ? <code>{data.intent.execution_state}</code> : null}
+    <span
+      className="trading-case-badge"
+      data-gate={status || undefined}
+      title={key ? `${label} · ${gateReasonLabel(key)}` : label}
+    >
+      {label}
+      {key ? <code>{key}</code> : null}
+      {decision.case_id ? (
+        <Link to={`${newsLeveragePath()}?case=${encodeURIComponent(decision.case_id)}`}>案例</Link>
+      ) : null}
     </span>
   );
 }

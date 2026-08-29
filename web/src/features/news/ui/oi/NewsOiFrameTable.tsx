@@ -1,15 +1,12 @@
 import {
+  tradingAdmissionCellCopy,
+  tradingAdmissionTraceEntries,
   tradingGateByEventId,
-  tradingOiCellCopy,
-  tradingOiLedgerByEventId,
-  tradingOiTraceEntries,
+  type TradingAdmissionLookup,
   type TradingGate,
   type TradingGateDecision,
-  type TradingOiLedgerEntry,
-  type TradingOiLookup,
-  type TradingIntents,
 } from "@features/trading";
-import { newsEventPath, newsSymbolPath } from "@shared/routing/paths";
+import { newsEventPath, newsLeveragePath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
@@ -17,7 +14,7 @@ import { ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { NewsFeedEvent, NewsOiTab, NewsOiTradeFloors, NewsQuote } from "../../api/newsQueries";
+import type { NewsFeedEvent, NewsOiTab, NewsQuote } from "../../api/newsQueries";
 import { NEWS_OI_TABS } from "../../api/newsQueries";
 import { clockTime, displayTime, formatCount } from "../../model/newsLabels";
 import {
@@ -43,12 +40,18 @@ import { NewsQuotePrice } from "../chrome/NewsQuoteValue";
 
 import "./newsOiFrameTable.css";
 
-/** One deterministic telemetry Event per row, with an exact optional capital-ledger join. */
+/**
+ * One deterministic telemetry Event per row, with the admission answer its Source received (#331).
+ *
+ * The trailing cell is the Source/Admission aggregate and only that. It used to carry a Case's state and
+ * an Intent's execution state as well, which meant one column answered three different questions and a
+ * failed Intent read made every row read as 未成案.
+ */
 export function NewsOiFrameTable({
   counts,
   error,
-  floors,
   gate,
+  gateError,
   hasMore,
   loadingMore,
   onLoadMore,
@@ -57,13 +60,11 @@ export function NewsOiFrameTable({
   rows,
   quotes,
   tab,
-  trading,
-  tradingError,
 }: {
   counts: Record<NewsOiTab, number | null>;
   error: unknown;
-  floors: NewsOiTradeFloors;
   gate: TradingGate | undefined;
+  gateError: boolean;
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
@@ -72,10 +73,7 @@ export function NewsOiFrameTable({
   rows: readonly NewsFeedEvent[];
   quotes: Record<string, NewsQuote>;
   tab: NewsOiTab;
-  trading: TradingIntents | undefined;
-  tradingError: boolean;
 }) {
-  const ledger = tradingOiLedgerByEventId(trading);
   const gateByEvent = tradingGateByEventId(gate);
   return (
     <section className="news-oi-frame-panel" aria-label="遥测帧">
@@ -123,21 +121,17 @@ export function NewsOiFrameTable({
             <span>研究分桶</span>
             <span>判定</span>
             <span className="news-oi-num">1H / 4H</span>
-            <span>交易 · OI_ONLY</span>
+            <span>准入</span>
           </div>
           {rows.map((event) => (
             <FrameRow
               event={event}
-              floors={floors}
               gateAnswered={Boolean(gate)}
               gateComplete={gate?.complete ?? false}
               gateDecision={gateByEvent.get(event.event_id)}
+              gateError={gateError}
               key={event.event_id}
-              ledgerEntry={ledger.get(event.event_id)}
-              ledgerComplete={trading?.complete ?? false}
               quotes={quotes}
-              tradingError={tradingError}
-              tradingLoaded={Boolean(trading)}
             />
           ))}
         </div>
@@ -157,43 +151,32 @@ export function NewsOiFrameTable({
 
 function FrameRow({
   event,
-  floors,
   gateAnswered,
   gateComplete,
   gateDecision,
-  ledgerComplete,
-  ledgerEntry,
+  gateError,
   quotes,
-  tradingError,
-  tradingLoaded,
 }: {
   event: NewsFeedEvent;
-  floors: NewsOiTradeFloors;
   gateAnswered: boolean;
   gateComplete: boolean;
   gateDecision: TradingGateDecision | undefined;
-  ledgerComplete: boolean;
-  ledgerEntry: TradingOiLedgerEntry | undefined;
+  gateError: boolean;
   quotes: Record<string, NewsQuote>;
-  tradingError: boolean;
-  tradingLoaded: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const oi = event.oi ?? null;
   const triage = event.triage ?? null;
   const symbol = oi?.symbol ?? "";
   const quoteSymbol = (event.assets ?? []).find((asset) => asset.listed)?.symbol;
-  const buckets = oiBuckets(oi, floors);
+  const buckets = oiBuckets(oi);
   const withheld = event.outcome.group !== "pushed";
-  const tradingLookup: TradingOiLookup = {
-    complete: ledgerComplete,
-    entry: ledgerEntry,
+  const admission: TradingAdmissionLookup = {
+    answered: gateAnswered,
+    complete: gateComplete,
+    decision: gateDecision,
     eventId: event.event_id,
-    gate: gateDecision,
-    gateAnswered,
-    gateComplete,
-    loadFailed: tradingError,
-    loaded: tradingLoaded,
+    loadFailed: gateError,
   };
   return (
     <article
@@ -263,9 +246,9 @@ function FrameRow({
           <span className="news-oi-reaction-slash">/</span>
           <ReactionValue event={event} horizon="4h" />
         </span>
-        <TradingCell lookup={tradingLookup} />
+        <AdmissionCell lookup={admission} />
       </button>
-      {open ? <FrameDetail event={event} tradingLookup={tradingLookup} /> : null}
+      {open ? <FrameDetail event={event} admission={admission} /> : null}
     </article>
   );
 }
@@ -283,14 +266,18 @@ function ReactionValue({ event, horizon }: { event: NewsFeedEvent; horizon: "1h"
   return <b data-dir={priceTone(value)}>{formatBps(value)}</b>;
 }
 
-function TradingCell({ lookup }: { lookup: TradingOiLookup }) {
-  const copy = tradingOiCellCopy(lookup);
+/**
+ * The admission answer, and nothing else.
+ *
+ * Never a Case state and never an execution state: those are other aggregates, and a cell that carried
+ * all three taught readers that a gate refusal and a policy refusal were the same kind of fact. The
+ * Case *link* is in the expanded row rather than here, because the row itself is one button and an
+ * anchor nested inside a button is neither valid nor operable.
+ */
+function AdmissionCell({ lookup }: { lookup: TradingAdmissionLookup }) {
+  const copy = tradingAdmissionCellCopy(lookup);
   return (
     <span className="news-oi-trading-cell" title={copy.title}>
-      {/* The lane's own quadrant, from `regime` on the case — not a pre-frame price this page does not
-          have. It leads the cell because it is the first gate the decision beside it went through, and it
-          is a separate field from `secondary` so a gate stage can never arrive dressed as a quadrant. */}
-      {copy.quadrant ? <span className="news-oi-quadrant">{copy.quadrant}</span> : null}
       {copy.secondary ? <small>{copy.secondary}</small> : null}
       <b>{copy.primary}</b>
     </span>
@@ -298,14 +285,15 @@ function TradingCell({ lookup }: { lookup: TradingOiLookup }) {
 }
 
 function FrameDetail({
+  admission,
   event,
-  tradingLookup,
 }: {
+  admission: TradingAdmissionLookup;
   event: NewsFeedEvent;
-  tradingLookup: TradingOiLookup;
 }) {
   const referrer = useRouteReferrer();
   const symbol = event.oi?.symbol ?? "";
+  const caseId = admission.decision?.case_id ?? null;
   return (
     <div className="news-oi-detail">
       <div className="news-oi-detail-left">
@@ -322,13 +310,22 @@ function FrameDetail({
               代币页 {symbol} <ChevronRight aria-hidden />
             </Link>
           ) : null}
+          {/* The Case this Source authored, when it authored one. A link, never a restated decision. */}
+          {caseId ? (
+            <Link
+              className="news-oi-open"
+              to={`${newsLeveragePath()}?case=${encodeURIComponent(caseId)}`}
+            >
+              资本判定 <ChevronRight aria-hidden />
+            </Link>
+          ) : null}
         </span>
       </div>
       <TracePanel
         label="判定痕迹 · OI_JUDGMENT_TRACE"
         entries={event.oi ? traceEntries(event.oi) : null}
       />
-      <TradingTrace lookup={tradingLookup} />
+      <AdmissionTrace lookup={admission} />
     </div>
   );
 }
@@ -359,8 +356,8 @@ function TracePanel({
   );
 }
 
-function TradingTrace({ lookup }: { lookup: TradingOiLookup }) {
-  return <TracePanel label="交易判定 · ?LANE=OI" entries={tradingOiTraceEntries(lookup)} />;
+function AdmissionTrace({ lookup }: { lookup: TradingAdmissionLookup }) {
+  return <TracePanel label="资本准入 · ADMISSION" entries={tradingAdmissionTraceEntries(lookup)} />;
 }
 
 /** The trace as the judge wrote it: the keys it used, in the order the rule reads them. */

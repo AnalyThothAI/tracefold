@@ -16,6 +16,7 @@ import {
 import {
   TRADING_NOW_MS,
   tradingGateFixture,
+  tradingCasesForUnderlying,
   tradingIntentsForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -86,16 +87,23 @@ export async function installMockApi(
     // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
     // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
     if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
-    // #282: the token page asks for one underlying, and the case it gets back has to belong to that name
-    // and to a frame the page actually loaded — otherwise 交易视角 renders its "no frame" path on every
-    // baseline and the panel is frozen in the one state it is least useful in.
+    // #282: the token page asks for one underlying, and what it gets back has to belong to that name —
+    // otherwise 资本复盘 renders its empty path on every baseline and the panel is frozen in the one
+    // state it is least useful in.
     if (path === "/api/trading/intents") {
       return fulfill(route, tradingIntentsForUnderlying(url.searchParams.get("underlying")));
     }
-    // #269: the admission ledger the OI audit's capital column reads for a whole page of frames at once.
+    if (path === "/api/trading/cases") {
+      return fulfill(route, tradingCasesForUnderlying(url.searchParams.get("underlying")));
+    }
+    // #269: the admission ledger the OI audit reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());
-    if (path.startsWith("/api/trading/events/")) {
-      return fulfill(route, { event_id: path.split("/").pop() ?? "", joinable: false });
+    if (path.startsWith("/api/trading/gate/")) {
+      return fulfill(route, {
+        decision: null,
+        event_id: path.split("/").pop() ?? "",
+        joinable: false,
+      });
     }
     if (path.startsWith("/api/news/symbols/")) {
       return fulfill(
@@ -127,13 +135,8 @@ function recordUnhandledApiRequest(page: Page, url: URL) {
 /**
  * The feed as the token page asks for it: this name's own OI frame on the same clock as its news.
  *
- * The page joins 交易视角 to its newest case by the `event_id` the ledger published, and the trading fixture
- * opens that case on `evt-oi-{base}`. Answering a symbol query with the generic rows every other route gets
- * meant the panel never found its frame, so the baseline froze the floor table with four unread rows — the
- * one state it says least in, and the state a reader would wrongly read as "measured, and none passed".
- *
- * Production serves this shape: the page's own tab strip counts an OI 帧 lane, and it read 0 on every
- * baseline for the same reason.
+ * Production serves this shape: the page's own tab strip counts an OI 帧 lane, and answering a symbol
+ * query with the generic rows every other route gets made it read 0 on every baseline.
  */
 function newsSymbolFeedData(symbol: string) {
   const feed = newsFeedData();

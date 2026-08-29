@@ -191,7 +191,8 @@ async def run_workers(settings: Settings) -> None:
             )
             for task_name, runner in worker_business_runners(
                 news_pipeline=components.news_pipeline,
-                trading_pipeline=components.trading_pipeline,
+                capital_lane=components.capital_lane,
+                telemetry=components.telemetry,
             ):
                 business_tasks.append(
                     group.create_task(
@@ -509,8 +510,6 @@ async def _graceful_cleanup(
         finite.close_admission()
         if components.news_pipeline is not None:
             await _within(components.news_pipeline.drain(), started_at)
-        if components.trading_pipeline is not None:
-            await _within(components.trading_pipeline.close(), started_at)
         if components.news_bus is not None:
             await _within(components.news_bus.close(), started_at)
         db.close_business_admission()

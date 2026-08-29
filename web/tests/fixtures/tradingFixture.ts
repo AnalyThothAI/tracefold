@@ -1,5 +1,6 @@
 import type {
   TradingCase,
+  TradingCases,
   TradingGate,
   TradingGateDecision,
   TradingIntent,
@@ -8,59 +9,44 @@ import type {
 } from "@features/trading/api/tradingQueries";
 
 export const TRADING_NOW_MS = Date.parse("2026-08-25T12:00:00Z");
+export const CAPITAL_POLICY_ID = "binance_oi_smart_money_long_v2";
 
+/**
+ * One fixture per durable aggregate (#331), because one route per durable aggregate.
+ *
+ * The mixed `TradingIntents` fixture this replaces carried `cases_without_intents`, which let a test
+ * assert Case behaviour through the Intent contract — exactly the coupling the split removes.
+ */
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
     budget: { max_entries_per_utc_day: 1, target_notional_usd: "10" },
     counts: {
       active_intents: 1,
-      candidate_counts_24h: { CASE_CREATED: 1, REJECTED: 87 },
-      candidate_counts_7d: { CASE_CREATED: 4, REJECTED: 392 },
-      candidate_reasons_24h: {
-        "eligibility:oi_value_below_floor": 22,
-        "eligibility:rank_above_limit": 65,
-        "freeze:case_created": 1,
-      },
-      candidate_reasons_7d: { "eligibility:rank_above_limit": 300 },
-      cases_by_state: { INTENT_EMITTED: 3, POLICY_REJECTED: 4 },
-      cases_by_strategy: { news_oi_alignment_v1: 5, oi_momentum_v1: 2 },
-      cases_by_trigger: { news: 5, oi: 2 },
-      cases_today_by_state: { INTENT_EMITTED: 1, POLICY_REJECTED: 4 },
+      cases_24h: 7,
       closed_intents_today: 2,
+      day_key: "2026-08-25",
       entries_today: 1,
-      funnel_day_key: "2026-08-25",
-      funnel_today: { case_created: 5 },
-      intents_by_state: { OPEN_PROTECTED: 1, TERMINAL: 2 },
+      intents_24h: 3,
       latest_case_created_at_ms: TRADING_NOW_MS - 3_600_000,
       latest_entry_fenced_at_ms: TRADING_NOW_MS - 3_400_000,
-      latest_gate_eligible_at_ms: TRADING_NOW_MS - 3_600_000,
       latest_intent_emitted_at_ms: TRADING_NOW_MS - 3_500_000,
       latest_position_closed_at_ms: TRADING_NOW_MS - 60_000,
       latest_position_opened_at_ms: TRADING_NOW_MS - 3_400_000,
-      latest_source_at_ms: TRADING_NOW_MS - 60_000,
-      liquidation_promotion_ready: false,
-      liquidation_promotion_reason: "source_contract_incomplete",
-      outcomes_by_state: { CLOSED_FLAT: 2 },
-      policy_allowed_24h: 3,
-      policy_allowed_today: 1,
-    },
-    floors: {
-      lookback_ms: 3_600_000,
-      max_price_move_bps: 600,
-      min_oi_value_usd: "20000000",
-      min_price_move_bps: 100,
-      min_whale_long_profit_bps: 9_500,
-    },
-    gate: {
-      config_digest: "c".repeat(64),
-      max_age_ms: 300_000,
-      max_rank_in_window: 2,
-      min_oi_value_usd: 5_000_000,
-      symbol_cooldown_ms: 1_800_000,
-      venue_priority: ["binance", "hyperliquid"],
-      version: "trading_candidate_gate_v1",
     },
     measured_at_ms: TRADING_NOW_MS,
+    policy: {
+      config: {
+        max_price_move_bps: "1000",
+        measurement_window_ms: "300000",
+        min_oi_change_bps: "500",
+        min_price_move_bps: "0",
+        min_whale_long_profit_bps: "0",
+        min_whale_oi_ratio_bps: "5000",
+      },
+      config_digest: "a".repeat(64),
+      policy_id: CAPITAL_POLICY_ID,
+      policy_version: CAPITAL_POLICY_ID,
+    },
     readiness: {
       control: "RUNNING",
       credentials_configured: true,
@@ -75,24 +61,6 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       blacklist_revision: 3,
       unexpected_exposure: false,
     },
-    strategies: [
-      {
-        config: {
-          allow_short: "False",
-          max_price_move_bps: "1000",
-          measurement_window_ms: "300000",
-          min_oi_change_bps: "500",
-          min_price_move_bps: "0",
-          min_whale_long_profit_bps: "0",
-          min_whale_oi_ratio_bps: "5000",
-        },
-        config_digest: "a".repeat(64),
-        permission: "paper",
-        strategy_id: "oi_smart_money_momentum_v1",
-        strategy_version: "oi_smart_money_momentum_v1",
-        trigger_kinds: ["oi"],
-      },
-    ],
     window_hours: 24,
     ...overrides,
   };
@@ -105,11 +73,10 @@ export function tradingIntentFixture(overrides: Partial<TradingIntent> = {}): Tr
     avg_exit_price: null,
     base_symbol: "SOL",
     case_id: "case-sol",
-    case_observed_at_ms: TRADING_NOW_MS - 400_000,
-    case_state: "INTENT_EMITTED",
     closed_at_ms: null,
     commissions_by_currency: null,
     created_at_ms: TRADING_NOW_MS - 380_000,
+    entry_fenced_at_ms: TRADING_NOW_MS - 370_000,
     event_id: "evt-oi-sol",
     execution_environment: "BINANCE_USDM_DEMO",
     execution_capability_snapshot_sha256: "c".repeat(64),
@@ -122,33 +89,18 @@ export function tradingIntentFixture(overrides: Partial<TradingIntent> = {}): Tr
     blacklist_snapshot_sha256_at_emission: "d".repeat(64),
     intent_id: "intent-sol",
     opened_at_ms: TRADING_NOW_MS - 360_000,
-    policy_decision: "long",
-    policy_reason: null,
-    pre_move_bps: 187,
+    policy_id: CAPITAL_POLICY_ID,
+    policy_version: CAPITAL_POLICY_ID,
     protected_at_ms: TRADING_NOW_MS - 350_000,
     protected_quantity: "0.05",
     realized_pnl_amount: null,
     realized_pnl_currency: null,
     reason_code: null,
     reference_price: "200",
-    regime: "buildup_up",
-    regime_reason: "quadrant",
     side: "long",
     stop_price: "196",
-    strategy_config: {
-      allow_short: "False",
-      max_price_move_bps: "1000",
-      measurement_window_ms: "300000",
-      min_oi_change_bps: "500",
-      min_price_move_bps: "0",
-      min_whale_long_profit_bps: "9500",
-      min_whale_oi_ratio_bps: "5000",
-    },
-    strategy_id: "oi_smart_money_momentum_v1",
-    strategy_version: "oi_smart_money_momentum_v1",
     target_notional_usd: "10",
     terminal_outcome: null,
-    trigger_kind: "oi",
     underlying_key: "crypto:SOL",
     updated_at_ms: TRADING_NOW_MS - 60_000,
     valid_until_ms: TRADING_NOW_MS + 60_000,
@@ -163,28 +115,57 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     created_at_ms: TRADING_NOW_MS - 500_000,
     decided_at_ms: TRADING_NOW_MS - 499_000,
     event_id: "evt-oi-hype",
+    intent_id: null,
+    manifest_version: "trading_manifest_v7",
+    mark_price: "0.0950",
     observed_at_ms: TRADING_NOW_MS - 501_000,
+    oi_change_bps: 1_548,
+    oi_value_usd: 23_010_000,
+    // The Case's own frozen thresholds, deliberately different from the running policy's, so a test can
+    // prove the page renders the Case rather than today's configuration.
+    policy_checks: [
+      {
+        check: "whale_oi_ratio_bps",
+        measured: "5424",
+        operator: ">",
+        passed: false,
+        threshold: "8000",
+      },
+    ],
+    policy_config: { max_price_move_bps: "600", min_whale_oi_ratio_bps: "8000" },
+    policy_config_digest: "e".repeat(64),
     policy_decision: "no_trade",
-    policy_reason: "whale_profit_below_floor",
+    policy_id: CAPITAL_POLICY_ID,
+    policy_reason: "smart_money_ratio_below_or_equal_floor",
+    policy_version: CAPITAL_POLICY_ID,
     pre_move_bps: 187,
-    regime: "buildup_up",
-    regime_reason: "quadrant",
-    state: "POLICY_REJECTED",
-    strategy_config: {
-      allow_short: "False",
-      max_price_move_bps: "1000",
-      measurement_window_ms: "300000",
-      min_oi_change_bps: "500",
-      min_price_move_bps: "0",
-      min_whale_long_profit_bps: "9500",
-      min_whale_oi_ratio_bps: "5000",
-    },
-    strategy_id: "oi_smart_money_momentum_v1",
-    strategy_version: "oi_smart_money_momentum_v1",
+    provider_symbol: "HYPEUSDT",
+    state: "NO_TRADE",
     trigger_kind: "oi",
     underlying_key: "crypto:HYPE",
+    whale_long_profit_bps: 9_074,
+    whale_oi_ratio_bps: 5_424,
     ...overrides,
   };
+}
+
+export function tradingCasesFixture(overrides: Partial<TradingCases> = {}): TradingCases {
+  return {
+    cases: [tradingCaseFixture()],
+    complete: true,
+    measured_at_ms: TRADING_NOW_MS,
+    reason_counts_24h: { smart_money_ratio_below_or_equal_floor: 4 },
+    state_counts_24h: { BLOCKED: 1, INTENT_EMITTED: 1, NO_TRADE: 5 },
+    window_hours: 24,
+    ...overrides,
+  };
+}
+
+export function tradingCasesForUnderlying(underlying: string | null): TradingCases {
+  const batch = tradingCasesFixture();
+  if (!underlying) return batch;
+  const key = underlying.includes(":") ? underlying : `crypto:${underlying.toUpperCase()}`;
+  return { ...batch, cases: (batch.cases ?? []).filter((row) => row.underlying_key === key) };
 }
 
 export function gateEvidence(
@@ -192,6 +173,9 @@ export function gateEvidence(
 ): NonNullable<TradingGateDecision["gate_evidence"]> {
   return {
     blacklist_reason: "",
+    enabled: [],
+    lane_full: "",
+    live_exchange_id: "",
     rule: "",
     source_decision: "drop",
     source_rule: "opening_move_with_whale_concentration",
@@ -216,7 +200,8 @@ export function tradingGateDecisionFixture(
     gate_retryable: false,
     gate_stage: "eligibility",
     gate_status: "REJECTED",
-    gate_version: "trading_candidate_gate_v1",
+    gate_version: "trading_admission_v2",
+    research_only: false,
     source_key: "oi:evt-oi-storj:oi_signal_v1",
     source_observed_at_ms: TRADING_NOW_MS - 120_000,
     trigger_kind: "oi",
@@ -225,11 +210,28 @@ export function tradingGateDecisionFixture(
   };
 }
 
+export function tradingGateConfigFixture(): TradingGate["config"] {
+  return {
+    config_digest: "c".repeat(64),
+    live_exchange_id: "binance",
+    max_age_ms: 300_000,
+    max_rank_in_window: 2,
+    min_oi_value_usd: 5_000_000,
+    symbol_cooldown_ms: 1_800_000,
+    version: "trading_admission_v2",
+  };
+}
+
 export function tradingGateFixture(overrides: Partial<TradingGate> = {}): TradingGate {
   return {
     complete: true,
+    config: tradingGateConfigFixture(),
     decisions: [tradingGateDecisionFixture()],
+    latest_gate_eligible_at_ms: TRADING_NOW_MS - 3_600_000,
+    latest_source_at_ms: TRADING_NOW_MS - 60_000,
     measured_at_ms: TRADING_NOW_MS,
+    reason_counts_24h: { "eligibility:oi_value_below_floor": 22 },
+    status_counts_24h: { CASE_CREATED: 1, REJECTED: 87, RESEARCH_ONLY: 4 },
     window_hours: 24,
     ...overrides,
   };
@@ -237,10 +239,12 @@ export function tradingGateFixture(overrides: Partial<TradingGate> = {}): Tradin
 
 export function tradingIntentsFixture(overrides: Partial<TradingIntents> = {}): TradingIntents {
   return {
-    cases_without_intents: [tradingCaseFixture()],
     complete: true,
     intents: [tradingIntentFixture()],
     measured_at_ms: TRADING_NOW_MS,
+    outcome_counts_24h: { CLOSED_FLAT: 2 },
+    reason_counts_24h: {},
+    state_counts_24h: { OPEN_PROTECTED: 1, TERMINAL: 2 },
     window_hours: 24,
     ...overrides,
   };
@@ -250,11 +254,5 @@ export function tradingIntentsForUnderlying(underlying: string | null): TradingI
   const batch = tradingIntentsFixture();
   if (!underlying) return batch;
   const key = underlying.includes(":") ? underlying : `crypto:${underlying.toUpperCase()}`;
-  return {
-    ...batch,
-    cases_without_intents: (batch.cases_without_intents ?? []).filter(
-      (row) => row.underlying_key === key,
-    ),
-    intents: (batch.intents ?? []).filter((row) => row.underlying_key === key),
-  };
+  return { ...batch, intents: (batch.intents ?? []).filter((row) => row.underlying_key === key) };
 }

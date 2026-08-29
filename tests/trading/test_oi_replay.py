@@ -10,20 +10,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from tracefold.trading.candidate.blacklist import Blacklist
-from tracefold.trading.candidate.eligibility import EligibilityPolicy
-from tracefold.trading.candidate.gate import GateConfig
+from tracefold.trading.admission import AdmissionConfig
+from tracefold.trading.policy import CapitalPolicy
 from tracefold.trading.research.oi_replay import (
     PENDING_MARKET_CONTEXT,
     meets_target_template,
     replay_oi_facts,
 )
-from tracefold.trading.strategy.oi_smart_money_momentum import OiSmartMoneyMomentumStrategy
 
 NOW = 1_787_000_000_000
-GATE = GateConfig.from_policy(EligibilityPolicy(min_oi_value_usd=5_000_000), venue_priority=("binance", "hyperliquid"))
-STRATEGY = OiSmartMoneyMomentumStrategy()
-OPEN_DENY = Blacklist.from_rows([])
+GATE = AdmissionConfig(min_oi_value_usd=5_000_000)
+POLICY = CapitalPolicy()
 
 
 def _row(**kwargs: Any) -> dict[str, Any]:
@@ -62,9 +59,8 @@ def _row(**kwargs: Any) -> dict[str, Any]:
 def _replay(rows: list[dict[str, Any]]) -> Any:
     return replay_oi_facts(
         rows,  # type: ignore[arg-type]
-        gate=GATE,
-        strategy=STRATEGY,
-        blacklist=OPEN_DENY,
+        admission=GATE,
+        policy=POLICY,
         now_ms=NOW,
     )
 
@@ -87,8 +83,8 @@ def test_the_seven_day_live_shape_is_reproduced_stage_by_stage() -> None:
     report = _replay(rows)
 
     assert report.facts == 10
-    assert report.by_reason["strategy:smart_money_oi_change_below_floor"] == 6
-    assert report.by_reason["strategy:smart_money_ratio_below_or_equal_floor"] == 2
+    assert report.by_reason["policy:smart_money_oi_change_below_floor"] == 6
+    assert report.by_reason["policy:smart_money_ratio_below_or_equal_floor"] == 2
     # STORJ is real and refused by the Candidate Gate, not by an Alpha rule: $3.19M is below the
     # 5M liquidity canary, which is a universe question and has one owner (#264).
     assert report.by_reason["eligibility:oi_value_below_floor"] == 1
@@ -141,23 +137,54 @@ def test_the_two_price_rules_are_never_reported_as_binding() -> None:
     assert report.by_stage[PENDING_MARKET_CONTEXT] == 5
 
 
-def test_an_unprovable_measurement_window_stops_at_the_strategy_and_leaves_the_cohort() -> None:
+def test_an_unprovable_measurement_window_stops_at_the_policy_and_leaves_the_cohort() -> None:
     """The template names five minutes. Three numbers over an unknown period are not an instance of it."""
 
     report = _replay([_row(event_id="unproven", measurement_window_ms=None)])
-    assert report.by_reason["strategy:source_window_mismatch"] == 1
+    assert report.by_reason["policy:source_window_mismatch"] == 1
     assert report.surviving == []
     assert report.target_cohort == []
 
 
 def test_an_unroutable_frame_is_refused_and_still_counted_in_the_template_cohort() -> None:
-    """Routing is about where an order would go, not about whether the shape occurred."""
+    """Venue is about where capital could go, not about whether the shape occurred."""
 
     report = _replay([_row(event_id="okx", venue="okx")])
-    assert report.by_reason["routing:venue_unresolved"] == 1
+    assert report.by_reason["venue:venue_unresolved"] == 1
     assert [row.symbol for row in report.target_cohort] == ["TUT"]
     assert report.target_cohort[0].routable is False
     assert report.routable_symbols == set()
+
+
+def test_a_hyperliquid_frame_is_replayed_in_full_and_never_marked_routable() -> None:
+    """#331: research may study a book this lane will never trade, and says which is which."""
+
+    report = _replay([_row(event_id="hl", venue="hyperliquid")])
+    assert report.routable_symbols == set()
+    assert [row.routable for row in report.outcomes] == [False]
+    # It reached the policy rather than stopping at the venue: the replay measures Alpha on both books.
+    assert report.outcomes[0].stage in {"policy", "pending_market_context"}
+
+
+def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routable_one() -> None:
+    """Two cohorts under one rulebook, or the comparison between them means nothing.
+
+    `research_only_venue` ends the venue stage without ending the replay. It used to also skip
+    eligibility outright, so the Hyperliquid cohort was scored with no rank ceiling, no OI-value floor
+    and no blacklist — a laxer rulebook than the Binance cohort it was being read against.
+    """
+
+    ranked_out = {"rank_in_window": 9}
+    binance, hyperliquid = _replay(
+        [
+            _row(event_id="bn", **ranked_out),
+            _row(event_id="hl", venue="hyperliquid", **ranked_out),
+        ]
+    ).outcomes
+
+    assert (binance.stage, binance.reason) == ("eligibility", "rank_above_limit")
+    assert (hyperliquid.stage, hyperliquid.reason) == (binance.stage, binance.reason)
+    assert (binance.routable, hyperliquid.routable) == (True, False)
 
 
 def test_coverage_is_left_to_the_caller_rather_than_reported_as_a_zero_nobody_measured() -> None:
@@ -183,13 +210,13 @@ def test_the_template_test_reads_only_the_three_conditions_it_names() -> None:
     from tracefold.trading.contracts import OiTradeCandidate
 
     def _candidate(**kwargs: Any) -> OiTradeCandidate:
-        from tracefold.trading.candidate.eligibility import oi_candidate
+        from tracefold.trading.sources import normalize_oi_source
 
-        parsed = oi_candidate(_row(**kwargs))  # type: ignore[arg-type]
+        parsed = normalize_oi_source(_row(**kwargs))  # type: ignore[arg-type]
         assert isinstance(parsed, OiTradeCandidate)
         return parsed
 
-    config = STRATEGY.config
+    config = POLICY.config
     assert meets_target_template(_candidate(), config=config) is True
     # Liquidity, rank and venue are not template conditions and do not remove a row from the cohort.
     assert meets_target_template(_candidate(oi_value_usd=1, rank_in_window=9, venue="okx"), config=config) is True

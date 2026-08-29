@@ -1,10 +1,15 @@
 """The one place a News projection row becomes a Trading candidate row.
 
 `tracefold.news` and `tracefold.trading` are siblings: neither imports the other, and neither reads the
-other's tables. Both nonetheless describe the same three facts — an OI telemetry verdict, an editorial
-Triage verdict, and a listed instrument — because a capital decision has to be traceable to the exact
-judgment that caused it. This module is where the two vocabularies meet, and it is deliberately dull:
-every field is named on both sides, nothing is computed, nothing is defaulted, and nothing is dropped.
+other's tables. Both nonetheless describe the same two facts — a deterministic OI telemetry frame and a
+listed instrument — because a capital decision has to be traceable to the exact measurement that caused
+it. This module is where the two vocabularies meet, and it is deliberately dull: every field is named
+on both sides, nothing is computed, nothing is defaulted, and nothing is dropped.
+
+**One live trigger crosses this seam (#331).** The editorial-verdict and liquidation mappers are gone
+with the projections behind them: editorial News no longer triggers automatic capital, and there is no
+online liquidation consumer. What is left is the OI frame the lane triggers on, the catalogue rows the
+*research* replay resolves scenarios from, and the Binance universe the cold capability refresh reads.
 
 Field-by-field is the point. A `dict` passed straight through makes a News rename look like a Trading
 bug months later; here the same rename fails `mypy` at this seam, next to the comment explaining what
@@ -18,22 +23,18 @@ from collections.abc import Sequence
 from typing import Any
 
 from tracefold.news.storage.trade_projection import (
-    LiquidationTradeProjectionRow,
-    NewsTradeProjectionRow,
     OiTradeProjectionRow,
     TradeInstrumentProjectionRow,
 )
 from tracefold.trading.capabilities import ExecutionUniverseCandidateRow
 from tracefold.trading.contracts import (
     InstrumentCandidateRow,
-    LiquidationCandidateRow,
-    NewsCandidateRow,
     OiCandidateRow,
 )
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v8"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v9"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -74,69 +75,6 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
     )
 
 
-def to_news_candidate_row(row: NewsTradeProjectionRow) -> NewsCandidateRow:
-    """Editorial Triage verdict -> the News scanner's input.
-
-    `verdict` and `grounded_assets` cross as the documents they are. Trading reads them with its own
-    fail-closed rules — two primaries, an ungrounded primary and an unreadable verdict are each a named
-    rejection — and re-shaping them here would move that judgment into the wiring.
-    """
-
-    return NewsCandidateRow(
-        event_id=row["event_id"],
-        verdict_created_at_ms=row["verdict_created_at_ms"],
-        final_decision=row["final_decision"],
-        evidence_version=row["evidence_version"],
-        evidence_sha256=row["evidence_sha256"],
-        focus_fact_id=row["focus_fact_id"],
-        verdict=row["verdict"],
-        learning_epoch=row["learning_epoch"],
-        program_version=row["program_version"],
-        program_sha256=row["program_sha256"],
-        policy_version=row["policy_version"],
-        editorial_origin=row["editorial_origin"],
-        editorial_sha256=row["editorial_sha256"],
-        scored_judgment_sha256=row["scored_judgment_sha256"],
-        runtime_manifest_sha=row["runtime_manifest_sha"],
-        opened_at_ms=row["opened_at_ms"],
-        comparison_fingerprint=row["comparison_fingerprint"],
-        asset_class=row["asset_class"],
-        grounded_assets=row["grounded_assets"],
-        ingest_mode=row["ingest_mode"],
-        source_artifact_id=row["source_artifact_id"],
-        source_published_at_ms=row["source_published_at_ms"],
-    )
-
-
-def to_liquidation_candidate_row(row: LiquidationTradeProjectionRow) -> LiquidationCandidateRow:
-    return LiquidationCandidateRow(
-        source_key=row["source_key"],
-        item_id=row["item_id"],
-        fact_id=row["fact_id"],
-        symbol=row["symbol"],
-        venue=row["venue"],
-        liquidated_position_side=row["liquidated_position_side"],
-        forced_order_side=row["forced_order_side"],
-        notional_usd=row["notional_usd"],
-        quantity=row["quantity"],
-        price=row["price"],
-        event_at_ms=row["event_at_ms"],
-        received_at_ms=row["received_at_ms"],
-        parser_version=row["parser_version"],
-        provider_record_identity=row["provider_record_identity"],
-        symbol_contract_identity=row["symbol_contract_identity"],
-        position_side_semantics=row["position_side_semantics"],
-        quantity_semantics=row["quantity_semantics"],
-        notional_semantics=row["notional_semantics"],
-        price_semantics=row["price_semantics"],
-        completeness_assumption=row["completeness_assumption"],
-        throttle_assumption=row["throttle_assumption"],
-        source_contract_version=row["source_contract_version"],
-        source_contract_complete=row["source_contract_complete"],
-        ingest_mode=row["ingest_mode"],
-    )
-
-
 def to_instrument_candidate_row(row: TradeInstrumentProjectionRow) -> InstrumentCandidateRow:
     """Instrument universe row -> the venue resolver's input, in the reader's venue order."""
 
@@ -151,46 +89,28 @@ def to_instrument_candidate_row(row: TradeInstrumentProjectionRow) -> Instrument
     )
 
 
-def news_trade_candidates(
+def news_oi_sources(
     repos: Any,
     metric_version: str,
     after_created_at_ms: int,
     until_created_at_ms: int,
-) -> tuple[Sequence[OiCandidateRow], Sequence[NewsCandidateRow], Sequence[LiquidationCandidateRow]]:
-    """`CandidateProjectionReader`: one point-in-time News read per lane, mapped into Trading's input.
+) -> Sequence[OiCandidateRow]:
+    """`OiProjectionReader`: one point-in-time News read, mapped into the capital lane's input.
 
     The window, the ordering and the generation gate belong to the News projection; this reader adds no
-    filter of its own, so what Trading scans is exactly what the SQL froze.
-
-    No Trading threshold crosses this seam any more (#264). `max_rank_in_window` and `min_oi_value_usd`
-    used to be passed down into News's SELECT, which meant a frame Trading rejected and a frame that was
-    never written were the same absence on this side.
+    filter of its own, so what the lane scans is exactly what the SQL froze. No Trading threshold
+    crosses this seam (#264): a frame the lane rejects and a frame that was never written must not be
+    the same absence on this side.
     """
 
-    return (
-        [
-            to_oi_candidate_row(row)
-            for row in repos.news.trade_candidate_oi_rows(
-                metric_version=metric_version,
-                after_created_at_ms=after_created_at_ms,
-                until_created_at_ms=until_created_at_ms,
-            )
-        ],
-        [
-            to_news_candidate_row(row)
-            for row in repos.news.trade_candidate_news_rows(
-                after_created_at_ms=after_created_at_ms,
-                until_created_at_ms=until_created_at_ms,
-            )
-        ],
-        [
-            to_liquidation_candidate_row(row)
-            for row in repos.news.trade_candidate_liquidation_rows(
-                after_received_at_ms=after_created_at_ms,
-                until_received_at_ms=until_created_at_ms,
-            )
-        ],
-    )
+    return [
+        to_oi_candidate_row(row)
+        for row in repos.news.trade_candidate_oi_rows(
+            metric_version=metric_version,
+            after_created_at_ms=after_created_at_ms,
+            until_created_at_ms=until_created_at_ms,
+        )
+    ]
 
 
 def news_trade_instruments(
@@ -232,10 +152,8 @@ def news_execution_instruments(repos: Any) -> list[ExecutionUniverseCandidateRow
 __all__ = [
     "MAPPED_NEWS_PROJECTION_VERSION",
     "news_execution_instruments",
-    "news_trade_candidates",
+    "news_oi_sources",
     "news_trade_instruments",
     "to_instrument_candidate_row",
-    "to_liquidation_candidate_row",
-    "to_news_candidate_row",
     "to_oi_candidate_row",
 ]

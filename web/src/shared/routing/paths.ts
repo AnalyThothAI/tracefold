@@ -15,7 +15,7 @@ export function newsOiPath(): string {
 }
 
 /**
- * 杠杆异动 (#256). The capital lane's reading of the deterministic OI frames — a different question from
+ * 资本判定 (#256). The capital lane's reading of the deterministic OI frames — a different question from
  * `/news/oi`, which audits whether the frames themselves parsed and cleared the push gates.
  */
 export function newsLeveragePath(): string {

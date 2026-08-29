@@ -7,9 +7,9 @@ from typing import Any
 from .capabilities import CapabilityStorage
 from .cases import CaseStorage
 from .control import ControlStorage
-from .evaluations import EvaluationStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
+from .lane import LaneStorage
 from .queries import QueryStorage
 from .replay import ReplayStorage
 
@@ -19,8 +19,8 @@ class TradingRepository(
     CapabilityStorage,
     CandidateGateStorage,
     CaseStorage,
-    EvaluationStorage,
     IntentStorage,
+    LaneStorage,
     QueryStorage,
     ReplayStorage,
 ):

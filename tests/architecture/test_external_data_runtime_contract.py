@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import get_args, get_type_hints
 
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.trading.pipeline.root import TradingPipeline
+from tracefold.trading.capital_lane import CapitalLane
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "src" / "tracefold"
@@ -38,16 +38,22 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 def _production_stage_types() -> set[type[object]]:
-    stages: set[type[object]] = set()
-    for pipeline in (NewsPipeline, TradingPipeline):
-        for annotation in get_type_hints(pipeline).values():
-            for candidate in get_args(annotation) or (annotation,):
-                if (
-                    isinstance(candidate, type)
-                    and candidate.__module__.startswith(("tracefold.news", "tracefold.trading"))
-                    and not getattr(candidate, "_is_protocol", False)
-                ):
-                    stages.add(candidate)
+    """Every business stage the Workers process composes, discovered rather than listed.
+
+    Trading contributes exactly one stage since #331: the capital lane is a deep module, not a
+    pipeline of runners, so it is named here directly instead of being read off a container's
+    annotations.
+    """
+
+    stages: set[type[object]] = {CapitalLane}
+    for annotation in get_type_hints(NewsPipeline).values():
+        for candidate in get_args(annotation) or (annotation,):
+            if (
+                isinstance(candidate, type)
+                and candidate.__module__.startswith(("tracefold.news", "tracefold.trading"))
+                and not getattr(candidate, "_is_protocol", False)
+            ):
+                stages.add(candidate)
     return stages
 
 

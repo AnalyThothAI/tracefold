@@ -5,32 +5,38 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Literal, Protocol, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .candidate.blacklist import BlacklistSnapshotV1
-from .candidate.routing import signal_exchange_id
-from .capabilities import ExecutionCapabilitySnapshotV1
+from .blacklist import BlacklistSnapshotV1
+from .capabilities import ExecutionCapabilitySnapshotV1, capability_instrument_id
 from .contracts import (
     Bar,
     FrozenMarketContext,
-    FrozenStrategyContext,
+    FrozenPolicyContext,
+    InstrumentCandidateRow,
     InstrumentRef,
+    OiCandidateRow,
     OiTradeCandidate,
     canonical_sha256,
     underlying_key,
 )
-from .decision.regime import RegimePolicy, assess, pre_move_bps, select_bar
 from .execution_policy import EXECUTION_POLICY_SHA256, TARGET_NOTIONAL_CEILING_USD
+from .market_context import PriceWindow, pre_move_bps, select_bar
+from .policy import CapitalPolicy
 from .research.oi_replay import PENDING_MARKET_CONTEXT, OiReplayOutcome
-from .strategy.root import TradingStrategy
+from .routing import resolve_instrument, signal_exchange_id
+from .sources import normalize_oi_source
 
 BAR_FIDELITY_VERSION: Final[Literal["bar_fidelity_v1"]] = "bar_fidelity_v1"
 _VENUE_BY_EXCHANGE = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
+# `(base_symbol, venue, observed_at_ms) -> catalogue rows`. The caller owns the read; this module owns
+# what a replay does with it.
+InstrumentLookup = Callable[[str, str, int], Sequence[InstrumentCandidateRow]]
 
 
 class _Frozen(BaseModel):
@@ -135,14 +141,14 @@ class ReplaySpecV1(_Frozen):
     execution_capability_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     replay_scenarios_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     blacklist_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    candidate_gate_version: str
-    candidate_gate_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    regime_lookback_ms: int = Field(gt=0)
-    regime_min_price_move_bps: int = Field(ge=0)
-    regime_max_price_move_bps: int = Field(gt=0)
-    regime_bar_gap_tolerance_ms: int = Field(ge=0)
+    admission_version: str
+    admission_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    price_window_lookback_ms: int = Field(gt=0)
+    price_window_bar_gap_tolerance_ms: int = Field(ge=0)
     target_notional_usd: Decimal = Field(gt=0, le=TARGET_NOTIONAL_CEILING_USD)
-    strategy_identities: list[dict[str, str]]
+    # The price band is the policy's, not the replay's (#331): it lives in `policy_config` under this
+    # identity, so a replay cannot describe a band the production policy is not executing.
+    policy_identities: list[dict[str, str]]
     intent_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     app_revision: str
@@ -156,12 +162,6 @@ class ReplaySpecV1(_Frozen):
     fill_model: dict[str, str]
     slippage_model: dict[str, str]
     latency_model: dict[str, str]
-
-    @model_validator(mode="after")
-    def validate_regime_band(self) -> Self:
-        if self.regime_max_price_move_bps <= self.regime_min_price_move_bps:
-            raise ValueError("replay_regime_band_invalid")
-        return self
 
     @property
     def run_id(self) -> str:
@@ -269,12 +269,14 @@ class BarEpisodeRunner(Protocol):
     ) -> BarEpisodeResult: ...
 
 
-def replay_strategy_identity(strategy: TradingStrategy) -> str:
+def replay_policy_identity(policy: CapitalPolicy) -> str:
+    """The exact policy a replay executed. The same object the live lane freezes into a Case."""
+
     return canonical_sha256(
         {
-            "strategy_id": strategy.strategy_id,
-            "strategy_version": strategy.strategy_version,
-            "strategy_config_sha256": strategy.config_digest,
+            "strategy_id": policy.policy_id,
+            "strategy_version": policy.policy_version,
+            "strategy_config_sha256": policy.config_digest,
         }
     )
 
@@ -283,17 +285,22 @@ def plan_replay_source(
     outcome: OiReplayOutcome,
     parsed: Mapping[str, OiTradeCandidate],
     *,
-    strategy: TradingStrategy,
+    policy: CapitalPolicy,
     requested_venues: tuple[str, ...],
 ) -> ReplayScenarioRequestV1 | ReplayTerminalOutcomeV1:
-    strategy_identity = replay_strategy_identity(strategy)
+    strategy_identity = replay_policy_identity(policy)
     if outcome.stage != PENDING_MARKET_CONTEXT:
-        decision = "NO_TRADE" if outcome.stage == "strategy" else "SKIPPED"
+        decision = "NO_TRADE" if outcome.stage == "policy" else "SKIPPED"
         return ReplayTerminalOutcomeV1(
             source_identity=outcome.source_key,
             strategy_identity=strategy_identity,
             decision=cast(Literal["NO_TRADE", "SKIPPED"], decision),
-            decision_reason=outcome.reason if decision == "NO_TRADE" else _skip_reason(outcome.stage, outcome.reason),
+            # The reason verbatim. It used to be re-prefixed here by stage (`gate_`, `source_`), which
+            # was a second vocabulary for facts that already have one: `ADMISSION_REASONS` is a closed,
+            # globally distinct set the ledger and the console both aggregate on, and the source-stage
+            # reasons already say `source_`. The prefixing had also silently stopped matching — it keyed
+            # on a stage named `admission` that #331's admission never emits.
+            decision_reason=outcome.reason,
             capital_admission="NOT_APPLICABLE",
             execution="NOT_APPLICABLE",
             execution_reason="strategy_not_directional",
@@ -317,14 +324,86 @@ def plan_replay_source(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayPlanSet:
+    """The scenarios a replay will price, the ones already terminal, and the catalogue it consulted."""
+
+    plans: list[DirectionalReplayPlan]
+    immediate: list[ReplayTerminalOutcomeV1]
+    research_rows: list[dict[str, Any]]
+
+
+def parse_replay_sources(rows: Sequence[OiCandidateRow]) -> dict[str, OiTradeCandidate]:
+    """The same source normalization the live lane runs, keyed by source identity."""
+
+    parsed: dict[str, OiTradeCandidate] = {}
+    for row in rows:
+        candidate = normalize_oi_source(row)
+        if isinstance(candidate, OiTradeCandidate):
+            parsed[candidate.source_key] = candidate
+    return parsed
+
+
+def plan_replay_scenarios(
+    outcomes: Sequence[OiReplayOutcome],
+    parsed: Mapping[str, OiTradeCandidate],
+    *,
+    policy: CapitalPolicy,
+    requested_venues: tuple[str, ...],
+    instruments: InstrumentLookup,
+) -> ReplayPlanSet:
+    """Turn every surviving fact into one priced scenario, or into a terminal outcome that says why.
+
+    Owned here rather than in the CLI (#331): resolving a research instrument, naming the replay's
+    instrument identity and accounting for every source are replay rules, and a copy of them in a
+    command file is a second implementation that drifts the first time the live lane's routing moves.
+    """
+
+    plans: list[DirectionalReplayPlan] = []
+    immediate: list[ReplayTerminalOutcomeV1] = []
+    research_rows: list[dict[str, Any]] = []
+    for outcome in outcomes:
+        planned = plan_replay_source(outcome, parsed, policy=policy, requested_venues=requested_venues)
+        if isinstance(planned, ReplayTerminalOutcomeV1):
+            immediate.append(planned)
+            continue
+        rows = list(
+            instruments(
+                planned.source.base_symbol,
+                planned.venue,
+                planned.source.observed_at_ms,
+            )
+        )
+        research_rows.extend(dict(row) for row in rows)
+        exchange = "binance" if planned.venue == "binance.perp" else "hyperliquid"
+        instrument = resolve_instrument(rows, priority=(exchange,), observed_at_ms=planned.source.observed_at_ms)
+        if instrument is None:
+            immediate.append(unresolved_replay_instrument(planned, policy=policy))
+            continue
+        replay_id = (
+            capability_instrument_id(instrument.provider_symbol)
+            if planned.venue == "binance.perp"
+            else f"{instrument.provider_symbol}-PERP.HYPERLIQUID"
+        )
+        plans.append(
+            DirectionalReplayPlan(
+                source=planned.source,
+                instrument=instrument,
+                venue=planned.venue,
+                instrument_id=replay_id,
+            )
+        )
+    return ReplayPlanSet(plans=plans, immediate=immediate, research_rows=research_rows)
+
+
 def unresolved_replay_instrument(
     request: ReplayScenarioRequestV1,
     *,
-    strategy: TradingStrategy,
+    policy: CapitalPolicy,
 ) -> ReplayTerminalOutcomeV1:
     return ReplayTerminalOutcomeV1(
         source_identity=request.source.source_key,
-        strategy_identity=replay_strategy_identity(strategy),
+        strategy_identity=replay_policy_identity(policy),
         scenario_venue=request.venue,
         decision="SKIPPED",
         decision_reason="instrument_unresolved",
@@ -337,21 +416,21 @@ def unresolved_replay_instrument(
 def evaluate_replay_market_slices(
     slices: list[ReplayMarketSlice],
     *,
-    strategy: TradingStrategy,
+    policy: CapitalPolicy,
     snapshot: ExecutionCapabilitySnapshotV1,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
-    regime_policy: RegimePolicy,
+    price_window: PriceWindow,
     target_notional: Decimal,
 ) -> list[ReplayTerminalOutcomeV1]:
     return [
         _market_outcome(
             item,
-            strategy=strategy,
+            policy=policy,
             snapshot=snapshot,
             blacklist=blacklist,
             run_episode=run_episode,
-            regime_policy=regime_policy,
+            price_window=price_window,
             target_notional=target_notional,
         )
         for item in slices
@@ -361,37 +440,34 @@ def evaluate_replay_market_slices(
 def _market_outcome(
     item: ReplayMarketSlice,
     *,
-    strategy: TradingStrategy,
+    policy: CapitalPolicy,
     snapshot: ExecutionCapabilitySnapshotV1,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
-    regime_policy: RegimePolicy,
+    price_window: PriceWindow,
     target_notional: Decimal,
 ) -> ReplayTerminalOutcomeV1:
     plan = item.plan
-    strategy_identity = replay_strategy_identity(strategy)
+    strategy_identity = replay_policy_identity(policy)
     if item.reason is not None:
         return _market_missing(plan, strategy_identity, item.reason)
     close_bars = [Bar(open_at_ms=bar.open_at_ms, close_at_ms=bar.close_at_ms, close=bar.close) for bar in item.bars]
     anchor = select_bar(
         close_bars,
         target_ms=plan.source.observed_at_ms,
-        gap_tolerance_ms=regime_policy.bar_gap_tolerance_ms,
+        gap_tolerance_ms=price_window.bar_gap_tolerance_ms,
     )
-    move = pre_move_bps(close_bars, anchor_at_ms=plan.source.observed_at_ms, policy=regime_policy)
+    move = pre_move_bps(close_bars, anchor_at_ms=plan.source.observed_at_ms, window=price_window)
     if anchor is None or move is None:
         return _market_missing(plan, strategy_identity, "outside_bar_coverage")
-    regime = assess(oi_direction=plan.source.oi_direction, move=move, policy=regime_policy)
-    decision = strategy.evaluate(
-        FrozenStrategyContext(
-            mode="paper",
+    decision = policy.decide(
+        FrozenPolicyContext(
             oi=plan.source,
-            regime=regime,
             market=FrozenMarketContext(
                 mark_price=anchor.close,
                 observed_at_ms=plan.source.observed_at_ms,
                 pre_move_bps=move,
-                pre_move_lookback_ms=regime_policy.lookback_ms,
+                pre_move_lookback_ms=price_window.lookback_ms,
             ),
         )
     )
@@ -543,14 +619,6 @@ def _decimal_places(value: Decimal) -> int:
     return max(0, -exponent)
 
 
-def _skip_reason(stage: str, reason: str) -> str:
-    if stage == "source":
-        return f"source_{reason}"
-    if stage == "gate":
-        return f"gate_{reason}"
-    return reason
-
-
 def summarize_replay_outcomes(outcomes: list[ReplayTerminalOutcomeV1]) -> dict[str, Any]:
     decision = Counter(row.decision for row in outcomes)
     capital = Counter(row.capital_admission for row in outcomes)
@@ -610,9 +678,11 @@ def verify_replay_artifact_bytes(payload: bytes, *, expected_sha256: str) -> Non
 
 __all__ = [
     "BAR_FIDELITY_VERSION",
+    "InstrumentLookup",
     "ReplayArtifactV1",
     "ReplayBarV1",
     "ReplayExecutionIntentV1",
+    "ReplayPlanSet",
     "ReplayReceiptV1",
     "ReplayScenarioCapabilityV1",
     "ReplaySpecV1",

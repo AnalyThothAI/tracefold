@@ -1164,14 +1164,11 @@ def test_strategy_2000_liquidations_are_typed_and_idempotent_for_live_and_recove
         ).fetchone()
         is not None
     )
-    projected = repos.news.trade_candidate_liquidation_rows(
-        after_received_at_ms=0,
-        until_received_at_ms=10**15,
-    )
-    recovery_source_key = next(row["source_key"] for row in rows if row["ingest_mode"] == "recovery")
-    assert retained["source_key"] in {row["source_key"] for row in projected}
-    assert recovery_source_key not in {row["source_key"] for row in projected}
-    assert all(row["ingest_mode"] == "live" for row in projected)
+    # The typed fact stays a durable News research source and is published to nobody (#331): the
+    # liquidation projection existed only for a Trading consumer that no longer exists, and a
+    # projection with no reader is an invitation for the capital lane to grow a second trigger.
+    assert not hasattr(repos.news, "trade_candidate_liquidation_rows")
+    assert not hasattr(repos.news, "trade_candidate_news_rows")
 
 
 @pytest.mark.parametrize(

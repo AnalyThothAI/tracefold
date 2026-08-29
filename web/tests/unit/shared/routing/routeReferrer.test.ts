@@ -11,8 +11,8 @@ describe("routeReferrerFromState", () => {
         to: "/news?outcome=held&hours=168",
       },
     );
-    expect(routeReferrerFromState({ label: "OI 遥测审计", to: "/news/oi" })).toEqual({
-      label: "OI 遥测审计",
+    expect(routeReferrerFromState({ label: "OI 来源与准入审计", to: "/news/oi" })).toEqual({
+      label: "OI 来源与准入审计",
       to: "/news/oi",
     });
   });

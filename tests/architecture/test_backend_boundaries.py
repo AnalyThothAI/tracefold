@@ -93,13 +93,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # the same digest. #286 extends that assembly to the runtime's regime, trade and notional config
         # so replay cannot silently use defaults. These are pure code-owned values; composition is App's,
         # which is why this belongs here rather than in `app.http` or either business package.
-        "tracefold.trading.candidate.eligibility",
-        "tracefold.trading.candidate.gate",
+        "tracefold.trading.admission",
+        "tracefold.trading.capital_lane",
         "tracefold.trading.contracts",
-        "tracefold.trading.decision.policy",
-        "tracefold.trading.decision.regime",
-        "tracefold.trading.pipeline.runtime",
-        "tracefold.trading.strategy.root",
+        "tracefold.trading.market_context",
+        "tracefold.trading.policy",
     ),
     "app.http": (
         "tracefold.news.health",
@@ -119,19 +117,15 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # re-implementing a funnel that would drift the first time a rule moved. That means importing
         # the pure modules by name, which is what these five entries are — every one of them a pure
         # function over frozen values, with no storage, provider or execution path behind it.
-        "tracefold.trading.candidate.blacklist",
-        "tracefold.trading.candidate.eligibility",
-        "tracefold.trading.candidate.gate",
-        "tracefold.trading.candidate.routing",
+        "tracefold.trading.blacklist",
         "tracefold.trading.capabilities",
         "tracefold.trading.contracts",
-        "tracefold.trading.decision.regime",
         "tracefold.trading.execution_policy",
         "tracefold.trading.intent",
+        "tracefold.trading.market_context",
+        "tracefold.trading.policy",
         "tracefold.trading.replay",
         "tracefold.trading.research.oi_replay",
-        "tracefold.trading.strategy.oi_smart_money_momentum",
-        "tracefold.trading.strategy.root",
         # The OI lane's measurement version, so the replay reads the same rows the scanner does. A
         # literal here would silently stop matching the day `oi_signals` bumps it.
         "tracefold.news.oi_signals",
@@ -161,16 +155,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
         "tracefold.news.storage.trade_projection",
         "tracefold.news.triage_rules",
-        "tracefold.trading.candidate.eligibility",
-        "tracefold.trading.contracts",
-        "tracefold.trading.decision.policy",
-        "tracefold.trading.decision.program",
-        "tracefold.trading.decision.regime",
-        "tracefold.trading.execution.order",
-        "tracefold.trading.pipeline.candidate",
-        "tracefold.trading.pipeline.root",
-        "tracefold.trading.pipeline.runtime",
         "tracefold.trading.capabilities",
+        "tracefold.trading.capital_lane",
+        "tracefold.trading.contracts",
     ),
     "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),

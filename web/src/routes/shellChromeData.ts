@@ -22,10 +22,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
-  [/^\/news\/oi$/, "OI 遥测审计"],
-  [/^\/news\/leverage$/, "杠杆异动"],
+  [/^\/news\/oi$/, "OI 来源与准入审计"],
+  [/^\/news\/leverage$/, "资本判定"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "交易 · Demo"],
+  [/^\/trading$/, "执行与持仓"],
 ];
 
 export type ShellRouteContext = {
@@ -90,12 +90,11 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
           : false,
       navCounts: {
         /*
-         * The capital lane's own 24 h cases, from the same `/api/trading/status` this shell already reads
-         * for the Demo badge. Every state counts: `POLICY_REJECTED` is a case the lane authored and
-         * refused, and it is most of a normal day — a slot that counted only cases that reached an intent
-         * would read `0` on a lane that decided ninety-seven times.
+         * The capital lane's own 24 h Cases, from the same `/api/trading/status` this shell already reads
+         * for the Demo badge. Every state counts, including the ones that refused: a slot that counted
+         * only Cases which reached an Intent would read `0` on a lane that decided ninety-seven times.
          */
-        cases: sumCounts(tradingStatusQuery.data?.counts?.cases_by_state),
+        cases: tradingStatusQuery.data?.counts?.cases_24h,
         events: newsStatusQuery.data?.funnel_24h?.received,
         // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
         // leads with. Received, not pushed — the destination is the whole lane, not its output.
@@ -205,15 +204,19 @@ function oiDailyFigure(
 ): CockpitTopbarFigure {
   if (!tradingStatus) return { label: "今日成案 · 放行", text: undefined };
 
-  const dayKey = tradingStatus.counts.funnel_day_key;
+  const dayKey = tradingStatus.counts.day_key;
   const today = new Date(nowMs).toISOString().slice(0, 10);
   const stale = dayKey !== today;
   return {
     label: stale
       ? `成案 · 放行 · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
-      : "今日成案 · 放行",
-    // Sparse counter maps omit zeroes; once the status document exists, absence is the ledger's zero.
-    text: `${tradingStatus.counts.funnel_today?.case_created ?? 0} · ${tradingStatus.counts.entries_today}`,
+      : "24h 成案 · 今日放行",
+    /*
+     * The 24 h Case total beside the day's fenced entries. It used to be `funnel_today.case_created`, a
+     * per-poll counter that reset at UTC midnight and counted a re-read of the same frame as work; both
+     * halves are now bounded aggregations over durable rows (#331).
+     */
+    text: `${tradingStatus.counts.cases_24h} · ${tradingStatus.counts.entries_today}`,
     ...(stale
       ? {
           title: dayKey ? `UTC ${dayKey}` : "UTC 日期未知",
@@ -221,17 +224,6 @@ function oiDailyFigure(
         }
       : {}),
   };
-}
-
-/**
- * A grouped count collapsed to one figure, or `undefined` when the read has not answered.
- *
- * `undefined` rather than `0`: the sidebar hides an absent count and would otherwise print a zero that
- * means "not loaded yet" beside a lane that is running.
- */
-function sumCounts(counts: Record<string, number> | undefined): number | undefined {
-  if (!counts) return undefined;
-  return Object.values(counts).reduce((total, value) => total + value, 0);
 }
 
 function loadedDuration(value: number | null | undefined): string | undefined {

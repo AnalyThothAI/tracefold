@@ -38,9 +38,9 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "杠杆异动" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "资本判定" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 遥测审计" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
     // #256: four working surfaces in two groups, and no ReviewDesk destination at all.
     await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
@@ -62,12 +62,11 @@ test.describe("desktop sidebar navigation", () => {
     await page.goto("/news");
 
     const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
-    await primaryNavigation.getByRole("link", { name: "OI 遥测审计" }).click();
+    await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
     await expect(page).toHaveURL(/\/news\/oi$/);
-    await expect(primaryNavigation.getByRole("link", { name: "OI 遥测审计" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
+    ).toHaveAttribute("aria-current", "page");
 
     await expectSidebarRouteChange(page, "事件流", "/news");
     /*
@@ -143,17 +142,16 @@ test.describe("mobile bottom navigation", () => {
     await expect(primaryNavigation).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "Radar" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 遥测审计" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
     // #207: the pipeline status page kept its route and lost its slot — the topbar lamp is the way in.
     await expect(primaryNavigation.getByRole("link", { name: "流水线状态" })).toHaveCount(0);
 
-    await primaryNavigation.getByRole("link", { name: "OI 遥测审计" }).click();
+    await primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }).click();
     await expect(page).toHaveURL(/\/news\/oi$/);
     await expect(primaryNavigation).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "OI 遥测审计" })).toHaveAttribute(
-      "aria-current",
-      "page",
-    );
+    await expect(
+      primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" }),
+    ).toHaveAttribute("aria-current", "page");
 
     await primaryNavigation.getByRole("link", { name: "事件流" }).click();
     await expect(page).toHaveURL(/\/news(?:\?|$)/);

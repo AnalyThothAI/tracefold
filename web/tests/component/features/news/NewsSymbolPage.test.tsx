@@ -10,8 +10,8 @@ import {
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
 import {
-  tradingCaseFixture,
-  tradingIntentsFixture,
+  tradingCasesFixture,
+  tradingCasesForUnderlying,
   tradingIntentsForUnderlying,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
@@ -54,6 +54,12 @@ describe("NewsSymbolPage", () => {
         HttpResponse.json({
           ok: true,
           data: tradingIntentsForUnderlying(new URL(request.url).searchParams.get("underlying")),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/cases.*/, ({ request }) =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingCasesForUnderlying(new URL(request.url).searchParams.get("underlying")),
         }),
       ),
     );
@@ -236,84 +242,53 @@ describe("NewsSymbolPage", () => {
 
   /*
    * #282's acceptance asks for three tokens with three different right answers, and the failure mode it is
-   * guarding against is the panel filling a gap in with something plausible. All three assert on what is
-   * *not* on screen as much as on what is.
+   * guarding against is a panel filling a gap in with something plausible. #331 moved the answer to the
+   * aggregate that owns it: the 交易视角 quadrant panel is gone with the quadrant itself, and 资本复盘
+   * renders the Case rows the server decided rather than re-deriving a verdict in the browser.
    */
-  it("measures the newest case's own frame against the floors that case froze", async () => {
-    useTradingIntents(
-      tradingIntentsFixture({
-        cases_without_intents: [
-          tradingCaseFixture({
-            base_symbol: "WIF",
-            case_id: "case-wif",
-            event_id: "evt-oi-wif",
-            underlying_key: "crypto:WIF",
-          }),
-        ],
-        intents: [],
-      }),
+  it("renders the Cases the server decided for this token, and never invents one", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/cases.*/, ({ request }) =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingCasesForUnderlying(new URL(request.url).searchParams.get("underlying")),
+        }),
+      ),
     );
-    renderSymbol();
+    renderSymbol("/news/symbols/HYPE", "HYPE");
 
-    expect(await screen.findByText("交易视角 · 最近一帧怎么读")).toBeInTheDocument();
-    // The quadrant the case recorded, not one derived from the frame here.
-    expect(await screen.findByText("buildup_up")).toBeInTheDocument();
-    // 大户占比 143.90% over the 50.00% *this case* froze, on the operator its strategy refuses with.
-    expect(screen.getByText("> 50.00%")).toBeInTheDocument();
-    expect(screen.getAllByText("过地板").length).toBe(2);
-    expect(screen.getByText("低于地板")).toBeInTheDocument();
-    /*
-     * The frame was found, so nothing is 未测量; and the note is counted off those rows rather than
-     * asserting a refusal. Both used to be wrong at once: every row read 未冻结 beside a frozen threshold,
-     * under a sentence that said none of them passed.
-     */
-    expect(screen.queryByText("未测量")).not.toBeInTheDocument();
-    expect(screen.getByText(/只过了 2 条/)).toBeInTheDocument();
-  });
-
-  it("says a token the lane never opened a case for was never asked, not answered", async () => {
-    const served = useTradingIntents(
-      tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
-    );
-    renderSymbol();
-
-    await waitFor(() => expect(served.count).toBeGreaterThan(0));
-    // The perspective names the absent case; the unified Case → Intent → Outcome section does not
-    // repeat that legacy order-era explanation.
-    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(1);
-    // No quadrant, no band, no floor table: four grey cells would assert a reading that never happened.
+    expect(await screen.findByText("资本复盘 · Case → Intent → Outcome")).toBeInTheDocument();
+    expect(await screen.findByText("不交易")).toBeInTheDocument();
+    expect(screen.getByText("鲸鱼占比未超过地板")).toBeInTheDocument();
+    expect(screen.getByText("未形成")).toBeInTheDocument();
+    // No quadrant, and no threshold comparison recomputed here: the frozen checks live with the Case.
     expect(screen.queryByText("buildup_up")).not.toBeInTheDocument();
     expect(screen.queryByText("过地板")).not.toBeInTheDocument();
   });
 
-  it("keeps the capital sections empty rather than inventive for a name off the instrument table", async () => {
+  it("says a token the lane never opened a case for has no Case, not a refusal", async () => {
     server.use(
-      http.get(/.*\/api\/news\/symbols\/.*/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsSymbolFixture({
-            base_symbol: "SPOT",
-            contracts: [],
-            known: false,
-            normalization: null,
-            tradeable: false,
-            venues: [],
-          }),
-        }),
+      http.get(/.*\/api\/trading\/cases.*/, () =>
+        HttpResponse.json({ ok: true, data: tradingCasesFixture({ cases: [] }) }),
       ),
     );
-    const served = useTradingIntents(
-      tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
-    );
+    renderSymbol();
 
-    renderSymbol("/news/symbols/SPOT", "SPOT");
-
-    expect(await screen.findByText(/标的表里查不到/)).toBeInTheDocument();
-    await waitFor(() => expect(served.count).toBeGreaterThan(0));
-    // An unlisted name has no case by construction, and the perspective says that rather than
-    // inventing capital-lane evidence.
-    expect(await screen.findAllByText(/没有为这个代币开过案/)).toHaveLength(1);
+    expect(await screen.findByText("当前窗口没有这个代币的 Case。")).toBeInTheDocument();
     expect(screen.queryByText("过地板")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes an unreadable capital ledger from an empty one", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/cases.*/, () =>
+        HttpResponse.json({ ok: false }, { status: 503 }),
+      ),
+    );
+    renderSymbol();
+
+    expect(
+      await screen.findByText("资本通道账本本轮不可用；不能据此断言没有案例。"),
+    ).toBeInTheDocument();
   });
 
   it("prints this window's counts once, in the identity band the artifact puts them in", async () => {
@@ -336,27 +311,6 @@ describe("NewsSymbolPage", () => {
     expect(window).toBeInTheDocument();
   });
 });
-
-/**
- * The batch as the endpoint answers it, filtered by the name the page asked for.
- *
- * Returns a served counter, because both capital sections render their empty state while the batch is
- * still in flight: an assertion made before it lands passes whatever the answer turns out to be.
- */
-function useTradingIntents(batch?: ReturnType<typeof tradingIntentsFixture>) {
-  const served = { count: 0 };
-  server.use(
-    http.get(/.*\/api\/trading\/intents.*/, ({ request }) => {
-      served.count += 1;
-      return HttpResponse.json({
-        ok: true,
-        data:
-          batch ?? tradingIntentsForUnderlying(new URL(request.url).searchParams.get("underlying")),
-      });
-    }),
-  );
-  return served;
-}
 
 function renderSymbol(path = "/news/symbols/WIF", base = "WIF") {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

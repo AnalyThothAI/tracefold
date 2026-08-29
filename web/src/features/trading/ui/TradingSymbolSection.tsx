@@ -1,57 +1,58 @@
 import { Card } from "@shared/ui/Card";
 
-import { useTradingIntentsWithToken } from "../api/tradingQueries";
+import { useTradingCasesWithToken, useTradingIntentsWithToken } from "../api/tradingQueries";
+import { caseStateLabel } from "../model/tradingCases";
 import {
-  CASE_STATE_ZH,
   INTENT_STATE_NOTE,
-  REGIME_ZH,
   caseClock,
-  strategyCaseLabel,
+  policyLabel,
+  policyReasonLabel,
 } from "../model/tradingLabels";
-import { policyRuleZh, tradingLedgerEntries } from "../model/tradingOiLedger";
 
 import { TradingEmptyNote, TradingSourceLine } from "./TradingChrome";
 
 import "./trading.css";
 import "./tradingSymbolSection.css";
 
-/** Case → Intent → Outcome history for one token. */
+/**
+ * One token's capital history: the Cases decided for it, and the Intents those Cases handed over.
+ *
+ * Two reads, two aggregates, joined on `case_id` for display only. Neither read invents the other's
+ * fields: a Case with no Intent says 未形成, which is a fact the Case table holds, not an inference from
+ * an absent execution row.
+ */
 export function TradingSymbolSection({ base, token }: { base: string; token: string }) {
-  const query = useTradingIntentsWithToken(token, base);
-  const rows = [...tradingLedgerEntries(query.data).values()].sort(
-    (a, b) => b.value.created_at_ms - a.value.created_at_ms,
+  const casesQuery = useTradingCasesWithToken(token, base);
+  const intentsQuery = useTradingIntentsWithToken(token, base);
+  const intents = new Map((intentsQuery.data?.intents ?? []).map((item) => [item.case_id, item]));
+  const rows = [...(casesQuery.data?.cases ?? [])].sort(
+    (a, b) => b.created_at_ms - a.created_at_ms,
   );
 
   return (
     <Card
       flush
-      hint={`过去 ${query.data?.window_hours ?? 24} 小时的资本案例；旧订单台账不进入此读模型`}
-      title="交易复盘 · Case → Intent → Outcome"
+      hint={`过去 ${casesQuery.data?.window_hours ?? 24} 小时的资本案例；旧订单台账不进入此读模型`}
+      title="资本复盘 · Case → Intent → Outcome"
     >
       {rows.length ? (
         <div className="trading-table">
           <div aria-hidden className="trading-case-head">
             <span>CUTOFF</span>
             <span>策略</span>
-            <span>象限</span>
             <span>Case</span>
             <span>规则</span>
             <span>Intent</span>
             <span>Outcome</span>
           </div>
-          {rows.map((entry) => {
-            const record = entry.value;
-            const intent = entry.kind === "intent" ? entry.value : null;
-            const observedAt = intent?.case_observed_at_ms ?? record.created_at_ms;
-            const caseState =
-              intent?.case_state ?? (entry.kind === "case" ? entry.value.state : "—");
+          {rows.map((record) => {
+            const intent = intents.get(record.case_id);
             return (
               <article className="trading-case-row" key={record.case_id}>
-                <span>{caseClock(observedAt)}</span>
-                <span>{strategyCaseLabel(record.strategy_id)}</span>
-                <span>{record.regime ? (REGIME_ZH[record.regime] ?? record.regime) : "—"}</span>
-                <span>{CASE_STATE_ZH[caseState] ?? caseState}</span>
-                <span>{record.policy_reason ? policyRuleZh(record.policy_reason) : "—"}</span>
+                <span>{caseClock(record.observed_at_ms)}</span>
+                <span>{policyLabel(record.policy_id)}</span>
+                <span>{caseStateLabel(record)}</span>
+                <span>{policyReasonLabel(record.policy_reason)}</span>
                 <span>{intent ? `${intent.intent_id} · ${intent.execution_state}` : "未形成"}</span>
                 <span>
                   {intent?.terminal_outcome ??
@@ -65,14 +66,14 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
         </div>
       ) : (
         <TradingEmptyNote>
-          {query.isError && !query.data
+          {casesQuery.isError && !casesQuery.data
             ? "资本通道账本本轮不可用；不能据此断言没有案例。"
-            : query.data == null
+            : casesQuery.isPending
               ? "正在读取资本通道账本…"
-              : "当前窗口没有这个代币的 Case 或 Intent。"}
+              : "当前窗口没有这个代币的 Case。"}
         </TradingEmptyNote>
       )}
-      <TradingSourceLine path="GET /api/trading/intents?underlying={base} → intents[] · cases_without_intents[]" />
+      <TradingSourceLine path="GET /api/trading/cases?underlying={base} → cases[] · GET /api/trading/intents?underlying={base} → intents[]" />
     </Card>
   );
 }

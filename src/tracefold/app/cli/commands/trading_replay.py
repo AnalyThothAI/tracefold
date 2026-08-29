@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from psycopg import Error as PostgresError
 
 from tracefold.app.cli.replay_artifacts import publish_replay_artifact, verify_replay_artifact
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_config import (
-    CANDIDATE_GATE_VERSION,
-    trading_config_from_settings,
-    trading_settings_gate,
-    trading_settings_strategies,
-)
+from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
+from tracefold.app.workers.wiring.news_to_trading import MAPPED_NEWS_PROJECTION_VERSION
 from tracefold.integrations.nautilus.config import installed_nautilus_wheel_identity
 from tracefold.integrations.nautilus.replay import run_bar_episode
 from tracefold.integrations.venues import (
@@ -26,13 +22,10 @@ from tracefold.integrations.venues import (
 )
 from tracefold.news import OI_METRIC_VERSION as NEWS_OI_METRIC_VERSION
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading.candidate.blacklist import Blacklist
-from tracefold.trading.candidate.eligibility import oi_candidate
-from tracefold.trading.candidate.routing import resolve_instrument
-from tracefold.trading.contracts import OiTradeCandidate, canonical_sha256
-from tracefold.trading.decision.regime import RegimePolicy
+from tracefold.trading.contracts import canonical_sha256
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256
-from tracefold.trading.intent import INTENT_POLICY_SHA256, capability_instrument_id
+from tracefold.trading.intent import INTENT_POLICY_SHA256
+from tracefold.trading.market_context import PriceWindow
 from tracefold.trading.replay import (
     DirectionalReplayPlan,
     ReplayArtifactV1,
@@ -40,15 +33,13 @@ from tracefold.trading.replay import (
     ReplayMarketSlice,
     ReplayReceiptV1,
     ReplaySpecV1,
-    ReplayTerminalOutcomeV1,
     evaluate_replay_market_slices,
-    plan_replay_source,
-    replay_strategy_identity,
+    parse_replay_sources,
+    plan_replay_scenarios,
+    replay_policy_identity,
     summarize_replay_outcomes,
-    unresolved_replay_instrument,
 )
-from tracefold.trading.research.oi_replay import OiReplayOutcome, replay_oi_facts
-from tracefold.trading.strategy.root import TradingStrategy
+from tracefold.trading.research.oi_replay import replay_oi_facts
 
 REPLAY_ROW_LIMIT = 20_000
 
@@ -73,13 +64,15 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
     )
     if not requested_venues or any(venue not in {"binance.perp", "hl.perp"} for venue in requested_venues):
         return 2, {"ok": False, "error": "replay_venues_invalid"}
-    strategy_id = str(getattr(args, "strategy", "oi_smart_money_momentum_v1") or "")
-    strategy = _strategy(settings, strategy_id)
-    if strategy is None or "oi" not in strategy.trigger_kinds:
+    runtime_config = capital_lane_config(settings)
+    policy = runtime_config.policy
+    requested_policy = str(getattr(args, "strategy", policy.policy_id) or policy.policy_id)
+    if requested_policy != policy.policy_id:
+        # One production policy identity, and a replay may only run *that* one. A replay of a retired
+        # identity would execute today's code under yesterday's name.
         return 2, {"ok": False, "error": "replay_strategy_invalid"}
 
-    gate = trading_settings_gate(settings)
-    runtime_config = trading_config_from_settings(settings)
+    admission = runtime_config.admission
     try:
         with repositories(settings, role="workers") as repos, repos.transaction():
             repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
@@ -95,42 +88,36 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
             facts = [to_oi_candidate_row(row) for row in fact_rows]
             if len(facts) >= REPLAY_ROW_LIMIT:
                 return 1, {"ok": False, "error": "replay_source_truncated"}
-            report = replay_oi_facts(
-                facts,
-                gate=gate,
-                strategy=cast(Any, strategy),
-                blacklist=Blacklist.from_rows([]),
-                now_ms=now_ms,
-            )
-            parsed = _parsed_sources(facts)
-            plans, immediate, research_rows = _plans(
-                repos,
+            report = replay_oi_facts(facts, admission=admission, policy=policy, now_ms=now_ms)
+            planned = plan_replay_scenarios(
                 report.outcomes,
-                parsed,
-                strategy=strategy,
+                parse_replay_sources(facts),
+                policy=policy,
                 requested_venues=requested_venues,
+                instruments=_instrument_lookup(repos),
             )
+            plans, immediate, research_rows = planned.plans, planned.immediate, planned.research_rows
     except RuntimeError as exc:
         return 1, {"ok": False, "error": str(exc)}
     except (OSError, PostgresError):
         return 1, {"ok": False, "error": "replay_authority_unavailable"}
 
-    market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms, regime_policy=runtime_config.regime))
+    market_slices = asyncio.run(_fetch_market_slices(plans, now_ms=now_ms, price_window=runtime_config.price_window))
     outcomes = immediate + evaluate_replay_market_slices(
         market_slices,
-        strategy=strategy,
+        policy=policy,
         snapshot=snapshot,
         blacklist=blacklist,
         run_episode=run_bar_episode,
-        regime_policy=runtime_config.regime,
-        target_notional=runtime_config.fixed_notional_usd,
+        price_window=runtime_config.price_window,
+        target_notional=runtime_config.target_notional_usd,
     )
     outcomes.sort(key=lambda row: (row.source_identity, row.strategy_identity, row.scenario_venue or ""))
     if len(outcomes) != len(facts) or len({row.source_identity for row in outcomes}) != len(facts):
         return 1, {"ok": False, "error": "replay_terminal_accounting_invalid"}
 
     identity = runtime_identity()
-    strategy_identity = replay_strategy_identity(strategy)
+    policy_identity = replay_policy_identity(policy)
     market_rows = [item.artifact_row() for item in market_slices]
     scenario_rows = [
         {
@@ -150,7 +137,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         end_ms=now_ms,
         source_query_contract_sha256=canonical_sha256(
             {
-                "projection": "news_trade_projection_v8",
+                "projection": MAPPED_NEWS_PROJECTION_VERSION,
                 "metric_version": NEWS_OI_METRIC_VERSION,
                 "after_created_at_ms": start_ms,
                 "until_created_at_ms": now_ms,
@@ -164,19 +151,17 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         execution_capability_snapshot_sha256=snapshot.snapshot_sha256,
         replay_scenarios_sha256=canonical_sha256(scenario_rows),
         blacklist_snapshot_sha256=blacklist.snapshot_sha256,
-        candidate_gate_version=CANDIDATE_GATE_VERSION,
-        candidate_gate_config_sha256=gate.digest,
-        regime_lookback_ms=runtime_config.regime.lookback_ms,
-        regime_min_price_move_bps=runtime_config.regime.min_price_move_bps,
-        regime_max_price_move_bps=runtime_config.regime.max_price_move_bps,
-        regime_bar_gap_tolerance_ms=runtime_config.regime.bar_gap_tolerance_ms,
-        target_notional_usd=runtime_config.fixed_notional_usd,
-        strategy_identities=[
+        admission_version=ADMISSION_VERSION,
+        admission_config_sha256=admission.digest,
+        price_window_lookback_ms=runtime_config.price_window.lookback_ms,
+        price_window_bar_gap_tolerance_ms=runtime_config.price_window.bar_gap_tolerance_ms,
+        target_notional_usd=runtime_config.target_notional_usd,
+        policy_identities=[
             {
-                "strategy_id": str(strategy.strategy_id),
-                "strategy_version": strategy.strategy_version,
-                "strategy_config_sha256": strategy.config_digest,
-                "strategy_identity": strategy_identity,
+                "strategy_id": policy.policy_id,
+                "strategy_version": policy.policy_version,
+                "strategy_config_sha256": policy.config_digest,
+                "strategy_identity": policy_identity,
             }
         ],
         intent_policy_sha256=INTENT_POLICY_SHA256,
@@ -249,89 +234,27 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
     return 0, _success(receipt, summary, reused=False)
 
 
-def _strategy(settings: Any, strategy_id: str) -> TradingStrategy | None:
-    return next(
-        (strategy for strategy in trading_settings_strategies(settings) if strategy.strategy_id == strategy_id),
-        None,
-    )
+def _instrument_lookup(repos: Any) -> Any:
+    """`InstrumentLookup` bound to one open repository session. App owns the read, replay owns the rule."""
 
-
-def _parsed_sources(facts: list[Any]) -> dict[str, OiTradeCandidate]:
-    parsed: dict[str, OiTradeCandidate] = {}
-    for row in facts:
-        candidate = oi_candidate(row)
-        if isinstance(candidate, OiTradeCandidate):
-            parsed[candidate.source_key] = candidate
-    return parsed
-
-
-def _plans(
-    repos: Any,
-    funnel_outcomes: list[OiReplayOutcome],
-    parsed: dict[str, OiTradeCandidate],
-    *,
-    strategy: TradingStrategy,
-    requested_venues: tuple[str, ...],
-) -> tuple[list[DirectionalReplayPlan], list[ReplayTerminalOutcomeV1], list[dict[str, Any]]]:
     from tracefold.app.workers.wiring.news_to_trading import news_trade_instruments
 
-    plans: list[DirectionalReplayPlan] = []
-    immediate: list[ReplayTerminalOutcomeV1] = []
-    research_rows: list[dict[str, Any]] = []
-    for outcome in funnel_outcomes:
-        planned = plan_replay_source(
-            outcome,
-            parsed,
-            strategy=strategy,
-            requested_venues=requested_venues,
-        )
-        if isinstance(planned, ReplayTerminalOutcomeV1):
-            immediate.append(planned)
-            continue
-        rows = list(
-            news_trade_instruments(
-                repos,
-                planned.source.base_symbol,
-                (planned.venue,),
-                observed_at_ms=planned.source.observed_at_ms,
-            )
-        )
-        research_rows.extend(dict(row) for row in rows)
-        exchange = "binance" if planned.venue == "binance.perp" else "hyperliquid"
-        instrument = resolve_instrument(
-            rows,
-            priority=(exchange,),
-            observed_at_ms=planned.source.observed_at_ms,
-        )
-        if instrument is None:
-            immediate.append(unresolved_replay_instrument(planned, strategy=strategy))
-            continue
-        replay_id = (
-            capability_instrument_id(instrument)
-            if planned.venue == "binance.perp"
-            else f"{instrument.provider_symbol}-PERP.HYPERLIQUID"
-        )
-        plans.append(
-            DirectionalReplayPlan(
-                source=planned.source,
-                instrument=instrument,
-                venue=planned.venue,
-                instrument_id=replay_id,
-            )
-        )
-    return plans, immediate, research_rows
+    def lookup(base_symbol: str, venue: str, observed_at_ms: int) -> Any:
+        return news_trade_instruments(repos, base_symbol, (venue,), observed_at_ms=observed_at_ms)
+
+    return lookup
 
 
 async def _fetch_market_slices(
     plans: list[DirectionalReplayPlan],
     *,
     now_ms: int,
-    regime_policy: RegimePolicy,
+    price_window: PriceWindow,
 ) -> list[ReplayMarketSlice]:
     semaphore = asyncio.Semaphore(8)
 
     async def fetch(plan: DirectionalReplayPlan) -> ReplayMarketSlice:
-        start_ms = plan.source.observed_at_ms - regime_policy.lookback_ms - regime_policy.bar_gap_tolerance_ms
+        start_ms = plan.source.observed_at_ms - price_window.lookback_ms - price_window.bar_gap_tolerance_ms
         end_ms = max(plan.source.observed_at_ms, plan.source.verdict_created_at_ms) + 1_200_000
         try:
             async with semaphore:

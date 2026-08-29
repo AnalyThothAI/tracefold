@@ -12,7 +12,7 @@ ExternalDataName = Literal[
     "instrument_snapshot",
     "opennews_recovery",
     "quote_snapshot",
-    "trading_candidate",
+    "trading_capital_lane",
     "trading_reconcile",
 ]
 ExternalDataSource = Literal[

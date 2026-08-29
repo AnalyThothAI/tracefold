@@ -1,4 +1,14 @@
-"""Read-only Case -> Intent -> Outcome HTTP contract."""
+"""Read-only capital-lane HTTP contract, one schema family per durable aggregate (#331).
+
+    Source / Admission   `TradingGateData`, `TradingGateDecisionData`
+    Case / Decision      `TradingCasesData`, `TradingCaseData`
+    Intent / Outcome     `TradingIntentsData`, `TradingIntentData`
+    runtime readiness    `TradingStatusData`
+
+Nothing crosses. A Case carries its own frozen policy checks and no execution lifecycle; an Intent
+carries its lifecycle and only a `case_id` back-reference; the status surface carries readiness and
+bounded durable totals and no threshold at all.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +18,12 @@ from pydantic import Field
 
 from .common import ExactApiSchema
 
+GateStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
+# `routing` is retained for rows written before #331; the current stages are the other five.
+GateStage = Literal["source", "venue", "eligibility", "capability", "routing", "market_context", "freeze"]
 
+
+# ---------------------------------------------------------------------------- runtime readiness
 class TradingBudgetData(ExactApiSchema):
     target_notional_usd: str
     max_entries_per_utc_day: Literal[1] = 1
@@ -29,78 +44,15 @@ class TradingReadinessData(ExactApiSchema):
     heartbeat_at_ms: int | None = None
 
 
-class TradingFloorsData(ExactApiSchema):
-    min_whale_long_profit_bps: int
-    min_oi_value_usd: str
-    min_price_move_bps: int
-    max_price_move_bps: int
-    lookback_ms: int
+class TradingRuntimeCountsData(ExactApiSchema):
+    """Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold."""
 
-
-class TradingBootstrapData(ExactApiSchema):
-    mean_bps: int
-    lower_95_bps: int
-    upper_95_bps: int
-
-
-class TradingHorizonData(ExactApiSchema):
-    measured: int = 0
-    missing: int = 0
-    bootstrap: TradingBootstrapData | None = None
-
-
-class TradingShadowCohortData(ExactApiSchema):
-    evaluated: int
-    completed: int
-    mean_return_bps: int | None = None
-    holdout: int = 0
-    source_contract_complete: int = 0
-    coverage_bps: int = 0
-    mean_source_latency_ms: int | None = None
-    duplicate_rate_bps: int | None = None
-    horizons: dict[str, TradingHorizonData] = Field(default_factory=dict)
-    mfe_mean_bps: int | None = None
-    mae_mean_bps: int | None = None
-    exit_by_reason: dict[str, int] = Field(default_factory=dict)
-    net_ex_funding_bootstrap: TradingBootstrapData | None = None
-    missing_data: dict[str, int] = Field(default_factory=dict)
-    promotion_ready: bool = False
-    promotion_reasons: list[str] = Field(default_factory=list)
-
-
-class TradingEventStudyCohortData(TradingShadowCohortData):
-    cohort_key: str
-    strategy_id: str
-    venue: str
-    liquidity_bucket: str
-
-
-class TradingCountsData(ExactApiSchema):
-    cases_by_state: dict[str, int] = Field(default_factory=dict)
-    cases_by_trigger: dict[str, int] = Field(default_factory=dict)
-    cases_by_strategy: dict[str, int] = Field(default_factory=dict)
-    shadow_by_strategy: dict[str, int] = Field(default_factory=dict)
-    shadow_by_rule: dict[str, int] = Field(default_factory=dict)
-    shadow_cohorts: dict[str, TradingShadowCohortData] = Field(default_factory=dict)
-    event_study_cohorts: list[TradingEventStudyCohortData] = Field(default_factory=list)
-    liquidation_promotion_ready: bool = False
-    liquidation_promotion_reason: str = ""
-    intents_by_state: dict[str, int] = Field(default_factory=dict)
-    outcomes_by_state: dict[str, int] = Field(default_factory=dict)
-    cases_today_by_state: dict[str, int] = Field(default_factory=dict)
-    policy_allowed_today: int = 0
-    policy_allowed_24h: int = 0
+    day_key: str = ""
+    active_intents: int = 0
     entries_today: int = 0
     closed_intents_today: int = 0
-    active_intents: int = 0
-    funnel_today: dict[str, int] = Field(default_factory=dict)
-    funnel_day_key: str = ""
-    candidate_counts_24h: dict[str, int] = Field(default_factory=dict)
-    candidate_counts_7d: dict[str, int] = Field(default_factory=dict)
-    candidate_reasons_24h: dict[str, int] = Field(default_factory=dict)
-    candidate_reasons_7d: dict[str, int] = Field(default_factory=dict)
-    latest_source_at_ms: int | None = None
-    latest_gate_eligible_at_ms: int | None = None
+    cases_24h: int = 0
+    intents_24h: int = 0
     latest_case_created_at_ms: int | None = None
     latest_intent_emitted_at_ms: int | None = None
     latest_entry_fenced_at_ms: int | None = None
@@ -108,6 +60,25 @@ class TradingCountsData(ExactApiSchema):
     latest_position_closed_at_ms: int | None = None
 
 
+class TradingPolicyIdentityData(ExactApiSchema):
+    """Which policy the lane would freeze onto a *new* Case. Never applied to an existing one."""
+
+    policy_id: str
+    policy_version: str
+    config_digest: str
+    config: dict[str, str] = Field(default_factory=dict)
+
+
+class TradingStatusData(ExactApiSchema):
+    budget: TradingBudgetData
+    readiness: TradingReadinessData
+    policy: TradingPolicyIdentityData
+    counts: TradingRuntimeCountsData
+    window_hours: int
+    measured_at_ms: int
+
+
+# ---------------------------------------------------------------------------- Source / Admission
 class TradingGateEvidenceData(ExactApiSchema):
     venue: str = ""
     oi_change_bps: int | None = None
@@ -121,7 +92,11 @@ class TradingGateEvidenceData(ExactApiSchema):
     limit: int | None = None
     age_ms: int | None = None
     max_age_ms: int | None = None
+    since_close_ms: int | None = None
+    cooldown_ms: int | None = None
     blacklist_reason: str = ""
+    live_exchange_id: str = ""
+    lane_full: str = ""
     enabled: list[str] = Field(default_factory=list)
     rule: str = ""
 
@@ -133,27 +108,63 @@ class TradingGateConfigData(ExactApiSchema):
     max_rank_in_window: int
     min_oi_value_usd: int
     symbol_cooldown_ms: int
-    venue_priority: list[str] = Field(default_factory=list)
+    live_exchange_id: str
 
 
-class TradingStrategyConfigData(ExactApiSchema):
-    strategy_id: str
-    strategy_version: str
-    config_digest: str
-    permission: str
-    trigger_kinds: list[str] = Field(default_factory=list)
-    config: dict[str, str] = Field(default_factory=dict)
+class TradingGateDecisionData(ExactApiSchema):
+    source_key: str
+    event_id: str | None = None
+    underlying_key: str | None = None
+    base_symbol: str = ""
+    trigger_kind: str
+    source_observed_at_ms: int
+    research_only: bool = False
+    gate_status: GateStatus | None = None
+    gate_stage: GateStage | None = None
+    gate_reason: str | None = None
+    gate_retryable: bool | None = None
+    gate_version: str | None = None
+    gate_config_digest: str | None = None
+    gate_evidence: TradingGateEvidenceData | None = None
+    gate_first_evaluated_at_ms: int | None = None
+    gate_last_evaluated_at_ms: int | None = None
+    gate_attempt_count: int | None = None
+    case_id: str | None = None
 
 
-class TradingStatusData(ExactApiSchema):
-    budget: TradingBudgetData
-    readiness: TradingReadinessData
-    floors: TradingFloorsData
-    gate: TradingGateConfigData
-    strategies: list[TradingStrategyConfigData] = Field(default_factory=list)
-    counts: TradingCountsData
+class TradingGateData(ExactApiSchema):
+    config: TradingGateConfigData
+    decisions: list[TradingGateDecisionData] = Field(default_factory=list)
+    status_counts_24h: dict[str, int] = Field(default_factory=dict)
+    reason_counts_24h: dict[str, int] = Field(default_factory=dict)
+    latest_source_at_ms: int | None = None
+    latest_gate_eligible_at_ms: int | None = None
+    complete: bool
     window_hours: int
     measured_at_ms: int
+
+
+class TradingGateSourceData(ExactApiSchema):
+    """One Source's admission answer, plus the Case it authored if it authored one.
+
+    `joinable` is `false` when the question cannot be asked at all: only the deterministic OI lane's
+    source key is reconstructible from an Event id.
+    """
+
+    event_id: str
+    joinable: bool
+    decision: TradingGateDecisionData | None = None
+
+
+# ---------------------------------------------------------------------------- Case / Decision
+class TradingPolicyCheckData(ExactApiSchema):
+    """One frozen condition: what was required, what was measured, and whether it passed."""
+
+    check: str
+    operator: str
+    threshold: str
+    measured: str | None = None
+    passed: bool
 
 
 class TradingCaseData(ExactApiSchema):
@@ -161,21 +172,40 @@ class TradingCaseData(ExactApiSchema):
     event_id: str | None = None
     underlying_key: str
     base_symbol: str
+    provider_symbol: str | None = None
     trigger_kind: str
-    strategy_id: str
-    strategy_version: str
+    manifest_version: str | None = None
+    policy_id: str
+    policy_version: str
+    policy_config_digest: str
+    # The thresholds this Case was frozen against, never the ones configured now.
+    policy_config: dict[str, str] = Field(default_factory=dict)
+    policy_checks: list[TradingPolicyCheckData] = Field(default_factory=list)
     state: str
-    regime: str | None = None
     policy_decision: str | None = None
     policy_reason: str | None = None
+    mark_price: str | None = None
     pre_move_bps: int | None = None
-    strategy_config: dict[str, str] = Field(default_factory=dict)
-    regime_reason: str | None = None
+    oi_change_bps: int | None = None
+    oi_value_usd: int | None = None
+    whale_oi_ratio_bps: int | None = None
+    whale_long_profit_bps: int | None = None
     observed_at_ms: int
     created_at_ms: int
     decided_at_ms: int | None = None
+    intent_id: str | None = None
 
 
+class TradingCasesData(ExactApiSchema):
+    cases: list[TradingCaseData] = Field(default_factory=list)
+    state_counts_24h: dict[str, int] = Field(default_factory=dict)
+    reason_counts_24h: dict[str, int] = Field(default_factory=dict)
+    complete: bool
+    window_hours: int
+    measured_at_ms: int
+
+
+# ---------------------------------------------------------------------------- Intent / Outcome
 class TradingIntentData(ExactApiSchema):
     intent_id: str
     intent_version: Literal["trade_intent_v1", "trade_intent_v2"]
@@ -201,6 +231,7 @@ class TradingIntentData(ExactApiSchema):
     avg_entry_price: str | None = None
     avg_exit_price: str | None = None
     stop_price: str | None = None
+    entry_fenced_at_ms: int | None = None
     opened_at_ms: int | None = None
     protected_at_ms: int | None = None
     closed_at_ms: int | None = None
@@ -210,69 +241,18 @@ class TradingIntentData(ExactApiSchema):
     commissions_by_currency: dict[str, str] | None = None
     created_at_ms: int
     updated_at_ms: int
-    trigger_kind: str
-    strategy_id: str
-    strategy_version: str
-    case_state: str
-    regime: str | None = None
-    policy_decision: str | None = None
-    policy_reason: str | None = None
-    pre_move_bps: int | None = None
-    strategy_config: dict[str, str] = Field(default_factory=dict)
-    regime_reason: str | None = None
-    case_observed_at_ms: int | None = None
+    policy_id: str
+    policy_version: str
 
 
 class TradingIntentsData(ExactApiSchema):
     intents: list[TradingIntentData] = Field(default_factory=list)
-    cases_without_intents: list[TradingCaseData] = Field(default_factory=list)
+    state_counts_24h: dict[str, int] = Field(default_factory=dict)
+    outcome_counts_24h: dict[str, int] = Field(default_factory=dict)
+    reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     complete: bool
     window_hours: int
     measured_at_ms: int
-
-
-class TradingGateDecisionData(ExactApiSchema):
-    source_key: str
-    event_id: str | None = None
-    underlying_key: str | None = None
-    base_symbol: str = ""
-    trigger_kind: str
-    source_observed_at_ms: int
-    gate_status: Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"] | None = None
-    gate_stage: Literal["source", "eligibility", "routing", "market_context", "freeze"] | None = None
-    gate_reason: str | None = None
-    gate_retryable: bool | None = None
-    gate_version: str | None = None
-    gate_config_digest: str | None = None
-    gate_evidence: TradingGateEvidenceData | None = None
-    gate_first_evaluated_at_ms: int | None = None
-    gate_last_evaluated_at_ms: int | None = None
-    gate_attempt_count: int | None = None
-    case_id: str | None = None
-
-
-class TradingGateData(ExactApiSchema):
-    decisions: list[TradingGateDecisionData] = Field(default_factory=list)
-    complete: bool
-    window_hours: int
-    measured_at_ms: int
-
-
-class TradingEventCaseData(ExactApiSchema):
-    event_id: str
-    joinable: bool
-    gate_status: Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"] | None = None
-    gate_stage: Literal["source", "eligibility", "routing", "market_context", "freeze"] | None = None
-    gate_reason: str | None = None
-    gate_retryable: bool | None = None
-    gate_version: str | None = None
-    gate_config_digest: str | None = None
-    gate_evidence: TradingGateEvidenceData | None = None
-    gate_first_evaluated_at_ms: int | None = None
-    gate_last_evaluated_at_ms: int | None = None
-    gate_attempt_count: int | None = None
-    case: TradingCaseData | None = None
-    intent: TradingIntentData | None = None
 
 
 __all__ = [name for name in globals() if name.startswith("Trading")]

@@ -32,15 +32,14 @@ price failure never changes whether the card is sent. The plane's failure is
 local by construction; News ingestion, judgment and readiness do not depend on
 it.
 
-Beside both runs the Trading core (#104), disabled by default. One cold
-CandidateRunner in Workers reads persisted Triage/OI facts through two
-**public News projections**, freezes one content-addressed Case, decides it —
-arithmetic for an OI case, one Predictor call for a News one — and, only
-for the exact frozen Demo contract, atomically inserts one TradeIntent while
-advancing the Case. It shares Event Reaction's one-slot heavy database
-admission rather than the four News lane slots; Quote plan/store uses an
-existing ordinary business permit so a Reaction backlog cannot age display
-quotes.
+Beside both runs the Trading core (#104, #331), disabled by default. One cold
+capital lane in Workers reads persisted OI facts through a **public News
+projection**, admits the Binance-venue ones, freezes one content-addressed
+Case, runs one deterministic long-only policy over it, and — only for the exact
+frozen Demo contract — atomically inserts one TradeIntent while advancing the
+Case. It shares Event Reaction's one-slot heavy database admission rather than
+the four News lane slots; Quote plan/store uses an existing ordinary business
+permit so a Reaction backlog cannot age display quotes.
 
 One separate Nautilus process is the sole execution authority. It polls
 `trading_intents`, fences each economic entry before a provider write, owns
@@ -124,7 +123,7 @@ action. `Worker task` names the stable task interface when the flow has one;
 
 Business runner classes carry only a typed `work_semantics` review annotation.
 The architecture harness discovers stages independently from the typed
-`NewsPipeline` and `TradingPipeline` production composition: every stage must
+`NewsPipeline` composition and the one `CapitalLane`: every stage must
 declare its semantics or an explicit internal-maintenance exemption, and each
 non-durable external stage must emit the common telemetry. Durable broker stages
 retain the existing broker/worker measurements. No scheduler, provider selector
@@ -144,16 +143,16 @@ evidence rather than executable configuration.
 | OKX quote | News Market Review | `latest_state` | OKX public REST | REST polling | `news-quotes`; 20 s | `news_quote_snapshots`; feed/event review readers |
 | Delivery price anchors | News Delivery | `derived_work` | Binance aggregate trades, then Hyperliquid/OKX/Lighter/Bitget recent trades; closed 1 m candles as fallback | bounded public REST on one approved delivery | `news-deliverer`; verdict message | ephemeral `ReaderDeliveryPresentation` only; no persisted tick history |
 | Single-name tradeability verification | News Delivery | `derived_work` | fresh Binance, Hyperliquid, OKX, Lighter and Bitget public catalogues | one bounded post-send fan-out | `news-deliverer`; eligible sent message | result stored in desired card or receipt-bound deletion evidence |
-| Binance candles | News Market Review / Trading adapter | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
-| Hyperliquid candles | News Market Review / Trading adapter | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-candidate`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| Binance candles | News Market Review / Trading adapter | `derived_work` | Binance public closed 5 m bars | REST on planned demand | `news-reactions` or `trading-capital-lane`; due work | versioned `news_event_reactions` or frozen Trading case evidence |
+| Hyperliquid candles | News Market Review | `derived_work` | Hyperliquid public closed 5 m bars | REST on planned demand | `news-reactions`; due work | versioned `news_event_reactions`; research replay only, never a live Case |
 | OKX candles | News Market Review | `derived_work` | OKX public closed bars | REST on planned demand | `news-reactions` or delivery fallback | versioned `news_event_reactions` or ephemeral delivery presentation |
 | Binance instruments | News Market Review | `latest_state` | Binance spot and USD-M catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
 | Hyperliquid instruments | News Market Review | `latest_state` | main perp, spot and bounded HIP-3 catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate, quote/reaction planning, Trading projection |
 | OKX instruments | News Market Review | `latest_state` | OKX live USDT swaps and USDT/USDC spot catalogues | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | `news_market_instruments`; Gate and price-source resolution |
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
-| Trading candidate planning | Trading | `derived_work` | public News projections, OI facts and venue bars | PostgreSQL planner + REST/model | `trading-candidate`; configured poll, default 2 s | frozen `trading_cases`; Trading policy |
-| Trading Intent handoff | Trading | `capital_truth` | accepted frozen Case | one PostgreSQL transaction | `trading-candidate`; after an accepted decision | immutable Intent plus guarded `INTENT_EMITTED` Case; Trading/operator |
+| Trading capital lane | Trading | `derived_work` | one public News OI projection and Binance closed bars | PostgreSQL planner + REST | `trading-capital-lane`; App-owned poll, 2 s | frozen `trading_cases` and the admission ledger |
+| Trading Intent handoff | Trading | `capital_truth` | accepted frozen Case | one PostgreSQL transaction | `trading-capital-lane`; after a `long` decision | immutable Intent plus guarded `INTENT_EMITTED` Case; Trading/operator |
 | Nautilus Binance Demo execution | Trading | `capital_truth` | one immutable `trading_intents` row plus Binance Demo truth | PostgreSQL poll + Nautilus adapter | `tracefold nautilus run`; 1 s while Trading is enabled | entry fence and execution Outcome on the same Intent row; operator |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
@@ -183,7 +182,7 @@ does not apply.
 | OKX instruments | 6 h; 15 m retry if no venue answers | latest catalogue | venue family | live USDT swaps and USDT/USDC spot | one bounded family fetch | venue families serial | 8 s provider | no / yes / yes | failed venue is omitted from reconciliation, preventing false mass delisting |
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
-| Trading candidate planning | configured poll, default 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
+| Trading capital lane | App-owned poll, 2 s | evidence eligibility window | underlying / durable source key | 4 case freezes and 4 advances/turn | provider/model calls serial | one | adapter-owned | yes while eligible / durable source-key rejection / no | missing or uncertain price/model evidence cannot create exposure |
 | Trading Intent handoff | accepted decision | immediate within 60 s Intent TTL | Case / global active fence | one nonterminal Intent globally | no provider call in the transaction | one | PostgreSQL deadline | bounded rescan / content identity / no | Intent insert and Case transition commit or roll back together |
 | Nautilus Binance Demo execution | 1 s PostgreSQL poll | 60 s Intent TTL | globally single active Intent | one active row | one entry, stop, or close operation at a time | one TradingNode | adapter-owned | restart reconciliation / database uniqueness / no | entry is fenced before send; exposure is protected or closing; terminal flat requires targeted venue-zero proof |
 
@@ -387,12 +386,18 @@ tracefold.news
   eval/               provider-hits Deduper+Gate replay only
 
 tracefold.trading
-  contracts.py        App-facing values/ports plus Case/Manifest vocabulary
+  capital_lane.py     the one deep module: `advance()`, Source -> Case -> Intent
+  contracts.py        App-facing values plus the Source/Case/Decision vocabulary
+  admission.py        the one place a Source is admitted, and its closed reason set
+  sources.py          one projected OI row -> one typed Source, or a named failure
+  policy.py           `binance_oi_smart_money_long_v2`: pure, long-only, frozen evidence
+  market_context.py   the price window a Case is frozen against
+  blacklist.py        the canonical deny-list
+  routing.py          venue identity, and the research-only catalogue resolver
+  capabilities.py     the frozen Binance Demo instrument universe
   intent.py           immutable TradeIntent and current Outcome contract
-  candidate/          deny-list, eligibility/funnel, News/OI fusion, venue routing
-  decision/           measured OI/price regime, one-call DSPy Program (#306 follow-on), pure trade policy
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
-  pipeline/           CandidateRunner and its one-runner composition root
+  replay.py, research/  credential-free BAR replay over the same policy identity
 
 tracefold.integrations
   provider and external-system adapters: OpenNews, RabbitMQ, Feishu, Telegram,
@@ -538,7 +543,7 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 `news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
 `news-reactions`), the one Trading loop when Trading is enabled
-(`trading-candidate`), and `workers-control` (singleton
+(`trading-capital-lane`), and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
 sync task. The polling loops read public catalogues and prices on code-owned
@@ -1753,28 +1758,70 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
 
 
-## Trading core (#104)
+## Trading core (#104, #331)
 
-`tracefold.trading` is the disabled-by-default capital capability. It turns
-persisted News/OI evidence into one frozen research decision and, only for an
-instrument in the active Binance Demo execution-capability snapshot, hands one
-immutable Intent to Nautilus. It does not claim Alpha.
+`tracefold.trading` is the disabled-by-default capital capability, and since
+#331 it is one deep module with one business action:
 
-```text
-public News projections + public closed bars
-  -> Candidate Gate
-  -> immutable TradingCase
-  -> strategy decision
-  -> one transaction:
-       INSERT immutable TradeIntent
-       guarded Case RUNNING -> INTENT_EMITTED
-  -> Nautilus bounded PostgreSQL poll
-  -> Binance USD-M Demo execution and reconciliation
-  -> execution projection on the same TradeIntent row
-  -> Case -> Intent -> Outcome API / CLI / console
+```python
+await capital_lane.advance()
 ```
 
-News and Trading remain sibling contexts. Trading reads only the two public News
+The caller — always `tracefold.app` — owns polling, the stop event and process
+lifecycle, and knows none of the admission order, the underlying
+de-duplication, the bar cutoff, the manifest construction, the capability
+resolution, the Case lease, the Intent identity or the transaction boundaries.
+
+### The domain language
+
+One word, one meaning, shared by the writer and every read surface:
+
+| Term | Meaning |
+| --- | --- |
+| **Source** | a persisted, citable market fact. The live trigger is a Binance OI frame and nothing else |
+| **Admission** | the durable Gate answer taken *before* a Case exists |
+| **RESEARCH_ONLY** | a legitimate research source with no live capital authority; Hyperliquid is one |
+| **Case** | a frozen candidate that passed live Admission and may run the capital policy |
+| **Decision** | the one terminal business answer about a Case |
+| **NO_TRADE** | the policy ran to completion and declined |
+| **BLOCKED** | a system fact, a capital authority or an invariant stopped the decision completing safely |
+| **INTENT_EMITTED** | the Case and one immutable Intent were handed over in the same transaction |
+| **Intent** | the immutable capital request submitted to Nautilus. Not an order |
+| **Outcome** | the durable result of execution and the position lifecycle |
+
+`POLICY_REJECTED` and `ORDER_PREPARED` are read-only history: production holds
+rows in both and they stay readable, but `settle_case` refuses to write either.
+
+### The one live ordering
+
+```text
+bounded OI projection snapshot
+  -> normalize source
+  -> Binance-live / research-only split
+  -> deterministic admission
+  -> resolve the active Binance Demo capability
+  -> fetch closed Binance bars (outside every transaction)
+  -> one transaction: Case + CASE_CREATED admission row
+  -> pure deterministic OI policy
+  -> NO_TRADE
+     or
+  -> final capability + deny-list + capacity + sizing recheck
+  -> one transaction: INSERT immutable TradeIntent + Case -> INTENT_EMITTED
+  -> Nautilus bounded PostgreSQL poll and its own independent entry fence
+  -> Binance USD-M Demo execution and reconciliation
+  -> execution projection on the same TradeIntent row
+  -> Source / Case / Intent read contracts
+```
+
+**Editorial News does not trigger automatic capital (#331).** It remains a
+sibling bounded context; the App seam maps one public OI projection into the
+lane and nothing else. Hyperliquid is answered `RESEARCH_ONLY` at admission
+rather than being carried four stages further to fail as
+`intent_instrument_not_allowed`. There is no online liquidation shadow runner,
+no Trading DSPy program, no strategy registry, and no venue priority — one live
+venue is code-owned.
+
+News and Trading remain sibling contexts. Trading reads only the public News
 projections supplied by the app composition root; neither package imports the
 other or reads the other's tables directly. RabbitMQ remains News-only. No
 Trading exchange, queue, outbox, LISTEN/NOTIFY channel, Redis, second database,
@@ -1784,13 +1831,30 @@ or in-memory correctness ledger exists.
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is
 notification transport success, not a trigger; capital must not depend on a
-notification channel being reachable. The frozen manifest names exactly one
-`primary_trigger`, one `strategy_id` / `strategy_version` /
-exact typed `strategy_config` / `strategy_config_digest`, and a point-in-time
-`contexts` object. `contexts.market` is the sole market truth; the manifest does
-not serialize a second market copy. A restart rebuilds the exact strategy from
-the frozen values instead of comparing the Case with today's thresholds. This prevents
-a later News, OI, or market observation from leaking backwards into the case.
+notification channel being reachable. The `trading_manifest_v7` manifest names
+exactly one `primary_trigger`, one `policy_id` / `policy_version` / exact typed
+`policy_config` / `policy_config_digest`, the capability snapshot the instrument
+was resolved from, and a point-in-time `contexts` object. `contexts.market` is
+the sole market truth. A restart re-runs the exact policy identity the Case
+froze rather than comparing the Case with today's thresholds; a Case naming a
+retired identity is `BLOCKED / policy_identity_retired` and never re-decided.
+
+### Failure semantics
+
+Expected business refusals are a closed typed vocabulary written durably.
+Everything else — a PostgreSQL timeout, a serialization failure, a repository
+bug — propagates out of `advance()` with its transaction rolled back, so the
+Case stays claimable and the Source is not consumed by an infrastructure fault.
+`intent_admission_blocked`, the catch-all that made those indistinguishable,
+does not exist. A missing `trading_runtime_state` row halts the turn before any
+scan, Case, provider call or Intent; it is never defaulted to `RUNNING`.
+
+The Nautilus entry fence returns a typed disposition — `GRANTED` (committed;
+only then may a provider entry be sent), `REFUSED` (a durable terminal
+rejection at zero exposure) or `UNAVAILABLE` (nothing written, and which of
+`runtime_not_ready` / `daily_entry_fence_taken` / `intent_not_claimable` /
+`intent_expired` it was). Risk-reducing actions — stop, close, flat proof — are
+never blocked by the entry fence.
 
 ### Frozen execution contract
 
@@ -1803,9 +1867,11 @@ native identity, underlying, quote, exact price/size increments, precision,
 minimums, and stop support, or
 excluded with one closed reason. Provider return order cannot change its hash.
 
-Only a Case whose frozen decision is `long`, whose strategy permission is not
-`shadow`, and whose complete `InstrumentRef` matches an included capability may
-emit an Intent. There is no reroute or fallback venue. The canonical blacklist
+Only a Case whose frozen decision is `long`, whose frozen capability snapshot
+digest still names the active pointer, and whose complete `InstrumentRef`
+matches an included capability may emit an Intent. There is no permission field
+to check: a policy that could name one would be a capital authority in a
+strategy string (#331). There is no reroute or fallback venue. The canonical blacklist
 keys only `crypto:{BASE}` and therefore denies every provider spelling of the
 underlying. Both emission and the last entry fence capture its monotonic
 revision, digest, and immutable payload; an intervening deny is a terminal flat
@@ -1829,11 +1895,14 @@ A quantity below venue minimum, insufficient balance, unacceptable quote, an
 identity mismatch, or any inability to prove the contract is a refusal. Nothing
 silently changes size, venue, side, leverage, or account.
 
-CandidateRunner owns the handoff transaction. It reads the active capability
-and blacklist under the same PostgreSQL transaction, inserts the content-
-addressed `trade_intent_v2` row, then guards the already-claimed Case from
-`RUNNING` to `INTENT_EMITTED` in the same caller-owned transaction. A failed
-insert or failed Case transition rolls both writes back. There is no prepared
+`LaneStorage.commit_long_decision` owns the handoff transaction. It re-reads
+the active capability pointer, the deny-list and both capacity fences *inside*
+the commit — every one of them can move while a Case waits — proves the venue
+lot size leaves a submittable quantity, inserts the content-addressed
+`trade_intent_v2` row, then guards the already-claimed Case from `RUNNING` to
+`INTENT_EMITTED` in the same caller-owned transaction. A failed insert or
+failed Case transition rolls both writes back, and every refusal is one of the
+closed `BlockedReason` values written onto the Case in that same transaction. There is no prepared
 order, provider payload, approval state, backend selector, dual-write, or
 fallback writer.
 
@@ -1955,27 +2024,36 @@ sole authority until it protects or closes the position.
 
 ### Research, admission, and durable data
 
-The Candidate Gate still owns deterministic eligibility, source-aligned
-research routing, freshness, deny-list, rank/liquidity, cooldown, and capacity
-answers. It records one
-`(source_key, gate_version, gate_config_digest)` decision so the console can
-explain why a source did not become a Case. The scanner re-reads a bounded
-overlap and relies on durable source identity rather than an in-memory cursor.
+Admission owns source contract, venue authority, freshness, deny-list,
+rank/liquidity, cooldown, capability presence, market context and capacity. It
+records one `(source_key, gate_version, gate_config_digest)` decision in
+`trading_candidate_gate_decisions` — the admission ledger — so the console can
+explain why a Source did not become a Case. The scan re-reads a bounded overlap
+and relies on durable source identity rather than an in-memory cursor.
 
-Cases freeze source identity, cutoff, attached context, exact strategy/version/
-config digest, regime, price evidence, and instrument. OI-triggered Cases use
-the arithmetic `oi_smart_money_momentum_v1`; News-triggered Cases may use the
-single bounded Trading decision Program before the same pure strategy policy
-returns the final decision. Shadow liquidation strategies remain research-only:
-they can write immutable strategy evaluations and outcomes, never Cases or
-Intents.
+Cases freeze source identity, cutoff, the price window, the exact
+policy/version/config digest, the capability snapshot they were resolved
+against, and the instrument. `policy_checks` records every condition the policy
+executed — threshold, operator, measured value, pass/fail — so a Case decided a
+week ago can be explained without today's configuration.
 
-Current product reads are Case -> Intent -> Outcome only.
-`trading_cases`, `trading_intents`, the candidate-gate ledger, runtime
-control, blacklist, and strategy research ledgers are current inputs.
-`trading_orders` and `trading_order_observations` remain read-only historical
-audit after the hard cut and are excluded from status, cooldown, active/daily
-admission, milestones, API, CLI, and UI. They have no production writer.
+Production runs exactly one capital policy,
+`binance_oi_smart_money_long_v2`: pure, deterministic, long-only, code-owned
+thresholds, and it answers `long` or `no_trade` only. It cannot express a
+permission, an execution environment or a venue; capital authority belongs to
+the lane and the durable capability snapshot.
+
+Current product reads are Source / Admission, Case / Decision, and Intent /
+Outcome, one HTTP owner each. `trading_cases`, `trading_intents`, the admission
+ledger, runtime control and the blacklist are current inputs. `trading_orders`
+and `trading_order_observations` remain read-only historical audit and have no
+production writer.
+
+Every product statistic is a bounded aggregation over durable rows. The
+per-poll `funnel` document — which reset at UTC midnight and counted one entry
+per re-read of the same frame, so its magnitudes were a function of the poll
+interval — is gone with `dspy_calls_today` and `day_key` (migration
+`20260829_0325`).
 
 Stage latency is computed from the durable source, Case, Intent fence, open,
 protection, and close timestamps. No report reconstructs an Order or treats an

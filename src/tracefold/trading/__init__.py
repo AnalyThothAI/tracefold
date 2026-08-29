@@ -1,8 +1,13 @@
-"""Public Case and TradeIntent values for the Trading bounded context."""
+"""Public Case, Intent and capability values for the Trading bounded context.
+
+App-facing values and one business action. The lane itself is imported by the composition root from
+`tracefold.trading.capital_lane`; it is not re-exported here, because a package root that exports a
+runner invites a caller to build one somewhere other than the composition seam.
+"""
 
 from __future__ import annotations
 
-from .candidate.blacklist import BlacklistSnapshotV1
+from .blacklist import BlacklistSnapshotV1
 from .capabilities import (
     ExecutionCapabilitySnapshotV1,
     ExecutionInstrumentCapabilityV1,

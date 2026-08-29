@@ -26,6 +26,8 @@ from tracefold.platform.postgres.migrations import alembic_config
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 NOW = 1_900_000_000_000
+# The v2 policy identity the `trading_intents_v2_shape_check` constraint pins.
+INTENT_POLICY_SHA256 = "5788964eb8e210bb09b2cfc5d540c4d680bc9982ae023f3d72227194ab2c1ff0"
 BEFORE_SNAPSHOT = "20260825_0307"
 BEFORE_STRATEGY_KERNEL = "20260825_0309"
 BEFORE_INTENT_HARD_CUT = "20260828_0316"
@@ -49,6 +51,15 @@ def _fresh_schema_at(revision: str) -> None:
     _upgrade(revision)
 
 
+def _has_column(conn: Any, column: str, *, table: str = "trading_cases") -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = %s AND column_name = %s",
+        (table, column),
+    ).fetchone()
+    return row is not None
+
+
 def _seed_pre_snapshot_order(
     conn: Any,
     *,
@@ -57,19 +68,21 @@ def _seed_pre_snapshot_order(
     position_opened_at_ms: int | None,
     must_close_at_ms: int | None,
 ) -> None:
-    strategy_schema = conn.execute(
-        "SELECT 1 FROM information_schema.columns "
-        "WHERE table_schema = 'public' AND table_name = 'trading_cases' AND column_name = 'trigger_kind'"
-    ).fetchone()
-    if strategy_schema is not None:
+    strategy_schema = _has_column(conn, "trigger_kind")
+    # `mode` is `'paper'` on every row that ever existed and #331 dropped it. This helper writes at
+    # several historical schema points, so it asks the catalogue rather than assuming one of them.
+    has_mode = _has_column(conn, "mode")
+    if strategy_schema:
         conn.execute(
-            """
+            f"""
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
-              strategy_config_digest, mode, primary_source_key, supplemental_source_keys,
+              strategy_config_digest, {"mode, " if has_mode else ""}primary_source_key,
+              supplemental_source_keys,
               manifest, manifest_sha256, state, observed_at_ms, created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, 'oi', 'oi_momentum_v1', 'oi_momentum_v1', %s, 'paper', %s,
-                      '[]'::jsonb, '{}'::jsonb, 'sha', 'ORDER_PREPARED', %s, %s, %s)
+            ) VALUES (%s, %s, 'oi', 'oi_momentum_v1', 'oi_momentum_v1', %s,
+                      {"'paper', " if has_mode else ""}%s,
+                      '[]'::jsonb, '{{}}'::jsonb, 'sha', 'ORDER_PREPARED', %s, %s, %s)
             """,
             (f"case-{order_id}", f"crypto:{order_id.upper()}", "0" * 64, f"key-{order_id}", NOW, NOW, NOW),
         )
@@ -574,6 +587,122 @@ def test_0320_hard_cuts_new_v1_writes_and_adds_append_only_authority_ledgers() -
             "workers_can_clear_bootstrap_proof": True,
             "nautilus_can_project_bootstrap_proof": True,
         }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+BEFORE_CAPITAL_LANE_V3 = "20260828_0324"
+
+
+@pytest.mark.parametrize(
+    ("blocker", "error"),
+    [
+        ("case", "capital_lane_v3_undecided_case"),
+        ("intent", "capital_lane_v3_nonterminal_intent"),
+    ],
+)
+def test_0325_refuses_to_cut_over_a_warm_lane(blocker: str, error: str) -> None:
+    """#331 Phase 0, stated at the schema. A v6 Case cannot be decided by the v7 policy."""
+
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_CAPITAL_LANE_V3)
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        if blocker == "case":
+            _seed_pre_hard_cut_case(conn, case_id="undecided-case", state="PENDING")
+        else:
+            _seed_pre_hard_cut_case(conn, case_id="intent-case", state="INTENT_EMITTED")
+            conn.execute(
+                """
+                INSERT INTO trading_execution_capability_snapshots (
+                  snapshot_sha256, created_at_ms, execution_environment,
+                  included_count, excluded_count, payload
+                ) VALUES (%s, %s, 'BINANCE_USDM_DEMO', 1, 0, '{}'::jsonb)
+                """,
+                ("4" * 64, NOW),
+            )
+            conn.execute(
+                """
+                INSERT INTO trading_intents (
+                  intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+                  execution_environment, execution_capability_snapshot_sha256,
+                  blacklist_revision_at_emission, blacklist_snapshot_sha256_at_emission,
+                  blacklist_snapshot_payload_at_emission, instrument_id, underlying_key, side,
+                  created_at_ms, valid_until_ms, reference_price, target_notional_usd,
+                  stop_loss_bps, max_holding_ms, max_entry_drift_bps, max_spread_bps,
+                  execution_state
+                ) VALUES (%s, 'trade_intent_v2', 'intent-case', %s, %s,
+                          'BINANCE_USDM_DEMO', %s, 0, %s,
+                          '{"snapshot_version": "blacklist_snapshot_v1"}'::jsonb,
+                          'SOLUSDT-PERP.BINANCE', 'crypto:SOL', 'long', %s, %s, 100, 10,
+                          200, 180000, 25, 30, 'PENDING')
+                """,
+                ("9" * 64, "3" * 64, INTENT_POLICY_SHA256, "4" * 64, "5" * 64, NOW, NOW + 60_000),
+            )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match=error):
+            _upgrade("20260829_0325")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0325_drains_the_per_poll_counters_and_admits_the_new_admission_vocabulary() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_CAPITAL_LANE_V3)
+        conn = connect_postgres_test(read_only=False)
+        # Historical rows stay exactly as they were written; nothing here rewrites a ledger.
+        _seed_pre_hard_cut_case(conn, case_id="historical-case", state="POLICY_REJECTED")
+        conn.commit()
+        conn.close()
+        conn = None
+        _upgrade("20260829_0325")
+        conn = connect_postgres_test(read_only=False)
+
+        assert _has_column(conn, "policy_checks")
+        for retired in ("mode",):
+            assert not _has_column(conn, retired)
+        for retired in ("funnel", "dspy_calls_today", "day_key"):
+            assert not _has_column(conn, retired, table="trading_runtime_state")
+        for dropped in ("trading_strategy_evaluations", "trading_strategy_registrations"):
+            assert conn.execute("SELECT to_regclass(%s) AS t", (f"public.{dropped}",)).fetchone()["t"] is None
+
+        row = conn.execute("SELECT state, strategy_id FROM trading_cases WHERE case_id = 'historical-case'").fetchone()
+        assert dict(row) == {"state": "POLICY_REJECTED", "strategy_id": "oi_smart_money_momentum_v1"}
+
+        # The Gate can now say `RESEARCH_ONLY` at the two new stages, and still stores `routing` rows.
+        for status, stage, reason in (
+            ("RESEARCH_ONLY", "venue", "research_only_venue"),
+            ("DEFERRED", "capability", "capability_absent"),
+            ("DEFERRED", "routing", "no_native_perp"),
+        ):
+            conn.execute(
+                """
+                INSERT INTO trading_candidate_gate_decisions (
+                  source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+                  source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+                  first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+                ) VALUES (%s, 'trading_admission_v2', %s, 'oi', 'crypto:SOL', %s, %s, %s, %s,
+                          false, '{}'::jsonb, NULL, %s, %s, 1)
+                """,
+                (f"oi:{reason}:v1", "0" * 64, NOW, status, stage, reason, NOW, NOW),
+            )
+        conn.commit()
+        assert conn.execute("SELECT count(*) AS n FROM trading_candidate_gate_decisions").fetchone()["n"] == 3
+
+        # Workers keep exactly the two runtime columns they still write.
+        granted = conn.execute(
+            "SELECT column_name FROM information_schema.column_privileges "
+            "WHERE grantee = 'tracefold_workers' AND table_name = 'trading_runtime_state' "
+            "AND privilege_type = 'UPDATE' ORDER BY column_name"
+        ).fetchall()
+        assert [row["column_name"] for row in granted] == ["control", "updated_at_ms"]
     finally:
         if conn is not None:
             conn.close()

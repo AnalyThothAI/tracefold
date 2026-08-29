@@ -22,7 +22,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 /**
- * OI 遥测审计 (#207/#137/#256). The lane is judged by rule rather than by the model, and the whole point of this
+ * OI 来源与准入审计 (#207/#137/#256). The lane is judged by rule rather than by the model, and the whole point of this
  * page is that the reader can see *which* rule — so the tests here are mostly about the page not inventing
  * anything the server did not say.
  */
@@ -68,7 +68,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
     await waitFor(() => expect(observed.admission).toBe("telemetry_deterministic"));
     expect(observed.hours).toBe("24");
@@ -81,7 +81,7 @@ describe("NewsOiPage", () => {
     // The tab filters the whole window server-side while the table shows one page of it. A count derived
     // from the rows below would make an empty page read as an empty window.
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
     const tabs = await screen.findByRole("tablist", { name: "按判定筛选" });
     expect(within(tabs).getByRole("tab", { name: /已推送/ })).toHaveTextContent("3");
@@ -99,38 +99,28 @@ describe("NewsOiPage", () => {
     expect(screen.getByText("解析成功 97.9%")).toBeInTheDocument();
   });
 
-  it("shows whether Trading is running and reads direction from its policy", async () => {
+  it("names the admission version it read and never an Alpha threshold", async () => {
+    /*
+     * #331: the panel shows the *admission* rules the ledger's rows are filed under. It shows no Alpha
+     * threshold at all, because those are frozen onto each Case and belong beside the Case that executed
+     * them — a panel printing today's configuration invited a reader to measure last week's Case with it.
+     */
     renderOi();
     expect(
-      await screen.findByText("BINANCE_USDM_DEMO · 资本通道关闭 · Alpha 地板在 1 条策略各自"),
+      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v2 · Alpha 阈值随案例冻结/),
     ).toBeInTheDocument();
+    expect(screen.getByText("binance")).toBeInTheDocument();
+    expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();
+  });
 
+  it("says the admission rules were unread rather than printing them as absent", async () => {
     cleanup();
-    const baseStatus = newsStatusFixture();
-    const baseOi = baseStatus.oi!;
-    const baseFloors = baseOi.trade_floors!;
     server.use(
-      http.get(/.*\/api\/news\/status$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsStatusFixture({
-            oi: {
-              ...baseOi,
-              trade_floors: {
-                ...baseFloors,
-                allow_short: true,
-                enabled: true,
-                execution_environment: "BINANCE_USDM_DEMO",
-              },
-            },
-          }),
-        }),
-      ),
+      http.get(/.*\/api\/trading\/gate$/, () => HttpResponse.json({ ok: false }, { status: 503 })),
     );
     renderOi();
-    expect(
-      await screen.findByText("BINANCE_USDM_DEMO · 已启用 · Alpha 地板在 1 条策略各自"),
-    ).toBeInTheDocument();
+    expect(await screen.findByText("BINANCE_USDM_DEMO · 准入规则未读到")).toBeInTheDocument();
+    expect(await screen.findByText(/准入台账读取失败/)).toBeInTheDocument();
   });
 
   it("marks a frame no threshold let through as having spent no window slot", async () => {
@@ -163,35 +153,29 @@ describe("NewsOiPage", () => {
     expect(row).not.toHaveTextContent("1 / 2");
   });
 
-  it("stamps no research bucket when the capital lane sends no floor", async () => {
-    // A console newer than the API gets the schema's zero defaults. `profit >= 0` would badge every frame
-    // as 研究里唯一均值为正的分桶 — a claim about a measured bucket, made against no threshold at all.
+  it("stamps the research bucket from the measurement, not from a lane threshold", async () => {
+    /*
+     * #331: the 95% boundary is `oi-agent-design-2026-08-22.md` §1.5's measured bucket, not the capital
+     * lane's floor. It used to be read off the lane's republished settings, so a console newer than the
+     * API got the schema's zero and badged every frame as 研究里唯一均值为正的分桶.
+     */
     server.use(
-      http.get(/.*\/api\/news\/status$/, () =>
+      http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({
           ok: true,
-          data: newsStatusFixture({
-            oi: {
-              ...newsStatusFixture().oi,
-              trade_floors: {
-                allow_short: false,
-                enabled: false,
-                execution_environment: "BINANCE_USDM_DEMO",
-                max_price_move_bps: 0,
-                min_oi_value_usd: 0,
-                min_price_move_bps: 0,
-                min_whale_long_profit_bps: 0,
-                pre_move_lookback_ms: 0,
-              },
-            },
+          data: newsFeedFixture({
+            events: [
+              newsOiFrameFixture({
+                oi: { ...newsOiFrameFixture().oi!, whale_long_profit_bps: 9_600 },
+              }),
+            ],
           }),
         }),
       ),
     );
 
     renderOi();
-    const row = await screen.findByRole("button", { name: /WIF/ });
-    expect(row).not.toHaveTextContent("盈利正桶");
+    expect(await screen.findByText("盈利正桶")).toBeInTheDocument();
   });
 
   it("keeps the tabs reachable when the frame request fails", async () => {
@@ -281,7 +265,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
     await waitFor(() =>
       expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("HOLO"),
     );
@@ -313,7 +297,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
     await waitFor(() => expect(document.querySelector(".news-oi-symbol b")?.textContent).toBe("—"));
   });
 
@@ -549,7 +533,7 @@ describe("NewsOiPage", () => {
     );
 
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
     // By structure, not by rendered text: with no `oi` block the row has no symbol and no measurement to
     // name it by, and its clock is local time — which is a different hour in CI than on this machine.
     await waitFor(() => expect(document.querySelector(".news-oi-row-main")).toBeInTheDocument());
@@ -568,7 +552,7 @@ describe("NewsOiPage", () => {
 
   it("shows the two compact policy sets side by side and never merges them", async () => {
     renderOi();
-    await screen.findByRole("heading", { name: "OI 遥测审计" });
+    await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
     const gates = await screen.findByRole("heading", { name: "推送闸门 · NEWS.OI" });
     const gatesCard = gates.closest("article") as HTMLElement;
@@ -579,20 +563,19 @@ describe("NewsOiPage", () => {
     expect(gatesCard).toHaveTextContent("拦下 0");
 
     /*
-     * The capital half is the Candidate Gate's own configuration (#269). It used to read the operator's
-     * `trading` settings document that News republishes — printing 持仓规模 ≥2000 万 while admission ran
-     * at 500 万 — and to show `min_whale_long_profit_bps` as a lane-wide 交易地板 when it is one
-     * strategy's Alpha threshold and a different strategy decides most cases.
+     * The capital half is Admission's own configuration, read from the same batch as the answers it
+     * filed (#269/#331). It used to read the operator's `trading` settings document that News
+     * republishes — printing 持仓规模 ≥2000 万 while admission ran at 500 万 — and to show an Alpha
+     * threshold as though it were the lane's.
      */
     const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
     const admissionCard = admission.closest("article") as HTMLElement;
     expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
     expect(within(admissionCard).getByText("≤ 2")).toBeInTheDocument();
-    expect(within(admissionCard).getByText("binance / hyperliquid")).toBeInTheDocument();
+    // One live venue, code-owned. Everything else is `RESEARCH_ONLY` and the frame table says so per row.
+    expect(within(admissionCard).getByText("binance")).toBeInTheDocument();
     expect(admissionCard).toHaveTextContent("5m");
-    // Where the Alpha floors live is said; none of them is printed here. They are per-strategy, and a
-    // single figure over a table of every frame is the comparison this panel just stopped making.
-    expect(admissionCard).toHaveTextContent("Alpha 地板在 1 条策略各自");
+    expect(admissionCard).toHaveTextContent("Alpha 阈值随案例冻结");
     expect(admissionCard).not.toHaveTextContent("≥95%");
     expect(screen.queryByRole("heading", { name: "交易地板 · TRADING" })).toBeNull();
   });
@@ -610,27 +593,27 @@ describe("NewsOiPage", () => {
       "/news/symbols/WIF",
     );
     expect(screen.getByText("判定痕迹 · OI_JUDGMENT_TRACE")).toBeInTheDocument();
-    expect(screen.getByText("交易判定 · ?LANE=OI")).toBeInTheDocument();
-    expect(screen.getByText("未评估")).toBeInTheDocument();
-    expect(screen.queryByText(/order-wif/)).toBeNull();
+    expect(screen.getByText("资本准入 · ADMISSION")).toBeInTheDocument();
+    expect(screen.getAllByText("未评估").length).toBeGreaterThan(0);
+    // The trace is admission's alone: no Case state, no execution state (#331).
+    expect(screen.queryByText(/order-wif|OPEN_PROTECTED/)).toBeNull();
   });
 
-  it("names which capital read failed, and offers a retry, even on a cold failure", async () => {
+  it("names the failed capital read, and offers a retry, even on a cold failure", async () => {
     /*
-     * Each of the three capital reads fails on its own. A cold admission-rules failure leaves the
-     * Candidate Gate panel with nothing to print, and four `—` tiles beside 已启用 read as "no
+     * A cold admission failure leaves the panel with nothing to print, and four `—` tiles read as "no
      * admission rule is configured" rather than "we could not ask" — so it has to be named above the
      * fold and retryable, not only reported inside the panel.
      */
     server.use(
-      http.get(/.*\/api\/trading\/status$/, () =>
-        HttpResponse.json({ ok: false, error: "status unavailable" }, { status: 503 }),
+      http.get(/.*\/api\/trading\/gate$/, () =>
+        HttpResponse.json({ ok: false, error: "gate unavailable" }, { status: 503 }),
       ),
     );
     renderOi();
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("准入规则读取失败");
+    expect(alert).toHaveTextContent("准入台账读取失败");
     expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
     // And the panel says the same thing where the missing numbers are.
     expect(screen.getByText("BINANCE_USDM_DEMO · 准入规则未读到")).toBeInTheDocument();
@@ -656,12 +639,6 @@ describe("NewsOiPage", () => {
           }),
         }),
       ),
-      http.get(/.*\/api\/trading\/intents$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: tradingIntentsFixture({ cases_without_intents: [], intents: [] }),
-        }),
-      ),
       http.get(/.*\/api\/trading\/gate$/, () =>
         HttpResponse.json({
           ok: true,
@@ -672,9 +649,10 @@ describe("NewsOiPage", () => {
                 base_symbol: "NVDA",
                 event_id: "evt-oi-nvda",
                 gate_evidence: gateEvidence({ venue: "binance" }),
-                gate_reason: "no_native_perp",
-                gate_stage: "routing",
-                gate_status: "EXPIRED",
+                gate_reason: "research_only_venue",
+                gate_stage: "venue",
+                gate_status: "RESEARCH_ONLY",
+                research_only: true,
                 source_key: "oi:evt-oi-nvda:oi_signal_v1",
                 underlying_key: "stock:NVDA",
               }),
@@ -686,15 +664,20 @@ describe("NewsOiPage", () => {
     renderOi();
 
     const rows = await screen.findAllByRole("button", { expanded: false });
-    expect(rows[0]).toHaveTextContent("已拒绝 · 持仓额低于流动性地板");
-    // A Binance stock perpetual this crypto-only lane can never route, closed by the clock while it
-    // waited — and still naming the instrument, which is the fix #268 made in the ledger itself.
-    expect(rows[1]).toHaveTextContent("已过期 · 该场所无原生永续");
+    // The Chinese is the title; the cell carries the status and the raw `stage:reason` an operator greps.
+    expect(rows[0]).toHaveTextContent("eligibility:oi_value_below_floor已拒绝");
+    // A real market fact from a venue this lane may study and never trade (#331). Not a refusal, and
+    // not drawn as one: the ledger's own word for it is `RESEARCH_ONLY`.
+    expect(rows[1]).toHaveTextContent("venue:research_only_venue仅研究");
     // And a frame with no ledger row at all is an absence, not a refusal.
     expect(rows[2]).toHaveTextContent("未评估");
 
     fireEvent.click(rows[0]);
-    expect(screen.getByText("oi_value_below_floor")).toBeInTheDocument();
+    // The expanded trace carries the row the ledger wrote, evidence included.
+    expect(screen.getByText("资本准入 · ADMISSION")).toBeInTheDocument();
+    expect(
+      screen.getByText(/持仓额低于流动性地板（eligibility:oi_value_below_floor）/),
+    ).toBeInTheDocument();
     expect(screen.getByText("5000000")).toBeInTheDocument();
   });
 

@@ -898,7 +898,7 @@ options:
 
 ```
 usage: tracefold trading replay-oi [-h] [--days DAYS]
-                                   [--strategy {oi_smart_money_momentum_v1}]
+                                   [--strategy {binance_oi_smart_money_long_v2}]
                                    [--venues VENUES] [--fidelity {bar_v1}]
                                    [--out OUT]
 
@@ -906,7 +906,9 @@ options:
   -h, --help            show this help message and exit
   --days DAYS           how far back to replay; the OI ledger holds 30 days of
                         parsed frames
-  --strategy {oi_smart_money_momentum_v1}
+  --strategy {binance_oi_smart_money_long_v2}
+                        the one production capital policy; a replay may only
+                        run the identity the lane runs
   --venues VENUES       comma-separated exact source-native venue scenarios
   --fidelity {bar_v1}
   --out OUT             artifact root

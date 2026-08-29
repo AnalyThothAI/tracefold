@@ -1,23 +1,20 @@
 """News-owned point-in-time projection read by App composition for Trading.
 
-The three row contracts below are the published shape of that projection. They are `TypedDict`s
+The two row contracts below are the published shape of that projection. They are `TypedDict`s
 because the rows *are* the SELECT lists — naming the columns is the whole contract, and a runtime
 model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
 different value. Nothing outside this module may add, rename or retype a key without editing them,
 which is what makes the App-side mapper break at type-check time instead of at 03:00 in a runner.
 
-They say nothing about *trade* eligibility: single-primary, grounding, novelty, magnitude, freshness
-and rank live in the trading lane's own pure rules. This side owns generation identity, the
-point-in-time boundaries and the deterministic order.
+They say nothing about *trade* eligibility: freshness, rank and the liquidity floor live in the
+capital lane's own pure rules. This side owns generation identity, the point-in-time boundaries and
+the deterministic order.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from decimal import Decimal
 from typing import Any, TypedDict
-
-from ..opennews import source_artifact_identity
 
 # Bump when a key is added, removed or retyped below — and when what a key *means* changes without the
 # key moving. The consumer's mapper is versioned against it, so neither a silently widened projection
@@ -41,7 +38,12 @@ from ..opennews import source_artifact_identity
 # `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
 # measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
 # be proven for this frame and a consumer must refuse it rather than assume five minutes.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v8"
+#
+# v9 (#331): the editorial-verdict and liquidation reads are gone. Editorial News no longer triggers
+# automatic capital and there is no online liquidation consumer, so publishing either was a projection
+# nothing read — and an invitation for the capital lane to grow a second trigger by accident. The OI
+# read and the instrument reads are what remains.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v9"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -105,67 +107,6 @@ class OiTradeProjectionRow(TypedDict):
     ingest_mode: str
     # LEFT JOIN on the leader Item, then a JSON member: absent frames and untagged frames both read None.
     venue: str | None
-
-
-class NewsTradeProjectionRow(TypedDict):
-    """One model Triage verdict that pushed on a crypto-class Event, frozen at the verdict cutoff."""
-
-    event_id: str
-    verdict_created_at_ms: int
-    final_decision: str
-    # Nullable in `news_verdicts` and deliberately not filtered here: a verdict with no evidence pointer
-    # is still a real judgment, and adding the predicate would silently narrow the projection's rows.
-    # `program_sha256`, `scored_judgment_sha256` and `runtime_manifest_sha` are nullable too, but the
-    # WHERE clause already requires each of them, so those cross as `str`.
-    evidence_version: int | None
-    evidence_sha256: str | None
-    focus_fact_id: str | None
-    verdict: Any
-    learning_epoch: str
-    program_version: str
-    program_sha256: str
-    policy_version: str
-    editorial_origin: str
-    editorial_sha256: str
-    scored_judgment_sha256: str
-    runtime_manifest_sha: str
-    opened_at_ms: int
-    comparison_fingerprint: str
-    asset_class: str
-    grounded_assets: Any
-    ingest_mode: str
-    source_artifact_id: str | None
-    # Derived here from the canonical URL's own identity, never selected: see the note in the reader.
-    source_published_at_ms: int | None
-
-
-class LiquidationTradeProjectionRow(TypedDict):
-    """One admission-time normalized forced-flow fact; direction remains descriptive only."""
-
-    source_key: str
-    item_id: str
-    fact_id: str
-    symbol: str
-    venue: str
-    liquidated_position_side: str
-    forced_order_side: str
-    notional_usd: Decimal
-    quantity: Decimal | None
-    price: Decimal
-    event_at_ms: int
-    received_at_ms: int
-    parser_version: str
-    provider_record_identity: str
-    symbol_contract_identity: str
-    position_side_semantics: str
-    quantity_semantics: str
-    notional_semantics: str
-    price_semantics: str
-    completeness_assumption: str
-    throttle_assumption: str
-    source_contract_version: str
-    source_contract_complete: bool
-    ingest_mode: str
 
 
 class TradeInstrumentProjectionRow(TypedDict):
@@ -275,100 +216,6 @@ class TradeProjectionStorage:
             ),
         ).fetchall()
         return [_oi_projection_row(row) for row in rows]
-
-    def trade_candidate_news_rows(
-        self,
-        *,
-        after_created_at_ms: int,
-        until_created_at_ms: int,
-        limit: int = TRADE_PROJECTION_ROW_LIMIT,
-    ) -> list[NewsTradeProjectionRow]:
-        """Model Triage verdicts that pushed on a crypto-class Event, frozen at the verdict cutoff.
-
-        Only the structural conditions live in SQL. Single-primary, grounding, novelty and magnitude are
-        the trading lane's own eligibility rules and stay pure functions over the verdict document, so
-        they are testable without a database and cannot silently diverge from the funnel report.
-
-        Newest first at the limit, for the reason given on the OI read.
-        """
-
-        rows = self.conn.execute(
-            f"""
-            SELECT v.event_id,
-                   v.created_at_ms  AS verdict_created_at_ms,
-                   v.final_decision,
-                   v.evidence_version,
-                   v.evidence_sha256,
-                   v.focus_fact_id,
-                   v.verdict,
-                   epoch.epoch_id AS learning_epoch,
-                   v.program_version,
-                   v.program_sha256,
-                   v.policy_version,
-                   v.editorial ->> 'editorial_origin' AS editorial_origin,
-                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
-                   v.scored_judgment_sha256,
-                   v.runtime_manifest_sha,
-                   e.opened_at_ms,
-                   e.comparison_fingerprint,
-                   e.asset_class,
-                   e.grounded_assets,
-                   e.ingest_mode,
-                   i.source_artifact_id,
-                   i.canonical_url
-              FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
-              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
-             WHERE v.stage = 'triage'
-               AND v.program_version = 'news_semantic_program_v5'
-               AND v.policy_version = 'news_triage_policy_v10'
-               AND v.editorial ->> 'editorial_origin' = 'model'
-               AND jsonb_typeof(v.editorial -> 'relevance') = 'object'
-               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
-               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{{64}}$'
-               AND v.scored_judgment_sha256 IS NOT NULL
-               AND v.runtime_manifest_sha IS NOT NULL
-               AND v.final_decision IN ('push', 'escalate')
-               AND v.degraded = false
-               AND e.ingest_mode = 'live'
-               AND e.asset_class = 'crypto'
-               AND v.created_at_ms > %s
-               AND v.created_at_ms <= %s
-             ORDER BY v.created_at_ms DESC, v.event_id DESC
-             LIMIT %s
-            """,
-            (int(after_created_at_ms), int(until_created_at_ms), int(limit)),
-        ).fetchall()
-        return [_news_projection_row(row) for row in rows]
-
-    def trade_candidate_liquidation_rows(
-        self,
-        *,
-        after_received_at_ms: int,
-        until_received_at_ms: int,
-        limit: int = TRADE_PROJECTION_ROW_LIMIT,
-    ) -> list[LiquidationTradeProjectionRow]:
-        """Typed live forced-flow facts; no strategy or directional inference is made here."""
-
-        rows = self.conn.execute(
-            """
-            SELECT l.source_key, l.item_id, l.fact_id, l.symbol, l.venue,
-                   l.liquidated_position_side, l.forced_order_side, l.notional_usd,
-                   l.quantity, l.price, l.event_at_ms, l.received_at_ms, l.parser_version,
-                   l.provider_record_identity, l.symbol_contract_identity,
-                   l.position_side_semantics, l.quantity_semantics, l.notional_semantics,
-                   l.price_semantics, l.completeness_assumption, l.throttle_assumption,
-                   l.source_contract_version, l.source_contract_complete, l.ingest_mode
-              FROM news_market_liquidations l
-             WHERE l.ingest_mode = 'live'
-               AND l.received_at_ms > %s
-               AND l.received_at_ms <= %s
-             ORDER BY l.received_at_ms DESC, l.source_key DESC
-             LIMIT %s
-            """,
-            (int(after_received_at_ms), int(until_received_at_ms), int(limit)),
-        ).fetchall()
-        return [_liquidation_projection_row(row) for row in rows]
 
     def trade_candidate_instrument(
         self,
@@ -520,69 +367,4 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         observed_at_ms=row["observed_at_ms"],
         ingest_mode=row["ingest_mode"],
         venue=row["venue"],
-    )
-
-
-def _news_projection_row(row: Any) -> NewsTradeProjectionRow:
-    """Name every selected column, and derive the one field that is not selected.
-
-    #154/#157 keep the artifact id as a column and derive its publication time from the URL's own
-    identity (a snowflake, for x.com), so the projection derives it the same way the delivery card's
-    `source_age_s` does rather than inventing a second answer. `canonical_url` is read here and does
-    not cross the boundary.
-    """
-
-    _, published_at_ms = source_artifact_identity(str(row["canonical_url"] or ""))
-    return NewsTradeProjectionRow(
-        event_id=row["event_id"],
-        verdict_created_at_ms=row["verdict_created_at_ms"],
-        final_decision=row["final_decision"],
-        evidence_version=row["evidence_version"],
-        evidence_sha256=row["evidence_sha256"],
-        focus_fact_id=row["focus_fact_id"],
-        verdict=row["verdict"],
-        learning_epoch=row["learning_epoch"],
-        program_version=row["program_version"],
-        program_sha256=row["program_sha256"],
-        policy_version=row["policy_version"],
-        editorial_origin=row["editorial_origin"],
-        editorial_sha256=row["editorial_sha256"],
-        scored_judgment_sha256=row["scored_judgment_sha256"],
-        runtime_manifest_sha=row["runtime_manifest_sha"],
-        opened_at_ms=row["opened_at_ms"],
-        comparison_fingerprint=row["comparison_fingerprint"],
-        asset_class=row["asset_class"],
-        grounded_assets=row["grounded_assets"],
-        ingest_mode=row["ingest_mode"],
-        source_artifact_id=row["source_artifact_id"],
-        source_published_at_ms=published_at_ms,
-    )
-
-
-def _liquidation_projection_row(row: Any) -> LiquidationTradeProjectionRow:
-    return LiquidationTradeProjectionRow(
-        source_key=row["source_key"],
-        item_id=row["item_id"],
-        fact_id=row["fact_id"],
-        symbol=row["symbol"],
-        venue=row["venue"],
-        liquidated_position_side=row["liquidated_position_side"],
-        forced_order_side=row["forced_order_side"],
-        notional_usd=row["notional_usd"],
-        quantity=row["quantity"],
-        price=row["price"],
-        event_at_ms=row["event_at_ms"],
-        received_at_ms=row["received_at_ms"],
-        parser_version=row["parser_version"],
-        provider_record_identity=row["provider_record_identity"],
-        symbol_contract_identity=row["symbol_contract_identity"],
-        position_side_semantics=row["position_side_semantics"],
-        quantity_semantics=row["quantity_semantics"],
-        notional_semantics=row["notional_semantics"],
-        price_semantics=row["price_semantics"],
-        completeness_assumption=row["completeness_assumption"],
-        throttle_assumption=row["throttle_assumption"],
-        source_contract_version=row["source_contract_version"],
-        source_contract_complete=row["source_contract_complete"],
-        ingest_mode=row["ingest_mode"],
     )
