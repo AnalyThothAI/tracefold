@@ -3,7 +3,7 @@
 Tracefold is an evidence-first market research system with exactly one
 business capability. News V3 turns the operator's OpenNews Strategy pushes
 into deduplicated Events, triages them with bounded structured model calls
-under deterministic rules, and delivers Feishu cards. One Python service
+under deterministic rules, and delivers reader cards through Feishu or one bound Telegram channel. One Python service
 persists material facts in PostgreSQL, builds a deterministic read model, and
 serves a React operator console plus stable HTTP and CLI contracts.
 
@@ -36,7 +36,7 @@ The Python package is deliberately shallow:
 ```text
 src/tracefold/
   news/           broker-driven Event pipeline: Deduper, Gate, Triage, delivery, labels
-  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu)
+  integrations/   provider and external-system adapters (OpenNews, RabbitMQ, Feishu, Telegram)
   platform/       config, PostgreSQL/Alembic, telemetry, bounded resource primitives
   app/            composition (`tracefold.app.workers` root), HTTP, and CLI adapters
 ```
@@ -76,15 +76,21 @@ A second `make up` rebuilds that application image and recreates only the
 migration, Serve, and Workers containers so configuration changes take effect.
 An already running PostgreSQL container is not recreated, and its named volume,
 operator configuration, and role passwords are preserved. The generated
-defaults contain no OpenNews, model, or webhook credential, and News push is
-disabled. The product still starts; credential-dependent capabilities report
+defaults contain no live OpenNews, model, webhook, or bot credential (the
+Telegram token file is an empty placeholder), and News push is disabled. The
+product still starts; credential-dependent capabilities report
 an explicit degraded or unavailable state instead of fabricating data. Add
-credentials only to `~/.tracefold/config.yaml`, then rerun `make up`.
+structured settings to `~/.tracefold/config.yaml`; place the Telegram bot token
+only in `~/.tracefold/telegram_bot_token`, then rerun `make up`.
+If push is explicitly enabled with an incomplete or insecure provider
+configuration, Workers fails startup instead of silently discarding requested
+deliveries.
 
 The operator-owned runtime directory is:
 
 ```text
 ~/.tracefold/config.yaml                 # 0600
+~/.tracefold/telegram_bot_token          # optional Telegram secret; 0600
 ~/.tracefold/postgres_password           # fresh-volume bootstrap only; 0600
 ~/.tracefold/postgres_serve_password     # read-only runtime; 0600
 ~/.tracefold/postgres_workers_password   # writer runtime; 0600

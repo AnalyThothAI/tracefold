@@ -73,7 +73,10 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # #310 rebinds it to factory v9 (endpoint-capable structured-output envelope). Recorded mode composes no
 # request, so the corpus, every score (`case_macro` 0.660714 / `cluster_macro` 0.71645) and every case
 # result are byte-identical again; only the identity block and the report root move.
-_EXPECTED_REPORT_SHA256 = "7abe5f3be7f30499faac89706533dc0d6d49685650529f3b8ce0c20f6e0d2d9b"
+# #315 unifies the model-visible OUTPUT CONTRACT across endpoint modes. The configurable request-envelope
+# cut additionally records prompt-only JSON and its temperature/request behavior. Recorded mode makes no
+# provider call, so neither change can reach a score; only the identity block and report root move.
+_EXPECTED_REPORT_SHA256 = "07ee75d474f1614e9c5fe7cce654ccc277845f1d069a5af4840622d2f476e4bb"
 
 
 @pytest.fixture(scope="module")

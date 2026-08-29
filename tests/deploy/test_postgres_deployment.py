@@ -298,6 +298,8 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
         "postgres_workers_password" in volume or "postgres_migrate_password" in volume for volume in serve_volumes
     )
     assert any("postgres_workers_password" in volume for volume in worker_volumes)
+    assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
+    assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert not any(
         "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
     )

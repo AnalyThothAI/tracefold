@@ -64,18 +64,38 @@ llm:
   api_key:
   base_url:
   news_triage_model:
+  request:
+    send_temperature:
+    temperature: 0
+    structured_output: "auto"
+    extra_body: {{}}
   news_reader_card:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
   news_triage_fallback:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
   news_reader_card_fallback:
     api_key:
     base_url:
     model:
+    request:
+      send_temperature:
+      temperature: 0
+      structured_output: "auto"
+      extra_body: {{}}
 
 news:
   enabled: true
@@ -89,6 +109,8 @@ news:
     enabled: false
     feishu_webhook_url:
     feishu_signing_secret:
+    telegram_bot_token_file:
+    telegram_chat_id:
     min_interval_seconds: 0.6
   policy:
     restatement_drop: true
@@ -109,6 +131,9 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    okx: true
+    lighter: true
+    bitget: true
     us_reference: true
     snapshot_period_hours: 6.0
   watchlist: []

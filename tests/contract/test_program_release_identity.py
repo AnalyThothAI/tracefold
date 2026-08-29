@@ -15,7 +15,7 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "c73b19bd578e38a56a65f6bd4090918c3b4e7f226703394da5f13367fd87e925"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "b4f16799f2b46dae7d195eee533a9078177504fb7d0f5bddf560151999af80d8"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
@@ -93,19 +93,21 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
     assert set(envelope) == {"identity_schema", "requests", "model_visible_input", "assembly", "route"}
     assert set(envelope["requests"]) == set(envelope["model_visible_input"]) == {"event_semantics", "reader_card"}
     for predictor, modes in envelope["requests"].items():
-        assert set(modes) == {"json_schema", "json_object"}, predictor
+        assert set(modes) == {"json_schema", "json_object", "prompt_json"}, predictor
         for mode, request in modes.items():
             # The whole wire envelope, not a summary of it: the system message carries the output
             # contract, the user message carries the field order and headings, and `response_format`
             # carries the schema the provider is held to.
-            assert set(request) == {
+            expected_fields = {
                 "model",
                 "messages",
                 "temperature",
                 "max_tokens",
                 "stream",
-                "response_format",
-            }, (predictor, mode)
+            }
+            if mode != "prompt_json":
+                expected_fields.add("response_format")
+            assert set(request) == expected_fields, (predictor, mode)
             assert [message["role"] for message in request["messages"]] == ["system", "user"]
     assert set(envelope["assembly"]) == {
         "reader_value_decision",

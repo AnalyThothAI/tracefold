@@ -23,6 +23,7 @@ from ..artifact_identity import canonical_json, canonical_sha
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.transport import (
     ProviderCallMetrics,
+    StructuredOutputMode,
     chat_request_body,
     choice_content,
     provider_call_metrics,
@@ -161,6 +162,8 @@ class MetricJudgeEndpoint:
         max_tokens: int = METRIC_JUDGE_MAX_TOKENS,
         timeout: float = METRIC_JUDGE_TIMEOUT_SECONDS,
         model_kwargs: Mapping[str, Any] | None = None,
+        temperature: float = 0,
+        structured_output: StructuredOutputMode | None = None,
         transport: Any = None,
     ) -> None:
         extras = reject_owned_model_kwargs(model_kwargs, code="news_program_compile_metric_judge_kwargs_owned")
@@ -168,6 +171,8 @@ class MetricJudgeEndpoint:
         self.api_base = str(api_base)
         self.max_tokens = int(max_tokens)
         self.timeout = float(timeout)
+        self._temperature = temperature
+        self._structured_output = structured_output
         # A copy, taken before the pop below: `identity` publishes `model_kwargs` when no role binding is
         # stamped, and aliasing the dict that `pop` mutates would publish a receipt missing the very
         # `extra_body.thinking = disabled` setting this endpoint depends on for `deepseek-v4-*`.
@@ -195,8 +200,10 @@ class MetricJudgeEndpoint:
             output_field="verdict",
             output_model=output_model,
             max_tokens=self.max_tokens,
+            temperature=self._temperature,
             extras=self._extras,
             extra_body=self._extra_body,
+            structured_output=self._structured_output,
         )
 
     def ask(

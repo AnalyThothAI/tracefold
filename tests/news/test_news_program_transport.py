@@ -447,6 +447,44 @@ def test_every_endpoint_gets_the_schema_in_the_message_and_only_the_constraint_d
     )
 
 
+def test_a_prompt_json_endpoint_inlines_the_schema_without_unsupported_request_fields() -> None:
+    spec = _spec()
+    body = chat_request_body(
+        model="MiniMax-M3",
+        instruction=spec.instruction,
+        field_order=("evidence_json",),
+        values={"evidence_json": "{}"},
+        output_field=spec.output_field,
+        output_model=spec.output_model,
+        max_tokens=64,
+        temperature=1.0,
+        structured_output="prompt_json",
+    )
+
+    assert body["temperature"] == 1.0
+    assert "response_format" not in body
+    schema = response_format(spec.output_field, spec.output_model)["json_schema"]["schema"]
+    assert canonical_json(schema) in body["messages"][0]["content"]
+
+
+def test_a_custom_endpoint_can_omit_temperature_without_a_provider_specific_profile() -> None:
+    spec = _spec()
+    body = chat_request_body(
+        model="local/custom-model",
+        instruction=spec.instruction,
+        field_order=("evidence_json",),
+        values={"evidence_json": "{}"},
+        output_field=spec.output_field,
+        output_model=spec.output_model,
+        max_tokens=64,
+        temperature=None,
+        structured_output="prompt_json",
+    )
+
+    assert "temperature" not in body
+    assert "response_format" not in body
+
+
 def test_the_two_modes_differ_in_exactly_one_value() -> None:
     """The messages are identical, so a future edit cannot reintroduce a per-mode prompt by accident."""
 
@@ -477,7 +515,7 @@ def test_the_two_modes_differ_in_exactly_one_value() -> None:
 _RESTATES_DESCRIPTION_SENTENCE = "Visible event_status.told index"
 
 
-@pytest.mark.parametrize("mode", ["json_schema", "json_object"])
+@pytest.mark.parametrize("mode", ["json_schema", "json_object", "prompt_json"])
 def test_the_rendered_contract_carries_the_field_descriptions_a_grammar_cannot(mode: str) -> None:
     spec = _spec()
     body = chat_request_body(

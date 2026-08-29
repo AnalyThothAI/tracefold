@@ -76,6 +76,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.artifact",
         "tracefold.news.program.transport",
         "tracefold.news.program.graph",
+        # Post-delivery relationship verification is a content-addressed model adapter composed by App.
+        # It cannot change admission or the semantic Program and is scheduled only after send settlement.
+        "tracefold.news.program.progression_review",
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
@@ -172,7 +175,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": ("tracefold.news.bus",),
-    "integrations.venues": ("tracefold.news.market_review.instruments", "tracefold.news.market_review.pricing"),
+    "integrations.venues": (
+        "tracefold.news.market_review.instruments",
+        "tracefold.news.market_review.pricing",
+        "tracefold.news.tradability",
+    ),
     "integrations.nautilus": (
         "tracefold.trading.execution_policy",
         "tracefold.trading.replay",

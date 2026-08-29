@@ -156,7 +156,7 @@ def model_health(
 
 def delivery_health(delivery: Mapping[str, Any]) -> HealthItem:
     if not delivery.get("delivery_available"):
-        return HealthItem("off", "推送未配置", "news.push 未启用或没有飞书 webhook")
+        return HealthItem("off", "推送未配置", "news.push 未启用、配置无效或 Workers 未运行")
     sent = int(delivery.get("sent_24h") or 0)
     terminal = int(delivery.get("terminal_24h") or 0)
     total = sent + terminal

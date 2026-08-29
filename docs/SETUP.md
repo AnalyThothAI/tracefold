@@ -66,18 +66,20 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
-token (`ws_token`) but no external credentials, and four independent
-PostgreSQL password files:
+token (`ws_token`) but no external credentials, five independent PostgreSQL
+password files, and an empty Telegram token placeholder:
 
 ```text
+telegram_bot_token
 postgres_password
 postgres_serve_password
 postgres_workers_password
 postgres_migrate_password
+postgres_nautilus_password
 ```
 
-The config and all password files are mode `0600`. Ordinary `tracefold init`
-never overwrites an existing config, never rotates an existing password, and
+The config, Telegram token placeholder, and all password files are mode `0600`.
+Ordinary `tracefold init` never overwrites an existing config, never rotates an existing password, and
 repairs the required permissions on every run. `tracefold init --force`
 replaces only `config.yaml` with a newly generated default; it still preserves
 all existing PostgreSQL passwords. Back up intentional config changes before
@@ -85,7 +87,8 @@ using `--force`.
 
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local API
-token but contains no model, OpenNews, or Feishu credential, points
+token plus an empty `telegram_bot_token` placeholder but contains no live
+model, OpenNews, Feishu, or Telegram credential, points
 `news.broker.url` at the compose RabbitMQ service, and leaves News push
 disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
@@ -106,8 +109,8 @@ The credentials a live deployment can hold are exactly: the OpenNews token
 `llm.base_url`, `llm.news_triage_model`, plus the optional
 `llm.news_reader_card`, `llm.news_triage_fallback`, and
 `llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
-Feishu webhook and optional signing secret (`news.push.*`), and the PostgreSQL
-role password files.
+one push provider's configuration (`news.push.*`), and the PostgreSQL role
+password files.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -122,12 +125,14 @@ lanes report explicit degradation or unavailable evidence:
   Triage fall back to fail-closed rules
   (`triage_degraded_24h` grows); a degraded verdict carries no Chinese text, so
   the feed and card fall back to the original title;
-- News push remains off until `news.push.enabled: true` and a supported
-  `news.push.feishu_webhook_url` are both configured.
+- News push remains off until `news.push.enabled: true` and exactly one provider
+  is complete: either a supported `news.push.feishu_webhook_url`, or a secure
+  Telegram bot-token file plus one private channel ID (`-100...`).
 
 `tracefold config` reports the effective file paths, configured booleans,
-broker `url_configured`, model names, and watchlist symbols; it never prints
-Strategy IDs/counts, provider tokens, the broker URL, webhook URLs,
+broker `url_configured`, model names, watchlist symbols, the selected push
+provider, and credential/target configured booleans; it never prints Strategy
+IDs/counts, provider tokens, Telegram channel IDs, the broker URL, webhook URLs,
 signing secrets, or model keys.
 
 `news.push.feishu_signing_secret` is optional. When present, the Adapter adds
@@ -137,20 +142,49 @@ that reduced-authentication choice. Configuration diagnostics report only
 configured booleans. Feishu delivery has no model-credential dependency; the
 card header is the Triage verdict's `headline_zh` (the original title when
 Triage is degraded) and the body is `why_zh` plus the code-owned facts line.
+Telegram delivery reads `news.push.telegram_bot_token_file` under the same
+regular-file, no-symlink, mode-`0600` policy as other provider files. The
+configured `telegram_chat_id` must be a private channel Bot API ID beginning
+with `-100`. Before the first send, Workers asks Telegram for the target
+metadata, verifies the exact ID is a channel without a public username, and
+verifies the bot is an administrator allowed to post. Invite links, public
+channels, personal chats, groups, and supergroups are rejected before the first
+message. Feishu and Telegram fields may not be configured together while push
+is enabled. An enabled but incomplete or insecure provider configuration makes
+Workers fail startup; it is not silently treated as disabled. Serve never mounts
+or reads the bot token, and reports delivery available only while Workers is
+running.
 
-An operator configuration for live News uses the existing generated fields;
-do not add another secrets file or environment variable:
+The Compose deployment mounts exactly the generated
+`~/.tracefold/telegram_bot_token` file into Workers, so Compose deployments must
+use `telegram_bot_token_file: "telegram_bot_token"`. A directly launched local
+Workers process may point at a different operator-owned secure file, but that
+path is not automatically mounted by Compose.
+
+An operator configuration for live News uses the existing generated fields and
+the documented secure token file; do not add another config source or
+environment variable:
 
 ```yaml
 llm:
   api_key: "<operator model secret>"
   base_url: "https://api.deepseek.com/v1"
   news_triage_model: "deepseek-v4-flash"
+  # Optional provider-neutral request controls. Omit to use known-provider defaults.
+  request:
+    send_temperature: true
+    temperature: 0
+    structured_output: "json_object"
+    extra_body: {}
   # Optional: omit this complete triple to run ReaderCard on the Triage endpoint.
   news_reader_card:
     api_key: "<reader model secret>"
     base_url: "https://reader.example/v1"
     model: "reader-model"
+    request:
+      send_temperature: false
+      structured_output: "prompt_json"
+      extra_body: {}
   # Optional all-or-none fallback route.
   news_triage_fallback:
     api_key: "<event fallback secret>"
@@ -177,8 +211,11 @@ news:
     url: "amqp://tracefold:<rabbitmq password>@rabbitmq:5672/"
   push:
     enabled: true
-    feishu_webhook_url: "<Feishu v2 webhook>"
-    feishu_signing_secret:
+    telegram_bot_token_file: "telegram_bot_token"
+    telegram_chat_id: -1001234567890
+    # Alternative provider (do not configure both):
+    # feishu_webhook_url: "<Feishu v2 webhook>"
+    # feishu_signing_secret:
   policy:                     # policy-v10 duplicate/safety knobs (all optional; these are the defaults)
     restatement_drop: true      # a restatement of a card the reader already received never pushes
     similarity_max: 0.25        # ordinary pushes above this sent-ledger similarity are same-fact duplicates
@@ -193,6 +230,9 @@ news:
     enabled: true
     binance: true
     hyperliquid: true
+    okx: true
+    lighter: true                 # post-send exact market lookup and price anchors
+    bitget: true                  # post-send exact market lookup and price anchors
     us_reference: true          # US listed-symbol directory (#91): tells the Gate a ticker is a stock, not tradeable here
     snapshot_period_hours: 6.0
   watchlist:
@@ -203,6 +243,16 @@ news:
     - {symbol: TSLA}
     - {symbol: COIN}
 ```
+
+Use `prompt_json` for an OpenAI-compatible local/provider endpoint that rejects
+`response_format` but can follow an in-prompt JSON Schema. Set
+`send_temperature: false` when it rejects the temperature field. These controls
+are available on every endpoint block; they replace model-name or URL-specific
+compatibility hacks. In `auto`, MiniMax M3 uses temperature 1, `top_p: 0.95`,
+thinking disabled, and prompt-only JSON; DeepSeek uses JSON-object mode. Explicit
+operator values take precedence. These request semantics enter
+`configured_endpoint_model_v3`, so two endpoints with different request contracts
+cannot reuse the same evidence cohort.
 
 `news.gate` controls admission and `news.policy` exposes only four duplicate/
 safety knobs; trade-relevance action eligibility is code-owned. The
@@ -275,9 +325,11 @@ removal of every 1 h/2 h/4 h reader-count veto: every distinct fact that passes 
 to delivery; the sent-reader ledger remains only for same-fact suppression.
 
 Leave the signing field empty only when unsigned delivery is intentional. Do
-not commit the populated operator config. Missing or invalid delivery
-configuration is fail-soft: Serve and Workers still start and every decided
-delivery settles `terminal/delivery_unavailable`.
+not commit the populated operator config. With `news.push.enabled: false`,
+Serve and Workers start without a provider and any delivery work settles
+`terminal/delivery_unavailable`. Once push is explicitly enabled, an incomplete
+or invalid provider configuration is a startup error for Workers; the requested
+delivery boundary is never silently discarded.
 
 The compose stack runs `rabbitmq:4-management` with the default user
 `tracefold` and password `${TRACEFOLD_RABBITMQ_PASSWORD:-tracefold}`; ports

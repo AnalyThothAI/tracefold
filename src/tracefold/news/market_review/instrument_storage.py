@@ -21,6 +21,7 @@ from .instruments import (
     normalize_symbol,
     resolve_base_symbol,
 )
+from .pricing import source_rank_sql
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,17 +128,11 @@ class InstrumentsRepository:
         """
 
         rows = self.conn.execute(
-            """
-            SELECT venue, venue_symbol, instrument_class, quote_asset
-              FROM news_market_instruments
+            f"""
+            SELECT i.venue, i.venue_symbol, i.instrument_class, i.quote_asset
+              FROM news_market_instruments i
              WHERE base_symbol = %s AND status = 'trading'
-             ORDER BY CASE venue
-                        WHEN 'binance.perp' THEN 0
-                        WHEN 'binance.spot' THEN 1
-                        WHEN 'hl.perp' THEN 2
-                        WHEN 'hl.spot' THEN 3
-                        ELSE 4
-                      END, venue, venue_symbol
+             ORDER BY {source_rank_sql()}, i.venue, i.venue_symbol
              LIMIT %s
             """,
             (str(base_symbol).upper(), int(limit)),
@@ -184,7 +179,7 @@ class InstrumentsRepository:
         if not wanted:
             return {}
         rows = self.conn.execute(
-            """
+            f"""
             SELECT s.symbol,
                    COALESCE(a.base_symbol, s.symbol) AS base_symbol,
                    m.venue
@@ -195,13 +190,7 @@ class InstrumentsRepository:
                   FROM news_market_instruments i
                  WHERE i.base_symbol = COALESCE(a.base_symbol, s.symbol) AND i.status = 'trading'
                    AND NOT (i.venue = ANY(%s))
-                 ORDER BY CASE i.venue
-                            WHEN 'binance.perp' THEN 0
-                            WHEN 'binance.spot' THEN 1
-                            WHEN 'hl.perp' THEN 2
-                            WHEN 'hl.spot' THEN 3
-                            ELSE 4
-                          END, i.venue
+                 ORDER BY {source_rank_sql()}, i.venue
                  LIMIT 1
               ) m ON true
             """,

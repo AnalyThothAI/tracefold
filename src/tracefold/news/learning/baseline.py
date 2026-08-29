@@ -53,7 +53,7 @@ from ..program.contracts import SemanticJudge, TriageContext
 from ..program.graph import NewsSemanticProgram
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
 from ..program.runtime import PROGRAM_VERSION
-from ..program.transport import ChatCompletionsPredictorAdapter
+from ..program.transport import ChatCompletionsPredictorAdapter, StructuredOutputMode
 from .contracts import METRIC_JUDGE_MAX_TOKENS, METRIC_JUDGE_TIMEOUT_SECONDS, ModelExecutionIdentity
 from .judge import CardEquivalenceJudge, MetricJudgeEndpoint
 from .metric import (
@@ -289,6 +289,8 @@ def build_compile_adapter(
     timeout: float,
     max_tokens: int,
     model_kwargs: Mapping[str, Any] | None = None,
+    temperature: float | None = 0,
+    structured_output: StructuredOutputMode | None = None,
 ) -> ChatCompletionsPredictorAdapter:
     """The one task endpoint `compile_live` drives the production graph on.
 
@@ -303,6 +305,8 @@ def build_compile_adapter(
         timeout=float(timeout),
         max_tokens=int(max_tokens),
         model_kwargs=model_kwargs,
+        temperature=temperature,
+        structured_output=structured_output,
     )
 
 
@@ -321,6 +325,8 @@ def build_judge(
     api_key: str,
     api_base: str,
     model_kwargs: Mapping[str, Any] | None = None,
+    temperature: float = 0,
+    structured_output: StructuredOutputMode | None = None,
     max_model_calls: int | None = None,
     transport: Any = None,
 ) -> CardEquivalenceJudge:
@@ -343,6 +349,8 @@ def build_judge(
         api_key=api_key,
         api_base=api_base,
         model_kwargs=model_kwargs or {},
+        temperature=temperature,
+        structured_output=structured_output,
         timeout=METRIC_JUDGE_TIMEOUT_SECONDS,
         max_tokens=METRIC_JUDGE_MAX_TOKENS,
         transport=transport,
@@ -353,7 +361,7 @@ def build_judge(
         api_base=str(api_base),
         max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
         timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
-        temperature=0,
+        temperature=temperature,
         model_kwargs=dict(model_kwargs or {}),
     )
     return CardEquivalenceJudge(lm, max_tokens=METRIC_JUDGE_MAX_TOKENS, max_model_calls=max_model_calls)

@@ -142,6 +142,11 @@ class NewsDeliveryData(ExactApiSchema):
     settled_at_ms: int | None = None
     card: dict[str, Any] = Field(default_factory=dict)
     receipt: dict[str, Any] | None = None
+    pending_card: dict[str, Any] | None = None
+    edit_state: Literal["editing", "edited", "ambiguous"] | None = None
+    edit_error_code: str | None = None
+    edit_attempted_at_ms: int | None = None
+    edit_settled_at_ms: int | None = None
 
 
 class NewsEvidenceSnapshotData(ExactApiSchema):

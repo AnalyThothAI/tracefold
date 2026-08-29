@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
     RECENT_HISTORY_WINDOW_MS,
@@ -36,6 +37,7 @@ _READER_HISTORY_PROJECTION = """
            ) AS canonical_assets
       FROM news_events e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
+                            AND d.delete_state IS DISTINCT FROM 'deleted'
       JOIN LATERAL (
         SELECT candidate.*
           FROM (
@@ -475,6 +477,234 @@ class DecisionStorage:
         )
         return bool(cursor.rowcount)
 
+    def begin_delivery_edit(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        card: Mapping[str, Any],
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        """Persist the desired replacement before mutating one provider message."""
+
+        parsed = _telegram_receipt(receipt)
+        if parsed is None:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = 'editing', pending_card = %s::jsonb,
+                   edit_error_code = NULL, edit_attempted_at_ms = %s, edit_settled_at_ms = NULL
+             WHERE event_id = %s AND kind = %s AND state = 'sent'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+               AND (edit_state IS NULL OR edit_state = 'edited')
+            """,
+            (
+                _dumps(dict(card)),
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def settle_delivery_edit(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        """CAS a confirmed provider edit over its already-durable desired card."""
+
+        parsed = _telegram_receipt(receipt, require_edited=True)
+        if parsed is None:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET card = pending_card, pending_card = NULL, receipt = %s::jsonb,
+                   edit_state = 'edited', edit_error_code = NULL, edit_settled_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'sent' AND edit_state = 'editing'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+            """,
+            (
+                _dumps(parsed.canonical()),
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def mark_delivery_edit_ambiguous(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        receipt: Mapping[str, Any],
+        error_code: str,
+        now_ms: int,
+    ) -> bool:
+        """Record that an attempted provider mutation cannot be proved either way."""
+
+        parsed = _telegram_receipt(receipt)
+        normalized_error = str(error_code or "")
+        if parsed is None or not normalized_error or len(normalized_error) > 160:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = 'ambiguous', edit_error_code = %s, edit_settled_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'sent' AND edit_state = 'editing'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+            """,
+            (
+                normalized_error,
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def begin_delivery_delete(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        evidence: Mapping[str, Any],
+        reason: str,
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        """Persist why one provider message is safe to delete before calling the provider."""
+
+        parsed = _telegram_receipt(receipt)
+        normalized_reason = str(reason or "")
+        if parsed is None or not normalized_reason or len(normalized_reason) > 200:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = 'deleting', delete_evidence = %s::jsonb, delete_reason = %s,
+                   delete_error_code = NULL, delete_attempted_at_ms = %s, delete_settled_at_ms = NULL
+             WHERE event_id = %s AND kind = %s AND state = 'sent'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+               AND delete_state IS NULL
+               AND (edit_state IS NULL OR edit_state = 'edited')
+            """,
+            (
+                _dumps(dict(evidence)),
+                normalized_reason,
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def settle_delivery_delete(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        receipt: Mapping[str, Any],
+        now_ms: int,
+    ) -> bool:
+        parsed = _telegram_receipt(receipt, require_deleted=True)
+        if parsed is None:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET receipt = %s::jsonb, delete_state = 'deleted', delete_error_code = NULL,
+                   delete_settled_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'sent' AND delete_state = 'deleting'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+            """,
+            (
+                _dumps(parsed.canonical()),
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
+    def mark_delivery_delete_ambiguous(
+        self,
+        *,
+        event_id: str,
+        kind: str,
+        receipt: Mapping[str, Any],
+        error_code: str,
+        now_ms: int,
+    ) -> bool:
+        parsed = _telegram_receipt(receipt)
+        normalized_error = str(error_code or "")
+        if parsed is None or not normalized_error or len(normalized_error) > 160:
+            return False
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = 'ambiguous', delete_error_code = %s, delete_settled_at_ms = %s
+             WHERE event_id = %s AND kind = %s AND state = 'sent' AND delete_state = 'deleting'
+               AND receipt ->> 'provider' = %s
+               AND receipt ->> 'message_id' = %s
+               AND receipt ->> 'pushed_at_ms' = %s
+               AND receipt ->> 'target_sha256' = %s
+            """,
+            (
+                normalized_error,
+                int(now_ms),
+                event_id,
+                kind,
+                parsed.provider,
+                str(parsed.message_id),
+                str(parsed.pushed_at_ms),
+                parsed.target_sha256,
+            ),
+        )
+        return bool(cursor.rowcount)
+
     def delivery(self, *, event_id: str, kind: str) -> dict[str, Any] | None:
         row = self.conn.execute(
             "SELECT * FROM news_deliveries WHERE event_id = %s AND kind = %s", (event_id, kind)
@@ -490,3 +720,68 @@ class DecisionStorage:
             (int(now_ms), int(now_ms) - 60_000),
         )
         return int(cursor.rowcount or 0)
+
+    def terminalize_interrupted_delivery_edits(self, *, now_ms: int) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = 'ambiguous', edit_error_code = 'edit_ambiguous_after_crash',
+                   edit_settled_at_ms = %s
+             WHERE edit_state = 'editing'
+            """,
+            (int(now_ms),),
+        )
+        return int(cursor.rowcount or 0)
+
+    def terminalize_interrupted_delivery_deletes(self, *, now_ms: int) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = 'ambiguous', delete_error_code = 'delete_ambiguous_after_crash',
+                   delete_settled_at_ms = %s
+             WHERE delete_state = 'deleting'
+            """,
+            (int(now_ms),),
+        )
+        return int(cursor.rowcount or 0)
+
+    def terminalize_stale_delivery_edits(self, *, now_ms: int) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET edit_state = 'ambiguous', edit_error_code = 'edit_settlement_unavailable',
+                   edit_settled_at_ms = %s
+             WHERE edit_state = 'editing' AND edit_attempted_at_ms < %s
+            """,
+            (int(now_ms), int(now_ms) - 60_000),
+        )
+        return int(cursor.rowcount or 0)
+
+    def terminalize_stale_delivery_deletes(self, *, now_ms: int) -> int:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_deliveries
+               SET delete_state = 'ambiguous', delete_error_code = 'delete_settlement_unavailable',
+                   delete_settled_at_ms = %s
+             WHERE delete_state = 'deleting' AND delete_attempted_at_ms < %s
+            """,
+            (int(now_ms), int(now_ms) - 60_000),
+        )
+        return int(cursor.rowcount or 0)
+
+
+def _telegram_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    require_edited: bool = False,
+    require_deleted: bool = False,
+) -> TelegramDeliveryReceipt | None:
+    try:
+        parsed = TelegramDeliveryReceipt.model_validate(receipt)
+    except ValueError:
+        return None
+    if require_edited and parsed.edited_at_ms is None:
+        return None
+    if require_deleted and parsed.deleted_at_ms is None:
+        return None
+    return parsed

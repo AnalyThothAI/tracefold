@@ -482,6 +482,20 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reaction",
         "reactions",
     }
+    assert set(event_schemas.NewsDeliveryData.model_fields) == {
+        "kind",
+        "state",
+        "error_code",
+        "attempted_at_ms",
+        "settled_at_ms",
+        "card",
+        "receipt",
+        "pending_card",
+        "edit_state",
+        "edit_error_code",
+        "edit_attempted_at_ms",
+        "edit_settled_at_ms",
+    }
     assert set(news_common_schemas.NewsAssetRefData.model_fields) == {"symbol", "base_symbol", "venue", "listed"}
     assert set(news_common_schemas.NewsSymbolNormalizationData.model_fields) == {"base_symbol", "aliases", "sources"}
     assert set(news_common_schemas.NewsOutcomeData.model_fields) == {"kind", "text_zh", "reason_zh", "group"}
@@ -765,6 +779,32 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
     assert isinstance(data["watchlist"], list)
 
 
+def test_status_does_not_call_a_declared_target_available_without_running_workers() -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "news": {
+                "enabled": True,
+                "push": {
+                    "enabled": True,
+                    "telegram_bot_token_file": "telegram_bot_token",
+                    "telegram_chat_id": -1001234567890,
+                },
+            },
+        }
+    )
+    app = create_app(settings=settings)
+    news = _FakeNewsRepository()
+    app.state.service = _FakeRuntime(settings, news)
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["workers_state"] is None
+    assert data["delivery"]["delivery_available"] is False
+
+
 def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pytest.MonkeyPatch) -> None:
     settings = Settings.model_validate(
         {
@@ -802,6 +842,108 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
         "summary_zh": "Reader 模型不可用",
         "detail_zh": "ReaderCard 配置无效；所有事件按规则兜底",
     }
+
+
+def test_status_marks_the_product_degraded_when_model_outputs_are_unusable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+            },
+            "news": {
+                "opennews_token": "opennews-token",
+                "broker": {"url": "amqp://guest:guest@127.0.0.1:5672/"},
+            },
+        }
+    )
+    news = _FakeNewsRepository()
+    original = news.status_snapshot
+
+    def status_snapshot(*, now_ms: int) -> dict[str, Any]:
+        snapshot = original(now_ms=now_ms)
+        snapshot["ingest"] = {
+            **snapshot["ingest"],
+            "connected": True,
+            "last_frame_at_ms": now_ms,
+        }
+        snapshot["broker"] = {"connected": True, "queues": {}, "error_code": None, "observed_at_ms": now_ms}
+        snapshot["pipeline"] = {
+            **snapshot["pipeline"],
+            "model_triage_24h": 20,
+            "triage_degraded_24h": 20,
+            "triage_degraded_by_code_24h": {"news_program_event_semantics_invalid": 20},
+        }
+        return snapshot
+
+    news.status_snapshot = status_snapshot  # type: ignore[method-assign]
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, news)
+    monkeypatch.setattr(
+        "tracefold.app.http.routes.status._news_workers_observation",
+        lambda *_a, **_k: ("running", None),
+    )
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["health"]["model"]["level"] == "bad"
+    assert data["state"] == "degraded"
+
+
+def test_status_marks_the_product_degraded_when_any_health_lane_warns(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "llm": {
+                "api_key": "triage-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+            },
+            "news": {
+                "opennews_token": "opennews-token",
+                "broker": {"url": "amqp://guest:guest@127.0.0.1:5672/"},
+            },
+        }
+    )
+    news = _FakeNewsRepository()
+    original = news.status_snapshot
+
+    def status_snapshot(*, now_ms: int) -> dict[str, Any]:
+        snapshot = original(now_ms=now_ms)
+        snapshot["ingest"] = {
+            **snapshot["ingest"],
+            "connected": True,
+            "last_frame_at_ms": now_ms,
+        }
+        snapshot["broker"] = {
+            "connected": True,
+            "queues": {"news.raw": {"messages": 50, "consumers": 1}},
+            "error_code": None,
+            "observed_at_ms": now_ms,
+        }
+        return snapshot
+
+    news.status_snapshot = status_snapshot  # type: ignore[method-assign]
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, news)
+    monkeypatch.setattr(
+        "tracefold.app.http.routes.status._news_workers_observation",
+        lambda *_a, **_k: ("running", None),
+    )
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["health"]["broker"]["level"] == "warn"
+    assert data["health"]["overall"] == "warn"
+    assert data["state"] == "degraded"
 
 
 def test_news_routes_require_the_operator_token(client) -> None:

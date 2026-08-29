@@ -315,7 +315,12 @@ class FeedStorage:
                 "attempted_at_ms": int(r["attempted_at_ms"]),
                 "settled_at_ms": r["settled_at_ms"],
                 "card": dict(r["card"] or {}),
+                "pending_card": dict(r["pending_card"]) if r["pending_card"] is not None else None,
                 "receipt": r["receipt"],
+                "edit_state": r["edit_state"],
+                "edit_error_code": r["edit_error_code"],
+                "edit_attempted_at_ms": r["edit_attempted_at_ms"],
+                "edit_settled_at_ms": r["edit_settled_at_ms"],
             }
             for r in deliveries
         ]

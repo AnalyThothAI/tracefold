@@ -54,6 +54,21 @@ def write_runtime_config(
 
 
 class CliTests(unittest.TestCase):
+    def test_init_rejects_a_telegram_token_path_that_is_a_symlink(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home = Path(tmpdir)
+            app_home = home / ".tracefold"
+            app_home.mkdir(parents=True)
+            target = app_home / "unexpected_target"
+            target.write_text("do-not-touch", encoding="utf-8")
+            (app_home / "telegram_bot_token").symlink_to(target)
+            with (
+                patch.dict("os.environ", {"HOME": str(home)}, clear=False),
+                self.assertRaisesRegex(ValueError, "optional_secret_path_not_file:telegram_bot_token"),
+            ):
+                main(["init"], stdout=io.StringIO())
+            self.assertEqual(target.read_text(encoding="utf-8"), "do-not-touch")
+
     def test_init_rejects_a_password_path_that_is_a_directory(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
@@ -234,6 +249,20 @@ class CliTests(unittest.TestCase):
         self.assertIs(news["models"]["reader_card_fallback_dedicated"], False)
         self.assertIsInstance(news["watchlist"], list)
         self.assertNotIn("hourly_cap", news["push"])
+        self.assertEqual(
+            news["push"],
+            {
+                "requested": False,
+                "delivery_available": False,
+                "reason": None,
+                "provider": None,
+                "feishu_webhook_url_configured": False,
+                "feishu_signing_secret_configured": False,
+                "telegram_bot_token_file_configured": False,
+                "telegram_chat_id_configured": False,
+                "min_interval_seconds": 0.6,
+            },
+        )
         self.assertNotIn("rss_enabled", news)
         self.assertNotIn("brief", news)
         self.assertNotIn("title_presentation", news)
@@ -276,16 +305,47 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("news_brief_model", payload.get("llm") or {})
         self.assertEqual(
             payload["llm"]["news_reader_card"],
-            {"api_key": None, "base_url": None, "model": None},
+            {
+                "api_key": None,
+                "base_url": None,
+                "model": None,
+                "request": {
+                    "send_temperature": None,
+                    "temperature": 0,
+                    "structured_output": "auto",
+                    "extra_body": {},
+                },
+            },
         )
         self.assertEqual(
             payload["llm"]["news_reader_card_fallback"],
-            {"api_key": None, "base_url": None, "model": None},
+            {
+                "api_key": None,
+                "base_url": None,
+                "model": None,
+                "request": {
+                    "send_temperature": None,
+                    "temperature": 0,
+                    "structured_output": "auto",
+                    "extra_body": {},
+                },
+            },
         )
         self.assertNotIn("opennews_strategy_ids", payload["news"])
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
         self.assertEqual(settings.news.broker.name_prefix, "")
         self.assertFalse(settings.news.push.enabled)
+        self.assertEqual(
+            payload["news"]["push"],
+            {
+                "enabled": False,
+                "feishu_webhook_url": None,
+                "feishu_signing_secret": None,
+                "telegram_bot_token_file": None,
+                "telegram_chat_id": None,
+                "min_interval_seconds": 0.6,
+            },
+        )
         self.assertNotIn("providers", payload)
         self.assertNotIn("macro_document_analysis_enabled", payload["llm"])
         self.assertEqual(set(payload), {"ws_token", "api", "storage", "llm", "news", "trading"})
@@ -402,6 +462,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.is_dir()
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
+        "telegram_bot_token",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
@@ -411,6 +472,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         path = app_home / name
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
+    assert (app_home / "telegram_bot_token").read_bytes() == b""
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -422,6 +484,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     app_home = tmp_path / ".tracefold"
     tracked_names = (
         "config.yaml",
+        "telegram_bot_token",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",

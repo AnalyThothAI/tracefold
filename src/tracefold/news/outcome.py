@@ -248,7 +248,7 @@ def delivery_error_zh(code: str | None) -> str:
     if text in DELIVERY_ERROR_ZH:
         return DELIVERY_ERROR_ZH[text]
     if text.startswith("news_delivery_failed:"):
-        return f"飞书发送失败（{text.split(':', 1)[1]}）"
+        return f"推送失败（{text.split(':', 1)[1]}）"
     return text
 
 

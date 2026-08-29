@@ -72,6 +72,9 @@ class _TurnPipeline:
             for index, (turn, idle_seconds) in enumerate(self._turns)
         ]
 
+    async def drain(self) -> None:
+        return None
+
     async def close(self) -> None:
         return None
 

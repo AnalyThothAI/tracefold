@@ -67,6 +67,8 @@ def _baseline_model_route(mode: BaselineMode, *, settings: Any, artifact: Any) -
                 timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
                 max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
                 model_kwargs=endpoint.model_kwargs,
+                temperature=endpoint.temperature,
+                structured_output=endpoint.structured_output,
             ),
         )
         # The model name alone cannot tell two endpoints apart: the local box and a hosted gateway can serve
@@ -343,7 +345,11 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             # then published as the before value for it.
             raise ValueError("news_program_baseline_dataset_requires_compiler_reflection_judge")
         endpoint = configured_lm_endpoint(
-            settings, model_name=judge_model, api_key=source.api_key, base_url=source.base_url
+            settings,
+            model_name=judge_model,
+            api_key=source.api_key,
+            base_url=source.base_url,
+            request_config=source.request,
         )
         # No admission ceiling, deliberately, and #253 tried the other way first. A judge that hits its
         # ceiling does not raise: it returns `unavailable`, `retains()` reads that as "not retained", a
@@ -355,6 +361,8 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
             api_key=endpoint.api_key,
             api_base=endpoint.api_base,
             model_kwargs=endpoint.model_kwargs,
+            temperature=0 if endpoint.temperature is None else endpoint.temperature,
+            structured_output=endpoint.structured_output,
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
@@ -549,7 +557,11 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
 
     # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
     endpoint = configured_lm_endpoint(
-        settings, model_name=str(args.model), api_key=source.api_key, base_url=source.base_url
+        settings,
+        model_name=str(args.model),
+        api_key=source.api_key,
+        base_url=source.base_url,
+        request_config=source.request,
     )
     batch = build_draft_batch(
         ReviewDrafter(
@@ -558,6 +570,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
                 api_key=endpoint.api_key,
                 api_base=endpoint.api_base,
                 model_kwargs=endpoint.model_kwargs,
+                temperature=endpoint.temperature,
                 max_tokens=4_096,
             )
         ),
@@ -682,11 +695,17 @@ def _migration_judge(args: Namespace, settings: Any) -> Any:
     if reflection is None or not reflection.configured:
         raise ValueError("news_program_baseline_judge_endpoint_not_configured")
     endpoint = configured_lm_endpoint(
-        settings, model_name=str(args.semantic_judge).strip(), api_key=reflection.api_key, base_url=reflection.base_url
+        settings,
+        model_name=str(args.semantic_judge).strip(),
+        api_key=reflection.api_key,
+        base_url=reflection.base_url,
+        request_config=reflection.request,
     )
     return build_judge(
         model_name=endpoint.model_name,
         api_key=endpoint.api_key,
         api_base=endpoint.api_base,
         model_kwargs=endpoint.model_kwargs,
+        temperature=0 if endpoint.temperature is None else endpoint.temperature,
+        structured_output=endpoint.structured_output,
     )

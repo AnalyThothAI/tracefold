@@ -56,7 +56,8 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at Alembic head `20260828_0317`. Both
+5. Deploy the exact reviewed image at the current Alembic head (`20260828_0324`
+   at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; the migration then
    repeats the three database drain predicates in its transaction before
@@ -68,29 +69,38 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. CandidateRunner can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
-For the V2 capability cut, keep Trading `PAUSED` and require zero nonterminal
-Intents. `make up` starts a bounded zero-claim Nautilus process, waits for its
-fresh account-wide `nautilus_bootstrap_account_zero_at_ms` proof while
-`/readyz` correctly remains red, refreshes/activates the snapshot, stops that
-process, and recreates the normal capability-governed Nautilus service. This
-same sequence handles both first activation and replacement, including recovery
-from an old snapshot that the provider can no longer load. The proof remains
-valid for the bounded provider load (at most five minutes) and activation clears
-it. Deploy/migrate the
-exact reviewed image to `20260828_0320`, then run:
+For the first V2 capability activation, keep Trading `PAUSED` and require zero
+nonterminal Intents. When no active snapshot exists, `make up` starts a bounded
+zero-claim Nautilus process, waits for its fresh account-wide
+`nautilus_bootstrap_account_zero_at_ms` proof while `/readyz` correctly remains
+red, activates the first snapshot, stops that process, and recreates the normal
+capability-governed Nautilus service. The proof remains valid for the bounded
+provider load (at most five minutes) and activation clears it.
+
+Once an active snapshot exists, `make up` and `make deploy-image` reuse it and
+only recreate normal Nautilus. They do not refresh capability or write Trading
+control; stale-but-valid is an accepted deployment state. A later replacement
+is an explicit paused-window operation:
 
 ```text
+uv run tracefold trading control paused
 uv run tracefold trading refresh-capabilities
+make up
 uv run tracefold trading status
+uv run tracefold trading control running
 ```
 
-Record the active snapshot digest/count and blacklist revision. Require
-readiness to return green only after the recreated Nautilus loads and
-revalidates every included instrument. Then set control to `RUNNING`. A failed
-load or activation leaves the old active snapshot unchanged and Trading paused.
-`tracefold nautilus run --bootstrap-zero-claims` is deployment-only: it refuses
-anything except `PAUSED` with zero active Intent and never claims readiness or
-consumes an Intent.
+Before refresh, require zero nonterminal Intents and current Nautilus readiness
+with no unexpected exposure; leave Nautilus running so that proof stays fresh.
+The refresh command fails before provider I/O unless control is already
+`PAUSED`, and it never pauses or resumes Trading itself. Record the new snapshot
+digest/count and blacklist revision, and restore `RUNNING` only after recreated
+Nautilus is ready and has revalidated every included instrument. A failed load
+or activation leaves the old active snapshot unchanged and the operator-chosen
+`PAUSED` control intact. If the old snapshot cannot load, keep Trading `PAUSED`
+and use the bounded `tracefold nautilus run --bootstrap-zero-claims` recovery
+process before retrying refresh; that process refuses active Intents, never
+claims readiness, and never consumes an Intent.
 
 Do not seed a production Case or Intent to make the console non-empty. A normal
 source must produce the Case, and only a frozen long/non-shadow Case admitted by
@@ -387,7 +397,7 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> deterministic assembler -> atomic SemanticJudgment/ScoredJudgment
      -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
-  -> q:news.deliver [SAC] Deliverer: one Feishu attempt per Event (kind first)
+  -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
   -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
   -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
      expiry, 30-day purge, broker snapshot
@@ -527,7 +537,9 @@ running; broker is `warn` at 50 and `bad` at 200 queued messages on a business
 queue, `bad` when a business queue has no consumer, `warn` with dead letters;
 model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
 names the error codes); delivery is `warn` when 10 % of 24 h attempts
-are terminal, `bad` at 30 %. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
+are terminal, `bad` at 30 %. A `warn` or `bad` level from any enabled health
+lane makes top-level `state` `degraded`; the API no longer reports a green
+`ready` state beside a failing health item. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
 in the rolling 24 h window, tested for parsed/admitted/Triage/sent durable facts. The independent Triage and
 delivery rolling ledgers remain throughput/health facts, so late work does not make a later funnel stage exceed
 its intake cohort. `reasons_24h` (Chinese labels
@@ -564,10 +576,14 @@ Diagnose News in this order:
    `telemetry_push_24h`; `dropped_by_rule.oi_parse_failed` is a provider parser
    contract fault, not ordinary model noise.
 5. `delivery`: `sent_1h`, `terminal_24h`, `last_error_code`
-   (`delivery_unavailable` = push disabled or webhook invalid;
+   (`delivery_unavailable` = push disabled or the selected provider configuration unavailable;
    `ambiguous_after_crash` = a send whose ack was lost). Historical rows can
    still contain the retired `delivery_paused` and
    `hourly_cap_reached` error, but policy v7 never writes it.
+   `delivery_available` is true only when the selected provider contract is
+   complete and Workers is running. If push is explicitly enabled with an
+   absent or insecure Telegram token file, Workers fails startup; inspect
+   `workers_state` and Workers logs instead of treating the target as available.
 6. `tracefold news review queue --view coverage --hours 168` first checks
    whether there is enough same-version production evidence and accepted
    review coverage to make a quality claim. Work the deterministic strata with
@@ -963,6 +979,16 @@ re-issues the stable root over unchanged seed texts one last time, so the first
 deployment after this migration opens a new `bundle_<sha8>` epoch and trips every
 armed or active canary. After it, an identity migration is a code change plus a
 re-pinned line in `tests/contract/test_program_release_identity.py`.
+`0322` adds the durable News delivery edit-intent lifecycle and its stale-edit
+index; it performs no provider call and requires no new credential or runtime
+role. `0323` adds the receipt-bound deletion lifecycle and its stale-intent
+index for authoritative five-venue single-name absence.
+`0324` replaces both lifecycle shape constraints with two-valued predicates so
+PostgreSQL `NULL` semantics cannot admit partial edit or delete intent. It fails
+closed if an existing row violates either lifecycle before replacing the constraints.
+Issue #325 owns the operator-approved recovery: keep the database at `0323`,
+repair only the invalid lifecycle tuple from provider evidence, and then roll
+forward to `0324`; never start an older-schema image after that migration commits.
 
 Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
@@ -970,8 +996,9 @@ settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
 `migration_status` `ready`, current News table counts, `news_schema.exact`, and
 `runtime_roles.ok`; `tracefold news bus-check` shows one consumer on
-`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` once
-the WSS connects; `/api/macro/overview` answers `404`; and the first candidate
+`news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` only
+after the WSS, broker, model, delivery, and Workers health checks are all green;
+`/api/macro/overview` answers `404`; and the first candidate
 Event receives a Triage verdict within seconds.
 
 ## Operator actions and retention
