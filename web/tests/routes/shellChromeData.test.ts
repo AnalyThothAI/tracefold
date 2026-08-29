@@ -1,4 +1,4 @@
-import { topbarFigures } from "@routes/shellChromeData";
+import { topbarFigures, topbarNewsSearchParams } from "@routes/shellChromeData";
 import { newsStatusFixture } from "@tests/fixtures/newsFixture";
 import { tradingStatusFixture } from "@tests/fixtures/tradingFixture";
 import { describe, expect, it } from "vitest";
@@ -72,5 +72,18 @@ describe("route-aware shell figures", () => {
       },
       { label: "今日入场", text: "1 / 1" },
     ]);
+  });
+});
+
+describe("topbar News search scope", () => {
+  it("starts a fresh seven-day all-outcome task without hidden feed filters", () => {
+    const next = topbarNewsSearchParams("  BTC ETF  ");
+
+    expect(next.toString()).toBe("q=BTC+ETF&outcome=all&hours=168");
+    expect([...next.keys()]).toEqual(["q", "outcome", "hours"]);
+  });
+
+  it("resets the scope even when an empty draft clears the query", () => {
+    expect(topbarNewsSearchParams("  ").toString()).toBe("outcome=all&hours=168");
   });
 });

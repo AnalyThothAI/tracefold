@@ -29,7 +29,7 @@ describe("CockpitTopbar", () => {
     );
     const input = screen.getByRole("textbox", { name: "news search" });
     expect(input).toHaveValue("bitcoin");
-    expect(input).toHaveAttribute("placeholder", "事件 / base_symbol / 场所");
+    expect(input).toHaveAttribute("placeholder", "标的 / 事件关键词");
 
     fireEvent.change(input, { target: { value: "local draft" } });
     expect(input).toHaveValue("local draft");
@@ -72,7 +72,7 @@ describe("CockpitTopbar", () => {
 
     expect(screen.getByRole("textbox", { name: "news search" })).toHaveAttribute(
       "placeholder",
-      "事件 / base_symbol / 场所",
+      "标的 / 事件关键词",
     );
     expect(screen.queryByRole("button", { name: "刷新" })).toBeNull();
     expect(document.querySelector(".cockpit-searchbar-keycap")).not.toBeNull();

@@ -83,12 +83,19 @@ class NewsFeedCountsData(ExactApiSchema):
     pending: int
 
 
+class NewsFeedSearchData(ExactApiSchema):
+    mode: Literal["asset", "text"]
+    normalized_query: str
+    resolved_symbols: list[str]
+
+
 class NewsFeedData(ExactApiSchema):
     events: list[NewsFeedEventData]
     next_cursor: str | None = None
     # First page only — a paged request reuses the counts the first page already reported.
     counts: NewsFeedCountsData | None = None
     filters: NewsFeedFiltersData
+    search: NewsFeedSearchData | None
 
 
 __all__ = [
@@ -97,4 +104,5 @@ __all__ = [
     "NewsFeedEventData",
     "NewsFeedFiltersData",
     "NewsFeedOiData",
+    "NewsFeedSearchData",
 ]

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from tracefold.platform.postgres.audit import ReadQuerySpec
 
-from .market_review.pricing import REACTION_METRIC_VERSION
-from .review.desk import review_read_statements
+from ..market_review.pricing import REACTION_METRIC_VERSION
+from ..review.desk import review_read_statements
+from .feed_sql import ASSET_SEARCH_PREDICATE, TEXT_SEARCH_PREDICATE, feed_counts_sql, feed_page_sql
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
     hour_ago = int(now_ms) - 3600_000
+    week_ago = int(now_ms) - 168 * 3600_000
+    search_base = "e.ingest_mode IN ('live', 'recovery') AND e.opened_at_ms >= %s"
+    search_cursor = "(e.opened_at_ms, e.event_id) < (%s, %s)"
     return (
         ReadQuerySpec(
             name="news_feed_events",
@@ -29,26 +33,63 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             """,
         ),
         ReadQuerySpec(
-            name="news_feed_symbol_filter",
+            name="news_search_identity",
             sql="""
-                SELECT e.event_id FROM news_events e
-                 WHERE EXISTS (SELECT 1 FROM news_event_assets a
-                                WHERE a.event_id = e.event_id
-                                  AND (a.symbol = %s
-                                       OR COALESCE((SELECT n.base_symbol FROM news_symbol_aliases n
-                                                     WHERE n.alias = a.symbol), '') = %s))
-                 ORDER BY e.opened_at_ms DESC LIMIT 51
+                SELECT base_symbol, priority
+                  FROM (
+                    SELECT base_symbol, 0 AS priority FROM news_symbol_aliases WHERE alias = %s
+                    UNION ALL
+                    SELECT DISTINCT base_symbol, 1 AS priority FROM news_symbol_aliases WHERE base_symbol = %s
+                    UNION ALL
+                    SELECT DISTINCT base_symbol, 1 AS priority FROM news_market_instruments
+                     WHERE status = 'trading' AND base_symbol = %s
+                    UNION ALL
+                    SELECT DISTINCT base_symbol, 2 AS priority FROM news_market_instruments
+                     WHERE status = 'trading' AND venue_symbol = %s
+                  ) matches
+                 ORDER BY priority, base_symbol
             """,
-            params=("BTC", "BTC"),
+            params=("BTC", "BTC", "BTC", "BTC"),
         ),
         ReadQuerySpec(
-            name="news_feed_search",
-            sql="""
-                SELECT e.event_id FROM news_events e
-                 WHERE e.search_doc @@ plainto_tsquery('simple', %s)
-                 ORDER BY e.opened_at_ms DESC LIMIT 51
-            """,
-            params=("bitcoin",),
+            name="news_search_event_symbols",
+            sql="SELECT alias FROM news_symbol_aliases WHERE base_symbol = %s ORDER BY alias",
+            params=("BTC",),
+        ),
+        ReadQuerySpec(
+            name="news_feed_asset_search",
+            # This is the fresh-search page the console actually requests: a bounded 168 h scope, the exact
+            # AssetSearch predicate and the production verdict/delivery joins. The builder is shared with
+            # FeedStorage so this audit cannot regress to a simplified look-alike query.
+            sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
+            params=(week_ago, ["BTC"], 51),
+        ),
+        ReadQuerySpec(
+            name="news_feed_asset_search_counts",
+            sql=feed_counts_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
+            params=(week_ago, ["BTC"]),
+            amplification_basis="aggregate_input",
+        ),
+        ReadQuerySpec(
+            name="news_feed_asset_search_cursor",
+            sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE} AND {search_cursor}"),
+            params=(week_ago, ["BTC"], int(now_ms), "\uffff", 51),
+        ),
+        ReadQuerySpec(
+            name="news_feed_text_search",
+            sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
+            params=(week_ago, "bitcoin", 51),
+        ),
+        ReadQuerySpec(
+            name="news_feed_text_search_counts",
+            sql=feed_counts_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
+            params=(week_ago, "bitcoin"),
+            amplification_basis="aggregate_input",
+        ),
+        ReadQuerySpec(
+            name="news_feed_text_search_cursor",
+            sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE} AND {search_cursor}"),
+            params=(week_ago, "bitcoin", int(now_ms), "\uffff", 51),
         ),
         ReadQuerySpec(
             name="news_event_detail",

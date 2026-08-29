@@ -163,6 +163,14 @@ class Instrument:
     status: InstrumentStatus = "trading"
 
 
+@dataclass(frozen=True, slots=True)
+class InstrumentSearchIdentity:
+    """One catalog-confirmed identity and every spelling the Event ledger may store for it."""
+
+    base_symbol: str
+    event_symbols: tuple[str, ...]
+
+
 def normalize_symbol(raw: str) -> str:
     """Upper-case, strip the provider's ``XYZ-`` prefix and any ``dex:`` prefix. Not alias resolution."""
 
@@ -186,6 +194,29 @@ def strip_quote_suffix(symbol: str, *, quote_asset: str | None = None) -> str:
         if upper.endswith(suffix) and len(upper) > len(suffix):
             return upper[: -len(suffix)]
     return upper
+
+
+def pair_base_symbol(raw: str) -> str | None:
+    """Return the base of one exact ``BASE/QUOTE`` or ``BASEQUOTE`` token.
+
+    The quote vocabulary is the same one used while ingesting venue catalogues. This parser does not prove
+    that the base exists; ``InstrumentsRepository`` performs that catalog lookup before search may call the
+    token an asset.
+    """
+
+    token = str(raw or "").strip().upper()
+    if not token or any(character.isspace() for character in token):
+        return None
+    for separator in ("/", "-", "_"):
+        if token.count(separator) != 1:
+            continue
+        base, quote = token.split(separator, 1)
+        if base and quote in _QUOTE_SUFFIXES:
+            return normalize_symbol(base) or None
+    for quote in _QUOTE_SUFFIXES:
+        if token.endswith(quote) and len(token) > len(quote):
+            return normalize_symbol(token[: -len(quote)]) or None
+    return None
 
 
 def is_valid_symbol(symbol: str) -> bool:

@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.search import NewsSearchPlan, compile_news_search
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.postgres.client import (
     connect_postgres,
@@ -43,6 +44,11 @@ class RepositorySession:
 
     def require_transaction(self, *, operation: str) -> None:
         require_transaction(self.conn, operation=operation)
+
+    def compile_news_search(self, *, q: str | None, symbol: str | None) -> NewsSearchPlan | None:
+        """Wire the News search interface to the session's existing instrument adapter."""
+
+        return compile_news_search(q=q, symbol=symbol, instruments=self.instruments)
 
 
 def repositories_for_connection(

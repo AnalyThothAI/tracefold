@@ -17,6 +17,7 @@ from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
+from tracefold.news.search import compile_news_search
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 
 pytestmark = pytest.mark.integration
@@ -432,8 +433,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
         family=None,
         admission=None,
         decision=None,
-        symbol=None,
-        q=None,
+        search=None,
         limit=100,
         cursor=None,
     )
@@ -449,8 +449,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
             family=None,
             admission=None,
             decision=None,
-            symbol=None,
-            q=None,
+            search=None,
             limit=10_000,
             cursor=None,
         )
@@ -1893,8 +1892,7 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
         family=None,
         admission=None,
         decision=None,
-        symbol=None,
-        q=None,
+        search=None,
         limit=10_000,
         cursor=None,
         oi="parse_failed",
@@ -1936,10 +1934,9 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
             family=None,
             admission=None,
             decision=None,
-            symbol=None,
             # The integration database is intentionally shared across this module. Scope the assertion to
             # this test's Events so unrelated, valid verdicts cannot make an exact-set assertion flaky.
-            q=sentinel,
+            search=compile_news_search(q=sentinel, symbol=None, instruments=repos.instruments),
             limit=10,
             cursor=None,
             **filters,
@@ -2061,8 +2058,7 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
             family=None,
             admission=None,
             decision=None,
-            symbol=symbol,
-            q=None,
+            search=compile_news_search(q=None, symbol=symbol, instruments=repos.instruments),
             limit=10_000,
             cursor=None,
         )
@@ -2077,18 +2073,18 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
     conn.commit()
 
 
-def test_feed_search_matches_reporting_origin_base_symbol_and_venue(conn) -> None:
+def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
     repos = repositories_for_connection(conn)
-    tagged_id, plain_id = _admit_test_events(
+    tagged_new, tagged_old, plain_id = _admit_test_events(
         conn,
         hit_base=1_796_200,
         titles=(
             "A semiconductor foundry raises advanced packaging capacity",
+            "A semiconductor supplier expands advanced packaging output",
             "A tropical cyclone closes a regional airport",
         ),
         hour=12,
     )
-    assert tagged_id != plain_id
     with repos.transaction():
         conn.execute(
             "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
@@ -2099,35 +2095,71 @@ def test_feed_search_matches_reporting_origin_base_symbol_and_venue(conn) -> Non
         conn.execute(
             "INSERT INTO news_market_instruments"
             " (venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms)"
-            " VALUES (%s, %s, %s, 'crypto', 'USD', 'trading', 0)"
+            " VALUES (%s, %s, %s, 'crypto', 'USDT', 'trading', 0)"
             " ON CONFLICT (venue, venue_symbol) DO UPDATE SET base_symbol = EXCLUDED.base_symbol",
             ("qsearch.venue", "QSEARCHBASE-PERP", "QSEARCHBASE"),
         )
-        conn.execute(
-            "INSERT INTO news_event_assets (event_id, symbol, opened_at_ms)"
-            " SELECT %s, %s, opened_at_ms FROM news_events WHERE event_id = %s ON CONFLICT DO NOTHING",
-            (tagged_id, "QSEARCHALIAS", tagged_id),
-        )
+        for event_id in (tagged_new, tagged_old):
+            conn.execute(
+                "INSERT INTO news_event_assets (event_id, symbol, opened_at_ms)"
+                " SELECT %s, %s, opened_at_ms FROM news_events WHERE event_id = %s ON CONFLICT DO NOTHING",
+                (event_id, "QSEARCHALIAS", event_id),
+            )
         conn.execute(
             "UPDATE news_items SET reporting_origin = 'qsearch-origin'"
             " WHERE item_id = (SELECT leader_item_id FROM news_events WHERE event_id = %s)",
-            (tagged_id,),
+            (tagged_new,),
+        )
+        _insert_test_verdict(
+            repos,
+            event_id=tagged_old,
+            direction="neutral",
+            final_decision="drop",
+            now_ms=1_800_000_000_000,
         )
 
-    def ids(q: str) -> set[str]:
-        page = repos.news.list_feed(
+    def page(
+        *,
+        q: str | None = None,
+        symbol: str | None = None,
+        outcome: str | None = None,
+        limit: int = 10,
+        cursor: str | None = None,
+    ):
+        return repos.news.list_feed(
             family=None,
             admission=None,
             decision=None,
-            symbol=None,
-            q=q,
-            limit=10,
-            cursor=None,
+            search=compile_news_search(q=q, symbol=symbol, instruments=repos.instruments),
+            limit=limit,
+            cursor=cursor,
+            outcome=outcome,
         )
-        return {event["event_id"] for event in page["events"]}
 
-    for query in ("qsearch-origin", "QSEARCHBASE", "qsearch.venue", "QSEARCHBASE-PERP"):
-        matched = ids(query)
-        assert tagged_id in matched
-        assert plain_id not in matched
+    asset_page = page(symbol="QSEARCHBASE")
+    expected = [event["event_id"] for event in asset_page["events"]]
+    assert set(expected) == {tagged_new, tagged_old}
+    assert asset_page["counts"] == {"total": 2, "pushed": 0, "held": 1, "pending": 1}
+    for query in ("QSEARCHBASE", "qsearchalias", "QSEARCHBASE-PERP", "QSEARCHBASEUSDT", "$QSEARCHBASE"):
+        query_page = page(q=query)
+        assert [event["event_id"] for event in query_page["events"]] == expected
+        assert query_page["counts"] == asset_page["counts"]
+
+    for outcome in ("pushed", "held", "pending"):
+        outcome_page = page(q="QSEARCHBASE", outcome=outcome)
+        assert len(outcome_page["events"]) == asset_page["counts"][outcome]
+        assert outcome_page["counts"] == asset_page["counts"]
+
+    first = page(q="QSEARCHBASE", limit=1)
+    second = page(q="QSEARCHBASE", limit=1, cursor=first["next_cursor"])
+    assert [event["event_id"] for event in first["events"] + second["events"]] == expected
+    assert second["next_cursor"] is None
+
+    for query in ("qsearch-origin", "qsearch.venue", "BTCT", "ABTC", "%", "_"):
+        assert not ({tagged_new, tagged_old} & {event["event_id"] for event in page(q=query)["events"]})
+    text_page = page(q="advanced packaging")
+    text_ids = {event["event_id"] for event in text_page["events"]}
+    assert {tagged_new, tagged_old} <= text_ids
+    assert plain_id not in text_ids
+    assert text_page["counts"] == asset_page["counts"]
     conn.commit()

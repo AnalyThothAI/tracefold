@@ -14,7 +14,9 @@ from tracefold.app.http.schemas import events as event_schemas
 from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
+from tracefold.news.market_review.instruments import InstrumentSearchIdentity
 from tracefold.platform.config.models import Settings
+from tracefold.platform.observability import TelemetryRegistry
 
 TOKEN = "contract-token"
 
@@ -62,6 +64,7 @@ class _FakeNewsRepository:
         self.calls.append(("list_feed", kwargs))
         if kwargs.get("cursor") == "broken":
             raise ValueError("news_feed_cursor_invalid")
+        search = kwargs.get("search")
         return {
             "events": [{**event, "title_zh": "铜价冲击纪录", "outcome": _OUTCOME} for event in self.events],
             "next_cursor": None,
@@ -72,8 +75,8 @@ class _FakeNewsRepository:
                 "family": kwargs["family"],
                 "admission": kwargs["admission"],
                 "decision": kwargs["decision"],
-                "symbol": kwargs["symbol"],
-                "q": kwargs["q"],
+                "symbol": search.symbol if search else None,
+                "q": search.q if search else None,
                 "limit": kwargs["limit"],
                 "outcome": kwargs.get("outcome"),
                 "hours": kwargs.get("hours"),
@@ -81,6 +84,7 @@ class _FakeNewsRepository:
                 "direction": ",".join(kwargs.get("directions") or ()) or None,
                 "channel": ",".join(kwargs.get("channels") or ()) or None,
             },
+            "search": search.public_metadata() if search else None,
         }
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
@@ -202,6 +206,13 @@ class _FakeInstrumentsRepository:
                 "listed": norm in listed,
             }
         return out
+
+    def search_identity(self, symbol: str, *, allow_pair: bool = True) -> InstrumentSearchIdentity | None:
+        token = str(symbol).upper()
+        if token in {"BTC", "BTCUSDT", "BTC/USDT", "BTC-USDT", "BTC_USDT"}:
+            assert allow_pair is True
+            return InstrumentSearchIdentity(base_symbol="BTC", event_symbols=("BTC",))
+        return None
 
     def aliases_by_base(self, base_symbols: Any, *, sources: Any = None) -> dict[str, dict[str, Any]]:
         # #87 review: the console asks for operator aliases only. Venue-derived rows are mechanical
@@ -333,11 +344,17 @@ class _FakeRepositories:
         self.price = _FakePriceRepository()
         self.conn = _FakeConnection()
 
+    def compile_news_search(self, *, q: str | None, symbol: str | None):
+        from tracefold.news.search import compile_news_search
+
+        return compile_news_search(q=q, symbol=symbol, instruments=self.instruments)
+
 
 class _FakeRuntime:
     def __init__(self, settings: Settings, news: _FakeNewsRepository) -> None:
         self.settings = settings
         self._news = news
+        self.telemetry = TelemetryRegistry()
 
     @contextmanager
     def repositories(self):
@@ -423,8 +440,13 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
     assert {"received_age_ms", "source_age_ms", "effective_age_ms", "freshness_basis"} <= {
         name for name, field in status_schemas.NewsQuoteVenueData.model_fields.items() if field.is_required()
     }
-    assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters"}
+    assert set(feed_schemas.NewsFeedData.model_fields) == {"events", "next_cursor", "counts", "filters", "search"}
     assert set(feed_schemas.NewsFeedCountsData.model_fields) == {"total", "pushed", "held", "pending"}
+    assert set(feed_schemas.NewsFeedSearchData.model_fields) == {
+        "mode",
+        "normalized_query",
+        "resolved_symbols",
+    }
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
         "family",
         "admission",
@@ -615,6 +637,63 @@ def test_feed_forwards_outcome_group_and_hours_window(client) -> None:
     # Pattern/bound violations are rejected by the FastAPI query validators (422).
     assert http.get("/api/news/feed", params={"token": TOKEN, "outcome": "bogus"}).status_code == 422
     assert http.get("/api/news/feed", params={"token": TOKEN, "hours": 999}).status_code == 422
+
+
+def test_feed_rejects_mixed_asset_and_text_search_before_repository_work(client) -> None:
+    http, news = client
+
+    response = http.get(
+        "/api/news/feed",
+        params={"token": TOKEN, "q": "BTC", "symbol": "BTC"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "ok": False,
+        "error": "news_feed_search_conflict",
+        "field": "q",
+    }
+    assert news.calls == []
+
+
+def test_feed_compiles_search_metadata_and_records_only_first_page_requests(client) -> None:
+    http, news = client
+
+    first = http.get("/api/news/feed", params={"token": TOKEN, "q": "$btc"})
+    paged = http.get("/api/news/feed", params={"token": TOKEN, "q": "$btc", "cursor": "abc"})
+    text = http.get("/api/news/feed", params={"token": TOKEN, "q": "bitcoin ETF"})
+
+    assert first.status_code == paged.status_code == 200
+    assert first.json()["data"]["search"] == {
+        "mode": "asset",
+        "normalized_query": "BTC",
+        "resolved_symbols": ["BTC"],
+    }
+    forwarded = news.calls[0][1]
+    assert forwarded["search"].event_symbols == ("BTC",)
+    assert "q" not in forwarded and "symbol" not in forwarded
+    # Even with the same Events, server-owned search explanation is response identity and therefore changes
+    # the strong ETag. A cache cannot replay an AssetSearch explanation for a TextSearch response.
+    assert first.headers["etag"] != text.headers["etag"]
+    metrics = http.get("/metrics").text
+    assert 'tracefold_news_search_requests_total{mode="asset",result="nonzero"} 1.0' in metrics
+
+
+def test_feed_records_zero_result_text_search_without_user_text_labels(client) -> None:
+    http, news = client
+    news.events = []
+
+    response = http.get("/api/news/feed", params={"token": TOKEN, "q": "private-query"})
+
+    assert response.status_code == 200
+    assert response.json()["data"]["search"] == {
+        "mode": "text",
+        "normalized_query": "private-query",
+        "resolved_symbols": [],
+    }
+    metrics = http.get("/metrics").text
+    assert 'tracefold_news_search_requests_total{mode="text",result="zero"} 1.0' in metrics
+    assert "private-query" not in metrics
 
 
 def test_feed_forwards_canonical_direction_and_channel_filters(client) -> None:

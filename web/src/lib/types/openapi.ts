@@ -867,6 +867,7 @@ export interface components {
             filters: components["schemas"]["NewsFeedFiltersData"];
             /** Next Cursor */
             next_cursor?: string | null;
+            search: components["schemas"]["NewsFeedSearchData"] | null;
         };
         /** NewsFeedEventData */
         NewsFeedEventData: {
@@ -1045,6 +1046,18 @@ export interface components {
             whale_oi_ratio_bps?: number | null;
             /** Window Ms */
             window_ms?: number | null;
+        };
+        /** NewsFeedSearchData */
+        NewsFeedSearchData: {
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "asset" | "text";
+            /** Normalized Query */
+            normalized_query: string;
+            /** Resolved Symbols */
+            resolved_symbols: string[];
         };
         /** NewsFunnelData */
         NewsFunnelData: {

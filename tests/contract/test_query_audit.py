@@ -15,8 +15,14 @@ from tracefold.platform.postgres.audit import (
 
 _NEWS_QUERY_NAMES = (
     "news_feed_events",
-    "news_feed_symbol_filter",
-    "news_feed_search",
+    "news_search_identity",
+    "news_search_event_symbols",
+    "news_feed_asset_search",
+    "news_feed_asset_search_counts",
+    "news_feed_asset_search_cursor",
+    "news_feed_text_search",
+    "news_feed_text_search_counts",
+    "news_feed_text_search_cursor",
     "news_event_detail",
     "news_event_asset_projection",
     "news_event_members",
@@ -80,8 +86,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     assert set(_NEWS_QUERY_NAMES) < names
     assert catalog.query_routes["/api/news/feed"] == (
         "news_feed_events",
-        "news_feed_symbol_filter",
-        "news_feed_search",
+        "news_search_identity",
+        "news_search_event_symbols",
+        "news_feed_asset_search",
+        "news_feed_asset_search_counts",
+        "news_feed_asset_search_cursor",
+        "news_feed_text_search",
+        "news_feed_text_search_counts",
+        "news_feed_text_search_cursor",
         "news_event_asset_projection",
         "news_reaction_attach",
     )
@@ -120,6 +132,10 @@ def test_default_news_query_specs_cover_every_news_route_query():
         if route.startswith("/api/news/"):
             assert set(route_queries) <= names, route
     assert set(_NEWS_QUERY_NAMES) <= names
+    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
+        "news_feed_asset_search_counts",
+        "news_feed_text_search_counts",
+    ]
 
 
 def test_app_catalog_rejects_unapproved_aggregate_input_queries():

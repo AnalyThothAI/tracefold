@@ -22,8 +22,14 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/status": ("readiness_schema", "workers_runtime"),
     "/api/news/feed": (
         "news_feed_events",
-        "news_feed_symbol_filter",
-        "news_feed_search",
+        "news_search_identity",
+        "news_search_event_symbols",
+        "news_feed_asset_search",
+        "news_feed_asset_search_counts",
+        "news_feed_asset_search_cursor",
+        "news_feed_text_search",
+        "news_feed_text_search_counts",
+        "news_feed_text_search_cursor",
         "news_event_asset_projection",
         "news_reaction_attach",
     ),
@@ -84,8 +90,15 @@ def query_audit_catalog(
         *provider(now_ms=int(now_ms)),
         *_trading_query_specs(now_ms=int(now_ms)),
     )
-    aggregate_input_queries = [query.name for query in queries if query.amplification_basis == "aggregate_input"]
-    if aggregate_input_queries:
+    allowed_aggregate_input_queries = {
+        # The production first-page feed aggregates are time-bounded and scan exactly the predicate whose
+        # page they describe. Their one returned row is not the right amplification denominator; the bounded
+        # input is. Both SQL statements are built by FeedStorage's own production statement builder.
+        "news_feed_asset_search_counts",
+        "news_feed_text_search_counts",
+    }
+    aggregate_input_queries = {query.name for query in queries if query.amplification_basis == "aggregate_input"}
+    if aggregate_input_queries - allowed_aggregate_input_queries:
         raise ValueError("only bounded aggregate reads may use aggregate-input amplification")
     return QueryAuditCatalog(
         queries=queries,
@@ -112,7 +125,7 @@ def query_audit_for_connection(
 
 
 def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    from tracefold.news.query_specs import news_query_specs
+    from tracefold.news.storage.query_specs import news_query_specs
 
     return news_query_specs(now_ms=now_ms)
 

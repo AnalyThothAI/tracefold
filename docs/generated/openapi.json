@@ -1767,11 +1767,22 @@
               }
             ],
             "title": "Next Cursor"
+          },
+          "search": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NewsFeedSearchData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "events",
-          "filters"
+          "filters",
+          "search"
         ],
         "title": "NewsFeedData",
         "type": "object"
@@ -2342,6 +2353,37 @@
           "rule"
         ],
         "title": "NewsFeedOiData",
+        "type": "object"
+      },
+      "NewsFeedSearchData": {
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "enum": [
+              "asset",
+              "text"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "normalized_query": {
+            "title": "Normalized Query",
+            "type": "string"
+          },
+          "resolved_symbols": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Resolved Symbols",
+            "type": "array"
+          }
+        },
+        "required": [
+          "mode",
+          "normalized_query",
+          "resolved_symbols"
+        ],
+        "title": "NewsFeedSearchData",
         "type": "object"
       },
       "NewsFunnelData": {
@@ -6383,7 +6425,7 @@
             "required": false,
             "schema": {
               "default": "",
-              "maxLength": 16,
+              "maxLength": 32,
               "title": "Symbol",
               "type": "string"
             }

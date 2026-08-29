@@ -67,15 +67,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     ? (new URLSearchParams(location.search).get("q") ?? "")
     : "";
   const submitTopbarSearch = (searchText: string) => {
-    const query = searchText.trim();
-    const next = isNewsRoute(location.pathname)
-      ? new URLSearchParams(location.search)
-      : new URLSearchParams();
-    if (query) {
-      next.set("q", query);
-    } else {
-      next.delete("q");
-    }
+    const next = topbarNewsSearchParams(searchText);
     navigate({ pathname: newsPath(), search: searchWithOptionalPrefix(next) });
   };
   return {
@@ -125,6 +117,16 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
     },
     routeContext,
   };
+}
+
+/** A topbar submit starts a new News task; hidden filters from the previous task never cross this seam. */
+export function topbarNewsSearchParams(searchText: string): URLSearchParams {
+  const next = new URLSearchParams();
+  const query = searchText.trim();
+  if (query) next.set("q", query);
+  next.set("outcome", "all");
+  next.set("hours", "168");
+  return next;
 }
 
 /** The two or three facts that identify the surface at a glance, using only status fields already in cache. */

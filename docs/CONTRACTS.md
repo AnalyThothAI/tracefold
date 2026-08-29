@@ -405,9 +405,22 @@ title alone selects a deterministic route.
   channels narrows nothing. The axes compose with every existing predicate
   before the count aggregate and cursor pagination.
 
-  `q` matches the Event search document and leader title, the leader item's `reporting_origin`, and any attached
-  asset's raw symbol, canonical `base_symbol`, instrument `venue`, or `venue_symbol`. Search is applied by the
-  authoritative feed query before counts and cursor pagination; the browser does not maintain a second index.
+  `q` and `symbol` are mutually exclusive. `symbol` (maximum 32 characters) is
+  always an exact asset-identity request. A normalized single-token `q` becomes
+  asset mode only when the instrument catalogue resolves it exactly as a
+  canonical symbol, alias, venue symbol, or one of the bounded pair spellings;
+  one leading `$` is ignored for that identity lookup. Unknown tokens and every
+  multi-word query are text mode. Asset mode expands the resolved identity to
+  its durable canonical and alias Event spellings, then matches only exact
+  `news_event_assets.symbol` values. It never falls back to title, origin,
+  venue, substring, or wildcard matching. Text mode applies PostgreSQL
+  `websearch_to_tsquery('simple', ...)` to the persisted Event search document;
+  `%` and `_` are ordinary input, not SQL wildcards. Chinese input is routed
+  consistently to text mode, but v1 makes no segmentation or recall guarantee.
+  Search is applied by the authoritative feed query before counts and cursor
+  pagination; the browser does not maintain a second index. The response always
+  carries nullable `search` metadata with `mode`, `normalized_query`, and
+  `resolved_symbols`; it is `null` when neither input was supplied.
 
   A `telemetry_deterministic` row additionally carries a nullable `oi` block
   (#207): `parsed`, `rule`, and — depending on which of the two shapes it is —
@@ -430,7 +443,8 @@ title alone selects a deterministic route.
   `news_verdicts.trace` for every candidate row, and a rare rule with no early
   exit walked the whole retention into the serve role's 1 s statement timeout.
 
-  Unknown query parameters, invalid admission,
+  Supplying both `q` and `symbol` returns 400
+  `news_feed_search_conflict` before repository work. Unknown query parameters, invalid admission,
   decision, `oi`, `direction` or `channel` values, malformed cursors, and the retired `priority`/`sort`
   parameters return 400; out-of-pattern `outcome`/`hours` return 422. Recovery
   Events are visible with `admission=recovery`. `filters` echoes every parameter incl. `outcome`,

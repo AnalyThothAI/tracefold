@@ -18,6 +18,7 @@ export type NewsFeedEvent = NewsSchemas["NewsFeedEventData"];
 export type NewsEvent = NewsSchemas["NewsEventData"];
 export type NewsFeed = NewsSchemas["NewsFeedData"];
 export type NewsFeedCounts = NewsSchemas["NewsFeedCountsData"];
+export type NewsFeedSearch = NewsSchemas["NewsFeedSearchData"];
 export type NewsAssetRef = NewsSchemas["NewsAssetRefData"];
 export type NewsSymbolNormalization = NewsSchemas["NewsSymbolNormalizationData"];
 export type NewsEventDetail = NewsSchemas["NewsEventDetailData"];
