@@ -19,8 +19,9 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 
 TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
 TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
+TEST_PROFILE_ARGS = $(if $(TRACEFOLD_TEST_PROFILE_PATH),-p tests.support.profile --test-profile="$(TRACEFOLD_TEST_PROFILE_PATH)" --test-profile-lane="$(TRACEFOLD_TEST_PROFILE_LANE)")
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-profile test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -40,7 +41,7 @@ tool-path: ## ensure uv tool executables are on PATH
 test: test-fast ## hermetic default regression (alias for test-fast)
 
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
-	@uv run python -m pytest -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
+	@uv run python -m pytest $(TEST_PROFILE_ARGS) -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
@@ -52,7 +53,7 @@ test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (ex
 		"$(TRACEFOLD_TEST_ARTIFACT_DIR)"/vitest-*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
 		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
 	@PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest \
-		-p tests.support.evidence -p _hypothesis_pytestplugin tests -m "not live and not scheduled" \
+		-p tests.support.evidence -p _hypothesis_pytestplugin $(TEST_PROFILE_ARGS) tests -m "not live and not scheduled" \
 		--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit.xml" \
 		--durations=50 \
 		--evidence-manifest="$(TRACEFOLD_TEST_LANE_DIR)/python.json" \
@@ -106,6 +107,15 @@ test-evidence: ## exact-HEAD fail-closed deterministic verification evidence (ex
 		--required-lane frontend-build \
 		--required-lane browser
 
+test-profile: ## reproduce #335 entrypoint inventory and duration-ratchet report without running tests
+	@rm -rf artifacts/test-profile/collection
+	@uv run python -m tests.support.profile collect \
+		--output-dir artifacts/test-profile/collection
+	@uv run python -m tests.support.profile aggregate \
+		--profile-dir artifacts/test-profile/collection \
+		--baseline tests/fixtures/issue_335_test_profile_baseline.json \
+		--output artifacts/test-profile/report.json
+
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property
 
@@ -147,7 +157,7 @@ check: ## run hermetic static, architecture, contract, and generated drift check
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
-	@uv run python -m pytest tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled"
+	@uv run python -m pytest $(TEST_PROFILE_ARGS) tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled"
 	@uv run python -m compileall src tests
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow

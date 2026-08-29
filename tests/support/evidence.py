@@ -46,6 +46,7 @@ _NON_GREEN_OUTCOME_FIELDS = ("failed", "skipped", "xfailed", "xpassed", "rerun",
 _ALLOWED_MODULE_PLUGINS = {
     "_hypothesis_pytestplugin": ("hypothesis", hypothesis_version),
     "tests.support.evidence": ("tracefold-evidence", LANE_SCHEMA_VERSION),
+    "tests.support.profile": ("tracefold-test-profile", "tracefold_test_profile_v1"),
 }
 _REQUIRED_PYTEST_CORE_MODULES = (
     "_pytest.threadexception",

@@ -362,6 +362,13 @@ uv run pytest -q \
 ### Test lanes and speed
 
 `make test` aliases `make test-fast` and never starts an external resource.
+`make test-profile` collects the current `quality`, `fast`, and deterministic-full
+nodeid inventories without executing tests, then writes
+`artifacts/test-profile/report.json`. The report exposes duplicate and missing
+selection, phase-aware durations when run profiles are supplied, and the
+Issue #335 duration ratchets. A duration ratchet needs three consecutive samples
+above 125% of its pinned baseline before it can fail; a single shared-runner
+outlier is diagnostic data, not a gate failure.
 Tests that need PostgreSQL declare the explicit `postgres_dsn` fixture; their
 directory is not a resource trigger. `make test-integration`, `make
 test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make

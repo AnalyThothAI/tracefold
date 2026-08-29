@@ -1,0 +1,33 @@
+{
+  "ci_run": 33234381220,
+  "commit_sha": "0e2c515f8f4bc5309362f306593e11f9bb1447e3",
+  "duration_ratchets": {
+    "lane:deterministic-full": {
+      "baseline_seconds": 537.7,
+      "regression_multiplier": 1.25,
+      "required_consecutive_samples": 3,
+      "target_seconds": 300.0
+    },
+    "module:tests/integration/test_news_candidate_evaluator.py": {
+      "baseline_seconds": 102.9,
+      "regression_multiplier": 1.25,
+      "required_consecutive_samples": 3,
+      "target_seconds": 30.0
+    },
+    "module:tests/integration/test_news_review_desk.py": {
+      "baseline_seconds": 42.7,
+      "regression_multiplier": 1.25,
+      "required_consecutive_samples": 3,
+      "target_seconds": 20.0
+    }
+  },
+  "inventory": {
+    "duplicate_executions": 1809,
+    "quality": 200,
+    "fast": 1609,
+    "deterministic_full": 2109,
+    "total_entrypoint_executions": 3918,
+    "unique_deterministic_nodeids": 2109
+  },
+  "issue": 335
+}
