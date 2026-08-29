@@ -560,6 +560,29 @@ def test_a_commit_time_denial_is_a_typed_blocked_reason_and_emits_no_intent() ->
     assert trading.commits == list(trading.cases)
 
 
+def test_a_backlog_case_that_loses_the_fence_at_commit_is_blocked_by_name() -> None:
+    """The one honest `capacity_exhausted`: a race, not a queueing artefact the lane manufactured.
+
+    Only one Case is frozen per turn, so a second claimable Case means a restart or a paused lane left
+    it behind — it was frozen in its own turn and had its own chance at the fence. Losing it now is a
+    real fact about the lane's capacity at decision time, and it is settled terminally under that name
+    rather than left to spin until its 5-minute budget expires.
+    """
+
+    trading = FakeTrading(authority=_authority(), rows=[_row()])
+    lane, _ = _lane(trading)
+    _advance(lane)
+    trading.claimable.append(next(iter(trading.cases)))
+    trading.commit_result = lambda case_id: DecisionCommit(state=CaseState.BLOCKED, reason="capacity_exhausted")
+
+    state = asyncio.run(lane._decide_one())
+
+    assert state == CaseState.BLOCKED
+    # The commit transaction owns the terminal write, so the lane does not settle it a second time.
+    assert trading.settled == []
+    assert trading.commits[-1] in trading.cases
+
+
 # ---------------------------------------------------------------------------- what cannot be reached
 def test_the_lane_has_no_news_or_liquidation_input_at_all() -> None:
     """#331 F2P 2. There is no editorial trigger to disable: the lane takes one projection."""

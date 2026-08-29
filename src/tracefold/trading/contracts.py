@@ -155,8 +155,8 @@ class CaseState(StrEnum):
     BLOCKED = "BLOCKED"
     # Read-only history. `POLICY_REJECTED` was the old writer's word for both "the policy said no" and
     # "the lane could not decide"; `ORDER_PREPARED` belonged to the retired Paper/OpenTrade writer.
-    # Production holds 225 rows in the first and 2 in the second, so both stay readable — and neither
-    # is reachable from `CURRENT_TERMINAL_STATES`.
+    # Production holds a few hundred rows in the first and two in the second, so both stay readable —
+    # and neither is reachable from `CURRENT_TERMINAL_STATES`.
     POLICY_REJECTED = "POLICY_REJECTED"
     ORDER_PREPARED = "ORDER_PREPARED"
 
