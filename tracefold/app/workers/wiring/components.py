@@ -15,6 +15,7 @@ from tracefold.app.workers.wiring.trading import (
     _wire_execution_capability_compiler,
     _wire_venue_catalog,
 )
+from tracefold.news.bus import BrokerBackpressure, BrokerUnavailable
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
@@ -33,6 +34,31 @@ class _Components:
     venue_catalog: VenueCatalog | None = None
     execution_capability_compiler: ExecutionCapabilityCompiler | None = None
     telemetry: TelemetryRegistry | None = None
+
+
+def _task_unavailable_reason(task_name: str | None, exc: BaseException) -> str:
+    """Map a composed News task failure onto the process readiness vocabulary."""
+
+    if task_name is None or not task_name.startswith("news-"):
+        return "runtime_failed"
+    if any(isinstance(item, (BrokerBackpressure, BrokerUnavailable)) for item in _leaf_exceptions(exc)):
+        return "news_broker_unavailable"
+    if task_name in {"news-deduper", "news-triage", "news-deliverer"}:
+        return "news_consumer_fatal"
+    if task_name == "news-receiver":
+        return "news_receiver_fatal"
+    if task_name == "news-recovery":
+        return "news_recovery_fatal"
+    return "runtime_failed"
+
+
+def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        leaves: list[BaseException] = []
+        for item in exc.exceptions:
+            leaves.extend(_leaf_exceptions(item))
+        return leaves
+    return [exc]
 
 
 async def _wire_components(

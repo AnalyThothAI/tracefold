@@ -615,6 +615,7 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "last_publish_at_ms",
         "last_error_code",
         "open_incidents",
+        "recovery",
         "token_configured",
     }
     assert set(status_schemas.NewsDeliveryStatusData.model_fields) == {

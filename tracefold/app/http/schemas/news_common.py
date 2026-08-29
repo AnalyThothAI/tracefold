@@ -15,6 +15,8 @@ class NewsOutcomeData(ExactApiSchema):
     kind: Literal[
         "held_recovery",
         "held_gate",
+        "expired_triage_handoff",
+        "expired_delivery_handoff",
         "queued_publish",
         "queued_triage",
         "dropped",

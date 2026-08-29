@@ -1221,6 +1221,7 @@ export interface components {
             last_publish_at_ms?: number | null;
             /** Open Incidents */
             open_incidents?: components["schemas"]["NewsIncidentData"][];
+            recovery?: components["schemas"]["NewsRecoveryStatusData"];
             /** Token Configured */
             token_configured: boolean;
         };
@@ -1385,7 +1386,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "held_recovery" | "held_gate" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed";
+            kind: "held_recovery" | "held_gate" | "expired_triage_handoff" | "expired_delivery_handoff" | "queued_publish" | "queued_triage" | "dropped" | "throttled" | "degraded_dropped" | "pending_delivery" | "delivered" | "delivery_failed";
             /**
              * Reason Zh
              * @default
@@ -1826,6 +1827,20 @@ export interface components {
              * @enum {string}
              */
             stage: "gate" | "drop" | "throttle" | "push" | "degraded" | "ungrounded";
+        };
+        /** NewsRecoveryStatusData */
+        NewsRecoveryStatusData: {
+            /** Last Error Code */
+            last_error_code?: string | null;
+            /** Oldest Opened At Ms */
+            oldest_opened_at_ms?: number | null;
+            /**
+             * Pending Count
+             * @default 0
+             */
+            pending_count: number;
+            /** Reason */
+            reason?: ("recovery_pending" | "recovery_transient") | null;
         };
         /** NewsSourceContractStageCountsData */
         NewsSourceContractStageCountsData: {

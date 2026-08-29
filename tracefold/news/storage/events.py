@@ -11,6 +11,42 @@ from ..opennews import source_artifact_identity
 from ..source_contracts import EventKind, SourceContractReason
 from .sql_values import _ADMITTED_SQL, _dumps
 
+_HANDOFF_STATE_LIMIT = 1_000
+_EVENT_HANDOFF_STATE_SQL = f"""
+    WITH pending AS MATERIALIZED (
+      SELECT e.opened_at_ms
+        FROM news_current_events_v1 e
+       WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
+         AND e.opened_at_ms >= %s
+         AND (
+           SELECT s.provenance = 'observed'
+              AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+             FROM news_event_evidence_snapshots s
+            WHERE s.event_id = e.event_id
+            ORDER BY s.evidence_version DESC LIMIT 1
+         )
+       ORDER BY e.opened_at_ms
+       LIMIT %s
+    ), expired AS MATERIALIZED (
+      SELECT e.opened_at_ms
+        FROM news_current_events_v1 e
+       WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
+         AND e.opened_at_ms < %s
+         AND (
+           SELECT s.provenance = 'observed'
+              AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+             FROM news_event_evidence_snapshots s
+            WHERE s.event_id = e.event_id
+            ORDER BY s.evidence_version DESC LIMIT 1
+         )
+       ORDER BY e.opened_at_ms DESC
+       LIMIT %s
+    )
+    SELECT (SELECT count(*) FROM pending) AS pending,
+           (SELECT min(opened_at_ms) FROM pending) AS oldest_pending_at_ms,
+           (SELECT count(*) FROM expired) AS expired
+"""
+
 
 class EventStorage:
     conn: Any
@@ -424,12 +460,13 @@ class EventStorage:
         )
         return True
 
-    def mark_event_published(self, *, event_id: str, now_ms: int) -> None:
-        self.conn.execute(
-            "UPDATE news_events SET published_at_ms = COALESCE(published_at_ms, %s), updated_at_ms = %s"
-            " WHERE event_id = %s AND NOT current_contract_archive_only",
+    def mark_event_published(self, *, event_id: str, now_ms: int) -> bool:
+        cursor = self.conn.execute(
+            "UPDATE news_events SET published_at_ms = %s, updated_at_ms = %s"
+            " WHERE event_id = %s AND NOT current_contract_archive_only AND published_at_ms IS NULL",
             (int(now_ms), int(now_ms), event_id),
         )
+        return bool(cursor.rowcount)
 
     def unpublished_candidates(
         self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
@@ -438,63 +475,53 @@ class EventStorage:
 
         Bounded on both sides (#76). The lower bound skips Events still mid-publish; the upper bound stops the
         catch-up from delivering something the reader can no longer use — an unbounded scan once sent a 30.6 h old
-        exchange notice. Events past the ceiling stay in the table, unpublished and un-judged; they keep reading as
-        pending in the feed, which is what `_OUTCOME_GROUP_SQL` and `event_outcome()` both already say. Teaching
-        those two the ceiling would mean encoding one rule twice — once in SQL, once in Python — so the give-up is
-        surfaced by `expired_unpublished_count()` and a Janitor warning instead.
+        exchange notice. Events past the ceiling stay in the table as durable audit facts; readers project them as
+        expired rather than pending.
         """
 
         rows = self.conn.execute(
             f"""
-            SELECT event_id FROM news_current_events_v1
-             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
-               AND opened_at_ms <= %s AND opened_at_ms >= %s
+            SELECT e.event_id, e.dedupe_family, e.queue_priority, e.trace_id, e.opened_at_ms
+              FROM news_current_events_v1 e
+             WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
+               AND e.opened_at_ms <= %s AND e.opened_at_ms >= %s
                AND (
                  SELECT s.provenance = 'observed'
                     AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
                    FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = news_current_events_v1.event_id
+                  WHERE s.event_id = e.event_id
                   ORDER BY s.evidence_version DESC LIMIT 1
                )
-             ORDER BY opened_at_ms LIMIT %s
+             ORDER BY e.opened_at_ms LIMIT %s
             """,
             (int(older_than_ms), int(newer_than_ms), int(limit)),
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def outbox_scan(
+    def event_handoff_scan(
         self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
-    ) -> tuple[list[dict[str, Any]], int]:
-        """One round trip for the Janitor turn: the Events to rescue, and how many the ceiling gave up on.
-
-        Kept to a single read on purpose — the Janitor runs every 60 s against the same pool the worker probes
-        use, and a second query per turn is pure contention for a number that is almost always zero.
-        """
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        """Bounded repair candidates plus the current pending/expired Event handoff projection."""
 
         return (
             self.unpublished_candidates(older_than_ms=older_than_ms, newer_than_ms=newer_than_ms, limit=limit),
-            self._expired_unpublished_count(older_than_ms=newer_than_ms),
+            self._event_handoff_state(deadline_ms=newer_than_ms),
         )
 
-    def _expired_unpublished_count(self, *, older_than_ms: int) -> int:
-        """Admitted Events the catch-up has given up on — surfaced so the ceiling is never silent (#76)."""
+    def _event_handoff_state(self, *, deadline_ms: int) -> dict[str, int | None]:
+        """Current marker-null Event handoffs, capped per side for bounded maintenance telemetry."""
 
         row = self.conn.execute(
-            f"""
-            SELECT count(*) AS n FROM news_current_events_v1
-             WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
-               AND opened_at_ms < %s
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = news_current_events_v1.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
-            """,
-            (int(older_than_ms),),
+            _EVENT_HANDOFF_STATE_SQL,
+            (int(deadline_ms), _HANDOFF_STATE_LIMIT, int(deadline_ms), _HANDOFF_STATE_LIMIT),
         ).fetchone()
-        return int(row["n"]) if row else 0
+        return {
+            "pending": int(row["pending"] or 0) if row else 0,
+            "oldest_pending_at_ms": int(row["oldest_pending_at_ms"])
+            if row and row["oldest_pending_at_ms"] is not None
+            else None,
+            "expired": int(row["expired"] or 0) if row else 0,
+        }
 
     def upgrade_event_admission(
         self,

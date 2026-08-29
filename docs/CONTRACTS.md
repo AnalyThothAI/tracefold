@@ -394,7 +394,8 @@ title alone selects a deterministic route.
   `source_contract_reason`, admission,
   asset class, grounded assets, watchlist hits, storyline key, context line,
   **one `outcome`** (`kind` from the stable enum `held_recovery`, `held_gate`,
-  `queued_publish`, `queued_triage`, `dropped`, `throttled`,
+  `expired_triage_handoff`, `expired_delivery_handoff`, `queued_publish`,
+  `queued_triage`, `dropped`, `throttled`,
   `degraded_dropped`, `pending_delivery`, `delivered`, `delivery_failed`;
   reader copy `text_zh` and `reason_zh`; `group` = `pushed|held|pending`),
   the latest Triage summary (final decision, override rule, throttle reason,
@@ -403,6 +404,14 @@ title alone selects a deterministic route.
   error code. `outcome` is the feed's task-tab filter (its SQL mirrors the
   outcome groups); `hours` bounds `opened_at_ms` to the last N hours (`0`
   or absent = no bound).
+
+  Event-to-Triage and push-Verdict-to-Delivery use the same code-owned
+  30-minute relevance ceiling. A marker-null handoff is pending at exactly the
+  boundary and expired only when strictly older; a non-null marker remains
+  published regardless of age. `expired_triage_handoff` and
+  `expired_delivery_handoff` are `held`, never `pending`. Page rows, outcome
+  filtering, and first-page counts share one request `as_of_ms`, so a row
+  cannot be expired in the response but pending in its counts.
 
   `event_family`, `change_state`, `assertion_status`, `source_authority`,
   `subject_code`, `final_decision`, `event_kind`, and `direction` accept
@@ -513,7 +522,10 @@ title alone selects a deterministic route.
   opened in the same rolling 24 h cohort and test those Events' durable stage facts,
   `reasons_24h` (`stage` `gate|drop|throttle|push|degraded|ungrounded`, raw
   `key`, `label_zh`, `count`, sorted by count), and four layers: `ingest` (WSS
-  connected, last frame/publish, error, open incidents, token configured; no
+  connected, last frame/publish, error, open incidents, closed-pending
+  `recovery` summary with `pending_count`, `oldest_opened_at_ms`, and
+  `last_error_code`, plus `reason` (`recovery_pending|recovery_transient|null`),
+  token configured; no
   Strategy IDs/counts), `broker`
   (configured, connected, per-queue message/consumer counts when observed,
   error code), `pipeline` (events and candidates per hour/day, Triage counts,
@@ -1040,7 +1052,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260830_0332`). Since
+append without rewrite access (current at migration `20260830_0333`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

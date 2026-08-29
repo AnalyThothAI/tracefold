@@ -22,11 +22,14 @@ import aio_pika
 import pytest
 from aio_pika import DeliveryMode, ExchangeType
 
-from tracefold.integrations.rabbitmq import BrokerBackpressure, RabbitMQBus, topology
+from tracefold.integrations.rabbitmq import RabbitMQBus, topology
 from tracefold.news.bus import (
     Q_DEAD,
+    Q_RETRY,
     Q_TRIAGE,
     RETRY_TTL_MS,
+    BrokerBackpressure,
+    BrokerUnavailable,
     BusMessage,
     DeferError,
     PermanentError,
@@ -78,6 +81,21 @@ def _event(
         occurred_at_ms=1,
         priority=priority,
     )
+
+
+def _exception_leaves(exc: BaseException) -> list[BaseException]:
+    if isinstance(exc, BaseExceptionGroup):
+        return [leaf for nested in exc.exceptions for leaf in _exception_leaves(nested)]
+    return [exc]
+
+
+async def _wait_for_depth(bus: RabbitMQBus, queue: str, expected: int, *, timeout: float = 10.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        if (await bus.queue_depths())[bus.queue_name(queue)]["messages"] == expected:
+            return
+        await asyncio.sleep(0.05)
+    assert (await bus.queue_depths())[bus.queue_name(queue)]["messages"] == expected
 
 
 def _management_json(path: str) -> object:
@@ -290,5 +308,102 @@ def test_transient_is_counted_defer_is_not_and_permanent_dead_letters() -> None:
             await asyncio.wait_for(consumer2, timeout=10)
             assert await bus.purge_dead_letters() >= 2
             assert (await bus.queue_depths())[bus.queue_name(Q_DEAD)]["messages"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_unclassified_exception_fails_consumer_without_terminal_settlement() -> None:
+    async def scenario() -> None:
+        async with _bus() as bus:
+
+            async def crash(_message: BusMessage) -> None:
+                raise RuntimeError("handler bug")
+
+            consumer = asyncio.create_task(bus.consume(Q_TRIAGE, crash, prefetch=1, stop_event=asyncio.Event()))
+            await bus.publish(_event("unclassified:1", {}))
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await asyncio.wait_for(consumer, timeout=10)
+            assert any(
+                type(leaf) is RuntimeError and str(leaf) == "handler bug" for leaf in _exception_leaves(caught.value)
+            )
+            assert (await bus.queue_depths())[bus.queue_name(Q_DEAD)]["messages"] == 0
+            await _wait_for_depth(bus, Q_TRIAGE, 1)
+
+            recovered = asyncio.Event()
+            stop = asyncio.Event()
+
+            async def recover(message: BusMessage) -> None:
+                assert message.message_id == "unclassified:1"
+                recovered.set()
+                stop.set()
+
+            consumer2 = asyncio.create_task(bus.consume(Q_TRIAGE, recover, prefetch=1, stop_event=stop))
+            await asyncio.wait_for(recovered.wait(), timeout=10)
+            await asyncio.wait_for(consumer2, timeout=10)
+            assert (await bus.queue_depths())[bus.queue_name(Q_DEAD)]["messages"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_unroutable_retry_publish_fails_consumer_and_preserves_original() -> None:
+    async def scenario() -> None:
+        async with _bus() as bus:
+            await bus.publish(_event("retry-unroutable:1", {}))
+            connection = await aio_pika.connect_robust(AMQP_URL, timeout=5)
+            channel = await connection.channel(publisher_confirms=True)
+            try:
+                await channel.queue_delete(bus.queue_name(Q_RETRY), if_unused=False, if_empty=False)
+            finally:
+                await channel.close()
+                await connection.close()
+
+            async def retry(_message: BusMessage) -> None:
+                raise TransientError("try again")
+
+            consumer = asyncio.create_task(bus.consume(Q_TRIAGE, retry, prefetch=1, stop_event=asyncio.Event()))
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await asyncio.wait_for(consumer, timeout=10)
+            assert any(isinstance(leaf, BrokerUnavailable) for leaf in _exception_leaves(caught.value))
+
+            # Restore this test's private retry lane before passive queue inspection and recovery.
+            await bus.declare_topology()
+            assert (await bus.queue_depths())[bus.queue_name(Q_DEAD)]["messages"] == 0
+            await _wait_for_depth(bus, Q_TRIAGE, 1)
+
+            recovered = asyncio.Event()
+            stop = asyncio.Event()
+
+            async def recover(message: BusMessage) -> None:
+                assert message.message_id == "retry-unroutable:1"
+                recovered.set()
+                stop.set()
+
+            consumer2 = asyncio.create_task(bus.consume(Q_TRIAGE, recover, prefetch=1, stop_event=stop))
+            await asyncio.wait_for(recovered.wait(), timeout=10)
+            await asyncio.wait_for(consumer2, timeout=10)
+
+    asyncio.run(scenario())
+
+
+def test_transient_exhaustion_dead_letters_only_after_the_attempt_limit() -> None:
+    async def scenario() -> None:
+        async with _bus(retry_ttl_ms=100) as bus:
+            attempts: list[int] = []
+            stop = asyncio.Event()
+
+            async def retry(message: BusMessage) -> None:
+                attempts.append(message.attempt)
+                raise TransientError("still unavailable")
+
+            consumer = asyncio.create_task(bus.consume(Q_TRIAGE, retry, prefetch=1, stop_event=stop))
+            await bus.publish(_event("transient-exhausted:1", {}))
+            await _wait_for_depth(bus, Q_DEAD, 1)
+            stop.set()
+            await asyncio.wait_for(consumer, timeout=10)
+
+            assert attempts == [1, 2, 3]
+            dead = await bus.dead_letters(limit=1)
+            assert dead[0]["message_id"] == "transient-exhausted:1"
+            assert dead[0]["reason"] == "rejected"
 
     asyncio.run(scenario())

@@ -9,7 +9,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from .. import liquidations, oi_signals
 from ..artifact_identity import canonical_sha
@@ -70,6 +70,49 @@ from .triage_route import (
 log = logging.getLogger("tracefold.news")
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
+
+
+async def publish_verdict(
+    bus: Any,
+    db: NewsDatabasePort,
+    *,
+    event_id: str,
+    trace_id: str,
+    amqp_priority: int,
+    policy_version: str,
+    occurred_at_ms: int | None = None,
+) -> Literal["marker_pending", "published"]:
+    """Publish one settled push Verdict to Delivery, then mark its confirmed handoff."""
+
+    stamp = now_ms()
+    await bus.publish(
+        BusMessage(
+            kind="verdict",
+            message_id=f"push:{event_id}",
+            routing_key=RK_VERDICT_PUSH,
+            payload={"event_id": event_id, "kind": "first"},
+            trace_id=trace_id,
+            occurred_at_ms=stamp if occurred_at_ms is None else int(occurred_at_ms),
+            priority=amqp_priority,
+        )
+    )
+    try:
+        await db.tx(
+            "news_triage_mark_published",
+            lambda repos: repos.news.mark_verdict_published(
+                event_id=event_id, stage="triage", policy_version=policy_version, now_ms=stamp
+            ),
+            timeout_seconds=1.0,
+        )
+        return "published"
+    except (TransientError, DeferError) as exc:
+        log.warning(
+            "news Verdict handoff confirmed but marker remains pending event_id=%s policy_version=%s error=%s",
+            event_id,
+            policy_version,
+            type(exc).__name__,
+        )
+        return "marker_pending"
 
 
 def _open_circuit_incident(repos: Any, *, now_ms: int) -> Any:
@@ -211,8 +254,11 @@ class TriageConsumer:
         bundle = await self.db.read("news_triage_load", lambda repos: self._load_with_aliases(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_event_missing")
-        card, history, _admission, event_kind = bundle
-        if event_kind == "unsupported_market":
+        card, history, admission, event_kind = bundle
+        # Evidence snapshots are immutable by design, so a pre-cut queued message may still carry the
+        # old candidate admission after a source-contract migration has held the material Event.  Route
+        # from current PostgreSQL truth before looking for a settled verdict or invoking any judge.
+        if admission == "recovery" or event_kind == "unsupported_market":
             return
         policy_version = liquidations.TRIAGE_POLICY_VERSION if event_kind == "liquidation" else TRIAGE_POLICY_VERSION
         if await self._republish_settled_verdict(event_id, message, policy_version=policy_version):
@@ -293,9 +339,10 @@ class TriageConsumer:
                     )
             break
         if outcome.final in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id,
-                outcome.final,
+            await publish_verdict(
+                self.bus,
+                self.db,
+                event_id=event_id,
                 trace_id=message.trace_id,
                 amqp_priority=message.priority,
                 policy_version=TRIAGE_POLICY_VERSION,
@@ -311,9 +358,10 @@ class TriageConsumer:
         if existing is None:
             return False
         if existing.get("published_at_ms") is None and existing["final_decision"] in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id,
-                existing["final_decision"],
+            await publish_verdict(
+                self.bus,
+                self.db,
+                event_id=event_id,
                 trace_id=message.trace_id,
                 amqp_priority=message.priority,
                 policy_version=policy_version,
@@ -800,9 +848,10 @@ class TriageConsumer:
 
             outcome = await self.db.tx("news_signal_judge", _rank_and_settle)
         if outcome.final in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id,
-                outcome.final,
+            await publish_verdict(
+                self.bus,
+                self.db,
+                event_id=event_id,
                 trace_id=message.trace_id,
                 amqp_priority=message.priority,
                 policy_version=TRIAGE_POLICY_VERSION,
@@ -906,9 +955,10 @@ class TriageConsumer:
 
         outcome = await self.db.tx("news_liquidation_judge", _settle)
         if outcome.final in {"push", "escalate"}:
-            await self._publish_decision(
-                event_id,
-                outcome.final,
+            await publish_verdict(
+                self.bus,
+                self.db,
+                event_id=event_id,
                 trace_id=message.trace_id,
                 amqp_priority=message.priority,
                 policy_version=liquidations.TRIAGE_POLICY_VERSION,
@@ -1105,33 +1155,3 @@ class TriageConsumer:
             str(routing.get("admission") or ""),
             str(routing.get("event_kind") or ""),
         )
-
-    async def _publish_decision(
-        self,
-        event_id: str,
-        final: str,
-        *,
-        trace_id: str,
-        amqp_priority: int,
-        policy_version: str,
-    ) -> None:
-        stamp = now_ms()
-        await self.bus.publish(
-            BusMessage(
-                kind="verdict",
-                message_id=f"push:{event_id}",
-                routing_key=RK_VERDICT_PUSH,
-                payload={"event_id": event_id, "kind": "first"},
-                trace_id=trace_id,
-                occurred_at_ms=stamp,
-                priority=amqp_priority,
-            )
-        )
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_triage_mark_published",
-                lambda repos: repos.news.mark_verdict_published(
-                    event_id=event_id, stage="triage", policy_version=policy_version, now_ms=stamp
-                ),
-                timeout_seconds=1.0,
-            )

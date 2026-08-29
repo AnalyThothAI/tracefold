@@ -26,7 +26,7 @@ from ..tradability import (
     TradabilityVerifier,
     tradability_candidates,
 )
-from .runtime import NewsDatabasePort
+from .runtime import NewsDatabasePort, _sleep_or_stop
 
 # The quote read gets its own short session. A price is display-only and must
 # never delay, retry, or suppress a delivery; every failure degrades to no
@@ -38,6 +38,7 @@ _DELIVERY_CANDLE_GAP_MS = 90_000
 _ONE_HOUR_MS = 3_600_000
 _DELIVERY_EDIT_TIMEOUT_SECONDS = 8.0
 _DELIVERY_EDIT_RECONCILE_SECONDS = 30.0
+_DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS = 0.25
 _PROGRESSION_LINK_SIMILARITY_MIN = 0.5
 _PROGRESSION_REVIEW_CANDIDATE_MAX = 8
 
@@ -279,14 +280,26 @@ class DelivererConsumer:
             )
         # Unlike an initial-send ambiguity, an inherited edit intent cannot be left in a pretend in-flight state:
         # this process owns no edit task yet. Refuse to consume until PostgreSQL records that truth.
-        await self.db.tx(
-            "news_delivery_edit_reconcile",
-            lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
+        startup_reconciliations = (
+            (
+                "news_delivery_edit_reconcile",
+                lambda repos: repos.news.terminalize_interrupted_delivery_edits(now_ms=now_ms()),
+            ),
+            (
+                "news_delivery_delete_reconcile",
+                lambda repos: repos.news.terminalize_interrupted_delivery_deletes(now_ms=now_ms()),
+            ),
         )
-        await self.db.tx(
-            "news_delivery_delete_reconcile",
-            lambda repos: repos.news.terminalize_interrupted_delivery_deletes(now_ms=now_ms()),
-        )
+        for name, reconcile in startup_reconciliations:
+            while not stop_event.is_set():
+                try:
+                    await self.db.tx(name, reconcile)
+                except DeferError:
+                    await _sleep_or_stop(stop_event, _DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS)
+                    continue
+                break
+            if stop_event.is_set():
+                return
         consume_task = asyncio.create_task(
             self.bus.consume(Q_DELIVER, self.handle, prefetch=1, stop_event=stop_event),
             name="news-delivery-consume",

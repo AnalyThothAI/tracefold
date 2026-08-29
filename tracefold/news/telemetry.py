@@ -19,6 +19,25 @@ NewsExternalDataSource = Literal[
 NewsExternalDataOutcome = Literal["error", "partial", "success"]
 NewsExternalDataProviderOutcome = Literal["error", "success"]
 NewsExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+NewsHandoffStage = Literal["event", "verdict"]
+NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
+NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]
+NewsRabbitConsumerFatalReason = Literal["broker", "handler", "settlement", "unknown"]
+NewsOpenNewsIncidentCause = Literal[
+    "authentication",
+    "broker_backpressure",
+    "broker_unavailable",
+    "idle_timeout",
+    "network_connect",
+    "planned_shutdown",
+    "process_outage",
+    "protocol_error",
+    "provider_close",
+    "triage_circuit_open",
+    "unknown",
+]
+NewsRecoveryOutcome = Literal["budget", "no_work", "partial", "success", "transient"]
+NewsRecoveryBudget = Literal["provider_calls", "published_messages", "wall_time"]
 
 
 class NewsExternalDataTelemetryPort(Protocol):
@@ -52,10 +71,66 @@ class NewsExternalDataTelemetryPort(Protocol):
     ) -> None: ...
 
 
+class NewsDurableEventTelemetryPort(Protocol):
+    """Low-cardinality measurements for the durable-event correctness boundaries."""
+
+    def set_news_handoff_state(
+        self,
+        stage: NewsHandoffStage,
+        *,
+        pending: int,
+        oldest_age_seconds: float,
+        expired: int,
+    ) -> None: ...
+
+    def record_news_handoff_repair(
+        self,
+        stage: NewsHandoffStage,
+        outcome: NewsHandoffRepairOutcome,
+    ) -> None: ...
+
+    def record_news_rabbitmq_consumer_fatal(
+        self,
+        queue: str,
+        reason_class: NewsRabbitConsumerFatalReason,
+    ) -> None: ...
+
+    def set_news_opennews_incident(
+        self,
+        *,
+        provider: Literal["opennews"],
+        cause: NewsOpenNewsIncidentCause,
+        count: int,
+        oldest_age_seconds: float,
+    ) -> None: ...
+
+    def record_news_opennews_recovery_turn(
+        self,
+        outcome: NewsRecoveryOutcome,
+        *,
+        provider_calls: int,
+        published_messages: int,
+        exhausted_budget: NewsRecoveryBudget | None = None,
+    ) -> None: ...
+
+
+class NewsTelemetryPort(NewsExternalDataTelemetryPort, NewsDurableEventTelemetryPort, Protocol):
+    pass
+
+
 __all__ = [
+    "NewsDurableEventTelemetryPort",
     "NewsExternalDataName",
     "NewsExternalDataOutcome",
     "NewsExternalDataSource",
     "NewsExternalDataTelemetryPort",
+    "NewsHandoffRepairOutcome",
+    "NewsHandoffStage",
+    "NewsOpenNewsIncidentCause",
+    "NewsRabbitConsumerFatalReason",
+    "NewsRabbitQueue",
+    "NewsRecoveryBudget",
+    "NewsRecoveryOutcome",
+    "NewsTelemetryPort",
     "NewsWorkSemantics",
 ]

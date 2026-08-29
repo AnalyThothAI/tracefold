@@ -18,6 +18,49 @@ from ..reader_history import (
 from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
+_HANDOFF_STATE_LIMIT = 1_000
+_VERDICT_HANDOFF_STATE_SQL = """
+    WITH pending AS MATERIALIZED (
+      SELECT v.created_at_ms
+        FROM news_verdicts v
+        JOIN news_current_events_v1 e ON e.event_id = v.event_id
+        JOIN news_event_evidence_snapshots evidence
+          ON evidence.event_id = v.event_id
+         AND evidence.evidence_version = v.evidence_version
+         AND evidence.evidence_sha256 = v.evidence_sha256
+         AND evidence.provenance = 'observed'
+         AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+       WHERE v.stage = 'triage'
+         AND v.judgment_contract_version = 'news_judgment_v2'
+         AND v.final_decision IN ('push', 'escalate')
+         AND v.published_at_ms IS NULL
+         AND e.event_kind <> 'unsupported_market'
+         AND v.created_at_ms >= %s
+       ORDER BY v.created_at_ms, v.event_id, v.policy_version
+       LIMIT %s
+    ), expired AS MATERIALIZED (
+      SELECT v.created_at_ms
+        FROM news_verdicts v
+        JOIN news_current_events_v1 e ON e.event_id = v.event_id
+        JOIN news_event_evidence_snapshots evidence
+          ON evidence.event_id = v.event_id
+         AND evidence.evidence_version = v.evidence_version
+         AND evidence.evidence_sha256 = v.evidence_sha256
+         AND evidence.provenance = 'observed'
+         AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+       WHERE v.stage = 'triage'
+         AND v.judgment_contract_version = 'news_judgment_v2'
+         AND v.final_decision IN ('push', 'escalate')
+         AND v.published_at_ms IS NULL
+         AND e.event_kind <> 'unsupported_market'
+         AND v.created_at_ms < %s
+       ORDER BY v.created_at_ms DESC, v.event_id DESC, v.policy_version DESC
+       LIMIT %s
+    )
+    SELECT (SELECT count(*) FROM pending) AS pending,
+           (SELECT min(created_at_ms) FROM pending) AS oldest_pending_at_ms,
+           (SELECT count(*) FROM expired) AS expired
+"""
 _READER_HISTORY_PROJECTION = """
     SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
            e.comparison_fingerprint, e.dedupe_family,
@@ -446,15 +489,69 @@ class DecisionStorage:
         ).fetchone()
         return dict(row) if row else None
 
-    def mark_verdict_published(self, *, event_id: str, stage: str, policy_version: str, now_ms: int) -> None:
-        self.conn.execute(
+    def mark_verdict_published(self, *, event_id: str, stage: str, policy_version: str, now_ms: int) -> bool:
+        cursor = self.conn.execute(
             """
-            UPDATE news_verdicts SET published_at_ms = COALESCE(published_at_ms, %s)
+            UPDATE news_verdicts SET published_at_ms = %s
              WHERE event_id = %s AND stage = %s AND policy_version = %s
-               AND judgment_contract_version = 'news_judgment_v2'
+               AND judgment_contract_version = 'news_judgment_v2' AND published_at_ms IS NULL
             """,
             (int(now_ms), event_id, stage, policy_version),
         )
+        return bool(cursor.rowcount)
+
+    def unpublished_verdict_candidates(
+        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Push Verdicts whose confirmed Delivery handoff marker is still absent."""
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
+              FROM news_verdicts v
+              JOIN news_current_events_v1 e ON e.event_id = v.event_id
+              JOIN news_event_evidence_snapshots evidence
+                ON evidence.event_id = v.event_id
+               AND evidence.evidence_version = v.evidence_version
+               AND evidence.evidence_sha256 = v.evidence_sha256
+               AND evidence.provenance = 'observed'
+               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+             WHERE v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.final_decision IN ('push', 'escalate')
+               AND v.published_at_ms IS NULL
+               AND e.event_kind <> 'unsupported_market'
+               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
+             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
+            """,
+            (int(older_than_ms), int(newer_than_ms), int(limit)),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def verdict_handoff_scan(
+        self, *, older_than_ms: int, newer_than_ms: int, limit: int = 50
+    ) -> tuple[list[dict[str, Any]], dict[str, int | None]]:
+        return (
+            self.unpublished_verdict_candidates(
+                older_than_ms=older_than_ms,
+                newer_than_ms=newer_than_ms,
+                limit=limit,
+            ),
+            self._verdict_handoff_state(deadline_ms=newer_than_ms),
+        )
+
+    def _verdict_handoff_state(self, *, deadline_ms: int) -> dict[str, int | None]:
+        row = self.conn.execute(
+            _VERDICT_HANDOFF_STATE_SQL,
+            (int(deadline_ms), _HANDOFF_STATE_LIMIT, int(deadline_ms), _HANDOFF_STATE_LIMIT),
+        ).fetchone()
+        return {
+            "pending": int(row["pending"] or 0) if row else 0,
+            "oldest_pending_at_ms": int(row["oldest_pending_at_ms"])
+            if row and row["oldest_pending_at_ms"] is not None
+            else None,
+            "expired": int(row["expired"] or 0) if row else 0,
+        }
 
     def begin_delivery(self, *, event_id: str, kind: str, card: Mapping[str, Any], now_ms: int) -> str:
         """Returns 'new' when this process owns the send, otherwise the existing state."""

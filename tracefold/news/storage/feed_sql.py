@@ -4,16 +4,26 @@ from __future__ import annotations
 
 from typing import Final
 
-from ..models import ADMITTED_ADMISSIONS
+from ..models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 
 ADMITTED_SQL: Final = ", ".join(f"'{value}'" for value in sorted(ADMITTED_ADMISSIONS))
 # Feed task tabs mirror OUTCOME_GROUP in outcome.py over the feed's joined rows. Keeping these predicates
 # beside both statement builders makes the page and count query share one definition.
+_EVENT_HANDOFF_LIVE_SQL: Final = (
+    f"e.published_at_ms IS NOT NULL OR e.opened_at_ms >= clock.handoff_now_ms - {OUTBOX_MAX_AGE_MS}"
+)
+_VERDICT_HANDOFF_LIVE_SQL: Final = (
+    f"t.published_at_ms IS NOT NULL OR t.created_at_ms >= clock.handoff_now_ms - {OUTBOX_MAX_AGE_MS}"
+)
 _PENDING_CORE_SQL: Final = (
     "COALESCE(d.state = 'sending', false) OR ("
     "d.state IS NULL"
     f" AND e.admission IN ({ADMITTED_SQL})"
-    " AND (t.final_decision IS NULL OR t.final_decision IN ('push', 'escalate')))"
+    " AND ((t.final_decision IS NULL AND ("
+    f"{_EVENT_HANDOFF_LIVE_SQL}"
+    ")) OR (COALESCE(t.final_decision IN ('push', 'escalate'), false) AND ("
+    f"{_VERDICT_HANDOFF_LIVE_SQL}"
+    "))))"
 )
 OUTCOME_GROUP_SQL: Final = {
     "pushed": "d.state = 'sent'",
@@ -37,20 +47,22 @@ def feed_page_sql(where_sql: str) -> str:
     """
 
     return f"""
+        WITH clock AS (SELECT %s::bigint AS handoff_now_ms)
         SELECT e.event_id, e.event_kind, e.source_contract_reason, e.leader_title,
                e.opened_at_ms, e.last_member_at_ms, e.member_count,
                e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
                i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
                t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
-               t.error_code AS triage_error_code,
+               t.error_code AS triage_error_code, t.created_at_ms AS verdict_created_at_ms,
+               t.published_at_ms AS verdict_published_at_ms,
                t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
                t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
                t.verdict AS triage_verdict, t.editorial AS model_editorial,
                t.trace -> 'judgment' AS oi_judgment,
                t.trace -> 'oi_signal' AS oi_metadata,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
-          FROM news_current_events_v1 e
+          FROM clock CROSS JOIN news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot
@@ -78,11 +90,12 @@ def feed_counts_sql(where_sql: str) -> str:
     """Build the production first-page count statement for the same predicate list as the page."""
 
     return f"""
+        WITH clock AS (SELECT %s::bigint AS handoff_now_ms)
         SELECT count(*) AS total,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
-          FROM news_current_events_v1 e
+          FROM clock CROSS JOIN news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot
@@ -93,7 +106,8 @@ def feed_counts_sql(where_sql: str) -> str:
             ON current_evidence.provenance = 'observed'
            AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
           LEFT JOIN LATERAL (
-            SELECT v.final_decision, v.editorial, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
+            SELECT v.final_decision, v.editorial, v.created_at_ms, v.published_at_ms,
+                   v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'

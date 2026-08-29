@@ -68,6 +68,14 @@ class BusDecodeError(ValueError):
     pass
 
 
+class BrokerBackpressure(RuntimeError):
+    """The broker rejected a confirmed publish."""
+
+
+class BrokerUnavailable(RuntimeError):
+    """The broker could not complete a confirmed publish."""
+
+
 def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mapping[str, Any] | None) -> BusMessage:
     try:
         raw = json.loads(body.decode("utf-8"))
@@ -167,6 +175,8 @@ __all__ = [
     "RK_RAW_LIVE",
     "RK_RAW_RECOVERY",
     "RK_VERDICT_PUSH",
+    "BrokerBackpressure",
+    "BrokerUnavailable",
     "BusDecodeError",
     "BusMessage",
     "Consumer",

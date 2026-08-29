@@ -7,13 +7,22 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Sequence
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
-from ..bus import DeferError, TransientError, new_trace_id, now_ms
+from ..bus import BrokerBackpressure, BrokerUnavailable, DeferError, TransientError, new_trace_id, now_ms
 from ..models import OUTBOX_MAX_AGE_MS
-from ..telemetry import NewsExternalDataSource, NewsExternalDataTelemetryPort, NewsWorkSemantics
+from ..telemetry import (
+    NewsDurableEventTelemetryPort,
+    NewsExternalDataSource,
+    NewsExternalDataTelemetryPort,
+    NewsHandoffRepairOutcome,
+    NewsHandoffStage,
+    NewsOpenNewsIncidentCause,
+    NewsWorkSemantics,
+)
 from .admission import publish_event
 from .runtime import NewsDatabasePort, _sleep_or_stop
+from .triage import publish_verdict
 
 log = logging.getLogger("tracefold.news")
 
@@ -22,6 +31,19 @@ _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
 _INSTRUMENT_RETRY_SECONDS = 15 * 60.0
+_OPENNEWS_INCIDENT_CAUSES: tuple[NewsOpenNewsIncidentCause, ...] = (
+    "authentication",
+    "broker_backpressure",
+    "broker_unavailable",
+    "idle_timeout",
+    "network_connect",
+    "planned_shutdown",
+    "process_outage",
+    "protocol_error",
+    "provider_close",
+    "triage_circuit_open",
+    "unknown",
+)
 
 
 class InstrumentSnapshotLoop:
@@ -170,12 +192,14 @@ class JanitorLoop:
         period_seconds: float = _JANITOR_PERIOD_SECONDS,
         retention_raw_days: int = 30,
         retention_judged_days: int = 365,
+        telemetry: NewsDurableEventTelemetryPort | None = None,
     ) -> None:
         # Two ports, because the retention sweep is a measured heavy transaction and the outbox catch-up is
         # not. Which physical lane each one lands on is the composition root's answer, never the Janitor's.
         self.db = db
         self.cold_db = cold_db
         self.bus = bus
+        self.telemetry = telemetry
         self.period = float(period_seconds)
         # Two tiers (#81): a raw Item nobody judged is storage, an Item behind a judged or labelled Event is the
         # corpus every later comparison replays against.
@@ -190,8 +214,21 @@ class JanitorLoop:
     async def turn(self) -> None:
         stamp = now_ms()
         if self.bus is not None:
-            with contextlib.suppress(TransientError, DeferError, Exception):
-                await self.republish_unpublished()
+            try:
+                await self.repair_event_handoffs()
+            except (BrokerBackpressure, BrokerUnavailable, TransientError, DeferError) as exc:
+                self._record_handoff_repair("event", "transient")
+                log.warning("news Event handoff repair deferred error=%s", type(exc).__name__)
+            try:
+                await self.repair_verdict_handoffs()
+            except (BrokerBackpressure, BrokerUnavailable, TransientError, DeferError) as exc:
+                self._record_handoff_repair("verdict", "transient")
+                log.warning("news Verdict handoff repair deferred error=%s", type(exc).__name__)
+        if self.telemetry is not None:
+            try:
+                await self._refresh_incident_telemetry(stamp)
+            except (TransientError, DeferError) as exc:
+                log.warning("news OpenNews incident telemetry deferred error=%s", type(exc).__name__)
         try:
 
             def _janitor(repos: Any, s: int = stamp) -> dict[str, Any]:
@@ -234,40 +271,125 @@ class JanitorLoop:
 
                 await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)
 
-    async def republish_unpublished(self) -> int:
-        """Commit-then-crash (or publish failure) before publish: re-publish candidate Events that never left."""
+    def _record_handoff_state(self, stage: NewsHandoffStage, state: dict[str, int | None], stamp: int) -> None:
+        if self.telemetry is None:
+            return
+        oldest_at = state.get("oldest_pending_at_ms")
+        self.telemetry.set_news_handoff_state(
+            stage,
+            pending=int(state.get("pending") or 0),
+            oldest_age_seconds=max(0.0, (stamp - int(oldest_at)) / 1000.0) if oldest_at is not None else 0.0,
+            expired=int(state.get("expired") or 0),
+        )
+
+    def _record_handoff_repair(self, stage: NewsHandoffStage, outcome: NewsHandoffRepairOutcome) -> None:
+        if self.telemetry is not None:
+            self.telemetry.record_news_handoff_repair(stage, outcome)
+
+    async def _refresh_incident_telemetry(self, stamp: int) -> None:
+        telemetry = self.telemetry
+        if telemetry is None:
+            return
+        rows = await self.db.read(
+            "news_opennews_incident_summary",
+            lambda repos: repos.news.open_incident_summary(),
+        )
+        for cause in _OPENNEWS_INCIDENT_CAUSES:
+            telemetry.set_news_opennews_incident(
+                provider="opennews",
+                cause=cause,
+                count=0,
+                oldest_age_seconds=0.0,
+            )
+        summaries: dict[NewsOpenNewsIncidentCause, tuple[int, int | None]] = {
+            cause: (0, None) for cause in _OPENNEWS_INCIDENT_CAUSES
+        }
+        for row in rows or []:
+            raw_cause = str(row.get("cause_class") or "unknown")
+            cause = cast(
+                NewsOpenNewsIncidentCause,
+                raw_cause if raw_cause in _OPENNEWS_INCIDENT_CAUSES else "unknown",
+            )
+            count, oldest = summaries[cause]
+            opened_at = row.get("oldest_opened_at_ms")
+            opened = int(opened_at) if opened_at is not None else None
+            summaries[cause] = (
+                count + int(row.get("count") or 0),
+                opened if oldest is None else (oldest if opened is None else min(oldest, opened)),
+            )
+        for cause in _OPENNEWS_INCIDENT_CAUSES:
+            count, oldest = summaries[cause]
+            if count <= 0:
+                continue
+            telemetry.set_news_opennews_incident(
+                provider="opennews",
+                cause=cause,
+                count=count,
+                oldest_age_seconds=max(0.0, (stamp - oldest) / 1000.0) if oldest is not None else 0.0,
+            )
+
+    async def repair_event_handoffs(self) -> int:
+        """Repair confirmed Event-to-Triage handoffs inside the relevance window."""
 
         stamp = now_ms()
         floor_ms, ceiling_ms = stamp - _OUTBOX_MIN_AGE_MS, stamp - OUTBOX_MAX_AGE_MS
 
         def _scan(repos: Any) -> Any:
-            return repos.news.outbox_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
+            return repos.news.event_handoff_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
 
-        rows, expired = await self.db.read("news_outbox_unpublished", _scan)
+        rows, state = await self.db.read("news_event_handoff_scan", _scan)
+        self._record_handoff_state("event", state, stamp)
+        expired = int(state.get("expired") or 0)
         if expired:
-            # Never silent: the ceiling gave up on these, and that is a fact an operator should see.
             log.warning(
-                "news outbox gave up on %d stranded event(s) older than %d min (#76)",
+                "news Event handoff expired for %d row(s) older than %d min",
                 expired,
                 OUTBOX_MAX_AGE_MS // 60_000,
             )
         republished = 0
         for row in rows:
-            event_id = str(row["event_id"])
-
-            def _card(repos: Any, e: str = event_id) -> Any:
-                return repos.news.event_card(e)
-
-            card = await self.db.read("news_outbox_card", _card)
-            if card is None:
-                continue
-            await publish_event(
+            outcome = await publish_event(
                 self.bus,
                 self.db,
-                event_id=str(card["event_id"]),
-                dedupe_family=str(card["dedupe_family"]),
-                queue_priority=str(card["queue_priority"]),
-                trace_id=str(card.get("trace_id") or new_trace_id()),
+                event_id=str(row["event_id"]),
+                dedupe_family=str(row["dedupe_family"]),
+                queue_priority=str(row["queue_priority"]),
+                trace_id=str(row.get("trace_id") or new_trace_id()),
+                occurred_at_ms=int(row["opened_at_ms"]),
             )
+            self._record_handoff_repair("event", outcome)
+            republished += 1
+        return republished
+
+    async def repair_verdict_handoffs(self) -> int:
+        """Repair confirmed push-Verdict-to-Delivery handoffs inside the relevance window."""
+
+        stamp = now_ms()
+        floor_ms, ceiling_ms = stamp - _OUTBOX_MIN_AGE_MS, stamp - OUTBOX_MAX_AGE_MS
+
+        def _scan(repos: Any) -> Any:
+            return repos.news.verdict_handoff_scan(older_than_ms=floor_ms, newer_than_ms=ceiling_ms)
+
+        rows, state = await self.db.read("news_verdict_handoff_scan", _scan)
+        self._record_handoff_state("verdict", state, stamp)
+        expired = int(state.get("expired") or 0)
+        if expired:
+            log.warning(
+                "news Verdict handoff expired for %d row(s) older than %d min",
+                expired,
+                OUTBOX_MAX_AGE_MS // 60_000,
+            )
+        republished = 0
+        for row in rows:
+            outcome = await publish_verdict(
+                self.bus,
+                self.db,
+                event_id=str(row["event_id"]),
+                trace_id=str(row.get("trace_id") or new_trace_id()),
+                amqp_priority=5 if str(row["queue_priority"]) == "high" else 0,
+                policy_version=str(row["policy_version"]),
+                occurred_at_ms=int(row["created_at_ms"]),
+            )
+            self._record_handoff_repair("verdict", outcome)
             republished += 1
         return republished

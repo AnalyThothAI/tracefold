@@ -798,8 +798,15 @@ class _StartupDatabase:
 
 
 class _StartupBus:
-    def __init__(self, *, url: str, name_prefix: str, connect_timeout_seconds: float) -> None:
-        del url, connect_timeout_seconds
+    def __init__(
+        self,
+        *,
+        url: str,
+        name_prefix: str,
+        connect_timeout_seconds: float,
+        telemetry: Any | None = None,
+    ) -> None:
+        del url, connect_timeout_seconds, telemetry
         self.prefix = name_prefix
         self.connected = False
 

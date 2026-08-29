@@ -81,6 +81,7 @@ WRITE_REPOSITORY_METHODS = (
     "open_incident",
     "close_open_incidents",
     "complete_recovery",
+    "record_recovery_error",
     "update_ingest_state",
     "mark_event_published",
     "mark_verdict_published",

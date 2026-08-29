@@ -20,7 +20,10 @@ from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, Worker
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.bus import (
     RK_RAW_LIVE,
+    RK_RAW_RECOVERY,
     RK_VERDICT_PUSH,
+    BrokerBackpressure,
+    BrokerUnavailable,
     BusMessage,
     DeferError,
     PermanentError,
@@ -35,11 +38,15 @@ from tracefold.news.models import (
     ReaderTradeTarget,
 )
 from tracefold.news.oi_signals import DEFAULT_OI_POLICY, program_sha256
+from tracefold.news.opennews import OpenNewsHistoryError
 from tracefold.news.pipeline import admission as admission_module
+from tracefold.news.pipeline import delivery as delivery_module
+from tracefold.news.pipeline import recovery as recovery_module
 from tracefold.news.pipeline import triage_audit as triage_audit_module
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
+from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.program.contracts import (
@@ -75,6 +82,22 @@ class FakeBus:
 
     def routing_keys(self) -> list[str]:
         return [message.routing_key for message in self.published]
+
+
+class RecordingHandoffTelemetry:
+    def __init__(self) -> None:
+        self.states: list[tuple[str, int, float, int]] = []
+        self.repairs: list[tuple[str, str]] = []
+        self.incidents: list[tuple[str, str, int, float]] = []
+
+    def set_news_handoff_state(self, stage: str, *, pending: int, oldest_age_seconds: float, expired: int) -> None:
+        self.states.append((stage, pending, oldest_age_seconds, expired))
+
+    def record_news_handoff_repair(self, stage: str, outcome: str) -> None:
+        self.repairs.append((stage, outcome))
+
+    def set_news_opennews_incident(self, *, provider: str, cause: str, count: int, oldest_age_seconds: float) -> None:
+        self.incidents.append((provider, cause, count, oldest_age_seconds))
 
 
 class WaitingBus(FakeBus):
@@ -122,9 +145,18 @@ class RecordingNews:
                     "event_kind": str(card.get("event_kind") or "news"),
                     "storyline_key": str(card.get("storyline_key") or ""),
                 }
-            if name == "outbox_scan" and name not in self.responses:
-                # #76: the Janitor turn is one read — rows to rescue plus how many the ceiling gave up on.
-                return (self.responses.get("unpublished_candidates") or [], self.responses.get("expired_count", 0))
+            if name == "event_handoff_scan" and name not in self.responses:
+                return (
+                    self.responses.get("unpublished_candidates") or [],
+                    self.responses.get("event_handoff_state")
+                    or {"pending": 0, "oldest_pending_at_ms": None, "expired": self.responses.get("expired_count", 0)},
+                )
+            if name == "verdict_handoff_scan" and name not in self.responses:
+                return (
+                    self.responses.get("unpublished_verdict_candidates") or [],
+                    self.responses.get("verdict_handoff_state")
+                    or {"pending": 0, "oldest_pending_at_ms": None, "expired": 0},
+                )
             value = self.responses.get(name)
             return value(*args, **kwargs) if callable(value) else value
 
@@ -919,6 +951,20 @@ def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process(
 
     assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
     assert bus.consumed == ["news.triage"]
+
+
+def test_triage_hard_stops_a_recovery_event_even_if_a_message_exists() -> None:
+    news = RecordingNews(
+        event_card=_card(admission="recovery"),
+        event_admission={"admission": "recovery", "event_kind": "news"},
+    )
+    bus = FakeBus()
+
+    asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "recovered-event"})))
+
+    assert "get_verdict" not in news.names()
+    assert "insert_verdict" not in news.names()
+    assert bus.published == []
 
 
 def test_triage_runtime_manifest_registration_is_a_required_startup_operation() -> None:
@@ -2403,6 +2449,43 @@ def test_delivery_refuses_to_consume_when_startup_edit_reconciliation_is_unavail
     assert bus.consumed == []
 
 
+def test_delivery_waits_out_startup_news_lane_contention_before_consuming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(delivery_module, "_DELIVERY_STARTUP_RECONCILE_RETRY_SECONDS", 0.001)
+    attempts = 0
+
+    def reconcile_after_contention(**_kwargs: Any) -> int:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise DeferError("db_admission_timeout:news_delivery_edit_reconcile")
+        return 1
+
+    news = _delivery_news(terminalize_interrupted_delivery_edits=reconcile_after_contention)
+    bus = WaitingBus()
+    consumer = _deliverer(news, bus, sender=RecordingSender())
+    stop_event = asyncio.Event()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(consumer.run(stop_event=stop_event))
+        for _ in range(100):
+            if bus.consumed:
+                break
+            if task.done():
+                await task
+            await asyncio.sleep(0.001)
+        else:
+            raise AssertionError("delivery did not consume after startup contention cleared")
+        stop_event.set()
+        await task
+
+    asyncio.run(scenario())
+
+    assert attempts == 2
+    assert bus.consumed == ["news.deliver"]
+
+
 def test_delivery_periodically_retries_stale_edit_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracefold.news.pipeline.delivery._DELIVERY_EDIT_RECONCILE_SECONDS", 0.01)
     stop_event = asyncio.Event()
@@ -2906,46 +2989,181 @@ def test_deliverer_does_not_read_quotes_for_a_card_it_will_not_send() -> None:
 # ---------------------------------------------------------------- Janitor
 def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     news = RecordingNews(
-        unpublished_candidates=[{"event_id": "ev-lost"}, {"event_id": "ev-gone"}],
-        event_card=lambda event_id: (
-            _card(event_id="ev-lost", dedupe_family="general", queue_priority="normal")
-            if event_id == "ev-lost"
-            else None
-        ),
+        unpublished_candidates=[
+            {
+                "event_id": "ev-lost",
+                "dedupe_family": "general",
+                "queue_priority": "normal",
+                "trace_id": "trace-1",
+                "opened_at_ms": NOW_MS - 60_000,
+            }
+        ],
     )
     bus = FakeBus()
 
     db = FakeWorkerDatabase(news)
-    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).republish_unpublished())
+    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).repair_event_handoffs())
 
     assert republished == 1
     assert bus.routing_keys() == ["event.general.normal"]
     assert bus.published[0].payload == {"event_id": "ev-lost"} and bus.published[0].trace_id == "trace-1"
+    assert bus.published[0].occurred_at_ms == NOW_MS - 60_000
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-lost"
+    assert "event_card" not in news.names()
     # #76: the catch-up scan is bounded on both sides — a floor so it skips Events still mid-publish, and a
     # ceiling so it never delivers something the reader can no longer use.
-    scan = news.kwargs_of("outbox_scan")
+    scan = news.kwargs_of("event_handoff_scan")
     assert scan["older_than_ms"] > scan["newer_than_ms"]
     assert scan["older_than_ms"] - scan["newer_than_ms"] == OUTBOX_MAX_AGE_MS - 15_000
 
 
 def test_janitor_never_gives_up_on_a_stranded_event_silently(caplog, monkeypatch) -> None:
-    """The ceiling drops work on the floor; that has to be visible or it is just a quieter version of #72."""
+    """Rows past the relevance ceiling are explicit terminal projections, never silent pending work."""
 
     news = RecordingNews(unpublished_candidates=[], expired_count=3)
     # Some earlier real-runtime tests reconfigure logging. This unit owns its logger state and restores it.
     monkeypatch.setattr(logging.getLogger("tracefold.news"), "disabled", False)
     with caplog.at_level("WARNING", logger="tracefold.news"):
         stranded = FakeWorkerDatabase(news)
-        asyncio.run(JanitorLoop(db=stranded, cold_db=stranded.cold_port, bus=FakeBus()).republish_unpublished())
-    assert any("gave up on 3 stranded event" in r.getMessage() for r in caplog.records)
+        asyncio.run(JanitorLoop(db=stranded, cold_db=stranded.cold_port, bus=FakeBus()).repair_event_handoffs())
+    assert any("Event handoff expired for 3 row" in r.getMessage() for r in caplog.records)
 
     quiet = RecordingNews(unpublished_candidates=[])
     with caplog.at_level("WARNING", logger="tracefold.news"):
         caplog.clear()
         quiet_db = FakeWorkerDatabase(quiet)
-        asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).republish_unpublished())
-    assert not [r for r in caplog.records if "gave up" in r.getMessage()]
+        asyncio.run(JanitorLoop(db=quiet_db, cold_db=quiet_db.cold_port, bus=FakeBus()).repair_event_handoffs())
+    assert not [r for r in caplog.records if "handoff expired" in r.getMessage()]
+
+
+def test_janitor_repairs_verdict_handoff_with_the_triage_message_contract() -> None:
+    news = RecordingNews(
+        unpublished_verdict_candidates=[
+            {
+                "event_id": "ev-push",
+                "policy_version": "policy-v1",
+                "created_at_ms": NOW_MS - 60_000,
+                "queue_priority": "high",
+                "trace_id": "trace-push",
+            }
+        ]
+    )
+    bus = FakeBus()
+    db = FakeWorkerDatabase(news)
+
+    republished = asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=bus).repair_verdict_handoffs())
+
+    assert republished == 1
+    assert bus.routing_keys() == [RK_VERDICT_PUSH]
+    assert bus.published[0].message_id == "push:ev-push"
+    assert bus.published[0].payload == {"event_id": "ev-push", "kind": "first"}
+    assert bus.published[0].trace_id == "trace-push" and bus.published[0].priority == 5
+    assert bus.published[0].occurred_at_ms == NOW_MS - 60_000
+    assert news.kwargs_of("mark_verdict_published") == {
+        "event_id": "ev-push",
+        "stage": "triage",
+        "policy_version": "policy-v1",
+        "now_ms": news.kwargs_of("mark_verdict_published")["now_ms"],
+    }
+
+
+def test_janitor_records_handoff_state_and_marker_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", lambda: NOW_MS)
+    news = RecordingNews(
+        unpublished_candidates=[
+            {
+                "event_id": "ev-marker-pending",
+                "dedupe_family": "general",
+                "queue_priority": "normal",
+                "trace_id": "trace-1",
+                "opened_at_ms": NOW_MS - 60_000,
+            }
+        ],
+        event_handoff_state={"pending": 2, "oldest_pending_at_ms": NOW_MS - 120_000, "expired": 3},
+    )
+    telemetry = RecordingHandoffTelemetry()
+    db = FakeWorkerDatabase(news, admission_timeout_for={"news_event_mark_published"})
+
+    repaired = asyncio.run(
+        JanitorLoop(db=db, cold_db=db.cold_port, bus=FakeBus(), telemetry=telemetry).repair_event_handoffs()
+    )
+
+    assert repaired == 1
+    assert telemetry.states == [("event", 2, 120.0, 3)]
+    assert telemetry.repairs == [("event", "marker_pending")]
+
+
+def test_janitor_contains_typed_handoff_transients_but_unknown_failures_escape() -> None:
+    class UnavailableBus(FakeBus):
+        async def publish(self, message: BusMessage) -> None:
+            del message
+            raise BrokerUnavailable("offline")
+
+        async def queue_depths(self) -> dict[str, Any]:
+            return {}
+
+        prefix = ""
+
+    row = {
+        "event_id": "ev-transient",
+        "dedupe_family": "general",
+        "queue_priority": "normal",
+        "trace_id": "trace-1",
+        "opened_at_ms": NOW_MS - 60_000,
+    }
+    news = RecordingNews(unpublished_candidates=[row], purge_learning_retention={})
+    telemetry = RecordingHandoffTelemetry()
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=UnavailableBus(), telemetry=telemetry).turn())
+
+    assert telemetry.repairs == [("event", "transient")]
+    assert "mark_event_published" not in news.names()
+
+    def _explode(**_kwargs: Any) -> Any:
+        raise RuntimeError("repair bug")
+
+    broken = RecordingNews(event_handoff_scan=_explode)
+    broken_db = FakeWorkerDatabase(broken)
+    with pytest.raises(RuntimeError, match="repair bug"):
+        asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, bus=FakeBus()).turn())
+
+
+def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", lambda: NOW_MS)
+    news = RecordingNews(
+        open_incident_summary=[
+            {"cause_class": "authentication", "count": 2, "oldest_opened_at_ms": NOW_MS - 90_000},
+            {"cause_class": "future_dynamic_cause", "count": 3, "oldest_opened_at_ms": NOW_MS - 30_000},
+        ],
+        purge_learning_retention={},
+    )
+    telemetry = RecordingHandoffTelemetry()
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, telemetry=telemetry).turn())
+
+    assert len(telemetry.incidents) == 13
+    assert len({cause for _, cause, _, _ in telemetry.incidents}) == 11
+    observed = {cause: (provider, count, age) for provider, cause, count, age in telemetry.incidents}
+    assert observed["authentication"] == ("opennews", 2, 90.0)
+    assert observed["unknown"] == ("opennews", 3, 30.0)
+    assert observed["broker_unavailable"] == ("opennews", 0, 0.0)
+
+    deferred_news = RecordingNews(purge_learning_retention={})
+    deferred_db = FakeWorkerDatabase(
+        deferred_news,
+        admission_timeout_for={"news_opennews_incident_summary"},
+    )
+    asyncio.run(JanitorLoop(db=deferred_db, cold_db=deferred_db.cold_port, telemetry=telemetry).turn())
+
+    def _explode() -> Any:
+        raise RuntimeError("incident projection bug")
+
+    broken_news = RecordingNews(open_incident_summary=_explode)
+    broken_db = FakeWorkerDatabase(broken_news)
+    with pytest.raises(RuntimeError, match="incident projection bug"):
+        asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, telemetry=telemetry).turn())
 
 
 def test_janitor_runs_learning_retention_on_the_one_slot_cold_lane() -> None:
@@ -3832,71 +4050,416 @@ def test_triage_withholds_a_batch_duplicate_on_a_storyline_nobody_has_pushed_on(
     assert bus.published == []
 
 
-# ---------------------------------------------------------------- Recovery
-class _FailingStrategyList:
-    """A history client whose Strategy list is momentarily unavailable — a 429, a timeout, a bad gateway."""
-
+# ---------------------------------------------------------- Receiver / Recovery
+class _WakeRecovery:
     def __init__(self) -> None:
+        self.requests = 0
+
+    def request(self) -> None:
+        self.requests += 1
+
+
+class _DurableIncidentNews(RecordingNews):
+    def __init__(self) -> None:
+        super().__init__()
+        self.open_causes: set[str] = set()
+
+    def open_incident(self, *, cause_class: str, **kwargs: Any) -> int:
+        self.calls.append(("open_incident", {"cause_class": cause_class, **kwargs}))
+        self.open_causes.add(cause_class)
+        return 1
+
+    def close_open_incidents(self, *, cause_classes: Sequence[str] | None, **kwargs: Any) -> int:
+        self.calls.append(("close_open_incidents", {"cause_classes": cause_classes, **kwargs}))
+        selected = set(cause_classes or self.open_causes)
+        closed = len(self.open_causes & selected)
+        self.open_causes -= selected
+        return closed
+
+    def update_ingest_state(self, **kwargs: Any) -> None:
+        self.calls.append(("update_ingest_state", kwargs))
+
+
+class _FailingPublishBus(FakeBus):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+
+    async def publish(self, message: BusMessage) -> None:
+        del message
+        raise self.error
+
+
+class _FailingOnceBus(FakeBus):
+    def __init__(self, error: Exception) -> None:
+        super().__init__()
+        self.error = error
+        self.attempts = 0
+
+    async def publish(self, message: BusMessage) -> None:
+        self.attempts += 1
+        if self.attempts == 1:
+            raise self.error
+        await super().publish(message)
+
+
+class _BlockedPublishBus(FakeBus):
+    async def publish(self, message: BusMessage) -> None:
+        del message
+        await asyncio.Event().wait()
+
+
+def test_receiver_reconciles_a_broker_incident_after_process_restart() -> None:
+    news = _DurableIncidentNews()
+    wake = _WakeRecovery()
+    failed = OpenNewsReceiver(
+        bus=_FailingPublishBus(BrokerUnavailable("news_broker_not_connected")),
+        db=FakeWorkerDatabase(news),
+        ws_client=None,
+        recovery=None,
+    )
+    close_deferred = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news, admission_timeout_for={"news_ingest_frame"}),
+        ws_client=None,
+        recovery=wake,  # type: ignore[arg-type]
+    )
+    restarted = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        ws_client=None,
+        recovery=wake,  # type: ignore[arg-type]
+    )
+
+    async def scenario() -> None:
+        await failed._publish_frame({"params": {"id": 1}}, strategy_id="1018")
+        assert news.open_causes == {"broker_unavailable"}
+        with pytest.raises(DeferError, match="news_ingest_frame"):
+            await close_deferred._publish_frame({"params": {"id": 2}}, strategy_id="1018")
+        assert news.open_causes == {"broker_unavailable"} and wake.requests == 0
+        await restarted._publish_frame({"params": {"id": 3}}, strategy_id="1018")
+
+    asyncio.run(scenario())
+
+    assert not news.open_causes
+    assert wake.requests == 1
+    failed_state = next(kwargs for name, kwargs in news.calls if name == "update_ingest_state")
+    assert failed_state["last_frame_at_ms"] > 0 and failed_state["last_error_code"] == "broker_unavailable"
+
+
+def test_receiver_surfaces_database_and_unknown_publish_failures() -> None:
+    news = _DurableIncidentNews()
+    deferred = OpenNewsReceiver(
+        bus=_FailingPublishBus(BrokerUnavailable("news_broker_not_connected")),
+        db=FakeWorkerDatabase(news, admission_timeout_for={"news_ingest_backpressure"}),
+        ws_client=None,
+        recovery=None,
+    )
+    unknown = OpenNewsReceiver(
+        bus=_FailingPublishBus(RuntimeError("bug")),
+        db=FakeWorkerDatabase(news),
+        ws_client=None,
+        recovery=None,
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(DeferError, match="news_ingest_backpressure"):
+            await deferred._publish_frame({"params": {"id": 1}}, strategy_id="1018")
+        with pytest.raises(RuntimeError, match="bug"):
+            await unknown._publish_frame({"params": {"id": 2}}, strategy_id="1018")
+
+    asyncio.run(scenario())
+    assert not news.open_causes
+
+
+def _pending_incident(incident_id: int = 1) -> dict[str, Any]:
+    return {
+        "incident_id": incident_id,
+        "cause_class": "broker_unavailable",
+        "opened_at_ms": 1_000_000_000_000,
+        "closed_at_ms": 2_000_000_000_000,
+        "recovery_from_at_ms": None,
+        "recovery_to_at_ms": None,
+    }
+
+
+def _history_hit(hit_id: int, published_at_ms: int) -> dict[str, Any]:
+    return {
+        "id": hit_id,
+        "text": f"Recovery hit {hit_id}",
+        "link": f"https://example.test/{hit_id}",
+        "source": "Reuters",
+        "newsType": "news",
+        "engineType": "news",
+        "ts": published_at_ms,
+        "coins": [],
+        "strategy": {"id": 1018, "name": "News", "sourceType": "news"},
+    }
+
+
+class _HistoryClient:
+    def __init__(
+        self,
+        *,
+        hits: list[dict[str, Any]] | None = None,
+        strategy_error: Exception | None = None,
+        hits_error: Exception | None = None,
+        hits_error_page: int | None = None,
+        hits_delay: float = 0.0,
+        total: int | None = None,
+    ) -> None:
+        self.hits = hits or []
+        self.strategy_error = strategy_error
+        self.hits_error = hits_error
+        self.hits_error_page = hits_error_page
+        self.hits_delay = hits_delay
+        self.total = len(self.hits) if total is None else total
         self.hits_calls = 0
 
     async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("boom")
+        if self.strategy_error is not None:
+            raise self.strategy_error
+        return {"success": True, "data": [{"id": 1018, "name": "News", "enabled": True}]}
 
-    async def get_strategy_hits(self, **_kwargs: Any) -> dict[str, Any]:
+    async def get_strategy_hits(self, *, page: int, **_kwargs: Any) -> dict[str, Any]:
         self.hits_calls += 1
-        return {"success": True, "data": [], "page": 1, "limit": 100, "total": 0}
+        if self.hits_delay:
+            await asyncio.sleep(self.hits_delay)
+        if self.hits_error is not None and (self.hits_error_page is None or page == self.hits_error_page):
+            raise self.hits_error
+        return {
+            "success": True,
+            "data": self.hits if page == 1 else [],
+            "page": page,
+            "limit": 100,
+            "total": self.total,
+        }
 
 
-def test_recovery_leaves_incidents_pending_when_the_strategy_list_is_unavailable() -> None:
-    """#126 made recovery ask the provider which Strategies exist, which introduced a way to lose a backlog.
+def test_recovery_typed_provider_failure_stays_pending_and_unknown_surfaces() -> None:
+    incident = _pending_incident()
 
-    `complete_recovery` is terminal and `pending_recovery_incidents` only selects `pending`, so settling an
-    incident `unavailable` throws its outage window away for good. One failed Strategy-list read must not do
-    that — it has to raise and let `run()` retry.
-    """
+    for error in (OpenNewsHistoryError("opennews_history_rate_limited"), RuntimeError("bug")):
+        news = RecordingNews(pending_recovery_incidents=[incident])
+        client = _HistoryClient(strategy_error=error)
+        recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=client)
 
-    news = RecordingNews(
-        pending_recovery_incidents=[
-            {
-                "incident_id": 1,
-                "cause_class": "socket_closed",
-                "opened_at_ms": 1_000,
-                "closed_at_ms": 2_000,
-                "recovery_from_at_ms": None,
-                "recovery_to_at_ms": None,
-            }
-        ]
+        with pytest.raises(type(error), match=str(error)):
+            asyncio.run(recovery._recover_pending())
+
+        assert "complete_recovery" not in news.names()
+        if isinstance(error, OpenNewsHistoryError):
+            assert news.kwargs_of("record_recovery_error")["error_code"] == error.code
+        else:
+            assert "record_recovery_error" not in news.names()
+
+
+@pytest.mark.parametrize(
+    ("error", "error_code"),
+    [
+        (BrokerUnavailable("news_broker_not_connected"), "news_broker_unavailable"),
+        (BrokerBackpressure("news_broker_publish_rejected"), "news_broker_backpressure"),
+    ],
+)
+def test_recovery_broker_failure_stays_pending_then_resumes(error: Exception, error_code: str) -> None:
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    bus = _FailingOnceBus(error)
+    recovery = RecoveryRunner(
+        bus=bus,
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(hits=[_history_hit(1, 999_999_970_000)]),
     )
-    client = _FailingStrategyList()
-    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=client)
 
-    with pytest.raises(TransientError, match="opennews_strategy_list_unavailable"):
+    with pytest.raises(type(error), match=str(error)):
+        asyncio.run(recovery._recover_pending())
+    assert "complete_recovery" not in news.names()
+    assert news.kwargs_of("record_recovery_error")["error_code"] == error_code
+
+    assert asyncio.run(recovery._recover_pending()) == "success"
+    assert news.kwargs_of("complete_recovery")["status"] == "recovered"
+    assert [message.message_id for message in bus.published] == ["raw:1"]
+
+
+def test_recovery_explicit_no_history_after_progress_is_partial_not_unavailable() -> None:
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    recovery = RecoveryRunner(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(
+            hits=[_history_hit(1, 1_500_000_000_000)],
+            hits_error=OpenNewsHistoryError("opennews_history_unavailable"),
+            hits_error_page=2,
+            total=200,
+        ),
+    )
+
+    assert asyncio.run(recovery._recover_pending()) == "partial"
+    completed = news.kwargs_of("complete_recovery")
+    assert completed["status"] == "partial"
+    assert completed["recovered_count"] == 1
+    assert completed["error_code"] == "opennews_history_unavailable"
+
+
+def test_recovery_requires_the_production_history_client() -> None:
+    with pytest.raises(ValueError, match="opennews_history_client_required"):
+        RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(RecordingNews()), history_client=None)
+
+
+def test_recovery_message_budget_resumes_without_replaying_the_page_prefix() -> None:
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    bus = FakeBus()
+    client = _HistoryClient(hits=[_history_hit(1, 1_500_000_000_000), _history_hit(2, 999_999_970_000)])
+    recovery = RecoveryRunner(
+        bus=bus,
+        db=FakeWorkerDatabase(news),
+        history_client=client,
+        max_published_messages=1,
+    )
+
+    with pytest.raises(RuntimeError, match="opennews_recovery_published_messages_budget"):
+        asyncio.run(recovery._recover_pending())
+    assert [message.message_id for message in bus.published] == ["raw:1"]
+    assert news.kwargs_of("record_recovery_error")["error_code"] == "opennews_recovery_published_messages_budget"
+    assert "complete_recovery" not in news.names()
+
+    assert asyncio.run(recovery._recover_pending()) == "success"
+    assert [message.message_id for message in bus.published] == ["raw:1", "raw:2"]
+    completed = news.kwargs_of("complete_recovery")
+    assert completed["status"] == "recovered" and completed["recovered_count"] == 2
+    assert all(message.routing_key == RK_RAW_RECOVERY.format(strategy_id="1018") for message in bus.published)
+
+
+def test_recovery_provider_call_and_wall_budgets_leave_incident_pending() -> None:
+    cases = (
+        (_HistoryClient(total=200), {"max_provider_calls": 2}, "provider_calls"),
+        (_HistoryClient(hits_delay=0.05), {"max_wall_seconds": 0.005}, "wall_time"),
+    )
+    for client, kwargs, budget_name in cases:
+        news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+        recovery = RecoveryRunner(
+            bus=FakeBus(),
+            db=FakeWorkerDatabase(news),
+            history_client=client,
+            **kwargs,
+        )
+        with pytest.raises(RuntimeError, match=f"opennews_recovery_{budget_name}_budget"):
+            asyncio.run(recovery._recover_pending())
+        assert "complete_recovery" not in news.names()
+        if budget_name == "wall_time":
+            assert "record_recovery_error" not in news.names()
+        else:
+            assert news.kwargs_of("record_recovery_error")["error_code"] == (f"opennews_recovery_{budget_name}_budget")
+
+
+def test_recovery_empty_strategy_list_stays_pending() -> None:
+    class _NoStrategiesHistory:
+        async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+            return {"success": True, "data": []}
+
+        async def get_strategy_hits(self, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("no enabled strategy may fetch hits")
+
+        async def close(self) -> None:
+            pass
+
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    recovery = RecoveryRunner(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        history_client=_NoStrategiesHistory(),
+    )
+
+    with pytest.raises(OpenNewsHistoryError, match="opennews_history_strategy_list_empty"):
         asyncio.run(recovery._recover_pending())
 
     assert "complete_recovery" not in news.names()
-    assert client.hits_calls == 0
+    assert news.kwargs_of("record_recovery_error")["error_code"] == "opennews_history_strategy_list_empty"
 
 
-def test_recovery_without_a_history_client_still_settles_unavailable() -> None:
-    """An absent client is permanent, not transient: there is nothing to wait for."""
+def test_recovery_wall_budget_stops_no_history_terminal_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"now": 0.0}
+    monkeypatch.setattr(recovery_module, "time", SimpleNamespace(perf_counter=lambda: clock["now"]))
+
+    class _NoHistory:
+        async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+            raise OpenNewsHistoryError("opennews_history_unavailable")
+
+        async def get_strategy_hits(self, **_kwargs: Any) -> dict[str, Any]:
+            raise AssertionError("explicit list failure may not fetch hits")
+
+        async def close(self) -> None:
+            pass
+
+    def _complete(**_kwargs: Any) -> bool:
+        clock["now"] = 1.0
+        return True
 
     news = RecordingNews(
-        pending_recovery_incidents=[
-            {
-                "incident_id": 7,
-                "cause_class": "socket_closed",
-                "opened_at_ms": 1_000,
-                "closed_at_ms": 2_000,
-                "recovery_from_at_ms": None,
-                "recovery_to_at_ms": None,
-            }
-        ]
+        pending_recovery_incidents=[_pending_incident(1), _pending_incident(2)],
+        complete_recovery=_complete,
     )
-    recovery = RecoveryRunner(bus=FakeBus(), db=FakeWorkerDatabase(news), history_client=None)
+    bus = FakeBus()
+    recovery = RecoveryRunner(
+        bus=bus,
+        db=FakeWorkerDatabase(news),
+        history_client=_NoHistory(),
+        max_wall_seconds=0.5,
+    )
 
-    asyncio.run(recovery._recover_pending())
+    with pytest.raises(RuntimeError, match="opennews_recovery_wall_time_budget"):
+        asyncio.run(recovery._recover_pending())
 
-    assert news.kwargs_of("complete_recovery")["status"] == "unavailable"
+    completed = [kwargs for name, kwargs in news.calls if name == "complete_recovery"]
+    assert len(completed) == 1 and completed[0]["status"] == "unavailable"
+    assert bus.published == []
+
+
+def test_recovery_wall_budget_cancels_a_stalled_broker_publish() -> None:
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    recovery = RecoveryRunner(
+        bus=_BlockedPublishBus(),
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(hits=[_history_hit(1, 1_500_000_000_000)]),
+        max_wall_seconds=0.01,
+    )
+
+    with pytest.raises(RuntimeError, match="opennews_recovery_wall_time_budget"):
+        asyncio.run(asyncio.wait_for(recovery._recover_pending(), timeout=0.2))
+
+    assert "complete_recovery" not in news.names()
+
+
+def test_recovery_periodically_finds_pending_work_without_a_request() -> None:
+    pending: list[dict[str, Any]] = []
+    news = RecordingNews(pending_recovery_incidents=lambda: list(pending))
+    recovery = RecoveryRunner(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(),
+        scan_interval_seconds=0.005,
+    )
+    stop = asyncio.Event()
+
+    async def scenario() -> None:
+        task = asyncio.create_task(recovery.run(stop_event=stop))
+        for _ in range(100):
+            if news.names().count("pending_recovery_incidents") >= 1:
+                break
+            await asyncio.sleep(0.001)
+        else:
+            raise AssertionError("startup recovery scan did not run")
+        pending.append(_pending_incident())
+        for _ in range(100):
+            if "complete_recovery" in news.names():
+                break
+            await asyncio.sleep(0.001)
+        else:
+            raise AssertionError("periodic recovery scan did not run")
+        stop.set()
+        await task
+
+    asyncio.run(scenario())
+    assert news.kwargs_of("complete_recovery")["status"] == "recovered"
 
 
 # ---------------------------------------------------------------------------- OI telemetry lane (#137)

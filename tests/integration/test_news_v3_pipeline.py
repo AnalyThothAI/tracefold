@@ -21,6 +21,7 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.search import compile_news_search
+from tracefold.news.storage.operations import RECOVERY_BACKLOG_LIMIT
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status
 
 pytestmark = pytest.mark.integration
@@ -709,18 +710,82 @@ def test_incidents_and_broker_snapshot(conn) -> None:
     with repos.transaction():
         planned = repos.news.open_incident(cause_class="planned_shutdown", now_ms=50, planned=True)
         incident = repos.news.open_incident(cause_class="network_connect", now_ms=100)
+        backpressure = repos.news.open_incident(cause_class="broker_backpressure", now_ms=110)
         assert repos.news.open_incident(cause_class="network_connect", now_ms=200) == incident
-        assert repos.news.close_open_incidents(cause_classes=["network_connect", "planned_shutdown"], now_ms=300) == 2
-        assert planned != incident
+        summary = {row["cause_class"]: row for row in repos.news.open_incident_summary()}
+        assert summary["network_connect"]["count"] == 1
+        assert summary["network_connect"]["oldest_opened_at_ms"] == 100
+        assert (
+            repos.news.close_open_incidents(
+                cause_classes=["network_connect", "planned_shutdown", "broker_backpressure"], now_ms=300
+            )
+            == 3
+        )
+        assert len({planned, incident, backpressure}) == 3
         pending = repos.news.pending_recovery_incidents()
         assert any(int(p["incident_id"]) == incident for p in pending)
+        assert any(int(p["incident_id"]) == backpressure for p in pending)
+        assert repos.news.record_recovery_error(
+            incident_id=backpressure, error_code="opennews_history_rate_limited", now_ms=350
+        )
+        backlog = repos.news.recovery_backlog()
+        assert backlog["pending_count"] >= 3
+        assert backlog["oldest_opened_at_ms"] == 50
+        assert backlog["last_error_code"] == "opennews_history_rate_limited"
+        assert backlog["reason"] == "recovery_transient"
+        assert repos.news.complete_recovery(
+            incident_id=backpressure,
+            status="recovered",
+            recovered_count=2,
+            error_code=None,
+            recovery_from_at_ms=80,
+            recovery_to_at_ms=300,
+            now_ms=400,
+        )
+        assert not repos.news.complete_recovery(
+            incident_id=backpressure,
+            status="recovered",
+            recovered_count=2,
+            error_code=None,
+            recovery_from_at_ms=80,
+            recovery_to_at_ms=300,
+            now_ms=500,
+        )
     with repos.transaction():
         repos.news.update_broker_snapshot(
             snapshot={"connected": True, "queues": {"news.raw": {"messages": 0, "consumers": 1}}}, now_ms=7
         )
     status = repos.news.status_snapshot(now_ms=10)
     assert status["broker"]["connected"] is True and status["broker"]["queues"]["news.raw"]["consumers"] == 1
+    assert status["ingest"]["recovery"]["pending_count"] >= 2
+    assert status["ingest"]["recovery"]["reason"] == "recovery_pending"
     conn.commit()
+
+
+def test_recovery_backlog_is_the_same_bounded_batch_recovery_will_process(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        for offset in range(RECOVERY_BACKLOG_LIMIT + 5):
+            incident_id = repos.news.open_incident(cause_class="unknown", now_ms=1_000 + offset * 2)
+            assert repos.news.close_open_incidents(cause_classes=["unknown"], now_ms=1_001 + offset * 2) == 1
+            if offset == RECOVERY_BACKLOG_LIMIT + 4:
+                assert repos.news.record_recovery_error(
+                    incident_id=incident_id,
+                    error_code="outside_next_recovery_batch",
+                    now_ms=2_000,
+                )
+
+        pending = repos.news.pending_recovery_incidents(limit=RECOVERY_BACKLOG_LIMIT)
+        backlog = repos.news.recovery_backlog()
+
+    assert len(pending) == RECOVERY_BACKLOG_LIMIT
+    assert backlog == {
+        "pending_count": len(pending),
+        "oldest_opened_at_ms": min(int(row["opened_at_ms"]) for row in pending),
+        "last_error_code": None,
+        "reason": "recovery_pending",
+    }
+    assert [row["incident_id"] for row in pending] == sorted(row["incident_id"] for row in pending)
 
 
 def _hit(
@@ -1284,12 +1349,13 @@ def test_recovery_runs_the_same_strict_market_parser_and_persists_drift_without_
         """
         SELECT
           (SELECT count(*) FROM news_verdicts WHERE event_id = %s) AS verdicts,
+          (SELECT count(*) FROM news_deliveries WHERE event_id = %s) AS deliveries,
           (SELECT count(*) FROM news_oi_signals WHERE event_id = %s) AS oi_signals,
           (SELECT count(*) FROM news_market_liquidations WHERE item_id = %s) AS liquidations
         """,
-        (result.event_id, result.event_id, result.item_id),
+        (result.event_id, result.event_id, result.event_id, result.item_id),
     ).fetchone()
-    assert downstream == {"verdicts": 0, "oi_signals": 0, "liquidations": 0}
+    assert downstream == {"verdicts": 0, "deliveries": 0, "oi_signals": 0, "liquidations": 0}
 
 
 @pytest.mark.parametrize(
@@ -2196,6 +2262,15 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             final_decision="drop",
             now_ms=1_800_000_000_000,
         )
+    as_of_ms = (
+        int(
+            conn.execute(
+                "SELECT max(opened_at_ms) AS opened_at_ms FROM news_events WHERE event_id = ANY(%s)",
+                ([tagged_new, tagged_old],),
+            ).fetchone()["opened_at_ms"]
+        )
+        + 60_000
+    )
 
     def page(
         *,
@@ -2218,6 +2293,7 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
             limit=limit,
             cursor=cursor,
             outcome=outcome,
+            now_ms=as_of_ms,
         )
 
     asset_page = page(symbol="QSEARCHBASE")

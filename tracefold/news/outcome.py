@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from .models import ADMITTED_ADMISSIONS
+from .models import ADMITTED_ADMISSIONS, OUTBOX_MAX_AGE_MS
 from .triage_rules import STALE_SOURCE_KEY
 
 OUTCOME_VERSION: Final = "news_outcome_v1"
@@ -20,6 +20,8 @@ OUTCOME_VERSION: Final = "news_outcome_v1"
 OutcomeKind = Literal[
     "held_recovery",
     "held_gate",
+    "expired_triage_handoff",
+    "expired_delivery_handoff",
     "queued_publish",
     "queued_triage",
     "dropped",
@@ -34,6 +36,8 @@ OutcomeKind = Literal[
 OUTCOME_GROUP: Final[dict[str, str]] = {
     "held_recovery": "held",
     "held_gate": "held",
+    "expired_triage_handoff": "held",
+    "expired_delivery_handoff": "held",
     "queued_publish": "pending",
     "queued_triage": "pending",
     "dropped": "held",
@@ -260,10 +264,13 @@ def event_outcome(
     published_at_ms: int | None,
     triage: Mapping[str, Any] | None,
     delivery: Mapping[str, Any] | None,
+    opened_at_ms: int | None = None,
+    now_ms: int | None = None,
 ) -> Outcome:
     """The one place that turns admission + latest triage verdict + first-card delivery into a conclusion.
 
-    ``triage`` needs ``final_decision``, ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``;
+    ``triage`` needs ``final_decision``, ``override_rule``, ``throttled_by``, ``degraded``, ``error_code``,
+    ``created_at_ms`` and ``published_at_ms``;
     ``delivery`` needs ``state`` and ``error_code``. Missing rows are ``None``.
     """
 
@@ -290,6 +297,12 @@ def event_outcome(
         return _outcome("held_gate", "未送审", admission_zh(admission_text))
     if triage is None:
         if published_at_ms is None:
+            if _handoff_expired(started_at_ms=opened_at_ms, now_ms=now_ms):
+                return _outcome(
+                    "expired_triage_handoff",
+                    "未送审（交接过期）",
+                    "入库后 30 分钟内未完成送审交接，已停止补发",
+                )
             return _outcome("queued_publish", "待处理", "已入库，等待送审")
         return _outcome("queued_triage", "审稿中", "排队等待模型判断")
 
@@ -317,7 +330,26 @@ def event_outcome(
     rule_zh = override_rule_zh(triage.get("override_rule"))
     if degraded:
         rule_zh = "模型不可用，按规则兜底推送" + (f"：{error_zh}" if error_zh else "")
+    if (
+        delivery is None
+        and triage.get("published_at_ms") is None
+        and _handoff_expired(started_at_ms=triage.get("created_at_ms"), now_ms=now_ms)
+    ):
+        return _outcome(
+            "expired_delivery_handoff",
+            "未推送（交接过期）",
+            "判定后 30 分钟内未完成投递交接，已停止补发",
+        )
     return _outcome("pending_delivery", "待推送（重点）" if important else "待推送", rule_zh)
+
+
+def _handoff_expired(*, started_at_ms: Any, now_ms: int | None) -> bool:
+    if started_at_ms is None or now_ms is None:
+        return False
+    try:
+        return int(now_ms) - int(started_at_ms) > OUTBOX_MAX_AGE_MS
+    except (TypeError, ValueError):
+        return False
 
 
 def _outcome(kind: OutcomeKind, text_zh: str, reason_zh: str) -> Outcome:
