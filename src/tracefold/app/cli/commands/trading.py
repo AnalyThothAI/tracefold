@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1
+from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
 from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
@@ -55,9 +55,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                         "control": capital.control,
                         "blacklist_revision": capital.blacklist_revision,
                     },
-                    "bindings": [
-                        binding.model_dump(mode="json") for binding in trading.binding_runtime_rows(now_ms=now)
-                    ],
+                    "bindings": [_binding_runtime(binding) for binding in trading.binding_runtime_rows(now_ms=now)],
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     # #211: where the 24 h of work actually spent its time, stage by stage. `n` per
                     # stage says how much evidence each number rests on.
@@ -140,6 +138,22 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             return 0, {"ok": True, "data": {"control": control}}
 
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
+
+
+def _binding_runtime(binding: VenueBindingRuntimeV1) -> dict[str, Any]:
+    return {
+        "binding": binding.binding,
+        "credential_state": binding.credential_state,
+        "credential_fingerprint": binding.credential_fingerprint,
+        "runtime_state": binding.runtime_state,
+        "account_state": binding.account_state,
+        "catalog_state": binding.catalog_state,
+        "catalog_snapshot_sha256": binding.catalog_snapshot_sha256,
+        "catalog_captured_at_ms": binding.catalog_captured_at_ms,
+        "heartbeat_at_ms": binding.heartbeat_at_ms,
+        "reason": binding.reason,
+        "updated_at_ms": binding.updated_at_ms,
+    }
 
 
 __all__ = ["handle_trading"]

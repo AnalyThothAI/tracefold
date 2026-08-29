@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
-from tracefold.trading.catalog import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntime
+from tracefold.trading.contracts import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
 
 TOKEN = "trading-contract-token"
 NOW = 1_790_000_000_000
@@ -146,10 +146,10 @@ class _Trading:
     def decision_runtime(self) -> DecisionRuntimeV1:
         return DecisionRuntimeV1(state="RUNNING", heartbeat_at_ms=NOW, reason=None, updated_at_ms=NOW)
 
-    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntime]:
+    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntimeV1]:
         del now_ms
         return [
-            VenueBindingRuntime(
+            VenueBindingRuntimeV1(
                 binding=binding,
                 credential_state="unconfigured",
                 credential_fingerprint=None,

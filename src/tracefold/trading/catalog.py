@@ -13,7 +13,7 @@ from typing import Any, ClassVar, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .contracts import canonical_sha256, underlying_key
+from .contracts import VenueBinding, canonical_sha256, underlying_key
 from .telemetry import (
     TradingExternalDataSource,
     TradingExternalDataTelemetryPort,
@@ -21,11 +21,6 @@ from .telemetry import (
     observe_provider_call,
 )
 
-VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
-CredentialState = Literal["configured", "invalid", "unconfigured"]
-BindingRuntimeState = Literal["faulted", "ready", "stale", "starting", "stopped"]
-BindingAccountState = Literal["exposure_present", "reconciled_flat", "unknown"]
-CatalogState = Literal["error", "missing", "ready", "stale"]
 ProductKind = Literal["linear_perpetual", "inverse_perpetual", "delivery_future", "spot", "option", "unknown"]
 
 CATALOG_SNAPSHOT_VERSION: Final[Literal["venue_instrument_catalog_snapshot_v1"]] = (
@@ -39,39 +34,6 @@ _BINDING_VENUE: Final[dict[VenueBinding, str]] = {
 
 class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-
-
-class DecisionRuntimeV1(_Frozen):
-    """The durable Decision Plane heartbeat projected across the App seam."""
-
-    state: Literal["DISABLED", "FAULTED", "RUNNING", "STARTING"]
-    heartbeat_at_ms: int | None
-    reason: str | None
-    updated_at_ms: int
-
-
-class CapitalRuntimeV1(_Frozen):
-    """The narrow durable Capital control projected across the App seam."""
-
-    control: Literal["CLOSE_ONLY", "PAUSED", "RUNNING"]
-    blacklist_revision: int = Field(ge=0)
-    updated_at_ms: int
-
-
-class VenueBindingRuntime(_Frozen):
-    """The public, secret-free runtime facts for one closed execution binding."""
-
-    binding: VenueBinding
-    credential_state: CredentialState
-    credential_fingerprint: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    runtime_state: BindingRuntimeState
-    account_state: BindingAccountState
-    catalog_state: CatalogState
-    catalog_snapshot_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    catalog_captured_at_ms: int | None
-    heartbeat_at_ms: int | None
-    reason: str | None
-    updated_at_ms: int
 
 
 class VenueInstrumentCatalogEntryV1(_Frozen):
@@ -274,12 +236,9 @@ class VenueCatalog:
 
 __all__ = [
     "CATALOG_SNAPSHOT_VERSION",
-    "CapitalRuntimeV1",
     "CatalogDatabasePort",
-    "DecisionRuntimeV1",
     "ProductKind",
     "VenueBinding",
-    "VenueBindingRuntime",
     "VenueCatalog",
     "VenueInstrumentCatalogEntryV1",
     "VenueInstrumentCatalogSnapshotV1",

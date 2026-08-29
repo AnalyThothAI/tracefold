@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -46,6 +47,45 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v8"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
+
+VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRuntimeV1:
+    """The durable Decision Plane heartbeat projected across the App seam."""
+
+    state: Literal["DISABLED", "FAULTED", "RUNNING", "STARTING"]
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class CapitalRuntimeV1:
+    """The narrow durable Capital control projected across the App seam."""
+
+    control: Literal["CLOSE_ONLY", "PAUSED", "RUNNING"]
+    blacklist_revision: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class VenueBindingRuntimeV1:
+    """The public, secret-free runtime facts for one closed execution binding."""
+
+    binding: VenueBinding
+    credential_state: Literal["configured", "invalid", "unconfigured"]
+    credential_fingerprint: str | None
+    runtime_state: Literal["faulted", "ready", "stale", "starting", "stopped"]
+    account_state: Literal["exposure_present", "reconciled_flat", "unknown"]
+    catalog_state: Literal["error", "missing", "ready", "stale"]
+    catalog_snapshot_sha256: str | None
+    catalog_captured_at_ms: int | None
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
+
 
 # No `NewsLearningEpoch` literal (#314). Trading pins the two upstream contracts it actually reasons
 # about — `program_version` and `policy_version` — and a News epoch label is neither: it names *when* a

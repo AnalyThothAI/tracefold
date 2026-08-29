@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..catalog import CapitalRuntimeV1
+from ..contracts import CapitalRuntimeV1
 
 
 class ControlStorage:
@@ -70,7 +70,7 @@ class ControlStorage:
         row = self.conn.execute(
             "SELECT control, blacklist_revision, updated_at_ms FROM trading_runtime_state WHERE id = 1"
         ).fetchone()
-        return CapitalRuntimeV1.model_validate(dict(row)) if row is not None else None
+        return CapitalRuntimeV1(**dict(row)) if row is not None else None
 
     def runtime_state(self) -> dict[str, Any] | None:
         row = self.conn.execute(

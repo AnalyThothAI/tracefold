@@ -29,7 +29,7 @@ from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntime
+from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -273,7 +273,7 @@ def get_trading_intents(
     )
 
 
-def _binding_runtime(row: VenueBindingRuntime) -> dict[str, Any]:
+def _binding_runtime(row: VenueBindingRuntimeV1) -> dict[str, Any]:
     return {
         "binding": row.binding,
         "credential_state": row.credential_state,

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..catalog import DecisionRuntimeV1, VenueBinding, VenueBindingRuntime, VenueInstrumentCatalogSnapshotV1
+from ..catalog import VenueInstrumentCatalogSnapshotV1
+from ..contracts import DecisionRuntimeV1, VenueBinding, VenueBindingRuntimeV1
 from .sql_values import _dumps
 
 
@@ -16,7 +17,7 @@ class CatalogStorage:
         row = self.conn.execute(
             "SELECT state, heartbeat_at_ms, reason, updated_at_ms FROM trading_decision_runtime WHERE id = 1"
         ).fetchone()
-        return DecisionRuntimeV1.model_validate(dict(row)) if row is not None else None
+        return DecisionRuntimeV1(**dict(row)) if row is not None else None
 
     def set_decision_runtime(
         self,
@@ -46,7 +47,7 @@ class CatalogStorage:
         return row is not None
 
     # ---------------------------------------------------------------- bindings
-    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntime]:
+    def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntimeV1]:
         rows = self.conn.execute(
             """
             SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
@@ -67,9 +68,9 @@ class CatalogStorage:
             """,
             {"now": int(now_ms)},
         ).fetchall()
-        return [VenueBindingRuntime.model_validate(dict(row)) for row in rows]
+        return [VenueBindingRuntimeV1(**dict(row)) for row in rows]
 
-    def binding_runtime(self, *, binding: VenueBinding, now_ms: int) -> VenueBindingRuntime | None:
+    def binding_runtime(self, *, binding: VenueBinding, now_ms: int) -> VenueBindingRuntimeV1 | None:
         row = self.conn.execute(
             """
             SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
@@ -90,7 +91,7 @@ class CatalogStorage:
             """,
             {"binding": binding, "now": int(now_ms)},
         ).fetchone()
-        return VenueBindingRuntime.model_validate(dict(row)) if row is not None else None
+        return VenueBindingRuntimeV1(**dict(row)) if row is not None else None
 
     def set_binding_runtime(
         self,

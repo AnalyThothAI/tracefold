@@ -23,7 +23,7 @@ from tests.postgres_test_utils import (
 )
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
-from tracefold.trading.contracts import canonical_sha256
+from tracefold.trading.contracts import DecisionRuntimeV1, canonical_sha256
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -869,12 +869,12 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
 
         decision = repos.decision_runtime()
         assert decision is not None
-        assert decision.model_dump(mode="json") == {
-            "state": "DISABLED",
-            "heartbeat_at_ms": None,
-            "reason": "trading_disabled",
-            "updated_at_ms": 0,
-        }
+        assert decision == DecisionRuntimeV1(
+            state="DISABLED",
+            heartbeat_at_ms=None,
+            reason="trading_disabled",
+            updated_at_ms=0,
+        )
         bindings = repos.binding_runtime_rows(now_ms=NOW)
         assert [row.binding for row in bindings] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
         assert {row.credential_state for row in bindings} == {"unconfigured"}

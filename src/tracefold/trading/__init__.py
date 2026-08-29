@@ -16,19 +16,19 @@ from .capabilities import (
     StableCapabilityExclusionV1,
 )
 from .catalog import (
-    CapitalRuntimeV1,
-    DecisionRuntimeV1,
-    VenueBinding,
-    VenueBindingRuntime,
     VenueInstrumentCatalogEntryV1,
     VenueInstrumentCatalogSnapshotV1,
     build_venue_catalog_snapshot,
 )
 from .contracts import (
     Bar,
+    CapitalRuntimeV1,
     CaseState,
+    DecisionRuntimeV1,
     InstrumentRef,
     TradingCaseManifest,
+    VenueBinding,
+    VenueBindingRuntimeV1,
 )
 from .intent import (
     ACTIVE_INTENT_STATES,
@@ -76,7 +76,7 @@ __all__ = [
     "TradeIntent",
     "TradingCaseManifest",
     "VenueBinding",
-    "VenueBindingRuntime",
+    "VenueBindingRuntimeV1",
     "VenueInstrumentCatalogEntryV1",
     "VenueInstrumentCatalogSnapshotV1",
     "build_venue_catalog_snapshot",
