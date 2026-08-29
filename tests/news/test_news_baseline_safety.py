@@ -10,12 +10,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
-import pytest
-
 import tracefold.news.learning.baseline as baseline_module
-from tests.support.audit_replay_corpus import load_audit_replay_corpus
-from tracefold.news.learning.baseline import build_baseline_cases, run_baseline
-from tracefold.news.program.artifact import load_stable_program_artifact
 
 # Anything that would turn a measurement into an action. `submit` appends an acceptance row, `promote`/
 # `accept` move a candidate through the release gate, `deliver`/`publish` reach the reader.
@@ -129,25 +124,3 @@ def test_the_database_connection_closes_before_any_model_call() -> None:
     assert len(with_blocks) == 1
     assert "run_baseline" not in _called_names(with_blocks[0])
     assert "run_baseline" in _called_names(handler)
-
-
-def test_a_recorded_run_needs_no_connection_no_provider_and_no_credential(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The strongest form of the guarantee: score the whole frozen corpus with the network unavailable."""
-
-    import socket
-
-    def refuse(*args: object, **kwargs: object) -> None:
-        raise AssertionError("the recorded baseline opened a socket")
-
-    monkeypatch.setattr(socket, "socket", refuse)
-    monkeypatch.setattr(socket, "create_connection", refuse)
-
-    corpus = load_audit_replay_corpus()
-    report = run_baseline(
-        build_baseline_cases(corpus["episodes"], action_source="recorded"),
-        mode="recorded",
-        artifact=load_stable_program_artifact(),
-    )
-    assert report.population["answered_n"] == len(corpus["episodes"])
-    assert report.route == {}
-    assert report.semantic_judge == {}

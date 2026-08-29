@@ -105,7 +105,7 @@ class EventStorage:
         self,
         *,
         source_artifact_id: str,
-        family: str,
+        dedupe_family: str,
         event_kind: EventKind,
         fingerprint: str,
         item_id: str,
@@ -121,16 +121,16 @@ class EventStorage:
         What the artifact id buys is the right to ignore the two guards the text-derived path needs: the
         three-token `shareable` floor (a tweet titled `What a coincidence!` scores below it and so was never
         looked up at all — the provider sent it twice, four seconds apart, under two URL spellings, and the
-        reader got two cards) and the 12 h family window (`opened_after_ms` is the caller's longer horizon).
+        reader got two cards) and the 12 h dedupe-family window (`opened_after_ms` is the caller's longer horizon).
         Both guards exist because *text* similarity is evidence; artifact identity is not evidence, it is the
         platform's own primary key.
         """
 
         if not source_artifact_id:
             return None
-        # Only an admitted Event carrying the active v2 evidence contract may absorb a live frame.  That exact
-        # contract boundary prevents a post-cut Item from disappearing into pre-v6 evidence without shortening
-        # #154's deliberate seven-day artifact window back to the ordinary 12 h family window. Recovery and
+        # Only an admitted Event carrying the v3 evidence contract may absorb a live frame. That exact
+        # contract boundary prevents a post-cut Item from disappearing into pre-cut evidence without shortening
+        # #154's deliberate seven-day artifact window back to the ordinary 12 h dedupe-family window. Recovery and
         # suppressed Events are excluded by admission because neither can produce the live reader card this Item
         # represents.
         row = self.conn.execute(
@@ -141,16 +141,18 @@ class EventStorage:
               JOIN news_event_members m ON m.item_id = i.item_id
               JOIN news_events e ON e.event_id = m.event_id
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
-               AND e.family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
+               AND e.dedupe_family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
                AND (
                  e.source_contract_reason IS NOT DISTINCT FROM %s
                  OR e.source_contract_reason = 'source_contract_unverified'
                )
                AND e.opened_at_ms >= %s
-               AND EXISTS (
-                 SELECT 1 FROM news_event_evidence_snapshots s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
                   WHERE s.event_id = e.event_id
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v2'
+                  ORDER BY s.evidence_version DESC LIMIT 1
                )
                AND e.admission = ANY(%s)
              ORDER BY (e.source_contract_reason IS NOT DISTINCT FROM %s) DESC,
@@ -159,7 +161,7 @@ class EventStorage:
             (
                 source_artifact_id,
                 item_id,
-                family,
+                dedupe_family,
                 event_kind,
                 fingerprint,
                 source_contract_reason,
@@ -173,7 +175,7 @@ class EventStorage:
     def find_exact_event(
         self,
         *,
-        family: str,
+        dedupe_family: str,
         event_kind: EventKind,
         fingerprint: str,
         now_ms: int,
@@ -181,26 +183,33 @@ class EventStorage:
     ) -> dict[str, Any] | None:
         row = self.conn.execute(
             """
-            SELECT event_id, opened_at_ms, expires_at_ms, admission, published_at_ms,
-                   source_contract_reason
-             FROM news_events
-             WHERE family = %s AND event_kind = %s
+            SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms,
+                   e.source_contract_reason
+              FROM news_events e
+             WHERE e.dedupe_family = %s AND e.event_kind = %s
                AND (
                  source_contract_reason IS NOT DISTINCT FROM %s
                  OR source_contract_reason = 'source_contract_unverified'
                )
-               AND comparison_fingerprint = %s AND expires_at_ms > %s
+               AND e.comparison_fingerprint = %s AND e.expires_at_ms > %s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = e.event_id
+                  ORDER BY s.evidence_version DESC LIMIT 1
+               )
              ORDER BY (source_contract_reason IS NOT DISTINCT FROM %s) DESC,
                       opened_at_ms ASC LIMIT 1
             """,
-            (family, event_kind, source_contract_reason, fingerprint, int(now_ms), source_contract_reason),
+            (dedupe_family, event_kind, source_contract_reason, fingerprint, int(now_ms), source_contract_reason),
         ).fetchone()
         return dict(row) if row else None
 
     def find_band_candidates(
         self,
         *,
-        family: str,
+        dedupe_family: str,
         event_kind: EventKind,
         band_keys: Sequence[str],
         now_ms: int,
@@ -216,19 +225,26 @@ class EventStorage:
                 FROM news_event_bands b
                 JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
                   ON q.band_index = b.band_index AND q.band_key = b.band_key
-               WHERE b.family = %s AND b.expires_at_ms > %s
+               WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
             )
             SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
               FROM news_events e JOIN hits ON hits.event_id = e.event_id
              WHERE e.event_kind = %s
                AND e.source_contract_reason IS NOT DISTINCT FROM %s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = e.event_id
+                  ORDER BY s.evidence_version DESC LIMIT 1
+               )
              ORDER BY e.opened_at_ms ASC
              LIMIT 25
             """,
             (
                 [p[0] for p in pairs],
                 [p[1] for p in pairs],
-                family,
+                dedupe_family,
                 int(now_ms),
                 event_kind,
                 source_contract_reason,
@@ -241,7 +257,7 @@ class EventStorage:
         *,
         event_id: str,
         leader_item_id: str,
-        family: str,
+        dedupe_family: str,
         event_kind: EventKind,
         comparison_fingerprint: str,
         comparison_title: str,
@@ -273,7 +289,7 @@ class EventStorage:
         self.conn.execute(
             """
             INSERT INTO news_events (
-              event_id, leader_item_id, family, event_kind, source_contract_reason,
+              event_id, leader_item_id, dedupe_family, event_kind, source_contract_reason,
               comparison_fingerprint, comparison_title, leader_title,
               focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
               opened_at_ms, last_member_at_ms, expires_at_ms, member_count, admission, queue_priority,
@@ -287,7 +303,7 @@ class EventStorage:
             (
                 event_id,
                 leader_item_id,
-                family,
+                dedupe_family,
                 event_kind,
                 source_contract_reason,
                 comparison_fingerprint,
@@ -329,12 +345,12 @@ class EventStorage:
         if band_keys:
             self.conn.execute(
                 """
-                INSERT INTO news_event_bands (band_index, band_key, event_id, family, expires_at_ms)
+                INSERT INTO news_event_bands (band_index, band_key, event_id, dedupe_family, expires_at_ms)
                 SELECT q.band_index, q.band_key, %s, %s, %s
                   FROM unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
                 ON CONFLICT DO NOTHING
                 """,
-                (event_id, family, int(expires_at_ms), list(range(len(band_keys))), list(band_keys)),
+                (event_id, dedupe_family, int(expires_at_ms), list(range(len(band_keys))), list(band_keys)),
             )
         for symbol in grounded_assets:
             self.conn.execute(
@@ -439,6 +455,13 @@ class EventStorage:
             SELECT event_id FROM news_events
              WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms <= %s AND opened_at_ms >= %s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = news_events.event_id
+                  ORDER BY s.evidence_version DESC LIMIT 1
+               )
              ORDER BY opened_at_ms LIMIT %s
             """,
             (int(older_than_ms), int(newer_than_ms), int(limit)),
@@ -467,6 +490,13 @@ class EventStorage:
             SELECT count(*) AS n FROM news_events
              WHERE published_at_ms IS NULL AND admission IN ({_ADMITTED_SQL})
                AND opened_at_ms < %s
+               AND (
+                 SELECT s.provenance = 'observed'
+                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                   FROM news_event_evidence_snapshots s
+                  WHERE s.event_id = news_events.event_id
+                  ORDER BY s.evidence_version DESC LIMIT 1
+               )
             """,
             (int(older_than_ms),),
         ).fetchone()
@@ -583,6 +613,11 @@ class EventStorage:
         ).fetchone()
         if (focus_item_id is None) != (focus_fact is None):
             raise ValueError("news_event_evidence_focus_incomplete")
+        if latest is not None and (
+            str(latest["provenance"]) != "observed"
+            or str(dict(latest["snapshot"] or {}).get("schema_version") or "") != "news_event_evidence_v3"
+        ):
+            raise ValueError("news_event_archive_only")
         previous = dict(latest["snapshot"] or {}) if latest is not None else {}
         if focus_fact is not None:
             focus = {
@@ -622,7 +657,7 @@ class EventStorage:
             for key in (
                 "event_id",
                 "leader_item_id",
-                "family",
+                "dedupe_family",
                 "event_kind",
                 "source_contract_reason",
                 "comparison_fingerprint",
@@ -683,7 +718,7 @@ class EventStorage:
         if artifact_published_at_ms is not None and pushed_at_ms:
             snapshot_card["source_age_s"] = max(0, (int(pushed_at_ms) - artifact_published_at_ms) // 1000)
         snapshot = {
-            "schema_version": "news_event_evidence_v2",
+            "schema_version": "news_event_evidence_v3",
             "event_id": event_id,
             "focus_fact": focus,
             "card": snapshot_card,
@@ -729,8 +764,11 @@ class EventStorage:
             """
             SELECT event_id, evidence_version, focus_fact_id, evidence_sha256, provenance,
                    release_eligible, snapshot, created_at_ms
-              FROM news_event_evidence_snapshots
-             WHERE event_id = %s ORDER BY evidence_version DESC LIMIT 1
+             FROM news_event_evidence_snapshots
+             WHERE event_id = %s
+               AND provenance = 'observed'
+               AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+             ORDER BY evidence_version DESC LIMIT 1
             """,
             (event_id,),
         ).fetchone()
@@ -743,6 +781,8 @@ class EventStorage:
         if evidence is None:
             return None
         snapshot = dict(evidence.get("snapshot") or {})
+        if snapshot.get("schema_version") != "news_event_evidence_v3":
+            raise ValueError("news_event_evidence_contract_invalid")
         card = dict(snapshot.get("card") or {})
         card.update(
             {

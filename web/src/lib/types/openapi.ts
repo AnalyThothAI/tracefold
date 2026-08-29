@@ -426,14 +426,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** NewsAcceptedReviewData */
+        /**
+         * NewsAcceptedReviewData
+         * @description Typed current Review summary; the stored submission payload is audit-only.
+         */
         NewsAcceptedReviewData: {
             /** Created At Ms */
             created_at_ms: number;
-            /** Dimensions */
-            dimensions?: {
-                [key: string]: string;
-            };
             /** Event Id */
             event_id?: string | null;
             /** Evidence Refs */
@@ -452,16 +451,8 @@ export interface components {
              * @default
              */
             note: string;
-            /** Novelty */
-            novelty?: {
-                [key: string]: unknown;
-            };
             /** Pairwise Case Id */
             pairwise_case_id?: string | null;
-            /** Payload */
-            payload?: {
-                [key: string]: unknown;
-            };
             /** Reader Contract Version */
             reader_contract_version: string;
             /** Review Id */
@@ -476,7 +467,7 @@ export interface components {
              * Subject Kind
              * @enum {string}
              */
-            subject_kind: "event" | "external_miss" | "pairwise" | "legacy_label";
+            subject_kind: "event" | "external_miss" | "pairwise";
         };
         /**
          * NewsAssetRefData
@@ -589,6 +580,14 @@ export interface components {
             /** State */
             state: string;
         };
+        /** NewsDuplicatesWithheld24hData */
+        NewsDuplicatesWithheld24hData: {
+            /**
+             * All
+             * @default 0
+             */
+            all: number;
+        };
         /** NewsEventData */
         NewsEventData: {
             /** Admission */
@@ -611,8 +610,6 @@ export interface components {
              * @enum {string}
              */
             event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
-            /** Family */
-            family: string;
             /**
              * Focus Fact Context
              * @default
@@ -819,7 +816,10 @@ export interface components {
              */
             uncertain: boolean;
         };
-        /** NewsEvidenceSnapshotData */
+        /**
+         * NewsEvidenceSnapshotData
+         * @description Current evidence identity only; raw evidence bytes remain in PostgreSQL audit storage.
+         */
         NewsEvidenceSnapshotData: {
             /** Created At Ms */
             created_at_ms: number;
@@ -833,15 +833,11 @@ export interface components {
             focus_fact_id: string;
             /**
              * Provenance
-             * @enum {string}
+             * @constant
              */
-            provenance: "observed" | "legacy_reconstructed";
+            provenance: "observed";
             /** Release Eligible */
             release_eligible: boolean;
-            /** Snapshot */
-            snapshot?: {
-                [key: string]: unknown;
-            };
         };
         /**
          * NewsFeedCountsData
@@ -892,8 +888,6 @@ export interface components {
              * @enum {string}
              */
             event_kind: "news" | "listing" | "oi" | "liquidation" | "unsupported_market";
-            /** Family */
-            family: string;
             /**
              * Focus Fact Context
              * @default
@@ -969,8 +963,6 @@ export interface components {
              * @default
              */
             storyline_key: string;
-            /** Title Zh */
-            title_zh?: string | null;
             triage?: components["schemas"]["NewsTriageSummaryData"] | null;
             /** Watchlist Hits */
             watchlist_hits?: string[];
@@ -979,14 +971,18 @@ export interface components {
         NewsFeedFiltersData: {
             /** Admission */
             admission?: string | null;
-            /** Channel */
-            channel?: string | null;
-            /** Decision */
-            decision?: string | null;
+            /** Assertion Status */
+            assertion_status?: string | null;
+            /** Change State */
+            change_state?: string | null;
             /** Direction */
             direction?: string | null;
-            /** Family */
-            family?: string | null;
+            /** Event Family */
+            event_family?: string | null;
+            /** Event Kind */
+            event_kind?: string | null;
+            /** Final Decision */
+            final_decision?: string | null;
             /** Hours */
             hours?: number | null;
             /** Limit */
@@ -997,6 +993,10 @@ export interface components {
             outcome?: ("pushed" | "held" | "pending") | null;
             /** Q */
             q?: string | null;
+            /** Source Authority */
+            source_authority?: string | null;
+            /** Subject Code */
+            subject_code?: string | null;
             /** Symbol */
             symbol?: string | null;
         };
@@ -1004,9 +1004,8 @@ export interface components {
          * NewsFeedOiData
          * @description #207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.
          *
-         *     `None` on every other admission. These are `oi_judgment_trace()` / `oi_parse_failure()` fields read back
-         *     verbatim so the browser never re-runs `oi_signal_parser_v1` over `leader_title` — a second parser in the
-         *     page would drift from the judge the moment either changed, and every figure here keys a stored verdict.
+         *     `None` on every other admission. The server assembles these fields from the typed judgment atom and its
+         *     current source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.
          *
          *     The two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an
          *     unparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /
@@ -1091,11 +1090,6 @@ export interface components {
              * @default 0
              */
             grounded: number;
-            /**
-             * Parsed
-             * @default 0
-             */
-            parsed: number;
             /**
              * Received
              * @default 0
@@ -1268,6 +1262,11 @@ export interface components {
             /** Updated At Ms */
             updated_at_ms?: number | null;
         };
+        /** NewsModelEditorialData */
+        NewsModelEditorialData: {
+            relevance: components["schemas"]["NewsTradeRelevanceData"];
+            taxonomy: components["schemas"]["NewsTaxonomyData"];
+        };
         /**
          * NewsOiPolicyData
          * @description `news.oi` as it is running right now — the operator-owned thresholds the judge applies.
@@ -1286,9 +1285,8 @@ export interface components {
          * NewsOiStatusData
          * @description #137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
          *
-         *     `by_rule_24h` is keyed on the judge's own rule names. It cannot come from `pipeline.dropped_by_rule`:
-         *     `decide()` writes `override_rule = 'telemetry_deterministic'` for every OI verdict — push and withhold
-         *     alike — so that map can say how many frames were held but never by which gate.
+         *     `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
+         *     reason map remains a cross-lane aggregate.
          */
         NewsOiStatusData: {
             /** By Rule 24H */
@@ -1359,10 +1357,7 @@ export interface components {
             dropped_by_rule?: {
                 [key: string]: number;
             };
-            /** Duplicates Withheld 24H */
-            duplicates_withheld_24h?: {
-                [key: string]: number;
-            };
+            duplicates_withheld_24h?: components["schemas"]["NewsDuplicatesWithheld24hData"];
             /**
              * Events 1H
              * @default 0
@@ -1384,11 +1379,6 @@ export interface components {
              */
             funnel_delivered_24h: number;
             /**
-             * Funnel Parsed 24H
-             * @default 0
-             */
-            funnel_parsed_24h: number;
-            /**
              * Funnel Received 24H
              * @default 0
              */
@@ -1408,11 +1398,6 @@ export interface components {
              * @default 0
              */
             model_triage_24h: number;
-            /**
-             * Novelty Defaulted 24H
-             * @default 0
-             */
-            novelty_defaulted_24h: number;
             /** Pushed By Rule */
             pushed_by_rule?: {
                 [key: string]: number;
@@ -1523,6 +1508,44 @@ export interface components {
             ungrounded_by_symbol_24h?: {
                 [key: string]: number;
             };
+        };
+        /** NewsPresentationVerdictData */
+        NewsPresentationVerdictData: {
+            /** Assets */
+            assets?: components["schemas"]["NewsTriageAssetData"][];
+            /**
+             * Audience
+             * @enum {string}
+             */
+            audience: "crypto" | "us_equity" | "macro" | "none";
+            /** Confidence */
+            confidence: number;
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "bullish" | "bearish" | "neutral" | "unclear";
+            /** Headline Zh */
+            headline_zh: string;
+            /** Magnitude */
+            magnitude: number;
+            /**
+             * Novelty
+             * @enum {string}
+             */
+            novelty: "new_fact" | "progression" | "restatement";
+            /** Restates */
+            restates: number;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "macro" | "sector" | "single_name";
+            /**
+             * Why Zh
+             * @default
+             */
+            why_zh: string;
         };
         /**
          * NewsPriceStatusData
@@ -1861,26 +1884,44 @@ export interface components {
         };
         /** NewsTaxonomyData */
         NewsTaxonomyData: {
-            /** Assertion Status */
-            assertion_status: string;
+            /**
+             * Assertion Status
+             * @enum {string}
+             */
+            assertion_status: "confirmed" | "claimed" | "rumor" | "conflicted" | "unknown";
             /** Assertion Status Zh */
             assertion_status_zh: string;
-            /** Change State */
-            change_state: string;
+            /**
+             * Change State
+             * @enum {string}
+             */
+            change_state: "announced" | "scheduled" | "effective" | "reported" | "updated" | "delayed" | "cancelled" | "recalled" | "unknown";
             /** Change State Zh */
             change_state_zh: string;
-            /** Codebook Sha256 */
-            codebook_sha256: string;
-            /** Event Family */
-            event_family: string;
+            /**
+             * Codebook Sha256
+             * @constant
+             */
+            codebook_sha256: "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac";
+            /**
+             * Event Family
+             * @enum {string}
+             */
+            event_family: "financial_results" | "guidance_outlook" | "product_service_change" | "corporate_transaction" | "financing_capital_allocation" | "leadership_governance" | "regulatory_legal" | "security_operational_incident" | "market_access" | "market_flow_price" | "macro_policy_data" | "geopolitical_conflict" | "other";
             /** Event Family Zh */
             event_family_zh: string;
-            /** Source Authority */
-            source_authority: string;
+            /**
+             * Source Authority
+             * @enum {string}
+             */
+            source_authority: "regulatory_filing" | "issuer_first_party" | "reputable_secondary" | "unknown";
             /** Source Authority Zh */
             source_authority_zh: string;
-            /** Subject Codes */
-            subject_codes?: string[];
+            /**
+             * Subject Codes
+             * @default []
+             */
+            subject_codes: ("medtop:04000000" | "medtop:20000174" | "medtop:20000175" | "medtop:20000177" | "medtop:20000178" | "medtop:20000180" | "medtop:20000183" | "medtop:20000186" | "medtop:20000187" | "medtop:20000189" | "medtop:20000190" | "medtop:20000192" | "medtop:20000195" | "medtop:20000196" | "medtop:20000197" | "medtop:20000199" | "medtop:20000200" | "medtop:20000204" | "medtop:20000205" | "medtop:20000207" | "medtop:20000208" | "medtop:20000344" | "medtop:20000346" | "medtop:20000350" | "medtop:20000359" | "medtop:20000365" | "medtop:20000370" | "medtop:20000371" | "medtop:20000373" | "medtop:20000379" | "medtop:20000384" | "medtop:20000385" | "medtop:20001164" | "medtop:20001279" | "medtop:16000000")[];
             /** Subject Labels Zh */
             subject_labels_zh?: string[];
             /**
@@ -1907,10 +1948,56 @@ export interface components {
             /** Title Zh */
             title_zh: string;
         };
+        /**
+         * NewsTradeRelevanceData
+         * @description The current typed market-relevance judgment; no free-form compatibility payload crosses HTTP.
+         */
+        NewsTradeRelevanceData: {
+            /**
+             * Affected Markets
+             * @default []
+             */
+            affected_markets: ("crypto_broad" | "us_equity_broad" | "rates" | "fx" | "energy" | "metals" | "single_asset")[];
+            /**
+             * Channels
+             * @default []
+             */
+            channels: ("rates" | "liquidity" | "risk_premium" | "energy_supply" | "commodity_supply" | "commodity_demand" | "regulation" | "exchange_access" | "product_progress" | "earnings_cashflow" | "positioning_flow" | "security_incident")[];
+            /**
+             * Development Delta
+             * @enum {string}
+             */
+            development_delta: "state_change" | "material_detail" | "color_only" | "scheduled";
+            /**
+             * Impact Breadth
+             * @enum {string}
+             */
+            impact_breadth: "none" | "single_instrument" | "sector" | "regional" | "cross_asset" | "global_systemic";
+            /**
+             * Reader Value
+             * @enum {string}
+             */
+            reader_value: "escalate" | "realtime" | "background" | "none";
+            /**
+             * Surprise
+             * @enum {string}
+             */
+            surprise: "unscheduled" | "material_vs_expectation" | "in_line" | "unknown";
+            /**
+             * Tradability
+             * @enum {string}
+             */
+            tradability: "direct" | "second_order" | "contextual" | "none";
+        };
         /** NewsTriageAssetData */
         NewsTriageAssetData: {
-            /** Role */
-            role: string;
+            /** Market Type */
+            market_type?: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "primary" | "mentioned";
             /** Symbol */
             symbol: string;
         };
@@ -1920,8 +2007,6 @@ export interface components {
          *     beside it so the browser can map it to a visual tone without owning a vocabulary table.
          */
         NewsTriageSummaryData: {
-            /** Actionable */
-            actionable?: boolean | null;
             /** Assets */
             assets?: components["schemas"]["NewsTriageAssetData"][];
             /** Audience */
@@ -1952,15 +2037,11 @@ export interface components {
             direction_zh: string;
             /** Error Code */
             error_code?: string | null;
-            /** Event Type */
-            event_type?: string | null;
             /**
-             * Event Type Zh
-             * @default
+             * Final Decision
+             * @enum {string}
              */
-            event_type_zh: string;
-            /** Final Decision */
-            final_decision: string;
+            final_decision: "push" | "escalate" | "drop" | "throttled";
             /** Headline Zh */
             headline_zh?: string | null;
             /** Magnitude */
@@ -1970,13 +2051,6 @@ export interface components {
              * @default
              */
             magnitude_zh: string;
-            /** Model Decision */
-            model_decision?: string | null;
-            /**
-             * Model Decision Zh
-             * @default
-             */
-            model_decision_zh: string;
             /** Novelty */
             novelty?: string | null;
             /**
@@ -1986,6 +2060,7 @@ export interface components {
             novelty_zh: string;
             /** Override Rule */
             override_rule?: string | null;
+            relevance?: components["schemas"]["NewsTradeRelevanceData"] | null;
             /** Scope */
             scope?: string | null;
             /**
@@ -1996,8 +2071,6 @@ export interface components {
             taxonomy?: components["schemas"]["NewsTaxonomyData"] | null;
             /** Throttled By */
             throttled_by?: string | null;
-            /** Title Zh */
-            title_zh?: string | null;
             /** Why Zh */
             why_zh?: string | null;
         };
@@ -2010,50 +2083,54 @@ export interface components {
              * @default false
              */
             degraded: boolean;
-            /** Editorial */
-            editorial?: {
-                [key: string]: unknown;
-            } | null;
             /** Error Code */
             error_code?: string | null;
             /** Evidence Sha256 */
-            evidence_sha256?: string | null;
+            evidence_sha256: string;
             /** Evidence Version */
-            evidence_version?: number | null;
-            /** Final Decision */
-            final_decision: string;
+            evidence_version: number;
+            /**
+             * Final Decision
+             * @enum {string}
+             */
+            final_decision: "push" | "escalate" | "drop" | "throttled";
             /** Focus Fact Id */
-            focus_fact_id?: string | null;
+            focus_fact_id: string;
+            /**
+             * Judgment Contract Version
+             * @constant
+             */
+            judgment_contract_version: "news_judgment_v2";
+            /**
+             * Judgment Origin
+             * @enum {string}
+             */
+            judgment_origin: "model" | "oi" | "liquidation" | "degraded";
+            /** Judgment Sha256 */
+            judgment_sha256: string;
             /** Model */
             model?: string | null;
-            /** Model Decision */
-            model_decision?: string | null;
+            model_editorial?: components["schemas"]["NewsModelEditorialData"] | null;
             /** Override Rule */
             override_rule?: string | null;
             /** Policy Version */
             policy_version: string;
             /** Program Sha256 */
-            program_sha256?: string | null;
+            program_sha256: string;
             /** Program Version */
-            program_version?: string | null;
-            /** Prompt Version */
-            prompt_version?: string | null;
+            program_version: string;
             /** Published At Ms */
             published_at_ms?: number | null;
-            /** Rule Baseline Decision */
-            rule_baseline_decision: string;
+            /**
+             * Rule Baseline Decision
+             * @enum {string}
+             */
+            rule_baseline_decision: "push" | "escalate" | "drop" | "throttled";
             /** Stage */
             stage: string;
             /** Throttled By */
             throttled_by?: string | null;
-            /** Trace */
-            trace?: {
-                [key: string]: unknown;
-            };
-            /** Verdict */
-            verdict?: {
-                [key: string]: unknown;
-            };
+            verdict: components["schemas"]["NewsPresentationVerdictData"];
         };
         /** ReadinessData */
         ReadinessData: {
@@ -2715,6 +2792,24 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
                 };
             };
+            /** @description Event does not exist */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
+                };
+            };
+            /** @description Event is archive-only under the current contract */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
+                };
+            };
             /** @description Validation Error */
             422: {
                 headers: {
@@ -2729,9 +2824,14 @@ export interface operations {
     get_news_feed_api_news_feed_get: {
         parameters: {
             query?: {
-                family?: string;
+                event_family?: string;
+                change_state?: string;
+                assertion_status?: string;
+                source_authority?: string;
+                subject_code?: string;
+                final_decision?: string;
+                event_kind?: string;
                 admission?: string;
-                decision?: string;
                 symbol?: string;
                 q?: string;
                 limit?: number;
@@ -2740,7 +2840,6 @@ export interface operations {
                 hours?: number;
                 oi?: string;
                 direction?: string;
-                channel?: string;
             };
             header?: never;
             path?: never;

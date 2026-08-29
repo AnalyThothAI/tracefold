@@ -5,15 +5,8 @@ OpenNews strategy 1019 (`OI Event Monitor`) pushes a fixed-format frame roughly 
     TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%
 
 Those four numbers are the whole message. They need no language understanding and they carry no
-storyline, so the Gate admits them as ``telemetry_deterministic`` and Triage judges them here instead
-of spending two structured model calls re-reading numbers a regex already has.
-
-What this module produces is an ordinary ``TriageVerdict``. That is the whole point: the rule the
-reader asked for counts a symbol's eligible signals in a rolling window, and ``decide()`` is deliberately
-unable to count — policy v7 removed every reader quota and ``StorylineStatus`` is tested to carry no
-capacity field. Counting *here* and handing ``decide()`` a verdict it already understands keeps one
-decision plane instead of two, and keeps delivery, receipts, outcome, feed, counters and audit on the
-single path they were built for.
+storyline, so the Gate admits them as ``telemetry_deterministic`` and this lane produces both the
+reader presentation and its only ``DecisionResult`` without entering the model policy.
 
 The symbol is the title's own leading token, normalized the way every other consumer of provider coin
 tags normalizes one. Real tickers in this feed include single characters (``S``, ``4``), so the
@@ -26,12 +19,15 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any, Final
 
-from .models import TriageAsset, TriageVerdict
+from .artifact_identity import canonical_sha
+from .models import Decision, TriageAsset, TriageVerdict
 from .oi_contracts import OI_METRIC_VERSION
+from .program.contracts import JUDGMENT_CONTRACT_VERSION
 from .source_contracts import OI_SOURCE_IDENTITY, SOURCE_CONTRACT_CLASSIFIER_VERSION, classify_source_contract
+from .triage_rules import DecisionResult
 
 METRIC_VERSION: Final = OI_METRIC_VERSION
 PARSER_VERSION: Final = "oi_signal_parser_v1"
@@ -51,8 +47,8 @@ SOURCE_CONTRACT_VERSION: Final = "opennews_oi_source_v1"
 RANK_SEMANTICS: Final = "eligible_rank_v1"
 # The judge's identity on the verdict row, where a model-judged Event carries its ProgramArtifact sha.
 # Content-addressed the same way: change the rule and the identity changes with it.
-PROGRAM_VERSION: Final = "news_oi_signal_v1"
-READER_CONTRACT_VERSION: Final = "oi_card_v2"
+PROGRAM_VERSION: Final = "news_oi_signal_v2"
+READER_CONTRACT_VERSION: Final = "oi_card_v3"
 WINDOW_MS: Final = 4 * 3_600_000
 
 # Anchored on purpose: this must recognise the telemetry template and nothing that merely mentions
@@ -107,7 +103,7 @@ def oi_source_contract(provider_metadata: Any) -> OiSourceContract | None:
             continue
         view = {**provider_metadata, "strategies": [strategy]}
         contract = classify_source_contract(view)
-        if contract.family == "oi_v1":
+        if contract.source_contract_family == "oi_v1":
             return OiSourceContract(
                 strategy_id=contract.identity.strategy_id,
                 contract_version=SOURCE_CONTRACT_VERSION,
@@ -163,12 +159,30 @@ DEFAULT_OI_POLICY: Final = OiPolicy()
 
 @dataclass(frozen=True, slots=True)
 class OiJudgment:
-    """One deterministic judgment, in the vocabulary the rest of the pipeline already speaks."""
+    """One OI presentation, structured fact and action authority."""
 
     verdict: TriageVerdict
-    signal: OiSignal
+    signal: OiSignal | None
     rank_in_window: int
     rule: str
+    decision: DecisionResult
+    judgment_contract_version: str = field(default=JUDGMENT_CONTRACT_VERSION, init=False)
+
+    @property
+    def judgment_atom(self) -> dict[str, Any]:
+        return {
+            "judgment_contract_version": self.judgment_contract_version,
+            "origin": "oi",
+            "verdict": self.verdict.model_dump(mode="json"),
+            "signal": None if self.signal is None else asdict(self.signal),
+            "rank_in_window": self.rank_in_window,
+            "rule": self.rule,
+            "decision": asdict(self.decision),
+        }
+
+    @property
+    def judgment_sha256(self) -> str:
+        return canonical_sha(self.judgment_atom)
 
 
 def _bps(value: str) -> int:
@@ -230,26 +244,37 @@ def parse_oi_signal(title: str) -> OiSignal | None:
     )
 
 
-def oi_parse_failure(title: str, *, provider_source: str) -> tuple[TriageVerdict, dict[str, Any]]:
-    """Fail-closed verdict and observable provider-contract trace for an unparseable 1019 frame."""
+def oi_parse_failure(title: str, *, provider_source: str) -> tuple[OiJudgment, dict[str, Any]]:
+    """Issue a typed fail-closed judgment and observable trace for an invalid 1019 frame."""
 
     title_sha256 = hashlib.sha256(title.encode("utf-8")).hexdigest()
     verdict = TriageVerdict(
         novelty="new_fact",
-        event_type="noise",
         assets=[],
         direction="neutral",
         scope="single_name",
         magnitude=0,
-        actionable=False,
         confidence=1.0,
-        decision="drop",
+        audience="crypto",
         headline_zh=title[:60] or "持仓异动帧无法解析",
         why_zh="",
     )
-    return verdict, {
+    rule = "oi_parse_failed"
+    decision = DecisionResult(
+        final="drop",
+        override_rule=rule,
+        throttled_by=None,
+        rule_baseline="drop",
+    )
+    judgment = OiJudgment(
+        verdict=verdict,
+        signal=None,
+        rank_in_window=0,
+        rule=rule,
+        decision=decision,
+    )
+    return judgment, {
         "parsed": False,
-        "rule": "oi_parse_failed",
         "strategy_id": OI_SOURCE_IDENTITY.strategy_id,
         "provider": "opennews",
         "provider_source": provider_source,
@@ -268,6 +293,7 @@ def program_sha256(policy: OiPolicy = DEFAULT_OI_POLICY) -> str:
             {
                 "program": PROGRAM_VERSION,
                 "reader_contract": READER_CONTRACT_VERSION,
+                "judgment_contract": JUDGMENT_CONTRACT_VERSION,
                 "metric": METRIC_VERSION,
                 "parser": PARSER_VERSION,
                 "rank_semantics": RANK_SEMANTICS,
@@ -359,15 +385,14 @@ def evaluate_oi(
     earlier_eligible_count: int,
     policy: OiPolicy = DEFAULT_OI_POLICY,
 ) -> OiJudgment:
-    """Judge one frame and express it as a ``TriageVerdict``.
+    """Judge one frame once, including the lane's final action.
 
     ``earlier_eligible_count`` is counted in PostgreSQL from this symbol's parsed rows inside the
     sliding window, using the same whale and OI-change thresholds as this judgment. Ineligible frames
     remain auditable but do not spend a later signal's rank.
 
-    The verdict is shaped so ``decide()`` reaches the intended answer through its ordinary rules: a
-    qualifying frame is an actionable, directional magnitude-2 ``oi_spike`` with a push intent, and a
-    rejected one is a self-consistent magnitude-0 ``noise`` that policy v8's veto still holds.
+    A qualifying frame is a directional magnitude-2 presentation; a rejected one is a magnitude-0
+    presentation. Neither copies action into the verdict.
     """
 
     rank = int(earlier_eligible_count) + 1
@@ -383,26 +408,33 @@ def evaluate_oi(
     verdict = TriageVerdict(
         novelty="new_fact",
         restates=-1,
-        # `oi_spike` has been in the taxonomy all along; until now it only ever landed on prose *about*
-        # open interest, never on the telemetry itself.
-        event_type="oi_spike" if qualifies else "noise",
         assets=[TriageAsset(symbol=signal.symbol, role="primary", market_type="perp")],
         direction="bullish" if signal.direction == "rise" else "bearish",
         scope="single_name",
         magnitude=2 if qualifies else 0,
-        actionable=qualifies,
         # Not a probability: this judgment is arithmetic, and saying otherwise would put a fake number
         # into the same field a model fills with a real one.
         confidence=1.0,
-        decision="push" if qualifies else "drop",
         audience="crypto",
         headline_zh=_headline(signal, rank=rank, window_ms=policy.window_ms),
-        title_zh="",
         # All four deterministic measurements are already in the title. Repeating them as the body creates a
         # two-line card that reads like two separate claims; unlike model-judged News there is no causal why.
         why_zh="",
     )
-    return OiJudgment(verdict=verdict, signal=signal, rank_in_window=rank, rule=rule)
+    final: Decision = "push" if qualifies else "drop"
+    decision = DecisionResult(
+        final=final,
+        override_rule=rule,
+        throttled_by=None,
+        rule_baseline=final,
+    )
+    return OiJudgment(
+        verdict=verdict,
+        signal=signal,
+        rank_in_window=rank,
+        rule=rule,
+        decision=decision,
+    )
 
 
 def oi_judgment_trace(
@@ -420,22 +452,17 @@ def oi_judgment_trace(
     """
 
     signal = judgment.signal
+    if signal is None:
+        raise ValueError("oi_signal_missing_from_parsed_judgment")
     return {
         "parsed": True,
         "source_strategy_id": None if source is None else source.strategy_id,
         "source_contract_version": None if source is None else source.contract_version,
         "measurement_window_ms": None if source is None else source.measurement_window_ms,
         "source_contract_rule": "proven" if source is not None else "source_window_unproven",
+        "parser_version": PARSER_VERSION,
         "source_classifier_version": SOURCE_CONTRACT_CLASSIFIER_VERSION,
-        "symbol": signal.symbol,
-        "direction": signal.direction,
-        "oi_change_bps": signal.oi_change_bps,
-        "oi_value_usd": signal.oi_value_usd,
-        "whale_long_profit_bps": signal.whale_long_profit_bps,
-        "whale_oi_ratio_bps": signal.whale_oi_ratio_bps,
-        "eligible_rank_in_window": judgment.rank_in_window,
         "rank_semantics": RANK_SEMANTICS,
-        "rule": judgment.rule,
         "policy": policy.as_dict(),
     }
 

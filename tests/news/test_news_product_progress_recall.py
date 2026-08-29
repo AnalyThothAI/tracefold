@@ -2,11 +2,11 @@
 
 Every case runs through the public semantic/Policy seam: a typed
 ``ScoredJudgment`` a contract-following EventSemantics would emit, then the
-unchanged policy-v10 ``decide()``. The suite therefore pins the *contract*, not
+the current ``decide()``. The suite therefore pins the *contract*, not
 one model's wording — a Program that reads the RulePacks correctly passes it,
 and a candidate that quietly re-learns "product is background" fails it.
 
-Policy v10 is deliberately untouched by #173. Product recall arrives by making
+Product recall arrives by making
 the typed semantics accurate enough to satisfy the eligibility predicate that
 already existed, never by adding a second action authority.
 """
@@ -48,17 +48,13 @@ _DROP_NONE = DecisionResult("drop", "reader_value_none", None, "drop", ())
 def _verdict(**overrides: Any) -> TriageVerdict:
     values: dict[str, Any] = {
         "novelty": "new_fact",
-        "event_type": "product",
         "assets": [TriageAsset(role="primary", symbol="HYPE", market_type="crypto")],
         "direction": "neutral",
         "scope": "single_name",
         "magnitude": 2,
-        "actionable": False,
         "confidence": 0.9,
-        "decision": "drop",
         "audience": "crypto",
         "headline_zh": "固定产品召回案例",
-        "title_zh": "",
         "why_zh": "",
     }
     values.update(overrides)
@@ -96,7 +92,7 @@ MUST_PUSH: tuple[tuple[str, TradeRelevanceV1, dict[str, Any]], ...] = (
     (
         "exchange_opens_new_spot_market",
         _state_change(channels=["exchange_access", "product_progress"]),
-        {"event_type": "listing", "direction": "bullish"},
+        {"direction": "bullish"},
     ),
     (
         "protocol_mainnet_capability_live",
@@ -181,7 +177,7 @@ MUST_HOLD: tuple[tuple[str, TradeRelevanceV1, dict[str, Any], DecisionResult], .
             affected_markets=[],
             reader_value="none",
         ),
-        {"event_type": "rumor", "magnitude": 0},
+        {"magnitude": 0},
         _DROP_NONE,
     ),
     (
@@ -207,7 +203,7 @@ MUST_HOLD: tuple[tuple[str, TradeRelevanceV1, dict[str, Any], DecisionResult], .
             affected_markets=[],
             reader_value="background",
         ),
-        {"event_type": "partnership", "magnitude": 1},
+        {"magnitude": 1},
         _DROP_BACKGROUND,
     ),
     (
@@ -221,7 +217,7 @@ MUST_HOLD: tuple[tuple[str, TradeRelevanceV1, dict[str, Any], DecisionResult], .
             affected_markets=[],
             reader_value="none",
         ),
-        {"event_type": "noise", "magnitude": 0},
+        {"magnitude": 0},
         _DROP_NONE,
     ),
 )
@@ -252,7 +248,7 @@ def test_a_provider_common_word_tag_cannot_manufacture_product_progress() -> Non
         affected_markets=[],
         reader_value="none",
     )
-    assert decide(_judgment(relevance=relevance, magnitude=0, event_type="noise"), tagged, None) == _DROP_NONE
+    assert decide(_judgment(relevance=relevance, magnitude=0), tagged, None) == _DROP_NONE
 
 
 # --- stability ------------------------------------------------------------------------------------------
@@ -289,7 +285,7 @@ def test_the_same_launch_from_another_outlet_is_still_a_restatement() -> None:
 
     status = storyline_status(
         "asset:HYPE",
-        told=[{"dir": "bullish", "headline_zh": "某协议主网能力上线", "grounded_assets": ["HYPE"]}],
+        told=[{"direction": "bullish", "headline_zh": "某协议主网能力上线", "symbols": ["HYPE"]}],
     )
     judgment = _judgment(relevance=_state_change(), direction="bullish", novelty="restatement", restates=0)
     assert decide(judgment, _CANDIDATE, status).final == "drop"

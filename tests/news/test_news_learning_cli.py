@@ -16,7 +16,7 @@ from tracefold.app.cli.commands.news_learning_runtime import _learning_program_j
 from tracefold.app.cli.parser import build_parser
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.resources import candidates as candidate_programs
-from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES
+from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES, PROGRAM_VERSION
 
 
 def test_taxonomy_evaluate_has_one_frozen_input_and_one_report_output() -> None:
@@ -386,7 +386,7 @@ def _readiness_settings(monkeypatch: Any) -> None:
         learning_runtime,
         "active_arm_manifest",
         lambda _settings: SimpleNamespace(
-            program_version="news_semantic_program_v5",
+            program_version=PROGRAM_VERSION,
             program_sha256="b" * 64,
             bundle_sha="c" * 64,
             policy_sha256="d" * 64,
@@ -534,7 +534,6 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
         "dataset": "",
         "mode": "recorded",
         "action_source": "",
-        "all_cohorts": False,
         "max_model_cases": 0,
         "semantic_judge": "",
         "limit": 10,
@@ -544,14 +543,7 @@ def _baseline_args(**updates: Any) -> SimpleNamespace:
     return SimpleNamespace(**args)
 
 
-@pytest.mark.parametrize(
-    "updates",
-    [
-        {"dataset": "a" * 64},
-        {"dataset": "a" * 64, "from_ms": None, "to_ms": None, "all_cohorts": True},
-    ],
-)
-def test_a_dataset_baseline_refuses_to_also_take_a_moving_window(monkeypatch: Any, updates: dict[str, Any]) -> None:
+def test_a_dataset_baseline_refuses_to_also_take_a_moving_window(monkeypatch: Any) -> None:
     """A run measures one corpus.
 
     The frozen dataset and the moving window answer different questions — release evidence and discovery —
@@ -566,7 +558,7 @@ def test_a_dataset_baseline_refuses_to_also_take_a_moving_window(monkeypatch: An
     monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", refuse)
 
-    code, payload = _handle_learning(_baseline_args(**updates))
+    code, payload = _handle_learning(_baseline_args(dataset="a" * 64))
     assert code == 2
     assert payload["error"] == "news_program_baseline_dataset_excludes_moving_window"
 
@@ -700,8 +692,7 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-        def baseline_episodes(self, _window: Any, *, cohort: bool, limit: int) -> list[Any]:
-            del cohort
+        def baseline_episodes(self, _window: Any, *, limit: int) -> list[Any]:
             seen["limit"] = limit
             return []
 
@@ -871,15 +862,8 @@ def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeyp
     assert payload["error"] == ("news_program_baseline_dataset_objective_blocked:development_selection_target_missing")
 
 
-def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) -> None:
-    """What #150 forbids is replaying today's policy over a *stored retired verdict*, and that is
-    `--mode recorded --action-source policy`, which the handler already rejects.
-
-    A live mode generates the verdict with today's Program and scores it under today's policy; only the
-    evidence and the reviewer's labels are historical, which is the only pairing that can be measured at all —
-    every accepted review this project has belongs to a retired cohort, so banning the combination made both
-    live modes unrunnable rather than safer. The receipt names the population instead.
-    """
+def test_a_live_baseline_reads_only_the_current_cohort(monkeypatch: Any) -> None:
+    """A moving-window baseline cannot opt into retired judgment contracts."""
 
     seen: dict[str, Any] = {}
 
@@ -887,8 +871,7 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
         def __init__(self, *_args: Any, **_kwargs: Any) -> None:
             pass
 
-        def baseline_episodes(self, _window: Any, *, cohort: bool, limit: int) -> list[Any]:
-            seen["cohort"] = cohort
+        def baseline_episodes(self, _window: Any, *, limit: int) -> list[Any]:
             seen["limit"] = limit
             return []
 
@@ -902,14 +885,12 @@ def test_a_live_baseline_may_read_retired_cohorts_and_says_so(monkeypatch: Any) 
     monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
     monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Evaluator)
 
-    code, payload = _handle_learning(
-        _baseline_args(mode="runtime_live", action_source="policy", max_model_cases=5, all_cohorts=True)
-    )
-    assert seen["cohort"] is False
+    code, payload = _handle_learning(_baseline_args(mode="runtime_live", action_source="policy", max_model_cases=5))
+    assert seen["limit"] == 5
     assert code == 2 and payload["error"]["code"] == "news_program_baseline_no_accepted_reviews_in_window"
 
     # The genuinely forbidden pairing stays blocked.
-    code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy", all_cohorts=True))
+    code, payload = _handle_learning(_baseline_args(mode="recorded", action_source="policy"))
     assert payload["error"] == "news_program_baseline_recorded_mode_requires_recorded_decision"
 
 

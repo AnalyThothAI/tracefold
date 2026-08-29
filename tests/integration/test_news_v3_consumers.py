@@ -31,12 +31,12 @@ from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
+from tracefold.news.program.runtime import PROGRAM_VERSION
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
-PROGRAM_VERSION = "news_semantic_program_test_v1"
 PROGRAM_SHA256 = "9" * 64
 EVENT_ROUTING_KEY = re.compile(r"^event\.[a-z_]+\.(high|normal)$")
 
@@ -186,7 +186,8 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
     assert all(m.priority == 0 for m in bus.published if m.routing_key.endswith(".normal"))
 
     rows = conn.execute(
-        "SELECT event_id, admission, published_at_ms, family, queue_priority FROM news_events WHERE event_id = ANY(%s)",
+        "SELECT event_id, admission, published_at_ms, dedupe_family, queue_priority"
+        " FROM news_events WHERE event_id = ANY(%s)",
         (published_ids,),
     ).fetchall()
     assert len(rows) == len(published_ids)
@@ -194,7 +195,7 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
     # to be stored, placed on the high scheduling lane, and then silently dropped instead of published).
     assert all(row["admission"] in ADMITTED_ADMISSIONS and row["published_at_ms"] is not None for row in rows)
     for row in rows:
-        assert f"event.{row['family']}.{row['queue_priority']}" in bus.routing_keys()
+        assert f"event.{row['dedupe_family']}.{row['queue_priority']}" in bus.routing_keys()
     unpublished_admitted = conn.execute(
         "SELECT count(*) AS n FROM news_events WHERE admission = ANY(%s) AND published_at_ms IS NULL",
         (sorted(ADMITTED_ADMISSIONS),),
@@ -333,7 +334,9 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
         assert row["stage"] == "triage" and row["policy_version"] == TRIAGE_POLICY_VERSION
         assert row["degraded"] is True
         assert row["error_code"] == "news_semantic_program_unconfigured"
-        assert row["model_decision"] is None and row["model"] is None
+        assert row["judgment_contract_version"] == "news_judgment_v2"
+        assert row["judgment_origin"] == "degraded" and row["model"] is None
+        assert row["scored_judgment_sha256"] == row["trace"]["judgment_sha256"]
         assert row["verdict"]["headline_zh"] and "模型不可用" not in row["verdict"]["headline_zh"]  # the wire headline
     strong_row = verdicts[strong["event_id"]]
     weak_row = verdicts[weak["event_id"]]
@@ -409,10 +412,9 @@ def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
         "oi_parse_failed",
         "oi_parse_failed",
     )
-    assert verdict["program_version"] == "news_oi_signal_v1"
+    assert verdict["program_version"] == "news_oi_signal_v2"
     assert verdict["trace"]["oi_signal"] == {
         "parsed": False,
-        "rule": "oi_parse_failed",
         "strategy_id": "1019",
         "provider": "opennews",
         "provider_source": "binance",
@@ -508,8 +510,8 @@ def test_verified_liquidation_reconciliation_focuses_the_typed_cross_item_fact(c
         (event_id,),
     ).fetchone()
     assert verdict == {
-        "program_version": "news_liquidation_fact_v1",
-        "override_rule": "liquidation_deterministic",
+        "program_version": "news_liquidation_fact_v2",
+        "override_rule": "liquidation_fact_only",
         "error_code": None,
     }
     assert judge.calls == 0

@@ -13,7 +13,7 @@ from ..artifact_identity import canonical_json
 from ..models import TriageVerdict
 from ..taxonomy import NewsTaxonomyV1, source_authority_from_evidence
 from .artifact import ProgramStrategyArtifactV1, render_model_evidence_json, validate_program_instruction
-from .assembly import decision_for, is_actionable, normalize_restates, restatement_index_error
+from .assembly import normalize_restates, restatement_index_error
 from .contracts import EditorialEnvelope, ProgramNormalizationTrace, ReaderCardSemanticView, TriageContext
 from .lm import mark_active_domain_failure, program_json_adapter
 from .signatures import EventSemantics, EventSemanticsSignature, ReaderCard, ReaderCardSignature
@@ -52,7 +52,6 @@ def _prepare(context: TriageContext | Mapping[str, Any]) -> _PreparedRun:
 
 def _reader_card_semantic_view(semantics: EventSemantics) -> ReaderCardSemanticView:
     return ReaderCardSemanticView(
-        event_type=semantics.event_type,
         assets=semantics.assets,
         direction=semantics.direction,
         magnitude=semantics.magnitude,
@@ -146,26 +145,17 @@ def _assemble(
         )
         if error is not None:
             raise ValueError(error)
-        relevance = semantics.relevance
         verdict = TriageVerdict.model_validate(
             {
                 "novelty": semantics.novelty,
                 "restates": semantics.restates,
-                "event_type": semantics.event_type,
                 "assets": [asset.model_dump(mode="json") for asset in semantics.assets],
                 "direction": semantics.direction,
                 "scope": semantics.scope,
                 "magnitude": semantics.magnitude,
-                "actionable": is_actionable(
-                    tradability=relevance.tradability,
-                    has_channels=bool(relevance.channels),
-                    has_affected_markets=bool(relevance.affected_markets),
-                ),
                 "confidence": semantics.confidence,
-                "decision": decision_for(relevance.reader_value),
                 "audience": semantics.audience,
                 "headline_zh": card.headline_zh.strip(),
-                "title_zh": "",
                 "why_zh": card.why_zh.strip(),
             }
         )
@@ -178,7 +168,7 @@ def _assemble(
             semantics=semantics,
             card=card,
             verdict=verdict,
-            editorial=EditorialEnvelope.issue(editorial_origin="model", relevance=relevance, taxonomy=taxonomy),
+            editorial=EditorialEnvelope.issue(relevance=semantics.relevance, taxonomy=taxonomy),
             normalizations=normalizations,
         )
     except ValueError as exc:

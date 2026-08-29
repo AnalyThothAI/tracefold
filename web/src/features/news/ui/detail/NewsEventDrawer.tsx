@@ -26,7 +26,7 @@ import "./newsEventDrawer.css";
  * footer link and any modified click go straight there.
  *
  * It carries the compact Artifact reading order: source, assets, judgment, then the four-step judgment chain.
- * Quotes, technical detail, related reporting and every raw verdict record stay on the full page.
+ * Quotes, technical detail, related reporting and typed judgment records stay on the full page.
  */
 export function NewsEventDrawer({
   eventId,
@@ -62,8 +62,7 @@ export function NewsEventDrawer({
     ? (assets.find((asset) => displayAssets([asset.symbol, asset.base_symbol]).includes(primaryTag))
         ?.base_symbol ?? primaryTag)
     : undefined;
-  const headline =
-    triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event?.leader_title || "事件";
+  const headline = triage?.headline_zh?.trim() || event?.leader_title || "事件";
   return (
     <Drawer
       actions={

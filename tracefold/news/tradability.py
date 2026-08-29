@@ -123,7 +123,6 @@ def tradability_candidate_identity(
     texts = (
         str(event.get("leader_title") or ""),
         str(verdict.get("headline_zh") or ""),
-        str(verdict.get("title_zh") or ""),
     )
     candidates: list[str] = []
 

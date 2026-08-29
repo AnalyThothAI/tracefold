@@ -58,6 +58,7 @@ _REVIEW_FACTS_CTE: Final = """
         JOIN news_events e ON e.event_id = v.event_id
         LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
        WHERE v.stage = 'triage' AND e.ingest_mode = 'live'
+         AND v.judgment_contract_version = 'news_judgment_v2'
          AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
          {cohort_filter}
        ORDER BY v.event_id, v.created_at_ms DESC
@@ -176,11 +177,11 @@ class ReviewStorage:
         cohort_filter = ""
         if cohort is not None:
             cohort_filter = (
-                "AND COALESCE(v.trace #>> '{agent_assignment,bundle_sha}', '') = %s "
-                "AND COALESCE(v.program_version, '') = %s "
-                "AND COALESCE(v.program_sha256, '') = %s "
-                "AND COALESCE(v.policy_version, '') = %s "
-                "AND COALESCE(v.model, '') = %s"
+                "AND v.trace #>> '{agent_assignment,bundle_sha}' = %s "
+                "AND v.program_version = %s "
+                "AND v.program_sha256 = %s "
+                "AND v.policy_version = %s "
+                "AND v.model = %s"
             )
             params.extend(
                 (
@@ -339,6 +340,7 @@ class ReviewStorage:
             SELECT e.event_id, e.leader_title, e.storyline_key,
                    (SELECT v.verdict ->> 'headline_zh' FROM news_verdicts v
                      WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                       AND v.judgment_contract_version = 'news_judgment_v2'
                      ORDER BY v.created_at_ms DESC LIMIT 1) AS headline_zh
               FROM news_events e
              WHERE e.event_id = ANY(%s)

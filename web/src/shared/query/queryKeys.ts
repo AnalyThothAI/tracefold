@@ -1,11 +1,15 @@
 export type NewsFeedQueryKeyFilters = {
   admission: string | null;
-  decision: string | null;
-  family: string | null;
+  eventFamilies: readonly string[];
+  changeStates: readonly string[];
+  assertionStatuses: readonly string[];
+  sourceAuthorities: readonly string[];
+  subjectCodes: readonly string[];
+  finalDecisions: readonly string[];
+  eventKinds: readonly string[];
   hours: number | null;
   outcome: string | null;
   directions: readonly string[];
-  channels: readonly string[];
   q: string;
   symbol: string | null;
 };
@@ -13,14 +17,18 @@ export type NewsFeedQueryKeyFilters = {
 export const newsFeedIdentity = (filters: NewsFeedQueryKeyFilters) =>
   [
     filters.q,
-    filters.family ?? "",
+    filters.eventFamilies.join(","),
+    filters.changeStates.join(","),
+    filters.assertionStatuses.join(","),
+    filters.sourceAuthorities.join(","),
+    filters.subjectCodes.join(","),
+    filters.finalDecisions.join(","),
+    filters.eventKinds.join(","),
     filters.admission ?? "",
-    filters.decision ?? "",
     filters.symbol ?? "",
     filters.outcome ?? "",
     filters.hours == null ? "" : String(filters.hours),
     filters.directions.join(","),
-    filters.channels.join(","),
   ] as const;
 
 export const queryKeys = {

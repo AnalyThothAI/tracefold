@@ -41,12 +41,12 @@ def _oi(**overrides: Any) -> OiTradeCandidate:
         "source_strategy_id": "opennews_oi_v1",
         "source_contract_version": "oi_source_contract_v1",
         "learning_epoch": "epoch-1",
-        "program_version": "news_oi_signal_v1",
+        "program_version": "news_oi_signal_v2",
         "program_sha256": DIGEST,
-        "policy_version": "news_triage_policy_v10",
-        "editorial_origin": "telemetry_deterministic",
-        "editorial_sha256": DIGEST,
-        "scored_judgment_sha256": DIGEST,
+        "policy_version": "news_triage_policy_v11",
+        "judgment_contract_version": "news_judgment_v2",
+        "judgment_origin": "oi",
+        "judgment_sha256": DIGEST,
         "runtime_manifest_sha": DIGEST,
     }
     values.update(overrides)

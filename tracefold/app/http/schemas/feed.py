@@ -14,9 +14,8 @@ from .news_common import (
 class NewsFeedOiData(ExactApiSchema):
     """#207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.
 
-    `None` on every other admission. These are `oi_judgment_trace()` / `oi_parse_failure()` fields read back
-    verbatim so the browser never re-runs `oi_signal_parser_v1` over `leader_title` — a second parser in the
-    page would drift from the judge the moment either changed, and every figure here keys a stored verdict.
+    `None` on every other admission. The server assembles these fields from the typed judgment atom and its
+    current source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.
 
     The two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an
     unparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /
@@ -45,7 +44,6 @@ class NewsFeedOiData(ExactApiSchema):
 
 
 class NewsFeedEventData(NewsEventData):
-    title_zh: str | None = None
     outcome: NewsOutcomeData
     triage: NewsTriageSummaryData | None = None
     delivery: NewsDeliverySummaryData | None = None
@@ -56,19 +54,22 @@ class NewsFeedEventData(NewsEventData):
 
 
 class NewsFeedFiltersData(ExactApiSchema):
-    family: str | None = None
+    event_family: str | None = None
+    change_state: str | None = None
+    assertion_status: str | None = None
+    source_authority: str | None = None
+    subject_code: str | None = None
+    final_decision: str | None = None
+    event_kind: str | None = None
     admission: str | None = None
-    decision: str | None = None
     symbol: str | None = None
     q: str | None = None
     limit: int
     outcome: Literal["pushed", "held", "pending"] | None = None
     hours: int | None = None
     oi: Literal["all", "pushed", "withheld", "parse_failed"] | None = None
-    # Comma-separated canonical values. The feed toolbar treats each axis as a multi-select and the server
-    # remains the authority over the result set; echoing the normalized query keeps the response auditable.
+    # Comma-separated canonical values. The server owns normalization and echoes the exact applied selection.
     direction: str | None = None
-    channel: str | None = None
 
 
 class NewsFeedCountsData(ExactApiSchema):

@@ -122,7 +122,7 @@ export function NewsSymbolEvents({
 
 function EventRow({ event }: { event: NewsFeedEvent }) {
   const triage = event.triage;
-  const headline = triage?.headline_zh?.trim() || event.title_zh?.trim() || event.leader_title;
+  const headline = triage?.headline_zh?.trim() || event.leader_title;
   return (
     <article className="news-symbol-row">
       <time

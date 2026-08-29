@@ -14,9 +14,9 @@ Schema deployment is not evidence that the classifier passed those gates.
 - Taxonomy version: `news_taxonomy_v1`.
 - IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
-- Production Program: `news_semantic_program_v7`, Program SHA
-  `0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24`.
-- Review contract: `news_review_v5`.
+- Production Program: `news_semantic_program_v8`, Program SHA
+  `2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+- Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` from structured source and
   provenance. The exact allowlists live in `tracefold.news.taxonomy`; prose is
@@ -88,25 +88,23 @@ the underlying financial, product, corporate, or regulatory event.
 ## Persistence and readers
 
 Model-origin `EditorialEnvelope.v2` requires a complete taxonomy and hashes it
-with TradeRelevance in the same Judgment. Historical v1 envelopes remain
-readable through their explicit v1 hash shape and return no taxonomy; no
-backfill or reverse rewrite occurs.
+with TradeRelevance in the same `news_judgment_v2` atom. Ordinary readers accept
+that current marker only. Earlier envelopes and judgments remain unchanged as
+immutable database evidence, but they are archive-only: no Program, history,
+review task, learning dataset, release gate, API, or Web path decodes or
+translates them.
 
 The Event detail API and console expose Chinese labels for all five axes, and
-market-review discovery reads versioned `event_family`. The internal
-ReaderHistory, learning policy replay, evaluation history and progression
-review retain `event_type`: changing those inputs would change novelty or
-Delivery behavior, which Phase 3 forbids. The legacy field remains visible as
-`旧分类` and diagnostic evidence only; it is not taxonomy Gold, routing authority
-or a taxonomy fallback. New writes contain one v2 editorial envelope, not v1/v2
-dual writes. Removing the legacy decision field belongs to a separately
-evidence-gated behavior release after its remaining consumers are retired.
-Structured listing, OI and liquidation presentation continues to read
-code-owned `event_kind` and never enters the generic Review v5 queue.
+market-review discovery reads versioned `event_family`. ReaderHistory,
+ToldContext, progression, learning replay, and evaluation carry full current
+field names and exact current identities; none accepts a compact or historical
+shape. Structured listing, OI, and liquidation presentation reads code-owned
+`event_kind`; OI and liquidation use their own typed judgments and do not
+fabricate model taxonomy or enter the generic Review v5 queue.
 
 ## Gold, shadow and evaluation
 
-Only an accepted `news_review_v5` receipt is Gold. A model draft records its
+Only an accepted `news_review_v6` receipt is Gold. A model draft records its
 author; that author cannot accept it. Product/financial/guidance families,
 confirmed-vs-rumor, `other`/`unknown`, legacy collisions, draft disagreement and
 other critical cases require a different adjudicator before release eligibility.

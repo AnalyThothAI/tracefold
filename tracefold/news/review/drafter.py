@@ -1,4 +1,4 @@
-"""Model-drafted `news_review_v5` rubrics, for a human to accept or reject (#117, #148).
+"""Model-drafted `news_review_v6` rubrics, for a human to accept or reject (#117, #148).
 
 Two facts set the whole shape of this module.
 
@@ -7,9 +7,8 @@ First, gold coverage is 0.1226 and *all* of it is `novelty` — no accepted revi
 gold, a failed dimension scores on "did anything change", so an optimizer can bank points by changing a value
 to another wrong one. Stating the right answer is worth more than any amount of extra compute.
 
-Second, `ReviewDesk.submit` writes an `acceptance` row unconditionally — there is no draft state, and
-`news_reviews_kind_check` allows only `judgment | acceptance | legacy`. So anything written through that path
-is accepted release evidence the instant it lands.
+Second, `ReviewDesk.submit` writes an `acceptance` row unconditionally — there is no draft state. Anything
+written through that path is accepted release evidence the instant it lands.
 
 Therefore a draft is **not** a review and never touches `news_reviews`. This produces a file. A human reads it,
 edits what is wrong, and submits the approved subset through the existing `review submit` — which stays the

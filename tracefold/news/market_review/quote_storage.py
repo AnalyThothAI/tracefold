@@ -319,7 +319,8 @@ class QuoteStorage:
                      SELECT bool_or(replace(upper(x ->> 'symbol'), 'XYZ-', '') = a.symbol)
                        FROM (
                          SELECT v.verdict FROM news_verdicts v
-                          WHERE v.event_id = a.event_id AND v.stage = 'triage'
+                         WHERE v.event_id = a.event_id AND v.stage = 'triage'
+                           AND v.judgment_contract_version = 'news_judgment_v2'
                           ORDER BY v.created_at_ms DESC LIMIT 1
                        ) t, LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x
                       WHERE x ->> 'role' = 'primary'
@@ -490,6 +491,7 @@ class QuoteStorage:
                 JOIN LATERAL (
                   SELECT v.verdict FROM news_verdicts v
                    WHERE v.event_id = w.event_id AND v.stage = 'triage'
+                     AND v.judgment_contract_version = 'news_judgment_v2'
                    ORDER BY v.created_at_ms DESC LIMIT 1
                 ) t ON true,
                 LATERAL jsonb_array_elements(COALESCE(t.verdict -> 'assets', '[]'::jsonb)) x

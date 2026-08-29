@@ -1025,7 +1025,7 @@ def _told_rows(context: TriageContext) -> list[dict[str, Any]]:
         {
             "i": entry.i,
             "event_id": entry.event_id,
-            "dir": entry.direction,
+            "direction": entry.direction,
             "headline_zh": entry.headline_zh,
             "grounded_assets": list(entry.symbols),
         }

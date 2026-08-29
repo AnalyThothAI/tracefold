@@ -43,7 +43,7 @@ from .ledger import LearningLedger
 from .profile import _PROFILE, TRUSTED_ROOT_SHA
 from .projection import _connected_fact_clusters
 
-DATASET_VERSION: Literal["news_learning_dataset_v1"] = "news_learning_dataset_v1"
+DATASET_VERSION: Literal["news_learning_dataset_v2"] = "news_learning_dataset_v2"
 # A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
 # after an Event opens, so freezing to "now" seals cases whose scores change after the file is written.
 SETTLEMENT_GRACE_MS = 10 * 60_000
@@ -66,7 +66,7 @@ class DatasetManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_sha: str
-    dataset_version: Literal["news_learning_dataset_v1"] = DATASET_VERSION
+    dataset_version: Literal["news_learning_dataset_v2"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
     learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
@@ -246,16 +246,12 @@ class DevelopmentDatasetStore:
         self,
         window: ClosedWindow,
         *,
-        cohort: bool = True,
         limit: int = 500,
     ) -> tuple[dict[str, Any], ...]:
         """Project accepted reviews in a window for the offline baseline. Freezes nothing, writes nothing.
 
-        ``cohort=True`` applies the release-plane eligibility for the exact active Program bundle — the
-        population a candidate would later be judged on. ``cohort=False`` drops it and takes every accepted
-        event review in the window, which is what a metric-wiring proof needs: the only labelled corpus this
-        project has was produced by an arm that has since been retired, and refusing to read it would mean the
-        baseline could never be checked against a known number.
+        The exact active Program bundle is the only current population.  Rows
+        from earlier epochs remain audit evidence and are not projected.
 
         Each episode carries the persisted ``DecisionResult`` projection so a caller can score history as it
         happened instead of as today's ``decide()`` would replay it.  A final-action string is insufficient:
@@ -264,16 +260,16 @@ class DevelopmentDatasetStore:
 
         if limit <= 0:
             raise ValueError("news_program_baseline_limit_invalid")
-        epoch_started_at_ms = self._ledger.epoch_started_at_ms() if cohort else 0
-        cases = (
-            self._accepted_cases(window, freeze_as_of_ms=self._ledger.now_ms(), epoch_started_at_ms=epoch_started_at_ms)
-            if cohort
-            else self._baseline_cases(window)
+        epoch_started_at_ms = self._ledger.epoch_started_at_ms()
+        cases = self._accepted_cases(
+            window,
+            freeze_as_of_ms=self._ledger.now_ms(),
+            epoch_started_at_ms=epoch_started_at_ms,
         )
         cases = tuple(sorted(cases, key=lambda case: (case.opened_at_ms, case.case_id))[:limit])
         if not cases:
             return ()
-        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms, cohort=cohort)
+        seed = self._seed_receipts(window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
         return self._with_recorded_decisions(cases, self._project_episodes(cases, seed))
 
     def _with_recorded_decisions(
@@ -320,59 +316,6 @@ class DevelopmentDatasetStore:
                 "seen_scope": str(trace.get("seen_scope") or ""),
             }
         return decisions
-
-    def _baseline_cases(self, window: ClosedWindow) -> tuple[DatasetCaseRef, ...]:
-        """Every accepted event review in the window, with no cohort filter. Baseline-only."""
-
-        rows = self._repository.accepted_event_review_sources(
-            rubric_versions=REVIEW_RUBRIC_VERSIONS,
-            reader_contract_version=READER_CONTRACT_VERSION,
-            from_ms=window.from_ms,
-            to_ms=window.to_ms,
-        )
-        drafts: list[tuple[DatasetCaseRef, str, str]] = []
-        for row in rows:
-            snapshot = dict(row["evidence_snapshot"] or {})
-            selection = dict(row.get("selection") or {})
-            case_id = _sha(
-                {
-                    "subject_kind": "event",
-                    "event_id": row.get("event_id"),
-                    "external_snapshot_id": None,
-                    "evidence_sha256": row["evidence_sha256"],
-                    "review_id": row["review_id"],
-                }
-            )
-            novelty = dict(row.get("novelty") or {})
-            drafts.append(
-                (
-                    DatasetCaseRef(
-                        case_id=case_id,
-                        subject_kind="event",
-                        event_id=row.get("event_id"),
-                        evidence_version=row.get("evidence_version"),
-                        evidence_sha256=row["evidence_sha256"],
-                        review_id=row["review_id"],
-                        cluster_id=_fact_cluster(str((snapshot.get("focus_fact") or {}).get("text") or "")),
-                        stratum=str(selection.get("stratum") or "eventless_miss"),
-                        should_push=str(row.get("should_push") or "uncertain"),
-                        opened_at_ms=int(row["opened_at_ms"]),
-                        delivery_truth=(
-                            "observed_sent" if str(row.get("delivery_state") or "") == "sent" else "observed_not_sent"
-                        ),
-                    ),
-                    str(novelty.get("duplicate_of") or "")
-                    if str(novelty.get("judgment") or "") == "restatement"
-                    else "",
-                    _sha(
-                        {
-                            "url": (snapshot.get("card") or {}).get("leader_url"),
-                            "focus_fact_id": (snapshot.get("focus_fact") or {}).get("fact_id"),
-                        }
-                    ),
-                )
-            )
-        return tuple(_connected_fact_clusters(drafts))
 
     def _project_episodes(
         self,
@@ -434,10 +377,10 @@ class DevelopmentDatasetStore:
                         magnitude=verdict.magnitude,
                         direction=verdict.direction,
                         headline_zh=verdict.headline_zh,
+                        why_zh=verdict.why_zh,
                         comparison_title=str(card.get("comparison_title") or ""),
                         comparison_fingerprint=str(card.get("comparison_fingerprint") or ""),
-                        family=str(card.get("family") or "general"),
-                        event_type=verdict.event_type,
+                        dedupe_family=str(card.get("dedupe_family") or "general"),
                         grounded_assets=tuple(str(value) for value in card.get("grounded_assets") or ()),
                         assets=tuple(asset.symbol for asset in verdict.assets),
                         canonical_assets=self._history.canonical_assets(
@@ -477,7 +420,7 @@ class DevelopmentDatasetStore:
             },
             "storyline": {
                 "title": str(event.get("leader_title") or ""),
-                "family": str(event.get("family") or "general"),
+                "dedupe_family": str(event.get("dedupe_family") or "general"),
             },
             "seen": [row.as_told_row() for row in self._history.build(case, state).recent_seen_rows],
             "told": [
@@ -485,10 +428,8 @@ class DevelopmentDatasetStore:
                     "event_id": entry.event_id,
                     "at_ms": entry.at_ms,
                     "storyline_key": entry.storyline_key,
-                    "event_type": entry.event_type,
                     "magnitude": entry.magnitude,
                     "direction": entry.direction,
-                    "dir": entry.direction,
                     "headline_zh": entry.headline_zh,
                     "assets": list(entry.symbols),
                 }
@@ -500,10 +441,7 @@ class DevelopmentDatasetStore:
             # production never used.
             #
             # `policy_source` is the honest part. This is the *active* arm manifest, which is the arm that
-            # ran only for current-cohort episodes. `--all-cohorts` deliberately reaches retired cohorts
-            # whose own policy was never sealed, so replaying `decide()` over them applies today's rules to
-            # yesterday's corpus. That is a legitimate question and a different one, and the receipt has to
-            # say which was asked rather than let a verified hash imply the arm's own policy.
+            # ran for this exact current cohort.
             "policy_version": TRIAGE_POLICY_VERSION,
             "policy_values": dict(policy_arm.policy),
             "policy_source": "active_arm_manifest",
@@ -663,21 +601,15 @@ class DevelopmentDatasetStore:
             "window_duration_hours": round((spec.window.to_ms - spec.window.from_ms) / 3_600_000, 3),
         }
 
-    def _seed_receipts(
-        self, from_ms: int, *, epoch_started_at_ms: int, cohort: bool = True
-    ) -> tuple[dict[str, Any], ...]:
+    def _seed_receipts(self, from_ms: int, *, epoch_started_at_ms: int) -> tuple[dict[str, Any], ...]:
         """The 48 h receipt source the first cases replay against.
 
-        `cohort=False` drops the arm filter for the same reason `_baseline_cases` does. The ledger is what
-        `decide()` reads for the restatement drop and the similarity throttle; scoping it to the current arm
-        while the corpus is not would hand the earliest cases an empty ledger and bias every
-        `--action-source policy` score toward push, silently.
+        The ledger uses the exact current arm and epoch.
         """
 
         return self._history.seed_receipts(
             from_ms=from_ms,
             epoch_started_at_ms=epoch_started_at_ms,
-            cohort=cohort,
             program_version=self._stable.program_version,
             program_sha256=self._stable.program_sha256,
             bundle_sha=self._stable.bundle_sha,
@@ -710,12 +642,12 @@ class DevelopmentDatasetStore:
             if row is None or row["evidence_sha256"] != case.evidence_sha256:
                 raise ValueError("news_learning_evidence_changed")
             production_judgment: dict[str, Any] | None = None
-            if row.get("verdict") is not None and row.get("editorial") is not None:
+            if row.get("verdict") is not None and row.get("model_editorial") is not None:
                 scored = ScoredJudgment.issue(
                     verdict=TriageVerdict.model_validate(row["verdict"]),
-                    editorial=EditorialEnvelope.model_validate(row["editorial"]),
+                    editorial=EditorialEnvelope.model_validate(row["model_editorial"]),
                 )
-                if str(row.get("scored_judgment_sha256") or "") != scored.scored_judgment_sha256:
+                if str(row.get("judgment_sha256") or "") != scored.scored_judgment_sha256:
                     raise ValueError("news_learning_scored_judgment_identity_mismatch")
                 production_judgment = scored.model_dump(mode="json")
             return {
@@ -731,7 +663,8 @@ class DevelopmentDatasetStore:
             raise ValueError("news_learning_external_evidence_changed")
         snapshot = dict(row["snapshot"] or {})
         synthetic = {
-            "schema_version": "news_event_evidence_v2",
+            "schema_version": "news_event_evidence_v3",
+            "event_id": case.case_id,
             "focus_fact": {"fact_id": case.case_id, "text": snapshot["title"], "context": snapshot.get("body", "")},
             "card": {
                 "event_id": case.case_id,
@@ -742,7 +675,7 @@ class DevelopmentDatasetStore:
                 "leader_description": snapshot.get("body", ""),
                 "leader_url": snapshot["source_url"],
                 "reporting_origin": snapshot.get("provenance", "operator"),
-                "family": "general",
+                "dedupe_family": "general",
                 "admission": "external_miss",
                 "queue_priority": "normal",
                 "asset_class": "none",
@@ -751,6 +684,8 @@ class DevelopmentDatasetStore:
                 "opened_at_ms": case.opened_at_ms,
                 "member_count": 1,
             },
+            "members": [],
+            "provenance": "observed",
         }
         return {
             "snapshot": synthetic,
@@ -794,9 +729,9 @@ class DevelopmentDatasetStore:
         # reader; review showed that reader could never reach the branch, and #343 then deleted the
         # migration path entirely — dead code claiming to enable something is worse than its absence.
         #
-        # No live evidence is lost by saying so: the seven datasets in production carry `program_v7`, and
-        # the predecessor of this check already refused them for naming an epoch that was not the current
-        # one. Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
+        # No live evidence is lost by saying so: every pre-hard-cut dataset is archive-only, and the
+        # predecessor of this check already refused it for naming an epoch that was not current.
+        # Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
         sealed_epoch = str(exact_payload.get("learning_epoch") or "")
         sealed_bundle = (dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha")
         if not is_bundle_sha(sealed_bundle) or sealed_epoch != epoch_id_for_bundle(str(sealed_bundle)):

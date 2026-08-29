@@ -94,8 +94,7 @@ function EventDocument({
   token: string;
 }) {
   const { event, outcome, triage } = detail;
-  const headline = triage?.headline_zh?.trim() || triage?.title_zh?.trim() || event.leader_title;
-  const translated = triage?.title_zh?.trim();
+  const headline = triage?.headline_zh?.trim() || event.leader_title;
   const url = validExternalUrl(event.leader_url);
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const quoteList = assets.map((asset) => quotes[asset.symbol]).filter(Boolean);
@@ -132,12 +131,8 @@ function EventDocument({
         </div>
 
         <h1 className="news-detail-headline">{headline}</h1>
-        {translated && translated !== headline ? (
-          <p className="news-detail-translated">{translated}</p>
-        ) : null}
-
         {triage || assets.length ? (
-          <div aria-label="模型判定" className="news-detail-verdict">
+          <div aria-label="事件判定" className="news-detail-verdict">
             {triage ? <NewsDirectionChip size="lg" triage={triage} /> : null}
             {assets.length ? (
               <>
@@ -152,7 +147,7 @@ function EventDocument({
 
         {triage?.why_zh ? <p className="news-detail-why">{triage.why_zh}</p> : null}
         {triage ? <VerdictFacts triage={triage} /> : null}
-        {triage ? <ModelIntent triage={triage} /> : null}
+        {triage ? <VerdictAssets triage={triage} /> : null}
 
         <p className="news-detail-original">
           <span className="news-detail-original-label">
@@ -313,7 +308,7 @@ function EventReactions({
 }
 
 /**
- * The rest of the model's judgment, in the server's own words. A cell is omitted rather than rendered as a
+ * The rest of the current judgment, in the server's own words. A cell is omitted rather than rendered as a
  * dash when the server has nothing for it, so a macro Event with no assets does not show a row of dashes.
  */
 function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
@@ -327,7 +322,6 @@ function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
         { label: "来源权威", value: taxonomy?.source_authority_zh ?? "" },
         { label: "断言状态", value: taxonomy?.assertion_status_zh ?? "" },
         { label: "主题", value: taxonomy?.subject_labels_zh?.join("、") ?? "" },
-        { label: "旧分类", value: triage.event_type_zh },
         { label: "范围", value: triage.scope_zh },
         // Confidence used to sit beside the direction, where it competed with the one number that matters
         // there. It is a judgment detail like the rest, so it reads as one (#87).
@@ -336,10 +330,6 @@ function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
           value: triage.confidence == null ? "" : `${Math.round(triage.confidence * 100)}%`,
         },
         { label: "新颖度", value: triage.novelty_zh },
-        {
-          label: "可操作",
-          value: triage.actionable == null ? "" : triage.actionable ? "是" : "否",
-        },
         { label: "受众", value: triage.audience_zh },
       ]}
       label="判定明细"
@@ -347,13 +337,12 @@ function VerdictFacts({ triage }: { triage: NewsTriageSummary }) {
   );
 }
 
-/** Which assets the model itself called primary, and which it merely mentioned. */
-function ModelIntent({ triage }: { triage: NewsTriageSummary }) {
+/** Which assets the current judgment called primary, and which it merely mentioned. */
+function VerdictAssets({ triage }: { triage: NewsTriageSummary }) {
   const assets = triage.assets ?? [];
   const primary = assets.filter((asset) => asset.role === "primary").map((a) => a.symbol);
   const mentioned = assets.filter((asset) => asset.role !== "primary").map((a) => a.symbol);
-  const overruled = triage.model_decision && triage.model_decision !== triage.final_decision;
-  if (!primary.length && !mentioned.length && !overruled) return null;
+  if (!primary.length && !mentioned.length) return null;
   return (
     <p className="news-detail-intent">
       {primary.length ? (
@@ -370,15 +359,6 @@ function ModelIntent({ triage }: { triage: NewsTriageSummary }) {
           {mentioned.map((symbol) => (
             <code key={symbol}>{symbol}</code>
           ))}
-        </span>
-      ) : null}
-      {/* Shown only when the deterministic policy overruled the model — otherwise the outcome already said it. */}
-      {overruled ? (
-        <span className="news-detail-asset-group">
-          <small>模型建议</small>
-          <b>{triage.model_decision_zh || triage.model_decision}</b>
-          <small>最终</small>
-          <b>{triage.decision_zh || triage.final_decision}</b>
         </span>
       ) : null}
     </p>
@@ -465,13 +445,12 @@ function MemberList({ members }: { members: NewsEventMember[] }) {
 function TechnicalDetails({ detail }: { detail: NewsEventDetail }) {
   const { event } = detail;
   return (
-    <NewsTechnical summary="技术详情（事件 id、话题线、判定与投递原始记录）">
+    <NewsTechnical summary="技术详情（事件 id、话题线、判定与投递记录）">
       <section>
         <h4>事件</h4>
         <KeyValue>
           <KeyValueRow k="event_id" v={event.event_id} />
           <KeyValueRow k="storyline_key" v={event.storyline_key} />
-          <KeyValueRow k="family" v={event.family} />
           <KeyValueRow k="admission" v={event.admission} />
           <KeyValueRow k="engine_type" v={event.engine_type} />
           <KeyValueRow k="ingest_mode" v={event.ingest_mode} />
@@ -517,21 +496,31 @@ function VerdictRecord({ verdict }: { verdict: NewsVerdict }) {
       <h4>判定 · {verdict.stage}</h4>
       <KeyValue>
         <KeyValueRow k="policy_version" v={verdict.policy_version} />
-        <KeyValueRow k="prompt_version" v={verdict.prompt_version ?? "—"} />
+        <KeyValueRow k="judgment_contract_version" v={verdict.judgment_contract_version} />
+        <KeyValueRow k="judgment_origin" v={verdict.judgment_origin} />
+        <KeyValueRow k="judgment_sha256" v={verdict.judgment_sha256} />
         <KeyValueRow k="model" v={verdict.model ?? "—"} />
-        <KeyValueRow k="model_decision" v={verdict.model_decision ?? "—"} />
+        <KeyValueRow k="program_version" v={verdict.program_version} />
+        <KeyValueRow k="program_sha256" v={verdict.program_sha256} />
         <KeyValueRow k="rule_baseline_decision" v={verdict.rule_baseline_decision} />
         <KeyValueRow k="final_decision" v={verdict.final_decision} />
         <KeyValueRow k="override_rule" v={verdict.override_rule ?? "—"} />
         <KeyValueRow k="throttled_by" v={verdict.throttled_by ?? "—"} />
         <KeyValueRow k="degraded" v={verdict.degraded ? "true" : "false"} />
         <KeyValueRow k="error_code" v={verdict.error_code ?? "—"} />
+        <KeyValueRow k="verdict_direction" v={verdict.verdict.direction} />
+        <KeyValueRow k="verdict_magnitude" v={String(verdict.verdict.magnitude)} />
+        <KeyValueRow k="verdict_scope" v={verdict.verdict.scope} />
+        <KeyValueRow k="verdict_novelty" v={verdict.verdict.novelty} />
+        <KeyValueRow k="headline_zh" v={verdict.verdict.headline_zh} />
+        <KeyValueRow k="event_family" v={verdict.model_editorial?.taxonomy.event_family ?? "—"} />
+        <KeyValueRow k="reader_value" v={verdict.model_editorial?.relevance.reader_value ?? "—"} />
+        <KeyValueRow k="evidence_version" v={String(verdict.evidence_version)} />
+        <KeyValueRow k="evidence_sha256" v={verdict.evidence_sha256} />
+        <KeyValueRow k="focus_fact_id" v={verdict.focus_fact_id} />
         <KeyValueRow k="created_at_ms" v={absoluteTime(verdict.created_at_ms)} />
         <KeyValueRow k="published_at_ms" v={optionalTime(verdict.published_at_ms)} />
       </KeyValue>
-      <pre className="news-json">
-        {JSON.stringify({ verdict: verdict.verdict, trace: verdict.trace }, null, 2)}
-      </pre>
     </section>
   );
 }

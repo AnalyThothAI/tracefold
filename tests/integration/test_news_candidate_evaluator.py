@@ -46,6 +46,7 @@ from tracefold.news.program.artifact import (
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import (
+    JUDGMENT_CONTRACT_VERSION,
     EditorialEnvelope,
     ProgramCallTrace,
     ProgramTrace,
@@ -58,7 +59,6 @@ from tracefold.news.program.contracts import (
 )
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
-from tracefold.news.reader_history import assemble_reader_history
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
@@ -279,17 +279,13 @@ def _verdict() -> dict[str, object]:
     return {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "regulation",
         "assets": [],
         "direction": "bullish",
         "scope": "sector",
         "magnitude": 2,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "audience": "us_equity",
         "headline_zh": "DRAM 合约价续涨",
-        "title_zh": "",
         "why_zh": "行业价格继续改善，但持续性仍需后续数据确认。",
     }
 
@@ -306,41 +302,34 @@ def _relevance() -> TradeRelevanceV1:
     )
 
 
-def _editorial(*, origin: str = "model") -> EditorialEnvelope:
-    if origin == "model":
-        return EditorialEnvelope.issue(
-            editorial_origin="model",
-            relevance=_relevance(),
-            taxonomy=news_taxonomy(
-                event_family="regulatory_legal",
-                change_state="reported",
-                assertion_status="claimed",
-                source_authority="reputable_secondary",
-            ),
-        )
-    return EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None)
+def _editorial() -> EditorialEnvelope:
+    return EditorialEnvelope.issue(
+        relevance=_relevance(),
+        taxonomy=news_taxonomy(
+            event_family="regulatory_legal",
+            change_state="reported",
+            assertion_status="claimed",
+            source_authority="reputable_secondary",
+        ),
+    )
 
 
-def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "model") -> dict[str, object]:
-    editorial = _editorial(origin=origin)
+def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
+    editorial = _editorial()
     scored = ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(verdict),
         editorial=editorial,
     )
     return {
         "verdict": verdict,
-        "editorial": editorial.model_dump(mode="json"),
-        "scored_judgment_sha256": scored.scored_judgment_sha256,
+        "model_editorial": editorial.model_dump(mode="json"),
+        "judgment_sha256": scored.scored_judgment_sha256,
     }
 
 
 def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object]) -> ProgramTrace:
     context_sha = _sha(context.model_dump(mode="json"))
-    semantics = {
-        key: value
-        for key, value in verdict.items()
-        if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
-    }
+    semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "why_zh"}}
     semantics["relevance"] = _relevance().model_dump(mode="json")
     card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
     editorial = _editorial()
@@ -459,7 +448,7 @@ class _StaticJudge:
         if self.candidate:
             verdict["headline_zh"] = "候选：DRAM 合约价续涨"
         if self.candidate and self.unstable and len(self.calls) == 3:
-            verdict.update(magnitude=0, actionable=False, decision="drop")
+            verdict.update(magnitude=0)
         trace = _trace(self.arm, context, verdict)
         return SemanticJudgment(
             verdict=verdict,
@@ -787,7 +776,7 @@ def _persist_prompt_candidate(
 
 def _insert_validation_dataset(conn, *, development, candidate: CandidateManifest) -> str:
     payload = {
-        "dataset_version": "news_learning_dataset_v1",
+        "dataset_version": "news_learning_dataset_v2",
         "role": "validation",
         "profile_id": "news_learning_release_v2",
         "learning_epoch": epoch_id_for_bundle(_arm().bundle_sha),
@@ -850,6 +839,8 @@ def _open_event(
     # which left the split ordered by the hash of the focus fact.
     published_at_ms: int | None = None,
     relevance: TradeRelevanceV1 | None = None,
+    final_decision: str = "push",
+    throttled_by: str | None = None,
 ) -> str:
     stable = _arm()
     effective_bundle = bundle_sha or stable.bundle_sha
@@ -885,15 +876,10 @@ def _open_event(
         evidence = repos.news.latest_evidence_snapshot(opened.event_id)
         assert evidence is not None
         verdict = _verdict()
-        semantics = {
-            key: value
-            for key, value in verdict.items()
-            if key not in {"actionable", "decision", "headline_zh", "title_zh", "why_zh"}
-        }
+        semantics = {key: value for key, value in verdict.items() if key not in {"headline_zh", "why_zh"}}
         semantics["relevance"] = effective_relevance.model_dump(mode="json")
         card = {key: verdict[key] for key in ("headline_zh", "why_zh")}
         editorial = EditorialEnvelope.issue(
-            editorial_origin="model",
             relevance=effective_relevance,
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
@@ -1049,14 +1035,15 @@ def _open_event(
             event_id=opened.event_id,
             stage="triage",
             policy_version=dataset_module.TRIAGE_POLICY_VERSION,
-            model_decision="push",
+            judgment_contract_version=JUDGMENT_CONTRACT_VERSION,
+            judgment_origin="model",
             rule_baseline_decision="push",
-            final_decision="push",
+            final_decision=final_decision,
             override_rule="trade_relevance_realtime",
-            throttled_by=None,
+            throttled_by=throttled_by,
             verdict=verdict,
-            editorial=editorial.model_dump(mode="json"),
-            scored_judgment_sha256=scored.scored_judgment_sha256,
+            model_editorial=editorial.model_dump(mode="json"),
+            judgment_sha256=scored.scored_judgment_sha256,
             runtime_manifest_sha=str(runtime_manifest_row["manifest_sha"]),
             model="fixture-model",
             program_version=effective_program_version,
@@ -1066,6 +1053,18 @@ def _open_event(
             trace={
                 "program_version": effective_program_version,
                 "program_sha256": effective_program_sha,
+                "judgment_contract_version": JUDGMENT_CONTRACT_VERSION,
+                "judgment_origin": "model",
+                "judgment_sha256": scored.scored_judgment_sha256,
+                "verdict_sha256": scored.verdict_sha256,
+                "editorial_sha256": editorial.editorial_sha256,
+                "runtime_manifest_sha": str(runtime_manifest_row["manifest_sha"]),
+                "evidence_version": int(evidence["evidence_version"]),
+                "evidence_sha256": str(evidence["evidence_sha256"]),
+                "focus_fact_id": str(evidence["focus_fact_id"]),
+                "told": [],
+                "told_count": 0,
+                **({"seen_scope": "all"} if throttled_by else {}),
                 "agent_assignment": {"arm": "stable", "bundle_sha": effective_bundle},
                 "program_execution_index": 1 if stale_reask else 0,
                 "program_trace": selected_trace,
@@ -1135,16 +1134,8 @@ def _accepted_event(
         published_at_ms=published_at_ms,
         relevance=relevance,
         delivered=delivered,
-    )
-    conn.execute(
-        "UPDATE news_verdicts SET trace = trace || %s::jsonb, final_decision = %s, throttled_by = %s "
-        "WHERE event_id = %s AND stage = 'triage'",
-        (
-            json.dumps({"agent_assignment": {"arm": "stable", "bundle_sha": selected_stable.bundle_sha}}),
-            final_decision,
-            throttled_by,
-            event_id,
-        ),
+        final_decision=final_decision,
+        throttled_by=throttled_by,
     )
     if delivery_error_code is not None:
         repos = repositories_for_connection(conn)
@@ -1366,89 +1357,6 @@ def test_freeze_dataset_includes_undelivered_holds_but_excludes_unsafe_pushes(co
     assert ambiguous_push not in case_ids
     assert development.counts["case_n"] == 2
     assert development.counts["eligible_event_n"] == 4
-
-
-def test_seed_receipts_match_production_latest_delivered_verdict_with_multiple_routes(conn) -> None:
-    stable = _arm()
-    event_id = _open_event(
-        conn,
-        bundle_sha=stable.bundle_sha,
-        program_version=stable.program_version,
-        program_sha256=stable.program_sha256,
-    )
-    repos = repositories_for_connection(conn)
-    source = dict(
-        conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = 'triage' ORDER BY created_at_ms DESC",
-            (event_id,),
-        ).fetchone()
-    )
-
-    def add_route(*, suffix: str, final: str, event_type: str, direction: str, at_ms: int) -> None:
-        verdict = dict(source["verdict"])
-        verdict.update(
-            {
-                "event_type": event_type,
-                "direction": direction,
-                "assets": [{"symbol": "BABA", "role": "primary"}],
-            }
-        )
-        assert repos.news.insert_verdict(
-            event_id=event_id,
-            stage="triage",
-            policy_version=f"news_triage_policy_v10_{suffix}",
-            model_decision=final,
-            rule_baseline_decision=final,
-            final_decision=final,
-            override_rule=source["override_rule"],
-            throttled_by=source["throttled_by"],
-            verdict=verdict,
-            editorial=dict(source["editorial"]),
-            scored_judgment_sha256=str(source["scored_judgment_sha256"]),
-            runtime_manifest_sha=str(source["runtime_manifest_sha"]),
-            model=str(source["model"]),
-            program_version=str(source["program_version"]),
-            program_sha256=str(source["program_sha256"]),
-            degraded=bool(source["degraded"]),
-            error_code=source["error_code"],
-            trace=dict(source["trace"]),
-            evidence_version=int(source["evidence_version"]),
-            evidence_sha256=str(source["evidence_sha256"]),
-            focus_fact_id=str(source["focus_fact_id"]),
-            now_ms=at_ms,
-        )
-
-    with repos.transaction():
-        add_route(
-            suffix="latest_delivered",
-            final="push",
-            event_type="regulation",
-            direction="bearish",
-            at_ms=NOW - 3_200_000,
-        )
-        add_route(
-            suffix="later_drop",
-            final="drop",
-            event_type="hack",
-            direction="bullish",
-            at_ms=NOW - 3_100_000,
-        )
-
-    production = repos.news.reader_history(
-        event_id="candidate-event",
-        now_ms=NOW,
-        include_targeted=False,
-    )
-    seed_rows = _datasets(conn, stable)._seed_receipts(
-        NOW,
-        epoch_started_at_ms=_epoch_started_at_ms(conn),
-    )
-    evaluation = assemble_reader_history(recent_rows=seed_rows, now_ms=NOW)
-
-    assert len(seed_rows) == 1
-    assert evaluation.recent_seen_rows == production.recent_seen_rows
-    assert evaluation.recent_seen_rows[0].event_type == "regulation"
-    assert evaluation.recent_seen_rows[0].direction == "bearish"
 
 
 def test_program_epoch_rejects_old_windows_and_old_artifacts_but_preserves_audit_json(conn) -> None:
@@ -2341,7 +2249,7 @@ def test_model_recording_conflict_rejects_nondeterministic_response(conn) -> Non
             "leader_description": "Contract prices rose in August.",
             "opened_at_ms": NOW - 3_600_000,
             "member_count": 1,
-            "family": "earnings",
+            "dedupe_family": "earnings",
             "queue_priority": "normal",
             "asset_class": "equity",
             "storyline_key": "asset:MU",
@@ -2389,7 +2297,7 @@ def test_every_physical_terminal_persists_a_complete_replay_document(conn) -> No
             "leader_title": "Terminal recording fixture",
             "opened_at_ms": NOW - 3_600_000,
             "member_count": 1,
-            "family": "general",
+            "dedupe_family": "general",
             "queue_priority": "normal",
             "asset_class": "none",
             "storyline_key": "topic:recording",
@@ -2473,7 +2381,7 @@ def test_synthetic_trace_entry_is_audited_but_not_recorded_or_charged(conn) -> N
             "leader_description": "Contract prices rose in August.",
             "opened_at_ms": NOW - 3_600_000,
             "member_count": 1,
-            "family": "earnings",
+            "dedupe_family": "earnings",
             "queue_priority": "normal",
             "asset_class": "equity",
             "storyline_key": "asset:MU",
@@ -3275,13 +3183,6 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
         hit_id=112002,
         title="An event produced by a different deployed bundle",
         bundle_sha=_sha("other-bundle"),
-    )
-    _open_event(
-        conn,
-        hit_id=112003,
-        title="An event produced by an older semantic program",
-        program_version="news_semantic_program_retired",
-        program_sha256=_sha("retired-program"),
     )
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(

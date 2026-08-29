@@ -18,6 +18,7 @@ from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.platform.postgres.migrations import alembic_config
 
@@ -62,6 +63,673 @@ def _fresh_schema_at(revision: str) -> None:
     _upgrade(revision)
 
 
+def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_marker() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260829_0329")
+        conn = connect_postgres_test(read_only=False)
+        taxonomy = {
+            "subject_codes": ["medtop:20000178"],
+            "event_family": "financial_results",
+            "change_state": "reported",
+            "assertion_status": "confirmed",
+            "taxonomy_version": "news_taxonomy_v1",
+            "source_authority": "reputable_secondary",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
+        }
+        relevance = {
+            "impact_breadth": "sector",
+            "tradability": "direct",
+            "surprise": "unknown",
+            "development_delta": "material_detail",
+            "channels": ["earnings_cashflow"],
+            "affected_markets": ["us_equity_broad"],
+            "reader_value": "realtime",
+        }
+
+        def editorial_with_hash(*, taxonomy_value: dict[str, Any], relevance_value: dict[str, Any]) -> dict[str, Any]:
+            body = {
+                "editorial_contract_version": "news_editorial_v2",
+                "editorial_origin": "model",
+                "taxonomy": taxonomy_value,
+                "relevance": relevance_value,
+            }
+            return body | {"editorial_sha256": canonical_sha(body)}
+
+        valid_editorial = editorial_with_hash(taxonomy_value=taxonomy, relevance_value=relevance)
+        invalid_editorial = editorial_with_hash(
+            taxonomy_value=taxonomy | {"subject_codes": ["medtop:04000000", "medtop:20000178"]},
+            relevance_value=relevance | {"channels": ["bogus_channel"]},
+        )
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+              first_ingest_mode, created_at_ms, updated_at_ms
+            ) VALUES ('archive-item', 'opennews', 'archive-key', 'archive title', 1, 1, 'live', 1, 1)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_events (
+              event_id, leader_item_id, family, comparison_fingerprint, comparison_title,
+              leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+              ingest_mode, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text,
+              focus_fact_method, event_kind
+            ) VALUES (
+              'archive-event', 'archive-item', 'general', 'archive-fingerprint', 'archive title',
+              'archive title', 1, 1, 2, 'candidate', 'live', 1, 1, 'archive-fact',
+              'archive title', 'whole_title', 'news'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_verdicts (
+              event_id, stage, policy_version, model_decision, rule_baseline_decision,
+              final_decision, verdict, degraded, trace, created_at_ms
+            ) VALUES (
+              'archive-event', 'triage', 'archive-policy', 'drop', 'drop', 'drop',
+              '{}'::jsonb, false, '{}'::jsonb, 1
+            )
+            """
+        )
+        for offset, (policy_version, editorial) in enumerate(
+            (("archive-valid-taxonomy", valid_editorial), ("archive-invalid-taxonomy", invalid_editorial)),
+            start=2,
+        ):
+            conn.execute(
+                """
+                INSERT INTO news_verdicts (
+                  event_id, stage, policy_version, model_decision, rule_baseline_decision,
+                  final_decision, verdict, editorial, scored_judgment_sha256,
+                  runtime_manifest_sha, model, program_version, program_sha256,
+                  degraded, trace, created_at_ms
+                ) VALUES (
+                  'archive-event', 'triage', %s, 'drop', 'drop', 'drop', '{}'::jsonb,
+                  %s::jsonb, %s, %s, 'archive-model', 'news_semantic_program_v8', %s,
+                  false, '{}'::jsonb, %s
+                )
+                """,
+                (
+                    policy_version,
+                    json.dumps(editorial),
+                    ("d" if offset == 2 else "e") * 64,
+                    "a" * 64,
+                    "b" * 64,
+                    offset,
+                ),
+            )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("20260830_0330")
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'news_events'"
+            ).fetchall()
+        }
+        assert "dedupe_family" in columns and "family" not in columns
+        archived = conn.execute(
+            "SELECT judgment_contract_version, judgment_origin FROM news_verdicts WHERE event_id = 'archive-event'"
+        ).fetchall()
+        assert archived == [
+            {"judgment_contract_version": None, "judgment_origin": None},
+            {"judgment_contract_version": None, "judgment_origin": None},
+            {"judgment_contract_version": None, "judgment_origin": None},
+        ]
+        news = repositories_for_connection(conn).news
+        assert news.latest_verdict(event_id="archive-event", stage="triage") is None
+        assert news.event_detail("archive-event") == {"archive_only": True}
+        feed = news.list_feed(
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
+            final_decision=None,
+            event_kind=None,
+            admission=None,
+            search=None,
+            limit=10,
+            cursor=None,
+        )
+        assert feed["events"] == []
+        receipt = conn.execute(
+            "SELECT artifact_sha, payload FROM news_learning_artifacts "
+            "WHERE kind = 'epoch_reset' AND created_by = 'migration_20260830_0330'"
+        ).fetchone()
+        assert receipt is not None
+        expected_receipt = {
+            "kind": "news_current_contract_hard_cut",
+            "source_issue": "https://github.com/AnalyThothAI/tracefold/issues/369",
+            "judgment_contract_version": "news_judgment_v2",
+            "evidence_contract_version": "news_event_evidence_v3",
+            "total_old_verdict_rows": 3,
+            "current_taxonomy_present_rows": 1,
+            "missing_invalid_conflicting_rows": 2,
+            "archive_only_event_rows": 1,
+            "affected_review_rows": 0,
+            "affected_history_rows": 0,
+            "affected_learning_rows": 0,
+            "disposition": "immutable_audit_only",
+        }
+        assert receipt["payload"] == expected_receipt
+        assert receipt["artifact_sha"] == _ledger_artifact_sha("epoch_reset", expected_receipt)
+
+        with pytest.raises(CheckViolation) as rejected:
+            conn.execute(
+                """
+                INSERT INTO news_verdicts (
+                  event_id, stage, policy_version, rule_baseline_decision, final_decision,
+                  verdict, degraded, trace, created_at_ms
+                ) VALUES (
+                  'archive-event', 'triage', 'direct-without-marker', 'drop', 'drop',
+                  '{
+                    "novelty":"new_fact","restates":-1,"assets":[],"direction":"neutral",
+                    "scope":"single_name","magnitude":0,"confidence":1.0,"audience":"none",
+                    "headline_zh":"拒绝无标记直写","why_zh":""
+                  }'::jsonb,
+                  false, '{}'::jsonb, 2
+                )
+                """
+            )
+        assert rejected.value.diag.constraint_name == "news_verdicts_current_judgment_check"
+        conn.rollback()
+
+        with pytest.raises(CheckViolation) as null_identity_rejected:
+            conn.execute(
+                """
+                WITH payload AS (
+                  SELECT
+                    '{
+                      "novelty":"new_fact","restates":-1,"assets":[],"direction":"neutral",
+                      "scope":"single_name","magnitude":0,"confidence":1.0,"audience":"none",
+                      "headline_zh":"拒绝空身份直写","why_zh":""
+                    }'::jsonb AS verdict,
+                    '{
+                      "final":"drop","override_rule":null,"throttled_by":null,
+                      "rule_baseline":"drop","watchlist_hits":[],"seen_similarity":null,
+                      "seen_against":-1,"seen_scope":""
+                    }'::jsonb AS decision
+                ), judgment AS (
+                  SELECT verdict, jsonb_build_object(
+                    'judgment_contract_version', 'news_judgment_v2',
+                    'origin', 'degraded',
+                    'verdict', verdict,
+                    'decision', decision,
+                    'error_code', 'direct_sql_identity_null'
+                  ) AS atom
+                  FROM payload
+                ), hashed AS (
+                  SELECT verdict, atom,
+                         encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex')
+                           AS verdict_sha256,
+                         encode(digest(convert_to(news_canonical_jsonb(atom), 'UTF8'), 'sha256'), 'hex')
+                           AS judgment_sha256
+                  FROM judgment
+                )
+                INSERT INTO news_verdicts (
+                  event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+                  rule_baseline_decision, final_decision, verdict, degraded, error_code,
+                  trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
+                  program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+                )
+                SELECT
+                  'archive-event', 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'degraded',
+                  'drop', 'drop', verdict, true, 'direct_sql_identity_null',
+                  jsonb_build_object(
+                    'judgment_contract_version', 'news_judgment_v2',
+                    'judgment_origin', 'degraded',
+                    'judgment_sha256', judgment_sha256,
+                    'verdict_sha256', verdict_sha256,
+                    'evidence_version', 3,
+                    'evidence_sha256', repeat('c', 64),
+                    'focus_fact_id', 'archive-fact',
+                    'runtime_manifest_sha', repeat('a', 64),
+                    'told', '[]'::jsonb,
+                    'told_count', 0,
+                    'judgment', atom
+                  ),
+                  judgment_sha256, NULL, 'news_semantic_program_v8', repeat('b', 64),
+                  3, repeat('c', 64), 'archive-fact', 3
+                FROM hashed
+                """
+            )
+        assert null_identity_rejected.value.diag.constraint_name == "news_verdicts_current_judgment_check"
+        conn.rollback()
+
+        current_verdict = {
+            "novelty": "new_fact",
+            "restates": -1,
+            "assets": [],
+            "direction": "neutral",
+            "scope": "single_name",
+            "magnitude": 0,
+            "confidence": 1.0,
+            "audience": "none",
+            "headline_zh": "拒绝伪造分类直写",
+            "why_zh": "",
+        }
+        verdict_sha256 = canonical_sha(current_verdict)
+        degraded_decision = {
+            "final": "drop",
+            "override_rule": None,
+            "throttled_by": None,
+            "rule_baseline": "drop",
+            "watchlist_hits": [],
+            "seen_similarity": None,
+            "seen_against": -1,
+            "seen_scope": "",
+        }
+        degraded_atom = {
+            "judgment_contract_version": "news_judgment_v2",
+            "origin": "degraded",
+            "verdict": current_verdict,
+            "decision": degraded_decision,
+            "error_code": "direct_sql_old_trace_key",
+        }
+        degraded_judgment_sha256 = canonical_sha(degraded_atom)
+        old_key_trace = {
+            "judgment_contract_version": "news_judgment_v2",
+            "judgment_origin": "degraded",
+            "judgment_sha256": degraded_judgment_sha256,
+            "verdict_sha256": verdict_sha256,
+            "runtime_manifest_sha": "a" * 64,
+            "evidence_version": 3,
+            "evidence_sha256": "c" * 64,
+            "focus_fact_id": "archive-fact",
+            "told": [],
+            "told_count": 0,
+            "reader_history": {"legacy_label": "must_push"},
+            "judgment": degraded_atom,
+        }
+        with pytest.raises(CheckViolation) as old_trace_key_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_verdicts (
+                  event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+                  rule_baseline_decision, final_decision, verdict, degraded, error_code,
+                  trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
+                  program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+                ) VALUES (
+                  'archive-event', 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'degraded',
+                  'drop', 'drop', %s::jsonb, true, 'direct_sql_old_trace_key',
+                  %s::jsonb, %s, %s, 'news_semantic_program_v8', %s,
+                  3, %s, 'archive-fact', 4
+                )
+                """,
+                (
+                    json.dumps(current_verdict),
+                    json.dumps(old_key_trace),
+                    degraded_judgment_sha256,
+                    "a" * 64,
+                    "b" * 64,
+                    "c" * 64,
+                ),
+            )
+        assert old_trace_key_rejected.value.diag.constraint_name == "news_verdicts_current_judgment_check"
+        conn.rollback()
+
+        current_told_trace = old_key_trace | {
+            "told": [
+                {
+                    "i": 0,
+                    "event_id": "told-event",
+                    "at_ms": 1,
+                    "ago_min": 0,
+                    "storyline_key": "storyline:told",
+                    "comparison_title": "已读事件",
+                    "comparison_fingerprint": "d" * 64,
+                    "symbols": ["BTC"],
+                    "magnitude": 1,
+                    "direction": "neutral",
+                    "headline_zh": "已读事件",
+                    "why_zh": "用于验证非空 current told ledger。",
+                    "tier": "recency",
+                    "similarity": 0.0,
+                    "history_scope": "recent",
+                    "retrieval_reason": "recent",
+                }
+            ],
+            "told_count": 1,
+        }
+        del current_told_trace["reader_history"]
+        conn.execute(
+            """
+            INSERT INTO news_verdicts (
+              event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+              rule_baseline_decision, final_decision, verdict, degraded, error_code,
+              trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
+              program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+            ) VALUES (
+              'archive-event', 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'degraded',
+              'drop', 'drop', %s::jsonb, true, 'direct_sql_old_trace_key',
+              %s::jsonb, %s, %s, 'news_semantic_program_v8', %s,
+              3, %s, 'archive-fact', 4
+            )
+            """,
+            (
+                json.dumps(current_verdict),
+                json.dumps(current_told_trace),
+                degraded_judgment_sha256,
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+            ),
+        )
+        conn.commit()
+
+        forged_structured_decision = degraded_decision | {"override_rule": "forged_rule"}
+        for origin, program_version, policy_version, fact_key, error_code, metadata_key, metadata in (
+            (
+                "oi",
+                "news_oi_signal_v2",
+                "news_triage_policy_v11",
+                "signal",
+                "oi_parse_failed",
+                "oi_signal",
+                {
+                    "parsed": False,
+                    "strategy_id": "1019",
+                    "provider": "opennews",
+                    "provider_source": "",
+                    "title_sha256": "d" * 64,
+                    "parser_version": "oi_signal_parser_v1",
+                    "source_classifier_version": "opennews_source_classifier_v1",
+                    "failure_stage": "source_contract_drift",
+                },
+            ),
+            (
+                "liquidation",
+                "news_liquidation_fact_v2",
+                "news_liquidation_policy_v2",
+                "fact",
+                "liquidation_parse_failed",
+                "liquidation",
+                {
+                    "parsed": False,
+                    "strategy_id": "2000",
+                    "provider": "opennews",
+                    "provider_source": "",
+                    "title_sha256": "e" * 64,
+                    "parser_version": "liquidation_parser_v1",
+                    "source_classifier_version": "opennews_source_classifier_v1",
+                    "failure_stage": "source_contract_drift",
+                },
+            ),
+        ):
+            forged_atom = {
+                "judgment_contract_version": "news_judgment_v2",
+                "origin": origin,
+                "verdict": current_verdict,
+                fact_key: None,
+                "rule": "forged_rule",
+                "decision": forged_structured_decision,
+            }
+            if origin == "oi":
+                forged_atom["rank_in_window"] = 0
+            forged_sha = canonical_sha(forged_atom)
+            forged_trace = {
+                "judgment_contract_version": "news_judgment_v2",
+                "judgment_origin": origin,
+                "judgment_sha256": forged_sha,
+                "verdict_sha256": verdict_sha256,
+                "runtime_manifest_sha": "a" * 64,
+                "evidence_version": 3,
+                "evidence_sha256": "c" * 64,
+                "focus_fact_id": "archive-fact",
+                "told": [],
+                "told_count": 0,
+                metadata_key: metadata,
+                "judgment": forged_atom,
+            }
+            with pytest.raises(CheckViolation) as forged_structured_rule_rejected:
+                conn.execute(
+                    """
+                    INSERT INTO news_verdicts (
+                      event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+                      rule_baseline_decision, final_decision, override_rule, verdict, degraded, error_code,
+                      trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
+                      program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+                    ) VALUES (
+                      'archive-event', 'triage', %s, 'news_judgment_v2', %s,
+                      'drop', 'drop', 'forged_rule', %s::jsonb, false, %s,
+                      %s::jsonb, %s, %s, %s, %s, 3, %s, 'archive-fact', 5
+                    )
+                    """,
+                    (
+                        policy_version,
+                        origin,
+                        json.dumps(current_verdict),
+                        error_code,
+                        json.dumps(forged_trace),
+                        forged_sha,
+                        "a" * 64,
+                        program_version,
+                        "b" * 64,
+                        "c" * 64,
+                    ),
+                )
+            assert forged_structured_rule_rejected.value.diag.constraint_name == "news_verdicts_current_judgment_check"
+            conn.rollback()
+
+        invalid_judgment_sha256 = canonical_sha(
+            {
+                "judgment_contract_version": "news_judgment_v2",
+                "verdict": current_verdict,
+                "editorial": invalid_editorial,
+                "verdict_sha256": verdict_sha256,
+            }
+        )
+        invalid_trace = {
+            "judgment_contract_version": "news_judgment_v2",
+            "judgment_origin": "model",
+            "judgment_sha256": invalid_judgment_sha256,
+            "verdict_sha256": verdict_sha256,
+            "editorial_sha256": invalid_editorial["editorial_sha256"],
+            "runtime_manifest_sha": "a" * 64,
+            "evidence_version": 3,
+            "evidence_sha256": "c" * 64,
+            "focus_fact_id": "archive-fact",
+            "told": [],
+            "told_count": 0,
+        }
+        with pytest.raises(CheckViolation) as malformed_model_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_verdicts (
+                  event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+                  rule_baseline_decision, final_decision, verdict, editorial,
+                  scored_judgment_sha256, runtime_manifest_sha, model, program_version,
+                  program_sha256, degraded, trace, evidence_version, evidence_sha256,
+                  focus_fact_id, created_at_ms
+                ) VALUES (
+                  'archive-event', 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'model',
+                  'drop', 'drop', %s::jsonb, %s::jsonb, %s, %s, 'direct-model',
+                  'news_semantic_program_v8', %s, false, %s::jsonb, 3, %s, 'archive-fact', 4
+                )
+                """,
+                (
+                    json.dumps(current_verdict),
+                    json.dumps(invalid_editorial),
+                    invalid_judgment_sha256,
+                    "a" * 64,
+                    "b" * 64,
+                    json.dumps(invalid_trace),
+                    "c" * 64,
+                ),
+            )
+        assert malformed_model_rejected.value.diag.constraint_name == "news_verdicts_current_judgment_check"
+        conn.rollback()
+
+        with pytest.raises(CheckViolation) as legacy_review_payload_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_reviews (
+                  review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
+                  rubric_version, reader_contract_version, reviewer, payload,
+                  release_eligible, created_at_ms
+                ) VALUES (
+                  %s, 'judgment', 'pairwise', 'pair.direct', %s, 'direct:case',
+                  'news_review_v6', 'reader_contract_v2', 'direct-reviewer',
+                  '{"legacy_label":"must_push"}'::jsonb, false, 5
+                )
+                """,
+                ("f" * 64, "9" * 64),
+            )
+        assert legacy_review_payload_rejected.value.diag.constraint_name == "news_reviews_current_contract_check"
+        conn.rollback()
+
+        review_dimensions = {
+            "factual_fidelity": "pass",
+            "taxonomy_subject_codes": "pass",
+            "taxonomy_event_family": "pass",
+            "taxonomy_change_state": "pass",
+            "taxonomy_source_authority": "pass",
+            "taxonomy_assertion_status": "pass",
+            "old_dimension": "pass",
+        }
+        review_novelty = {"judgment": "new_fact", "duplicate_of": "", "old_duplicate": False}
+        review_selection = {
+            "stratum": "random_control",
+            "stratum_zh": "随机对照",
+            "reason": "coverage_control",
+            "reason_zh": "随机覆盖对照",
+            "sampling_probability": 0.02,
+            "selection_version": "news_review_sampler_v3",
+        }
+        malformed_review_payload = {
+            "kind": "event_rubric",
+            "should_push": "should_hold",
+            "dimensions": review_dimensions,
+            "novelty": review_novelty,
+            "first_bad_owner": None,
+            "evidence_refs": [],
+            "expected": None,
+            "taxonomy": taxonomy,
+            "taxonomy_review": {
+                "label_source": "human",
+                "draft_author": "",
+                "review_role": "primary",
+                "adjudicates_review_id": "",
+                "draft_taxonomy": None,
+            },
+            "expected_correction": "",
+            "note": "",
+        }
+        with pytest.raises(CheckViolation) as malformed_review_shape_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_reviews (
+                  review_id, review_kind, subject_kind, task_id, task_version,
+                  event_id, evidence_version, rubric_version, reader_contract_version,
+                  reviewer, should_push, dimensions, novelty, first_bad_owner,
+                  evidence_refs, selection, payload, release_eligible, created_at_ms
+                ) VALUES (
+                  %s, 'judgment', 'event', 'event.archive-event.1', %s,
+                  'archive-event', 1, 'news_review_v6', 'reader_contract_v2',
+                  'direct-reviewer', 'should_hold', %s::jsonb, %s::jsonb, 'unknown',
+                  '[]'::jsonb, %s::jsonb, %s::jsonb, false, 6
+                )
+                """,
+                (
+                    "1" * 64,
+                    "2" * 64,
+                    json.dumps(review_dimensions),
+                    json.dumps(review_novelty),
+                    json.dumps(review_selection),
+                    json.dumps(malformed_review_payload),
+                ),
+            )
+        assert malformed_review_shape_rejected.value.diag.constraint_name == "news_reviews_current_contract_check"
+        conn.rollback()
+
+        pairwise_selection = {
+            "stratum": "blind_pairwise",
+            "stratum_zh": "匿名候选对比",
+            "sampling_probability": 1.0,
+            "selection_version": "news_blind_pairwise_v1",
+        }
+        pairwise_payload = {
+            "kind": "blind_pairwise",
+            "preference": "A",
+            "critical_errors": [],
+            "evidence_refs": [],
+            "note": "",
+        }
+        conn.execute(
+            """
+            INSERT INTO news_reviews (
+              review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
+              rubric_version, reader_contract_version, reviewer, selection, payload,
+              release_eligible, created_at_ms
+            ) VALUES (
+              %s, 'judgment', 'pairwise', 'pair.direct', %s, 'direct:case',
+              'news_review_v6', 'reader_contract_v2', 'direct-reviewer', %s::jsonb, %s::jsonb,
+              false, 7
+            )
+            """,
+            ("3" * 64, "4" * 64, json.dumps(pairwise_selection), json.dumps(pairwise_payload)),
+        )
+        conn.commit()
+        with pytest.raises(CheckViolation) as mismatched_acceptance_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_reviews (
+                  review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
+                  rubric_version, reader_contract_version, reviewer, accepts_review_id,
+                  release_eligible, created_at_ms
+                ) VALUES (
+                  %s, 'acceptance', 'pairwise', 'pair.wrong', %s, 'direct:case',
+                  'news_review_v6', 'reader_contract_v2', 'direct-reviewer', %s,
+                  false, 8
+                )
+                """,
+                ("5" * 64, "4" * 64, "3" * 64),
+            )
+        assert (
+            mismatched_acceptance_rejected.value.diag.constraint_name == "news_reviews_current_acceptance_target_check"
+        )
+        conn.rollback()
+
+        conn.execute("UPDATE news_events SET focus_fact_method = 'whole_item' WHERE event_id = 'archive-event'")
+        current_evidence = news.append_evidence_snapshot(event_id="archive-event", now_ms=6)
+        conn.commit()
+        malformed_snapshot = dict(current_evidence["snapshot"])
+        malformed_snapshot["card"] = dict(malformed_snapshot["card"]) | {"family": "general"}
+        malformed_evidence_sha256 = canonical_sha(malformed_snapshot)
+        with pytest.raises(CheckViolation) as legacy_evidence_key_rejected:
+            conn.execute(
+                """
+                INSERT INTO news_event_evidence_snapshots (
+                  event_id, evidence_version, focus_fact_id, evidence_sha256,
+                  provenance, release_eligible, snapshot, created_at_ms
+                ) VALUES (
+                  'archive-event', 2, 'archive-fact', %s,
+                  'observed', true, %s::jsonb, 7
+                )
+                """,
+                (malformed_evidence_sha256, json.dumps(malformed_snapshot)),
+            )
+        assert legacy_evidence_key_rejected.value.diag.constraint_name == "news_event_evidence_current_contract_check"
+        conn.rollback()
+    finally:
+        if conn is not None:
+            conn.close()
+        restore = connect_postgres_test(read_only=False)
+        try:
+            reset_postgres_schema(restore)
+        finally:
+            restore.close()
+
+
 def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
     """The production upgrade hard-cuts Label v1 only after a lossless copy.
 
@@ -93,7 +761,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
-        assert revision["version_num"] == "20260829_0329"
+        assert revision["version_num"] == "20260830_0330"
         assert conn.execute("SELECT to_regclass('public.news_event_labels') AS name").fetchone()["name"] is None
 
         migrated = conn.execute(
@@ -197,7 +865,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
             "update_allowed": False,
             "delete_allowed": False,
         }
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
     finally:
         if conn is not None:
             conn.close()
@@ -239,7 +907,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
         epoch = conn.execute("SELECT * FROM news_learning_epochs WHERE epoch_id = 'program_v1'").fetchone()
         assert epoch is not None
         assert deployed_after_ms <= epoch["starts_at_ms"] <= deployed_before_ms
@@ -567,7 +1235,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
         event_columns = {
             row["column_name"]
             for row in conn.execute(
@@ -595,7 +1263,16 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         ]
         assert "queue_priority" in view_columns
         assert "priority" not in view_columns
-        assert view_columns[-4:] == ["editorial", "scored_judgment_sha256", "runtime_manifest_sha", "event_kind"]
+        assert view_columns[-8:] == [
+            "program_version",
+            "program_sha256",
+            "judgment_contract_version",
+            "judgment_origin",
+            "model_editorial",
+            "judgment_sha256",
+            "runtime_manifest_sha",
+            "event_kind",
+        ]
 
         epochs = conn.execute("SELECT * FROM news_learning_epochs ORDER BY starts_at_ms, epoch_id").fetchall()
         # v1..v6 plus `program_v7` (#162), `program_v8` (#306) and `program_v9` (#310): every
@@ -660,7 +1337,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         news = repositories_for_connection(conn).news
         assert (
             news.find_exact_event(
-                family="general",
+                dedupe_family="general",
                 event_kind="news",
                 fingerprint="same-fingerprint",
                 now_ms=program_v6["starts_at_ms"],
@@ -670,7 +1347,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         assert (
             news.find_artifact_event(
                 source_artifact_id="x:12345",
-                family="general",
+                dedupe_family="general",
                 event_kind="news",
                 fingerprint="same-fingerprint",
                 item_id="new-item",
@@ -680,7 +1357,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         )
         assert (
             news.find_band_candidates(
-                family="general",
+                dedupe_family="general",
                 event_kind="news",
                 band_keys=("same-band",),
                 now_ms=program_v6["starts_at_ms"],
@@ -813,7 +1490,7 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -970,7 +1647,7 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
 
         epochs = {
             row["epoch_id"]: dict(row)
@@ -1095,7 +1772,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
 
         activation = dict(
             conn.execute(
@@ -1164,7 +1841,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
 
         activation = dict(
             conn.execute(

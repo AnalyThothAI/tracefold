@@ -36,7 +36,6 @@ from ..taxonomy import (
     IPTCCodebookSha,
     ModelTaxonomyV1,
     NewsTaxonomyV1,
-    project_legacy_event_type,
     source_authority_from_evidence,
 )
 from .metric import (
@@ -48,7 +47,7 @@ from .metric import (
 
 TAXONOMY_SHADOW_SCHEMA: Final = "tracefold.news.taxonomy_shadow_observation.v1"
 TAXONOMY_CANDIDATE_REGISTRATION_SCHEMA: Final = "tracefold.news.taxonomy_candidate_registration.v1"
-TAXONOMY_EVALUATION_SCHEMA: Final = "tracefold.news.taxonomy_evaluation_report.v1"
+TAXONOMY_EVALUATION_SCHEMA: Final = "tracefold.news.taxonomy_evaluation_report.v2"
 TAXONOMY_SHADOW_INSTRUCTION: Final = """Classify one bounded ordinary News Event under news_taxonomy_v1.
 Return only the typed taxonomy. Choose at most three allowed IPTC subject qcodes. event_family describes what
 happened, never source format, rumor status, actor type, noise, or delivery value. filing is a source container;
@@ -197,7 +196,7 @@ class TaxonomyShadowProgramV1(dspy.Module):  # type: ignore[misc]
 
 
 class TaxonomyEvaluationReportV1(_ExactModel):
-    schema_id: Literal["tracefold.news.taxonomy_evaluation_report.v1"] = TAXONOMY_EVALUATION_SCHEMA
+    schema_id: Literal["tracefold.news.taxonomy_evaluation_report.v2"] = TAXONOMY_EVALUATION_SCHEMA
     taxonomy_version: Literal["news_taxonomy_v1"] = TAXONOMY_VERSION
     codebook_sha256: IPTCCodebookSha = IPTC_CODEBOOK_SHA256
     identity: TaxonomyEvaluationIdentityV1
@@ -208,7 +207,6 @@ class TaxonomyEvaluationReportV1(_ExactModel):
     split_roots: dict[str, str]
     axes: dict[str, Any]
     subject_codes: dict[str, Any]
-    legacy_baseline: dict[str, Any]
     abstention_risk_coverage: list[dict[str, Any]]
     slices: dict[str, Any]
     reviewer: dict[str, Any]
@@ -224,7 +222,7 @@ class TaxonomyEvaluationReportV1(_ExactModel):
 class TaxonomyGoldReceiptV1(_ExactModel):
     review_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     acceptance_id: str = Field(pattern=r"^[0-9a-f]{64}$")
-    rubric_version: Literal["news_review_v5"] = "news_review_v5"
+    rubric_version: Literal["news_review_v6"] = "news_review_v6"
     reviewer: str = Field(min_length=1, max_length=128)
     accepted_at_ms: int = Field(ge=0)
     release_eligible: Literal[True]
@@ -304,7 +302,7 @@ class TaxonomyCodeIdentityV1(_ExactModel):
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     taxonomy_version: Literal["news_taxonomy_v1"] = TAXONOMY_VERSION
     codebook_sha256: IPTCCodebookSha = IPTC_CODEBOOK_SHA256
-    review_rubric_version: Literal["news_review_v5"] = "news_review_v5"
+    review_rubric_version: Literal["news_review_v6"] = "news_review_v6"
     metric_id: str
     metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: str
@@ -336,7 +334,7 @@ class TaxonomyCandidateRegistrationV1(_ExactModel):
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     taxonomy_version: Literal["news_taxonomy_v1"] = TAXONOMY_VERSION
     codebook_sha256: IPTCCodebookSha = IPTC_CODEBOOK_SHA256
-    review_rubric_version: Literal["news_review_v5"] = "news_review_v5"
+    review_rubric_version: Literal["news_review_v6"] = "news_review_v6"
     metric_id: str
     metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: str
@@ -424,7 +422,7 @@ class TaxonomyEvaluationIdentityV1(_ExactModel):
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     taxonomy_version: Literal["news_taxonomy_v1"] = TAXONOMY_VERSION
     codebook_sha256: IPTCCodebookSha = IPTC_CODEBOOK_SHA256
-    review_rubric_version: Literal["news_review_v5"] = "news_review_v5"
+    review_rubric_version: Literal["news_review_v6"] = "news_review_v6"
     metric_id: str
     metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: str
@@ -613,11 +611,6 @@ def build_taxonomy_evaluation_report(
         for axis in _AXES
     }
     subject = _multilabel_metrics(scored_cases)
-    legacy_pairs = [
-        (case["gold"].event_family, project_legacy_event_type(str(case.get("legacy_event_type") or "")).event_family)
-        for case in scored_cases
-    ]
-    legacy = _class_metrics([(str(gold), str(prediction)) for gold, prediction in legacy_pairs])
 
     def exact(case: Mapping[str, Any]) -> bool:
         return bool(case["gold"] == case["prediction"])
@@ -791,7 +784,6 @@ def build_taxonomy_evaluation_report(
         len(known_source_cases),
     )
     event_macro_f1 = axes["event_family"]["macro_f1"]
-    legacy_macro_f1 = legacy["macro_f1"]
     non_abstain_coverage = risk_curve[1]["coverage"]
     non_abstain_error = risk_curve[1]["error_rate"]
     gates = {
@@ -800,17 +792,6 @@ def build_taxonomy_evaluation_report(
             None if not ready or event_macro_f1 is None else event_macro_f1 >= 0.85,
             observed=event_macro_f1,
             threshold=">= 0.85",
-        ),
-        "legacy_macro_f1_delta": _gate(
-            None
-            if not ready or event_macro_f1 is None or legacy_macro_f1 is None
-            else event_macro_f1 - legacy_macro_f1 >= 0.05,
-            observed=(
-                None
-                if event_macro_f1 is None or legacy_macro_f1 is None
-                else round(event_macro_f1 - legacy_macro_f1, 6)
-            ),
-            threshold=">= 0.05",
         ),
         "product_precision_recall": _gate(
             None
@@ -959,7 +940,6 @@ def build_taxonomy_evaluation_report(
         split_roots={name: canonical_sha(rows) for name, rows in sorted(splits.items())},
         axes=axes,
         subject_codes=subject,
-        legacy_baseline=legacy,
         abstention_risk_coverage=risk_curve,
         slices={key: _slice(scored_cases, key) for key in ("language", "source_authority", "audience", "scope")},
         reviewer=reviewer,
@@ -1116,7 +1096,6 @@ def verify_taxonomy_gold_receipts(
             and prediction != gold_taxonomy
             and taxonomy_requires_independent_adjudication(
                 gold_taxonomy,
-                legacy_event_type=str(verdict.get("event_type") or ""),
                 draft_taxonomy=prediction,
             )
         )
@@ -1142,7 +1121,6 @@ def verify_taxonomy_gold_receipts(
                 "source_authority": payload["taxonomy"]["source_authority"],
                 "audience": verdict.get("audience") or "unknown",
                 "scope": verdict.get("scope") or "unknown",
-                "legacy_event_type": verdict.get("event_type") or "",
                 "should_push": should_push,
                 "primary_taxonomy": (
                     primary_taxonomy.model_dump(mode="json") if primary_taxonomy is not None else None

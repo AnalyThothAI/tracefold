@@ -63,8 +63,8 @@ class DevelopmentEpisode(_ExactModel):
 # EventSemantics owns interpretation; ReaderCard owns copy. Feedback is routed the same way, so a Predictor is
 # never asked to repair a failure it cannot cause.
 #
-# These are exactly the names `review._DIMENSIONS` accepts. Inventing plausible extras (`novelty`, `event_type`,
-# `actionable`) would leave dead entries no reviewer can ever label, and publish them in the metric receipt as
+# These are exactly the names `review._DIMENSIONS` accepts. Inventing plausible extras would leave dead entries
+# no reviewer can ever label, and publish them in the metric receipt as
 # if they were scored. Novelty is a separate accepted field, not a rubric dimension, and is scored below.
 # `timeliness` is absent on purpose. The canonical ReviewDesk owner map assigns it to `delivery`, and
 # `TriageVerdict` has no timeliness field — so scoring it here fell through to "did the whole verdict change?"
@@ -87,7 +87,7 @@ _DELIVERY_DIMENSIONS = ("timeliness",)
 
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
 _NO_GOLD: Final = object()
-# `news_review_v5` non-taxonomy gold keys, per dimension. Taxonomy has its own evaluator; `why_support`/
+# `news_review_v6` non-taxonomy gold keys, per dimension. Taxonomy has its own evaluator; `why_support`/
 # `why_value`/`headline_fidelity`/`factual_fidelity`/
 # `timeliness` have no scalar gold. Failed typed fields without exact gold do not enter the score; free-text
 # retention and factual support use the sealed judge path instead.
@@ -148,9 +148,8 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
     operator silenced a storyline would not be evidence that its editorial judgment was wrong, and teaching
     that into a Prompt would make the Program quieter for reasons that have nothing to do with the news.
 
-    Recorded mode carries the persisted DecisionResult fields; live modes run
-    the same v10 ``decide()`` function production uses.  No caller may replace
-    this with the model's compatibility ``verdict.decision`` field.
+    Recorded mode carries the persisted `DecisionResult` fields; live modes run the same current `decide()`
+    function production uses. No caller may replace that action authority with model-owned relevance.
     """
 
     recorded = projection.get("recorded_decision_result")
@@ -188,7 +187,7 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
         scope=judgment.verdict.scope,
         verdict_primaries=[asset.symbol for asset in judgment.verdict.assets if asset.role == "primary"],
         grounded_assets=grounded,
-        family=str(storyline.get("family") or "general"),
+        dedupe_family=str(storyline.get("dedupe_family") or "general"),
     )
     return decide(
         judgment,
@@ -201,7 +200,6 @@ def production_decision(judgment: ScoredJudgment, projection: Mapping[str, Any])
             source_age_s=gate.get("source_age_s"),
         ),
         storyline_status(key, told=told, seen=seen),
-        degraded=judgment.editorial.editorial_origin == "degraded_unavailable",
         policy=policy,
     )
 

@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from ..models import ReaderReceipt, display_title
+from ..models import ReaderReceipt
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..outcome import (
@@ -15,7 +15,6 @@ from ..outcome import (
     decision_zh,
     direction_zh,
     event_outcome,
-    event_type_zh,
     magnitude_zh,
     novelty_zh,
     scope_zh,
@@ -55,7 +54,7 @@ OI_FILTERS: Final[dict[str, tuple[str, ...]]] = {
 # outcome-group count be skipped for the tab that is displayed most.
 OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
 # The lane the key can only come from. `triage.py` enters its OI branch under
-# `admission == 'telemetry_deterministic'` and nothing else writes `trace['oi_signal']`, so pairing the rule
+# `admission == 'telemetry_deterministic'` and only that lane writes an OI judgment, so pairing the rule
 # with the admission narrows nothing semantically — measured live on 2026-08-25, all 298 verdicts carrying
 # the key across the whole retention belonged to that admission.
 #
@@ -74,9 +73,14 @@ class FeedStorage:
     def list_feed(
         self,
         *,
-        family: str | None,
+        event_family: tuple[str, ...] | None,
+        change_state: tuple[str, ...] | None,
+        assertion_status: tuple[str, ...] | None,
+        source_authority: tuple[str, ...] | None,
+        subject_code: tuple[str, ...] | None,
+        final_decision: tuple[str, ...] | None,
+        event_kind: tuple[EventKind, ...] | None,
         admission: str | None,
-        decision: str | None,
         search: NewsSearchPlan | None,
         limit: int,
         cursor: str | None,
@@ -84,7 +88,6 @@ class FeedStorage:
         hours: int | None = None,
         oi: str | None = None,
         directions: tuple[str, ...] | None = None,
-        channels: tuple[EventKind, ...] | None = None,
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
@@ -99,9 +102,19 @@ class FeedStorage:
             since_ms = int(now_ms if now_ms is not None else time.time() * 1000) - window_hours * 3600_000
             where.append("e.opened_at_ms >= %s")
             params.append(since_ms)
-        if family:
-            where.append("e.family = %s")
-            params.append(family)
+        taxonomy_filters = (
+            (event_family, "event_family"),
+            (change_state, "change_state"),
+            (assertion_status, "assertion_status"),
+            (source_authority, "source_authority"),
+        )
+        for values, key in taxonomy_filters:
+            if values:
+                where.append(f"t.editorial #>> '{{taxonomy,{key}}}' = ANY(%s)")
+                params.append(list(values))
+        if subject_code:
+            where.append("COALESCE(t.editorial #> '{taxonomy,subject_codes}', '[]'::jsonb) ?| %s")
+            params.append(list(subject_code))
         if admission:
             where.append("e.admission = %s")
             params.append(admission)
@@ -112,23 +125,20 @@ class FeedStorage:
             else:
                 where.append(TEXT_SEARCH_PREDICATE)
                 params.append(search.normalized_query)
-        if decision:
-            where.append("t.final_decision = %s")
-            params.append(decision)
+        if final_decision:
+            where.append("t.final_decision = ANY(%s)")
+            params.append(list(final_decision))
         if directions:
             where.append("t.direction = ANY(%s)")
             params.append(list(directions))
-        if channels and len(channels) < len(EVENT_KINDS):
+        if event_kind and len(event_kind) < len(EVENT_KINDS):
             where.append("e.event_kind = ANY(%s)")
-            params.append(list(channels))
+            params.append(list(event_kind))
         if oi in OI_FILTERS:
-            # The judge's own rule, from the trace it wrote. `final_decision` cannot answer this: a frame held
-            # by a threshold and one whose provider template stopped parsing are both `drop`, and both carry
-            # `override_rule = 'telemetry_deterministic'` because `decide()` names the admission, not the gate.
-            # Measured live on 2026-08-25: all 99 OI verdicts in 24 h carried that one `override_rule`, while
-            # the trace split them 78 / 19 / 2 across the three gates. The predicate carries the lane's
-            # admission with the rule, which is what keeps it off the whole retention's TOAST — see
-            # `_OI_RULE_PREDICATE`.
+            # The canonical judgment atom owns the rule; `override_rule` is the same value, while
+            # `final_decision` cannot distinguish threshold holds from provider parse failures because both
+            # are `drop`. The predicate carries the lane's admission with the rule, which is what keeps it off
+            # the whole retention's TOAST — see `_OI_RULE_PREDICATE`.
             where.append(_OI_RULE_PREDICATE)
             params.append(list(OI_FILTERS[oi]))
         # Counting is worth one extra aggregate only on the first page; later pages reuse what it returned.
@@ -159,9 +169,14 @@ class FeedStorage:
             "next_cursor": next_cursor,
             "counts": counts,
             "filters": {
-                "family": family,
+                "event_family": _joined_filter(event_family),
+                "change_state": _joined_filter(change_state),
+                "assertion_status": _joined_filter(assertion_status),
+                "source_authority": _joined_filter(source_authority),
+                "subject_code": _joined_filter(subject_code),
+                "final_decision": _joined_filter(final_decision),
+                "event_kind": _joined_filter(event_kind),
                 "admission": admission,
-                "decision": decision,
                 "symbol": search.symbol if search is not None else None,
                 "q": search.q if search is not None else None,
                 "limit": int(limit),
@@ -169,7 +184,6 @@ class FeedStorage:
                 "hours": window_hours,
                 "oi": oi if oi in OI_OUTCOMES else None,
                 "direction": ",".join(directions) if directions else None,
-                "channel": ",".join(channels) if channels else None,
             },
             "search": search.public_metadata() if search is not None else None,
         }
@@ -194,6 +208,24 @@ class FeedStorage:
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
+        boundary = self.conn.execute(
+            """
+            SELECT e.event_id, latest.provenance, latest.schema_version
+              FROM news_events e
+              LEFT JOIN LATERAL (
+                SELECT s.provenance, s.snapshot ->> 'schema_version' AS schema_version
+                  FROM news_event_evidence_snapshots s
+                 WHERE s.event_id = e.event_id
+                 ORDER BY s.evidence_version DESC LIMIT 1
+              ) latest ON true
+             WHERE e.event_id = %s
+            """,
+            (event_id,),
+        ).fetchone()
+        if boundary is None:
+            return None
+        if boundary["provenance"] != "observed" or boundary["schema_version"] != "news_event_evidence_v3":
+            return {"archive_only": True}
         card = self._current_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
             return None
@@ -207,7 +239,12 @@ class FeedStorage:
             (event_id,),
         ).fetchall()
         verdicts = self.conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s ORDER BY created_at_ms", (event_id,)
+            """
+            SELECT * FROM news_verdicts
+             WHERE event_id = %s AND judgment_contract_version = 'news_judgment_v2'
+             ORDER BY created_at_ms
+            """,
+            (event_id,),
         ).fetchall()
         deliveries = self.conn.execute(
             "SELECT * FROM news_deliveries WHERE event_id = %s ORDER BY created_at_ms", (event_id,)
@@ -230,6 +267,10 @@ class FeedStorage:
             }
             for r in members
         ]
+        timeline_verdict_rows = [
+            dict(r) | {"model_editorial": dict(r["editorial"]) if r["editorial"] is not None else None}
+            for r in verdicts
+        ]
         verdict_rows = [_verdict_public(dict(r)) for r in verdicts]
         delivery_rows = [
             {
@@ -249,9 +290,10 @@ class FeedStorage:
             for r in deliveries
         ]
         outcome, timeline = event_timeline(
-            event=event, members=member_rows, verdicts=verdict_rows, deliveries=delivery_rows
+            event=event, members=member_rows, verdicts=timeline_verdict_rows, deliveries=delivery_rows
         )
-        latest_triage = next((v for v in reversed(verdict_rows) if v.get("stage") == "triage"), None)
+        latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
+        latest_editorial = dict((latest_triage or {}).get("editorial") or {})
         return {
             "event": event,
             "outcome": outcome.as_dict(),
@@ -261,9 +303,9 @@ class FeedStorage:
                 throttled_by=(latest_triage or {}).get("throttled_by"),
                 degraded=(latest_triage or {}).get("degraded"),
                 error_code=(latest_triage or {}).get("error_code"),
-                model_decision=(latest_triage or {}).get("model_decision"),
                 verdict=(latest_triage or {}).get("verdict") or {},
-                taxonomy=dict((latest_triage or {}).get("editorial") or {}).get("taxonomy"),
+                taxonomy=latest_editorial.get("taxonomy"),
+                relevance=latest_editorial.get("relevance"),
                 full=True,
             ),
             "timeline": timeline,
@@ -279,11 +321,15 @@ class FeedStorage:
                     "evidence_sha256": row["evidence_sha256"],
                     "provenance": row["provenance"],
                     "release_eligible": bool(row["release_eligible"]),
-                    "snapshot": dict(row["snapshot"] or {}),
                     "created_at_ms": int(row["created_at_ms"]),
                 }
                 for row in self.conn.execute(
-                    "SELECT * FROM news_event_evidence_snapshots WHERE event_id = %s ORDER BY evidence_version",
+                    """
+                    SELECT * FROM news_event_evidence_snapshots
+                     WHERE event_id = %s AND provenance = 'observed'
+                       AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                     ORDER BY evidence_version
+                    """,
                     (event_id,),
                 ).fetchall()
             ],
@@ -299,12 +345,42 @@ class FeedStorage:
               FROM (
                 SELECT count(*) AS judgment_n FROM news_reviews
                  WHERE event_id = %s AND review_kind = 'judgment'
+                   AND subject_kind = 'event'
+                   AND news_current_review_valid(
+                         review_kind, subject_kind, rubric_version, reader_contract_version,
+                         event_id, evidence_version, external_snapshot_id, pairwise_case_id,
+                         should_push, dimensions, novelty, first_bad_owner, evidence_refs,
+                         expected_correction, note, selection, payload, accepts_review_id
+                       ) IS TRUE
               ) counts
               LEFT JOIN LATERAL (
                 SELECT judgment.*
                   FROM news_reviews acceptance
                   JOIN news_reviews judgment ON judgment.review_id = acceptance.accepts_review_id
                  WHERE acceptance.review_kind = 'acceptance' AND judgment.event_id = %s
+                   AND judgment.subject_kind = 'event'
+                   AND news_current_review_valid(
+                         acceptance.review_kind, acceptance.subject_kind,
+                         acceptance.rubric_version, acceptance.reader_contract_version,
+                         acceptance.event_id, acceptance.evidence_version,
+                         acceptance.external_snapshot_id, acceptance.pairwise_case_id,
+                         acceptance.should_push, acceptance.dimensions, acceptance.novelty,
+                         acceptance.first_bad_owner, acceptance.evidence_refs,
+                         acceptance.expected_correction, acceptance.note, acceptance.selection,
+                         acceptance.payload,
+                         acceptance.accepts_review_id
+                       ) IS TRUE
+                   AND news_current_review_valid(
+                         judgment.review_kind, judgment.subject_kind,
+                         judgment.rubric_version, judgment.reader_contract_version,
+                         judgment.event_id, judgment.evidence_version,
+                         judgment.external_snapshot_id, judgment.pairwise_case_id,
+                         judgment.should_push, judgment.dimensions, judgment.novelty,
+                         judgment.first_bad_owner, judgment.evidence_refs,
+                         judgment.expected_correction, judgment.note, judgment.selection,
+                         judgment.payload,
+                         judgment.accepts_review_id
+                       ) IS TRUE
                  ORDER BY acceptance.created_at_ms DESC, acceptance.review_id DESC LIMIT 1
               ) j ON true
             """,
@@ -316,9 +392,10 @@ class FeedStorage:
         if row.get("review_id"):
             accepted = {
                 "review_id": row["review_id"],
+                "subject_kind": row["subject_kind"],
+                "event_id": row["event_id"],
+                "external_snapshot_id": row["external_snapshot_id"],
                 "should_push": row["should_push"],
-                "dimensions": dict(row["dimensions"] or {}),
-                "novelty": dict(row["novelty"] or {}),
                 "first_bad_owner": row["first_bad_owner"],
                 "evidence_refs": list(row["evidence_refs"] or []),
                 "expected_correction": row["expected_correction"],
@@ -327,6 +404,7 @@ class FeedStorage:
                 "created_at_ms": int(row["created_at_ms"]),
                 "rubric_version": row["rubric_version"],
                 "reader_contract_version": row["reader_contract_version"],
+                "pairwise_case_id": row["pairwise_case_id"],
             }
         return {
             "judgment_n": int(row["judgment_n"] or 0),
@@ -353,11 +431,13 @@ class FeedStorage:
                 WHERE created_at_ms >= %s) AS telemetry_parsed_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
+                  AND judgment_contract_version = 'news_judgment_v2'
                   AND created_at_ms >= %s) AS telemetry_parse_failed_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND final_decision IN ('push','escalate')
+                  AND judgment_contract_version = 'news_judgment_v2'
                   AND created_at_ms >= %s
-                  AND program_version = 'news_oi_signal_v1') AS telemetry_push_24h,
+                  AND program_version = 'news_oi_signal_v2') AS telemetry_push_24h,
               -- #207: Events, not provider items. `telemetry_received_24h` counts exact OI source frames
               -- *before* the Gate, so it names frames the monitor's table can never show; the three by-rule
               -- buckets count judged verdicts, so together they miss a frame still waiting for one. This is
@@ -365,7 +445,17 @@ class FeedStorage:
               -- serves — and it is what the 全部 tab counts.
               (SELECT count(*) FROM news_events
                 WHERE opened_at_ms >= %s
-                  AND admission = 'telemetry_deterministic') AS telemetry_events_24h
+                  AND admission = 'telemetry_deterministic'
+                  AND EXISTS (
+                    SELECT 1 FROM news_event_evidence_snapshots evidence
+                     WHERE evidence.event_id = news_events.event_id
+                       AND evidence.evidence_version = (
+                         SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                          WHERE latest.event_id = news_events.event_id
+                       )
+                       AND evidence.provenance = 'observed'
+                       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                  )) AS telemetry_events_24h
             """,
             (
                 day_ago,
@@ -400,10 +490,21 @@ class FeedStorage:
               LEFT JOIN LATERAL (
                 SELECT bool_or(true) AS has_verdict,
                        bool_or(error_code IN ('oi_parse_failed', 'liquidation_parse_failed')) AS parse_failed
-                  FROM news_verdicts
+                 FROM news_verdicts
                  WHERE event_id = e.event_id AND stage = 'triage'
+                   AND judgment_contract_version = 'news_judgment_v2'
               ) v ON true
              WHERE e.opened_at_ms >= %s
+               AND EXISTS (
+                 SELECT 1 FROM news_event_evidence_snapshots evidence
+                  WHERE evidence.event_id = e.event_id
+                    AND evidence.evidence_version = (
+                      SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                       WHERE latest.event_id = e.event_id
+                    )
+                    AND evidence.provenance = 'observed'
+                    AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+               )
              GROUP BY e.event_kind
             """,
             (day_ago,),
@@ -427,9 +528,8 @@ class FeedStorage:
     def _oi_by_rule_24h(self, *, day_ago: int) -> dict[str, int]:
         """The deterministic judge's own gate, counted over 24 h.
 
-        `pipeline.dropped_by_rule` cannot answer this: it groups `override_rule`, and `decide()` writes
-        `telemetry_deterministic` there for every OI verdict, push and withhold alike. The gate name lives
-        only in the trace the judge wrote.
+        `pipeline.dropped_by_rule` mixes every lane. This monitor groups the OI judge's canonical atom rule
+        directly so push, threshold holds, and parse failures remain separate.
 
         Its own query, filtered to OI verdicts first, rather than another grouping key on the funnel's
         shared verdict scan. That scan reads `trace` for every Triage verdict in the window — 1948 rows and
@@ -441,9 +541,10 @@ class FeedStorage:
 
         rows = self.conn.execute(
             """
-            SELECT COALESCE(trace -> 'oi_signal' ->> 'rule', '') AS oi_rule, count(*) AS n
+            SELECT COALESCE(trace #>> '{judgment,rule}', '') AS oi_rule, count(*) AS n
               FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
+               AND judgment_contract_version = 'news_judgment_v2'
                AND program_version = %s
              GROUP BY 1
             """,
@@ -510,6 +611,16 @@ class FeedStorage:
                 count(*) FILTER (WHERE admission = 'candidate') AS candidates_24h
                 FROM news_events
                WHERE opened_at_ms >= %s
+                 AND EXISTS (
+                   SELECT 1 FROM news_event_evidence_snapshots evidence
+                    WHERE evidence.event_id = news_events.event_id
+                      AND evidence.evidence_version = (
+                        SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                         WHERE latest.event_id = news_events.event_id
+                      )
+                      AND evidence.provenance = 'observed'
+                      AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+                 )
             ), verdict_counts AS (
               SELECT
                 -- Two denominators on purpose. The funnel is the reader's view — 收到 ⊇ 送审 ⊇ 模型判断
@@ -520,7 +631,7 @@ class FeedStorage:
                 -- would otherwise dilute the degraded share and make the model look healthier than it is.
                 count(*) AS triage_24h,
                 count(*) FILTER (
-                  WHERE program_version IS DISTINCT FROM 'news_oi_signal_v1'
+                  WHERE judgment_origin IN ('model', 'degraded')
                 ) AS model_triage_24h,
                 count(*) FILTER (WHERE degraded) AS triage_degraded_24h,
                 count(*) FILTER (WHERE final_decision IN ('push','escalate')) AS decided_push_24h,
@@ -533,10 +644,10 @@ class FeedStorage:
                   FILTER (WHERE latency_ms IS NOT NULL) AS triage_p95_ms,
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY queue_lag_ms)
                   FILTER (WHERE queue_lag_ms IS NOT NULL) AS queue_lag_p95_ms,
-                count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h,
-                count(*) FILTER (WHERE novelty_defaulted) AS novelty_defaulted_24h
+                count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h
                 FROM news_verdicts
                WHERE stage = 'triage' AND created_at_ms >= %s
+                 AND judgment_contract_version = 'news_judgment_v2'
             )
             SELECT * FROM event_counts CROSS JOIN verdict_counts
             """,
@@ -669,6 +780,16 @@ class FeedStorage:
             f"""
             SELECT admission, count(*) AS n FROM news_events
              WHERE opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
+               AND EXISTS (
+                 SELECT 1 FROM news_event_evidence_snapshots evidence
+                  WHERE evidence.event_id = news_events.event_id
+                    AND evidence.evidence_version = (
+                      SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                       WHERE latest.event_id = news_events.event_id
+                    )
+                    AND evidence.provenance = 'observed'
+                    AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+               )
              GROUP BY admission ORDER BY n DESC
             """,
             (day_ago,),
@@ -678,11 +799,11 @@ class FeedStorage:
             """
             SELECT final_decision, COALESCE(override_rule, 'unknown') AS rule,
                    COALESCE(throttled_by, 'unknown') AS key, degraded, COALESCE(error_code, 'unknown') AS code,
-                   seen_scope,
                    count(*) AS n
-              FROM news_verdicts
+             FROM news_verdicts
              WHERE stage = 'triage' AND created_at_ms >= %s
-             GROUP BY 1, 2, 3, 4, 5, 6
+               AND judgment_contract_version = 'news_judgment_v2'
+             GROUP BY 1, 2, 3, 4, 5
             """,
             (day_ago,),
         ).fetchall()
@@ -690,9 +811,8 @@ class FeedStorage:
         throttled: dict[str, int] = {}
         pushed_by_rule: dict[str, int] = {}
         degraded_by_code: dict[str, int] = {}
-        # Duplicate withholds by measurement path. Policy v7 writes `all` for
-        # every ordinary push comparison; `throttled` is retained for old rows.
-        duplicates: dict[str, int] = {"throttled": 0, "all": 0}
+        # Current duplicate withholds name the exact sent-ledger measurement scope.
+        duplicates: dict[str, int] = {"all": 0}
         for row in verdict_groups:
             n = int(row["n"])
             final = str(row["final_decision"])
@@ -701,18 +821,23 @@ class FeedStorage:
             elif final == "throttled":
                 throttled[str(row["key"])] = throttled.get(str(row["key"]), 0) + n
                 if str(row["key"]).endswith(":seen"):
-                    # Old rows without `seen_scope` came from the pre-v7
-                    # count-throttle path; keep them in the historical bucket.
-                    scope = str(row["seen_scope"] or "") or "throttled"
-                    duplicates[scope] = duplicates.get(scope, 0) + n
+                    duplicates["all"] += n
             elif final in {"push", "escalate"}:
                 pushed_by_rule[str(row["rule"])] = pushed_by_rule.get(str(row["rule"]), 0) + n
             if row["degraded"]:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
-        # Both Review v2 shapes of "the reader should have got this": an accepted Event judgment and an
-        # accepted ExternalMissSnapshot.  The latter is the only observed upper bound on upstream recall.
+        # Both current Review shapes of "the reader should have got this": an accepted Event judgment and an
+        # accepted ExternalMissSnapshot. The latter is the only observed upper bound on upstream recall.
+        # Release eligibility and the active epoch are material facts; old review contracts are archive-only.
         missed = self.conn.execute(
             """
+            WITH current_epoch AS (
+              SELECT epoch.starts_at_ms
+                FROM news_review_active_agent_v1 active
+                JOIN news_learning_epochs epoch ON epoch.bundle_sha = active.stable_sha
+               ORDER BY active.created_at_ms DESC
+               LIMIT 1
+            )
             SELECT count(*) FILTER (WHERE j.should_push IN ('must_push', 'should_push')) AS n,
                    count(*) FILTER (
                      WHERE j.subject_kind = 'external_miss'
@@ -720,11 +845,32 @@ class FeedStorage:
                    ) AS external
               FROM news_reviews acceptance
               JOIN news_reviews j ON j.review_id = acceptance.accepts_review_id
-             WHERE acceptance.review_kind = 'acceptance' AND acceptance.created_at_ms >= %s
+              JOIN current_epoch ON true
+             WHERE acceptance.review_kind = 'acceptance'
+               AND news_current_review_valid(
+                     acceptance.review_kind, acceptance.subject_kind,
+                     acceptance.rubric_version, acceptance.reader_contract_version,
+                     acceptance.event_id, acceptance.evidence_version,
+                     acceptance.external_snapshot_id, acceptance.pairwise_case_id,
+                     acceptance.should_push, acceptance.dimensions, acceptance.novelty,
+                     acceptance.first_bad_owner, acceptance.evidence_refs,
+                     acceptance.expected_correction, acceptance.note, acceptance.selection,
+                     acceptance.payload,
+                     acceptance.accepts_review_id
+                   ) IS TRUE
+               AND news_current_review_valid(
+                     j.review_kind, j.subject_kind, j.rubric_version, j.reader_contract_version,
+                     j.event_id, j.evidence_version, j.external_snapshot_id, j.pairwise_case_id,
+                     j.should_push, j.dimensions, j.novelty, j.first_bad_owner, j.evidence_refs,
+                     j.expected_correction, j.note, j.selection, j.payload, j.accepts_review_id
+                   ) IS TRUE
+               AND acceptance.release_eligible AND j.release_eligible
+               AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
+               AND j.created_at_ms >= current_epoch.starts_at_ms
             """,
             (day_ago,),
         ).fetchone()
-        # The five Event-feed stages are one cohort, not five independent rolling windows. A verdict created
+        # The four Event-feed stages are one cohort, not four independent rolling windows. A verdict created
         # today for yesterday's Event still belongs in model-health throughput, but it must not make the
         # feed's 24 h funnel grow after the intake cohort has fallen out of the window. Every predicate below
         # therefore starts from the same set of Events opened in the window and asks how far each one got.
@@ -737,6 +883,7 @@ class FeedStorage:
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
                           WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                            AND v.judgment_contract_version = 'news_judgment_v2'
                        )
                    ) AS triaged,
                    count(*) FILTER (
@@ -744,6 +891,7 @@ class FeedStorage:
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
                           WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                            AND v.judgment_contract_version = 'news_judgment_v2'
                        )
                        AND EXISTS (
                          SELECT 1 FROM news_deliveries d
@@ -751,6 +899,16 @@ class FeedStorage:
                        )
                    ) AS delivered
               FROM news_events WHERE opened_at_ms >= %s
+               AND EXISTS (
+                 SELECT 1 FROM news_event_evidence_snapshots evidence
+                  WHERE evidence.event_id = news_events.event_id
+                    AND evidence.evidence_version = (
+                      SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
+                       WHERE latest.event_id = news_events.event_id
+                    )
+                    AND evidence.provenance = 'observed'
+                    AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+               )
             """,
             (day_ago,),
         ).fetchone()
@@ -769,11 +927,7 @@ class FeedStorage:
             "duplicates_withheld_24h": duplicates,
             "candidate_share_24h": round(admitted / events, 4) if events else None,
             "admitted_24h": admitted,
-            # A material Event exists only after the transport/envelope parser succeeds, so this legacy
-            # `parsed` equals the Event cohort. Strict source-contract parser outcomes live in
-            # `source_contracts_24h`; provider frames are never an alternate fact table.
             "funnel_received_24h": events,
-            "funnel_parsed_24h": events,
             "funnel_admitted_24h": admitted,
             "funnel_triaged_24h": triaged,
             "funnel_delivered_24h": delivered,
@@ -798,7 +952,6 @@ def _encode_cursor(opened_at_ms: int, event_id: str) -> str:
 def _event_public(card: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "event_id": card["event_id"],
-        "family": card["family"],
         "event_kind": card["event_kind"],
         "source_contract_reason": card.get("source_contract_reason"),
         "leader_title": card["leader_title"],
@@ -836,9 +989,9 @@ def _triage_summary(
     throttled_by: Any = None,
     degraded: Any = False,
     error_code: Any = None,
-    model_decision: Any = None,
     verdict: Mapping[str, Any] | None = None,
     taxonomy: Mapping[str, Any] | None = None,
+    relevance: Mapping[str, Any] | None = None,
     full: bool = False,
 ) -> dict[str, Any] | None:
     """The reader-facing Triage summary shared by the feed row and the Event detail.
@@ -847,7 +1000,7 @@ def _triage_summary(
     ``delivery.py`` emits the same `DIRECTION_ZH`/`MAGNITUDE_ZH` words, and one definition keeps the card and
     the console from drifting); the raw enum ships beside it purely so the UI can pick a visual tone.
 
-    ``full`` is the Event detail. The feed row renders only direction/magnitude/type over 25 rows, so it takes
+    ``full`` is the Event detail. The feed row renders only direction/magnitude over 25 rows, so it takes
     the slim shape — carrying the detail fields there cost 20.7% of the feed payload for nothing."""
 
     if not final_decision:
@@ -855,7 +1008,6 @@ def _triage_summary(
     v: Mapping[str, Any] = verdict or {}
     direction = v.get("direction")
     magnitude = _optional_int(v.get("magnitude"))
-    event_type = v.get("event_type")
     scope = v.get("scope")
     summary = {
         "final_decision": final_decision,
@@ -865,12 +1017,9 @@ def _triage_summary(
         "error_code": error_code,
         "direction": direction,
         "magnitude": magnitude,
-        "event_type": event_type,
         "headline_zh": v.get("headline_zh"),
-        "title_zh": display_title(v),
         "direction_zh": direction_zh(direction),
         "magnitude_zh": magnitude_zh(magnitude),
-        "event_type_zh": event_type_zh(event_type),
     }
     if not full:
         return summary
@@ -881,16 +1030,14 @@ def _triage_summary(
         "novelty": novelty,
         "audience": audience,
         "confidence": _optional_float(v.get("confidence")),
-        "actionable": _optional_bool(v.get("actionable")),
-        "model_decision": model_decision,
-        "taxonomy": taxonomy_public(taxonomy),
+        "taxonomy": taxonomy_public(taxonomy) if taxonomy is not None else None,
+        "relevance": dict(relevance) if relevance is not None else None,
         "why_zh": v.get("why_zh"),
         "assets": _triage_assets(v.get("assets")),
         "scope_zh": scope_zh(scope),
         "novelty_zh": novelty_zh(novelty),
         "audience_zh": audience_zh(audience),
         "decision_zh": decision_zh(final_decision),
-        "model_decision_zh": decision_zh(model_decision),
     }
 
 
@@ -926,12 +1073,12 @@ def _optional_bool(value: Any) -> bool | None:
     return bool(value) if isinstance(value, bool) else None
 
 
-def _oi_summary(value: Any) -> dict[str, Any] | None:
+def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | None:
     """The deterministic OI judgment behind one `telemetry_deterministic` row, or None for every other row.
 
-    Every field is `oi_judgment_trace()` / `oi_parse_failure()` output read back verbatim — the browser is not
-    allowed to re-run `oi_signal_parser_v1` over `leader_title`, and a number it re-derived would be a second
-    parser to keep in step with the judge. The two thresholds come from the trace's own `policy`, so a stored
+    The fact, rank and rule come only from the canonical judgment atom. Source/parser/policy metadata remains
+    beside it, but never repeats those business fields. The browser is not allowed to re-run
+    `oi_signal_parser_v1` over `leader_title`; the two thresholds come from the stored policy metadata, so a
     frame keeps saying what it ran under after an operator retunes `news.oi`.
 
     `symbol` is the judge's parsed subject, not something the browser may infer from the wire title. The Gate
@@ -945,27 +1092,30 @@ def _oi_summary(value: Any) -> dict[str, Any] | None:
     Strategy IDs.
     """
 
-    if not isinstance(value, Mapping):
+    if not isinstance(judgment_value, Mapping) or judgment_value.get("origin") != "oi":
         return None
-    policy = value.get("policy")
+    metadata = metadata_value if isinstance(metadata_value, Mapping) else {}
+    signal = judgment_value.get("signal")
+    signal = signal if isinstance(signal, Mapping) else {}
+    policy = metadata.get("policy")
     policy = policy if isinstance(policy, Mapping) else {}
     return {
-        "parsed": bool(value.get("parsed")),
-        "rule": str(value.get("rule") or ""),
-        "symbol": str(value.get("symbol") or "") or None,
-        "oi_change_bps": _optional_int(value.get("oi_change_bps")),
-        "oi_value_usd": _optional_int(value.get("oi_value_usd")),
-        "whale_long_profit_bps": _optional_int(value.get("whale_long_profit_bps")),
-        "whale_oi_ratio_bps": _optional_int(value.get("whale_oi_ratio_bps")),
-        "eligible_rank_in_window": _optional_int(value.get("eligible_rank_in_window")),
-        "rank_semantics": str(value.get("rank_semantics") or "") or None,
+        "parsed": bool(signal),
+        "rule": str(judgment_value.get("rule") or ""),
+        "symbol": str(signal.get("symbol") or "") or None,
+        "oi_change_bps": _optional_int(signal.get("oi_change_bps")),
+        "oi_value_usd": _optional_int(signal.get("oi_value_usd")),
+        "whale_long_profit_bps": _optional_int(signal.get("whale_long_profit_bps")),
+        "whale_oi_ratio_bps": _optional_int(signal.get("whale_oi_ratio_bps")),
+        "eligible_rank_in_window": _optional_int(judgment_value.get("rank_in_window")),
+        "rank_semantics": str(metadata.get("rank_semantics") or "") or None,
         "window_ms": _optional_int(policy.get("window_ms")),
         "max_rank_in_window": _optional_int(policy.get("max_rank_in_window")),
         "whale_oi_ratio_above_bps": _optional_int(policy.get("whale_oi_ratio_above_bps")),
         "oi_change_at_least_bps": _optional_int(policy.get("oi_change_at_least_bps")),
-        "parser_version": str(value.get("parser_version") or "") or None,
-        "failure_stage": str(value.get("failure_stage") or "") or None,
-        "title_sha256": str(value.get("title_sha256") or "") or None,
+        "parser_version": str(metadata.get("parser_version") or "") or None,
+        "failure_stage": str(metadata.get("failure_stage") or "") or None,
+        "title_sha256": str(metadata.get("title_sha256") or "") or None,
     }
 
 
@@ -976,8 +1126,9 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
         throttled_by=row.get("throttled_by"),
         degraded=row.get("triage_degraded"),
         error_code=row.get("triage_error_code"),
-        model_decision=row.get("model_decision"),
         verdict=row.get("triage_verdict") or {},
+        taxonomy=dict(row.get("model_editorial") or {}).get("taxonomy"),
+        relevance=dict(row.get("model_editorial") or {}).get("relevance"),
     )
     delivery = (
         {
@@ -993,37 +1144,48 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
     )
     return {
         **_event_public(row),
-        "title_zh": display_title(row) or None,
         "outcome": outcome.as_dict(),
         "triage": triage,
         "delivery": delivery,
-        "oi": _oi_summary(row.get("oi_signal")),
+        "oi": _oi_summary(row.get("oi_judgment"), row.get("oi_metadata")),
     }
 
 
 def _verdict_public(row: Mapping[str, Any]) -> dict[str, Any]:
+    editorial = row.get("editorial")
+    model_editorial = None
+    if isinstance(editorial, Mapping):
+        taxonomy = editorial.get("taxonomy")
+        relevance = editorial.get("relevance")
+        if isinstance(taxonomy, Mapping) and isinstance(relevance, Mapping):
+            model_editorial = {
+                "taxonomy": taxonomy_public(taxonomy),
+                "relevance": dict(relevance),
+            }
     return {
         "stage": row["stage"],
         "policy_version": row["policy_version"],
-        "model_decision": row.get("model_decision"),
+        "judgment_contract_version": row["judgment_contract_version"],
+        "judgment_origin": row["judgment_origin"],
+        "judgment_sha256": row["scored_judgment_sha256"],
+        "verdict": dict(row.get("verdict") or {}),
+        "model_editorial": model_editorial,
         "rule_baseline_decision": row["rule_baseline_decision"],
         "final_decision": row["final_decision"],
         "override_rule": row.get("override_rule"),
         "throttled_by": row.get("throttled_by"),
-        "verdict": dict(row.get("verdict") or {}),
-        "editorial": dict(row.get("editorial") or {}) if row.get("editorial") is not None else None,
         "model": row.get("model"),
         "program_version": row.get("program_version"),
         "program_sha256": row.get("program_sha256"),
-        # Prompt identity is historical audit data. New Program verdicts leave
-        # the legacy column null and never execute it.
-        "prompt_version": row.get("prompt_version"),
         "degraded": bool(row.get("degraded")),
         "error_code": row.get("error_code"),
-        "trace": dict(row.get("trace") or {}),
         "evidence_version": row.get("evidence_version"),
         "evidence_sha256": row.get("evidence_sha256"),
         "focus_fact_id": row.get("focus_fact_id"),
         "published_at_ms": row.get("published_at_ms"),
         "created_at_ms": int(row["created_at_ms"]),
     }
+
+
+def _joined_filter(values: Sequence[str] | None) -> str | None:
+    return ",".join(values) if values else None

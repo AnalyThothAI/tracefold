@@ -48,7 +48,7 @@ LARGE_LIQUIDATION_SOURCE_IDENTITY: Final = SourceIdentity("2083", "Large-scale l
 
 @dataclass(frozen=True, slots=True)
 class SourceContract:
-    family: SourceContractFamily
+    source_contract_family: SourceContractFamily
     event_kind: EventKind
     identity: SourceIdentity
     reason: SourceContractReason | None = None
@@ -92,13 +92,18 @@ def classify_source_contract(provider_metadata: Any) -> SourceContract:
     identity = source_identity(provider_metadata)
     exact = _EXACT_CONTRACTS.get(identity)
     if exact is not None:
-        family, event_kind, reason = exact
-        return SourceContract(family=family, event_kind=event_kind, identity=identity, reason=reason)
+        source_contract_family, event_kind, reason = exact
+        return SourceContract(
+            source_contract_family=source_contract_family,
+            event_kind=event_kind,
+            identity=identity,
+            reason=reason,
+        )
 
     # A provider handle already bound to a contract may not silently change meaning.
     if identity.strategy_id in _BOUND_STRATEGY_IDS:
         return SourceContract(
-            family="unsupported_market",
+            source_contract_family="unsupported_market",
             event_kind="unsupported_market",
             identity=identity,
             reason="source_contract_drift",
@@ -106,7 +111,7 @@ def classify_source_contract(provider_metadata: Any) -> SourceContract:
 
     # Listing remains a generic Program route for every provider-enabled listing Strategy.
     if identity.engine_type == "listing":
-        return SourceContract(family="listing_v1", event_kind="listing", identity=identity)
+        return SourceContract(source_contract_family="listing_v1", event_kind="listing", identity=identity)
 
     has_score = (
         isinstance(provider_metadata, Mapping)
@@ -115,12 +120,12 @@ def classify_source_contract(provider_metadata: Any) -> SourceContract:
     )
     if not has_score and (identity.source_type in {"market", "wallet"} or identity.engine_type == "market"):
         return SourceContract(
-            family="unsupported_market",
+            source_contract_family="unsupported_market",
             event_kind="unsupported_market",
             identity=identity,
             reason="unsupported_market_contract",
         )
-    return SourceContract(family="news_v1", event_kind="news", identity=identity)
+    return SourceContract(source_contract_family="news_v1", event_kind="news", identity=identity)
 
 
 def classify_source_contracts(provider_metadata: Any) -> tuple[SourceContract, ...]:
@@ -150,15 +155,15 @@ def source_contract_admission(
 ) -> Admission:
     """Compose the source contract with the unchanged generic Gate result."""
 
-    if contract.family == "unsupported_market":
+    if contract.source_contract_family == "unsupported_market":
         return "unsupported_market_contract"
     if ingest_mode == "recovery":
         return "recovery"
-    if contract.family == "oi_v1":
+    if contract.source_contract_family == "oi_v1":
         return "telemetry_deterministic"
-    if contract.family == "liquidation_v1":
+    if contract.source_contract_family == "liquidation_v1":
         return "liquidation_deterministic"
-    if contract.family == "listing_v1":
+    if contract.source_contract_family == "listing_v1":
         return "listing_deterministic"
     return generic_admission
 

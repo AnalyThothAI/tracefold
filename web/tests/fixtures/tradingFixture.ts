@@ -134,7 +134,7 @@ export function tradingCaseFixture(overrides: Partial<TradingCase> = {}): Tradin
     decided_at_ms: TRADING_NOW_MS - 499_000,
     event_id: "evt-oi-hype",
     intent_id: null,
-    manifest_version: "trading_manifest_v8",
+    manifest_version: "trading_manifest_v9",
     mark_price: "0.0950",
     observed_at_ms: TRADING_NOW_MS - 501_000,
     oi_change_bps: 1_548,

@@ -64,11 +64,11 @@ test("Event feed controls preserve the approved disclosure and URL contract", as
 
   await page.reload();
   await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBe("bullish");
-  await expect.poll(() => new URL(page.url()).searchParams.get("channel")).toBe("oi");
+  await expect.poll(() => new URL(page.url()).searchParams.get("event_kind")).toBe("oi");
   await page.getByRole("button", { name: "筛选 · 2" }).click();
   await page.getByRole("button", { name: "清除" }).click();
   await expect.poll(() => new URL(page.url()).searchParams.get("direction")).toBeNull();
-  await expect.poll(() => new URL(page.url()).searchParams.get("channel")).toBeNull();
+  await expect.poll(() => new URL(page.url()).searchParams.get("event_kind")).toBeNull();
   await page.getByRole("button", { name: "筛选" }).click();
 
   const pipelineTrigger = page.getByRole("button", { name: /流水线健康/ });

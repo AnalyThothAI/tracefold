@@ -43,7 +43,9 @@ from typing import Any, TypedDict
 # automatic capital and there is no online liquidation consumer, so publishing either was a projection
 # nothing read — and an invitation for the capital lane to grow a second trigger by accident. The OI
 # read and the instrument reads are what remains.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v9"
+# v10 (#369): OI carries its typed judgment identity directly.  The retired
+# synthetic Editorial envelope is neither read nor reconstructed.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v10"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -77,16 +79,15 @@ class OiTradeProjectionRow(TypedDict):
     event_id: str
     verdict_created_at_ms: int
     final_decision: str
-    # `evaluate_oi`'s named rule, from the deterministic judge's own trace. Nullable: a trace written by
-    # an older judge, or one that failed to record the member, must read as absent rather than as a rule.
-    source_rule: str | None
+    # `evaluate_oi`'s non-empty named rule from the current canonical judgment atom.
+    source_rule: str
     learning_epoch: str
     program_version: str
     program_sha256: str
     policy_version: str
-    editorial_origin: str
-    editorial_sha256: str
-    scored_judgment_sha256: str
+    judgment_contract_version: str
+    judgment_origin: str
+    judgment_sha256: str
     runtime_manifest_sha: str
     metric_version: str
     # What the provider proves about the measurement, not about the market (#265). Nullable together:
@@ -164,41 +165,54 @@ class TradeProjectionStorage:
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
-                   v.trace -> 'oi_signal' ->> 'rule' AS source_rule,
+                   v.trace #>> '{{judgment,rule}}' AS source_rule,
                    epoch.epoch_id           AS learning_epoch,
                    v.program_version,
                    v.program_sha256,
                    v.policy_version,
-                   v.editorial ->> 'editorial_origin' AS editorial_origin,
-                   v.editorial ->> 'editorial_sha256' AS editorial_sha256,
-                   v.scored_judgment_sha256,
+                   v.judgment_contract_version,
+                   v.judgment_origin,
+                   v.scored_judgment_sha256 AS judgment_sha256,
                    v.runtime_manifest_sha,
                    s.metric_version,
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
-                   s.symbol,
-                   s.direction,
-                   s.oi_change_bps,
-                   s.oi_value_usd,
-                   s.whale_long_profit_bps,
-                   s.whale_oi_ratio_bps,
-                   s.rank_in_window,
+                   v.trace #>> '{{judgment,signal,symbol}}' AS symbol,
+                   v.trace #>> '{{judgment,signal,direction}}' AS direction,
+                   (v.trace #>> '{{judgment,signal,oi_change_bps}}')::bigint AS oi_change_bps,
+                   (v.trace #>> '{{judgment,signal,oi_value_usd}}')::bigint AS oi_value_usd,
+                   (v.trace #>> '{{judgment,signal,whale_long_profit_bps}}')::bigint AS whale_long_profit_bps,
+                   (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
+                   (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
                    s.observed_at_ms,
                    e.ingest_mode,
                    i.provider_metadata ->> 'source' AS venue
               FROM news_verdicts v
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
+               AND v.trace #> '{{judgment,signal}}' = jsonb_build_object(
+                     'symbol', s.symbol,
+                     'direction', s.direction,
+                     'oi_change_bps', s.oi_change_bps,
+                     'oi_value_usd', s.oi_value_usd,
+                     'whale_long_profit_bps', s.whale_long_profit_bps,
+                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
+                   )
+               AND (v.trace #>> '{{judgment,rank_in_window}}')::integer = s.rank_in_window
+               AND v.trace #>> '{{oi_signal,source_strategy_id}}' IS NOT DISTINCT FROM s.source_strategy_id
+               AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
+               AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
+                     IS NOT DISTINCT FROM s.measurement_window_ms
               JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
-               AND v.program_version = 'news_oi_signal_v1'
-               AND v.policy_version = 'news_triage_policy_v10'
-               AND v.editorial ->> 'editorial_origin' = 'telemetry_deterministic'
-               AND jsonb_typeof(v.editorial -> 'relevance') = 'null'
+               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_origin = 'oi'
+               AND v.program_version = 'news_oi_signal_v2'
+               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
-               AND v.editorial ->> 'editorial_sha256' ~ '^[0-9a-f]{{64}}$'
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
                AND v.degraded = false
@@ -349,9 +363,9 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         program_version=row["program_version"],
         program_sha256=row["program_sha256"],
         policy_version=row["policy_version"],
-        editorial_origin=row["editorial_origin"],
-        editorial_sha256=row["editorial_sha256"],
-        scored_judgment_sha256=row["scored_judgment_sha256"],
+        judgment_contract_version=row["judgment_contract_version"],
+        judgment_origin=row["judgment_origin"],
+        judgment_sha256=row["judgment_sha256"],
         runtime_manifest_sha=row["runtime_manifest_sha"],
         metric_version=row["metric_version"],
         source_strategy_id=row["source_strategy_id"],

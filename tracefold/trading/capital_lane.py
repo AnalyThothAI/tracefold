@@ -662,8 +662,10 @@ def _uses_current_news_generation(raw: object, *, news_generation: str) -> bool:
     return (
         isinstance(source, dict)
         and str(source.get("learning_epoch") or "") == news_generation
-        and source.get("policy_version") == "news_triage_policy_v10"
-        and source.get("program_version") == "news_oi_signal_v1"
+        and source.get("policy_version") == "news_triage_policy_v11"
+        and source.get("program_version") == "news_oi_signal_v2"
+        and source.get("judgment_contract_version") == "news_judgment_v2"
+        and source.get("judgment_origin") == "oi"
     )
 
 

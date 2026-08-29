@@ -97,7 +97,7 @@
 | `band_index` | `SMALLINT` | False | `None` |
 | `band_key` | `TEXT` | False | `None` |
 | `event_id` | `TEXT` | False | `None` |
-| `family` | `TEXT` | False | `None` |
+| `dedupe_family` | `TEXT` | False | `None` |
 | `expires_at_ms` | `BIGINT` | False | `None` |
 
 ## `news_event_evidence_snapshots`
@@ -156,7 +156,7 @@
 |--------|------|----------|---------|
 | `event_id` | `TEXT` | False | `None` |
 | `leader_item_id` | `TEXT` | False | `None` |
-| `family` | `TEXT` | False | `None` |
+| `dedupe_family` | `TEXT` | False | `None` |
 | `comparison_fingerprint` | `TEXT` | False | `None` |
 | `comparison_title` | `TEXT` | False | `None` |
 | `leader_title` | `TEXT` | False | `None` |
@@ -184,7 +184,7 @@
 | `focus_fact_id` | `TEXT` | False | `None` |
 | `focus_fact_text` | `TEXT` | False | `''::text` |
 | `focus_fact_context` | `TEXT` | False | `''::text` |
-| `focus_fact_method` | `TEXT` | False | `'legacy_reconstructed'::text` |
+| `focus_fact_method` | `TEXT` | False | `None` |
 | `focus_span_start` | `INTEGER` | False | `0` |
 | `focus_span_end` | `INTEGER` | False | `0` |
 | `event_kind` | `TEXT` | False | `None` |
@@ -491,7 +491,6 @@
 | `event_id` | `TEXT` | False | `None` |
 | `stage` | `TEXT` | False | `None` |
 | `policy_version` | `TEXT` | False | `None` |
-| `model_decision` | `TEXT` | True | `None` |
 | `rule_baseline_decision` | `TEXT` | False | `None` |
 | `final_decision` | `TEXT` | False | `None` |
 | `override_rule` | `TEXT` | True | `None` |
@@ -515,8 +514,9 @@
 | `latency_ms` | `DOUBLE PRECISION` | True | `None` |
 | `queue_lag_ms` | `DOUBLE PRECISION` | True | `None` |
 | `reasked_after_told_change` | `BOOLEAN` | True | `None` |
-| `novelty_defaulted` | `BOOLEAN` | True | `None` |
 | `seen_scope` | `TEXT` | True | `None` |
+| `judgment_contract_version` | `TEXT` | True | `None` |
+| `judgment_origin` | `TEXT` | True | `None` |
 
 ## `trading_binding_runtime`
 

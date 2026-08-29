@@ -3,9 +3,9 @@ import { DropdownMenu } from "radix-ui";
 import { useState } from "react";
 
 import {
-  NEWS_FEED_CHANNELS,
   NEWS_FEED_DIRECTIONS,
   NEWS_FEED_HOURS,
+  NEWS_EVENT_KINDS,
   type NewsFeedCounts,
   type NewsFeedDirection,
   type NewsFeedFilters,
@@ -38,7 +38,7 @@ export function NewsFeedToolbar({
   const total = tabCount(counts, filters.outcome);
   const [timeOpen, setTimeOpen] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const activeFilters = filters.directions.length + filters.channels.length;
+  const activeFilters = filters.directions.length + filters.eventKinds.length;
   return (
     <>
       <div className="news-feed-toolbar">
@@ -211,13 +211,13 @@ function FilterPanel({
       </div>
       <small>类型</small>
       <div>
-        {NEWS_FEED_CHANNELS.map((value) => (
+        {NEWS_EVENT_KINDS.map((value) => (
           <button
-            aria-pressed={filters.channels.includes(value)}
+            aria-pressed={filters.eventKinds.includes(value)}
             key={value}
             onClick={() =>
               onChange({
-                channels: toggleFilterValue(filters.channels, value, NEWS_FEED_CHANNELS),
+                eventKinds: toggleFilterValue(filters.eventKinds, value, NEWS_EVENT_KINDS),
               })
             }
             type="button"
@@ -229,7 +229,7 @@ function FilterPanel({
       {activeFilters ? (
         <button
           className="news-filter-clear"
-          onClick={() => onChange({ channels: [], directions: [] })}
+          onClick={() => onChange({ eventKinds: [], directions: [] })}
           type="button"
         >
           清除

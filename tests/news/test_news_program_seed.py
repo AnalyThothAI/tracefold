@@ -66,8 +66,8 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
     card = seed_instruction("reader_card")
 
     for marker in (
-        "Choose exactly one legacy event_type",
         "## news_taxonomy_v1",
+        "Code adds source_authority from provenance",
         "2: clearly tradable",
         "A product state change is magnitude 2, not a milestone",
         "a. The text says a level was crossed",
@@ -75,7 +75,7 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
         "Securities Investigation Notice",
         "restatement: the same fact as one told entry",
         "A direction flip versus the told entry is never a restatement.",
-        "reader_value is the only model delivery intent",
+        "reader_value is the model-owned editorial intent",
     ):
         assert marker in semantics, marker
     for marker in (
@@ -87,7 +87,6 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
         assert marker in card, marker
 
     # ReaderCard is not told how to interpret; EventSemantics is not told how to write copy.
-    assert "Choose exactly one event_type" not in card
     assert "Write a faithful Chinese reading" not in semantics
 
 
@@ -100,7 +99,8 @@ def test_a_seed_is_inside_the_one_instruction_budget_and_carries_no_identity_has
     # The prompt is behavior, not identity: a pure identity change must never rewrite bytes the provider
     # bills for.
     assert re.search(r"[0-9a-f]{64}", text) is None
-    assert "title_zh" not in seed_instruction("reader_card")
+    assert "headline_zh" in seed_instruction("reader_card")
+    assert "why_zh" in seed_instruction("reader_card")
 
 
 def test_the_seed_registry_covers_exactly_the_two_predictors() -> None:

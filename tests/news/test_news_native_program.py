@@ -29,7 +29,6 @@ def _semantics(**updates: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": 4,
-        "event_type": "listing",
         "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
@@ -64,7 +63,7 @@ def _context() -> TriageContext:
     return TriageContext.from_card(
         {
             "event_id": "event-secret",
-            "evidence_version": 2,
+            "evidence_version": 3,
             "evidence_sha256": "a" * 64,
             "focus_fact_id": "fact-secret",
             "reporting_origin": "Reuters",
@@ -74,7 +73,7 @@ def _context() -> TriageContext:
             "leader_description": "Trading starts tomorrow.",
             "opened_at_ms": 1_000_000,
             "member_count": 2,
-            "family": "listing",
+            "dedupe_family": "listing",
             "provider_score_max": 90,
             "provider_metadata": {"coins": [{"symbol": "BTC", "grade": "A"}]},
             "queue_priority": "normal",
@@ -88,10 +87,13 @@ def _context() -> TriageContext:
                 "event_id": "old-event",
                 "at_ms": 900_000,
                 "storyline_key": "asset:BTC",
-                "event_family": "market_access",
+                "dedupe_family": "listing",
+                "comparison_title": "BTC listed on another exchange",
+                "comparison_fingerprint": "f" * 64,
                 "magnitude": 1,
                 "direction": "bullish",
                 "headline_zh": "这条历史卡片只允许第一个 Predictor 看到",
+                "why_zh": "历史卡片原因",
                 "grounded_assets": ["BTC"],
             }
         ],
@@ -161,7 +163,18 @@ def test_two_named_predictors_use_exact_artifact_instructions_and_bounded_reader
     assert result.editorial.taxonomy.source_authority == "reputable_secondary"
     assert result.verdict.headline_zh == "比特币出现新进展"
     assert result.verdict.why_zh == "值得关注。"
-    assert result.verdict.actionable is True and result.verdict.decision == "push"
+    assert result.verdict.model_dump(mode="json") == {
+        "novelty": "new_fact",
+        "restates": -1,
+        "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 1,
+        "confidence": 0.8,
+        "audience": "crypto",
+        "headline_zh": "比特币出现新进展",
+        "why_zh": "值得关注。",
+    }
     assert [(trace.field, trace.input_value, trace.output_value) for trace in result.normalizations] == [
         ("channels", ("security_incident", "rates"), ("rates", "security_incident")),
         ("affected_markets", ("single_asset", "fx"), ("fx", "single_asset")),
@@ -269,7 +282,7 @@ def test_direct_native_scope_marks_post_predictor_domain_failure_terminal(async_
 
     with (
         pytest.raises(ValueError, match="news_program_restatement_index_invalid"),
-        ledger.scope(LMCallContext("news_semantic_program_v7", "a" * 64, "b" * 64)),
+        ledger.scope(LMCallContext("news_semantic_program_v8", "a" * 64, "b" * 64)),
     ):
         if async_entry:
             asyncio.run(program.acall(context=_context(), event_lm=event_lm, card_lm=card_lm))

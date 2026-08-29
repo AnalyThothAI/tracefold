@@ -35,7 +35,7 @@ TOLD_TIER_ORDER: Final[tuple[ToldTier, ...]] = (
     "fact_similarity",
     "recency",
 )
-TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v2"
+TOLD_SELECTOR_ID: Final[str] = "told_context_selector_v3"
 TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
     {
         "selector": TOLD_SELECTOR_ID,
@@ -45,13 +45,15 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
             "event_id",
             "at_ms",
             "storyline_key",
-            "event_type",
             "magnitude",
             "direction",
             "headline_zh",
             "grounded_assets",
             "assets",
             "comparison_title",
+            "comparison_fingerprint",
+            "dedupe_family",
+            "why_zh",
             "history_scope",
             "retrieval_reason",
         ],
@@ -70,10 +72,40 @@ TOLD_SELECTOR_SHA256: Final[str] = canonical_sha(
         "dedup": "event_id",
         "excludes_candidate": True,
         "visible_cap": TOLD_MAX,
-        "visible_fields": ["i", "ago_min", "key", "type", "sym", "m", "dir", "headline_zh"],
+        "visible_fields": [
+            "i",
+            "ago_min",
+            "storyline_key",
+            "comparison_title",
+            "symbols",
+            "magnitude",
+            "direction",
+            "headline_zh",
+            "why_zh",
+        ],
     }
 )
 NEWS_RETRIEVAL_SHA256: Final[str] = news_retrieval_sha256(told_selector_sha256=TOLD_SELECTOR_SHA256)
+
+_TOLD_SOURCE_FIELDS: Final = frozenset(
+    {
+        "event_id",
+        "at_ms",
+        "storyline_key",
+        "comparison_title",
+        "comparison_fingerprint",
+        "dedupe_family",
+        "grounded_assets",
+        "assets",
+        "canonical_assets",
+        "magnitude",
+        "direction",
+        "headline_zh",
+        "why_zh",
+        "history_scope",
+        "retrieval_reason",
+    }
+)
 
 
 class _ExactContractModel(BaseModel):
@@ -88,11 +120,13 @@ class ToldLedgerEntry(_ExactContractModel):
     at_ms: int = Field(ge=0)
     ago_min: int = Field(ge=0)
     storyline_key: str = ""
-    event_type: str = ""
+    comparison_title: str = ""
+    comparison_fingerprint: str = ""
     symbols: tuple[str, ...] = Field(default=(), max_length=TOLD_SYMBOLS_MAX)
     magnitude: int = Field(ge=0, le=3)
     direction: str
     headline_zh: str = Field(max_length=60)
+    why_zh: str = Field(default="", max_length=140)
     tier: ToldTier = "recency"
     similarity: float = Field(default=0.0, ge=0.0, le=1.0)
     history_scope: HistoryScope = "recent"
@@ -167,6 +201,13 @@ class ToldLedgerSnapshot(_ExactContractModel):
         ranked: list[tuple[int, float, int, str, Mapping[str, Any], ToldTier, float]] = []
         deduped: set[str] = set()
         for row in window:
+            unexpected = set(row).difference(_TOLD_SOURCE_FIELDS)
+            if unexpected:
+                raise ValueError(f"news_told_context_fields_unexpected:{','.join(sorted(unexpected))}")
+            required = {"dedupe_family", "magnitude", "direction", "headline_zh", "why_zh"}
+            missing = required.difference(row)
+            if missing:
+                raise ValueError(f"news_told_context_fields_missing:{','.join(sorted(missing))}")
             event_id = str(row.get("event_id") or "")
             if not event_id or event_id == exclude_event_id or event_id in deduped:
                 continue
@@ -202,11 +243,13 @@ class ToldLedgerSnapshot(_ExactContractModel):
                     at_ms=int(row.get("at_ms") or 0),
                     ago_min=max(0, int(now_ms) - int(row.get("at_ms") or 0)) // 60_000,
                     storyline_key=str(row.get("storyline_key") or ""),
-                    event_type=str(row.get("event_type") or ""),
+                    comparison_title=str(row.get("comparison_title") or "")[:600],
+                    comparison_fingerprint=str(row.get("comparison_fingerprint") or ""),
                     symbols=tuple(sorted(_row_symbols(row)))[:TOLD_SYMBOLS_MAX],
-                    magnitude=int(row.get("magnitude") or row.get("m") or 0),
-                    direction=str(row.get("direction") or row.get("dir") or ""),
-                    headline_zh=str(row.get("headline_zh") or "")[:60],
+                    magnitude=int(row["magnitude"]),
+                    direction=str(row["direction"]),
+                    headline_zh=str(row["headline_zh"])[:60],
+                    why_zh=str(row["why_zh"])[:140],
                     tier=tier,
                     similarity=round(fact_similarity, 4),
                     history_scope=cast(HistoryScope, str(row.get("history_scope") or "recent")),

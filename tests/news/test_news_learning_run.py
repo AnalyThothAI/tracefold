@@ -110,7 +110,7 @@ def _optimization(**updates: Any) -> dict[str, Any]:
             "episode_projection_root_sha256": _EPISODE_ROOT,
             "episode_count": 84,
             "learning_epoch": "bundle_00000000",
-            "review_rubric_version": "news_review_v4",
+            "review_rubric_version": "news_review_v6",
         },
         "objective": {
             "episode_projection_root_sha256": _EPISODE_ROOT,

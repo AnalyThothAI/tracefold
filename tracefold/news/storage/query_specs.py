@@ -25,6 +25,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                   LEFT JOIN LATERAL (
                     SELECT final_decision FROM news_verdicts v
                      WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                       AND v.judgment_contract_version = 'news_judgment_v2'
                      ORDER BY v.created_at_ms DESC LIMIT 1
                   ) t ON true
                  WHERE e.ingest_mode IN ('live', 'recovery')
@@ -115,7 +116,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_verdicts",
-            sql="SELECT * FROM news_verdicts WHERE event_id = %s ORDER BY created_at_ms",
+            sql="SELECT * FROM news_verdicts WHERE event_id = %s "
+            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms",
             params=("event",),
         ),
         ReadQuerySpec(
@@ -123,6 +125,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="""
                 SELECT count(*) AS pushed FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
                  WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
+                   AND v.judgment_contract_version = 'news_judgment_v2'
                    AND e.storyline_key = %s AND v.created_at_ms >= %s
             """,
             params=("theme:rates", day_ago),
@@ -133,7 +136,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 SELECT DISTINCT b.event_id FROM news_event_bands b
                   JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
                     ON q.band_index = b.band_index AND q.band_key = b.band_key
-                 WHERE b.family = %s AND b.expires_at_ms > %s
+                 WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
             """,
             params=([0, 1], ["a", "b"], "general", now_ms),
         ),
@@ -150,7 +153,8 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_status_pipeline_24h",
-            sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s",
+            sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' "
+            "AND judgment_contract_version = 'news_judgment_v2' AND created_at_ms >= %s",
             params=(day_ago,),
         ),
         ReadQuerySpec(

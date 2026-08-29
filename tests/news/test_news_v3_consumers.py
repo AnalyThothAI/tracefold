@@ -257,7 +257,7 @@ class InlineFinite:
 def _card(**overrides: Any) -> dict[str, Any]:
     card = {
         "event_id": "ev-strong",
-        "family": "general",
+        "dedupe_family": "general",
         "leader_title": "NVIDIA to invest $100bn in OpenAI data centre",
         "leader_url": "https://example.test/nvda",
         "leader_description": "",
@@ -275,7 +275,7 @@ def _card(**overrides: Any) -> dict[str, Any]:
         "evidence_version": 1,
         "evidence_sha256": "e" * 64,
         "focus_fact_id": "fact-1",
-        "evidence_schema_version": "news_event_evidence_v2",
+        "evidence_schema_version": "news_event_evidence_v3",
     }
     card.update(overrides)
     return card
@@ -301,15 +301,21 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 event_created=True,
                 admission="candidate",
                 event_id="ev-1",
-                family="macro",
+                dedupe_family="macro",
                 gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
-            SimpleNamespace(event_created=False, admission="candidate", event_id="ev-1", family="macro", gate=None),
+            SimpleNamespace(
+                event_created=False,
+                admission="candidate",
+                event_id="ev-1",
+                dedupe_family="macro",
+                gate=None,
+            ),
             SimpleNamespace(
                 event_created=True,
                 admission="suppressed_ungrounded",
                 event_id="ev-2",
-                family="general",
+                dedupe_family="general",
                 gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
             ),
             # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
@@ -318,7 +324,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 event_created=True,
                 admission="listing_deterministic",
                 event_id="ev-3",
-                family="listing",
+                dedupe_family="listing",
                 gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
             # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
@@ -327,7 +333,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 event_created=True,
                 admission="candidate",
                 event_id="ev-4",
-                family="general",
+                dedupe_family="general",
                 gate=SimpleNamespace(queue_priority="normal", amqp_priority=0),
             ),
         ]
@@ -532,13 +538,12 @@ def test_triage_without_model_pushes_an_objective_watchlist_fact_and_persists_ed
     inserted = news.kwargs_of("insert_verdict")
     assert inserted["stage"] == "triage" and inserted["policy_version"] == TRIAGE_POLICY_VERSION
     assert inserted["degraded"] is True and inserted["error_code"] == "news_semantic_program_unconfigured"
-    assert inserted["model"] is None and inserted["model_decision"] is None
+    assert inserted["model"] is None and inserted["model_editorial"] is None
     assert "prompt_version" not in inserted
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
-    assert inserted["editorial"]["editorial_origin"] == "degraded_unavailable"
-    assert inserted["editorial"]["relevance"] is None
-    assert len(inserted["scored_judgment_sha256"]) == 64
+    assert inserted["judgment_origin"] == "degraded"
+    assert len(inserted["judgment_sha256"]) == 64
     assert inserted["runtime_manifest_sha"] == "d" * 64
     assert inserted["rule_baseline_decision"] == "push" and inserted["final_decision"] == "push"
     assert inserted["verdict"]["headline_zh"] == "NVIDIA to invest $100bn in OpenAI data centre"  # wire headline
@@ -656,11 +661,12 @@ def _program_call(
         input_sha256=marker * 64,
         model_binding="primary",
         physical_provider_call=True,
+        runtime_provider="test",
+        runtime_model="fake",
+        runtime_model_sha256="e" * 64,
+        runtime_binding_sha256="f" * 64,
         output_sha256="d" * 64,
         validated_output={"marker": marker},
-        provider="test",
-        model="fake",
-        model_sha256="e" * 64,
         latency_ms=7,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -668,13 +674,14 @@ def _program_call(
         total_tokens=input_tokens + output_tokens,
         provider_cost_microusd=provider_cost_microusd,
         finish_reason="stop",
+        terminal_disposition="provider_success",
+        invocation_sha256=marker * 64,
     )
 
 
 def _program_trace(
     *,
     fallback_from: str | None = None,
-    novelty_defaulted: bool = False,
     context_sha256: str = "1" * 64,
     verdict_sha256: str | None = "7" * 64,
     calls: tuple[ProgramCallTrace, ...] = (),
@@ -689,7 +696,6 @@ def _program_trace(
         verdict_sha256=verdict_sha256,
         answering_route="fallback" if fallback_from else "primary",
         fallback_from=fallback_from,
-        novelty_defaulted=novelty_defaulted,
         calls=calls,
     )
 
@@ -715,11 +721,7 @@ def _judgment(
     usage: ProgramUsage | None = None,
 ) -> SemanticJudgment:
     verdict_payload = verdict.model_dump(mode="json") if hasattr(verdict, "model_dump") else dict(verdict)
-    editorial = EditorialEnvelope.issue(
-        editorial_origin="model",
-        relevance=trade_relevance(),
-        taxonomy=news_taxonomy(),
-    )
+    editorial = EditorialEnvelope.issue(relevance=trade_relevance(), taxonomy=news_taxonomy())
     default_calls = (
         _program_call(
             predictor="event_semantics",
@@ -961,14 +963,11 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     ok = _judgment(
         TriageVerdict(
             novelty="new_fact",
-            event_type="partnership",
             assets=[],
             direction="bullish",
             scope="single_name",
             magnitude=1,
-            actionable=True,
             confidence=0.6,
-            decision="push",
             headline_zh="ok",
         )
     )
@@ -994,14 +993,11 @@ def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:
     answered_by_fallback = _judgment(
         TriageVerdict(
             novelty="new_fact",
-            event_type="partnership",
             assets=[],
             direction="bullish",
             scope="single_name",
             magnitude=1,
-            actionable=True,
             confidence=0.6,
-            decision="push",
             headline_zh="ok",
         ),
         model="deepseek-chat",
@@ -1232,7 +1228,18 @@ def _delivery_news(**overrides: Any) -> RecordingNews:
         "latest_verdict": lambda *, event_id, stage: (
             {
                 "final_decision": "push",
-                "verdict": {"direction": "bullish", "magnitude": 2, "headline_zh": "英伟达", "title_zh": "英伟达投资"},
+                "verdict": {
+                    "novelty": "new_fact",
+                    "restates": -1,
+                    "assets": [{"symbol": "NVDA", "role": "primary"}],
+                    "direction": "bullish",
+                    "scope": "single_name",
+                    "magnitude": 2,
+                    "confidence": 0.8,
+                    "audience": "us_equity",
+                    "headline_zh": "英伟达投资",
+                    "why_zh": "投资扩大算力供给。",
+                },
             }
             if stage == "triage"
             else None
@@ -1473,7 +1480,6 @@ def test_telegram_sends_a_progression_before_llm_association_review_then_edits_w
                             "tier": "storyline",
                             "similarity": 0.31,
                             "headline_zh": "美光工会此前启动劳资协商",
-                            "event_type": "product",
                             "symbols": ["MU"],
                             "at_ms": NOW_MS - 150_000,
                         }
@@ -2714,7 +2720,7 @@ def _oi_delivery_news() -> RecordingNews:
         event_card=_card(admission="candidate", event_kind="oi", grounded_assets=[]),
         latest_verdict=lambda *, event_id, stage: {
             "final_decision": "push",
-            "program_version": "news_oi_signal_v1",
+            "program_version": "news_oi_signal_v2",
             "program_sha256": program_sha256(DEFAULT_OI_POLICY),
             "verdict": {
                 "direction": "bullish",
@@ -2902,7 +2908,9 @@ def test_janitor_republishes_candidates_that_never_left_the_process() -> None:
     news = RecordingNews(
         unpublished_candidates=[{"event_id": "ev-lost"}, {"event_id": "ev-gone"}],
         event_card=lambda event_id: (
-            _card(event_id="ev-lost", family="general", queue_priority="normal") if event_id == "ev-lost" else None
+            _card(event_id="ev-lost", dedupe_family="general", queue_priority="normal")
+            if event_id == "ev-lost"
+            else None
         ),
     )
     bus = FakeBus()
@@ -2978,15 +2986,13 @@ def _model_verdict(**overrides: Any) -> Any:
     base: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "partnership",
         "assets": [{"symbol": "NVDA", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 2,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "headline_zh": "英伟达投资 OpenAI",
+        "why_zh": "投资扩大算力供给。",
     }
     base.update(overrides)
     return TriageVerdict(**base)
@@ -3043,8 +3049,8 @@ def test_triage_runs_exactly_the_persisted_canary_arm_and_traces_the_assignment(
     assert inserted["program_version"] == PROGRAM_VERSION
     assert inserted["program_sha256"] == PROGRAM_SHA256
     assert inserted["verdict"]["headline_zh"] == "候选版真实输出"
-    assert inserted["editorial"]["editorial_contract_version"] == "news_editorial_v2"
-    assert inserted["editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
+    assert inserted["model_editorial"]["editorial_contract_version"] == "news_editorial_v2"
+    assert inserted["model_editorial"]["taxonomy"]["taxonomy_version"] == "news_taxonomy_v1"
     assert inserted["trace"]["agent_assignment"] == {
         "activation_id": activation_id,
         "arm": "candidate",
@@ -3108,11 +3114,16 @@ def _ledger_row(
         "event_id": event_id,
         "at_ms": at_ms,
         "storyline_key": key,
+        "comparison_title": headline,
+        "comparison_fingerprint": f"fingerprint:{event_id}",
+        "dedupe_family": "general",
         "magnitude": 2,
         "direction": "bullish",
         "headline_zh": headline,
+        "why_zh": "已有读者收据。",
         "grounded_assets": grounded_assets if grounded_assets is not None else [],
         "assets": [],
+        "canonical_assets": grounded_assets if grounded_assets is not None else [],
     }
 
 
@@ -3154,8 +3165,6 @@ def test_triage_told_rows_carry_the_instruments_so_the_listing_exemption_can_fir
             _model_verdict(
                 novelty="restatement",
                 restates=0,
-                event_type="listing",
-                decision="push",
                 magnitude=1,
                 assets=[{"symbol": "BICO", "role": "primary"}],
                 headline_zh="Upbit 将上线 BICO",
@@ -3183,7 +3192,7 @@ def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_res
         reader_history=_recent_history(*ledger),
     )
     bus = FakeBus()
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0)])
     triage = _triage_with_judge(news, bus, model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
@@ -3211,7 +3220,7 @@ def test_triage_reader_history_reaches_the_model_and_the_trace_and_grounds_a_res
 def test_triage_shows_targeted_history_to_the_model_but_never_to_recent_seen_policy() -> None:
     old_exact = {
         **_ledger_row("ev-old-exact", NOW_MS - 24 * 3_600_000),
-        "family": "general",
+        "dedupe_family": "general",
         "comparison_fingerprint": "f" * 64,
         "canonical_assets": ["NVDA"],
     }
@@ -3222,7 +3231,7 @@ def test_triage_shows_targeted_history_to_the_model_but_never_to_recent_seen_pol
         insert_verdict=True,
         reader_history=history,
     )
-    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0, decision="drop")])
+    model = _ScriptedSemanticJudge([_model_verdict(novelty="restatement", restates=0)])
     triage = _triage_with_judge(news, FakeBus(), model)
 
     asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
@@ -3323,7 +3332,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     )
     bus = FakeBus()
     first_verdict = _model_verdict(novelty="new_fact")
-    reask_verdict = _model_verdict(novelty="restatement", restates=0, decision="drop")
+    reask_verdict = _model_verdict(novelty="restatement", restates=0)
     first_trace = _program_trace(
         context_sha256="a" * 64,
         verdict_sha256=canonical_sha(first_verdict.model_dump(mode="json")),
@@ -3414,7 +3423,6 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     trace = row["trace"]
     assert trace["reasked_after_told_change"] is True
     assert trace["first_judgment"]["verdict"]["novelty"] == "new_fact"
-    assert trace["first_judgment"]["verdict"]["decision"] == "push"
     assert trace["first_judgment"]["editorial"]["relevance"]["reader_value"] == "realtime"
     assert trace["first_input_sha256"] == first_trace.context_sha256
     assert trace["told_count"] == 1 and trace["restates_event_id"] == "ev-just-pushed"
@@ -3470,7 +3478,7 @@ def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> 
         storyline_key="macro:general",
     )
     cards = iter((initial, refreshed))
-    verdict = _model_verdict(decision="drop", magnitude=1, actionable=False)
+    verdict = _model_verdict(magnitude=1)
     judge = _ScriptedSemanticJudge([verdict, verdict])
     news = RecordingNews(
         get_verdict=None,
@@ -3902,7 +3910,7 @@ def _oi_card(**overrides: Any) -> dict[str, Any]:
         leader_title=_OI_TITLE,
         admission="telemetry_deterministic",
         engine_type="market",
-        family="market_telemetry",
+        dedupe_family="market_telemetry",
         grounded_assets=[],
         watchlist_hits=[],
         queue_priority="normal",
@@ -3934,9 +3942,11 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     assert judge.calls == 0, "a telemetry frame must never reach the model"
     assert "assign_agent_arm" not in news.names(), "no model call means no arm to assign"
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "push" and inserted["override_rule"] == "telemetry_deterministic"
-    assert inserted["program_version"] == "news_oi_signal_v1" and inserted["degraded"] is False
-    assert inserted["verdict"]["event_type"] == "oi_spike"
+    assert inserted["final_decision"] == "push"
+    assert inserted["override_rule"] == "opening_move_with_whale_concentration"
+    assert inserted["program_version"] == "news_oi_signal_v2" and inserted["degraded"] is False
+    assert inserted["judgment_origin"] == "oi"
+    assert inserted["verdict"]["assets"] == [{"symbol": "TRUMP", "market_type": "perp", "role": "primary"}]
     assert inserted["verdict"]["headline_zh"] == (
         "▲ TRUMP 持仓异动4.55%｜持仓3217万｜鲸鱼占比100.7%｜鲸鱼多头盈利80.2%｜4h内第1次"
     )
@@ -4009,7 +4019,7 @@ def test_telemetry_beyond_the_window_rank_preserves_the_arithmetic_hold() -> Non
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-oi"})))
 
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "telemetry_deterministic"
+    assert inserted["final_decision"] == "drop" and inserted["override_rule"] == "beyond_window_rank"
     assert news.kwargs_of("insert_oi_signal")["rank_in_window"] == 3
     assert bus.published == []
 
@@ -4039,7 +4049,7 @@ def _liquidation_card(**overrides: Any) -> dict[str, Any]:
         leader_title="SPCX Large Short Liquidation 202.71K at $137.01",
         admission="liquidation_deterministic",
         engine_type="market",
-        family="market_telemetry",
+        dedupe_family="market_telemetry",
         grounded_assets=[],
         watchlist_hits=[],
         queue_priority="normal",
@@ -4054,8 +4064,8 @@ def _liquidation_card(**overrides: Any) -> dict[str, Any]:
 
 def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> None:
     news = RecordingNews(
-        # A historical generic-v10 row must not short-circuit the dedicated
-        # liquidation policy selected from the durable admission.
+        # An ordinary model row cannot short-circuit the dedicated liquidation
+        # policy selected from the durable admission.
         get_verdict=lambda **kwargs: (
             {"final_decision": "push", "published_at_ms": None}
             if kwargs["policy_version"] == TRIAGE_POLICY_VERSION
@@ -4097,17 +4107,23 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
 
     assert judge.calls == 0
     assert "assign_agent_arm" not in news.names()
-    assert news.kwargs_of("get_verdict")["policy_version"] == "news_liquidation_policy_v1"
+    assert news.kwargs_of("get_verdict")["policy_version"] == "news_liquidation_policy_v2"
     inserted = news.kwargs_of("insert_verdict")
-    assert inserted["program_version"] == "news_liquidation_fact_v1"
-    assert inserted["policy_version"] == "news_liquidation_policy_v1"
+    assert inserted["program_version"] == "news_liquidation_fact_v2"
+    assert inserted["policy_version"] == "news_liquidation_policy_v2"
     assert inserted["degraded"] is False
-    assert inserted["verdict"]["event_type"] == "liquidation"
+    assert inserted["judgment_origin"] == "liquidation"
     assert inserted["verdict"]["direction"] == "neutral"
-    assert inserted["verdict"]["actionable"] is False
-    assert inserted["trace"]["liquidation"]["forced_order_side"] == "buy"
+    assert inserted["verdict"]["why_zh"].startswith("已发生的被迫成交")
+    assert set(inserted["trace"]["liquidation"]) == {
+        "parsed",
+        "source_latency_ms",
+        "parser_version",
+        "source_classifier_version",
+    }
+    assert inserted["trace"]["judgment"]["fact"]["forced_order_side"] == "buy"
     assert inserted["trace"]["gate_policy_version"] == "news_liquidation_admission_v1"
-    assert inserted["trace"]["liquidation"]["source_contract"]["complete"] is False
+    assert inserted["trace"]["judgment"]["fact"]["source_contract_complete"] is False
     assert news.kwargs_of("resolve_unverified_source_contract")["reason"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
@@ -4137,7 +4153,7 @@ def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:
     news = RecordingNews(
         get_verdict=lambda **kwargs: (
             {"final_decision": "push", "published_at_ms": None}
-            if kwargs["policy_version"] == "news_liquidation_policy_v1"
+            if kwargs["policy_version"] == "news_liquidation_policy_v2"
             else None
         ),
         event_card=_liquidation_card(),
@@ -4147,5 +4163,5 @@ def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:
     asyncio.run(_triage(news, bus).handle(_message("event", {"event_id": "ev-liquidation"})))
 
     assert "insert_verdict" not in news.names()
-    assert news.kwargs_of("mark_verdict_published")["policy_version"] == "news_liquidation_policy_v1"
+    assert news.kwargs_of("mark_verdict_published")["policy_version"] == "news_liquidation_policy_v2"
     assert bus.routing_keys() == [RK_VERDICT_PUSH]

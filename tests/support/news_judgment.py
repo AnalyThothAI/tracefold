@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
@@ -39,17 +39,14 @@ def scored_judgment(
     verdict: dict[str, Any] | TriageVerdict,
     *,
     relevance: TradeRelevanceV1 | None = None,
-    editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"] = "model",
     taxonomy: NewsTaxonomyV1 | None = None,
 ) -> ScoredJudgment:
     typed_verdict = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
-    typed_relevance = (relevance or trade_relevance()) if editorial_origin == "model" else None
     return ScoredJudgment.issue(
         verdict=typed_verdict,
         editorial=EditorialEnvelope.issue(
-            editorial_origin=editorial_origin,
-            relevance=typed_relevance,
-            taxonomy=(taxonomy or news_taxonomy() if editorial_origin == "model" else None),
+            relevance=relevance or trade_relevance(),
+            taxonomy=taxonomy or news_taxonomy(),
         ),
     )
 

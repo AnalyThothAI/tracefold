@@ -1,0 +1,448 @@
+"""#369: retired News contracts exist only in explicitly named archives."""
+
+from __future__ import annotations
+
+import ast
+import gzip
+import json
+import re
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+THIS_FILE = Path(__file__).resolve()
+
+_ALL_SURFACES = (
+    ROOT / "src" / "tracefold",
+    ROOT / "web" / "src",
+    ROOT / "web" / "tests",
+    ROOT / "docs" / "generated",
+    ROOT / "tests",
+)
+_NEWS_SURFACES = (
+    ROOT / "src" / "tracefold" / "news",
+    ROOT / "src" / "tracefold" / "app" / "http",
+    ROOT / "src" / "tracefold" / "app" / "cli",
+    ROOT / "web" / "src",
+    ROOT / "web" / "tests",
+    ROOT / "docs" / "generated",
+    ROOT / "tests",
+)
+_TEXT_SUFFIXES = frozenset({".json", ".md", ".py", ".sql", ".ts", ".tsx"})
+
+_RETIRED_VERSION_IDENTITIES = frozenset(
+    {f"news_semantic_program_v{version}" for version in range(1, 8)}
+    | {f"news_program_v{version}" for version in range(1, 8)}
+    | {f"news_triage_policy_v{version}" for version in range(1, 11)}
+    | {f"news_delivery_card_v{version}" for version in range(1, 11)}
+    | {f"news_review_v{version}" for version in range(1, 6)}
+    | {
+        "news_liquidation_fact_v1",
+        "news_liquidation_policy_v1",
+        "news_oi_signal_v1",
+        "news_reader_history_v1",
+        "told_context_selector_v1",
+        "told_context_selector_v2",
+    }
+)
+
+_RETIRED_EVERYWHERE = (
+    frozenset(
+        {
+            "event_type",
+            "event_type_zh",
+            "funnel_parsed_24h",
+            "legacy_label",
+            "legacy_reconstructed",
+            "legacy_event_type",
+            "LegacyTaxonomyProjectionV1",
+            "project_legacy_event_type",
+            "model_decision",
+            "model_decision_zh",
+            "display_title",
+            "news_editorial_v1",
+            "novelty_defaulted",
+            "provider_cost_usd",
+            "news_triage_model_unconfigured",
+            "news_triage_output_invalid",
+            "news_triage_output_truncated",
+            "news_triage_timeout",
+            "unclear_push_event_types",
+        }
+    )
+    | _RETIRED_VERSION_IDENTITIES
+)
+_RETIRED_NEWS_ONLY = frozenset({"actionable"})
+_RETIRED_WITH_DERIVATIVES = frozenset({"model_decision", "novelty_defaulted"})
+_CURRENT_LEDGER_CONTRACT_FILES = (
+    ROOT / "src" / "tracefold" / "news" / "reader_history.py",
+    ROOT / "src" / "tracefold" / "news" / "told_context.py",
+    ROOT / "src" / "tracefold" / "news" / "pipeline" / "delivery.py",
+    ROOT / "src" / "tracefold" / "news" / "pipeline" / "triage_audit.py",
+    ROOT / "src" / "tracefold" / "news" / "program" / "contracts.py",
+)
+
+# Historical bytes, migration inputs, and negative contract assertions stay inspectable, but each exception is
+# one file plus one exact token. Ordinary fixtures never belong here.
+_EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
+    "src/tracefold/platform/postgres/alembic/current_schema_20260818_0275.sql": frozenset(
+        {"display_title", "family", "model_decision"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260821_0284_learning_evidence_foundation.py": frozenset(
+        {"legacy_reconstructed"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260821_0285_review_v2.py": frozenset({"legacy_label"}),
+    "src/tracefold/platform/postgres/alembic/versions/20260826_0311_news_status_metrics.py": frozenset(
+        {"novelty_defaulted"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0292_dspy_program_epoch.py": frozenset(
+        {"news_semantic_program_v1"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0293_program_v2_epoch.py": frozenset(
+        {"news_semantic_program_v1"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0294_program_v3_epoch.py": frozenset(
+        {"news_semantic_program_v1"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0295_program_v4_epoch.py": frozenset(
+        {"news_semantic_program_v2"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0297_news_oi_signals.py": frozenset(
+        {"news_oi_signal_v1"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260822_0298_program_v5_epoch.py": frozenset(
+        {"news_semantic_program_v3"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260823_0301_trade_relevance_program_v6.py": frozenset(
+        {"news_oi_signal_v1", "news_semantic_program_v4", "news_triage_policy_v10"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260824_0303_program_v7_epoch.py": frozenset(
+        {"news_review_v4", "news_semantic_program_v5"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260824_0304_program_strategy_artifact.py": frozenset(
+        {"news_review_v4", "news_semantic_program_v5"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260825_0305_compile_record.py": frozenset({"news_review_v4"}),
+    "src/tracefold/platform/postgres/alembic/versions/20260825_0306_compile_record_run_spend.py": frozenset(
+        {"news_review_v4"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260825_0307_prompt_candidate.py": frozenset({"news_review_v4"}),
+    "src/tracefold/platform/postgres/alembic/versions/20260827_0315_news_event_kind.py": frozenset(
+        {"news_liquidation_fact_v1", "news_oi_signal_v1", "news_semantic_program_v5"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260828_0318_program_v8_epoch.py": frozenset(
+        {"news_semantic_program_v5"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260828_0319_program_v9_epoch.py": frozenset(
+        {"news_semantic_program_v5"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260829_0328_news_taxonomy_v1.py": frozenset(
+        {"news_review_v5", "news_semantic_program_v7"}
+    ),
+    "src/tracefold/platform/postgres/alembic/versions/20260830_0330_news_current_contract_hard_cut.py": frozenset(
+        {
+            "actionable",
+            "display_title",
+            "event_type",
+            "event_type_zh",
+            "family",
+            "legacy_event_type",
+            "legacy_label",
+            "legacy_reconstructed",
+            "model_decision",
+            "novelty_defaulted",
+            "project_legacy_event_type",
+            "provider_cost_usd",
+            "unclear_push_event_types",
+        }
+    ),
+    "tests/fixtures/news_baseline_calibration_v1.json.gz": frozenset(
+        {
+            "actionable",
+            "decision",
+            "event_type",
+            "family",
+            "news_triage_policy_v8",
+            "title_zh",
+            "unclear_push_event_types",
+        }
+    ),
+    "tests/fixtures/news_audit_replay_corpus_v2.json": frozenset(
+        {
+            "actionable",
+            "decision",
+            "event_type",
+            "family",
+            "news_editorial_v1",
+            "news_triage_policy_v10",
+            "title_zh",
+            "unclear_push_event_types",
+        }
+    ),
+    "tests/contract/test_news_http_contract.py": frozenset(
+        {
+            "actionable",
+            "event_type",
+            "event_type_zh",
+            "funnel_parsed_24h",
+            "legacy_reconstructed",
+            "model_decision",
+            "model_decision_zh",
+            "novelty_defaulted",
+        }
+    ),
+    "tests/contract/test_openapi_drift.py": frozenset(
+        {
+            "actionable",
+            "event_type",
+            "event_type_zh",
+            "legacy_label",
+            "model_decision",
+            "model_decision_zh",
+        }
+    ),
+    "tests/integration/test_news_learning_migration.py": frozenset(
+        {
+            "legacy_label",
+            "model_decision",
+            "news_review_v4",
+            "news_semantic_program_v1",
+            "news_semantic_program_v3",
+            "news_semantic_program_v4",
+            "news_semantic_program_v5",
+        }
+    ),
+    "tests/integration/test_news_candidate_evaluator.py": frozenset({"news_semantic_program_v1"}),
+    "tests/integration/test_news_event_kind_migration.py": frozenset(
+        {"news_review_v5", "news_semantic_program_v5", "news_semantic_program_v7"}
+    ),
+    "tests/integration/test_news_status_metrics_migration.py": frozenset({"novelty_defaulted"}),
+    "tests/integration/test_postgres_schema_runtime.py": frozenset({"family", "model_decision", "novelty_defaulted"}),
+    "tests/news/test_news_liquidations.py": frozenset({"actionable", "event_type"}),
+    "tests/news/test_news_oi_signals.py": frozenset({"actionable", "event_type"}),
+}
+
+_TEST_SHAPE_ALLOWLIST: dict[str, frozenset[str]] = {
+    "tests/integration/test_news_event_assets_migration.py": frozenset({"family"}),
+    "tests/integration/test_news_event_kind_migration.py": frozenset({"family"}),
+    "tests/integration/test_news_learning_migration.py": frozenset({"family"}),
+    "tests/integration/test_news_status_metrics_migration.py": frozenset({"family"}),
+}
+
+
+def _text(path: Path) -> str:
+    if path.suffix == ".gz":
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            return handle.read()
+    return path.read_text(encoding="utf-8")
+
+
+def _files(roots: tuple[Path, ...]) -> set[Path]:
+    return {
+        path
+        for root in roots
+        for path in root.rglob("*")
+        if path.is_file() and path.suffix in _TEXT_SUFFIXES and path.resolve() != THIS_FILE
+    }
+
+
+def _is_test_source(path: Path) -> bool:
+    return path.is_relative_to(ROOT / "tests") or path.is_relative_to(ROOT / "web" / "tests")
+
+
+def _contains_token(text: str, token: str, *, test_source: bool = False) -> bool:
+    if test_source and token == "actionable":
+        return re.search(r"""["']actionable["']|\bactionable\s*[:=]|\.actionable\b""", text) is not None
+    if token in _RETIRED_WITH_DERIVATIVES:
+        return token in text
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", text) is not None
+
+
+def _literal_strings(node: ast.Dict | ast.Set | ast.List | ast.Tuple) -> set[str]:
+    values = node.keys if isinstance(node, ast.Dict) else node.elts
+    return {value.value for value in values if isinstance(value, ast.Constant) and isinstance(value.value, str)}
+
+
+def _retired_test_shape_tokens(path: Path) -> set[str]:
+    if path.suffix != ".py":
+        return set()
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    retired: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict):
+            keys = _literal_strings(node)
+            if "headline_zh" in keys:
+                retired.update(keys & {"actionable", "decision", "event_type", "title_zh"})
+            if {"title", "family"} <= keys or {"family", "decision", "limit"} <= keys:
+                retired.add("family")
+            if {"family", "decision", "limit"} <= keys:
+                retired.add("decision")
+        elif isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+            values = _literal_strings(node)
+            if "family" in values and {"event_id", "leader_title"} <= values:
+                retired.add("family")
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if re.search(r"INSERT\s+INTO\s+news_events\s*\([^)]*\bfamily\b", node.value, flags=re.IGNORECASE):
+                retired.add("family")
+    return retired
+
+
+def _table_columns(schema: str, table: str) -> set[str]:
+    section = schema.split(f"## `{table}`\n", 1)[1].split("\n## `", 1)[0]
+    return set(re.findall(r"^\| `([^`]+)` \|", section, flags=re.MULTILINE))
+
+
+def test_retired_news_contract_tokens_exist_only_at_exact_historical_boundaries() -> None:
+    all_files = _files(_ALL_SURFACES)
+    news_files = _files(_NEWS_SURFACES)
+    scans = {token: all_files for token in _RETIRED_EVERYWHERE} | {token: news_files for token in _RETIRED_NEWS_ONLY}
+    found_allowed_tokens: dict[str, set[str]] = {path: set() for path in _EXACT_ALLOWLIST}
+    offenders: list[str] = []
+
+    for token, paths in scans.items():
+        for path in sorted(paths):
+            text = _text(path)
+            if not _contains_token(text, token, test_source=_is_test_source(path)):
+                continue
+            relative = path.relative_to(ROOT).as_posix()
+            if token in _EXACT_ALLOWLIST.get(relative, ()):
+                found_allowed_tokens[relative].add(token)
+            else:
+                offenders.append(f"{relative}: {token}")
+
+    archive_scan_tokens = _RETIRED_EVERYWHERE | _RETIRED_NEWS_ONLY
+    for relative, allowed in _EXACT_ALLOWLIST.items():
+        text = _text(ROOT / relative)
+        offenders.extend(
+            f"{relative}: {token}"
+            for token in archive_scan_tokens
+            if _contains_token(
+                text,
+                token,
+                test_source=relative.startswith(("tests/", "web/tests/")),
+            )
+            and token not in allowed
+        )
+        for token in allowed:
+            if _contains_token(text, token, test_source=relative.startswith(("tests/", "web/tests/"))):
+                found_allowed_tokens[relative].add(token)
+
+    assert offenders == []
+    assert {path: frozenset(tokens) for path, tokens in found_allowed_tokens.items()} == _EXACT_ALLOWLIST
+
+
+def test_ordinary_tests_do_not_build_retired_news_shapes() -> None:
+    found_allowed: dict[str, set[str]] = {path: set() for path in _TEST_SHAPE_ALLOWLIST}
+    offenders: list[str] = []
+    for path in sorted(_files((ROOT / "tests",))):
+        relative = path.relative_to(ROOT).as_posix()
+        for token in sorted(_retired_test_shape_tokens(path)):
+            if token in _TEST_SHAPE_ALLOWLIST.get(relative, ()):
+                found_allowed[relative].add(token)
+            else:
+                offenders.append(f"{relative}: {token}")
+
+    assert offenders == []
+    assert {path: frozenset(tokens) for path, tokens in found_allowed.items()} == _TEST_SHAPE_ALLOWLIST
+
+
+def test_current_python_verdict_and_event_identity_are_exact() -> None:
+    from tracefold.news.models import TriageVerdict
+    from tracefold.news.program.contracts import FrozenEventEvidence
+
+    assert set(TriageVerdict.model_fields) == {
+        "novelty",
+        "restates",
+        "assets",
+        "direction",
+        "scope",
+        "magnitude",
+        "confidence",
+        "audience",
+        "headline_zh",
+        "why_zh",
+    }
+    assert TriageVerdict.model_config["extra"] == "forbid"
+    assert "dedupe_family" in FrozenEventEvidence.model_fields
+    assert "family" not in FrozenEventEvidence.model_fields
+    assert FrozenEventEvidence.model_config["extra"] == "forbid"
+
+
+def test_web_uses_timeline_title_only_at_the_timeline_owner() -> None:
+    users = {
+        path.relative_to(ROOT).as_posix()
+        for path in _files((ROOT / "web" / "src",))
+        if path.name != "openapi.ts" and _contains_token(path.read_text(encoding="utf-8"), "title_zh")
+    }
+    assert users == {"web/src/features/news/ui/detail/NewsTimeline.tsx"}
+
+
+def test_current_ledger_contracts_have_no_short_or_pre_rename_field_aliases() -> None:
+    aliases = ("family", "type", "sym", "m", "dir")
+    offenders = [
+        f"{path.relative_to(ROOT)}: {alias}"
+        for path in _CURRENT_LEDGER_CONTRACT_FILES
+        for alias in aliases
+        if re.search(rf"[\"']{alias}[\"']", path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def test_generated_news_api_has_only_current_typed_shapes() -> None:
+    document = json.loads((ROOT / "docs" / "generated" / "openapi.json").read_text(encoding="utf-8"))
+    schemas = document["components"]["schemas"]
+
+    verdict = schemas["NewsVerdictData"]
+    editorial = schemas["NewsModelEditorialData"]
+    presentation = schemas["NewsPresentationVerdictData"]
+    triage = schemas["NewsTriageSummaryData"]
+    filters = schemas["NewsFeedFiltersData"]
+    event = schemas["NewsEventData"]
+    evidence = schemas["NewsEvidenceSnapshotData"]
+    review = schemas["NewsAcceptedReviewData"]
+
+    assert verdict["additionalProperties"] is False
+    assert {"editorial", "trace", "prompt_version", "model_decision"}.isdisjoint(verdict["properties"])
+    assert verdict["properties"]["verdict"] == {"$ref": "#/components/schemas/NewsPresentationVerdictData"}
+    assert "verdict" in verdict["required"]
+    assert presentation["additionalProperties"] is False
+    assert set(presentation["properties"]) == {
+        "novelty",
+        "restates",
+        "assets",
+        "direction",
+        "scope",
+        "magnitude",
+        "confidence",
+        "audience",
+        "headline_zh",
+        "why_zh",
+    }
+    assert editorial["additionalProperties"] is False
+    assert set(editorial["properties"]) == {"taxonomy", "relevance"}
+    assert {
+        "event_type",
+        "event_type_zh",
+        "actionable",
+        "model_decision",
+        "model_decision_zh",
+        "title_zh",
+    }.isdisjoint(triage["properties"])
+    assert {"family", "decision", "channel"}.isdisjoint(filters["properties"])
+    assert {"final_decision", "event_kind"}.issubset(filters["properties"])
+    assert {"family", "dedupe_family"}.isdisjoint(event["properties"])
+    assert evidence["properties"]["provenance"]["const"] == "observed"
+    assert "snapshot" not in evidence["properties"]
+    assert "legacy_label" not in review["properties"]
+    assert {"payload", "dimensions", "novelty"}.isdisjoint(review["properties"])
+
+
+def test_generated_news_schema_has_only_current_identity_columns() -> None:
+    schema = (ROOT / "docs" / "generated" / "db-schema.md").read_text(encoding="utf-8")
+
+    for table in ("news_events", "news_event_bands"):
+        columns = _table_columns(schema, table)
+        assert "dedupe_family" in columns
+        assert "family" not in columns
+    verdict_columns = _table_columns(schema, "news_verdicts")
+    assert {"judgment_contract_version", "judgment_origin", "scored_judgment_sha256"}.issubset(verdict_columns)
+    assert "model_decision" not in verdict_columns

@@ -24,7 +24,7 @@ Q_DEAD: Final = "news.dead"
 
 RK_RAW_LIVE: Final = "raw.opennews.{strategy_id}"
 RK_RAW_RECOVERY: Final = "raw.recovery.{strategy_id}"
-RK_EVENT: Final = "event.{family}.{queue_priority}"
+RK_EVENT: Final = "event.{dedupe_family}.{queue_priority}"
 RK_VERDICT_PUSH: Final = "verdict.push"
 
 RETRY_TTL_MS: Final = 30_000

@@ -10,7 +10,6 @@ from tracefold.news.outcome import (
     OVERRIDE_RULE_ZH,
     admission_zh,
     delivery_error_zh,
-    error_code_zh,
     event_outcome,
     override_rule_zh,
     storyline_key_zh,
@@ -47,7 +46,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
         (
             "unsupported_market_contract",
             NOW,
-            _triage("push", override_rule="watchlist"),
+            _triage("push", override_rule="watchlist_objective_guard"),
             {"state": "sent", "error_code": None},
             "delivered",
             "已推送",
@@ -55,7 +54,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
         (
             "unsupported_market_contract",
             NOW,
-            _triage("push", override_rule="watchlist"),
+            _triage("push", override_rule="watchlist_objective_guard"),
             {"state": "sending", "error_code": None},
             "pending_delivery",
             "推送中",
@@ -63,36 +62,55 @@ def _triage(final: str, **over: object) -> dict[str, object]:
         (
             "unsupported_market_contract",
             NOW,
-            _triage("push", override_rule="watchlist"),
+            _triage("push", override_rule="watchlist_objective_guard"),
             {"state": "terminal", "error_code": "ambiguous_after_crash"},
             "delivery_failed",
             "未送达",
         ),
         ("candidate", None, None, None, "queued_publish", "待处理"),
         ("candidate", NOW, None, None, "queued_triage", "审稿中"),
-        ("candidate", NOW, _triage("drop", override_rule="noise"), None, "dropped", "未推送"),
+        ("candidate", NOW, _triage("drop", override_rule="reader_value_none"), None, "dropped", "未推送"),
         (
             "candidate",
             NOW,
-            _triage("throttled", override_rule="model_push_actionable", throttled_by="storyline:asset:BTC"),
+            _triage("throttled", override_rule="trade_relevance_realtime", throttled_by="storyline:asset:BTC:seen"),
             None,
             "throttled",
-            "未推送（历史限流）",
+            "未推送（重复）",
         ),
         (
             "candidate",
             NOW,
-            _triage("drop", override_rule="fail_closed_fallback", degraded=True, error_code="news_triage_timeout"),
+            _triage(
+                "drop",
+                override_rule="degraded_no_objective_guard",
+                degraded=True,
+                error_code="news_program_route_deadline",
+            ),
             None,
             "degraded_dropped",
             "未推送（规则兜底）",
         ),
-        ("candidate", NOW, _triage("push", override_rule="model_push_actionable"), None, "pending_delivery", "待推送"),
-        ("candidate", NOW, _triage("escalate", override_rule="magnitude3"), None, "pending_delivery", "待推送（重点）"),
         (
             "candidate",
             NOW,
-            _triage("push", override_rule="watchlist"),
+            _triage("push", override_rule="trade_relevance_realtime"),
+            None,
+            "pending_delivery",
+            "待推送",
+        ),
+        (
+            "candidate",
+            NOW,
+            _triage("escalate", override_rule="trade_relevance_escalate"),
+            None,
+            "pending_delivery",
+            "待推送（重点）",
+        ),
+        (
+            "candidate",
+            NOW,
+            _triage("push", override_rule="watchlist_objective_guard"),
             {"state": "sent", "error_code": None},
             "delivered",
             "已推送",
@@ -100,7 +118,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
         (
             "candidate",
             NOW,
-            _triage("escalate", override_rule="magnitude3"),
+            _triage("escalate", override_rule="trade_relevance_escalate"),
             {"state": "sent", "error_code": None},
             "delivered",
             "已推送（重点）",
@@ -108,7 +126,7 @@ def _triage(final: str, **over: object) -> dict[str, object]:
         (
             "listing_deterministic",
             NOW,
-            _triage("push", override_rule="model_push_actionable"),
+            _triage("push", override_rule="listing_deterministic"),
             {"state": "terminal", "error_code": "feishu_http_500"},
             "delivery_failed",
             "未送达",
@@ -131,10 +149,10 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     throttled = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("throttled", throttled_by="storyline:theme:trade:cap3"),
+        triage=_triage("throttled", throttled_by="storyline:theme:trade:seen"),
         delivery=None,
     )
-    assert throttled.reason_zh == "「贸易与关税」话题 4 小时内已推 3 条"
+    assert throttled.reason_zh == "重复：读者刚收到过内容高度相近的卡片"
     duplicate = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
@@ -145,77 +163,67 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     dropped = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("drop", override_rule="unclear_direction"),
+        triage=_triage("drop", override_rule="reader_value_none"),
         delivery=None,
     )
-    assert dropped.reason_zh == "方向不明，未达推送标准"
+    assert dropped.reason_zh == "无读者价值，不推送"
     degraded = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("drop", degraded=True, error_code="news_triage_output_truncated"),
+        triage=_triage("drop", degraded=True, error_code="news_program_output_truncated"),
         delivery=None,
     )
-    assert degraded.reason_zh == "模型不可用，按规则兜底不推：模型输出被截断"
+    assert degraded.reason_zh == "模型不可用，按规则兜底不推：语义程序输出被截断"
     failed = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("push", override_rule="model_push_actionable"),
+        triage=_triage("push", override_rule="trade_relevance_realtime"),
         delivery={"state": "terminal", "error_code": "ambiguous_after_crash"},
     )
     assert failed.reason_zh == "发送状态不确定（进程中断），不重发"
     fallback_push = event_outcome(
         admission="candidate",
         published_at_ms=NOW,
-        triage=_triage("push", override_rule="fail_closed_fallback", degraded=True, error_code="news_triage_timeout"),
+        triage=_triage(
+            "push",
+            override_rule="degraded_watchlist_objective",
+            degraded=True,
+            error_code="news_program_route_deadline",
+        ),
         delivery={"state": "sent", "error_code": None},
     )
-    assert fallback_push.kind == "delivered" and fallback_push.reason_zh == "模型不可用，按规则兜底推送：模型超时"
+    assert fallback_push.kind == "delivered" and fallback_push.reason_zh == "模型不可用，按规则兜底推送：语义程序超时"
 
 
 def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_codes() -> None:
     current_rules = {
         "degraded_listing_objective",
         "degraded_no_objective_guard",
-        "degraded_telemetry_objective",
         "degraded_watchlist_objective",
+        "beyond_window_rank",
         "listing_deterministic",
+        "liquidation_fact_only",
+        "liquidation_parse_failed",
+        "oi_change_below_threshold",
+        "oi_parse_failed",
+        "opening_move_with_whale_concentration",
         "restatement",
         "stale_source_artifact",
-        "telemetry_deterministic",
         "trade_relevance_escalate",
         "trade_relevance_inconsistent",
         "trade_relevance_realtime",
+        "whale_ratio_below_threshold",
         "watchlist_objective_guard",
     }
     missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)
     assert missing == []
     assert override_rule_zh("brand_new_rule") == "brand_new_rule"
-    # Keys that only exist on historical rows (retired policies/lanes) still get Chinese copy.
-    assert override_rule_zh("magnitude2_actionable").startswith("影响明显")
-    assert admission_zh("suppressed_ungrounded").endswith("（已退役）")
-    assert error_code_zh("news_analyst_failed:GraphRecursionError") == "分析模型失败（已退役通道）"
     assert admission_zh("candidate") == "已送审"
-    assert error_code_zh("news_triage_model_failed:RateLimitError") == "模型调用失败（RateLimitError）"
-    assert throttled_by_zh("hourly_cap") == "已达每小时推送上限"
-    assert throttled_by_zh("storyline:asset:XYZ-HD") == "XYZ-HD 同一话题在节流窗口内已推过同等或更重要的消息"
-    assert throttled_by_zh("storyline:macro:general:cap3") == "「综合」类 4 小时内已推 3 条"
-    # Policy v3 (issue #61): the novelty vocabulary, still on historical rows.
     assert override_rule_zh("restatement") == "重复：读者已收到同一事实"
-    assert override_rule_zh("novel_bypass").endswith("（旧规则）")
-    # Historical v5/v6 rules remain readable after policy v7 removed quotas.
-    assert override_rule_zh("distinct_bypass") == "与读者刚收到的卡片都不同，放行"
-    assert throttled_by_zh("storyline:asset:BTC:hard6") == "BTC 2 小时内已推 6 条，达到防洪上限"
-    assert throttled_by_zh("storyline:theme:rates:hard18") == "「利率与央行」话题 4 小时内已推 18 条，达到防洪上限"
     assert throttled_by_zh("storyline:asset:BTC:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    assert throttled_by_zh("storyline:macro:general:cap3:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    # Policy v7 emits only this content-based shape. `:seen` short-circuits
-    # ahead of historical cap/hard regexes.
     assert throttled_by_zh("storyline:asset:KLAC:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:theme:mideast_energy:seen") == "重复：读者刚收到过内容高度相近的卡片"
     assert throttled_by_zh("storyline:macro:general:seen") == "重复：读者刚收到过内容高度相近的卡片"
-    # Historical keys (the pre-v5 hard caps) still read as sentences.
-    assert throttled_by_zh("storyline:theme:rates:hard6") == "「利率与央行」话题 4 小时内已推 6 条，达到防洪上限"
-    assert throttled_by_zh("storyline:macro:general:hard6") == "「综合」类 4 小时内已推 6 条，达到防洪上限"
     assert storyline_key_zh("theme:mideast_energy") == "中东与能源" and storyline_key_zh("asset:BTC") == "BTC"
 
 
@@ -224,6 +232,8 @@ def _event(**over: object) -> dict[str, object]:
         "event_id": "ev-1",
         "leader_title": "Binance will list XYZ",
         "reporting_origin": "binance",
+        "dedupe_family": "general",
+        "event_kind": "news",
         "opened_at_ms": NOW,
         "member_count": 3,
         "admission": "candidate",
@@ -245,12 +255,21 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         "headline_zh": "币安上线 XYZ",
         "direction": "bullish",
         "magnitude": 2,
-        "event_type": "listing",
         "scope": "single_name",
     }
     triage = {
         **_triage("push", override_rule="trade_relevance_realtime", verdict=verdict),
-        "model_decision": "push",
+        "judgment_origin": "model",
+        "judgment_contract_version": "news_judgment_v2",
+        "model_editorial": {
+            "taxonomy": {
+                "event_family": "market_access",
+                "change_state": "effective",
+                "assertion_status": "confirmed",
+                "source_authority": "issuer_first_party",
+            },
+            "relevance": {"reader_value": "realtime"},
+        },
         "trace": {"storyline_key": "asset:XYZ", "queue_lag_ms": 800},
     }
     members = [
@@ -278,7 +297,9 @@ def test_timeline_tells_the_story_in_order_with_chinese_summaries() -> None:
         event=_event(grounded_assets=["CL", "XYZ-CL", "BTC"]), members=[], verdicts=[], deliveries=[]
     )
     assert cl_steps[1]["summary_zh"] == "已送审 · 关联 CL BTC"
-    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 上币 · 模型建议：推送"
+    assert steps[2]["summary_zh"] == "币安上线 XYZ · 利多 / 影响明显 / 市场准入"
+    assert steps[2]["facts"]["taxonomy"]["event_family"] == "market_access"
+    assert steps[2]["facts"]["relevance"] == {"reader_value": "realtime"}
     assert steps[3]["summary_zh"] == "推送 · 交易相关性达到实时推送标准"
     assert steps[4]["summary_zh"] == "已送达" and steps[4]["at_ms"] == NOW + 9_500
     assert steps[3]["facts"]["storyline_zh"] == "XYZ"
@@ -347,14 +368,19 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "events_24h": 200,
             "candidates_24h": 150,
             "triage_24h": 150,
+            "model_triage_24h": 150,
             "triage_degraded_24h": 3,
             "decided_push_24h": 20,
+            "funnel_received_24h": 200,
+            "funnel_admitted_24h": 150,
+            "funnel_triaged_24h": 150,
+            "funnel_delivered_24h": 19,
             "triage_p95_ms": 3200,
             "suppressed_by_reason": {"suppressed_pr_template": 5},
-            "dropped_by_rule": {"noise": 60, "unclear_direction": 30},
-            "throttled_by_key": {"storyline:asset:BTC": 12},
-            "pushed_by_rule": {"model_push_actionable": 18, "magnitude3": 2},
-            "triage_degraded_by_code_24h": {"news_triage_timeout": 3},
+            "dropped_by_rule": {"reader_value_none": 60, "reader_value_background": 30},
+            "throttled_by_key": {"storyline:asset:BTC:seen": 12},
+            "pushed_by_rule": {"trade_relevance_realtime": 18, "trade_relevance_escalate": 2},
+            "triage_degraded_by_code_24h": {"news_program_route_deadline": 3},
             "tagged_24h": 150,
             "grounded_24h": 144,
             "ungrounded_by_symbol_24h": {"SPOT": 38, "NEAR": 9},
@@ -387,7 +413,6 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     }
     assert out["funnel_24h"] == {
         "received": 200,
-        "parsed": 200,
         "admitted": 150,
         "candidates": 150,
         "triaged": 150,
@@ -402,27 +427,53 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
         "delivered_1h": 2,
     }
     reasons = out["reasons_24h"]
-    assert reasons[0] == {"stage": "drop", "key": "noise", "label_zh": "模型判定为噪音", "count": 60}
+    assert reasons[0] == {
+        "stage": "drop",
+        "key": "reader_value_none",
+        "label_zh": "无读者价值，不推送",
+        "count": 60,
+    }
     assert {r["stage"] for r in reasons} == {"gate", "drop", "throttle", "push", "degraded", "ungrounded"}
     assert all(r["label_zh"] for r in reasons)
     # The provider tag is its own label — inventing the English word it collided with would be a guess.
     assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
 
 
-def test_status_funnel_prefers_the_single_event_cohort_over_throughput_ledgers() -> None:
+def test_status_funnel_reads_the_single_event_cohort() -> None:
     inputs = _status_inputs()
     inputs["pipeline"] = {
         **inputs["pipeline"],
         "funnel_received_24h": 12,
-        "funnel_parsed_24h": 12,
         "funnel_admitted_24h": 9,
         "funnel_triaged_24h": 8,
         "funnel_delivered_24h": 3,
     }
     out = status_health(**inputs)  # type: ignore[arg-type]
-    assert {
-        stage: out["funnel_24h"][stage] for stage in ("received", "parsed", "admitted", "triaged", "delivered")
-    } == {"received": 12, "parsed": 12, "admitted": 9, "triaged": 8, "delivered": 3}
+    assert {stage: out["funnel_24h"][stage] for stage in ("received", "admitted", "triaged", "delivered")} == {
+        "received": 12,
+        "admitted": 9,
+        "triaged": 8,
+        "delivered": 3,
+    }
+
+
+def test_status_health_does_not_fall_back_to_throughput_counts() -> None:
+    inputs = _status_inputs()
+    inputs["pipeline"] = {
+        "events_24h": 200,
+        "admitted_24h": 150,
+        "triage_24h": 150,
+        "triage_degraded_24h": 3,
+    }
+    out = status_health(**inputs)  # type: ignore[arg-type]
+
+    assert out["health"]["model"]["summary_zh"] == "24 小时内没有送审事件"
+    assert {stage: out["funnel_24h"][stage] for stage in ("received", "admitted", "triaged", "delivered")} == {
+        "received": 0,
+        "admitted": 0,
+        "triaged": 0,
+        "delivered": 0,
+    }
 
 
 def test_status_health_thresholds_turn_amber_and_red() -> None:
@@ -492,83 +543,9 @@ def test_status_health_thresholds_turn_amber_and_red() -> None:
     assert off["health"]["overall"] == "bad"
 
 
-def test_timeline_fills_the_empty_title_sentinel() -> None:
-    """#101: an empty `title_zh` means "same as headline_zh". The console shows a title either way — the sentinel
-    saves output tokens, it does not take the field away from the operator."""
-
-    verdict = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
+def test_timeline_exposes_only_the_current_reader_headline() -> None:
+    verdict = {"headline_zh": "币安上线 XYZ", "direction": "bullish", "magnitude": 2}
     _, steps = event_timeline(event=_event(), members=[], verdicts=[_triage("push", verdict=verdict)], deliveries=[])
-    assert steps[2]["facts"]["title_zh"] == "币安上线 XYZ"
-
-    condensed = {**verdict, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
-    _, steps = event_timeline(event=_event(), members=[], verdicts=[_triage("push", verdict=condensed)], deliveries=[])
-    assert steps[2]["facts"]["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"
-
-
-def test_console_read_sites_fill_the_empty_title_sentinel() -> None:
-    """#101 AC#2: the two surfaces the operator actually reads — the detail hero's translated line and the feed
-    row — both resolve the sentinel. Neither had an assertion; the timeline test above covers only the collapsed
-    technical panel, and the HTTP contract test uses a fake repository."""
-
-    from tracefold.news.storage.feed import _feed_row, _triage_summary
-    from tracefold.news.taxonomy import IPTC_CODEBOOK_SHA256
-
-    sentinel = {"headline_zh": "币安上线 XYZ", "title_zh": "", "direction": "bullish", "magnitude": 2}
-    summary = _triage_summary(final_decision="push", verdict=sentinel)
-    assert summary is not None and summary["title_zh"] == "币安上线 XYZ"
-
-    condensed = {**sentinel, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"}
-    filled = _triage_summary(final_decision="push", verdict=condensed)
-    assert filled is not None and filled["title_zh"] == "币安公告将于本周上线 XYZ 现货交易对"
-
-    taxonomy = {
-        "subject_codes": ["medtop:20001279"],
-        "event_family": "market_access",
-        "change_state": "effective",
-        "assertion_status": "confirmed",
-        "taxonomy_version": "news_taxonomy_v1",
-        "source_authority": "issuer_first_party",
-        "codebook_sha256": IPTC_CODEBOOK_SHA256,
-    }
-    detailed = _triage_summary(final_decision="push", verdict=sentinel, taxonomy=taxonomy, full=True)
-    slim = _triage_summary(final_decision="push", verdict=sentinel, taxonomy=taxonomy)
-    assert detailed is not None and detailed["taxonomy"]["event_family_zh"] == "市场准入"
-    assert detailed["taxonomy"]["subject_labels_zh"] == ["加密货币"]
-    assert slim is not None and "taxonomy" not in slim
-
-    # The feed row reads the flattened SQL columns, not the verdict blob — a separate path with the same rule.
-    row = {
-        "event_id": "ev-1",
-        "family": "general",
-        "event_kind": "news",
-        "source_contract_reason": None,
-        "last_member_at_ms": NOW,
-        "expires_at_ms": NOW + 3600_000,
-        "comparison_title": "binance will list xyz",
-        "engine_type": "listing",
-        "macro_lexicon": False,
-        "provider_score_max": 80.0,
-        "context_line": "",
-        "published_at_ms": NOW,
-        "trace_id": "t-1",
-        "opened_at_ms": NOW,
-        "leader_title": "Binance will list XYZ",
-        "reporting_origin": "binance",
-        "admission": "candidate",
-        "asset_class": "crypto",
-        "grounded_assets": ["XYZ"],
-        "watchlist_hits": [],
-        "storyline_key": "asset:XYZ",
-        "member_count": 1,
-        "ingest_mode": "live",
-        "provenance": [],
-        "final_decision": "push",
-        "headline_zh": "币安上线 XYZ",
-        "title_zh": "",
-    }
-    assert _feed_row(row)["title_zh"] == "币安上线 XYZ"
-    assert _feed_row({**row, "title_zh": "币安公告将于本周上线 XYZ 现货交易对"})["title_zh"] == (
-        "币安公告将于本周上线 XYZ 现货交易对"
-    )
-    # Nothing to show at all stays None rather than becoming an empty string in the API payload.
-    assert _feed_row({**row, "headline_zh": None, "title_zh": ""})["title_zh"] is None
+    facts = steps[2]["facts"]
+    assert facts["headline_zh"] == "币安上线 XYZ"
+    assert set(facts).isdisjoint({"event" + "_type", "action" + "able", "model" + "_decision", "title" + "_zh"})

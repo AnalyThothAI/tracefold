@@ -127,16 +127,20 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert feed.status_code == 200
     feed_data = feed.json()["data"]
     assert feed_data["filters"] == {
-        "family": None,
+        "event_family": None,
+        "change_state": None,
+        "assertion_status": None,
+        "source_authority": None,
+        "subject_code": None,
+        "final_decision": None,
+        "event_kind": None,
         "admission": None,
-        "decision": None,
         "symbol": None,
         "q": None,
         "limit": 10,
         "outcome": None,
         "hours": None,
         "direction": None,
-        "channel": None,
         # #207: the deterministic OI lane's outcome. Absent here means the whole lane, the same way every
         # other filter reads — the monitor is the only caller that sets it.
         "oi": None,
@@ -168,7 +172,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         "delivery_failed",
     }
     assert 0 < len(feed_data["events"]) <= 10
-    assert all("title_zh" in event for event in feed_data["events"])
+    assert all("title_zh" not in event for event in feed_data["events"])
     assert {event["event_id"] for event in feed_data["events"]} <= set(event_ids)
     if len(event_ids) > 10:
         assert feed_data["next_cursor"]

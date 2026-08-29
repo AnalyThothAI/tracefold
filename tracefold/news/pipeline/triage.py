@@ -9,10 +9,10 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from typing import Any, ClassVar
 
 from .. import liquidations, oi_signals
+from ..artifact_identity import canonical_sha
 from ..bus import (
     Q_TRIAGE,
     RK_VERDICT_PUSH,
@@ -23,9 +23,8 @@ from ..bus import (
     now_ms,
 )
 from ..events.storyline import final_storyline_key
-from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, TriageVerdict, json_ready
+from ..models import GATE_POLICY_VERSION, TRIAGE_POLICY_VERSION, json_ready
 from ..program.contracts import (
-    EditorialEnvelope,
     ScoredJudgment,
     SemanticJudge,
     SemanticJudgeError,
@@ -107,7 +106,7 @@ def _record_deterministic_assets(repos: Any, s: _TriageSettle) -> None:
     enter reader history as a canonical asset.
     """
 
-    if s.judgment.editorial.editorial_origin != "telemetry_deterministic":
+    if s.origin not in {"oi", "liquidation"}:
         return
     assets = [(asset.symbol, asset.market_type) for asset in s.verdict.assets if asset.role == "primary"]
     if not assets:
@@ -213,16 +212,13 @@ class TriageConsumer:
         if bundle is None:
             raise PermanentError("news_event_missing")
         card, history, _admission, event_kind = bundle
-        # Evidence snapshots are immutable by design, so a pre-cut queued message may still carry the
-        # old candidate admission after a source-contract migration has held the material Event.  Route
-        # from current PostgreSQL truth before looking for a settled verdict or invoking any judge.
         if event_kind == "unsupported_market":
             return
         policy_version = liquidations.TRIAGE_POLICY_VERSION if event_kind == "liquidation" else TRIAGE_POLICY_VERSION
         if await self._republish_settled_verdict(event_id, message, policy_version=policy_version):
             return
-        if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v2":
-            raise PermanentError("news_event_evidence_v2_required")
+        if str(card.get("evidence_schema_version") or "") != "news_event_evidence_v3":
+            raise PermanentError("news_event_evidence_v3_required")
         facts = _gate_facts(card, self.watchlist_symbols)
         if event_kind == "oi":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
@@ -267,6 +263,8 @@ class TriageConsumer:
             settle = self._settle_for(route, arm=arm, attempts=attempts, judged=judged, trace=trace)
             outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
             if outcome.stale:
+                if not isinstance(judged.judgment, ScoredJudgment):
+                    raise RuntimeError("news_stale_non_model_judgment")
                 # A card landed while the model was thinking: ask once more with the ledger it did not see (rare,
                 # ~0.6% of calls at 8 pushes/h) instead of pushing a restatement the reader just received. Everything
                 # the model and decide() look at is re-read under a fresh stamp so the second input is consistent.
@@ -590,7 +588,7 @@ class TriageConsumer:
                 scope=verdict.scope,
                 verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
                 grounded_assets=route.facts.grounded_assets,
-                family=str(card.get("family") or "general"),
+                dedupe_family=str(card.get("dedupe_family") or "general"),
                 aliases=self._aliases,
                 degraded=judged.degraded,
             ),
@@ -700,7 +698,7 @@ class TriageConsumer:
             "attempt": message.attempt,
             "program_version": oi_signals.PROGRAM_VERSION,
             "runtime_manifest_sha": self.runtime_manifest_sha,
-            "policy": self.policy.as_dict(),
+            "policy": self.oi_policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
             "evidence_version": int(card.get("evidence_version") or 0),
             "evidence_sha256": str(card.get("evidence_sha256") or ""),
@@ -717,7 +715,7 @@ class TriageConsumer:
             provider_source = (
                 str(provider_metadata.get("source") or "") if isinstance(provider_metadata, Mapping) else ""
             )
-            verdict, failure = oi_signals.oi_parse_failure(title, provider_source=provider_source)
+            judgment, failure = oi_signals.oi_parse_failure(title, provider_source=provider_source)
             log.warning(
                 "news_oi_parse_failed event_id=%s strategy_id=%s provider=opennews "
                 "title_sha256=%s parser_version=%s failure_stage=source_contract_drift",
@@ -731,7 +729,7 @@ class TriageConsumer:
                 event_id=event_id,
                 card=card,
                 facts=facts,
-                verdict=verdict,
+                judgment=judgment,
                 history=history,
                 trace=trace,
                 stamp=stamp,
@@ -797,7 +795,7 @@ class TriageConsumer:
                         event_id=event_id,
                         card=card,
                         facts=facts,
-                        verdict=judgment.verdict,
+                        judgment=judgment,
                         history=history,
                         trace=trace,
                         stamp=stamp,
@@ -853,7 +851,7 @@ class TriageConsumer:
             )
             error_code = None
             if row is None:
-                verdict, fact_trace = liquidations.parse_failure(
+                judgment, fact_trace = liquidations.parse_failure(
                     str(card.get("leader_title") or ""), provider_source=provider_source
                 )
                 error_code = "liquidation_parse_failed"
@@ -897,7 +895,7 @@ class TriageConsumer:
                     source_contract_complete=bool(row["source_contract_complete"]),
                     parser_version=str(row["parser_version"]),
                 )
-                verdict = liquidations.verdict(fact)
+                judgment = liquidations.judge(fact)
                 fact_trace = liquidations.trace(fact)
             trace = {**base_trace, "liquidation": fact_trace}
             return self._decide_and_persist(
@@ -906,7 +904,7 @@ class TriageConsumer:
                     event_id=event_id,
                     card=card,
                     facts=facts,
-                    verdict=verdict,
+                    judgment=judgment,
                     history=history,
                     trace=trace,
                     stamp=stamp,
@@ -933,7 +931,7 @@ class TriageConsumer:
         event_id: str,
         card: Mapping[str, Any],
         facts: GateFacts,
-        verdict: TriageVerdict,
+        judgment: oi_signals.OiJudgment | liquidations.LiquidationJudgment,
         history: ReaderHistorySnapshot,
         trace: dict[str, Any],
         stamp: int,
@@ -942,15 +940,13 @@ class TriageConsumer:
         program_sha256: str,
         policy_version: str = TRIAGE_POLICY_VERSION,
     ) -> _TriageSettle:
+        verdict = judgment.verdict
         return _TriageSettle(
             event_id=event_id,
             evidence_version=int(card.get("evidence_version") or 0),
             evidence_sha256=str(card.get("evidence_sha256") or ""),
             focus_fact_id=str(card.get("focus_fact_id") or ""),
-            judgment=ScoredJudgment.issue(
-                verdict=verdict,
-                editorial=EditorialEnvelope.issue(editorial_origin="telemetry_deterministic", relevance=None),
-            ),
+            judgment=judgment,
             facts=facts,
             final_key=final_storyline_key(
                 title=str(card.get("leader_title") or ""),
@@ -958,14 +954,13 @@ class TriageConsumer:
                 scope=verdict.scope,
                 verdict_primaries=[a.symbol for a in verdict.assets if a.role == "primary"],
                 grounded_assets=facts.grounded_assets,
-                family=str(card.get("family") or "general"),
+                dedupe_family=str(card.get("dedupe_family") or "general"),
                 aliases=self._aliases,
                 degraded=False,
             ),
             told=[],
             history=history,
             # An arithmetic judgment reads no semantic history, so there is no selected context to go stale.
-            # Recent reader history is still refreshed inside the lock because `decide()` measures duplicates.
             selected_context_sha="",
             novelty_context_sha="",
             prelim_key=str(card.get("storyline_key") or ""),
@@ -1010,25 +1005,22 @@ class TriageConsumer:
             return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
         status = storyline_status(s.final_key, told=s.told, seen=seen)
         trace = s.trace
-        if s.policy_version == liquidations.TRIAGE_POLICY_VERSION:
-            decision = liquidations.reader_decision(s.verdict, error_code=s.error_code)
+        if isinstance(s.judgment, ScoredJudgment):
+            decision = decide(s.judgment, s.facts, status, policy=s.policy)
         else:
-            decision = decide(
-                s.judgment,
-                s.facts,
-                status,
-                degraded=s.degraded,
-                policy=s.policy,
-            )
-        if s.error_code == "oi_parse_failed":
-            # The final action still comes from the one deterministic decision plane; this names the
-            # provider-contract failure without changing the model policy helper's release identity.
-            decision = replace(decision, override_rule=s.error_code)
+            decision = s.deterministic_decision
         trace["status_final"] = {"storyline_key": s.final_key}
         trace["storyline_key"] = s.final_key
-        trace["verdict_sha256"] = s.judgment.verdict_sha256
-        trace["editorial_sha256"] = s.judgment.editorial.editorial_sha256
-        trace["scored_judgment_sha256"] = s.judgment.scored_judgment_sha256
+        trace["verdict_sha256"] = canonical_sha(s.verdict.model_dump(mode="json"))
+        trace["judgment_contract_version"] = s.judgment.judgment_contract_version
+        trace["judgment_origin"] = s.origin
+        trace["judgment_sha256"] = s.judgment_sha256
+        model_editorial = None
+        if isinstance(s.judgment, ScoredJudgment):
+            trace["editorial_sha256"] = s.judgment.editorial.editorial_sha256
+            model_editorial = s.judgment.editorial.model_dump(mode="json")
+        else:
+            trace["judgment"] = s.judgment.judgment_atom
         trace["runtime_manifest_sha"] = s.runtime_manifest_sha
         trace["seen_count"] = len(status.seen_headlines)
         trace["selected_context_sha256"] = s.selected_context_sha
@@ -1047,26 +1039,34 @@ class TriageConsumer:
                     "headline_zh": str(row.get("headline_zh") or ""),
                     "at_ms": int(row.get("at_ms") or 0),
                 }
-        if grounded_restatement(s.verdict, status):
+        if isinstance(s.judgment, ScoredJudgment) and grounded_restatement(s.verdict, status):
             trace["restates_event_id"] = s.told[s.verdict.restates]["event_id"]
         final = decision.final
         reason = decision.throttled_by or decision.override_rule or ""
+        if isinstance(s.judgment, ScoredJudgment):
+            taxonomy = s.judgment.editorial.taxonomy
+            classification = "/".join(
+                (taxonomy.event_family, taxonomy.change_state, taxonomy.assertion_status, taxonomy.source_authority)
+            )
+        else:
+            classification = str(s.card.get("event_kind") or s.origin)
         context_line = (
-            f"[{s.verdict.audience}/{s.verdict.event_type}/{s.verdict.direction} m{s.verdict.magnitude}"
+            f"[{s.origin}:{classification}/{s.verdict.audience}/{s.verdict.direction} m{s.verdict.magnitude}"
             f" → {final}·{reason}] {s.verdict.headline_zh}"
         )
         repos.news.insert_verdict(
             event_id=s.event_id,
             stage="triage",
             policy_version=s.policy_version,
-            model_decision=(s.verdict.decision if s.judgment.editorial.editorial_origin == "model" else None),
+            judgment_contract_version=s.judgment.judgment_contract_version,
+            judgment_origin=s.origin,
             rule_baseline_decision=decision.rule_baseline,
             final_decision=final,
             override_rule=decision.override_rule,
             throttled_by=decision.throttled_by,
             verdict=json_ready(s.verdict),
-            editorial=s.judgment.editorial.model_dump(mode="json"),
-            scored_judgment_sha256=s.judgment.scored_judgment_sha256,
+            model_editorial=model_editorial,
+            judgment_sha256=s.judgment_sha256,
             runtime_manifest_sha=s.runtime_manifest_sha,
             model=s.model_name,
             program_version=s.program_version,

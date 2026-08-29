@@ -869,7 +869,7 @@ def _build_report(
             "policy_sha256": policy["policy_sha256"],
             "policy_values": policy["policy_values"],
             "policy_source": policy["policy_source"],
-            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v5"),
+            "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v6"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
             # `current` is the release-plane population (this Program, this policy, this epoch); `all`
@@ -949,9 +949,7 @@ def _policy_identity(cases: Sequence[BaselineCase]) -> dict[str, Any]:
             seen[sha] = {
                 "policy_version": str(projection.get("policy_version") or ""),
                 "policy_values": dict(projection.get("policy_values") or {}),
-                # Where the values came from. `active_arm_manifest` over an `--all-cohorts` window means
-                # today's rules replayed on a retired corpus — a real question, but not "the policy that arm
-                # ran", and the receipt must not let a verified hash imply otherwise.
+                # Where the values came from; the receipt must not let a verified hash imply a different owner.
                 "policy_source": str(projection.get("policy_source") or "unknown"),
             }
     if not seen:

@@ -43,7 +43,7 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
     conn.execute(
         """
         INSERT INTO news_events (
-          event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title,
+          event_id, leader_item_id, dedupe_family, event_kind, comparison_fingerprint, comparison_title,
           leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, member_count,
           admission, queue_priority, provider_score_max, engine_type, asset_class,
           grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
@@ -51,7 +51,7 @@ def _clone_event(conn, source_event_id: str, *, suffix: str, opened_at_ms: int) 
           focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
           focus_span_start, focus_span_end
         )
-        SELECT %s, leader_item_id, family, event_kind, comparison_fingerprint || %s,
+        SELECT %s, leader_item_id, dedupe_family, event_kind, comparison_fingerprint || %s,
                comparison_title, leader_title, %s, %s, %s, member_count,
                admission, queue_priority, provider_score_max, engine_type, asset_class,
                grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
@@ -414,7 +414,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
         "stable_bundle_sha": "2" * 64,
         "envelope_sha256": "4" * 64,
         "artifact_schema_version": "news_program_strategy_artifact_v1",
-        "program_version": "news_semantic_program_v5",
+        "program_version": PROGRAM_VERSION,
         "program_sha256": "5" * 64,
         "candidate_shas": ("3" * 64,),
         "image_digest": "sha256:first",
@@ -453,7 +453,7 @@ def test_runtime_manifest_appends_active_agent_and_rollback_window_receipts(conn
             stable_bundle_sha="5" * 64,
             envelope_sha256="6" * 64,
             artifact_schema_version="news_program_strategy_artifact_v1",
-            program_version="news_semantic_program_v5",
+            program_version=PROGRAM_VERSION,
             program_sha256="7" * 64,
             candidate_shas=(),
             image_digest="sha256:second",

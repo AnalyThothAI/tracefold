@@ -45,12 +45,14 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
         conn.execute(
             """
             INSERT INTO news_events (
-              event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title,
-              leader_title, focus_fact_id, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+              event_id, leader_item_id, dedupe_family, event_kind, comparison_fingerprint, comparison_title,
+              leader_title, focus_fact_id, focus_fact_text, focus_fact_method,
+              opened_at_ms, last_member_at_ms, expires_at_ms, admission,
               storyline_key, ingest_mode, created_at_ms, updated_at_ms
             )
             SELECT 'status-event-' || g, 'status-item-' || g, 'general', 'news', 'status-fingerprint-' || g,
-                   'comparison', 'leader ' || g, 'fact:' || g, %s, %s, %s + 3600000,
+                   'comparison', 'leader ' || g, 'fact:' || g, 'leader ' || g, 'whole_title',
+                   %s, %s, %s + 3600000,
                    'candidate', 'asset:STATUS' || g, 'live', %s, %s
               FROM generate_series(1, %s) AS g
             """,
@@ -58,25 +60,69 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
         )
         conn.execute(
             """
-            INSERT INTO news_verdicts (
-              event_id, stage, policy_version, rule_baseline_decision, final_decision,
-              verdict, degraded, trace, created_at_ms
+            WITH payload AS (
+              SELECT g,
+                     jsonb_build_object(
+                       'novelty', 'new_fact', 'restates', -1, 'assets', '[]'::jsonb,
+                       'direction', 'neutral', 'scope', 'single_name', 'magnitude', 0,
+                       'confidence', 1.0, 'audience', 'none',
+                       'headline_zh', '状态样本 ' || g, 'why_zh', ''
+                     ) AS verdict,
+                     '{
+                       "final":"drop","override_rule":null,"throttled_by":null,
+                       "rule_baseline":"drop","watchlist_hits":[],"seen_similarity":null,
+                       "seen_against":-1,"seen_scope":""
+                     }'::jsonb AS decision
+                FROM generate_series(1, %s) AS g
+            ), judgment AS (
+              SELECT g, verdict, jsonb_build_object(
+                       'judgment_contract_version', 'news_judgment_v2',
+                       'origin', 'degraded', 'verdict', verdict, 'decision', decision,
+                       'error_code', 'status_scale_fixture'
+                     ) AS atom
+                FROM payload
+            ), hashed AS (
+              SELECT g, verdict, atom,
+                     encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex')
+                       AS verdict_sha256,
+                     encode(digest(convert_to(news_canonical_jsonb(atom), 'UTF8'), 'sha256'), 'hex')
+                       AS judgment_sha256
+                FROM judgment
             )
-            SELECT 'status-event-' || g, 'triage', 'v6', 'drop', 'drop', '{}'::jsonb, false,
+            INSERT INTO news_verdicts (
+              event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+              rule_baseline_decision, final_decision, verdict, degraded, error_code,
+              trace, scored_judgment_sha256, runtime_manifest_sha, program_version,
+              program_sha256, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+            )
+            SELECT 'status-event-' || g, 'triage', 'news_triage_policy_v11',
+                   'news_judgment_v2', 'degraded', 'drop', 'drop', verdict, true,
+                   'status_scale_fixture',
                    jsonb_build_object(
+                     'judgment_contract_version', 'news_judgment_v2',
+                     'judgment_origin', 'degraded',
+                     'judgment_sha256', judgment_sha256,
+                     'verdict_sha256', verdict_sha256,
+                     'runtime_manifest_sha', repeat('a', 64),
+                     'evidence_version', 1,
+                     'evidence_sha256', repeat('c', 64),
+                     'focus_fact_id', 'fact:' || g,
+                     'told', '[]'::jsonb,
+                     'told_count', 0,
+                     'judgment', atom,
                      'latency_ms', g::double precision + 0.125,
                      'queue_lag_ms', g::double precision * 2 + 0.25,
                      'reasked_after_told_change', g %% 10 = 0,
-                     'novelty_defaulted', g %% 20 = 0,
                      'payload', (
                        SELECT string_agg(md5(g::text || ':' || chunk::text), '')
                          FROM generate_series(1, %s) AS chunk
                      )
                    ),
-                   %s
-              FROM generate_series(1, %s) AS g
+                   judgment_sha256, repeat('a', 64), 'news_semantic_program_v8',
+                   repeat('b', 64), 1, repeat('c', 64), 'fact:' || g, %s
+              FROM hashed
             """,
-            (TRACE_CHUNKS, now_ms, VERDICTS),
+            (VERDICTS, TRACE_CHUNKS, now_ms),
         )
         conn.execute("ANALYZE news_events")
         conn.execute("ANALYZE news_verdicts")

@@ -127,7 +127,7 @@ def _dataset(episodes: tuple[DevelopmentEpisode, ...] | None = None) -> FrozenDe
         episode_count=len(cases),
         learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1_787_549_907_739,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
     )
     return FrozenDevelopmentDataset.bind(
         ref=ref,
@@ -193,7 +193,7 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
         judge=_StampedJudge(),
         max_metric_calls=3,
         seed=17,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
         compile_fn=_FakeGepaCompile(),
     )
 
@@ -335,7 +335,7 @@ def test_a_dataset_ref_that_describes_a_different_projection_fails_closed() -> N
         episode_count=len(episodes),
         learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
     )
     with pytest.raises(ValueError, match="projection_root_mismatch"):
         FrozenDevelopmentDataset.bind(
@@ -361,7 +361,7 @@ def test_a_dataset_ref_naming_an_artifact_it_was_not_built_from_fails_closed() -
         episode_count=len(episodes),
         learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
     )
     with pytest.raises(ValueError, match="dataset_artifact_hash_mismatch"):
         FrozenDevelopmentDataset.bind(
@@ -384,7 +384,7 @@ def test_a_parent_that_is_not_the_active_stable_cannot_be_optimized_against() ->
         episode_count=len(episodes),
         learning_epoch="bundle_00000000",
         learning_epoch_started_at_ms=1,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
     )
     with pytest.raises(ValueError, match="parent_must_be_active_stable"):
         FrozenDevelopmentDataset.bind(

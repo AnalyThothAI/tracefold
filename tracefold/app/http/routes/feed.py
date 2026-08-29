@@ -6,7 +6,14 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
-from tracefold.news import EVENT_KINDS
+from tracefold.news import (
+    ASSERTION_STATUSES,
+    CHANGE_STATES,
+    EVENT_FAMILIES,
+    EVENT_KINDS,
+    IPTC_SUBJECT_CODES,
+    SOURCE_AUTHORITIES,
+)
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
@@ -28,22 +35,26 @@ _ADMISSIONS = {
     "suppressed_low_signal",
     "recovery",
 }
-_DECISIONS = {"push", "escalate", "drop", "throttled", "degraded"}
-# #207: the deterministic OI lane's outcome, for the 持仓异动 monitor's tabs. `decision` cannot express it —
+_FINAL_DECISIONS = ("push", "escalate", "drop", "throttled")
+# #207: the deterministic OI lane's outcome, for the 持仓异动 monitor's tabs. `final_decision` cannot express it —
 # a frame held by a threshold and one whose provider template stopped parsing are both `drop` — and the
 # browser must not split them by filtering a loaded page, which would leave the tab counts describing the
 # whole window while the rows below described one page of it.
 _OI_OUTCOMES = {"all", "pushed", "withheld", "parse_failed"}
 _DIRECTIONS = ("bullish", "bearish", "neutral")
-_CHANNELS = EVENT_KINDS
 
 
 @router.get("/news/feed", response_model=_FeedEnvelope)
 def get_news_feed(
     request: Request,
-    family: Annotated[str, Query(max_length=32)] = "",
+    event_family: Annotated[str, Query(max_length=320)] = "",
+    change_state: Annotated[str, Query(max_length=128)] = "",
+    assertion_status: Annotated[str, Query(max_length=96)] = "",
+    source_authority: Annotated[str, Query(max_length=128)] = "",
+    subject_code: Annotated[str, Query(max_length=768)] = "",
+    final_decision: Annotated[str, Query(max_length=64)] = "",
+    event_kind: Annotated[str, Query(max_length=128)] = "",
     admission: Annotated[str, Query(max_length=40)] = "",
-    decision: Annotated[str, Query(max_length=16)] = "",
     symbol: Annotated[str, Query(max_length=32)] = "",
     q: Annotated[str, Query(max_length=200)] = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -54,14 +65,18 @@ def get_news_feed(
     # the named `news_feed_oi_invalid` rather than a shape error that says nothing about the vocabulary.
     oi: Annotated[str, Query(max_length=40)] = "",
     direction: Annotated[str, Query(max_length=40)] = "",
-    channel: Annotated[str, Query(max_length=64)] = "",
 ) -> Response:
     _validate_query_params(
         request,
         supported={
-            "family",
+            "event_family",
+            "change_state",
+            "assertion_status",
+            "source_authority",
+            "subject_code",
+            "final_decision",
+            "event_kind",
             "admission",
-            "decision",
             "symbol",
             "q",
             "limit",
@@ -70,20 +85,58 @@ def get_news_feed(
             "hours",
             "oi",
             "direction",
-            "channel",
             "token",
         },
     )
     if admission and admission not in _ADMISSIONS:
         raise ApiBadRequest("news_feed_admission_invalid", field="admission")
-    if decision and decision not in _DECISIONS:
-        raise ApiBadRequest("news_feed_decision_invalid", field="decision")
     if oi and oi not in _OI_OUTCOMES:
         raise ApiBadRequest("news_feed_oi_invalid", field="oi")
+    event_families = _parse_csv_filter(
+        event_family,
+        allowed=EVENT_FAMILIES,
+        error="news_feed_event_family_invalid",
+        field="event_family",
+    )
+    change_states = _parse_csv_filter(
+        change_state,
+        allowed=CHANGE_STATES,
+        error="news_feed_change_state_invalid",
+        field="change_state",
+    )
+    assertion_statuses = _parse_csv_filter(
+        assertion_status,
+        allowed=ASSERTION_STATUSES,
+        error="news_feed_assertion_status_invalid",
+        field="assertion_status",
+    )
+    source_authorities = _parse_csv_filter(
+        source_authority,
+        allowed=SOURCE_AUTHORITIES,
+        error="news_feed_source_authority_invalid",
+        field="source_authority",
+    )
+    subject_codes = _parse_csv_filter(
+        subject_code,
+        allowed=IPTC_SUBJECT_CODES,
+        error="news_feed_subject_code_invalid",
+        field="subject_code",
+    )
+    final_decisions = _parse_csv_filter(
+        final_decision,
+        allowed=_FINAL_DECISIONS,
+        error="news_feed_final_decision_invalid",
+        field="final_decision",
+    )
+    event_kinds = _parse_csv_filter(
+        event_kind,
+        allowed=EVENT_KINDS,
+        error="news_feed_event_kind_invalid",
+        field="event_kind",
+    )
     directions = _parse_csv_filter(
         direction, allowed=_DIRECTIONS, error="news_feed_direction_invalid", field="direction"
     )
-    channels = _parse_csv_filter(channel, allowed=_CHANNELS, error="news_feed_channel_invalid", field="channel")
     if q.strip() and symbol.strip():
         raise ApiBadRequest("news_feed_search_conflict", field="q")
     runtime = _authenticated_runtime(request)
@@ -92,9 +145,14 @@ def get_news_feed(
         search = repos.compile_news_search(q=q or None, symbol=symbol or None)
         try:
             data = repos.news.list_feed(
-                family=family or None,
+                event_family=event_families,
+                change_state=change_states,
+                assertion_status=assertion_statuses,
+                source_authority=source_authorities,
+                subject_code=subject_codes,
+                final_decision=final_decisions,
+                event_kind=event_kinds,
                 admission=admission or None,
-                decision=decision or None,
                 search=search,
                 limit=limit,
                 cursor=cursor or None,
@@ -102,7 +160,6 @@ def get_news_feed(
                 hours=hours or None,
                 oi=oi or None,
                 directions=directions,
-                channels=channels,
             )
         except ValueError as exc:
             # Only `list_feed` decodes the cursor. Anything that fails while resolving instruments is a

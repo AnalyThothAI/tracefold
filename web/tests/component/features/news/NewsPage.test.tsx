@@ -51,11 +51,14 @@ describe("NewsPage", () => {
           "priority",
           "decision",
           "family",
+          "final_decision",
+          "event_family",
           "admission",
           "outcome",
           "hours",
           "direction",
           "channel",
+          "event_kind",
         ]) {
           observed[name] = params.get(name);
         }
@@ -92,9 +95,12 @@ describe("NewsPage", () => {
     expect(observed.outcome).toBe("pushed");
     expect(observed.direction).toBeNull();
     expect(observed.channel).toBeNull();
+    expect(observed.event_kind).toBeNull();
     expect(observed.priority).toBeNull();
     expect(observed.decision).toBeNull();
     expect(observed.family).toBeNull();
+    expect(observed.final_decision).toBeNull();
+    expect(observed.event_family).toBeNull();
     expect(observed.admission).toBeNull();
   });
 
@@ -141,7 +147,13 @@ describe("NewsPage", () => {
     expect(badges[0]).toHaveAttribute("data-variant", "text");
     expect(badges[0]).toHaveAttribute("title", "模型判断值得推送");
     expect(inRow.getByText("模型判断值得推送")).toBeInTheDocument();
-    for (const raw of ["model_push_actionable", "candidate", "asset:BTC", "escalate", "general"]) {
+    for (const raw of [
+      "trade_relevance_realtime",
+      "candidate",
+      "asset:BTC",
+      "escalate",
+      "general",
+    ]) {
       expect(inRow.queryByText(raw)).not.toBeInTheDocument();
     }
   });
@@ -357,13 +369,13 @@ describe("NewsPage", () => {
                 event_id: "evt-recovery",
                 admission: "recovery",
                 ingest_mode: "recovery",
+                leader_title: "补抄回来的旧闻",
                 outcome: newsOutcomeFixture({
                   group: "held",
                   kind: "held_recovery",
                   reason_zh: "断线期间补抄的旧闻，仅用于去重与历史",
                   text_zh: "补抄件，不推送",
                 }),
-                title_zh: "补抄回来的旧闻",
                 triage: null,
               }),
             ],
@@ -415,7 +427,6 @@ describe("NewsPage", () => {
             events: [
               newsFeedEventFixture({
                 leader_title: longTitle,
-                title_zh: null,
                 triage: { ...newsFeedEventFixture().triage!, headline_zh: null },
               }),
             ],
@@ -431,12 +442,12 @@ describe("NewsPage", () => {
     expect(heading.closest("[data-page-archetype='scan']")).not.toBeNull();
   });
 
-  it("keeps outcome, time, direction, and channel in URL-owned server state", async () => {
+  it("keeps outcome, time, direction, and event kind in URL-owned server state", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["q", "outcome", "hours", "direction", "channel"]) {
+        for (const name of ["q", "outcome", "hours", "direction", "event_kind"]) {
           observed[name] = params.get(name);
         }
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
@@ -445,14 +456,14 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&channel=liquidation,listing",
+      "/news?q=bitcoin&outcome=held&hours=168&direction=bullish,neutral&event_kind=liquidation,listing",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     await waitFor(() => expect(observed.direction).toBe("bullish,neutral"));
     expect(observed).toEqual({
-      channel: "listing,liquidation",
       direction: "bullish,neutral",
+      event_kind: "listing,liquidation",
       hours: "168",
       outcome: "held",
       q: "bitcoin",
@@ -477,11 +488,11 @@ describe("NewsPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "◆ 中性" }));
     await waitFor(() => expect(observed.direction).toBe("bullish"));
     fireEvent.click(screen.getByRole("button", { name: "未支持市场" }));
-    await waitFor(() => expect(observed.channel).toBe("listing,liquidation,unsupported_market"));
+    await waitFor(() => expect(observed.event_kind).toBe("listing,liquidation,unsupported_market"));
     fireEvent.click(screen.getByRole("button", { name: "清除" }));
     await waitFor(() => {
       expect(observed.direction).toBeNull();
-      expect(observed.channel).toBeNull();
+      expect(observed.event_kind).toBeNull();
     });
     expect(screen.getByRole("button", { name: "筛选" })).toBeInTheDocument();
     expect(screen.getByTestId("location")).toHaveTextContent("q=bitcoin");
@@ -555,12 +566,21 @@ describe("NewsPage", () => {
     );
   });
 
-  it("does not forward retired priority/sort or unknown decision, outcome, and hours values", async () => {
+  it("does not forward retired filters or unknown final decision, outcome, and hours values", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
       http.get(/.*\/api\/news\/feed$/, ({ request }) => {
         const params = new URL(request.url).searchParams;
-        for (const name of ["priority", "sort", "decision", "outcome", "hours"])
+        for (const name of [
+          "priority",
+          "sort",
+          "family",
+          "decision",
+          "channel",
+          "final_decision",
+          "outcome",
+          "hours",
+        ])
           observed[name] = params.get(name);
         return HttpResponse.json({ ok: true, data: newsFeedFixture() });
       }),
@@ -568,13 +588,16 @@ describe("NewsPage", () => {
 
     renderNews(
       <NewsPage token="test-token" view="feed" />,
-      "/news?priority=high&sort=priority&decision=maybe&outcome=whatever&hours=999",
+      "/news?priority=high&sort=priority&family=general&decision=push&channel=news&final_decision=maybe&outcome=whatever&hours=999",
     );
 
     await screen.findByRole("heading", { name: /央行政策转向，风险资产承压/ });
     expect(observed.priority).toBeNull();
     expect(observed.sort).toBeNull();
     expect(observed.decision).toBeNull();
+    expect(observed.family).toBeNull();
+    expect(observed.channel).toBeNull();
+    expect(observed.final_decision).toBeNull();
     expect(observed.outcome).toBe("pushed");
     expect(observed.hours).toBe("24");
     expect(screen.queryByRole("group", { name: "已启用筛选" })).not.toBeInTheDocument();
@@ -701,7 +724,7 @@ describe("NewsPage", () => {
     expect(screen.queryByRole("button", { name: /条新事件/ })).not.toBeInTheDocument();
   });
 
-  it("renders the approved five-stage 24 h funnel on the Feed header", async () => {
+  it("renders the approved four-stage 24 h funnel on the Feed header", async () => {
     renderNews(<NewsPage token="test-token" view="feed" />);
 
     const funnel = await screen.findByRole("region", { name: "过去 24 小时漏斗" });
@@ -711,9 +734,9 @@ describe("NewsPage", () => {
      */
     expect(screen.queryByRole("link", { name: "查看流水线状态" })).toBeNull();
     expect(within(funnel).getByLabelText("24 小时漏斗").textContent).toBe(
-      // Five counts and the share each came from. #87: 符号落表 is measured against the Events that
+      // Four counts and the share each came from. #87: 符号落表 is measured against the Events that
       // *carried* a tag, never against the tagless macro headlines that never offered a symbol.
-      "RECEIVED320采集PARSED320已解析100%ADMITTED180过门禁56%JUDGED175已审稿97%PUSHED41已推送13%",
+      "RECEIVED320采集ADMITTED180过门禁56%JUDGED175已审稿97%PUSHED41已推送13%",
     );
   });
 
@@ -912,10 +935,10 @@ describe("NewsPage", () => {
     ]);
     expect(steps[0]).toHaveTextContent("来源 Reuters World · 归并 4 条同类报道（2 个来源）");
     expect(steps[3]).toHaveTextContent("推送 · 模型判断值得推送");
-    expect(within(steps[3]).queryByText("model_push_actionable")).not.toBeInTheDocument();
+    expect(within(steps[3]).queryByText("trade_relevance_realtime")).not.toBeInTheDocument();
     fireEvent.click(within(steps[3]).getByRole("button", { name: /展开字段/ }));
     expect(within(steps[3]).getByText("override_rule")).toBeInTheDocument();
-    expect(within(steps[3]).getByText("model_push_actionable")).toBeInTheDocument();
+    expect(within(steps[3]).getByText("trade_relevance_realtime")).toBeInTheDocument();
 
     const members = screen.getByRole("region", { name: "同类报道" });
     expect(within(members).getAllByRole("listitem")).toHaveLength(2);
@@ -930,7 +953,7 @@ describe("NewsPage", () => {
     expect(technical).not.toHaveAttribute("open");
     expect(within(technical).getByText("storyline_key")).toBeInTheDocument();
     expect(within(technical).getByText("asset:BTC")).toBeInTheDocument();
-    expect(within(technical).getByText("news_triage_policy_v1")).toBeInTheDocument();
+    expect(within(technical).getByText("news_triage_policy_v11")).toBeInTheDocument();
     for (const [earlier, later] of [
       [hero, timeline],
       [timeline, members],
@@ -995,7 +1018,7 @@ describe("NewsPage", () => {
               ...newsEventDetailFixture().timeline!.slice(0, 2),
               {
                 at_ms: NEWS_NOW_MS - 90_000,
-                facts: { degraded: true, error_code: "news_triage_output_truncated" },
+                facts: { degraded: true, error_code: "news_program_output_truncated" },
                 stage: "triage",
                 summary_zh: "模型不可用：模型输出被截断，按规则兜底",
                 title_zh: "审稿",
@@ -1022,9 +1045,11 @@ describe("NewsPage", () => {
             verdicts: [
               newsVerdictFixture({
                 degraded: true,
-                error_code: "news_triage_output_truncated",
+                error_code: "news_program_output_truncated",
                 final_decision: "push",
-                model_decision: null,
+                judgment_origin: "degraded",
+                model: null,
+                model_editorial: null,
                 override_rule: "fail_closed_fallback",
               }),
             ],
@@ -1054,7 +1079,7 @@ describe("NewsPage", () => {
       within(timeline).getByText("未送达：飞书发送失败（FeishuServerError）"),
     ).toBeInTheDocument();
     const technical = screen.getByText(/技术详情/).closest("details")!;
-    expect(within(technical).getByText("news_triage_output_truncated")).toBeInTheDocument();
+    expect(within(technical).getByText("news_program_output_truncated")).toBeInTheDocument();
     expect(
       within(technical).getByText("news_delivery_failed:FeishuServerError"),
     ).toBeInTheDocument();

@@ -259,6 +259,7 @@ class LearningStorage:
                 SELECT true AS present, x.degraded, x.error_code
                   FROM news_verdicts x
                  WHERE x.event_id = a.event_id AND x.stage = 'triage'
+                   AND x.judgment_contract_version = 'news_judgment_v2'
                  ORDER BY x.created_at_ms DESC LIMIT 1
               ) v ON true
              WHERE a.activation_id = %s AND a.arm = 'candidate'
@@ -816,7 +817,7 @@ class LearningStorage:
         return [dict(row) for row in rows]
 
     def taxonomy_gold_sources(self, acceptance_ids: Sequence[str]) -> list[dict[str, Any]]:
-        """Accepted Review v5 judgments joined to their exact ordinary-News evidence rows."""
+        """Accepted Review v6 judgments joined to their exact ordinary-News evidence rows."""
 
         rows = self.conn.execute(
             """
@@ -843,6 +844,10 @@ class LearningStorage:
                    source.opened_at_ms,
                    source.ingest_mode,
                    source.verdict,
+                   source.model_editorial,
+                   source.judgment_contract_version,
+                   source.judgment_origin,
+                   source.judgment_sha256,
                    source.program_version,
                    source.program_sha256,
                    source.policy_version,
@@ -890,34 +895,6 @@ class LearningStorage:
             tuple(values),
         )
 
-    def accepted_event_review_sources(
-        self, *, rubric_versions: Sequence[str], reader_contract_version: str, from_ms: int, to_ms: int
-    ) -> list[dict[str, Any]]:
-        """Every accepted event review whose Event opened in the window, with no cohort filter. Baseline-only."""
-
-        rows = self.conn.execute(
-            """
-    WITH accepted AS (
-      SELECT DISTINCT ON (j.event_id) j.*
-        FROM news_reviews a
-        JOIN news_reviews j ON j.review_id = a.accepts_review_id
-       WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
-         AND a.release_eligible AND j.release_eligible
-         AND j.rubric_version = ANY(%s) AND j.reader_contract_version = %s
-       ORDER BY j.event_id, a.created_at_ms DESC, a.review_id DESC
-    )
-    SELECT accepted.*, source.evidence_sha256, source.opened_at_ms,
-           source.final_decision, source.delivery_state, source.evidence_snapshot
-      FROM accepted
-      JOIN news_review_task_source_v1 source
-        ON source.event_id = accepted.event_id
-       AND source.evidence_version = accepted.evidence_version
-     WHERE source.opened_at_ms >= %s AND source.opened_at_ms < %s AND source.ingest_mode = 'live'
-    """,
-            (list(rubric_versions), reader_contract_version, from_ms, to_ms),
-        ).fetchall()
-        return [dict(row) for row in rows]
-
     def accepted_event_reviews_in_window(
         self,
         *,
@@ -938,8 +915,8 @@ class LearningStorage:
             """
     WITH accepted AS (
       SELECT DISTINCT ON (j.event_id) j.*, a.created_at_ms AS accepted_at_ms
-        FROM news_reviews a
-        JOIN news_reviews j ON j.review_id = a.accepts_review_id
+        FROM news_review_records_v1 a
+        JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
        WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'event'
          AND a.release_eligible AND j.release_eligible
          AND a.created_at_ms >= %s AND j.created_at_ms >= %s
@@ -1000,8 +977,8 @@ class LearningStorage:
             """
     SELECT DISTINCT ON (j.external_snapshot_id) j.*, a.created_at_ms AS accepted_at_ms,
            x.evidence_sha256, x.occurred_at_ms AS opened_at_ms, x.snapshot AS evidence_snapshot
-      FROM news_reviews a
-      JOIN news_reviews j ON j.review_id = a.accepts_review_id
+      FROM news_review_records_v1 a
+      JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
       JOIN news_external_miss_snapshots x ON x.snapshot_id = j.external_snapshot_id
      WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'external_miss'
        AND a.release_eligible AND j.release_eligible
@@ -1064,7 +1041,9 @@ class LearningStorage:
     SELECT a.arm, a.bundle_sha, a.selector_version, a.eligibility_reason,
            a.assigned_at_ms, e.event_id, e.opened_at_ms,
            s.evidence_version, s.evidence_sha256, s.snapshot AS evidence_snapshot,
-           v.verdict, v.editorial, v.scored_judgment_sha256, v.runtime_manifest_sha,
+           v.verdict, v.editorial AS model_editorial,
+           v.judgment_contract_version, v.judgment_origin,
+           v.scored_judgment_sha256 AS judgment_sha256, v.runtime_manifest_sha,
            v.final_decision, v.degraded, v.error_code AS verdict_error_code,
            v.trace, v.program_version, v.program_sha256,
            d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
@@ -1073,17 +1052,20 @@ class LearningStorage:
       LEFT JOIN LATERAL (
         SELECT x.* FROM news_verdicts x
          WHERE x.event_id = e.event_id AND x.stage = 'triage'
+           AND x.judgment_contract_version = 'news_judgment_v2'
          ORDER BY x.created_at_ms DESC LIMIT 1
       ) v ON true
-      LEFT JOIN LATERAL (
+      JOIN LATERAL (
         SELECT x.* FROM news_event_evidence_snapshots x
          WHERE x.event_id = e.event_id
-           AND x.evidence_version = COALESCE(
-             v.evidence_version,
-             (SELECT max(z.evidence_version) FROM news_event_evidence_snapshots z
-               WHERE z.event_id = e.event_id)
-           )
-      ) s ON true
+         ORDER BY x.evidence_version DESC LIMIT 1
+      ) s ON s.provenance = 'observed'
+         AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+         AND (v.evidence_version IS NULL OR (
+               s.evidence_version = v.evidence_version
+               AND s.evidence_sha256 = v.evidence_sha256
+               AND s.focus_fact_id = v.focus_fact_id
+             ))
       LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
      WHERE a.activation_id = %s
        AND e.opened_at_ms >= %s AND e.opened_at_ms < %s
@@ -1115,8 +1097,8 @@ class LearningStorage:
         rows = self.conn.execute(
             """
     SELECT DISTINCT ON (j.pairwise_case_id) j.pairwise_case_id, j.payload
-      FROM news_reviews a
-      JOIN news_reviews j ON j.review_id = a.accepts_review_id
+      FROM news_review_records_v1 a
+      JOIN news_review_records_v1 j ON j.review_id = a.accepts_review_id
      WHERE a.review_kind = 'acceptance' AND j.subject_kind = 'pairwise'
        AND j.pairwise_case_id LIKE %s
      ORDER BY j.pairwise_case_id, a.created_at_ms DESC, a.review_id DESC
@@ -1129,7 +1111,7 @@ class LearningStorage:
         """How many pairwise judgments this run has already spent from the review budget."""
 
         row = self.conn.execute(
-            "SELECT count(*) AS n FROM news_reviews "
+            "SELECT count(*) AS n FROM news_review_records_v1 "
             "WHERE review_kind = 'judgment' AND subject_kind = 'pairwise' AND pairwise_case_id LIKE %s",
             (f"{run_sha}:%",),
         ).fetchone()
@@ -1174,7 +1156,10 @@ class LearningStorage:
         return None if row is None else dict(row)
 
     def review(self, review_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute("SELECT * FROM news_reviews WHERE review_id = %s", (review_id,)).fetchone()
+        row = self.conn.execute(
+            "SELECT * FROM news_review_records_v1 WHERE review_id = %s",
+            (review_id,),
+        ).fetchone()
         return None if row is None else dict(row)
 
     def review_task_source(self, *, event_id: str, evidence_version: int) -> dict[str, Any] | None:
@@ -1203,6 +1188,7 @@ class LearningStorage:
               FROM news_verdicts v
              JOIN news_events e ON e.event_id = v.event_id
              WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
+               AND v.judgment_contract_version = 'news_judgment_v2'
              ORDER BY v.event_id, v.created_at_ms DESC
             """,
             (list(event_ids),),
@@ -1334,7 +1320,9 @@ class LearningStorage:
     def reviews_by_id(self, review_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
         if not review_ids:
             return {}
-        rows = self.conn.execute("SELECT * FROM news_reviews WHERE review_id = ANY(%s)", (list(review_ids),)).fetchall()
+        rows = self.conn.execute(
+            "SELECT * FROM news_review_records_v1 WHERE review_id = ANY(%s)", (list(review_ids),)
+        ).fetchall()
         return {str(row["review_id"]): dict(row) for row in rows}
 
     def learning_epoch_row_for_bundle(self, bundle_sha: str) -> dict[str, Any] | None:

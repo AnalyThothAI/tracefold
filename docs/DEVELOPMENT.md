@@ -396,7 +396,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260829_0329` head; schema tests also run against that migrated head.
+current `20260830_0330` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -524,7 +524,7 @@ source route and factory-v7 hard cut without rewriting or appending the
 history, but exact current-bundle acceptance makes factory-v6 evidence
 audit-only and starts the factory-v7 eligible cohort at zero.
 
-Current Review v5 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
+Current Review v6 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
 `trade_affected_markets` and `reader_value`, and adds exact Gold for all five
 `news_taxonomy_v1` axes. Critical taxonomy cases require an independent
@@ -698,25 +698,13 @@ and a missing or tampered policy raises rather than scoring — a corpus that
 cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
-The metric-v4 audit/replay corpus lives in
-`tests/fixtures/news_audit_replay_corpus_v2.json`, not in the operator's
-database; the v1 fixture remains frozen metric-v3 history. A check that moves
-with live data cannot prove the *wiring* is unchanged. The recorded pins live only in
-`tests/news/test_news_audit_replay_corpus.py` — one place to read, one place to
-update when the fixture is regenerated.
-Every string in the fixture outside an explicit structural allowlist is redacted
-through an equality-preserving map (`tests/support/audit_replay_corpus.py`),
-which keeps every comparison the recorded metric makes — all equality — while
-publishing no provider or reviewer prose. The allowlist direction matters: the
-first version listed the *text* keys instead and shipped 60 reader-facing
-Chinese cards under `title_zh`, guarded by a test that re-ran the redactor and
-compared, which is a tautology for a key-based redactor. The guard now scans the
-shipped bytes for the shape of human language. The fixture is valid for
-`--mode recorded` only, because `decide()`'s character-bigram duplicate check
-would read different neighbours out of redacted headlines. Regenerate it with
-`uv run python -m tests.support.audit_replay_corpus <path>` and update the
-pinned numbers in `tests/news/test_news_audit_replay_corpus.py` in the same
-commit.
+`tests/fixtures/news_audit_replay_corpus_v2.json` is immutable pre-hard-cut
+audit evidence. It is archive-only: no ordinary test, current metric, dataset,
+Program, or release gate imports it, and there is no current generator or
+recorded-mode reader for its legacy judgment shape. The current-contract
+architecture guard names the file and its historical keys explicitly; any new
+consumer or additional legacy reference fails CI. Current metric-v6 evidence is
+built only from exact `news_judgment_v2` rows in the active epoch.
 
 The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor
 DeepSeek returns a price litellm can resolve, so `provider_cost_microusd` is

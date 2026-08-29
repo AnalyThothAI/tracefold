@@ -73,7 +73,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     } <= functions
     assert {
         "event_id",
-        "family",
+        "dedupe_family",
         "event_kind",
         "leader_item_id",
         "leader_title",
@@ -96,9 +96,12 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "latency_ms",
         "queue_lag_ms",
         "reasked_after_told_change",
-        "novelty_defaulted",
         "seen_scope",
+        "judgment_contract_version",
+        "judgment_origin",
     } <= news_verdict_columns
+    assert "family" not in news_event_columns
+    assert {"model_decision", "novelty_defaulted"}.isdisjoint(news_verdict_columns)
     assert news_delivery_columns == {
         "event_id",
         "kind",
@@ -167,7 +170,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260829_0329"
+    assert version == latest_migration_version() == "20260830_0330"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -192,4 +195,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260829_0329"
+    assert version == latest_migration_version() == "20260830_0330"

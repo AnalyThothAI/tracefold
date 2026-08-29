@@ -155,7 +155,7 @@ JUDGE_PROGRAM_SHA256 = canonical_sha(_JUDGE_PROGRAM_IDENTITY)
 
 # `factual_fidelity` is a judgment about the whole card, so text alone cannot answer it: a candidate can copy
 # both sentences verbatim and still flip `direction`. These fields travel with the text for that reason.
-_SEMANTIC_FIELDS = ("event_type", "magnitude", "direction", "actionable", "scope", "assets")
+_SEMANTIC_FIELDS = ("magnitude", "direction", "scope", "assets")
 
 
 def _semantics(verdict: Mapping[str, Any]) -> str:

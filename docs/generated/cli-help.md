@@ -339,7 +339,7 @@ positional arguments:
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
                         sandbox, no tariff, no writes)
-    draft-reviews       propose news_review_v5 rubrics with exact taxonomy
+    draft-reviews       propose news_review_v6 rubrics with exact taxonomy
                         Gold (writes a file, never the DB)
     taxonomy-register   register one frozen taxonomy shadow candidate before
                         opening its future holdout
@@ -379,7 +379,6 @@ usage: tracefold news learning baseline [-h] [--from-ms FROM_MS]
                                         [--mode {recorded,compile_live,runtime_live}]
                                         [--action-source {recorded,policy}]
                                         [--max-model-cases MAX_MODEL_CASES]
-                                        [--all-cohorts]
                                         [--semantic-judge MODEL]
                                         [--limit LIMIT] [--out OUT]
 
@@ -389,7 +388,7 @@ options:
   --to-ms TO_MS
   --dataset SHA         score the exact frozen development dataset instead of
                         a moving window; mutually exclusive with --from-
-                        ms/--to-ms/--all-cohorts
+                        ms/--to-ms
   --mode {recorded,compile_live,runtime_live}
                         recorded: score the persisted verdict against the
                         action that shipped, no model call; compile_live: the
@@ -409,8 +408,6 @@ options:
                         most cases allowed to reach a provider. runtime_live
                         spends 2-8 real calls per case, sequentially, on the
                         endpoints that also serve production Triage
-  --all-cohorts         drop release-plane eligibility and score every
-                        accepted review in the window
   --semantic-judge MODEL
                         score free-text retention anchors by meaning instead
                         of byte equality, using this model (e.g.

@@ -10,13 +10,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal, assert_never
 
+from ..liquidations import LiquidationJudgment
 from ..models import GATE_POLICY_VERSION, TriageVerdict
+from ..oi_signals import OiJudgment
 from ..program.contracts import ScoredJudgment, SemanticJudge, TriageContext
 from ..reader_history import ReaderHistorySnapshot
-from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, fallback_verdict
+from ..triage_rules import DecidePolicy, DecisionResult, DegradedJudgment, GateFacts, fallback_verdict
 from .triage_audit import _reader_history_trace, _told_trace
+
+_TriageJudgment = ScoredJudgment | OiJudgment | LiquidationJudgment | DegradedJudgment
+_JudgmentOrigin = Literal["model", "oi", "liquidation", "degraded"]
 
 
 @dataclass
@@ -49,7 +54,7 @@ class _TriageSettle:
     evidence_version: int
     evidence_sha256: str
     focus_fact_id: str
-    judgment: ScoredJudgment
+    judgment: _TriageJudgment
     facts: GateFacts
     final_key: str
     told: Sequence[Mapping[str, Any]]
@@ -72,7 +77,41 @@ class _TriageSettle:
 
     @property
     def verdict(self) -> TriageVerdict:
-        return self.judgment.verdict
+        judgment = self.judgment
+        if isinstance(judgment, (ScoredJudgment, OiJudgment, LiquidationJudgment, DegradedJudgment)):
+            return judgment.verdict
+        return assert_never(judgment)
+
+    @property
+    def origin(self) -> _JudgmentOrigin:
+        judgment = self.judgment
+        if isinstance(judgment, ScoredJudgment):
+            return "model"
+        if isinstance(judgment, OiJudgment):
+            return "oi"
+        if isinstance(judgment, LiquidationJudgment):
+            return "liquidation"
+        if isinstance(judgment, DegradedJudgment):
+            return "degraded"
+        return assert_never(judgment)
+
+    @property
+    def judgment_sha256(self) -> str:
+        judgment = self.judgment
+        if isinstance(judgment, ScoredJudgment):
+            return judgment.scored_judgment_sha256
+        if isinstance(judgment, (OiJudgment, LiquidationJudgment, DegradedJudgment)):
+            return judgment.judgment_sha256
+        return assert_never(judgment)
+
+    @property
+    def deterministic_decision(self) -> DecisionResult:
+        judgment = self.judgment
+        if isinstance(judgment, ScoredJudgment):
+            raise TypeError("news_model_judgment_requires_transactional_status")
+        if isinstance(judgment, (OiJudgment, LiquidationJudgment, DegradedJudgment)):
+            return judgment.decision
+        return assert_never(judgment)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +205,7 @@ class _ProgramAttempts:
 class _Judged:
     """The judgment this pass produced, and whether it came from the Program or from the fallback."""
 
-    judgment: ScoredJudgment
+    judgment: ScoredJudgment | DegradedJudgment
     degraded: bool
     error_code: str | None
 
@@ -181,9 +220,9 @@ def _gate_facts(card: Mapping[str, Any], watchlist_symbols: frozenset[str]) -> G
 
 
 def _degraded_judgment(route: _RouteInputs, code: str) -> _Judged:
-    """The deterministic verdict for an Event no Program answered. `decide()` still owns what happens."""
+    """The typed deterministic result for an Event no Program answered."""
 
-    judgment, _ = fallback_verdict(route.facts, error_code=code, title=route.wire_title)
+    judgment = fallback_verdict(route.facts, error_code=code, title=route.wire_title)
     return _Judged(judgment=judgment, degraded=True, error_code=code)
 
 

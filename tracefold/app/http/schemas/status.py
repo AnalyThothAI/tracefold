@@ -79,6 +79,10 @@ class NewsSourceContracts24hData(ExactApiSchema):
     unsupported_market: NewsSourceContractStageCountsData = Field(default_factory=NewsSourceContractStageCountsData)
 
 
+class NewsDuplicatesWithheld24hData(ExactApiSchema):
+    all: int = 0
+
+
 class NewsPipelineStatusData(ExactApiSchema):
     events_1h: int = 0
     events_24h: int = 0
@@ -102,7 +106,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     triage_p95_ms: float | None = None
     queue_lag_p95_ms: float | None = None
     reasked_24h: int = 0
-    novelty_defaulted_24h: int = 0
     triage_model: str | None = None
     reader_card_model: str | None = None
     reader_card_dedicated: bool = False
@@ -115,8 +118,7 @@ class NewsPipelineStatusData(ExactApiSchema):
     pushed_by_rule: dict[str, int] = Field(default_factory=dict)
     reviewed_should_push_24h: int = 0
     reviewed_external_miss_24h: int = 0
-    # #100: {"throttled": n, "all": n} — duplicates withheld, by the path that measured the card.
-    duplicates_withheld_24h: dict[str, int] = Field(default_factory=dict)
+    duplicates_withheld_24h: NewsDuplicatesWithheld24hData = Field(default_factory=NewsDuplicatesWithheld24hData)
     tagged_24h: int = 0
     grounded_24h: int = 0
     ungrounded_by_symbol_24h: dict[str, int] = Field(default_factory=dict)
@@ -124,7 +126,6 @@ class NewsPipelineStatusData(ExactApiSchema):
     admitted_24h: int = 0
     # Event-feed funnel: one cohort selected by Event.opened_at_ms, then tested for each durable stage.
     funnel_received_24h: int = 0
-    funnel_parsed_24h: int = 0
     funnel_admitted_24h: int = 0
     funnel_triaged_24h: int = 0
     funnel_delivered_24h: int = 0
@@ -152,9 +153,8 @@ class NewsOiWindowSymbolData(ExactApiSchema):
 class NewsOiStatusData(ExactApiSchema):
     """#137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
 
-    `by_rule_24h` is keyed on the judge's own rule names. It cannot come from `pipeline.dropped_by_rule`:
-    `decide()` writes `override_rule = 'telemetry_deterministic'` for every OI verdict — push and withhold
-    alike — so that map can say how many frames were held but never by which gate.
+    `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
+    reason map remains a cross-lane aggregate.
     """
 
     policy: NewsOiPolicyData | None = None
@@ -206,7 +206,6 @@ class NewsHealthData(ExactApiSchema):
 
 class NewsFunnelData(ExactApiSchema):
     received: int = 0
-    parsed: int = 0
     admitted: int = 0
     candidates: int = 0
     triaged: int = 0
@@ -269,6 +268,7 @@ __all__ = [
     "NewsBrokerQueueData",
     "NewsBrokerStatusData",
     "NewsDeliveryStatusData",
+    "NewsDuplicatesWithheld24hData",
     "NewsFunnelData",
     "NewsHealthData",
     "NewsHealthItemData",

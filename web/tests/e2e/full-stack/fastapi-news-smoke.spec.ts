@@ -39,11 +39,7 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
   );
   const firstEvent = asObject(Array.isArray(events) ? events[0] : null);
   const triage = asObject(firstEvent.triage);
-  const headline = firstNonEmptyString(
-    triage.headline_zh,
-    firstEvent.title_zh,
-    firstEvent.leader_title,
-  );
+  const headline = firstNonEmptyString(triage.headline_zh, firstEvent.leader_title);
   expect(headline !== null, "The seeded Event must expose a reader headline.").toBe(true);
 
   await expect(page.getByRole("heading", { name: "新闻事件流" })).toBeVisible();
@@ -57,7 +53,7 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
     reason: "Changing route scope intentionally supersedes the prior polling reads.",
   });
   await page.goto(
-    "/news?symbol=NOPE&family=general&outcome=held&hours=1&direction=bullish&channel=oi",
+    "/news?symbol=NOPE&event_family=other&outcome=held&hours=1&direction=bullish&event_kind=oi",
   );
   const searchedFeedPromise = page.waitForResponse((response) => {
     const url = new URL(response.url());

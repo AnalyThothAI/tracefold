@@ -26,25 +26,6 @@ class EventSemantics(_ExactModel):
             "Visible event_status.told index if and only if novelty is restatement; -1 for new_fact or progression."
         ),
     )
-    event_type: Literal[
-        "listing",
-        "delisting",
-        "filing",
-        "regulation",
-        "hack",
-        "exploit",
-        "partnership",
-        "funding",
-        "macro",
-        "rates",
-        "oi_spike",
-        "liquidation",
-        "whale",
-        "earnings",
-        "product",
-        "rumor",
-        "noise",
-    ]
     assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]

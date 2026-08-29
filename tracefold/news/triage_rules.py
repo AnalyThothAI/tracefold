@@ -1,13 +1,14 @@
-"""decide(): deterministic post-rules over the Triage verdict (pure, golden-tested)."""
+"""The ordinary model policy and its code-owned degraded fallback."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Final
 
+from .artifact_identity import canonical_sha
 from .models import Decision, TriageVerdict, base_symbol
-from .program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from .program.contracts import JUDGMENT_CONTRACT_VERSION, ScoredJudgment, TradeRelevanceV1
 from .similarity import max_similarity
 
 # One owner for the withhold key: `outcome` renders it, `repository` counts it.
@@ -18,7 +19,7 @@ _DIRECTIONAL = frozenset({"bullish", "bearish"})
 
 @dataclass(frozen=True, slots=True)
 class DecidePolicy:
-    """The four v10 safety/duplicate knobs exposed through ``news.policy``.
+    """The four safety/duplicate knobs exposed through ``news.policy``.
 
     Trade relevance and objective guards are a code-owned ordered policy, not
     operator-tunable thresholds.
@@ -120,6 +121,30 @@ class DecisionResult:
     seen_scope: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class DegradedJudgment:
+    """One unavailable-model presentation and its only action authority."""
+
+    verdict: TriageVerdict
+    decision: DecisionResult
+    error_code: str
+    judgment_contract_version: str = field(default=JUDGMENT_CONTRACT_VERSION, init=False)
+
+    @property
+    def judgment_atom(self) -> dict[str, Any]:
+        return {
+            "judgment_contract_version": self.judgment_contract_version,
+            "origin": "degraded",
+            "verdict": self.verdict.model_dump(mode="json"),
+            "decision": asdict(self.decision),
+            "error_code": self.error_code,
+        }
+
+    @property
+    def judgment_sha256(self) -> str:
+        return canonical_sha(self.judgment_atom)
+
+
 _base = base_symbol
 
 
@@ -130,15 +155,15 @@ def grounded_watchlist_hits(facts: GateFacts) -> tuple[str, ...]:
 
 
 def rule_baseline(facts: GateFacts) -> Decision:
-    """The v10 degraded baseline: only objective guards fail open."""
+    """The degraded baseline: only objective guards fail open."""
 
-    if facts.admission in {"listing_deterministic", "telemetry_deterministic"}:
+    if facts.admission == "listing_deterministic":
         return "push"
     return "push" if grounded_watchlist_hits(facts) else "drop"
 
 
 def realtime_eligible(verdict: TriageVerdict, relevance: TradeRelevanceV1) -> bool:
-    """The code-owned trade-attention eligibility predicate from policy v10."""
+    """The code-owned trade-attention eligibility predicate from policy v11."""
 
     direct_surface = (
         relevance.tradability in {"direct", "second_order"}
@@ -157,22 +182,12 @@ def realtime_eligible(verdict: TriageVerdict, relevance: TradeRelevanceV1) -> bo
 # so the duplicate check needs the instrument, not the prose (#72).
 _TEMPLATE_ADMISSIONS: Final = frozenset({"listing_deterministic"})
 
-# Open-interest telemetry: repeats are already bounded, by the rank ceiling inside the lane's own
-# evaluator (#137). Two frames for one symbol are two different observations — different change,
-# different value, different rank — and the reader asked for the opening ones by count. Running the
-# content check over them as well would silently halve that count: `WINDOW_MS` and `TOLD_WINDOW_MS`
-# are both 4 h, so a rank-2 frame is always inside its rank-1 sibling's ledger, and the two headlines
-# score 0.41 against a 0.25 threshold. The measured "first two per symbol" would have shipped as
-# "one per symbol". A byte-identical repeat is still collapsed upstream by the exact fingerprint.
-_RANK_BOUNDED_ADMISSIONS: Final = frozenset({"telemetry_deterministic"})
-
 
 def _template_fact(facts: GateFacts) -> bool:
     """True for a Gate-admitted frame whose text is a template carrying an instrument.
 
-    Only the Gate's admission counts. ``verdict.event_type`` is unverified model output, so trusting
-    it would let any story the model repeatedly types as ``listing`` — a recurring "X will support Y"
-    tease, an ETF-approval rumour thread — escape duplicate evidence on every repeat with no
+    Only the Gate's admission counts. Model taxonomy is not admission evidence, so trusting it would
+    let a recurring "X will support Y" tease escape duplicate evidence on every repeat with no
     corroboration. The admission is derived upstream from provider metadata.
     """
 
@@ -236,19 +251,20 @@ def decide(
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
-    degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
 ) -> DecisionResult:
-    """Deterministic policy over one atomically identified editorial judgment.
+    """Deterministic policy over one current model judgment.
 
     Runtime policy has no hourly, 2-hour, or 4-hour reader quota, and no
     operator mute: once the semantic conditions resolve to push/escalate, only
-    duplicate evidence may withhold the card. ``degraded`` fallback cards skip
-    similarity because their wire headline is not a semantic judgment.
+    duplicate evidence may withhold the card. Structured and degraded lanes
+    carry their own ``DecisionResult`` and cannot enter this function.
     """
 
+    if facts.admission in {"telemetry_deterministic", "liquidation_deterministic"}:
+        raise ValueError("news_model_decide_structured_admission")
     verdict = judgment.verdict
-    editorial = judgment.editorial
+    relevance = judgment.editorial.relevance
     baseline = rule_baseline(facts)
     primaries = {_base(a.symbol) for a in verdict.assets if a.role == "primary"}
     grounded = {_base(s) for s in facts.grounded_assets}
@@ -266,41 +282,23 @@ def decide(
 
     final: Decision
     rule: str | None
-    if degraded or editorial.editorial_origin == "degraded_unavailable":
-        if facts.admission == "listing_deterministic":
-            final, rule = "push", "degraded_listing_objective"
-        elif facts.admission == "telemetry_deterministic":
-            final, rule = "push", "degraded_telemetry_objective"
-        elif watch_hits:
-            final, rule = "push", "degraded_watchlist_objective"
-        else:
-            final, rule = "drop", "degraded_no_objective_guard"
-    elif facts.admission == "listing_deterministic":
+    if facts.admission == "listing_deterministic":
         final, rule = "push", "listing_deterministic"
-    elif facts.admission == "telemetry_deterministic":
-        # This intent is arithmetic output from the code-owned OI lane, never a
-        # model delivery opinion. It preserves the bounded rank rule.
-        final = verdict.decision
-        rule = "telemetry_deterministic"
     elif watch_hits:
         final, rule = "push", "watchlist_objective_guard"
-    elif editorial.editorial_origin != "model" or editorial.relevance is None:
-        final, rule = "drop", "trade_relevance_inconsistent"
-    elif editorial.relevance.reader_value == "escalate" and realtime_eligible(verdict, editorial.relevance):
+    elif relevance.reader_value == "escalate" and realtime_eligible(verdict, relevance):
         final, rule = "escalate", "trade_relevance_escalate"
-    elif editorial.relevance.reader_value == "realtime" and realtime_eligible(verdict, editorial.relevance):
+    elif relevance.reader_value == "realtime" and realtime_eligible(verdict, relevance):
         final, rule = "push", "trade_relevance_realtime"
-    elif editorial.relevance.reader_value in {"background", "none"}:
-        final, rule = "drop", f"reader_value_{editorial.relevance.reader_value}"
+    elif relevance.reader_value in {"background", "none"}:
+        final, rule = "drop", f"reader_value_{relevance.reader_value}"
     else:
         final, rule = "drop", "trade_relevance_inconsistent"
 
     # #154: a replay is not a push, whatever the verdict says about it. `escalate` is exempt for the same reason
-    # it is exempt from the similarity check — a false positive is least affordable on the loudest cards — and a
-    # degraded verdict is exempt because the wire-headline fallback is already the conservative path.
+    # it is exempt from the similarity check — a false positive is least affordable on the loudest cards.
     if (
         final == "push"
-        and not degraded
         and policy.stale_source_max_age_s > 0
         and facts.source_age_s is not None
         and facts.source_age_s > policy.stale_source_max_age_s
@@ -313,8 +311,7 @@ def decide(
     seen_similarity: float | None = None
     seen_against = -1
     seen_scope = ""
-    rank_bounded = facts.admission in _RANK_BOUNDED_ADMISSIONS
-    if final == "push" and status is not None and not degraded and not rank_bounded and policy.similarity_max > 0.0:
+    if final == "push" and status is not None and policy.similarity_max > 0.0:
         seen_scope = "all"
         seen_similarity, seen_against = max_similarity(verdict.headline_zh, status.seen_headlines)
         if (
@@ -336,37 +333,44 @@ def decide(
     return DecisionResult(final, rule, None, baseline, watch_hits, seen_similarity, seen_against, seen_scope)
 
 
-def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> tuple[ScoredJudgment, DecisionResult]:
-    """Fail-closed degraded verdict when the model is unavailable. ``headline_zh`` carries the wire headline (the
-    console and the context line show what the Event is, not that the model failed; the card renders the wire text
-    itself, see delivery)."""
+def fallback_verdict(facts: GateFacts, *, error_code: str, title: str = "") -> DegradedJudgment:
+    """Issue the one degraded presentation and its code-owned objective action."""
 
     baseline = rule_baseline(facts)
+    watch_hits = grounded_watchlist_hits(facts)
     wire_headline = " ".join(str(title or "").split())[:60] or "模型不可用（规则兜底）"
     verdict = TriageVerdict(
         novelty="new_fact",
-        event_type="noise" if baseline == "drop" else "macro",
         assets=[],
-        direction="neutral",  # a rule verdict has no view on direction; "unclear" would veto its own push
+        direction="neutral",
         scope="macro",
-        magnitude=0 if baseline == "drop" else 2,
-        actionable=baseline == "push",
+        magnitude=0,
         confidence=0.0,
-        decision=baseline,
         headline_zh=wire_headline,
         why_zh="",
     )
-    judgment = ScoredJudgment.issue(
-        verdict=verdict,
-        editorial=EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None),
+    if facts.admission == "listing_deterministic":
+        rule = "degraded_listing_objective"
+    elif watch_hits:
+        rule = "degraded_watchlist_objective"
+    else:
+        rule = "degraded_no_objective_guard"
+    decision = DecisionResult(
+        final=baseline,
+        override_rule=rule,
+        throttled_by=None,
+        rule_baseline=baseline,
+        watchlist_hits=watch_hits,
     )
-    return judgment, decide(judgment, facts, None, degraded=True)
+    return DegradedJudgment(verdict=verdict, decision=decision, error_code=error_code)
 
 
 def _row_symbols(row: Mapping[str, Any]) -> frozenset[str]:
-    """Every symbol a ledger row was about, from the Gate's grounded tags and the verdict's assets."""
+    """Every symbol a full sent-ledger row was about."""
 
-    symbols = {_base(str(value)) for value in row.get("grounded_assets") or () if value}
+    symbols = {
+        _base(str(value)) for key in ("canonical_assets", "grounded_assets") for value in row.get(key) or () if value
+    }
     for asset in row.get("assets") or ():
         symbol = asset.get("symbol") if isinstance(asset, Mapping) else asset
         if symbol:
@@ -387,15 +391,13 @@ def storyline_status(
     cost of a narrower comparison than the worker performs.
     """
 
-    told_directions = tuple(str(t.get("dir") or "") for t in told)
-    told_assets = tuple(_row_symbols(t) for t in told)
+    told_directions = tuple(str(t.get("direction") or "") for t in told)
+    told_assets = tuple(frozenset(_base(str(value)) for value in t.get("symbols") or () if value) for t in told)
     rows = list(told if seen is None else seen)
     seen_headlines = tuple(str(r.get("headline_zh") or "") for r in rows)
     seen_event_ids = tuple(str(r.get("event_id") or "") for r in rows)
-    # `told` rows spell the direction `dir`, ledger rows spell it `direction`; a row that carries neither leaves
-    # an empty string, which `_seen_flip` reads as "no opinion" and never exempts on.
-    seen_directions = tuple(str(r.get("direction") or r.get("dir") or "") for r in rows)
-    seen_assets = tuple(_row_symbols(r) for r in rows)
+    seen_directions = tuple(str(r.get("direction") or "") for r in rows)
+    seen_assets = told_assets if seen is None else tuple(_row_symbols(r) for r in rows)
     return StorylineStatus(
         key=key,
         told_directions=told_directions,
@@ -411,6 +413,7 @@ __all__ = [
     "DEFAULT_POLICY",
     "DecidePolicy",
     "DecisionResult",
+    "DegradedJudgment",
     "GateFacts",
     "StorylineStatus",
     "decide",

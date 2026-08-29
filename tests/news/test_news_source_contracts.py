@@ -81,7 +81,7 @@ def test_exact_provider_contracts_have_one_closed_classification(
         _metadata(identity.strategy_id, identity.strategy_name, identity.source_type, identity.engine_type)
     )
     assert result.identity == identity
-    assert result.family == family
+    assert result.source_contract_family == family
     assert result.event_kind == event_kind
     assert result.reason == reason
     assert result.classifier_version == SOURCE_CONTRACT_CLASSIFIER_VERSION
@@ -114,7 +114,7 @@ def test_a_known_id_with_any_rebound_identity_field_fails_closed(
                     values["engine_type"],
                 )
             )
-            assert (result.family, result.event_kind, result.reason) == ("listing_v1", "listing", None)
+            assert (result.source_contract_family, result.event_kind, result.reason) == ("listing_v1", "listing", None)
             return
         expected_reason = "unsupported_market_contract"
     else:
@@ -128,7 +128,7 @@ def test_a_known_id_with_any_rebound_identity_field_fails_closed(
             values["engine_type"],
         )
     )
-    assert result.family == "unsupported_market"
+    assert result.source_contract_family == "unsupported_market"
     assert result.event_kind == "unsupported_market"
     assert result.reason == expected_reason
 
@@ -137,9 +137,13 @@ def test_provider_enablement_still_allows_ordinary_news_listing_and_scored_marke
     ordinary = classify_source_contract(_metadata("9999", "Any enabled news", "news", "news"))
     listing = classify_source_contract(_metadata("9998", "Any enabled listing", "news", "listing"))
     scored_market = classify_source_contract(_metadata("9997", "Rated market signal", "market", "market", score=85))
-    assert (ordinary.family, ordinary.event_kind, ordinary.reason) == ("news_v1", "news", None)
-    assert (listing.family, listing.event_kind, listing.reason) == ("listing_v1", "listing", None)
-    assert (scored_market.family, scored_market.event_kind, scored_market.reason) == ("news_v1", "news", None)
+    assert (ordinary.source_contract_family, ordinary.event_kind, ordinary.reason) == ("news_v1", "news", None)
+    assert (listing.source_contract_family, listing.event_kind, listing.reason) == ("listing_v1", "listing", None)
+    assert (scored_market.source_contract_family, scored_market.event_kind, scored_market.reason) == (
+        "news_v1",
+        "news",
+        None,
+    )
 
 
 def test_every_strategy_tuple_on_a_material_item_is_reconstructable_in_first_seen_order() -> None:
@@ -163,7 +167,7 @@ def test_every_strategy_tuple_on_a_material_item_is_reconstructable_in_first_see
 @pytest.mark.parametrize("source_type", ["market", "wallet"])
 def test_unbound_scoreless_market_or_wallet_frames_have_a_named_safe_terminal(source_type: str) -> None:
     result = classify_source_contract(_metadata("9999", "Unknown source", source_type, "market"))
-    assert result.family == "unsupported_market"
+    assert result.source_contract_family == "unsupported_market"
     assert result.event_kind == "unsupported_market"
     assert result.reason == "unsupported_market_contract"
 
@@ -181,5 +185,5 @@ def test_unbound_scoreless_market_or_wallet_frames_have_a_named_safe_terminal(so
 def test_one_pure_composition_selects_the_existing_route(metadata: dict[str, Any], expected: str) -> None:
     contract = classify_source_contract(metadata)
     assert source_contract_admission(contract, generic_admission="candidate", ingest_mode="live") == expected
-    recovery = "unsupported_market_contract" if contract.family == "unsupported_market" else "recovery"
+    recovery = "unsupported_market_contract" if contract.source_contract_family == "unsupported_market" else "recovery"
     assert source_contract_admission(contract, generic_admission="candidate", ingest_mode="recovery") == recovery

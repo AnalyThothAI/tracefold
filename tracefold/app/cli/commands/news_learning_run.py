@@ -146,7 +146,6 @@ def _baseline(
             action_source="",
             from_ms=None,
             to_ms=None,
-            all_cohorts=False,
             max_model_cases=int(args.max_baseline_model_cases),
             semantic_judge=judge_model,
             limit=int(args.max_baseline_model_cases),

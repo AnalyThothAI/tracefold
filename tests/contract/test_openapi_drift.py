@@ -131,6 +131,11 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         response_schema = operation[method]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
 
+    event_responses = schema["paths"]["/api/news/events/{event_id}"]["get"]["responses"]
+    assert event_responses["410"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiEnvelope_NewsEventDetailData_"
+    }
+
     components = schema["components"]["schemas"]
     for name in (
         "NewsFeedData",
@@ -139,6 +144,9 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsEventDetailData",
         "NewsEventMemberData",
         "NewsVerdictData",
+        "NewsPresentationVerdictData",
+        "NewsModelEditorialData",
+        "NewsTradeRelevanceData",
         "NewsDeliveryData",
         "NewsStatusData",
         "NewsIngestStatusData",
@@ -147,6 +155,7 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsSourceContractStageCountsData",
         "NewsSourceContracts24hData",
         "NewsDeliveryStatusData",
+        "NewsDuplicatesWithheld24hData",
         "NewsLearningRetentionStatusData",
         "NewsFeedOiData",
         "NewsOiStatusData",
@@ -256,14 +265,13 @@ def test_news_contract_hard_cuts_story_brief_rss_and_title_translation_surfaces(
     assert {"story_id", "title_translation", "notification", "push_delivery_state"}.isdisjoint(event_properties)
     assert {
         "event_id",
-        "family",
         "event_kind",
         "source_contract_reason",
         "leader_title",
         "admission",
         "storyline_key",
     } <= set(event_properties)
-    assert "priority" not in event_properties
+    assert {"priority", "family", "dedupe_family"}.isdisjoint(event_properties)
 
 
 @pytest.mark.contract
@@ -276,20 +284,24 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
 
     assert set(parameters) == {
-        "family",
+        "event_family",
+        "change_state",
+        "assertion_status",
+        "source_authority",
+        "subject_code",
+        "final_decision",
+        "event_kind",
         "admission",
-        "decision",
         "symbol",
         "q",
         "limit",
         "cursor",
         "outcome",
         "hours",
-        # #207: which gate the deterministic OI judge applied. `decision` collapses a threshold withhold and
+        # #207: which gate the deterministic OI judge applied. `final_decision` collapses a threshold withhold and
         # an unparseable provider frame into one `drop`, so the monitor's tabs cannot be built from it.
         "oi",
         "direction",
-        "channel",
     }
     assert parameters["q"]["schema"]["maxLength"] == 200
     assert parameters["symbol"]["schema"]["maxLength"] == 32
@@ -301,9 +313,14 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
     assert {"reporting_origin", "provider_score_gt"}.isdisjoint(parameters)
     filters = schema["components"]["schemas"]["NewsFeedFiltersData"]
     assert set(filters["properties"]) == {
-        "family",
+        "event_family",
+        "change_state",
+        "assertion_status",
+        "source_authority",
+        "subject_code",
+        "final_decision",
+        "event_kind",
         "admission",
-        "decision",
         "symbol",
         "q",
         "limit",
@@ -311,9 +328,41 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "hours",
         "oi",
         "direction",
-        "channel",
     }
     assert set(filters["required"]) == {"limit"}
+    triage = schema["components"]["schemas"]["NewsTriageSummaryData"]["properties"]
+    assert {"taxonomy", "relevance", "headline_zh", "final_decision"} <= set(triage)
+    assert {
+        "event_type",
+        "event_type_zh",
+        "actionable",
+        "model_decision",
+        "model_decision_zh",
+        "title_zh",
+    }.isdisjoint(triage)
+    verdict = schema["components"]["schemas"]["NewsVerdictData"]["properties"]
+    assert {"judgment_contract_version", "judgment_origin", "judgment_sha256", "model_editorial"} <= set(verdict)
+    assert {"editorial", "trace", "prompt_version", "model_decision"}.isdisjoint(verdict)
+    assert {
+        "judgment_contract_version",
+        "judgment_origin",
+        "judgment_sha256",
+        "verdict",
+        "program_version",
+        "program_sha256",
+        "evidence_version",
+        "evidence_sha256",
+        "focus_fact_id",
+    } <= set(schema["components"]["schemas"]["NewsVerdictData"]["required"])
+    assert schema["components"]["schemas"]["NewsEvidenceSnapshotData"]["properties"]["provenance"]["const"] == (
+        "observed"
+    )
+    assert "snapshot" not in schema["components"]["schemas"]["NewsEvidenceSnapshotData"]["properties"]
+    assert "legacy_label" not in str(
+        schema["components"]["schemas"]["NewsAcceptedReviewData"]["properties"]["subject_kind"]
+    )
+    review = schema["components"]["schemas"]["NewsAcceptedReviewData"]["properties"]
+    assert {"payload", "dimensions", "novelty"}.isdisjoint(review)
 
 
 @pytest.mark.contract
@@ -346,7 +395,7 @@ def test_contracts_md_lists_the_same_trade_channels_as_the_code() -> None:
 
     It spells the channel enum out in prose, so nothing else notices when the code-owned order gains a value:
     #173 added `product_progress` and the doc kept listing eleven codes until a reviewer read both. A client
-    validating a `news_review_v3` payload against the stale list rejects a legitimate channel.
+    validating a current accepted-review payload against the stale list rejects a legitimate channel.
     """
 
     from tracefold.news.program.contracts import TRADE_CHANNEL_ORDER

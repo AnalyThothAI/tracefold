@@ -149,6 +149,11 @@ ASSERTION_STATUS_ZH: Final[dict[str, str]] = {
     "unknown": "断言状态未知",
 }
 
+EVENT_FAMILIES: Final[tuple[str, ...]] = tuple(EVENT_FAMILY_ZH)
+CHANGE_STATES: Final[tuple[str, ...]] = tuple(CHANGE_STATE_ZH)
+SOURCE_AUTHORITIES: Final[tuple[str, ...]] = tuple(SOURCE_AUTHORITY_ZH)
+ASSERTION_STATUSES: Final[tuple[str, ...]] = tuple(ASSERTION_STATUS_ZH)
+
 SubjectCode = Literal[
     "medtop:04000000",
     "medtop:20000174",
@@ -342,41 +347,8 @@ def source_authority_from_evidence(evidence: Any) -> SourceAuthority:
     return source_authority((source, *(str(value) for value in strategies)))
 
 
-class LegacyTaxonomyProjectionV1(_ExactTaxonomyModel):
-    projection_version: Literal["news_legacy_taxonomy_projection_v1"] = "news_legacy_taxonomy_projection_v1"
-    legacy_event_type: str
-    event_family: EventFamily | Literal["unknown"]
-    assertion_status: AssertionStatus = "unknown"
-
-
-_LEGACY_FAMILY: Final[dict[str, EventFamily]] = {
-    "earnings": "financial_results",
-    "product": "product_service_change",
-    "regulation": "regulatory_legal",
-    "hack": "security_operational_incident",
-    "exploit": "security_operational_incident",
-    "listing": "market_access",
-    "delisting": "market_access",
-    "funding": "financing_capital_allocation",
-    "oi_spike": "market_flow_price",
-    "liquidation": "market_flow_price",
-    "rates": "macro_policy_data",
-}
-
-
-def project_legacy_event_type(event_type: str) -> LegacyTaxonomyProjectionV1:
-    """Conservative diagnostic projection; mixed-axis labels abstain."""
-
-    value = str(event_type)
-    return LegacyTaxonomyProjectionV1(
-        legacy_event_type=value,
-        event_family=_LEGACY_FAMILY.get(value, "unknown"),
-        assertion_status="rumor" if value == "rumor" else "unknown",
-    )
-
-
 def taxonomy_public(value: Mapping[str, Any] | NewsTaxonomyV1 | None) -> dict[str, Any] | None:
-    """Versioned server-owned API projection; historical judgments return None."""
+    """Versioned server-owned current API projection."""
 
     if value is None:
         return None
@@ -396,23 +368,25 @@ def event_family_zh(value: str | None) -> str:
 
 
 __all__ = [
+    "ASSERTION_STATUSES",
+    "CHANGE_STATES",
+    "EVENT_FAMILIES",
     "IPTC_CODEBOOK_SHA256",
     "IPTC_MEDIA_TOPICS_VERSION",
     "IPTC_SUBJECT_CODEBOOK",
     "IPTC_SUBJECT_CODES",
     "IPTC_SUBJECT_LABELS_ZH",
+    "SOURCE_AUTHORITIES",
     "TAXONOMY_VERSION",
     "AssertionStatus",
     "ChangeState",
     "EventFamily",
     "IPTCCodebookSha",
-    "LegacyTaxonomyProjectionV1",
     "ModelTaxonomyV1",
     "NewsTaxonomyV1",
     "SourceAuthority",
     "SubjectCode",
     "event_family_zh",
-    "project_legacy_event_type",
     "source_authority",
     "source_authority_from_evidence",
     "taxonomy_public",

@@ -50,7 +50,7 @@ export function NewsEventRow({
   searchState?: string;
 }) {
   const triage = event.triage;
-  const headline = triage?.headline_zh?.trim() || event.title_zh?.trim() || event.leader_title;
+  const headline = triage?.headline_zh?.trim() || event.leader_title;
   const showOriginal = headline !== event.leader_title;
   const assets = displayAssetRefs(event.grounded_assets ?? [], event.assets);
   const sentAt = event.delivery?.state === "sent" ? event.delivery.settled_at_ms : null;

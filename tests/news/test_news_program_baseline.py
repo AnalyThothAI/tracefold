@@ -56,35 +56,31 @@ def _frozen_policy_projection() -> dict[str, object]:
 
 
 _VERDICT: dict[str, Any] = {
-    "event_type": "product",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "magnitude": 1,
     "direction": "bullish",
-    "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
     "novelty": "new_fact",
     "restates": -1,
-    "decision": "push",
     "confidence": 0.9,
     "headline_zh": "特斯拉发布 Cybercab 无人驾驶出租车",
     "why_zh": "新车型进入量产排程，直接改变该名字的交付预期",
-    "title_zh": "",
 }
 
 _CONTEXT: dict[str, Any] = {
-    "schema_version": "news_event_evidence_v1",
+    "schema_version": "news_event_evidence_v3",
     "focus_fact": {"fact_id": "f" * 64, "text": "Tesla launches the Cybercab", "context": ""},
     "card": {
         "event_id": "e" * 64,
-        "evidence_version": 1,
+        "evidence_version": 3,
         "evidence_sha256": "a" * 64,
         "focus_fact_id": "f" * 64,
         "leader_title": "Tesla launches the Cybercab",
         "leader_description": "",
         "leader_url": "https://example.invalid/1",
         "reporting_origin": "wire",
-        "family": "general",
+        "dedupe_family": "general",
         "admission": "candidate",
         "queue_priority": "normal",
         "asset_class": "equity_or_commodity",
@@ -173,7 +169,7 @@ def test_failed_dimension_without_gold_is_visible_but_not_scored() -> None:
 
 
 def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
-    """The whole point of `news_review_v3`: a coin flip must stop scoring like a repair."""
+    """Exact accepted-review gold prevents a coin flip from scoring like a repair."""
 
     dimensions = {"magnitude": "fail", "factual_fidelity": "pass"}
     golded = _episode(dimensions=dimensions, expected={"magnitude": 2})
@@ -312,7 +308,7 @@ def test_build_baseline_cases_drops_loader_only_keys() -> None:
     assert build_baseline_cases([raw], action_source="policy")[0].recorded_decision_result is None
 
 
-def test_rubric_v5_gold_requires_a_failed_dimension() -> None:
+def test_rubric_v6_gold_requires_a_failed_dimension() -> None:
     base = {
         "kind": "event_rubric",
         "should_push": "should_push",
@@ -344,7 +340,7 @@ def test_rubric_v5_gold_requires_a_failed_dimension() -> None:
         )
 
 
-def test_rubric_v5_submission_without_optional_gold_validates() -> None:
+def test_rubric_v6_submission_without_optional_gold_validates() -> None:
 
     submission = EventRubricSubmission(
         kind="event_rubric",

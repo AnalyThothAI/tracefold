@@ -238,7 +238,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     mode = _baseline_mode(args.mode)
     action_source = str(args.action_source) or ("recorded" if mode == "recorded" else "policy")
     if mode == "recorded" and action_source != "recorded":
-        # Scoring a retired arm's verdict against today's `decide()` compares two things that never coexisted.
+        # Recorded mode measures the persisted current action, not a fresh policy replay.
         raise ValueError("news_program_baseline_recorded_mode_requires_recorded_decision")
     if mode != "recorded" and action_source == "recorded":
         # A live mode must score the fresh judgment through the frozen policy. Reusing a recorded decision
@@ -252,7 +252,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         raise ValueError("news_program_baseline_live_mode_requires_max_model_cases")
     dataset_sha = str(getattr(args, "dataset", "") or "").strip()
     moving_window = [name for name in ("from_ms", "to_ms") if getattr(args, name, None) is not None]
-    if dataset_sha and (moving_window or bool(args.all_cohorts)):
+    if dataset_sha and moving_window:
         # A run measures one corpus. Silently preferring one input would publish a report whose window and
         # whose cases came from different questions.
         raise ValueError("news_program_baseline_dataset_excludes_moving_window")
@@ -294,7 +294,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         else:
             window = ClosedWindow(from_ms=int(args.from_ms), to_ms=int(args.to_ms))
             limit = int(args.limit) if mode == "recorded" else min(int(args.limit), max_model_cases)
-            episodes = datasets.baseline_episodes(window, cohort=not bool(args.all_cohorts), limit=limit)
+            episodes = datasets.baseline_episodes(window, limit=limit)
     if not episodes:
         code = (
             "news_program_baseline_dataset_has_no_optimizer_corpus"
@@ -353,7 +353,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         )
     report = run_baseline(
         build_baseline_cases(episodes, action_source=action_source),
-        cohort_scope=("frozen_development" if dataset_sha else "all" if bool(args.all_cohorts) else "current"),
+        cohort_scope=("frozen_development" if dataset_sha else "current"),
         objective=plan,
         dataset_identity=dataset_identity,
         retrieval_population=retrieval_population,
@@ -397,7 +397,7 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
 
 
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Propose `news_review_v5` rubrics with exact taxonomy Gold. The output is a file, never a review.
+    """Propose `news_review_v6` rubrics with exact taxonomy Gold. The output is a file, never a review.
 
     `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
     be accepted release evidence the instant it landed. The human stays the acceptance authority; this only

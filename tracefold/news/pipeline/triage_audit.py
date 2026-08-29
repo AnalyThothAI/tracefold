@@ -13,21 +13,7 @@ def _told_trace(told: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """The ledger exactly as the model saw it (plus event ids), so ``news why`` can name the restated card and
     CandidateEvaluator recordings can reproduce ``StorylineStatus.told_directions``."""
 
-    return [
-        {
-            "i": int(t.get("i", i)),
-            "event_id": str(t.get("event_id") or ""),
-            "at_ms": int(t.get("at_ms") or 0),
-            "m": int(t.get("m") or 0),
-            "dir": str(t.get("dir") or ""),
-            "headline_zh": str(t.get("headline_zh") or ""),
-            "tier": str(t.get("tier") or ""),
-            "similarity": float(t.get("similarity") or 0.0),
-            "history_scope": str(t.get("history_scope") or "recent"),
-            "retrieval_reason": str(t.get("retrieval_reason") or "recent"),
-        }
-        for i, t in enumerate(told)
-    ]
+    return [dict(entry) for entry in told]
 
 
 def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
@@ -38,22 +24,7 @@ def _told_from_context(context: TriageContext) -> list[dict[str, Any]]:
     "not evidence of a different instrument", which silently disabled the listing exemption in production.
     """
 
-    return [
-        {
-            "i": entry.i,
-            "event_id": entry.event_id,
-            "at_ms": entry.at_ms,
-            "m": entry.magnitude,
-            "dir": entry.direction,
-            "headline_zh": entry.headline_zh,
-            "grounded_assets": list(entry.symbols),
-            "tier": entry.tier,
-            "similarity": entry.similarity,
-            "history_scope": entry.history_scope,
-            "retrieval_reason": entry.retrieval_reason,
-        }
-        for entry in context.told.entries
-    ]
+    return [entry.model_dump(mode="json") for entry in context.told.entries]
 
 
 def _reader_history_trace(history: ReaderHistorySnapshot, told: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -162,7 +133,6 @@ def _sync_program_audit(
             "program_execution_index",
             "program_trace",
             "input_sha256",
-            "novelty_defaulted",
             "model_fallback_from",
         ):
             trace.pop(field_name, None)
@@ -199,7 +169,6 @@ def _sync_program_audit(
     trace.pop("program_execution_index", None)
     trace.pop("program_trace", None)
     trace.pop("input_sha256", None)
-    trace.pop("novelty_defaulted", None)
     trace.pop("model_fallback_from", None)
     if selected_execution_index is None:
         return
@@ -210,7 +179,5 @@ def _sync_program_audit(
     trace["program_execution_index"] = selected_execution_index
     trace["program_trace"] = dict(selected_trace)
     trace["input_sha256"] = str(selected_trace["context_sha256"])
-    if bool(selected_trace.get("novelty_defaulted")):
-        trace["novelty_defaulted"] = True
     if selected.get("fallback_from"):
         trace["model_fallback_from"] = str(selected["fallback_from"])

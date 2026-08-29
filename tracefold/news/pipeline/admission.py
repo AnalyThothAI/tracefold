@@ -22,7 +22,7 @@ from ..bus import (
 )
 from ..events.facts import FactUnit, extract_fact_units
 from ..events.gate import GateInput, GateVerdict, evaluate_gate
-from ..events.identity import event_family, event_window_ms
+from ..events.identity import dedupe_family, dedupe_window_ms
 from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import description_after_title, extract_title
@@ -41,7 +41,7 @@ from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
-# How far back an exact *artifact* match may reach (#154). The family windows bound how long two texts stay
+# How far back an exact *artifact* match may reach (#154). The dedupe-family windows bound how long two texts stay
 # comparable; this bounds how long the platform's own primary key stays meaningful, which is much longer. The
 # measured worst case in a 30-day window was a tweet the provider re-sent 88.7 h later under a new record id.
 ARTIFACT_WINDOW_MS = 7 * 24 * 60 * 60_000
@@ -76,7 +76,7 @@ class AdmitResult:
     event_kind: EventKind
     match_kind: str  # leader | exact | near | none
     gate: GateVerdict | None
-    family: str
+    dedupe_family: str
     storyline_key: str
     comparison_fingerprint: str
     title: str
@@ -234,7 +234,7 @@ def admit_item(
     extracted = extract_title(fact.text)
     title = extracted.title or fact.text[:500]
     comparison = extracted.comparison
-    family = event_family(comparison)
+    family_name = dedupe_family(comparison)
     fingerprint = hashlib.sha256(comparison.encode("utf-8")).hexdigest()
     published_at_ms = int(event.entry.published_at_ms or observed_at_ms)
     inserted = news.upsert_item(
@@ -255,7 +255,7 @@ def admit_item(
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
-    if source_contract.family == "liquidation_v1":
+    if source_contract.source_contract_family == "liquidation_v1":
         liquidation = liquidations.parse_liquidation(
             title,
             item_id=item_id,
@@ -298,7 +298,7 @@ def admit_item(
     # Admission exercises the strict parser in both live and recovery modes so contract drift is durable
     # even when recovery intentionally never reaches Triage. This parse is side-effect free: OI's ranked
     # fact remains live-only and is still written by the deterministic judge.
-    if source_contract.family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
+    if source_contract.source_contract_family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
         source_contract_reason = "source_contract_drift"
     existing_membership = news.fact_membership(
         item_id=item_id,
@@ -322,7 +322,7 @@ def admit_item(
             event_kind=str(ev["event_kind"]) if ev else source_contract.event_kind,  # type: ignore[arg-type]
             match_kind=str(existing_membership["match_kind"]),
             gate=None,
-            family=family,
+            dedupe_family=family_name,
             storyline_key=str(ev["storyline_key"]) if ev else "",
             comparison_fingerprint=fingerprint,
             title=title,
@@ -357,12 +357,12 @@ def admit_item(
         ),
     )
     tokens = comparison_tokens(comparison)
-    window_ms = event_window_ms(family)
+    window_ms = dedupe_window_ms(family_name)
     shareable = len(tokens) >= 3
 
     exact = (
         news.find_exact_event(
-            family=family,
+            dedupe_family=family_name,
             event_kind=source_contract.event_kind,
             fingerprint=fingerprint,
             now_ms=now_ms,
@@ -379,7 +379,7 @@ def admit_item(
         # the platform's own primary key, so neither guard applies to it.
         exact = news.find_artifact_event(
             source_artifact_id=event.source_artifact_id,
-            family=family,
+            dedupe_family=family_name,
             event_kind=source_contract.event_kind,
             fingerprint=fingerprint,
             item_id=item_id,
@@ -417,7 +417,7 @@ def admit_item(
             match_kind="exact",
             gate=gate,
             event_kind=source_contract.event_kind,
-            family=family,
+            dedupe_family=family_name,
             fingerprint=fingerprint,
             title=title,
             reporting_origin=event.entry.reporting_origin or "opennews",
@@ -453,7 +453,7 @@ def admit_item(
             ()
             if source_contract.event_kind in {"oi", "liquidation"}
             else news.find_band_candidates(
-                family=family,
+                dedupe_family=family_name,
                 event_kind=source_contract.event_kind,
                 band_keys=keys,
                 now_ms=now_ms,
@@ -487,7 +487,7 @@ def admit_item(
                 match_kind="near",
                 gate=gate,
                 event_kind=source_contract.event_kind,
-                family=family,
+                dedupe_family=family_name,
                 fingerprint=fingerprint,
                 title=title,
                 reporting_origin=event.entry.reporting_origin or "opennews",
@@ -504,9 +504,12 @@ def admit_item(
         keys = ()
 
     storyline = preliminary_storyline_key(
-        title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
+        title=title,
+        grounded_assets=gate.strong_assets,
+        asset_class=gate.asset_class,
+        dedupe_family=family_name,
     )
-    context_line = f"[{gate.asset_class}/{family}/{engine_type}] " + " ".join(gate.grounded_assets)
+    context_line = f"[{gate.asset_class}/{family_name}/{engine_type}] " + " ".join(gate.grounded_assets)
     event_id = _event_identity(
         item_id=item_id,
         fact=fact,
@@ -524,7 +527,7 @@ def admit_item(
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,
-        family=family,
+        dedupe_family=family_name,
         event_kind=source_contract.event_kind,
         comparison_fingerprint=fingerprint,
         comparison_title=comparison,
@@ -563,7 +566,7 @@ def admit_item(
         event_kind=source_contract.event_kind,
         match_kind="leader",
         gate=gate,
-        family=family,
+        dedupe_family=family_name,
         storyline_key=storyline,
         comparison_fingerprint=fingerprint,
         title=title,
@@ -579,7 +582,7 @@ def _member_result(
     match_kind: str,
     gate: GateVerdict,
     event_kind: EventKind,
-    family: str,
+    dedupe_family: str,
     fingerprint: str,
     title: str,
     reporting_origin: str,
@@ -625,7 +628,7 @@ def _member_result(
         event_kind=event_kind,
         match_kind=match_kind,
         gate=gate,
-        family=family,
+        dedupe_family=dedupe_family,
         storyline_key=str(row["storyline_key"]) if row else "",
         comparison_fingerprint=fingerprint,
         title=title,
@@ -660,7 +663,7 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
 
 
 async def publish_event(
-    bus: Any, db: NewsDatabasePort, *, event_id: str, family: str, queue_priority: str, trace_id: str
+    bus: Any, db: NewsDatabasePort, *, event_id: str, dedupe_family: str, queue_priority: str, trace_id: str
 ) -> None:
     """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
 
@@ -669,7 +672,7 @@ async def publish_event(
         BusMessage(
             kind="event",
             message_id=f"event:{event_id}",
-            routing_key=RK_EVENT.format(family=family, queue_priority=queue_priority),
+            routing_key=RK_EVENT.format(dedupe_family=dedupe_family, queue_priority=queue_priority),
             payload={"event_id": event_id},
             trace_id=trace_id,
             occurred_at_ms=stamp,
@@ -749,7 +752,7 @@ class DeduperConsumer:
                     self.bus,
                     self.db,
                     event_id=result.event_id,
-                    family=result.family,
+                    dedupe_family=result.dedupe_family,
                     queue_priority=result.gate.queue_priority if result.gate else "normal",
                     trace_id=message.trace_id,
                 )

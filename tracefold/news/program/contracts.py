@@ -7,7 +7,6 @@ model routes and compiler state are deliberately absent from this module.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
@@ -101,6 +100,7 @@ TRADE_AFFECTED_MARKET_ORDER: Final[tuple[TradeAffectedMarket, ...]] = (
     "single_asset",
 )
 EDITORIAL_CONTRACT_VERSION: Final[Literal["news_editorial_v2"]] = "news_editorial_v2"
+JUDGMENT_CONTRACT_VERSION: Final[Literal["news_judgment_v2"]] = "news_judgment_v2"
 
 
 class _ExactContractModel(BaseModel):
@@ -164,7 +164,6 @@ class ReaderCardSemanticView(_ExactContractModel):
     opportunity to infer urgency or final action.
     """
 
-    event_type: str
     assets: tuple[TriageAsset, ...] = Field(default=(), max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     magnitude: int = Field(ge=0, le=3)
@@ -176,47 +175,32 @@ class ReaderCardSemanticView(_ExactContractModel):
 
 
 class EditorialEnvelope(_ExactContractModel):
-    """Versioned editorial sibling persisted atomically with one verdict."""
+    """The one current editorial sibling persisted atomically with a verdict."""
 
-    # v1 remains an explicit historical reader. New writes are v2 only.
-    editorial_contract_version: Literal["news_editorial_v1", "news_editorial_v2"] = EDITORIAL_CONTRACT_VERSION
-    editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"]
-    relevance: TradeRelevanceV1 | None
-    taxonomy: NewsTaxonomyV1 | None = None
+    editorial_contract_version: Literal["news_editorial_v2"] = EDITORIAL_CONTRACT_VERSION
+    editorial_origin: Literal["model"] = "model"
+    relevance: TradeRelevanceV1
+    taxonomy: NewsTaxonomyV1
     editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
     def issue(
         cls,
         *,
-        editorial_origin: Literal["model", "telemetry_deterministic", "degraded_unavailable"],
-        relevance: TradeRelevanceV1 | None,
-        taxonomy: NewsTaxonomyV1 | None = None,
+        relevance: TradeRelevanceV1,
+        taxonomy: NewsTaxonomyV1,
     ) -> EditorialEnvelope:
         payload = {
             "editorial_contract_version": EDITORIAL_CONTRACT_VERSION,
-            "editorial_origin": editorial_origin,
-            "relevance": None if relevance is None else relevance.model_dump(mode="json"),
-            "taxonomy": None if taxonomy is None else taxonomy.model_dump(mode="json"),
+            "editorial_origin": "model",
+            "relevance": relevance.model_dump(mode="json"),
+            "taxonomy": taxonomy.model_dump(mode="json"),
         }
         return cls(**payload, editorial_sha256=canonical_sha(payload))
 
     @model_validator(mode="after")
     def _origin_and_identity_are_exact(self) -> EditorialEnvelope:
-        if (self.editorial_origin == "model") != (self.relevance is not None):
-            raise ValueError("news_editorial_origin_relevance_mismatch")
-        if self.editorial_contract_version == "news_editorial_v2" and (
-            (self.editorial_origin == "model") != (self.taxonomy is not None)
-        ):
-            raise ValueError("news_editorial_origin_taxonomy_mismatch")
-        if self.editorial_contract_version == "news_editorial_v1" and self.taxonomy is not None:
-            raise ValueError("news_editorial_v1_taxonomy_forbidden")
-        excluded = (
-            {"editorial_sha256", "taxonomy"}
-            if self.editorial_contract_version == "news_editorial_v1"
-            else {"editorial_sha256"}
-        )
-        payload = self.model_dump(mode="json", exclude=excluded)
+        payload = self.model_dump(mode="json", exclude={"editorial_sha256"})
         if self.editorial_sha256 != canonical_sha(payload):
             raise ValueError("news_editorial_hash_mismatch")
         return self
@@ -237,7 +221,7 @@ class FrozenEventEvidence(_ExactContractModel):
     content: str = Field(default="", max_length=600)
     published_at_ms: int = Field(ge=0)
     member_count: int = Field(default=1, ge=1)
-    family: str = "general"
+    dedupe_family: str = "general"
     provider_score: int | None = None
     provider_coins: tuple[str, ...] = Field(default=(), max_length=10)
     queue_priority: Literal["high", "normal"] = "normal"
@@ -262,7 +246,7 @@ class _ModelVisibleEvent(_ExactContractModel):
     content: str = Field(max_length=600)
     published_at_ms: int = Field(ge=0)
     member_count: int = Field(ge=1)
-    family: str
+    dedupe_family: str
     provider_coins: tuple[str, ...] = Field(max_length=10)
 
 
@@ -275,12 +259,13 @@ class _ModelVisibleGate(_ExactContractModel):
 class _ModelVisibleToldEntry(_ExactContractModel):
     i: int = Field(ge=0)
     ago_min: int = Field(ge=0)
-    key: str
-    type: str
-    sym: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
-    m: int = Field(ge=0, le=3)
-    dir: str
+    storyline_key: str
+    comparison_title: str = Field(max_length=600)
+    symbols: tuple[str, ...] = Field(max_length=_TOLD_SYMBOLS_MAX)
+    magnitude: int = Field(ge=0, le=3)
+    direction: str
     headline_zh: str = Field(max_length=60)
+    why_zh: str = Field(max_length=140)
 
 
 class _ModelVisibleEventStatus(_ExactContractModel):
@@ -349,7 +334,7 @@ class TriageContext(_ExactContractModel):
                 content=str(card.get("leader_description") or "")[:600],
                 published_at_ms=int(card.get("opened_at_ms") or card.get("published_at_ms") or 0),
                 member_count=max(1, int(card.get("member_count") or 1)),
-                family=str(card.get("family") or "general"),
+                dedupe_family=str(card.get("dedupe_family") or "general"),
                 provider_score=card.get("provider_score_max"),
                 provider_coins=coins,
                 queue_priority=str(card.get("queue_priority") or "normal"),
@@ -386,7 +371,7 @@ class TriageContext(_ExactContractModel):
             content=event.content,
             published_at_ms=event.published_at_ms,
             member_count=event.member_count,
-            family=event.family,
+            dedupe_family=event.dedupe_family,
             provider_coins=event.provider_coins,
         )
 
@@ -410,12 +395,13 @@ class TriageContext(_ExactContractModel):
                     _ModelVisibleToldEntry(
                         i=entry.i,
                         ago_min=entry.ago_min,
-                        key=entry.storyline_key,
-                        type=entry.event_type,
-                        sym=entry.symbols,
-                        m=entry.magnitude,
-                        dir=entry.direction,
+                        storyline_key=entry.storyline_key,
+                        comparison_title=entry.comparison_title,
+                        symbols=entry.symbols,
+                        magnitude=entry.magnitude,
+                        direction=entry.direction,
                         headline_zh=entry.headline_zh,
+                        why_zh=entry.why_zh,
                     )
                     for entry in self.told.entries
                 ),
@@ -445,12 +431,14 @@ class TriageContext(_ExactContractModel):
         return canonical_sha(
             [
                 {
-                    "key": entry.storyline_key,
-                    "type": entry.event_type,
-                    "sym": list(entry.symbols),
-                    "m": entry.magnitude,
-                    "dir": entry.direction,
+                    "storyline_key": entry.storyline_key,
+                    "comparison_title": entry.comparison_title,
+                    "comparison_fingerprint": entry.comparison_fingerprint,
+                    "symbols": list(entry.symbols),
+                    "magnitude": entry.magnitude,
+                    "direction": entry.direction,
                     "headline_zh": entry.headline_zh,
+                    "why_zh": entry.why_zh,
                     "tier": entry.tier,
                 }
                 for entry in self.told.entries
@@ -578,16 +566,10 @@ class ProgramTrace(_ExactContractModel):
     editorial_sha256: str | None = None
     answering_route: Literal["primary", "fallback"] | None = None
     fallback_from: str | None = None
-    # Historical v5 traces may carry true. Native v6 never writes it: missing
-    # novelty is a domain validation failure and follows normal fallback.
-    novelty_defaulted: bool = False
     calls: tuple[ProgramCallTrace, ...] = ()
 
     @model_validator(mode="after")
     def _native_physical_calls_are_addressed_and_terminal(self) -> ProgramTrace:
-        match = re.fullmatch(r"news_semantic_program_v(\d+)", self.program_version)
-        if match is None or int(match.group(1)) < 6:
-            return self
         for call in self.calls:
             if not call.physical_provider_call:
                 continue
@@ -613,10 +595,6 @@ class ProgramUsage(_ExactContractModel):
     total_tokens: int = Field(ge=0)
     provider_cost_microusd: int | None = Field(default=None, ge=0)
 
-    @property
-    def provider_cost_usd(self) -> float | None:
-        return None if self.provider_cost_microusd is None else self.provider_cost_microusd / 1_000_000
-
 
 def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]:
     physical_calls = [call for call in calls if call.physical_provider_call]
@@ -637,6 +615,7 @@ def aggregate_program_usage(calls: Sequence[ProgramCallTrace]) -> dict[str, Any]
 class ScoredJudgment(_ExactContractModel):
     """Canonical verdict/editorial projection shared by every learning surface."""
 
+    judgment_contract_version: Literal["news_judgment_v2"] = JUDGMENT_CONTRACT_VERSION
     verdict: TriageVerdict
     editorial: EditorialEnvelope
     verdict_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -646,8 +625,9 @@ class ScoredJudgment(_ExactContractModel):
     def issue(cls, *, verdict: TriageVerdict, editorial: EditorialEnvelope) -> ScoredJudgment:
         verdict_sha256 = canonical_sha(verdict.model_dump(mode="json"))
         payload = {
+            "judgment_contract_version": JUDGMENT_CONTRACT_VERSION,
             "verdict": verdict.model_dump(mode="json"),
-            "editorial": _editorial_identity_payload(editorial),
+            "editorial": editorial.model_dump(mode="json"),
             "verdict_sha256": verdict_sha256,
         }
         return cls(
@@ -661,18 +641,14 @@ class ScoredJudgment(_ExactContractModel):
     def _projection_identity_is_exact(self) -> ScoredJudgment:
         expected_verdict = canonical_sha(self.verdict.model_dump(mode="json"))
         payload = {
+            "judgment_contract_version": self.judgment_contract_version,
             "verdict": self.verdict.model_dump(mode="json"),
-            "editorial": _editorial_identity_payload(self.editorial),
+            "editorial": self.editorial.model_dump(mode="json"),
             "verdict_sha256": self.verdict_sha256,
         }
         if self.verdict_sha256 != expected_verdict or self.scored_judgment_sha256 != canonical_sha(payload):
             raise ValueError("news_scored_judgment_identity_mismatch")
         return self
-
-
-def _editorial_identity_payload(editorial: EditorialEnvelope) -> dict[str, Any]:
-    excluded = {"taxonomy"} if editorial.editorial_contract_version == "news_editorial_v1" else set()
-    return editorial.model_dump(mode="json", exclude=excluded)
 
 
 class SemanticJudgment(_ExactContractModel):
@@ -739,6 +715,7 @@ class SemanticJudge(Protocol):
 __all__ = [
     "EDITORIAL_CONTRACT_VERSION",
     "GROUNDED_ASSETS_MAX",
+    "JUDGMENT_CONTRACT_VERSION",
     "STRATEGIES_MAX",
     "TRADE_AFFECTED_MARKET_ORDER",
     "TRADE_CHANNEL_ORDER",

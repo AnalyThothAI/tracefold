@@ -74,13 +74,11 @@ test("News secondary row copy remains readable at AA contrast", async ({ page })
   const feed = newsFeedFixture({
     events: [
       newsFeedEventFixture({
-        title_zh: null,
         event_id: "news-assetless-contrast",
         grounded_assets: [],
         watchlist_hits: [],
       }),
       newsFeedEventFixture({
-        title_zh: null,
         event_id: "news-grounded-contrast",
         grounded_assets: ["CL"],
         watchlist_hits: [],
@@ -211,10 +209,9 @@ async function routeNewsFeed(page: Page, titles: string[]) {
   const feed = newsFeedFixture({
     events: titles.map((title, index) =>
       newsFeedEventFixture({
-        title_zh: null,
         event_id: `news-density-${index + 1}`,
         leader_title: title,
-        triage: { ...newsFeedEventFixture().triage!, headline_zh: null, title_zh: null },
+        triage: { ...newsFeedEventFixture().triage!, headline_zh: null },
       }),
     ),
   });

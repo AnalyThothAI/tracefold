@@ -36,7 +36,7 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     assert data["event"]["admission"] == "telemetry_deterministic"
     assert data["event"]["published_at_ms"] is not None
     assert data["members"] and data["members"][0]["reporting_origin"] == "binance"
-    assert data["verdicts"][-1]["program_version"] == "news_oi_signal_v1"
+    assert data["verdicts"][-1]["program_version"] == "news_oi_signal_v2"
     assert data["verdicts"][-1]["final_decision"] == "push"
     assert len(data["deliveries"]) == 1
     delivery = data["deliveries"][0]

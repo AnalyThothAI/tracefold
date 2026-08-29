@@ -390,7 +390,11 @@ def test_gate_admission_rules() -> None:
 def test_storyline_keys() -> None:
     assert (
         storyline_key(
-            title="Trump threatens to bomb Oman", headline_zh="", scope="macro", primary_assets=["CL"], family="general"
+            title="Trump threatens to bomb Oman",
+            headline_zh="",
+            scope="macro",
+            primary_assets=["CL"],
+            dedupe_family="general",
         )
         == "theme:mideast_energy"
     )
@@ -400,13 +404,13 @@ def test_storyline_keys() -> None:
             headline_zh="",
             scope="single_name",
             primary_assets=["NVDA"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:NVDA"
     )
     assert (
         preliminary_storyline_key(
-            title="US 30-year yield hits 5.32%", grounded_assets=(), asset_class="macro", family="general"
+            title="US 30-year yield hits 5.32%", grounded_assets=(), asset_class="macro", dedupe_family="general"
         )
         == "theme:rates"
     )
@@ -418,7 +422,7 @@ def test_storyline_keys() -> None:
             scope="single_name",
             verdict_primaries=["BTC"],
             grounded_assets=["BTC"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:BTC"
     )
@@ -429,7 +433,7 @@ def test_storyline_keys() -> None:
             scope="macro",
             verdict_primaries=[],
             grounded_assets=[],
-            family="general",
+            dedupe_family="general",
         )
         == "theme:crypto_treasury"
     )
@@ -441,7 +445,7 @@ def test_storyline_keys() -> None:
             scope="sector",
             verdict_primaries=["BTC"],
             grounded_assets=["BTC", "CL", "XYZ-CL"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:BTC"
     )
@@ -453,13 +457,16 @@ def test_storyline_keys() -> None:
             scope="macro",
             verdict_primaries=["BTC"],
             grounded_assets=[],
-            family="general",
+            dedupe_family="general",
         )
         == "theme:rates"
     )
     assert (
         preliminary_storyline_key(
-            title="TABLE-U.S. July housing starts fall 12.4%", grounded_assets=(), asset_class="macro", family="general"
+            title="TABLE-U.S. July housing starts fall 12.4%",
+            grounded_assets=(),
+            asset_class="macro",
+            dedupe_family="general",
         )
         == "theme:us_macro_data"
     )
@@ -469,14 +476,11 @@ def test_storyline_keys() -> None:
 def _verdict(**kw) -> TriageVerdict:
     base = dict(
         novelty="new_fact",
-        event_type="partnership",
         assets=[TriageAsset(symbol="NVDA", role="primary")],
         direction="bullish",
         scope="single_name",
         magnitude=2,
-        actionable=True,
         confidence=0.8,
-        decision="push",
         headline_zh="英伟达投资",
         why_zh="",
     )
@@ -496,14 +500,13 @@ def decide(
     facts: GateFacts,
     status: StorylineStatus | None,
     *,
-    degraded: bool = False,
     policy: DecidePolicy = DEFAULT_POLICY,
     relevance: dict[str, Any] | None = None,
 ) -> Any:
-    """Exercise the typed v10 seam without repeating envelope construction in every pure assertion."""
+    """Exercise the current model-only seam without repeating envelope construction in every pure assertion."""
 
     judgment = scored_judgment(verdict, relevance=trade_relevance(**(relevance or {})))
-    return production_decide(judgment, facts, status, degraded=degraded, policy=policy)
+    return production_decide(judgment, facts, status, policy=policy)
 
 
 def test_source_artifact_identity_survives_the_provider_url_spellings() -> None:
@@ -585,9 +588,6 @@ def test_trade_relevance_is_the_only_model_owned_action_input() -> None:
     )
     verdict = _verdict(
         magnitude=2,
-        decision="drop",
-        actionable=False,
-        event_type="macro",
         assets=[TriageAsset(symbol="SPY", role="primary")],
     )
     realtime = decide(verdict, off_watchlist, None)
@@ -630,11 +630,10 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     """
 
     # A ledger entry whose rendered headline names no ticker at all — the production shape.
-    told = [{"dir": "bullish", "headline_zh": "Coinbase 将上线狗狗币", "grounded_assets": ["DOGE"]}]
+    told = [{"direction": "bullish", "headline_zh": "Coinbase 将上线狗狗币", "symbols": ["DOGE"]}]
     status = storyline_status("asset:DOGE", told=told)
     admitted = replace(_FACTS, admission="listing_deterministic", grounded_assets=("BICO",))
     other_instrument = _verdict(
-        event_type="listing",
         novelty="restatement",
         restates=0,
         headline_zh="Upbit 将上线 BICO 等三个币种",
@@ -652,11 +651,12 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
     assert repeat.final == "drop" and repeat.override_rule == "restatement"
 
     # A ledger row that carries no assets is not evidence of a different instrument.
-    blind = storyline_status("asset:DOGE", told=[{"dir": "bullish", "headline_zh": "Coinbase 将上线狗狗币"}])
+    blind = storyline_status(
+        "asset:DOGE", told=[{"direction": "bullish", "headline_zh": "Coinbase 将上线狗狗币", "symbols": []}]
+    )
     assert decide(other_instrument, admitted, blind).override_rule == "restatement"
 
-    # The model's own `event_type` is not evidence of a listing frame: only the Gate's admission is,
-    # or any story the model keeps typing as `listing` escapes duplicate evidence on every repeat.
+    # Only the Gate's objective admission is evidence of a listing frame.
     typed_only = decide(other_instrument, replace(_FACTS, grounded_assets=("BICO",)), status)
     assert typed_only.final == "drop" and typed_only.override_rule == "restatement"
 
@@ -670,7 +670,7 @@ def test_listing_frames_are_exempt_from_duplicate_evidence_only_across_instrumen
 def test_decide_rules_and_throttle() -> None:
     # The grounded watchlist is an objective guard and wins before model relevance.
     guarded = decide(
-        _verdict(magnitude=0, actionable=False, decision="drop"),
+        _verdict(magnitude=0),
         _FACTS,
         None,
         relevance={
@@ -717,10 +717,6 @@ def test_decide_restatement_drop_is_grounded() -> None:
     assert decide(_verdict(novelty="restatement", restates=0), _FACTS, None).final == "push"
     # An m3 restatement (the duplicated 4.75% yield escalate) drops too.
     assert decide(_verdict(novelty="restatement", restates=0, magnitude=3), _FACTS, quiet).final == "drop"
-    # Policy v8: `noise` no longer outranks restatement on a magnitude-2 actionable verdict. The card
-    # still drops — the trace now names the rule that actually applies to it.
-    noisy_repeat = decide(_verdict(novelty="restatement", restates=0, event_type="noise"), _FACTS, quiet)
-    assert noisy_repeat.final == "drop" and noisy_repeat.override_rule == "restatement"
     # The switch.
     assert (
         decide(
@@ -764,8 +760,6 @@ def test_decide_uses_content_duplicate_evidence_without_a_count_quota() -> None:
         )
         assert claimed.final == "throttled", novelty
 
-    # Degraded fallback has no semantic headline and therefore skips similarity.
-    assert decide(_verdict(), _FACTS, seen, degraded=True).final == "push"
     # Disabling similarity does not restore a hidden count cap.
     duplicate_off = decide(
         _verdict(headline_zh="英伟达发布 Blackwell Ultra 芯片，单卡算力翻倍"),
@@ -796,10 +790,12 @@ def _told_row(event_id: str, at_ms: int, **overrides: Any) -> dict[str, Any]:
         "at_ms": at_ms,
         "storyline_key": "asset:BTC",
         "comparison_title": "",
-        "event_type": "macro",
+        "comparison_fingerprint": "",
+        "dedupe_family": "general",
         "magnitude": 2,
         "direction": "bullish",
         "headline_zh": event_id,
+        "why_zh": "",
         "grounded_assets": [],
         "assets": [],
     }
@@ -961,6 +957,7 @@ def test_told_selector_trusts_upstream_bounds_and_drops_duplicate_and_self_rows_
 
 
 def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fact() -> None:
+    from tracefold.news.pipeline.triage_audit import _told_from_context, _told_trace
     from tracefold.news.program.contracts import TriageContext
 
     targeted = _told_row(
@@ -980,22 +977,24 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
     visible = {
         "i",
         "ago_min",
-        "key",
-        "type",
-        "sym",
-        "m",
-        "dir",
+        "storyline_key",
+        "comparison_title",
+        "symbols",
+        "magnitude",
+        "direction",
         "headline_zh",
+        "why_zh",
     }
     context = TriageContext.from_card(
         {
             "event_id": "self",
-            "evidence_version": 1,
+            "evidence_version": 3,
             "evidence_sha256": "e" * 64,
             "focus_fact_id": "fact",
             "leader_title": "current",
             "opened_at_ms": _NOW,
             "storyline_key": "theme:rates",
+            "dedupe_family": "general",
         },
         watchlist=(),
         told_rows=[recent, targeted],
@@ -1003,41 +1002,39 @@ def test_told_selector_trusts_bounded_history_and_prioritizes_targeted_exact_fac
         queue_lag_ms=0,
     )
     assert set(context.event_semantics_payload()["event_status"]["told"][0]) == visible
+    audit_told = _told_from_context(context)
+    assert audit_told == [entry.model_dump(mode="json") for entry in context.told.entries]
+    assert _told_trace(audit_told) == audit_told
+    assert audit_told[0]["ago_min"] == 1_440
 
 
-def test_prior_taxonomy_cannot_change_model_context_or_novelty_reask_identity() -> None:
+def test_told_source_contract_rejects_unowned_taxonomy() -> None:
     from tracefold.news.program.contracts import TriageContext
 
     card = {
         "event_id": "self",
-        "evidence_version": 1,
+        "evidence_version": 3,
         "evidence_sha256": "e" * 64,
         "focus_fact_id": "fact",
         "leader_title": "current",
         "opened_at_ms": _NOW,
         "storyline_key": "theme:rates",
+        "dedupe_family": "general",
     }
     prior = _told_row(
         "prior",
         _NOW - 60_000,
         storyline_key="theme:rates",
-        event_type="regulation",
     )
 
-    contexts = [
+    with pytest.raises(ValueError, match="news_told_context_fields_unexpected:taxonomy"):
         TriageContext.from_card(
             card,
             watchlist=(),
-            told_rows=[{**prior, "event_family": event_family}],
+            told_rows=[{**prior, "taxonomy": {"event_family": "regulatory_legal"}}],
             now_ms=_NOW,
             queue_lag_ms=0,
         )
-        for event_family in ("regulatory_legal", "product_service_change")
-    ]
-
-    assert contexts[0].event_semantics_payload() == contexts[1].event_semantics_payload()
-    assert contexts[0].novelty_context_sha256() == contexts[1].novelty_context_sha256()
-    assert contexts[0].event_semantics_payload()["event_status"]["told"][0]["type"] == "regulation"
 
 
 def test_told_selector_keeps_a_targeted_canonical_alias_inside_a_dense_pool() -> None:
@@ -1089,9 +1086,13 @@ def test_composite_retrieval_identity_binds_reader_history_and_selector_behaviou
 
 
 def test_storyline_status_carries_told_directions() -> None:
-    told = [{"i": 0, "dir": "bullish", "headline_zh": "a"}, {"i": 1, "dir": "neutral", "headline_zh": "b"}]
+    told = [
+        {"i": 0, "direction": "bullish", "symbols": ["BTC"], "headline_zh": "a"},
+        {"i": 1, "direction": "neutral", "symbols": [], "headline_zh": "b"},
+    ]
     status = storyline_status("asset:BTC", told=told)
     assert status.told_directions == ("bullish", "neutral") and status.told_count == 2
+    assert status.told_assets == (frozenset({"BTC"}), frozenset())
     assert storyline_status("asset:BTC").told_count == 0
 
 
@@ -1103,7 +1104,7 @@ def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
             title="STRAITS: Crypto surge causes $2.7bn liquidations",
             grounded_assets=("BTC",),
             asset_class="crypto",
-            family="market_telemetry",
+            dedupe_family="market_telemetry",
         )
         == "asset:BTC"
     )
@@ -1112,7 +1113,7 @@ def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
             title="Exxon starts production at new Guyana oil FPSO",
             grounded_assets=("XOM",),
             asset_class="equity_or_commodity",
-            family="general",
+            dedupe_family="general",
         )
         == "asset:XOM"
     )
@@ -1121,7 +1122,7 @@ def test_mideast_storyline_requires_real_strait_or_mideast_context() -> None:
             title="Tanker struck in Strait of Hormuz, Brent supply risk rises",
             grounded_assets=("CL",),
             asset_class="equity_or_commodity",
-            family="general",
+            dedupe_family="general",
         )
         == "theme:mideast_energy"
     )
@@ -1134,8 +1135,22 @@ def test_fallback_is_not_silent() -> None:
         admission="candidate",
     )
     assert rule_baseline(weak) == "drop"
-    judgment, decision = fallback_verdict(weak, error_code="news_triage_timeout")
-    assert decision.final == "drop" and judgment.verdict.headline_zh
+    judgment = fallback_verdict(weak, error_code="news_program_route_deadline")
+    assert judgment.decision.final == "drop" and judgment.verdict.headline_zh
+    assert judgment.error_code == "news_program_route_deadline"
+    assert set(judgment.verdict.model_dump(mode="json")) == {
+        "novelty",
+        "restates",
+        "assets",
+        "direction",
+        "scope",
+        "magnitude",
+        "confidence",
+        "audience",
+        "headline_zh",
+        "why_zh",
+    }
+    assert judgment.judgment_sha256 == fallback_verdict(weak, error_code="news_program_route_deadline").judgment_sha256
 
     # v10 degraded handling fails open only for objective facts. Queue priority and provider score are not
     # editorial evidence and cannot enter GateFacts at all.
@@ -1145,17 +1160,18 @@ def test_fallback_is_not_silent() -> None:
         admission="listing_deterministic",
     )
     assert rule_baseline(listing) == "push"
+    assert fallback_verdict(listing, error_code="x").decision.override_rule == "degraded_listing_objective"
     strong = GateFacts(
         grounded_assets=("BTC",),
         watchlist_symbols=frozenset({"BTC"}),
         admission="candidate",
     )
-    assert fallback_verdict(strong, error_code="x")[1].final == "push"
+    assert fallback_verdict(strong, error_code="x").decision.final == "push"
     assert (
-        fallback_verdict(strong, error_code="x", title="  Fed  holds rates\nsteady ")[0].verdict.headline_zh
+        fallback_verdict(strong, error_code="x", title="  Fed  holds rates\nsteady ").verdict.headline_zh
         == "Fed holds rates steady"
     )
-    assert fallback_verdict(strong, error_code="x")[0].verdict.headline_zh == "模型不可用（规则兜底）"
+    assert fallback_verdict(strong, error_code="x").verdict.headline_zh == "模型不可用（规则兜底）"
 
 
 # ---------------------------------------------------------------- delivery / bus
@@ -1176,9 +1192,7 @@ def test_card_is_the_reader_contract() -> None:
             "direction": "bullish",
             "magnitude": 2,
             "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
-            "title_zh": "英伟达将投资 1000 亿美元",
             "why_zh": "英伟达把千亿美元投进 OpenAI 的俄亥俄数据中心，算力供给链再加码",
-            "event_type": "partnership",
             "scope": "single_name",
             "assets": [{"symbol": "NVDA", "role": "primary"}, {"symbol": "OPENAI", "role": "mentioned"}],
         },
@@ -1198,13 +1212,12 @@ def test_card_is_the_reader_contract() -> None:
         "范围：",
         "成员：",
         "Provider",
-        "partnership",
         "single_name",
         "原标题",
         "个别标的",
     ):
         assert machine_word not in text
-    assert "Nvidia to invest $100bn" not in text and "英伟达将投资 1000 亿美元" not in text  # no title lines
+    assert "Nvidia to invest $100bn" not in text
     assert "打开来源" in text and "news_delivery_card" not in text
     escalated = render_first_card(
         event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "member_count": 1},
@@ -1638,7 +1651,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="single_name",
             verdict_primaries=["JNJ"],
             grounded_assets=["OKB"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:JNJ"
     )
@@ -1650,7 +1663,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="macro",
             verdict_primaries=[],
             grounded_assets=["BTC"],
-            family="general",
+            dedupe_family="general",
         )
         == "macro:general"
     )
@@ -1662,7 +1675,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="macro",
             verdict_primaries=[],
             grounded_assets=["OKB"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:OKB"
     )
@@ -1674,7 +1687,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="macro",
             verdict_primaries=[],
             grounded_assets=["MU"],
-            family="general",
+            dedupe_family="general",
         )
         == "macro:general"
     )
@@ -1686,7 +1699,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="macro",
             verdict_primaries=[],
             grounded_assets=["NVDA"],
-            family="general",
+            dedupe_family="general",
             degraded=True,
         )
         == "asset:NVDA"
@@ -1699,7 +1712,7 @@ def test_final_storyline_key_prefers_the_named_subject_over_an_arbitrary_tag() -
             scope="macro",
             verdict_primaries=["XOM"],
             grounded_assets=["XOM"],
-            family="general",
+            dedupe_family="general",
         )
         == "theme:mideast_energy"
     )
@@ -1766,15 +1779,11 @@ def test_decide_never_withholds_an_escalate_as_a_similarity_match() -> None:
     assert repeat.throttled_by is None
 
 
-def test_decide_leaves_the_degraded_and_switched_off_paths_alone() -> None:
-    """A rule-baseline card carries a placeholder headline, and `similarity_max = 0` is the operator switching the
-    content judgment off. Neither is ever measured, on either path."""
+def test_decide_leaves_the_switched_off_similarity_path_alone() -> None:
+    """`similarity_max = 0` is the operator switching the content judgment off."""
 
     window = _fresh(seen_headlines=_OKX_LEDGER, seen_event_ids=("a", "b", "c"))
     duplicate = _verdict(headline_zh="KLA Corporation（$KLACx）出现在 OKX")
-
-    degraded = decide(duplicate, _FACTS, window, degraded=True)
-    assert degraded.final == "push" and degraded.seen_similarity is None and degraded.seen_scope == ""
 
     off = decide(duplicate, _FACTS, window, policy=DecidePolicy(similarity_max=0.0))
     assert off.final == "push" and off.seen_similarity is None and off.seen_scope == ""
@@ -1820,7 +1829,7 @@ def test_final_storyline_key_only_accepts_symbol_shaped_primaries() -> None:
             scope="single_name",
             verdict_primaries=primaries,
             grounded_assets=["OKB"],
-            family="general",
+            dedupe_family="general",
         )
 
     assert key(["TSLA"]) == "asset:TSLA"
@@ -1845,43 +1854,24 @@ def test_symbol_in_text_does_not_match_ordinary_english_words() -> None:
             scope="macro",
             verdict_primaries=[],
             grounded_assets=["NOT"],
-            family="general",
+            dedupe_family="general",
         )
         == "macro:general"
     )
 
 
-def test_empty_title_zh_means_same_as_headline() -> None:
-    """#101: `title_zh` repeated `headline_zh` verbatim in 85% of a live day's verdicts — ~13% of all output
-    tokens — because the prompt only asks for a condensed header when the wire headline is long. Prompt v9 asks
-    for the sentinel instead; every reader fills it in, so nothing downstream sees an empty title."""
+def test_invalid_model_headline_falls_back_to_the_wire_title() -> None:
+    card = render_first_card(
+        event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "reporting_origin": "ft"},
+        verdict={
+            "direction": "bullish",
+            "magnitude": 2,
+            "headline_zh": "看 https://evil.example",
+            "why_zh": "算力供给链再加码",
+            "assets": [],
+        },
+        decision="push",
+        grounded_assets=[],
+    )
 
-    def _card(**verdict_over: object) -> dict:
-        return render_first_card(
-            event={"event_id": "e1", "leader_title": "Nvidia to invest $100bn", "reporting_origin": "ft"},
-            verdict={
-                "direction": "bullish",
-                "magnitude": 2,
-                "headline_zh": "英伟达千亿美元投资 OpenAI 数据中心",
-                "why_zh": "算力供给链再加码",
-                "assets": [],
-                **verdict_over,
-            },
-            decision="push",
-            grounded_assets=[],
-        )
-
-    # The sentinel never reaches the card: the header is headline_zh, exactly as when title_zh repeated it.
-    assert _card(title_zh="")["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
-    assert (
-        _card(title_zh="英伟达将投资 1000 亿美元")["header"]["title"]["content"] == "英伟达千亿美元投资 OpenAI 数据中心"
-    )
-    # title_zh is still the fallback for a headline that sanitises away (a URL in it), and the wire title after it.
-    assert (
-        _card(headline_zh="看 https://evil.example", title_zh="英伟达将投资 1000 亿美元")["header"]["title"]["content"]
-        == "英伟达将投资 1000 亿美元"
-    )
-    assert (
-        _card(headline_zh="看 https://evil.example", title_zh="")["header"]["title"]["content"]
-        == "Nvidia to invest $100bn"
-    )
+    assert card["header"]["title"]["content"] == "Nvidia to invest $100bn"

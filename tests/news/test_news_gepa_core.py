@@ -89,19 +89,15 @@ def _relevance(**overrides: Any) -> TradeRelevanceV1:
 
 def _metric_verdict(**overrides: Any) -> dict[str, Any]:
     verdict: dict[str, Any] = {
-        "decision": "push",
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "filing",
         "assets": [{"symbol": "ABC", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 2,
-        "actionable": True,
         "confidence": 0.8,
         "audience": "us_equity",
         "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
-        "title_zh": "",
         "why_zh": "时间表发生变化。",
     }
     verdict.update(overrides)
@@ -112,7 +108,6 @@ def _judgment(*, relevance: TradeRelevanceV1 | None = None, **verdict: Any) -> S
     return ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(_metric_verdict(**verdict)),
         editorial=EditorialEnvelope.issue(
-            editorial_origin="model",
             relevance=relevance or _relevance(),
             taxonomy=news_taxonomy(),
         ),
@@ -238,7 +233,6 @@ def _semantics(**overrides: Any) -> dict[str, Any]:
     values: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "filing",
         "assets": [{"symbol": "ABC", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
@@ -335,7 +329,7 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
                     "watchlist_symbols": [],
                     "admission": "candidate",
                 },
-                "storyline": {"title": "Issuer files a material update", "family": "filing"},
+                "storyline": {"title": "Issuer files a material update", "dedupe_family": "filing"},
                 "seen": [],
                 "told": [],
                 "recorded_decision_result": {
@@ -472,7 +466,7 @@ def _run(
         judge=judge or _NoopJudge(),
         max_metric_calls=3,
         seed=17,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
         compile_fn=compile_fn or _FakeGepaCompile(),
     )
 
@@ -647,7 +641,7 @@ def test_compile_refuses_distinct_task_and_reflection_ledgers_before_provider_sp
             judge=_NoopJudge(),
             max_metric_calls=3,
             seed=17,
-            review_rubric_version="news_review_v4",
+            review_rubric_version="news_review_v6",
             compile_fn=_FakeGepaCompile(),
         )
 
@@ -675,8 +669,8 @@ def test_metric_receipt_hash_binds_the_executed_implementation_source() -> None:
         del args, kwargs
         return MetricOutcome(score=0.5, feedback="changed")
 
-    original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v4")
-    changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v4")
+    original = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v6")
+    changed = _metric_receipt(changed_metric, review_rubric_version="news_review_v6")
 
     assert original["metric_id"] == changed["metric_id"]
     assert canonical_sha(original) != canonical_sha(changed)
@@ -752,7 +746,7 @@ def _metric_gold(**overrides: Any) -> Any:
                 "watchlist_symbols": [],
                 "admission": "candidate",
             },
-            "storyline": {"title": "Issuer files a material update", "family": "filing"},
+            "storyline": {"title": "Issuer files a material update", "dedupe_family": "filing"},
             "seen": [],
             "told": [],
             **_frozen_policy_projection(),
@@ -797,44 +791,24 @@ def _metric_context() -> TriageContext:
     )
 
 
-def _score(gold: Any, verdict: dict[str, Any], pred_name: str | None = None) -> Any:
+def _score(
+    gold: Any,
+    verdict: dict[str, Any],
+    pred_name: str | None = None,
+    *,
+    relevance: TradeRelevanceV1 | None = None,
+) -> Any:
     return accepted_review_metric(
         gold,
         CandidatePrediction(
             verdict=verdict,
             editorial=EditorialEnvelope.issue(
-                editorial_origin="model",
-                relevance=_relevance(),
+                relevance=relevance or _relevance(),
                 taxonomy=news_taxonomy(),
             ),
         ),
         pred_name=pred_name,
     )
-
-
-def test_metric_scores_the_production_action_not_the_models_intent() -> None:
-    """`decision` is an intent `decide()` routinely overrides. A grounded restatement is dropped whatever the
-    model asked for, so a metric reading `decision` would reward a card the reader never receives."""
-
-    told = [
-        {
-            "i": 0,
-            "event_id": "prior",
-            "dir": "bullish",
-            "headline_zh": "发行人提交重大更新，交付时间表整体推迟一个季度",
-            "grounded_assets": ["ABC"],
-        }
-    ]
-    gold = _metric_gold(
-        accepted_review={"should_push": "should_hold"},
-        policy_metric={"told": told, "seen": [dict(told[0], direction="bullish")], **_frozen_policy_projection()},
-    )
-    # The model asks to push; the policy drops it as a grounded restatement, which is what the reviewer wanted.
-    restatement = _metric_verdict(decision="push", novelty="restatement", restates=0)
-    assert _score(gold, restatement).score == 1.0
-
-    # The same verdict scored against the old contract — the model's own `decision` — would have failed it.
-    assert restatement["decision"] == "push"
 
 
 def test_metric_sees_the_stale_source_withhold_production_applies() -> None:
@@ -845,7 +819,7 @@ def test_metric_sees_the_stale_source_withhold_production_applies() -> None:
     optimizer is rewarded for an action production would not have taken.
     """
 
-    pushed = _metric_verdict(decision="push")
+    pushed = _metric_verdict()
     fresh = _metric_gold(policy_metric={"gate": {"source_age_s": 2}})
     stale = _metric_gold(policy_metric={"gate": {"source_age_s": 16 * 3600}})
 
@@ -868,8 +842,20 @@ def test_metric_hard_gates_cannot_be_averaged_away_by_retention_anchors() -> Non
         production_judgment=_judgment(),
     )
     # Four accepted dimensions agree, but the reader never gets a fact the reviewer marked `must_push`.
-    missed = _metric_verdict(event_type="noise", magnitude=0, actionable=False, decision="drop")
-    result = _score(gold, missed)
+    missed = _metric_verdict(magnitude=0)
+    result = _score(
+        gold,
+        missed,
+        relevance=_relevance(
+            impact_breadth="none",
+            tradability="contextual",
+            surprise="in_line",
+            development_delta="color_only",
+            channels=(),
+            affected_markets=(),
+            reader_value="background",
+        ),
+    )
     assert result.score == 0.0
     assert "must receive" in result.feedback
 
@@ -897,7 +883,6 @@ def test_factual_failure_must_be_repaired_against_evidence_not_merely_reworded()
     prediction = CandidatePrediction(
         verdict=changed,
         editorial=EditorialEnvelope.issue(
-            editorial_origin="model",
             relevance=_relevance(),
             taxonomy=news_taxonomy(),
         ),
@@ -1019,7 +1004,6 @@ def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback
     projection["gate"] = {**dict(projection["gate"]), "watchlist_symbols": ["ABC"]}
     gold = dataclasses.replace(gold, policy_metric=projection)
     editorial = EditorialEnvelope.issue(
-        editorial_origin="model",
         relevance=_relevance(
             reader_value="background",
             tradability="contextual",
@@ -1040,7 +1024,7 @@ def test_watchlist_objective_guard_action_never_becomes_event_semantics_feedback
 
 
 def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
-    receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v4")
+    receipt = _metric_receipt(accepted_review_metric, review_rubric_version="news_review_v6")
     assert receipt["weights"] == {
         "final_action": 0.45,
         "trade_relevance": 0.35,

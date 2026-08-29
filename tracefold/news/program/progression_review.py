@@ -19,7 +19,7 @@ from ..progression_review import (
 )
 from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, program_json_adapter
 
-PROGRESSION_REVIEW_VERSION = "news_progression_review_v3"
+PROGRESSION_REVIEW_VERSION = "news_progression_review_v4"
 PROGRESSION_REVIEW_MAX_CANDIDATES = 8
 PROGRESSION_REVIEW_MAX_TOKENS = 512
 PROGRESSION_REVIEW_MAX_CALLS = 2
@@ -132,7 +132,7 @@ class ProgressionReviewProgram(dspy.Module):  # type: ignore[misc]
             "model_binding": lm.model_binding,
         }
         self.identity_sha256 = canonical_sha(self._identity)
-        self.verifier_id = f"tracefold.news.progression_review_v3:{self.identity_sha256[:16]}"
+        self.verifier_id = f"tracefold.news.progression_review_v4:{self.identity_sha256[:16]}"
 
     @property
     def identity(self) -> dict[str, Any]:
@@ -154,14 +154,17 @@ class ProgressionReviewProgram(dspy.Module):  # type: ignore[misc]
             "current": {
                 "source_title": str(event.get("leader_title") or "")[:600],
                 "source_description": str(event.get("leader_description") or "")[:600],
+                "storyline_key": str(event.get("storyline_key") or "")[:160],
+                "comparison_title": str(event.get("comparison_title") or "")[:600],
                 "headline_zh": str(verdict.get("headline_zh") or "")[:120],
                 "why_zh": str(verdict.get("why_zh") or "")[:320],
-                "event_type": str(verdict.get("event_type") or "")[:32],
                 "symbols": [
                     str(asset.get("symbol") or "")[:32]
                     for asset in verdict.get("assets") or ()
                     if isinstance(asset, Mapping) and asset.get("symbol")
                 ][:6],
+                "magnitude": max(0, min(3, int(verdict.get("magnitude") or 0))),
+                "direction": str(verdict.get("direction") or "")[:32],
             },
             "candidates": visible_candidates,
         }
@@ -223,12 +226,17 @@ class ProgressionReviewProgram(dspy.Module):  # type: ignore[misc]
         return {
             "i": raw_i,
             "headline_zh": str(candidate.get("headline_zh") or "")[:120],
+            "why_zh": str(candidate.get("why_zh") or "")[:320],
+            "storyline_key": str(candidate.get("storyline_key") or "")[:160],
+            "comparison_title": str(candidate.get("comparison_title") or "")[:600],
+            "comparison_fingerprint": str(candidate.get("comparison_fingerprint") or "")[:128],
             "tier": str(candidate.get("tier") or "recency")[:32],
             "similarity": similarity,
             # Time becomes association evidence only after two same-target Telegram receipts resolve.
             "ago_min": None,
-            "event_type": str(candidate.get("event_type") or "")[:32],
             "symbols": [str(value)[:32] for value in candidate.get("symbols") or ()][:6],
+            "magnitude": max(0, min(3, int(candidate.get("magnitude") or 0))),
+            "direction": str(candidate.get("direction") or "")[:32],
         }
 
 

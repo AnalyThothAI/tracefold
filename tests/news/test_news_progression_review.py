@@ -56,7 +56,6 @@ def test_progression_verifier_confirms_only_a_named_candidate_and_uses_its_store
                     "tier": "storyline",
                     "similarity": 0.31,
                     "ago_min": 90,
-                    "event_type": "product",
                     "symbols": ["MU"],
                 }
             ],
@@ -67,7 +66,7 @@ def test_progression_verifier_confirms_only_a_named_candidate_and_uses_its_store
     assert review.candidate_i == 3
     assert review.candidate_headline_zh == "美光工会此前启动劳资协商"
     assert review.reason_zh == "同一工会行动从协商进入罢工投票，新增了明确比例。"
-    assert review.verifier_id.startswith("tracefold.news.progression_review_v3:")
+    assert review.verifier_id.startswith("tracefold.news.progression_review_v4:")
     assert len(lm.requests) == 1
     request = lm.requests[0]
     rendered = "\n".join(part.text for message in request.messages for part in message.parts if hasattr(part, "text"))
@@ -105,7 +104,6 @@ def test_progression_verifier_compacts_a_long_multiline_reason_before_it_reaches
                     "tier": "recency",
                     "similarity": 0.5,
                     "ago_min": 5,
-                    "event_type": "other",
                     "symbols": [],
                 }
             ],
@@ -129,14 +127,12 @@ def test_taxonomy_cannot_change_the_progression_review_request() -> None:
                 verdict={
                     "headline_zh": "当前新闻",
                     "why_zh": "当前影响",
-                    "event_type": "regulation",
                     "taxonomy": {"event_family": event_family},
                 },
                 candidates=[
                     {
                         "i": 0,
                         "headline_zh": "候选新闻",
-                        "event_type": "regulation",
                         "event_family": event_family,
                         "symbols": [],
                     }
@@ -150,7 +146,7 @@ def test_taxonomy_cannot_change_the_progression_review_request() -> None:
         )
 
     assert rendered[0] == rendered[1]
-    assert '"event_type":"regulation"' in rendered[0]
+    assert "taxonomy" not in rendered[0]
     assert "event_family" not in rendered[0]
 
 

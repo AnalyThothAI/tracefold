@@ -20,10 +20,10 @@
   enums, symbols, content hashes, opaque identifiers, stable keys — has been
   replaced by a content hash, and a test scans the committed bytes for the shape
   of human language rather than for a list of key names. The allowlist direction
-  is the requirement, not a preference: `tests/support/audit_replay_corpus.py`
-  first enumerated the text keys instead and shipped 60 reader-facing Chinese
-  cards under a `title_zh` nobody had listed, guarded by an assertion that was a
-  tautology for a key-based redactor. Anything richer than that — raw evidence,
+  is the requirement, not a preference. The pre-hard-cut
+  `tests/fixtures/news_audit_replay_corpus_v2.json` remains only as explicitly
+  allowlisted immutable archive evidence; no ordinary test or current runtime
+  decodes it. Anything richer than that — raw evidence,
   prompts, cards, reviewer prose — stays out of the repository. The database
   copies are content-addressed audit evidence and append-only. Program artifact exports are canonical JSON
   but carry proprietary optimizer-written instructions, so “no credentials”
@@ -243,7 +243,7 @@ epoch; `0293`, `0294` and `0295` append the corrected semantic, expert-quality
 and D-generation `program_v2`–`program_v4` epochs. `0298` appends `program_v5`
 for factory v3 and candidate-conditioned ToldContext. `0301` preserves all
 history and appends `program_v6` for factory/executable v4, policy v10, review
-v4 and metric/compiler protocol v3. `0303` appends the current `program_v7` for
+v4 and metric/compiler protocol v3. `0303` appends the then-current `program_v7` for
 factory/executable v5 after the Program/Learning package split. Issue #190
 reissues the sole v7 root when canonical identity starts rejecting
 NaN/Infinity, and Issue #193 reissues it again as the single-document strategy

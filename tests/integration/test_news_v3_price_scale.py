@@ -70,10 +70,14 @@ def _seed(conn: Any) -> None:
     )
     conn.execute(
         """
-        INSERT INTO news_events (event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title,
-                                 leader_title, focus_fact_id, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+        INSERT INTO news_events (event_id, leader_item_id, dedupe_family, event_kind,
+                                 comparison_fingerprint, comparison_title,
+                                 leader_title, focus_fact_id, focus_fact_text, focus_fact_context,
+                                 focus_fact_method, focus_span_start, focus_span_end,
+                                 opened_at_ms, last_member_at_ms, expires_at_ms, admission,
                                  storyline_key, ingest_mode, created_at_ms, updated_at_ms)
         SELECT 'e-' || g, 'i-' || g, 'general', 'news', 'f-' || g, 'c', 'leader ' || g, 'fact:' || g,
+               'leader ' || g, '', 'whole_item', 0, length('leader ' || g),
                %s + g * %s::bigint, %s + g * %s::bigint, %s + g * %s::bigint + 3600000, 'candidate',
                'asset:S' || (g %% 500), 'live', %s, %s
           FROM generate_series(1, %s) AS g
@@ -89,23 +93,78 @@ def _seed(conn: Any) -> None:
     )
     conn.execute(
         """
-        INSERT INTO news_verdicts (event_id, stage, policy_version, rule_baseline_decision, final_decision,
-                                   verdict, degraded, created_at_ms)
-        SELECT 'e-' || g, 'triage', 'v6', 'push',
-               (ARRAY['push', 'drop', 'throttled', 'escalate'])[1 + g %% 4],
+        WITH base AS (
+          SELECT g,
+                 (ARRAY['push', 'drop', 'throttled', 'escalate'])[1 + g %% 4] AS final_decision,
+                 jsonb_build_object(
+                   'novelty', 'new_fact',
+                   'restates', -1,
+                   'assets', jsonb_build_array(
+                     jsonb_build_object('symbol', 'S' || (g %% 500), 'market_type', NULL, 'role', 'primary'),
+                     jsonb_build_object('symbol', 'T' || (g %% 500), 'market_type', NULL, 'role', 'primary')
+                   ),
+                   'direction', (ARRAY['bullish', 'bearish', 'neutral'])[1 + g %% 3],
+                   'scope', 'single_name',
+                   'magnitude', g %% 4,
+                   'confidence', 1.0,
+                   'audience', 'none',
+                   'headline_zh', '容量测试 ' || g,
+                   'why_zh', ''
+                 ) AS verdict
+            FROM generate_series(1, %s) AS g
+        ), judgment AS (
+          SELECT *, jsonb_build_object(
+                   'judgment_contract_version', 'news_judgment_v2',
+                   'origin', 'degraded',
+                   'verdict', verdict,
+                   'decision', jsonb_build_object(
+                     'final', final_decision,
+                     'override_rule', 'capacity_fixture',
+                     'throttled_by', NULL,
+                     'rule_baseline', 'push',
+                     'watchlist_hits', '[]'::jsonb,
+                     'seen_similarity', NULL,
+                     'seen_against', -1,
+                     'seen_scope', ''
+                   ),
+                   'error_code', 'capacity_fixture'
+                 ) AS judgment_atom
+            FROM base
+        ), addressed AS (
+          SELECT *,
+                 encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex') AS verdict_sha,
+                 encode(digest(
+                   convert_to(news_canonical_jsonb(judgment_atom), 'UTF8'), 'sha256'
+                 ), 'hex') AS judgment_sha
+            FROM judgment
+        )
+        INSERT INTO news_verdicts (
+          event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+          rule_baseline_decision, final_decision, override_rule, verdict, editorial,
+          scored_judgment_sha256, runtime_manifest_sha, model, program_version, program_sha256,
+          degraded, error_code, trace, evidence_version, evidence_sha256, focus_fact_id, created_at_ms
+        )
+        SELECT 'e-' || g, 'triage', 'news_triage_policy_v11', 'news_judgment_v2', 'degraded',
+               'push', final_decision, 'capacity_fixture', verdict, NULL,
+               judgment_sha, repeat('b', 64), NULL, 'news_semantic_program_v8', repeat('a', 64),
+               true, 'capacity_fixture',
                jsonb_build_object(
-                 'direction', (ARRAY['bullish', 'bearish', 'neutral'])[1 + g %% 3],
-                 'magnitude', g %% 4,
-                 'event_type', (ARRAY['listing', 'hack', 'regulation', 'product'])[1 + g %% 4],
-                 'assets', jsonb_build_array(
-                   jsonb_build_object('symbol', 'S' || (g %% 500), 'role', 'primary'),
-                   jsonb_build_object('symbol', 'T' || (g %% 500), 'role', 'primary')
-                 )
+                 'judgment_contract_version', 'news_judgment_v2',
+                 'judgment_origin', 'degraded',
+                 'judgment_sha256', judgment_sha,
+                 'verdict_sha256', verdict_sha,
+                 'runtime_manifest_sha', repeat('b', 64),
+                 'evidence_version', 1,
+                 'evidence_sha256', repeat('e', 64),
+                 'focus_fact_id', 'fact:' || g,
+                 'told', '[]'::jsonb,
+                 'told_count', 0,
+                 'judgment', judgment_atom
                ),
-               false, %s + g * %s::bigint
-          FROM generate_series(1, %s) AS g
+               1, repeat('e', 64), 'fact:' || g, %s + g * %s::bigint
+          FROM addressed
         """,
-        (window_start, step, EVENTS),
+        (EVENTS, window_start, step),
     )
     conn.execute(
         """

@@ -34,19 +34,15 @@ ROOT = Path(__file__).resolve().parents[2]
 OBJECTIVE_MODULE = ROOT / "tracefold" / "news" / "learning" / "objective.py"
 
 _VERDICT: dict[str, Any] = {
-    "decision": "push",
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "filing",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "direction": "bullish",
     "scope": "single_name",
     "magnitude": 2,
-    "actionable": True,
     "confidence": 0.8,
     "audience": "us_equity",
     "headline_zh": "特斯拉发布重大更新",
-    "title_zh": "",
     "why_zh": "时间表发生变化。",
 }
 
@@ -92,7 +88,7 @@ def _episode(
         "leader_description": "The filing changes the expected timetable.",
         "leader_url": f"https://example.invalid/{index}",
         "reporting_origin": "wire",
-        "family": "general",
+        "dedupe_family": "general",
         "admission": "candidate",
         "queue_priority": "normal",
         "asset_class": "equity_or_commodity",
@@ -139,7 +135,7 @@ def _episode(
         if policy_metric is not None
         else {
             "gate": {"grounded_assets": ["TSLA"], "watchlist_symbols": [], "admission": "candidate"},
-            "storyline": {"title": f"Tesla files update {index}", "family": "general"},
+            "storyline": {"title": f"Tesla files update {index}", "dedupe_family": "general"},
             "seen": list(seen_rows),
             "told": [],
             **_policy(),
@@ -152,10 +148,11 @@ def _told_row(event_id: str, *, at_ms: int) -> dict[str, Any]:
         "event_id": event_id,
         "at_ms": at_ms,
         "storyline_key": "asset:TSLA",
-        "event_type": "filing",
+        "dedupe_family": "general",
         "magnitude": 2,
         "direction": "bullish",
         "headline_zh": "此前已告知读者的同一事实",
+        "why_zh": "此前事实已送达。",
         "assets": ["TSLA"],
         "comparison_title": "tesla files update prior",
     }
@@ -486,7 +483,7 @@ def test_an_unreplayable_novelty_target_blocks_the_run_like_any_other_target() -
                 seen_rows=({"event_id": "event-prior"},),
                 policy_metric={
                     "gate": {"grounded_assets": ["TSLA"], "watchlist_symbols": [], "admission": "candidate"},
-                    "storyline": {"title": "broken", "family": "general"},
+                    "storyline": {"title": "broken", "dedupe_family": "general"},
                     "seen": [{"event_id": "event-prior"}],
                     "told": [],
                 },
@@ -605,7 +602,7 @@ def test_the_mirrored_hard_gate_ladder_agrees_with_the_metric_itself() -> None:
             should_push="uncertain",
             policy_metric={
                 "gate": {"grounded_assets": ["AAPL"], "watchlist_symbols": [], "admission": "candidate"},
-                "storyline": {"title": "Tesla files update 7", "family": "general"},
+                "storyline": {"title": "Tesla files update 7", "dedupe_family": "general"},
                 "seen": [],
                 "told": [],
                 **_policy(),
@@ -874,7 +871,7 @@ def test_an_unverifiable_policy_projection_blocks_before_the_budget_is_spent() -
         production_magnitude=0,
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "watchlist_symbols": [], "admission": "candidate"},
-            "storyline": {"title": "broken", "family": "general"},
+            "storyline": {"title": "broken", "dedupe_family": "general"},
             "seen": [],
             "told": [],
         },
@@ -971,7 +968,7 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
         judge=_Judge(),
         max_metric_calls=4,
         seed=129,
-        review_rubric_version="news_review_v4",
+        review_rubric_version="news_review_v6",
         compile_fn=_capturing_optimize,
     )
 

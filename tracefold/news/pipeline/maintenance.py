@@ -265,7 +265,7 @@ class JanitorLoop:
                 self.bus,
                 self.db,
                 event_id=str(card["event_id"]),
-                family=str(card["family"]),
+                dedupe_family=str(card["dedupe_family"]),
                 queue_priority=str(card["queue_priority"]),
                 trace_id=str(card.get("trace_id") or new_trace_id()),
             )

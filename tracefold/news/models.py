@@ -14,8 +14,8 @@ GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses
 # reader actions from the typed trade-relevance contract plus objective guards.
-TRIAGE_POLICY_VERSION = "news_triage_policy_v10"
-DELIVERY_CARD_VERSION = "news_delivery_card_v10"
+TRIAGE_POLICY_VERSION = "news_triage_policy_v11"
+DELIVERY_CARD_VERSION = "news_delivery_card_v11"
 
 Admission = Literal[
     "candidate",
@@ -198,14 +198,13 @@ class TriageAsset(BaseModel):
 
 
 class TriageVerdict(BaseModel):
-    """Structured output of the Triage call. `decision` is the model's intent only.
+    """Current shared semantic and reader-copy atom.
 
     ``novelty`` is judged against the told ledger in the status bar (cards the reader already received) and comes
     first in the schema on purpose: the model fills the tool call in property order, and a required field placed
-    last was the one it dropped (issue #61 probe: 7/44 hard inputs omitted it). It stays *required* in the tool
-    schema (no default); verdicts stored before v7 are replayed with ``novelty="new_fact"``. ``restates`` is an
-    integer sentinel (-1 = none) rather than ``int | None`` because the anyOf/null shape raised the empty-tool-call
-    rate.
+    last was the one it dropped (issue #61 probe: 7/44 hard inputs omitted it). ``restates`` is an integer sentinel
+    (-1 = none) rather than ``int | None`` because the anyOf/null shape raised the empty-tool-call rate. Semantic
+    taxonomy lives only in ``EditorialEnvelope.taxonomy`` and every action lives only in ``DecisionResult``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -216,41 +215,13 @@ class TriageVerdict(BaseModel):
     restates: int = Field(
         default=-1, ge=-1, description="index i of the told entry this event restates; -1 unless novelty=restatement"
     )
-    event_type: Literal[
-        "listing",
-        "delisting",
-        "filing",
-        "regulation",
-        "hack",
-        "exploit",
-        "partnership",
-        "funding",
-        "macro",
-        "rates",
-        "oi_spike",
-        "liquidation",
-        "whale",
-        "earnings",
-        "product",
-        "rumor",
-        "noise",
-    ]
     assets: list[TriageAsset] = Field(default_factory=list, max_length=8)
     direction: Literal["bullish", "bearish", "neutral", "unclear"]
     scope: Literal["macro", "sector", "single_name"]
     magnitude: int = Field(ge=0, le=3)
-    actionable: bool
     confidence: float = Field(ge=0.0, le=1.0)
-    decision: Literal["push", "drop", "escalate"]
     audience: Audience = "none"
     headline_zh: str = Field(min_length=1, max_length=60)
-    # Empty means "same as headline_zh" (#101). The current Program no longer asks ReaderCard to generate this
-    # duplicate field and always emits the sentinel; historical verdicts with a populated value remain readable.
-    title_zh: str = Field(
-        default="",
-        max_length=160,
-        description="legacy compatibility sentinel; the current Program always leaves it empty",
-    )
     why_zh: str = Field(default="", max_length=140)
 
 
@@ -262,17 +233,6 @@ def base_symbol(symbol: str) -> str:
     """
 
     return str(symbol or "").upper().replace("XYZ-", "")
-
-
-def display_title(verdict: Mapping[str, Any]) -> str:
-    """The Chinese title an operator surface should show for a verdict.
-
-    ``title_zh`` empty means "same as ``headline_zh``" (#101). The current Program always emits that sentinel;
-    historical populated values remain readable. Every console/API read site calls this so the fallback rule
-    lives in one place.
-    """
-
-    return str(verdict.get("title_zh") or verdict.get("headline_zh") or "")
 
 
 def json_ready(value: Any) -> Any:
@@ -313,6 +273,5 @@ __all__ = [
     "TriageAsset",
     "TriageVerdict",
     "base_symbol",
-    "display_title",
     "json_ready",
 ]

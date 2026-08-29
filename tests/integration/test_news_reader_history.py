@@ -5,9 +5,11 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.models import TriageVerdict
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.reader_history import build_reader_history
 
 pytestmark = pytest.mark.integration
@@ -59,43 +61,54 @@ def _persist_triage_verdict(
     event_id: str,
     at_ms: int,
     symbol: str,
-    policy_version: str = "news_triage_policy_test",
 ) -> None:
     evidence = repos.news.latest_evidence_snapshot(event_id)
     assert evidence is not None
     verdict = TriageVerdict(
         novelty="new_fact",
-        event_type="filing",
         assets=[{"symbol": symbol, "role": "primary"}],
         direction="bearish",
         scope="single_name",
         magnitude=2,
-        actionable=True,
         confidence=0.9,
-        decision="push",
         headline_zh="阿里巴巴配售新股",
         why_zh="",
     )
     judgment = scored_judgment(verdict)
+    runtime_manifest_sha = "b" * 64
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+    }
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=policy_version,
-        model_decision="push",
+        policy_version=TRIAGE_POLICY_VERSION,
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin="model",
         rule_baseline_decision="push",
         final_decision="push",
         override_rule="trade_relevance_realtime",
         throttled_by=None,
         verdict=verdict.model_dump(mode="json"),
-        editorial=judgment.editorial.model_dump(mode="json"),
-        scored_judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha="b" * 64,
+        model_editorial=judgment.editorial.model_dump(mode="json"),
+        judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
         model="test",
-        program_version="news_semantic_program_test",
+        program_version=SEMANTIC_PROGRAM_VERSION,
         program_sha256="a" * 64,
         degraded=False,
         error_code=None,
-        trace={},
+        trace=trace,
         evidence_version=int(evidence["evidence_version"]),
         evidence_sha256=str(evidence["evidence_sha256"]),
         focus_fact_id=str(evidence["focus_fact_id"]),
@@ -243,14 +256,14 @@ def test_evaluator_does_not_recall_a_verdict_only_asset_that_production_cannot_j
                 "storyline_key": "asset:OTHER",
                 "comparison_title": "unrelated issuer routine notice",
                 "comparison_fingerprint": "prior-fingerprint",
-                "family": "general",
+                "dedupe_family": "general",
                 "grounded_assets": [],
                 "assets": ["BABA"],
                 "canonical_assets": [],
-                "event_type": "filing",
                 "magnitude": 2,
                 "direction": "bearish",
                 "headline_zh": "无关发行人提交例行文件",
+                "why_zh": "",
             },
         ),
         now_ms=now_ms,
@@ -315,14 +328,6 @@ def test_reader_history_exact_target_requires_a_settled_sent_receipt(conn) -> No
             (states["ambiguous"],),
         )
         conn.execute("DELETE FROM news_deliveries WHERE event_id=%s", (states["decision-only"],))
-        _persist_triage_verdict(
-            repos,
-            event_id=states["sent"],
-            at_ms=now_ms - 1,
-            symbol="NVDA",
-            policy_version="news_triage_policy_test_second_route",
-        )
-
     history = repos.news.reader_history(event_id=current, now_ms=now_ms)
 
     assert history.recent_seen_rows == ()

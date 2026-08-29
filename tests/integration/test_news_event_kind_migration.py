@@ -14,7 +14,7 @@ from tests.postgres_test_utils import connect_postgres_test, reset_postgres_sche
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events.facts import extract_fact_units
-from tracefold.news.events.identity import event_family
+from tracefold.news.events.identity import dedupe_family
 from tracefold.news.events.titles import extract_title
 from tracefold.news.opennews import OPENNEWS_SOURCE_ID, parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item, item_identity
@@ -426,7 +426,7 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
                 title=title,
                 fact_id=fact.fact_id,
                 comparison_fingerprint=hashlib.sha256(comparison.encode()).hexdigest(),
-                family=event_family(comparison),
+                family=dedupe_family(comparison),
             )
         legacy_collision_record_id = "2881004"
         legacy_collision_title = (
@@ -463,7 +463,7 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
             title=legacy_collision_title,
             fact_id=legacy_collision_fact.fact_id,
             comparison_fingerprint=hashlib.sha256(legacy_collision_comparison.encode()).hexdigest(),
-            family=event_family(legacy_collision_comparison),
+            family=dedupe_family(legacy_collision_comparison),
         )
         for event_id, admission in {
             "typed-liquidation": "candidate",
@@ -592,7 +592,7 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         _upgrade("head")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
         assert {
             str(row["event_id"]): str(row["event_kind"])
             for row in conn.execute("SELECT event_id, event_kind FROM news_events ORDER BY event_id").fetchall()

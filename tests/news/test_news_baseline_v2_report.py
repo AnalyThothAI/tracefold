@@ -33,7 +33,7 @@ _CARD: dict[str, Any] = {
     "leader_description": "",
     "leader_url": "https://example.invalid/1",
     "reporting_origin": "wire",
-    "family": "general",
+    "dedupe_family": "general",
     "admission": "candidate",
     "queue_priority": "normal",
     "asset_class": "equity_or_commodity",
@@ -58,18 +58,14 @@ _CARD: dict[str, Any] = {
 _VERDICT: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "product",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
-    "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
-    "decision": "push",
     "confidence": 0.9,
     "headline_zh": "特斯拉承诺在得州新增一条电池产线",
     "why_zh": "新增产能直接改变该名字的交付预期",
-    "title_zh": "",
 }
 
 

@@ -7,7 +7,19 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.liquidations import PROGRAM_VERSION as LIQUIDATION_PROGRAM_VERSION
+from tracefold.news.liquidations import TRIAGE_POLICY_VERSION as LIQUIDATION_TRIAGE_POLICY_VERSION
+from tracefold.news.liquidations import judge as judge_liquidation
+from tracefold.news.liquidations import parse_liquidation
+from tracefold.news.liquidations import trace as liquidation_metadata
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
+from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
+from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_judgment_trace, oi_parse_failure
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.source_contracts import (
     EVENT_KINDS,
     SOURCE_CONTRACT_CLASSIFIER_VERSION,
@@ -59,7 +71,7 @@ def _event(
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,
-        family="general",
+        dedupe_family="general",
         event_kind=event_kind,
         comparison_fingerprint="same-fingerprint",
         comparison_title="same comparison title",
@@ -93,30 +105,204 @@ def _event(
 
 def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None:
     evidence = news.latest_evidence_snapshot(event_id)
+    event_kind = news.event_admission(event_id)["event_kind"]
+    if event_kind == "news":
+        judgment = scored_judgment(
+            TriageVerdict(
+                novelty="new_fact",
+                assets=[],
+                direction="neutral",
+                scope="single_name",
+                magnitude=0,
+                confidence=1.0,
+                headline_zh="测试新闻判断",
+            )
+        )
+        origin = "model"
+        judgment_sha256 = judgment.scored_judgment_sha256
+        model_editorial = judgment.editorial.model_dump(mode="json")
+        model = "test"
+        program_version = SEMANTIC_PROGRAM_VERSION
+        policy_version = TRIAGE_POLICY_VERSION
+        trace: dict[str, Any] = {"editorial_sha256": judgment.editorial.editorial_sha256}
+    elif event_kind == "oi":
+        judgment, lane_trace = oi_parse_failure("invalid OI frame", provider_source="opennews")
+        origin = "oi"
+        judgment_sha256 = judgment.judgment_sha256
+        model_editorial = None
+        model = None
+        program_version = OI_PROGRAM_VERSION
+        policy_version = TRIAGE_POLICY_VERSION
+        trace = {"oi_signal": lane_trace, "judgment": judgment.judgment_atom}
+        error_code = "oi_parse_failed"
+    else:
+        fact = parse_liquidation(
+            "BTC Large Short Liquidation 1M at $100000",
+            item_id=f"{event_id}-item",
+            fact_id=f"fact:{event_id}",
+            provider_source="binance",
+            event_at_ms=NOW,
+            received_at_ms=NOW,
+        )
+        assert fact is not None
+        judgment = judge_liquidation(fact)
+        origin = "liquidation"
+        judgment_sha256 = judgment.judgment_sha256
+        model_editorial = None
+        model = None
+        program_version = LIQUIDATION_PROGRAM_VERSION
+        policy_version = LIQUIDATION_TRIAGE_POLICY_VERSION
+        trace = {"liquidation": liquidation_metadata(fact), "judgment": judgment.judgment_atom}
+    runtime_manifest_sha = "b" * 64
+    trace.update(
+        {
+            "judgment_contract_version": judgment.judgment_contract_version,
+            "judgment_origin": origin,
+            "judgment_sha256": judgment_sha256,
+            "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
+            "runtime_manifest_sha": runtime_manifest_sha,
+            "evidence_version": int(evidence["evidence_version"]),
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+            "focus_fact_id": str(evidence["focus_fact_id"]),
+            "told": [],
+            "told_count": 0,
+        }
+    )
     news.insert_verdict(
         event_id=event_id,
         stage="triage",
-        policy_version=f"policy:{event_id}",
-        model_decision=None,
-        rule_baseline_decision="drop",
-        final_decision="drop",
-        override_rule=None,
-        throttled_by=None,
-        verdict={},
-        editorial={},
-        scored_judgment_sha256="a" * 64,
-        runtime_manifest_sha="b" * 64,
-        model=None,
-        program_version="news_test_v1",
+        policy_version=policy_version,
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin=origin,
+        rule_baseline_decision=judgment.decision.rule_baseline if origin != "model" else "drop",
+        final_decision=judgment.decision.final if origin != "model" else "drop",
+        override_rule=judgment.decision.override_rule if origin != "model" else None,
+        throttled_by=judgment.decision.throttled_by if origin != "model" else None,
+        verdict=judgment.verdict.model_dump(mode="json"),
+        model_editorial=model_editorial,
+        judgment_sha256=judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
+        model=model,
+        program_version=program_version,
         program_sha256="c" * 64,
         degraded=False,
         error_code=error_code,
-        trace={},
+        trace=trace,
         evidence_version=int(evidence["evidence_version"]),
         evidence_sha256=str(evidence["evidence_sha256"]),
         focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=NOW,
     )
+
+
+def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_identity(conn) -> None:
+    repos = repositories_for_connection(conn)
+    news = repos.news
+    policy = OiPolicy()
+    signal = OiSignal(
+        symbol="BTC",
+        direction="rise",
+        oi_change_bps=455,
+        oi_value_usd=32_170_000,
+        whale_long_profit_bps=8_021,
+        whale_oi_ratio_bps=10_071,
+    )
+    judgment = evaluate_oi(signal, earlier_eligible_count=0, policy=policy)
+    with repos.transaction():
+        news.register_agent_runtime_manifest(
+            manifest_sha="d" * 64,
+            stable_bundle_sha="f" * 64,
+            envelope_sha256="e" * 64,
+            artifact_schema_version="news_program_artifact_v1",
+            program_version=SEMANTIC_PROGRAM_VERSION,
+            program_sha256="c" * 64,
+            candidate_shas=(),
+            image_digest="sha256:test",
+            runtime_revision="projection-test",
+            now_ms=NOW,
+        )
+        _item(news, "projection-oi-item")
+        _event(news, "projection-oi-event", "projection-oi-item", "oi")
+        evidence = news.latest_evidence_snapshot("projection-oi-event")
+        news.insert_oi_signal(
+            event_id="projection-oi-event",
+            metric_version=OI_METRIC_VERSION,
+            symbol=signal.symbol,
+            direction=signal.direction,
+            oi_change_bps=signal.oi_change_bps,
+            oi_value_usd=signal.oi_value_usd,
+            whale_long_profit_bps=signal.whale_long_profit_bps,
+            whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
+            observed_at_ms=NOW,
+            rank_in_window=judgment.rank_in_window,
+            now_ms=NOW,
+        )
+        judgment_sha256 = judgment.judgment_sha256
+        runtime_manifest_sha = "b" * 64
+        trace = {
+            "judgment_contract_version": judgment.judgment_contract_version,
+            "judgment_origin": "oi",
+            "judgment_sha256": judgment_sha256,
+            "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
+            "runtime_manifest_sha": runtime_manifest_sha,
+            "evidence_version": int(evidence["evidence_version"]),
+            "evidence_sha256": str(evidence["evidence_sha256"]),
+            "focus_fact_id": str(evidence["focus_fact_id"]),
+            "told": [],
+            "told_count": 0,
+            "policy": policy.as_dict(),
+            "oi_signal": oi_judgment_trace(judgment, policy=policy),
+            "judgment": judgment.judgment_atom,
+        }
+        news.insert_verdict(
+            event_id="projection-oi-event",
+            stage="triage",
+            policy_version=TRIAGE_POLICY_VERSION,
+            judgment_contract_version=judgment.judgment_contract_version,
+            judgment_origin="oi",
+            rule_baseline_decision=judgment.decision.rule_baseline,
+            final_decision=judgment.decision.final,
+            override_rule=judgment.decision.override_rule,
+            throttled_by=judgment.decision.throttled_by,
+            verdict=judgment.verdict.model_dump(mode="json"),
+            model_editorial=None,
+            judgment_sha256=judgment_sha256,
+            runtime_manifest_sha=runtime_manifest_sha,
+            model=None,
+            program_version=OI_PROGRAM_VERSION,
+            program_sha256="c" * 64,
+            degraded=False,
+            error_code=None,
+            trace=trace,
+            evidence_version=int(evidence["evidence_version"]),
+            evidence_sha256=str(evidence["evidence_sha256"]),
+            focus_fact_id=str(evidence["focus_fact_id"]),
+            now_ms=NOW,
+        )
+
+    def projected() -> list[dict[str, Any]]:
+        return news.trade_candidate_oi_rows(
+            metric_version=OI_METRIC_VERSION,
+            after_created_at_ms=NOW - 1,
+            until_created_at_ms=NOW,
+        )
+
+    assert [(row["symbol"], row["rank_in_window"], row["source_rule"]) for row in projected()] == [
+        ("BTC", 1, "opening_move_with_whale_concentration")
+    ]
+    conn.execute("UPDATE news_oi_signals SET rank_in_window = 2 WHERE event_id = 'projection-oi-event'")
+    assert projected() == []
+    conn.execute(
+        "UPDATE news_oi_signals SET rank_in_window = 1, oi_value_usd = oi_value_usd + 1 "
+        "WHERE event_id = 'projection-oi-event'"
+    )
+    assert projected() == []
+    conn.execute(
+        "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "
+        "source_strategy_id = '1019', source_contract_version = 'opennews_oi_source_v1', "
+        "measurement_window_ms = 300000 WHERE event_id = 'projection-oi-event'"
+    )
+    assert projected() == []
 
 
 def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadata(conn) -> None:
@@ -175,19 +361,21 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
         _event(news, "oi-event", "oi-item", "oi")
 
     assert (
-        news.find_exact_event(family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW)[
+        news.find_exact_event(dedupe_family="general", event_kind="news", fingerprint="same-fingerprint", now_ms=NOW)[
             "event_id"
         ]
         == "news-event"
     )
     assert (
-        news.find_exact_event(family="general", event_kind="oi", fingerprint="same-fingerprint", now_ms=NOW)["event_id"]
+        news.find_exact_event(dedupe_family="general", event_kind="oi", fingerprint="same-fingerprint", now_ms=NOW)[
+            "event_id"
+        ]
         == "oi-event"
     )
     assert (
         news.find_artifact_event(
             source_artifact_id="artifact:shared",
-            family="general",
+            dedupe_family="general",
             event_kind="news",
             fingerprint="same-fingerprint",
             item_id="new-item",
@@ -198,7 +386,7 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
     assert (
         news.find_artifact_event(
             source_artifact_id="artifact:shared",
-            family="general",
+            dedupe_family="general",
             event_kind="oi",
             fingerprint="same-fingerprint",
             item_id="new-item",
@@ -208,11 +396,15 @@ def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
     )
     assert [
         row["event_id"]
-        for row in news.find_band_candidates(family="general", event_kind="news", band_keys=("same-band",), now_ms=NOW)
+        for row in news.find_band_candidates(
+            dedupe_family="general", event_kind="news", band_keys=("same-band",), now_ms=NOW
+        )
     ] == ["news-event"]
     assert [
         row["event_id"]
-        for row in news.find_band_candidates(family="general", event_kind="oi", band_keys=("same-band",), now_ms=NOW)
+        for row in news.find_band_candidates(
+            dedupe_family="general", event_kind="oi", band_keys=("same-band",), now_ms=NOW
+        )
     ] == ["oi-event"]
     assert news.event_card("oi-event")["event_kind"] == "oi"
     assert news.event_admission("oi-event") == {
@@ -279,14 +471,18 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
         outcome: str | None = None,
     ) -> dict[str, Any]:
         return news.list_feed(
-            family=None,
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
             admission=None,
-            decision=None,
+            final_decision=None,
             search=None,
             limit=limit,
             cursor=cursor,
             outcome=outcome,
-            channels=channels,
+            event_kind=channels,
             now_ms=NOW + 1,
         )
 
@@ -357,9 +553,14 @@ def test_terminal_delivery_without_a_verdict_is_held_in_both_row_and_tab_partiti
         )
 
     common = dict(
-        family=None,
+        event_family=None,
+        change_state=None,
+        assertion_status=None,
+        source_authority=None,
+        subject_code=None,
         admission=None,
-        decision=None,
+        final_decision=None,
+        event_kind=None,
         search=None,
         limit=20,
         cursor=None,

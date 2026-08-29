@@ -18,28 +18,43 @@ import { describe, expect, it } from "vitest";
 
 const baseFilters = {
   admission: null,
-  decision: null,
+  assertionStatuses: [],
+  changeStates: [],
   directions: [],
-  family: null,
+  eventFamilies: [],
+  eventKinds: [],
+  finalDecisions: [],
   hours: null,
   outcome: null,
-  channels: [],
   q: "",
+  sourceAuthorities: [],
+  subjectCodes: [],
   symbol: null,
 } as const;
 
 describe("useNewsFeedWithToken", () => {
   it("separates Feed cache identities by every server filter", () => {
     const latest = queryKeys.newsFeed(baseFilters);
-    const pushed = queryKeys.newsFeed({ ...baseFilters, decision: "push" });
+    const pushed = queryKeys.newsFeed({ ...baseFilters, finalDecisions: ["push"] });
 
     expect(latest).not.toEqual(pushed);
     expect(latest[0]).toBe("news-feed");
-    expect(pushed[4]).toBe("push");
+    expect(pushed[7]).toBe("push");
     const held = queryKeys.newsFeed({ ...baseFilters, hours: 6, outcome: "held" });
     expect(held).not.toEqual(latest);
-    expect(held[6]).toBe("held");
-    expect(held[7]).toBe("6");
+    expect(held[11]).toBe("held");
+    expect(held[12]).toBe("6");
+    for (const filtered of [
+      { ...baseFilters, eventFamilies: ["financial_results"] as const },
+      { ...baseFilters, changeStates: ["announced"] as const },
+      { ...baseFilters, assertionStatuses: ["confirmed"] as const },
+      { ...baseFilters, sourceAuthorities: ["issuer_first_party"] as const },
+      { ...baseFilters, subjectCodes: ["medtop:04000000"] as const },
+      { ...baseFilters, eventKinds: ["news"] as const },
+      { ...baseFilters, directions: ["bullish"] as const },
+    ]) {
+      expect(queryKeys.newsFeed(filtered)).not.toEqual(latest);
+    }
   });
 
   it("reads the Event Feed endpoint with exact server filter names", async () => {
@@ -49,8 +64,11 @@ describe("useNewsFeedWithToken", () => {
         const params = new URL(request.url).searchParams;
         for (const name of [
           "admission",
-          "decision",
-          "family",
+          "assertion_status",
+          "change_state",
+          "event_family",
+          "event_kind",
+          "final_decision",
           "limit",
           "q",
           "symbol",
@@ -58,7 +76,8 @@ describe("useNewsFeedWithToken", () => {
           "outcome",
           "hours",
           "direction",
-          "channel",
+          "source_authority",
+          "subject_code",
         ]) {
           observed[name] = params.get(name);
         }
@@ -69,13 +88,17 @@ describe("useNewsFeedWithToken", () => {
       () =>
         useNewsFeedWithToken("token", {
           admission: "candidate",
-          decision: "push",
+          assertionStatuses: ["confirmed"],
+          changeStates: ["announced"],
           directions: ["bullish", "neutral"],
-          family: "general",
+          eventFamilies: ["financial_results"],
+          eventKinds: ["news"],
+          finalDecisions: ["push"],
           hours: 24,
           outcome: "pushed",
-          channels: ["news"],
           q: "bitcoin",
+          sourceAuthorities: ["issuer_first_party"],
+          subjectCodes: ["medtop:04000000"],
           symbol: "BTC",
         }),
       { wrapper: wrapper() },
@@ -83,15 +106,19 @@ describe("useNewsFeedWithToken", () => {
     await waitFor(() => expect(result.current.data?.events).toHaveLength(1));
     expect(observed).toEqual({
       admission: "candidate",
+      assertion_status: "confirmed",
+      change_state: "announced",
       cursor: null,
-      decision: "push",
       direction: "bullish,neutral",
-      family: "general",
+      event_family: "financial_results",
+      event_kind: "news",
+      final_decision: "push",
       hours: "24",
       limit: "25",
       outcome: "pushed",
-      channel: "news",
       q: "bitcoin",
+      source_authority: "issuer_first_party",
+      subject_code: "medtop:04000000",
       symbol: "BTC",
     });
     expect(result.current.data?.events[0].triage?.final_decision).toBe("push");
