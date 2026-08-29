@@ -123,55 +123,23 @@ epoch follows automatically: the Workers startup barrier opens
 canary. When the pin fails, diff `execution_envelope()` before re-pinning: the
 hash says something moved, and the document says what.
 
-This replaced a declared literal that had one failure mode — a change lands and
-nobody bumps anything. Three identity-clearing incidents in four days were that,
-and the net of pins that grew to catch it cost 44 files on its last bump.
-
 **Pins carry greppable names.** A pinned value must be a named constant
 (`NEWS_EXECUTION_ENVELOPE_SHA256`, `_EXPECTED_REPORT_SHA256`), never a bare
-literal inside an assertion. The rule exists because #313's bump was searched
-with two greps and still missed a ninth site: an anonymous `== 8` counting epoch
-rows, which no search for the identity could ever have found. If you cannot
-`rg` the name, the next person maintaining the value cannot find your copy of
-it.
+literal inside an assertion. Every consumer must reference that name so an
+identity migration has a complete, searchable update set. Historical rationale
+and incidents remain in #313.
 
-**Deleting a guard.** Removing a check is a judgment about what it carries, so
-it is made per check, against the code rather than against the comment above it.
-Four failure modes have cost real defects here (#319):
-
-*The stated reason must be what the code does.* `_write_exclusive` kept `O_EXCL`
-under a docstring claiming it stops two concurrent compilers corrupting one
-artifact. It does not: every caller passes a uuid-unique temporary that cannot
-collide, and the destination is published by `os.rename`, which overwrites. The
-property belonged to the collision and write-verification checks deleted in the
-same commit. Verify the mechanism before you write down why something stays —
-in a review that judges each guard on its stated justification, a false
-justification is more expensive than a bug, because the next person inherits it
-as a premise.
-
-*Correcting a reason means chasing every record.* That wrong rationale reached
-the code, a commit message, an issue body and a memory note. Fixing the docstring
-alone leaves the others authoritative, and a record contradicting itself is worse
-than one that is simply wrong — a later reader has no way to tell which half to
-believe.
-
-*A delete list will miss things; the acceptance grep will not.* #319 named one
-credential scanner and there were two — `artifact_identity.reject_secret_material`
-surfaced only from running the grep the acceptance criteria specify. Write the
-grep first and let it, not the prose list, decide when the cut is complete.
-
-*Ask what else the check was quietly guaranteeing.* Path armouring around artifact
-loading also converted `OSError` into a coded `ValueError`, which is what the CLI
-catches to render a named failure. Removing the armour removed the error contract,
-and an absent artifact — an ordinary operational state — began arriving as an
-unhandled traceback. A guard often supplies a second property nobody wrote down;
-find it before deleting the first.
+**Deleting a guard.** Verify the mechanism in current code, identify secondary
+error or concurrency contracts, update every durable rationale, and write the
+acceptance search before deleting a check. Judge each guard separately; a prose
+delete list is not evidence that the old path is gone. Historical examples and
+their corrections remain in #319.
 
 ## Tests
 
 | Entry | Purpose | Allowed | Excluded |
 |---|---|---|---|
-| `make check-static` | CI static quality owner | Ruff, format, mypy, generated/router drift, compileall | Pytest, Docker, DB, RabbitMQ, Node |
+| `make check-static` | CI static quality owner | Ruff, format, mypy, generated/router drift, mandatory agent/operator documentation links, compileall | Pytest, Docker, DB, RabbitMQ, Node |
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
@@ -280,26 +248,45 @@ Hypothesis is a test-only dependency in the uv `dev` group and is resolved by
 `uv sync --locked --no-dev`, so lock/source drift fails and test tools never
 enter the runtime environment.
 
-Required CI runs `quality-static`, four backend Python owner jobs, `trust-root`,
-and `frontend` concurrently. Stable architecture and product contracts belong
-to `python-hermetic`; `trust-root` owns only the evidence/profile, CI topology,
-test-resource, frontend-harness and deployment-verifier self-tests. PostgreSQL, migration, runtime/browser resources
-belong to isolated GitHub jobs rather than one shared schema. An
-`evidence-aggregate` job downloads every exact-SHA manifest and proves the V3
-union; the stable `ci-gate` uses `needs` with `if: always()` and fails when any
-input job failed, was cancelled, or was skipped. The `main` ruleset requires
-only this stable context, binds it
-to the GitHub Actions integration, requires the branch to be current, and
-allows neither force push nor deletion. Verification trust-root changes are
-guarded by the same exact-HEAD CI contract: required `ci-gate` is bound to GitHub
-Actions and every Action is SHA-pinned. The repository deliberately adds no
-special non-author approval requirement for these paths.
+The code-owned `scripts/ci_plan.py` classifies the complete PR diff and writes a
+content-addressed plan before any verification job starts. Ordinary docs,
+Python, PostgreSQL and frontend changes select the conservative owners in the
+root task matrix. CI/evidence, toolchain, deployment-verifier, router, runtime
+root, config/security, capital, new or unclassified test modules, and unknown
+surfaces expand to full. A tracked test module selects its stable path-owned
+lane; markers cannot silently move an item to a different owner. Changing the
+topology itself is trust-root/full. Planner errors and empty or unclassified
+change sets also expand to full. Main pushes and manual release runs always use
+full. Rename discovery disables rename folding so both the old and new paths
+participate in classification.
 
-The pull-request run proves the exact PR-head commit and tree. A squash merge
+Full CI runs `quality-static`, four backend Python owner jobs, `trust-root`, and
+`frontend` concurrently. Stable architecture and product contracts belong to
+`python-hermetic`; `trust-root` uniquely owns the evidence/profile, CI topology,
+test-resource, frontend-harness, impact-plan and deployment-verifier self-tests.
+PostgreSQL, migration, runtime/browser resources belong to isolated GitHub jobs
+rather than one shared schema. A selected PR runs only jobs marked required in
+the verified plan; every other V3 lane remains explicit as
+`not_required(reason)` in the aggregate.
+
+Every executed lane binds its manifest to the plan SHA. The
+`evidence-aggregate` job verifies that identity, rejects missing required or
+present non-required manifests, and proves the duplicate-free full Python union
+whenever the plan is full. The stable `ci-gate` independently requires each
+planned job to succeed, each non-required job to be skipped, and the aggregate
+to succeed; failure, cancellation, or a skipped required job fails closed. The
+`main` ruleset requires only this stable context, binds it to GitHub Actions,
+requires the branch to be current, and allows neither force push nor deletion.
+Every Action remains SHA-pinned.
+
+The pull-request run proves the exact PR-head commit, tree and selected plan. A squash merge
 creates a different `main` commit, so the post-merge push run is the first
-evidence for that main SHA. Deployment, cutover and release work must wait for
-that exact main SHA's `ci-gate`; a green PR-head run is not pre-merge proof of a
-future squash SHA. This repository does not claim merge-queue evidence.
+full evidence for that main SHA. Deployment, cutover and release work must wait
+for that exact main SHA's full-plan `ci-gate`; the deployment verifier checks the
+trusted check identity and requires its GitHub Actions run to be a successful
+`main` push for the same SHA, which the code-owned planner always expands to
+full. A green PR-head run is not pre-merge proof of a future squash SHA. This
+repository does not claim merge-queue evidence.
 
 Every PR uses the repository template and completes these fields:
 
@@ -403,9 +390,11 @@ test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
 test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
 diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
 subset of the integration lane and never evidence on its own. `make test-all` remains a local
-complete-suite convenience. `make test-evidence` is the canonical
-merge/release entry, runs every deterministic lane with fail-closed resource
-and outcome checks, and includes frontend validation.
+complete-suite convenience. `make test-evidence` is the canonical local
+full-plan entry, runs every deterministic lane with fail-closed resource and
+outcome checks, and includes frontend validation. Pull requests complete
+through the checked-in impact plan; main and release still execute this full
+set.
 
 PostgreSQL behavior tests use a run-scoped baseline database migrated once to
 head, then receive a private function- or module-scoped clone. A test that
@@ -894,6 +883,9 @@ make regen-contract   # openapi.json + web/src/lib/types/openapi.ts
 
 `AGENTS.md` and `CLAUDE.md` share one generated block, produced from
 `docs/agents/shared-router.md` by `scripts/sync_agent_router.py --write`.
+The portable task-worktree lifecycle lives only in
+`docs/agents/worktrees.md`; tool-specific router appendices link to it rather
+than copying it.
 
 Each generated artifact has one source of truth and one update command:
 
@@ -903,12 +895,12 @@ Each generated artifact has one source of truth and one update command:
 - OpenAPI and TypeScript: the Python app schema, updated with
   `make regen-contract`.
 
-`make check` executes the database-free CLI-help and agent-router canonical
-checker exactly once each. Its Python OpenAPI check is
-hermetic; Node-backed TypeScript codegen runs in the external-codegen/full
-lane. Generated outputs change in the same commit as their source. Regenerate
-the owning output only through its generator and inspect its diff before
-committing.
+`make check` executes the database-free CLI-help, agent-router canonical, and
+mandatory agent/operator documentation-link checkers exactly once each. Its
+Python OpenAPI check is hermetic; Node-backed TypeScript codegen runs in the
+external-codegen/full lane. Generated outputs change in the same commit as
+their source. Regenerate the owning output only through its generator and
+inspect its diff before committing.
 
 ## Completion
 

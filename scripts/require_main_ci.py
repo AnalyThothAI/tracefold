@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -86,6 +87,23 @@ def require_main_ci(root: Path, payload: dict[str, Any]) -> str:
     latest = max(trusted, key=lambda row: int(row.get("id") or 0))
     if latest.get("status") != "completed" or latest.get("conclusion") != "success":
         raise RuntimeError("main_ci_gate_not_success")
+    workflow_run = latest.get("tracefold_workflow_run")
+    if not isinstance(workflow_run, dict) or {
+        "event": workflow_run.get("event"),
+        "head_branch": workflow_run.get("head_branch"),
+        "head_sha": workflow_run.get("head_sha"),
+        "status": workflow_run.get("status"),
+        "conclusion": workflow_run.get("conclusion"),
+        "path": workflow_run.get("path"),
+    } != {
+        "event": "push",
+        "head_branch": "main",
+        "head_sha": head,
+        "status": "completed",
+        "conclusion": "success",
+        "path": ".github/workflows/ci.yml",
+    }:
+        raise RuntimeError("main_ci_gate_not_full_plan")
     return head
 
 
@@ -119,6 +137,30 @@ def _check_runs(sha: str) -> dict[str, Any]:
     payload = json.loads(result.stdout)
     if not isinstance(payload, dict):
         raise RuntimeError("main_ci_gate_response_invalid")
+    for row in payload.get("check_runs", []):
+        if not isinstance(row, dict) or row.get("name") != REQUIRED_CHECK:
+            continue
+        details_url = str(row.get("details_url") or "")
+        match = re.search(r"/actions/runs/(?P<run_id>[0-9]+)/job/[0-9]+$", details_url)
+        if match is None:
+            continue
+        workflow = subprocess.run(
+            (
+                "gh",
+                "api",
+                "--hostname",
+                "github.com",
+                f"repos/{GITHUB_REPOSITORY}/actions/runs/{match.group('run_id')}",
+            ),
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=30,
+        )
+        workflow_payload = json.loads(workflow.stdout)
+        if not isinstance(workflow_payload, dict):
+            raise RuntimeError("main_ci_workflow_run_response_invalid")
+        row["tracefold_workflow_run"] = workflow_payload
     return payload
 
 

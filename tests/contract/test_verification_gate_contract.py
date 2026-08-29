@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
+from scripts import verification_topology
 from tests.support import evidence
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -24,7 +25,7 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     triggers = workflow[True]  # YAML 1.1 parses GitHub's unquoted `on` key as boolean true.
 
-    assert {"pull_request", "push"} <= set(triggers)
+    assert {"pull_request", "push", "workflow_dispatch", "release"} <= set(triggers)
     assert "main" in triggers["pull_request"]["branches"]
     assert "main" in triggers["push"]["branches"]
     assert "paths" not in triggers["pull_request"]
@@ -43,7 +44,18 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
         "runtime-process",
         "frontend",
     }
-    assert required_jobs | {"evidence-aggregate", "ci-gate"} == set(jobs)
+    assert required_jobs | {"ci-plan", "evidence-aggregate", "ci-gate"} == set(jobs)
+    planner = jobs["ci-plan"]
+    planner_outputs = {name.replace("-", "_") for name in required_jobs}
+    assert set(planner["outputs"]) == {"plan_sha256", "full", *planner_outputs}
+    planner_commands = "\n".join(step.get("run", "") for step in planner["steps"])
+    assert "scripts/ci_plan.py plan" in planner_commands
+    assert "github.event.pull_request.base.sha" in str(planner)
+    assert any(
+        step.get("uses", "").startswith("actions/upload-artifact@")
+        and "artifacts/ci-plan/plan.json" in step.get("with", {}).get("path", "")
+        for step in planner["steps"]
+    )
     expected_commands = {
         "quality-static": "test-evidence-quality-static",
         "python-hermetic": "test-evidence-python-hermetic",
@@ -55,6 +67,10 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     }
     for job_name, expected_command in expected_commands.items():
         job = jobs[job_name]
+        assert job["needs"] == "ci-plan"
+        output_name = job_name.replace("-", "_")
+        assert job["if"] == f"needs.ci-plan.outputs.{output_name} == 'true'"
+        assert job["env"]["TRACEFOLD_CI_PLAN_SHA256"] == "${{ needs.ci-plan.outputs.plan_sha256 }}"
         assert int(job["timeout-minutes"]) > 0
         assert any(expected_command in step.get("run", "") for step in job["steps"])
         checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
@@ -70,9 +86,16 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
                 assert FULL_SHA.fullmatch(revision), action
 
     aggregate = jobs["evidence-aggregate"]
-    assert set(aggregate["needs"]) == required_jobs
+    assert set(aggregate["needs"]) == required_jobs | {"ci-plan"}
     assert aggregate["if"] == "always()"
-    assert any("make test-evidence-aggregate" in step.get("run", "") for step in aggregate["steps"])
+    aggregate_commands = "\n".join(step.get("run", "") for step in aggregate["steps"])
+    assert "TRACEFOLD_CI_PLAN_PATH=" in aggregate_commands
+    assert "make test-evidence-aggregate" in aggregate_commands
+    assert any(
+        step.get("uses", "").startswith("actions/download-artifact@")
+        and str(step.get("with", {}).get("name", "")).startswith("ci-plan-")
+        for step in aggregate["steps"]
+    )
     for job in jobs.values():
         for step in job.get("steps", []):
             action = step.get("uses")
@@ -81,16 +104,13 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
 
     gate = jobs["ci-gate"]
     assert gate["name"] == "ci-gate"
-    assert set(gate["needs"]) == required_jobs | {"evidence-aggregate"}
+    assert set(gate["needs"]) == required_jobs | {"ci-plan", "evidence-aggregate"}
     assert gate["if"] == "always()"
-    gate_step = gate["steps"][0]
-    gate_results = tuple(gate_step["env"].values())
-    assert all(any(f"needs.{name}.result" in value for value in gate_results) for name in gate["needs"])
-    successful = {name: "success" for name in gate_step["env"]}
-    assert _run_gate_script(gate_step["run"], successful).returncode == 0
-    for name in successful:
-        for outcome in ("failure", "cancelled", "skipped"):
-            assert _run_gate_script(gate_step["run"], {**successful, name: outcome}).returncode != 0
+    gate_step = next(step for step in gate["steps"] if "scripts/ci_plan.py gate" in step.get("run", ""))
+    assert all(f"needs.{name}.result" in gate_step["run"] for name in required_jobs)
+    assert "needs.ci-plan.result" in gate_step["run"]
+    assert "needs.evidence-aggregate.result" in gate_step["run"]
+    assert '--summary "$GITHUB_STEP_SUMMARY"' in gate_step["run"]
     for job_name, command in expected_commands.items():
         evidence_step = next(step for step in jobs[job_name]["steps"] if command in step.get("run", ""))
         assert "GITHUB_SHA" not in evidence_step.get("env", {})
@@ -123,16 +143,6 @@ def test_ci_gate_check_name_is_unique_across_all_workflows() -> None:
         )
 
     assert owners == ["ci.yml:ci-gate"]
-
-
-def _run_gate_script(script: str, results: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["bash", "-euo", "pipefail", "-c", script],
-        env=results,
-        capture_output=True,
-        check=False,
-        text=True,
-    )
 
 
 def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> None:
@@ -275,12 +285,18 @@ def _run_evidence_case(
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     repository = tmp_path / "repository"
     (repository / "tests" / "support").mkdir(parents=True)
+    (repository / "scripts").mkdir()
     (repository / "tracefold" / "platform" / "postgres").mkdir(parents=True)
     (repository / "web").mkdir()
     shutil.copy2(Path(evidence.__file__).resolve(), repository / "tests" / "support" / "evidence.py")
+    shutil.copy2(
+        Path(verification_topology.__file__).resolve(),
+        repository / "scripts" / "verification_topology.py",
+    )
     for package in (
         repository / "tests",
         repository / "tests" / "support",
+        repository / "scripts",
         repository / "tracefold",
         repository / "tracefold" / "platform",
         repository / "tracefold" / "platform" / "postgres",

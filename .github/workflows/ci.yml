@@ -5,6 +5,9 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+  release:
+    types: [published, prereleased]
 
 permissions:
   contents: read
@@ -20,10 +23,51 @@ env:
   TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
+  ci-plan:
+    name: ci-plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      plan_sha256: ${{ steps.plan.outputs.plan_sha256 }}
+      full: ${{ steps.plan.outputs.full }}
+      quality_static: ${{ steps.plan.outputs.quality_static }}
+      python_hermetic: ${{ steps.plan.outputs.python_hermetic }}
+      trust_root: ${{ steps.plan.outputs.trust_root }}
+      postgres_behavior: ${{ steps.plan.outputs.postgres_behavior }}
+      migration: ${{ steps.plan.outputs.migration }}
+      runtime_process: ${{ steps.plan.outputs.runtime_process }}
+      frontend: ${{ steps.plan.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+      - id: plan
+        name: Build fail-closed impact plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python scripts/ci_plan.py plan --event "$EVENT_NAME" --base-sha "$BASE_SHA" \
+              --head-sha "$TESTED_SHA" --output artifacts/ci-plan/plan.json \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            python scripts/ci_plan.py plan --event "$EVENT_NAME" --head-sha "$TESTED_SHA" \
+              --output artifacts/ci-plan/plan.json --github-output "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ci-plan-${{ env.TESTED_SHA }}
+          path: artifacts/ci-plan/plan.json
+          if-no-files-found: error
+
   quality-static:
     name: quality-static
+    needs: ci-plan
+    if: needs.ci-plan.outputs.quality_static == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -50,8 +94,12 @@ jobs:
 
   python-hermetic:
     name: python-hermetic
+    needs: ci-plan
+    if: needs.ci-plan.outputs.python_hermetic == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
@@ -68,8 +116,12 @@ jobs:
 
   trust-root:
     name: trust-root
+    needs: ci-plan
+    if: needs.ci-plan.outputs.trust_root == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
@@ -89,8 +141,12 @@ jobs:
 
   postgres-behavior:
     name: postgres-behavior
+    needs: ci-plan
+    if: needs.ci-plan.outputs.postgres_behavior == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: &postgres_service
         image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
@@ -116,8 +172,12 @@ jobs:
 
   migration:
     name: migration
+    needs: ci-plan
+    if: needs.ci-plan.outputs.migration == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: *postgres_service
     steps:
@@ -137,8 +197,12 @@ jobs:
 
   runtime-process:
     name: runtime-process
+    needs: ci-plan
+    if: needs.ci-plan.outputs.runtime_process == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: *postgres_service
       rabbitmq: &rabbitmq_service
@@ -171,8 +235,12 @@ jobs:
 
   frontend:
     name: frontend
+    needs: ci-plan
+    if: needs.ci-plan.outputs.frontend == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: *postgres_service
       rabbitmq: *rabbitmq_service
@@ -199,10 +267,12 @@ jobs:
 
   evidence-aggregate:
     name: evidence-aggregate
-    needs: [quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend]
+    needs: [ci-plan, quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    env:
+      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {ref: "${{ env.TESTED_SHA }}"}
@@ -211,6 +281,11 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked
+      - name: Download exact impact plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ci-plan-${{ env.TESTED_SHA }}
+          path: artifacts/ci-plan
       - name: Download every lane manifest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -218,34 +293,35 @@ jobs:
           path: artifacts/test-evidence
           merge-multiple: true
       - name: Aggregate duplicate-free V3 evidence
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-aggregate
+        run: GITHUB_SHA="$TESTED_SHA" TRACEFOLD_CI_PLAN_PATH=artifacts/ci-plan/plan.json make test-evidence-aggregate
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: {name: "evidence-aggregate-${{ env.TESTED_SHA }}", path: artifacts/test-evidence/manifest.json, if-no-files-found: error}
 
   ci-gate:
     name: ci-gate
-    needs: [quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend, evidence-aggregate]
+    needs: [ci-plan, quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend, evidence-aggregate]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every planned verification job
-        env:
-          QUALITY_STATIC_RESULT: ${{ needs.quality-static.result }}
-          PYTHON_HERMETIC_RESULT: ${{ needs.python-hermetic.result }}
-          TRUST_ROOT_RESULT: ${{ needs.trust-root.result }}
-          POSTGRES_BEHAVIOR_RESULT: ${{ needs.postgres-behavior.result }}
-          MIGRATION_RESULT: ${{ needs.migration.result }}
-          RUNTIME_PROCESS_RESULT: ${{ needs.runtime-process.result }}
-          FRONTEND_RESULT: ${{ needs.frontend.result }}
-          EVIDENCE_AGGREGATE_RESULT: ${{ needs.evidence-aggregate.result }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {ref: "${{ env.TESTED_SHA }}"}
+      - name: Download exact impact plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ci-plan-${{ env.TESTED_SHA }}
+          path: artifacts/ci-plan
+      - name: Require the exact planned verification result
         run: |
-          test "$QUALITY_STATIC_RESULT" = success
-          test "$PYTHON_HERMETIC_RESULT" = success
-          test "$TRUST_ROOT_RESULT" = success
-          test "$POSTGRES_BEHAVIOR_RESULT" = success
-          test "$MIGRATION_RESULT" = success
-          test "$RUNTIME_PROCESS_RESULT" = success
-          test "$FRONTEND_RESULT" = success
-          test "$EVIDENCE_AGGREGATE_RESULT" = success
+          python scripts/ci_plan.py gate --plan artifacts/ci-plan/plan.json \
+            --plan-result ${{ needs.ci-plan.result }} \
+            --job-result quality-static=${{ needs.quality-static.result }} \
+            --job-result python-hermetic=${{ needs.python-hermetic.result }} \
+            --job-result trust-root=${{ needs.trust-root.result }} \
+            --job-result postgres-behavior=${{ needs.postgres-behavior.result }} \
+            --job-result migration=${{ needs.migration.result }} \
+            --job-result runtime-process=${{ needs.runtime-process.result }} \
+            --job-result frontend=${{ needs.frontend.result }} \
+            --aggregate-result ${{ needs.evidence-aggregate.result }} \
+            --summary "$GITHUB_STEP_SUMMARY"

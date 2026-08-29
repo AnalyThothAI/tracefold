@@ -172,7 +172,7 @@ test-evidence-aggregate:
 	@uv run python -m tests.support.evidence aggregate \
 		--lane-dir "$(TRACEFOLD_TEST_LANE_DIR)" \
 		--output "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" \
-		$(foreach lane,$(EVIDENCE_REQUIRED_LANES),--required-lane $(lane))
+		$(if $(TRACEFOLD_CI_PLAN_PATH),--plan "$(TRACEFOLD_CI_PLAN_PATH)",$(foreach lane,$(EVIDENCE_REQUIRED_LANES),--required-lane $(lane)))
 
 test-evidence: ## exact-HEAD V3 evidence: every deterministic test has one primary lane
 	@$(MAKE) --no-print-directory test-evidence-prepare
@@ -243,6 +243,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run mypy src
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/sync_agent_router.py --check
+	@uv run python scripts/check_mandatory_docs_links.py
 	@uv run python -m compileall src tests
 
 check: check-static ## static checks plus local architecture/contract regression
