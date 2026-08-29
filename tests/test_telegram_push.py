@@ -214,6 +214,67 @@ def test_sender_renders_the_compact_single_asset_layout() -> None:
     )
 
 
+def test_sender_does_not_render_unclear_direction_or_magnitude_as_trade_targets() -> None:
+    observed: dict[str, object] = {}
+    card = _card(source_url="https://x.com/FirstSquawk/status/1234567890123456789")
+    card["header"] = {
+        "title": {"content": "中国存储芯片厂商长鑫存储起诉五角大楼，挑战涉军企业清单指定"},
+        "template": "grey",
+    }
+    card["elements"][0]["content"] = (
+        "长鑫存储在美国法院起诉，要求撤销五角大楼将其列入涉军企业清单的决定。\n"
+        "方向待定 · 影响明显 · CXMT · FirstSquawk · 09:14"
+    )
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        preflight = _preflight_response(request)
+        if preflight is not None:
+            return preflight
+        observed.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 42, "chat": {"id": CHANNEL_ID, "type": "channel"}}},
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=CHANNEL_ID,
+        transport=httpx.MockTransport(handle),
+    )
+    sender.prepare()
+    sender.send_card(
+        card,
+        presentation=ReaderDeliveryPresentation(
+            trade_targets=(
+                ReaderTradeTarget(
+                    ticker="CXMT",
+                    venue="binance.perp",
+                    venue_symbol="CXMTUSDT",
+                    base_symbol="CXMT",
+                    quote_asset="USDT",
+                ),
+            ),
+            market_movements=(
+                ReaderMarketMovement(
+                    ticker="CXMT",
+                    after_news_bps=0,
+                    return_1h_bps=8,
+                    change_24h_bps=182,
+                    one_hour_state="available",
+                ),
+            ),
+            novelty="new_fact",
+        ),
+    )
+
+    text = str(observed["text"])
+    assert text.count("🎯 <b>标的</b>") == 1
+    assert "🎯 <b>标的</b>  方向待定" not in text
+    assert "🎯 <b>标的</b>  影响明显" not in text
+    assert '<a href="https://www.binance.com/en/futures/CXMTUSDT">CXMT</a>' in text
+    assert "🧭 <b>方向</b>  明显方向待定" in text
+
+
 def test_sender_puts_new_fact_below_title_and_explains_macro_events_without_a_ticker() -> None:
     observed: dict[str, object] = {}
     card = {
@@ -886,10 +947,6 @@ def test_sender_escapes_untrusted_card_text_before_enabling_html() -> None:
     assert _without_timing(observed["text"]) == (
         "🔴 <b>A &lt; B &amp; &lt;i&gt;not markup&lt;/i&gt;</b>\n\n"
         "利润 &lt; 预期 &amp; 风险上升\n\n"
-        "🎯 <b>标的</b>  A&amp;B\n"
-        "新闻后 暂无\n"
-        "1h 暂无，\n"
-        "24h 暂无\n\n"
         "🧭 <b>方向</b>  明显利空\n\n"
         "🔗 <b>来源</b>  路透社"
     )

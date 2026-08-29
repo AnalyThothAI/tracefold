@@ -165,7 +165,10 @@ intents instead of retrying an uncertain destructive action. A settled deletion 
 reader-history ledger, so a removed untradeable issuer cannot suppress a later genuinely tradable listing. The
 Telegram projection gives every asset its own block: the first line is `🎯 标的 BTC`, followed by separate
 `新闻后 +1.10%`, `1h +0.80%，`, and `24h +3.20%` lines. Multiple assets repeat that complete block with a blank
-line between them. The novelty badge sits directly below the title: `🆕 新事实`, or `🔄 新进展` with the prior
+line between them. Direction and magnitude remain presentation metadata: an unclear verdict renders `方向待定`,
+and a positional tail token that does not match the code-owned ticker grammar fails closed rather than becoming a
+trade target. The novelty badge sits directly
+below the title: `🆕 新事实`, or `🔄 新进展` with the prior
 headline immediately only when no post-delivery verifier is configured and an exact-fact retrieval or stored
 title-similarity score of at least `0.50` supports it. With the verifier configured, an initial progression shows
 an indented one-line `关联确认中` child block and never waits for another model call. The same message is later

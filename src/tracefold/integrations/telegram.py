@@ -42,7 +42,7 @@ _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
 _BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
-_DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确"})
+_DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确", "方向待定"})
 _NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
 _MAGNITUDE_LABELS = {
     "影响很小": "很小",
@@ -638,7 +638,9 @@ def _telegram_facts(value: str) -> _TelegramFacts:
     novelty = parts.pop(0) if parts and parts[0] in _NOVELTY_LABELS else ""
     magnitude = parts.pop(0) if parts and parts[0] in _MAGNITUDE_LABELS else ""
     asset_text = " ".join(parts).strip()
-    assets = tuple(part for part in asset_text.split() if part and part != "-")
+    # Reader assets are code-grounded exchange symbols. Fail closed when a future
+    # presentation-label drift leaves arbitrary metadata in the positional tail.
+    assets = tuple(part for part in asset_text.split() if _LINKABLE_TICKER_RE.fullmatch(part) is not None)
     return _TelegramFacts(
         direction=direction,
         novelty=novelty,
