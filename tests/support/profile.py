@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tests.support.evidence import TEST_PROFILE_SCHEMA_VERSION
+from tests.support.evidence import PYTHON_LANES, TEST_PROFILE_SCHEMA_VERSION, primary_lane_owner
 
 PROFILE_SCHEMA_VERSION = TEST_PROFILE_SCHEMA_VERSION
 PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
@@ -24,17 +24,14 @@ PROFILE_REPORT_SCHEMA_VERSION = "tracefold_test_profile_report_v1"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PROFILE_PATH_ENV = "TRACEFOLD_TEST_PROFILE_PATH"
 _PROFILE_LANE_ENV = "TRACEFOLD_TEST_PROFILE_LANE"
-_ENTRYPOINTS = {
-    "quality": "_collect-profile-quality",
-    "fast": "_collect-profile-fast",
-    "deterministic-full": "_collect-profile-deterministic-full",
-}
+_ENTRYPOINTS = {lane: f"_collect-profile-{lane}" for lane in PYTHON_LANES}
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("tracefold test profile")
     group.addoption("--test-profile", help="write a tracefold_test_profile_v1 JSON document")
     group.addoption("--test-profile-lane", help="stable name of the profiled test lane")
+    group.addoption("--test-profile-owner-lane", help="collect only the code-owned V3 primary lane")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -52,6 +49,25 @@ def pytest_collection_finish(session: pytest.Session) -> None:
     recorder = _recorder(session.config)
     if recorder is not None:
         recorder.selected_nodeids = sorted(item.nodeid for item in session.items)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    owner_lane = config.getoption("--test-profile-owner-lane")
+    if not owner_lane:
+        return
+    if owner_lane not in PYTHON_LANES:
+        raise pytest.UsageError(f"unknown test profile owner lane: {owner_lane}")
+    selected: list[pytest.Item] = []
+    deselected: list[pytest.Item] = []
+    root = Path(str(config.rootpath)).resolve()
+    for item in items:
+        path = item.path.resolve().relative_to(root).as_posix()
+        owner = primary_lane_owner(path, {marker.name for marker in item.iter_markers()})
+        (selected if owner == owner_lane else deselected).append(item)
+    items[:] = selected
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -160,8 +176,8 @@ def build_report(
     history: Sequence[dict[str, Any]] = (),
 ) -> dict[str, Any]:
     inventories = {lane: set(_strings(profile.get("selected_nodeids"))) for lane, profile in profiles.items()}
-    full = inventories.get("deterministic-full", set())
     all_selected = set().union(*inventories.values()) if inventories else set()
+    full = inventories.get("deterministic-full", all_selected)
     owners = {
         nodeid: sorted(lane for lane, inventory in inventories.items() if nodeid in inventory)
         for nodeid in sorted(all_selected)
@@ -303,7 +319,13 @@ def _aggregate_command(arguments: Sequence[str]) -> int:
     history_paths = list(options.history)
     if options.history_dir is not None and options.history_dir.exists():
         history_paths.extend(sorted(options.history_dir.glob("*.json")))
-    profiles = {lane: _read_json(options.profile_dir / f"{lane}.json") for lane in _ENTRYPOINTS}
+    profiles = {
+        str(profile["lane"]): profile
+        for path in sorted(options.profile_dir.glob("*.json"))
+        if isinstance((profile := _read_json(path)).get("lane"), str)
+    }
+    if not profiles:
+        raise ValueError(f"test_profile_directory_empty:{options.profile_dir}")
     report = build_report(
         profiles,
         baseline=_read_json(options.baseline),

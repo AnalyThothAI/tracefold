@@ -34,12 +34,24 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     assert workflow["env"]["TESTED_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
 
     jobs = workflow["jobs"]
-    required_jobs = {"quality", "fast", "deterministic-full"}
-    assert required_jobs | {"ci-gate"} <= set(jobs)
+    required_jobs = {
+        "quality-static",
+        "python-hermetic",
+        "trust-root",
+        "postgres-behavior",
+        "migration",
+        "runtime-process",
+        "frontend",
+    }
+    assert required_jobs | {"evidence-aggregate", "ci-gate"} == set(jobs)
     expected_commands = {
-        "quality": "make check",
-        "fast": "make test-fast",
-        "deterministic-full": "make test-evidence",
+        "quality-static": "test-evidence-quality-static",
+        "python-hermetic": "test-evidence-python-hermetic",
+        "trust-root": "test-evidence-trust-root",
+        "postgres-behavior": "test-evidence-postgres-behavior",
+        "migration": "test-evidence-migration",
+        "runtime-process": "test-evidence-runtime-process",
+        "frontend": "test-evidence-frontend",
     }
     for job_name, expected_command in expected_commands.items():
         job = jobs[job_name]
@@ -57,9 +69,19 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
                 _, revision = action.rsplit("@", 1)
                 assert FULL_SHA.fullmatch(revision), action
 
+    aggregate = jobs["evidence-aggregate"]
+    assert set(aggregate["needs"]) == required_jobs
+    assert aggregate["if"] == "always()"
+    assert any("make test-evidence-aggregate" in step.get("run", "") for step in aggregate["steps"])
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            action = step.get("uses")
+            if action:
+                assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), action
+
     gate = jobs["ci-gate"]
     assert gate["name"] == "ci-gate"
-    assert required_jobs <= set(gate["needs"])
+    assert set(gate["needs"]) == required_jobs | {"evidence-aggregate"}
     assert gate["if"] == "always()"
     gate_step = gate["steps"][0]
     gate_results = tuple(gate_step["env"].values())
@@ -69,13 +91,24 @@ def test_required_ci_has_one_stable_fail_closed_gate() -> None:
     for name in successful:
         for outcome in ("failure", "cancelled", "skipped"):
             assert _run_gate_script(gate_step["run"], {**successful, name: outcome}).returncode != 0
-    evidence_step = next(
-        step for step in jobs["deterministic-full"]["steps"] if "make test-evidence" in step.get("run", "")
-    )
-    assert "TRACEFOLD_TEST_POSTGRES_DSN" in evidence_step["env"]
-    assert "GMGN_TEST_POSTGRES_DSN" not in evidence_step["env"]
-    assert "GITHUB_SHA" not in evidence_step["env"]
-    assert 'GITHUB_SHA="$TESTED_SHA" make test-evidence' in evidence_step["run"]
+    for job_name, command in expected_commands.items():
+        evidence_step = next(step for step in jobs[job_name]["steps"] if command in step.get("run", ""))
+        assert "GITHUB_SHA" not in evidence_step.get("env", {})
+        assert 'GITHUB_SHA="$TESTED_SHA"' in evidence_step["run"]
+    for job_name in ("postgres-behavior", "migration", "runtime-process", "frontend"):
+        evidence_step = next(step for step in jobs[job_name]["steps"] if "test-evidence-" in step.get("run", ""))
+        assert "TRACEFOLD_TEST_POSTGRES_DSN" in evidence_step["env"]
+        assert "GMGN_TEST_POSTGRES_DSN" not in evidence_step["env"]
+
+    quality_commands = subprocess.run(
+        ["make", "-n", "test-evidence-quality-static"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout
+    assert "make check-static" in quality_commands
+    assert "pytest" not in quality_commands
 
 
 def test_ci_gate_check_name_is_unique_across_all_workflows() -> None:
@@ -107,8 +140,8 @@ def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> No
     uv_version = workflow["env"]["UV_VERSION"]
 
     assert re.fullmatch(r"\d+\.\d+\.\d+", uv_version)
-    for job_name in ("quality", "fast", "deterministic-full", "ci-gate"):
-        assert workflow["jobs"][job_name]["runs-on"] == "ubuntu-24.04"
+    for job in workflow["jobs"].values():
+        assert job["runs-on"] == "ubuntu-24.04"
     for job in workflow["jobs"].values():
         for step in job.get("steps", []):
             if step.get("uses", "").startswith("astral-sh/setup-uv@"):
@@ -126,11 +159,14 @@ def test_ci_and_runtime_install_the_same_pinned_uv_from_a_validated_lock() -> No
     for image in ("node:22-bookworm-slim", "python:3.13-slim-bookworm"):
         assert re.search(rf"FROM {re.escape(image)}@sha256:[0-9a-f]{{64}}", dockerfile)
 
-    services = workflow["jobs"]["deterministic-full"]["services"]
-    for image in (services["postgres"]["image"], services["rabbitmq"]["image"]):
+    for job_name in ("postgres-behavior", "migration", "runtime-process", "frontend"):
+        image = workflow["jobs"][job_name]["services"]["postgres"]["image"]
         assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
-    deterministic_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["deterministic-full"]["steps"])
-    assert "playwright install --with-deps chromium" in deterministic_commands
+    for job_name in ("runtime-process", "frontend"):
+        image = workflow["jobs"][job_name]["services"]["rabbitmq"]["image"]
+        assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
+    frontend_commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["frontend"]["steps"])
+    assert "playwright install --with-deps chromium" in frontend_commands
 
 
 def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
@@ -314,7 +350,7 @@ def test_evidence_manifest_is_generated_by_the_actual_pytest_session(tmp_path: P
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert manifest["schema_version"] == "tracefold_test_lane_v2"
+    assert manifest["schema_version"] == "tracefold_test_lane_v3"
     assert re.fullmatch(r"[0-9a-f]{40}", manifest["commit_sha"])
     assert re.fullmatch(r"[0-9a-f]{40}", manifest["git_tree_sha"])
     assert manifest["lane"] == "python"
@@ -389,7 +425,7 @@ def test_evidence_mode_rejects_collection_without_execution(tmp_path: Path) -> N
     assert "evidence_selected_outcome_count_mismatch" in manifest["errors"]
 
 
-def test_evidence_mode_fails_when_node_is_unavailable(tmp_path: Path) -> None:
+def test_frontend_python_evidence_fails_when_node_is_unavailable(tmp_path: Path) -> None:
     executable_dir = tmp_path / "bin"
     executable_dir.mkdir()
     git = shutil.which("git")
@@ -399,6 +435,7 @@ def test_evidence_mode_fails_when_node_is_unavailable(tmp_path: Path) -> None:
     result, manifest = _run_evidence_case(
         tmp_path,
         "def test_green(): assert True\n",
+        extra_args=("--evidence-lane=frontend-python",),
         env={"PATH": str(executable_dir)},
     )
 

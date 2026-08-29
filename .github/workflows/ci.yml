@@ -20,8 +20,8 @@ env:
   TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  quality:
-    name: quality
+  quality-static:
+    name: quality-static
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -38,144 +38,208 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Install locked Python dependencies
         run: uv sync --locked
-      - name: Run quality checks
-        env:
-          PYTEST_ADDOPTS: --junitxml=artifacts/quality/junit.xml --durations=50
-          TRACEFOLD_TEST_PROFILE_LANE: quality
-          TRACEFOLD_TEST_PROFILE_PATH: artifacts/quality/profile.json
-        run: |
-          mkdir -p artifacts/quality
-          set -o pipefail
-          make check 2>&1 | tee artifacts/quality/run.log
+      - name: Run static quality evidence
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-quality-static
       - name: Upload quality evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: quality-${{ env.TESTED_SHA }}
-          path: artifacts/quality
-          if-no-files-found: warn
+          name: evidence-quality-static-${{ env.TESTED_SHA }}
+          path: artifacts/test-evidence
+          if-no-files-found: error
 
-  fast:
-    name: fast
+  python-hermetic:
+    name: python-hermetic
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.TESTED_SHA }}
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Install locked Python dependencies
-        run: uv sync --locked
-      - name: Run hermetic fast tests
-        env:
-          PYTEST_ADDOPTS: --junitxml=artifacts/fast/junit.xml --durations=50
-          TRACEFOLD_TEST_PROFILE_LANE: fast
-          TRACEFOLD_TEST_PROFILE_PATH: artifacts/fast/profile.json
-        run: |
-          mkdir -p artifacts/fast
-          set -o pipefail
-          make test-fast 2>&1 | tee artifacts/fast/run.log
-      - name: Upload fast evidence
-        if: always()
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run hermetic primary lane
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-python-hermetic
+      - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: fast-${{ env.TESTED_SHA }}
-          path: artifacts/fast
-          if-no-files-found: warn
+        with: {name: "evidence-python-hermetic-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
 
-  deterministic-full:
-    name: deterministic-full
+  trust-root:
+    name: trust-root
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    services:
-      postgres:
-        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
-        env:
-          POSTGRES_DB: tracefold_test
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 55432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d tracefold_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-      rabbitmq:
-        image: rabbitmq:4.1-management-alpine@sha256:5ae1b436f98ed304168a55a90280dadfb0f1bfe5736d6e2e970e69f7f8fdf5e4
-        env:
-          RABBITMQ_DEFAULT_PASS: tracefold
-          RABBITMQ_DEFAULT_USER: tracefold
-        ports:
-          - 5672:5672
-          - 15672:15672
-        options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          fetch-depth: 0
-          ref: ${{ env.TESTED_SHA }}
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-          cache-dependency-path: web/package-lock.json
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-dependency-glob: uv.lock
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run trust-root primary lane
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-trust-root
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-trust-root-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+
+  postgres-behavior:
+    name: postgres-behavior
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres: &postgres_service
+        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        env: {POSTGRES_DB: tracefold_test, POSTGRES_PASSWORD: postgres, POSTGRES_USER: postgres}
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d tracefold_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run PostgreSQL behavior primary lane
+        env: {TRACEFOLD_TEST_POSTGRES_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"}
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-postgres-behavior
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-postgres-behavior-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+
+  migration:
+    name: migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres: *postgres_service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run historical migration primary lane
+        env: {TRACEFOLD_TEST_POSTGRES_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"}
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-migration
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-migration-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+
+  runtime-process:
+    name: runtime-process
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres: *postgres_service
+      rabbitmq: &rabbitmq_service
+        image: rabbitmq:4.1-management-alpine@sha256:5ae1b436f98ed304168a55a90280dadfb0f1bfe5736d6e2e970e69f7f8fdf5e4
+        env: {RABBITMQ_DEFAULT_PASS: tracefold, RABBITMQ_DEFAULT_USER: tracefold}
+        ports: ["5672:5672", "15672:15672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run runtime and process primary lane
+        env: &resource_env
+          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+          TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
+          TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-runtime-process
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-runtime-process-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres: *postgres_service
+      rabbitmq: *rabbitmq_service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with: {node-version: "${{ env.NODE_VERSION }}", cache: npm, cache-dependency-path: web/package-lock.json}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - name: Install locked dependencies
         run: |
           uv sync --locked
           npm ci --prefix web
           (cd web && npx playwright install --with-deps chromium)
-      - name: Run deterministic evidence
-        env:
-          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
-          TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
-          TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
-          TRACEFOLD_TEST_PROFILE_LANE: deterministic-full
-          TRACEFOLD_TEST_PROFILE_PATH: artifacts/test-evidence/profile.json
-        run: |
-          mkdir -p artifacts/test-evidence
-          set -o pipefail
-          GITHUB_SHA="$TESTED_SHA" make test-evidence 2>&1 | tee artifacts/test-evidence/run.log
-      - name: Upload deterministic evidence
-        if: always()
+      - name: Run frontend and browser evidence
+        env: *resource_env
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-frontend
+      - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-frontend-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+
+  evidence-aggregate:
+    name: evidence-aggregate
+    needs: [quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {ref: "${{ env.TESTED_SHA }}"}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Download every lane manifest
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: deterministic-full-${{ env.TESTED_SHA }}
+          pattern: evidence-*-${{ env.TESTED_SHA }}
           path: artifacts/test-evidence
-          if-no-files-found: warn
+          merge-multiple: true
+      - name: Aggregate duplicate-free V3 evidence
+        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-aggregate
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: {name: "evidence-aggregate-${{ env.TESTED_SHA }}", path: artifacts/test-evidence/manifest.json, if-no-files-found: error}
 
   ci-gate:
     name: ci-gate
-    needs: [quality, fast, deterministic-full]
+    needs: [quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend, evidence-aggregate]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every verification job
+      - name: Require every planned verification job
         env:
-          QUALITY_RESULT: ${{ needs.quality.result }}
-          FAST_RESULT: ${{ needs.fast.result }}
-          DETERMINISTIC_FULL_RESULT: ${{ needs.deterministic-full.result }}
+          QUALITY_STATIC_RESULT: ${{ needs.quality-static.result }}
+          PYTHON_HERMETIC_RESULT: ${{ needs.python-hermetic.result }}
+          TRUST_ROOT_RESULT: ${{ needs.trust-root.result }}
+          POSTGRES_BEHAVIOR_RESULT: ${{ needs.postgres-behavior.result }}
+          MIGRATION_RESULT: ${{ needs.migration.result }}
+          RUNTIME_PROCESS_RESULT: ${{ needs.runtime-process.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          EVIDENCE_AGGREGATE_RESULT: ${{ needs.evidence-aggregate.result }}
         run: |
-          test "$QUALITY_RESULT" = success
-          test "$FAST_RESULT" = success
-          test "$DETERMINISTIC_FULL_RESULT" = success
+          test "$QUALITY_STATIC_RESULT" = success
+          test "$PYTHON_HERMETIC_RESULT" = success
+          test "$TRUST_ROOT_RESULT" = success
+          test "$POSTGRES_BEHAVIOR_RESULT" = success
+          test "$MIGRATION_RESULT" = success
+          test "$RUNTIME_PROCESS_RESULT" = success
+          test "$FRONTEND_RESULT" = success
+          test "$EVIDENCE_AGGREGATE_RESULT" = success
