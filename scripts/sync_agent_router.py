@@ -1,13 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the shared block of `AGENTS.md` and `CLAUDE.md` from one canonical source.
+"""Generate both root routers from the canonical shared routing block.
 
-Both routers carry the same routing table, the same runtime-config rule and the same frontend
-guardrails, because both are read by an agent that has to be told the same things. Keeping two copies
-in step by hand worked exactly as well as it sounds: the previous test could only prove they matched
-each other, so they drifted together away from `docs/`.
-
-`--write` regenerates the block in both files from `docs/agents/shared-router.md`. `--check` reports
-which router drifted and exits non-zero; it runs in `make check`.
+`--write` regenerates the block from `docs/agents/shared-router.md`; `--check`
+reports drift and is owned by `make check`.
 """
 
 from __future__ import annotations

@@ -11,146 +11,45 @@ edited here.
 
 <!-- BEGIN SHARED AGENT ROUTER -->
 
-## What this is
+## System
 
-`Tracefold Market Research System`: one Python service and CLI named
-`tracefold` that turns provider news pushes into audited research signals and
-serves them over HTTP / CLI to a React operator console.
+Tracefold is one Python service and CLI that persists audited News and Trading facts in PostgreSQL and serves them to a React operator console.
 
-Two business capabilities sit over one PostgreSQL store, as siblings rather
-than layers: **News V3** (`tracefold.news`) turns OpenNews frames into Events,
-judges each one, and delivers at most one reader card; **Trading**
-(`tracefold.trading`, #104, disabled by default) is the capital lane that
-consumes two public News projections. They never import each other and never
-read each other's tables — `tracefold.app` is the only seam that knows both.
+## Invariants
 
-`docs/ARCHITECTURE.md` is the single description of how any of that works: the
-Kappa/CQRS truth model, the broker-driven Event pipeline, the Gate, the
-Program-native Triage and its policy, delivery, the instrument universe, the
-Price Review plane, the learning/canary plane, and the Trading state machine.
-Read it before changing behavior; do not reconstruct it from this file.
+- PostgreSQL material facts and durable ledgers are the only business truth; frames, messages, caches, projections, model outputs, and HTTP responses are not alternate truth.
+- News and Trading are sibling capabilities: neither imports the other or reads the other's tables; `tracefold.app` is their only composition seam.
+- Program, envelope, policy, metric, commit, tree, lock, tool, and resource identities are release evidence; identity changes use their explicit contract pins.
+- Merge evidence belongs to the exact tested HEAD. Main, manual release runs, and unknown impact always use the full plan; a PR may omit a lane only through a verified `not_required(reason)` plan entry.
+- Tests cross the affected public, persistence, process, broker, browser, or order-adapter seam. A mock cannot replace the risk mechanism, and skip/xfail/rerun cannot manufacture required green.
+- Use one task worktree and branch; keep the primary checkout clean. Follow `docs/agents/worktrees.md` for the single lifecycle policy.
+- Live data uses the operator-owned config reported by `uv run tracefold config`. Never print or copy secrets; report only redacted state and paths.
+- Internal migrations are hard cuts: update consumers and delete obsolete aliases, forwarding modules, dual reads, and compatibility paths in the same change.
 
-Two facts worth carrying into every task because they are easy to get wrong:
+## Task routing
 
-- PostgreSQL material facts and durable ledgers are the only business truth.
-  Provider frames, broker messages, process caches, projections, model outputs
-  and HTTP responses are not an alternate truth.
-- Program identity — the two Predictor instructions under `program_sha256`, the
-  computed `envelope_sha256` over code-owned envelope/route/budget behavior, and
-  the policy and metric versions — is release evidence. `envelope_sha256` is
-  computed, so it moves on its own; what you owe is the re-pinned line in
-  `tests/contract/test_program_release_identity.py`, which is the signature on an
-  explicit, evidence-gated identity migration.
+| Task surface | Must read | Bootstrap | Development tests | Completion plan |
+| --- | --- | --- | --- | --- |
+| docs-only | relevant document; issue tracker for planned work | none; Python only if its checker needs it | relevant docs/router checks | quality-static |
+| pure Python | relevant Architecture section; Development | `make sync` | focused pytest; `make test-fast` | quality + hermetic + owner PostgreSQL/runtime lanes |
+| PostgreSQL | Architecture DB section; Operations; Development | `make sync`; isolated PostgreSQL | focused real-PostgreSQL tests | quality + hermetic + postgres/migration/runtime lanes |
+| frontend | Frontend; Contracts | `npm ci` in `web/` | focused Vitest; affected lint/type/build | quality + frontend lanes |
+| CI/evidence | Development Verification Evidence Contract | `make sync`; Node only for affected harness/toolchain | trust-root and focused contract tests | full |
+| deploy/capital | Operations; Security; relevant Architecture section and Issue | full task bootstrap | affected production seam | full plus live receipt |
 
-## Agent skills
+## Truth routes
 
-## Completion evidence
-
-Completion evidence is bound to the exact tested HEAD. Results from an earlier
-commit, a skipped resource lane, or a modified acceptance contract are not
-merge or release evidence. Follow the Verification Evidence Contract in
-`docs/DEVELOPMENT.md`.
-
-### Issue tracker
-
-GitHub Issues in `AnalyThothAI/tracefold` are the project request and PRD
-tracker. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-
-Use the canonical label mapping in `docs/agents/triage-labels.md`.
-
-### Domain docs
-
-This is a single-context repository. Follow `docs/agents/domain.md` before
-domain exploration; absent optional context or ADR files are not errors.
-
-## Runtime config for real data
-
-Live-data runs use the operator-owned `~/.tracefold/config.yaml` for
-application/provider/credential/storage settings. Worker topology and
-safety/resource budgets are code-owned. Do not assume repository fixtures,
-example YAML, or `.env` files are the active runtime config. Before debugging
-provider data or News events against real data, run `uv run tracefold config`
-and confirm the reported `config_path` points at `~/.tracefold/config.yaml`.
-Never print or copy secret values; report only redacted booleans, paths, and
-diagnostic command results.
-
-## Frontend guardrails
-
-Frontend CSS is harness-constrained, not convention-only. Before changing
-`web/src` UI code, read `docs/FRONTEND.md`. Global side-effect CSS belongs only
-under `web/src/styles`; owner CSS must live beside the component or route that
-imports it. Feature CSS must use the owning feature namespace and must not restyle
-shared UI internals or Obsidian `.ods-*` selectors. `npm run lint` runs ESLint
-plus the frontend architecture harness; do not bypass it after CSS, responsive,
-route shell, or shared UI changes.
-
-## Where to read what
-
-| Need                                      | File                                                                                     |
-| ----------------------------------------- | ---------------------------------------------------------------------------------------- |
-| Install, run, docker                      | `docs/SETUP.md`                                                                          |
-| What the system is, and why               | `docs/ARCHITECTURE.md`                                                                   |
-| How code here must be written             | `docs/DEVELOPMENT.md` ("Architecture coding rules")                                      |
-| Frontend architecture                     | `docs/FRONTEND.md`                                                                       |
-| Public surfaces (config, HTTP, CLI)       | `docs/CONTRACTS.md`                                                                      |
-| Development, issue specs, design, testing | `docs/DEVELOPMENT.md`                                                                    |
-| Secrets, config, authn changes            | `docs/SECURITY.md`                                                                       |
-| Operations, workers, PostgreSQL diagnosis | `docs/OPERATIONS.md`                                                                     |
-| Business package boundaries               | `docs/ARCHITECTURE.md`; the public Python interfaces are the `tracefold.news` and `tracefold.trading` package roots |
-| Durable specs and acceptance              | GitHub Issues; repository conventions are in `docs/agents/issue-tracker.md`              |
-| Research notebooks: channels, run, commit  | `notebooks/README.md`                                                                    |
-| Auto-generated artefacts                  | `docs/generated/`                                                                        |
-
-CLI surface: `uv run tracefold --help` is the source of truth (snapshot at
-`docs/generated/cli-help.md`).
+- Architecture and package boundaries: relevant section of `docs/ARCHITECTURE.md`; coding and verification: `docs/DEVELOPMENT.md`.
+- Frontend and public surfaces: `docs/FRONTEND.md` and `docs/CONTRACTS.md`; operations, PostgreSQL, security, and deploy: `docs/OPERATIONS.md` and `docs/SECURITY.md`.
+- Install and generated artifacts: `docs/SETUP.md` and `docs/generated/`; notebooks: `notebooks/README.md`.
+- GitHub Issues are the PRD and acceptance tracker. Use `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, and `docs/agents/domain.md`.
+- During development run focused checks; at completion run the code-owned impact plan. `make test-evidence` remains the local full-plan entry, and the final main SHA always needs full `ci-gate` evidence.
 
 <!-- END SHARED AGENT ROUTER -->
 
-## Claude-only protocol: worktrees, plan mode, skills
+## Claude-specific invocation
 
-### Worktree by default (do not switch the primary checkout)
-
-The primary checkout (`~/Documents/Code/tracefold`) is the deployment checkout:
-it stays on `main`, stays clean, and is the only place `make up` / `make status`
-/ `make logs` run. Never `git checkout <branch>` there, never edit files there
-for a task, and never leave it dirty. Every code or docs change — including
-one-line fixes — starts in its own worktree so several tasks (and several
-sessions) can proceed at the same time:
-
-```bash
-git fetch origin main
-git worktree add -b claude/<issue-or-slug> .claude/worktrees/<slug> origin/main
-cd .claude/worktrees/<slug> && make sync && (cd web && npm ci) # per-worktree venv/node_modules
-```
-
-- `EnterWorktree` (Claude Code tool) is the same thing: it creates
-  `.claude/worktrees/<name>` from `origin/main` and moves the session there.
-  Sibling directories (`../tracefold-<slug>`, the historical `codex/*`
-  worktrees) are also fine; `.worktrees/` and `.claude/worktrees/` are
-  gitignored.
-- Branch from `origin/main`, not from local `main`; name branches
-  `claude/<issue>-<slug>` (or the agent's own prefix). One task, one worktree,
-  one branch, one PR.
-- Before editing, run `git worktree list` and `git status` — an existing
-  worktree belongs to its current task; do not reuse or clean it up.
-- Tests run inside the worktree (`make test`, focused lanes from
-  `docs/DEVELOPMENT.md`). The compose stack (`make up`, ports 8765/8766/5672,
-  the `tracefold-*` volumes) is shared and owned by the primary checkout: do not
-  run `make up`/`make down` from a worktree.
-- Finish: PR → merge → in the primary checkout `git pull --ff-only origin main`
-  → `make up` (deployment) → `git worktree remove .claude/worktrees/<slug>` and
-  `git branch -d claude/<slug>`; `git worktree prune` for stale entries.
-- Commit only on the task branch; never commit or push on `main` directly.
-
-### Plan mode and skills
-
-- Non-trivial changes (new table/worker/queue/prompt/policy, hard cuts) start
-  with the GitHub issue (`docs/agents/issue-tracker.md`) and a plan; use plan
-  mode to agree scope before editing.
-- Run `/code-review` on the branch before opening the PR; `/security-review`
-  when config, auth, credentials, or delivery code changes.
-- Live-data debugging follows "Runtime config for real data" above: read-only
-  SQL as the `tracefold_serve` role, `uv run tracefold config`, never print
-  secrets.
+- Follow the canonical lifecycle in `docs/agents/worktrees.md`.
+- Use `EnterWorktree` for a new Claude task worktree and keep an already assigned task worktree. Use the `claude/<issue>-<slug>` branch prefix unless the environment assigned another task prefix.
+- Use Plan mode for non-trivial hard cuts and keep durable scope or decision changes in the GitHub Issue.
+- Run `/code-review` on the final task branch and `/security-review` when the changed surface requires it.

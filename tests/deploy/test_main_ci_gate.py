@@ -45,12 +45,30 @@ def _repository(tmp_path: Path) -> Path:
     return root
 
 
-def _check(*, conclusion: str = "success", app_id: int = 15_368) -> dict[str, object]:
+def _check(
+    root: Path,
+    *,
+    conclusion: str = "success",
+    app_id: int = 15_368,
+    full: bool = True,
+) -> dict[str, object]:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True, text=True
+    ).stdout.strip()
     return {
         "name": "ci-gate",
         "status": "completed",
         "conclusion": conclusion,
         "app": {"id": app_id},
+        "details_url": "https://github.com/AnalyThothAI/tracefold/actions/runs/123/job/456",
+        "tracefold_workflow_run": {
+            "event": "push" if full else "pull_request",
+            "head_branch": "main" if full else "feature",
+            "head_sha": head,
+            "status": "completed",
+            "conclusion": "success",
+            "path": ".github/workflows/ci.yml",
+        },
     }
 
 
@@ -80,19 +98,29 @@ def test_verifier_cli_ignores_an_ambient_github_enterprise_host(tmp_path: Path) 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     fake_gh = bin_dir / "gh"
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True, text=True
+    ).stdout.strip()
     fake_gh.write_text(
         "#!/bin/sh\n"
         "host=''\n"
+        "endpoint=''\n"
         'while [ "$#" -gt 0 ]; do\n'
         '  case "$1" in\n'
         "    --hostname) host=$2; shift 2 ;;\n"
-        "    *) shift ;;\n"
+        "    *) endpoint=$1; shift ;;\n"
         "  esac\n"
         "done\n"
         '[ "$host" = github.com ] || exit 64\n'
-        "printf '%s\\n' "
+        'case "$endpoint" in\n'
+        "  */actions/runs/123) printf '%s\\n' "
+        f'\'{{"event":"push","head_branch":"main","head_sha":"{head}",'
+        '"status":"completed","conclusion":"success","path":".github/workflows/ci.yml"}\' ;;\n'
+        "  *) printf '%s\\n' "
         '\'{"check_runs":[{"id":1,"name":"ci-gate","status":"completed",'
-        '"conclusion":"success","app":{"id":15368}}]}\'\n',
+        '"conclusion":"success","app":{"id":15368},'
+        '"details_url":"https://github.com/AnalyThothAI/tracefold/actions/runs/123/job/456"}]}\' ;;\n'
+        "esac\n",
         encoding="utf-8",
     )
     fake_gh.chmod(0o700)
@@ -113,7 +141,8 @@ def test_verifier_cli_ignores_an_ambient_github_enterprise_host(tmp_path: Path) 
 def test_exact_main_sha_with_actions_ci_gate_can_deploy(tmp_path: Path) -> None:
     from scripts.require_main_ci import require_main_ci
 
-    assert require_main_ci(_repository(tmp_path), {"check_runs": [_check()]})
+    root = _repository(tmp_path)
+    assert require_main_ci(root, {"check_runs": [_check(root)]})
 
 
 def test_duplicate_ci_gate_definition_blocks_deployment(tmp_path: Path) -> None:
@@ -143,24 +172,32 @@ def test_duplicate_ci_gate_definition_blocks_deployment(tmp_path: Path) -> None:
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=root, check=True)
 
     with pytest.raises(RuntimeError, match="deployment_ci_gate_definition_not_unique"):
-        require_main_ci(root, {"check_runs": [_check()]})
+        require_main_ci(root, {"check_runs": [_check(root)]})
 
 
 @pytest.mark.parametrize(
-    ("payload", "error"),
+    ("case", "error"),
     [
-        ({"check_runs": []}, "main_ci_gate_missing"),
-        ({"check_runs": [_check(conclusion="failure")]}, "main_ci_gate_not_success"),
-        ({"check_runs": [_check(app_id=1)]}, "main_ci_gate_wrong_integration"),
+        ("missing", "main_ci_gate_missing"),
+        ("failure", "main_ci_gate_not_success"),
+        ("spoofed", "main_ci_gate_wrong_integration"),
+        ("selected", "main_ci_gate_not_full_plan"),
     ],
 )
-def test_missing_failed_or_spoofed_ci_gate_blocks_deployment(
-    tmp_path: Path, payload: dict[str, object], error: str
-) -> None:
+def test_missing_failed_or_spoofed_ci_gate_blocks_deployment(tmp_path: Path, case: str, error: str) -> None:
     from scripts.require_main_ci import require_main_ci
 
+    root = _repository(tmp_path)
+    if case == "missing":
+        payload: dict[str, object] = {"check_runs": []}
+    elif case == "failure":
+        payload = {"check_runs": [_check(root, conclusion="failure")]}
+    elif case == "spoofed":
+        payload = {"check_runs": [_check(root, app_id=1)]}
+    else:
+        payload = {"check_runs": [_check(root, full=False)]}
     with pytest.raises(RuntimeError, match=error):
-        require_main_ci(_repository(tmp_path), payload)
+        require_main_ci(root, payload)
 
 
 def test_commit_ahead_of_verified_origin_main_blocks_deployment(tmp_path: Path) -> None:
@@ -185,7 +222,7 @@ def test_commit_ahead_of_verified_origin_main_blocks_deployment(tmp_path: Path) 
     )
 
     with pytest.raises(RuntimeError, match="deployment_head_not_origin_main"):
-        require_main_ci(root, {"check_runs": [_check()]})
+        require_main_ci(root, {"check_runs": [_check(root)]})
 
 
 @pytest.mark.parametrize("state", ["unstaged", "staged", "untracked", "ignored-env"])
@@ -205,7 +242,7 @@ def test_dirty_deployment_source_blocks_even_when_head_ci_is_green(tmp_path: Pat
         (root / ".env").write_text("COMPOSE_FILE=surprise.yaml\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="deployment_source_dirty"):
-        require_main_ci(root, {"check_runs": [_check()]})
+        require_main_ci(root, {"check_runs": [_check(root)]})
 
 
 def test_secondary_worktree_cannot_deploy_the_primary_stack(tmp_path: Path) -> None:
@@ -216,7 +253,7 @@ def test_secondary_worktree_cannot_deploy_the_primary_stack(tmp_path: Path) -> N
     subprocess.run(["git", "worktree", "add", "--detach", str(worktree), "HEAD"], cwd=root, check=True)
 
     with pytest.raises(RuntimeError, match="deployment_checkout_not_primary"):
-        require_main_ci(worktree, {"check_runs": [_check()]})
+        require_main_ci(worktree, {"check_runs": [_check(root)]})
 
 
 def test_stale_local_main_cannot_redeploy_an_old_green_sha(tmp_path: Path) -> None:
@@ -247,7 +284,7 @@ def test_stale_local_main_cannot_redeploy_an_old_green_sha(tmp_path: Path) -> No
     subprocess.run(["git", "push", "-q", "origin", "main"], cwd=updater, check=True)
 
     with pytest.raises(RuntimeError, match="deployment_head_not_remote_main"):
-        require_main_ci(root, {"check_runs": [_check()]})
+        require_main_ci(root, {"check_runs": [_check(root)]})
 
 
 @pytest.mark.parametrize(

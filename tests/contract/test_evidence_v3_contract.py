@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from hypothesis import settings
 
+from scripts import ci_plan
 from tests.support import evidence, profile
 
 pytestmark = pytest.mark.slow
@@ -1152,6 +1153,159 @@ def test_aggregate_succeeds_only_after_every_required_lane_is_green(tmp_path: Pa
     assert set(manifest["lanes"]) == {"python-hermetic", "frontend-unit"}
 
 
+def test_selected_plan_aggregate_records_every_not_required_lane_without_requiring_its_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(evidence, "tested_head_changes", lambda root: ())
+    lane_dir = tmp_path / "lanes"
+    output = tmp_path / "manifest.json"
+    plan_path = tmp_path / "plan.json"
+    lane_dir.mkdir()
+    root = Path(evidence.__file__).resolve().parents[2]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True, text=True
+    ).stdout.strip()
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=("README.md",),
+        tested_sha=head,
+        base_sha="0" * 40,
+    )
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setenv("TRACEFOLD_CI_PLAN_SHA256", plan["plan_sha256"])
+    (lane_dir / "quality-static.json").write_text(json.dumps(_lane_payload("quality-static")), encoding="utf-8")
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--plan",
+            str(plan_path),
+        )
+    )
+
+    assert result == 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["overall"] == "success"
+    assert manifest["plan_sha256"] == plan["plan_sha256"]
+    assert manifest["required_lanes"] == ["quality-static"]
+    assert set(manifest["not_required"]) == set(evidence.REQUIRED_LANES) - {"quality-static"}
+    assert manifest["not_required"]["runtime-process"] == "no_changed_surface_requires_lane"
+    assert manifest["inventory"]["scope"] == "selected"
+
+
+def test_selected_plan_aggregate_rejects_a_manifest_for_a_not_required_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(evidence, "tested_head_changes", lambda root: ())
+    lane_dir = tmp_path / "lanes"
+    output = tmp_path / "manifest.json"
+    plan_path = tmp_path / "plan.json"
+    lane_dir.mkdir()
+    root = Path(evidence.__file__).resolve().parents[2]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True, text=True
+    ).stdout.strip()
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=("README.md",),
+        tested_sha=head,
+        base_sha="0" * 40,
+    )
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setenv("TRACEFOLD_CI_PLAN_SHA256", plan["plan_sha256"])
+    for lane in ("quality-static", "runtime-process"):
+        (lane_dir / f"{lane}.json").write_text(json.dumps(_lane_payload(lane)), encoding="utf-8")
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--plan",
+            str(plan_path),
+        )
+    )
+
+    assert result != 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert "not_required_lane_manifest_present:runtime-process" in manifest["errors"]
+
+
+def test_selected_python_plan_proves_the_complete_union_of_each_required_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(evidence, "tested_head_changes", lambda root: ())
+    lane_dir = tmp_path / "lanes"
+    output = tmp_path / "manifest.json"
+    plan_path = tmp_path / "plan.json"
+    lane_dir.mkdir()
+    root = Path(evidence.__file__).resolve().parents[2]
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, check=True, text=True
+    ).stdout.strip()
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=("src/tracefold/news/events/facts.py",),
+        tested_sha=head,
+        base_sha="0" * 40,
+    )
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    monkeypatch.setenv("TRACEFOLD_CI_PLAN_SHA256", plan["plan_sha256"])
+    inventory = [f"tests/test_fixture.py::test_{index}" for index in range(4)]
+    ownership = {lane: [] for lane in evidence.PYTHON_LANES}
+    ownership.update(
+        {
+            "python-hermetic": [inventory[0]],
+            "postgres-behavior": [inventory[1]],
+            "runtime-process": inventory[2:],
+        }
+    )
+    (lane_dir / "quality-static.json").write_text(json.dumps(_lane_payload("quality-static")), encoding="utf-8")
+    for lane in ("python-hermetic", "postgres-behavior", "runtime-process"):
+        selected = ownership[lane]
+        payload = _lane_payload(lane, selected=len(selected), passed=len(selected))
+        payload.update(
+            {
+                "selected_nodeids": selected,
+                "inventory_nodeids": inventory,
+                "ownership_nodeids": ownership,
+                "inventory_count": len(inventory),
+                "inventory_sha256": evidence._nodeids_sha256(inventory),
+            }
+        )
+        (lane_dir / f"{lane}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    arguments = (
+        "aggregate",
+        "--lane-dir",
+        str(lane_dir),
+        "--output",
+        str(output),
+        "--plan",
+        str(plan_path),
+    )
+    assert evidence.main(arguments) == 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["inventory"]["expected"] == manifest["inventory"]["executed"] == 4
+
+    runtime_path = lane_dir / "runtime-process.json"
+    runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+    runtime["selected_nodeids"] = runtime["selected_nodeids"][:1]
+    runtime["selected"] = runtime["passed"] = 1
+    runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+
+    assert evidence.main(arguments) != 0
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert "required_lane_owner_selection_mismatch:runtime-process" in manifest["errors"]
+    assert manifest["inventory"]["missing"] == [inventory[3]]
+
+
 @pytest.mark.parametrize(
     ("second_selection", "expected_error", "inventory_field"),
     [
@@ -1214,6 +1368,7 @@ def test_v3_union_fails_closed_on_missing_or_duplicate_nodeids(
     [
         ("tests/news/test_news_v3_pure.py", set(), "python-hermetic"),
         ("tests/contract/test_cli.py", {"contract"}, "python-hermetic"),
+        ("tests/contract/test_ci_impact_plan.py", {"contract"}, "trust-root"),
         ("tests/contract/test_evidence_v3_contract.py", {"contract", "slow"}, "trust-root"),
         ("tests/deploy/test_main_ci_gate.py", {"deploy"}, "trust-root"),
         ("tests/contract/test_openapi_codegen.py", {"contract", "external_codegen"}, "frontend-python"),

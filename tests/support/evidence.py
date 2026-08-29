@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import threading
@@ -55,6 +56,7 @@ _TRUST_ROOT_MODULES = frozenset(
     {
         "tests/architecture/test_docs_surface.py",
         "tests/architecture/test_test_resource_declarations.py",
+        "tests/contract/test_ci_impact_plan.py",
         "tests/contract/test_evidence_v3_contract.py",
         "tests/contract/test_evidence_v2_v3_shadow_contract.py",
         "tests/contract/test_test_profile.py",
@@ -813,6 +815,10 @@ class _EvidenceRecorder:
                 "marker_lanes": {marker: self._marker_lane(marker) for marker in self.required_markers},
                 "selected_nodeids": selected_nodeids,
                 "inventory_nodeids": inventory_nodeids,
+                "ownership_nodeids": {
+                    lane: sorted(nodeid for nodeid, owner in self.owner_by_nodeid.items() if owner == lane)
+                    for lane in PYTHON_LANES
+                },
                 "inventory_sha256": _nodeids_sha256(inventory_nodeids),
                 "inventory_count": len(inventory_nodeids),
                 "plan_sha256": _plan_sha256(),
@@ -1528,8 +1534,15 @@ def _nodeids_sha256(nodeids: Sequence[str]) -> str:
 
 
 def _plan_sha256() -> str:
+    bound_plan = os.environ.get("TRACEFOLD_CI_PLAN_SHA256", "").strip()
+    if bound_plan:
+        if not re.fullmatch(r"[0-9a-f]{64}", bound_plan):
+            raise ValueError("evidence_ci_plan_sha256_invalid")
+        return bound_plan
+    impact_planner = _REPO_ROOT / "scripts" / "ci_plan.py"
     payload = {
         "schema_version": AGGREGATE_SCHEMA_VERSION,
+        "impact_policy_sha256": _sha256(impact_planner) if impact_planner.is_file() else "not-applicable",
         "required_lanes": list(REQUIRED_LANES),
         "commands": {lane: list(commands) for lane, commands in _FULL_PLAN_COMMANDS.items()},
         "python_lanes": list(PYTHON_LANES),
@@ -1581,10 +1594,42 @@ def _aggregate(arguments: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(prog="python -m tests.support.evidence aggregate")
     parser.add_argument("--lane-dir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--required-lane", action="append", required=True)
+    parser.add_argument("--required-lane", action="append", default=[])
+    parser.add_argument("--plan", type=Path)
     options = parser.parse_args(arguments)
-    required_lanes = tuple(dict.fromkeys(options.required_lane))
     errors: list[str] = []
+    selected_plan: dict[str, Any] | None = None
+    not_required: dict[str, str] = {}
+    if options.plan:
+        from scripts import ci_plan
+
+        try:
+            raw_plan = json.loads(options.plan.read_text(encoding="utf-8"))
+            if not isinstance(raw_plan, dict):
+                raise ValueError("ci_plan_payload_invalid")
+            ci_plan.verify_plan(raw_plan)
+            selected_plan = raw_plan
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"ci_plan_invalid:{exc}")
+        if options.required_lane:
+            errors.append("ci_plan_and_required_lane_conflict")
+    elif not options.required_lane:
+        parser.error("one of --plan or --required-lane is required")
+
+    if selected_plan is None:
+        required_lanes = tuple(dict.fromkeys(options.required_lane)) or REQUIRED_LANES
+        aggregate_plan_sha256 = _plan_sha256()
+        full_plan = True
+    else:
+        required_lanes = tuple(lane for lane in REQUIRED_LANES if selected_plan["lanes"][lane]["status"] == "required")
+        not_required = {
+            lane: selected_plan["lanes"][lane]["reason"]
+            for lane in REQUIRED_LANES
+            if selected_plan["lanes"][lane]["status"] == "not_required"
+        }
+        aggregate_plan_sha256 = str(selected_plan["plan_sha256"])
+        full_plan = bool(selected_plan["full"])
+
     worktree_changes = list(tested_head_changes(_REPO_ROOT))
     if worktree_changes:
         errors.append("evidence_tested_head_dirty")
@@ -1596,9 +1641,21 @@ def _aggregate(arguments: Sequence[str]) -> int:
         errors.append("evidence_github_sha_mismatch")
     uv_lock_sha256 = _sha256(_REPO_ROOT / "uv.lock")
     package_lock_sha256 = _sha256(_REPO_ROOT / "web" / "package-lock.json")
-    plan_sha256 = _plan_sha256()
+    plan_sha256 = aggregate_plan_sha256
     migration_head = _migration_head()
+    present_lane_names = {path.stem for path in options.lane_dir.glob("*.json")}
+    errors.extend(f"unexpected_lane_manifest:{lane}" for lane in sorted(present_lane_names - set(REQUIRED_LANES)))
+    errors.extend(
+        f"not_required_lane_manifest_present:{lane}" for lane in sorted(present_lane_names & set(not_required))
+    )
+    if selected_plan is not None:
+        if selected_plan.get("tested_sha") != commit_sha:
+            errors.append("ci_plan_tested_sha_mismatch")
+        bound_plan_sha256 = os.environ.get("TRACEFOLD_CI_PLAN_SHA256", "").strip()
+        if bound_plan_sha256 and bound_plan_sha256 != plan_sha256:
+            errors.append("ci_plan_environment_sha256_mismatch")
     expected_inventory: list[str] | None = None
+    expected_ownership: dict[str, list[str]] | None = None
     executed_nodeids: list[str] = []
     for lane in required_lanes:
         path = options.lane_dir / f"{lane}.json"
@@ -1672,15 +1729,41 @@ def _aggregate(arguments: Sequence[str]) -> int:
             expected_inventory = inventory_nodeids
         elif inventory_nodeids != expected_inventory:
             errors.append(f"required_lane_inventory_mismatch:{lane}")
+        if selected_plan is not None:
+            raw_ownership = lane_manifest.get("ownership_nodeids")
+            ownership_valid = isinstance(raw_ownership, dict) and set(raw_ownership) == set(PYTHON_LANES)
+            if ownership_valid:
+                ownership = {owner: raw_ownership[owner] for owner in PYTHON_LANES}
+                ownership_valid = all(_is_sorted_unique_strings(nodeids) for nodeids in ownership.values())
+            else:
+                ownership = {}
+            if not ownership_valid:
+                errors.append(f"required_lane_ownership_invalid:{lane}")
+            else:
+                owned_nodeids = [nodeid for nodeids in ownership.values() for nodeid in nodeids]
+                if len(owned_nodeids) != len(set(owned_nodeids)) or sorted(owned_nodeids) != inventory_nodeids:
+                    errors.append(f"required_lane_ownership_inventory_mismatch:{lane}")
+                if selected_nodeids != ownership[lane]:
+                    errors.append(f"required_lane_owner_selection_mismatch:{lane}")
+                if expected_ownership is None:
+                    expected_ownership = ownership
+                elif ownership != expected_ownership:
+                    errors.append(f"required_lane_ownership_mismatch:{lane}")
         executed_nodeids.extend(selected_nodeids)
 
-    expected = set(expected_inventory or [])
+    repository_inventory = set(expected_inventory or [])
     nodeid_counts = Counter(executed_nodeids)
     executed = set(nodeid_counts)
+    if full_plan:
+        expected = repository_inventory
+    elif expected_ownership is not None:
+        expected = {nodeid for lane in required_lanes if lane in PYTHON_LANES for nodeid in expected_ownership[lane]}
+    else:
+        expected = set()
     missing = sorted(expected - executed)
-    unexpected = sorted(executed - expected)
+    unexpected = sorted(executed - repository_inventory)
     duplicates = sorted(nodeid for nodeid, count in nodeid_counts.items() if count > 1)
-    if expected_inventory is None:
+    if expected_inventory is None and any(lane in PYTHON_LANES for lane in required_lanes):
         errors.append("python_inventory_missing")
     if missing:
         errors.append(f"python_inventory_missing_nodeids:{len(missing)}")
@@ -1695,12 +1778,15 @@ def _aggregate(arguments: Sequence[str]) -> int:
         "uv_lock_sha256": uv_lock_sha256,
         "package_lock_sha256": package_lock_sha256,
         "plan_sha256": plan_sha256,
+        "plan": selected_plan,
         "migration_head": migration_head,
         "required_lanes": list(required_lanes),
+        "not_required": not_required,
         "worktree": {"clean": not worktree_changes, "changes": worktree_changes},
         "overall": "failure" if errors else "success",
         "errors": sorted(set(errors)),
         "inventory": {
+            "scope": "full" if full_plan else "selected",
             "expected": len(expected),
             "executed": len(executed),
             "executions": len(executed_nodeids),

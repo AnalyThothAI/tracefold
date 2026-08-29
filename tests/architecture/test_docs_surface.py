@@ -9,6 +9,8 @@ from tests.support import evidence
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
 MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+)\)")
+BEGIN = "<!-- BEGIN SHARED AGENT ROUTER -->"
+END = "<!-- END SHARED AGENT ROUTER -->"
 
 
 def test_make_check_runs_each_canonical_drift_checker_once_without_external_resources() -> None:
@@ -114,3 +116,58 @@ def test_current_documentation_links_resolve() -> None:
             if target_path and not (source.parent / target_path).resolve().exists():
                 missing.append(f"{source.relative_to(ROOT)} -> {target}")
     assert missing == []
+
+
+def test_agent_task_matrix_has_one_unambiguous_dry_run_for_each_acceptance_surface() -> None:
+    source = (DOCS / "agents" / "shared-router.md").read_text(encoding="utf-8")
+    rows: dict[str, tuple[str, str, str, str]] = {}
+    for line in source.splitlines():
+        cells = tuple(cell.strip() for cell in line.strip().strip("|").split("|"))
+        if len(cells) == 5 and cells[0] in {"docs-only", "pure Python", "PostgreSQL", "frontend"}:
+            rows[cells[0]] = cells[1:]
+
+    assert rows == {
+        "docs-only": (
+            "relevant document; issue tracker for planned work",
+            "none; Python only if its checker needs it",
+            "relevant docs/router checks",
+            "quality-static",
+        ),
+        "pure Python": (
+            "relevant Architecture section; Development",
+            "`make sync`",
+            "focused pytest; `make test-fast`",
+            "quality + hermetic + owner PostgreSQL/runtime lanes",
+        ),
+        "PostgreSQL": (
+            "Architecture DB section; Operations; Development",
+            "`make sync`; isolated PostgreSQL",
+            "focused real-PostgreSQL tests",
+            "quality + hermetic + postgres/migration/runtime lanes",
+        ),
+        "frontend": (
+            "Frontend; Contracts",
+            "`npm ci` in `web/`",
+            "focused Vitest; affected lint/type/build",
+            "quality + frontend lanes",
+        ),
+    }
+
+
+def test_generated_agent_routers_share_only_the_small_router_and_one_canonical_worktree_policy() -> None:
+    source = (DOCS / "agents" / "shared-router.md").read_text(encoding="utf-8")
+    shared = source.split(BEGIN, 1)[1].split(END, 1)[0]
+    invariant_section = shared.split("## Invariants", 1)[1].split("## Task routing", 1)[0]
+
+    assert 5 <= sum(line.startswith("- ") for line in invariant_section.splitlines()) <= 10
+    assert "## Agent skills" not in shared
+    assert len(shared.splitlines()) <= 90
+    for router_name in ("AGENTS.md", "CLAUDE.md"):
+        router = (ROOT / router_name).read_text(encoding="utf-8")
+        assert router.split(BEGIN, 1)[1].split(END, 1)[0] == shared
+        appendix = router.split(END, 1)[1]
+        assert "docs/agents/worktrees.md" in appendix
+        assert "| Task surface |" not in appendix
+        assert "npm ci" not in appendix
+        assert "make sync" not in appendix
+        assert "make up" not in appendix
