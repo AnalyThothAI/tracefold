@@ -15,36 +15,24 @@ TRACEFOLD_NAUTILUS_URL ?= http://127.0.0.1:$(TRACEFOLD_NAUTILUS_PORT)
 TRACEFOLD_COMPOSE_WAIT_SECONDS ?= 300
 export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WORKERS_PORT TRACEFOLD_NAUTILUS_HOST TRACEFOLD_NAUTILUS_PORT
 
-TRACEFOLD_TEST_ARTIFACT_DIR ?= artifacts/test-evidence
-TRACEFOLD_TEST_LANE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/lanes
-TRACEFOLD_TEST_PROFILE_DIR := $(TRACEFOLD_TEST_ARTIFACT_DIR)/profiles
-TEST_PROFILE_ARGS = $(if $(TRACEFOLD_TEST_PROFILE_PATH),-p tests.support.profile --test-profile="$(TRACEFOLD_TEST_PROFILE_PATH)" --test-profile-lane="$(TRACEFOLD_TEST_PROFILE_LANE)")
-TEST_PROFILE_HISTORY_ARGS = $(if $(TRACEFOLD_TEST_PROFILE_HISTORY_DIR),--history-dir "$(TRACEFOLD_TEST_PROFILE_HISTORY_DIR)")
-QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not generated and not external_codegen and not slow and not scheduled"
+TRACEFOLD_TEST_RESULT_DIR ?= artifacts/test-results
+QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not external_codegen and not slow and not scheduled"
 FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
-DETERMINISTIC_TEST_SELECTION := tests -m "not live and not scheduled"
-PYTHON_EVIDENCE_LANES := python-hermetic postgres-behavior migration runtime-process frontend-python trust-root
-EVIDENCE_REQUIRED_LANES := quality-static $(PYTHON_EVIDENCE_LANES) frontend-typecheck frontend-lint frontend-architecture frontend-unit frontend-format frontend-build browser
+CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not live and not slow and not scheduled and not external_codegen"
+CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
+CI_POSTGRES_BEHAVIOR_SELECTION := tests/integration -m "integration and not migration and not slow and not scheduled"
+CI_MIGRATION_SELECTION := tests/integration -m "migration and not slow and not scheduled"
+CI_RUNTIME_PROCESS_SELECTION := tests -m "(deploy or e2e or golden or slow) and not live and not scheduled"
+CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
-define SEAL_EVIDENCE_LANE
-uv run python -m tests.support.evidence seal-clean --manifest "$(TRACEFOLD_TEST_LANE_DIR)/$(1).json"
+define RUN_REQUIRED_PYTEST
+PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci \
+	TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run python -m pytest -p _hypothesis_pytestplugin \
+	$(1) --maxfail=0 --override-ini=xfail_strict=true \
+	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-define RUN_PROFILED_PYTEST
-uv run python -m pytest $(TEST_PROFILE_ARGS) $(1) $(2)
-endef
-
-define RUN_EVIDENCE_PYTEST
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pytest \
-	-p tests.support.evidence -p tests.support.profile -p _hypothesis_pytestplugin $(DETERMINISTIC_TEST_SELECTION) \
-	--evidence-lane="$(1)" \
-	--evidence-manifest="$(TRACEFOLD_TEST_LANE_DIR)/$(1).json" \
-	--test-profile="$(TRACEFOLD_TEST_PROFILE_DIR)/$(1).json" \
-	--test-profile-lane="$(1)" \
-	--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit-$(1).xml" --durations=50
-endef
-
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-evidence-prepare test-evidence-quality-static test-evidence-python-hermetic test-evidence-postgres-behavior test-evidence-migration test-evidence-runtime-process test-evidence-frontend-python test-evidence-trust-root test-evidence-frontend test-evidence-aggregate test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-results-prepare ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -64,141 +52,83 @@ tool-path: ## ensure uv tool executables are on PATH
 test: test-fast ## hermetic default regression (alias for test-fast)
 
 test-fast: ## unit + hermetic contract + semantic architecture; no external resources
-	@$(call RUN_PROFILED_PYTEST,$(FAST_TEST_SELECTION))
-
-define COLLECT_V3_PROFILE
-_collect-profile-$(1):
-	@$$(call RUN_PROFILED_PYTEST,$$(DETERMINISTIC_TEST_SELECTION),--test-profile-owner-lane="$(1)" --collect-only -q)
-endef
-
-$(foreach lane,$(PYTHON_EVIDENCE_LANES),$(eval $(call COLLECT_V3_PROFILE,$(lane))))
+	@uv run python -m pytest $(FAST_TEST_SELECTION)
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
 	@uv run python -m pytest
 
-test-evidence-prepare:
-	@uv run python -m tests.support.evidence --assert-clean
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@rm -f "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" "$(TRACEFOLD_TEST_LANE_DIR)"/*.json \
-		"$(TRACEFOLD_TEST_PROFILE_DIR)"/*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)"/junit-*.xml \
-		"$(TRACEFOLD_TEST_ARTIFACT_DIR)"/vitest-*.json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
+test-results-prepare:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)"/junit-*.xml \
+		"$(TRACEFOLD_TEST_RESULT_DIR)"/vitest-*.json \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
-test-evidence-quality-static:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)"
-	@uv run python -m tests.support.evidence record-command \
-		--lane quality-static --output "$(TRACEFOLD_TEST_LANE_DIR)/quality-static.json" \
-		-- make check-static
-	@$(call SEAL_EVIDENCE_LANE,quality-static)
+ci-quality-static:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
+	@$(MAKE) --no-print-directory check-static
+	@$(call RUN_REQUIRED_PYTEST,$(CI_QUALITY_SELECTION),junit-quality-static.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
 
-test-evidence-python-hermetic:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,python-hermetic)
-	@$(call SEAL_EVIDENCE_LANE,python-hermetic)
+ci-python-hermetic:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_PYTHON_HERMETIC_SELECTION),junit-python-hermetic.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
 
-test-evidence-postgres-behavior:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,postgres-behavior)
-	@$(call SEAL_EVIDENCE_LANE,postgres-behavior)
+ci-postgres-behavior:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_POSTGRES_BEHAVIOR_SELECTION),junit-postgres-behavior.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
 
-test-evidence-migration:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,migration)
-	@$(call SEAL_EVIDENCE_LANE,migration)
+ci-migration:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_MIGRATION_SELECTION),junit-migration.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 
-test-evidence-runtime-process:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,runtime-process)
-	@$(call SEAL_EVIDENCE_LANE,runtime-process)
+ci-runtime-process:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_RUNTIME_PROCESS_SELECTION),junit-runtime-process.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
 
-test-evidence-frontend-python:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,frontend-python)
-	@$(call SEAL_EVIDENCE_LANE,frontend-python)
-
-test-evidence-trust-root:
-	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
-	@$(call RUN_EVIDENCE_PYTEST,trust-root)
-	@$(call SEAL_EVIDENCE_LANE,trust-root)
-
-test-evidence-frontend: test-evidence-frontend-python
-	@uv run python -m tests.support.evidence record-command \
-		--lane frontend-typecheck --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-typecheck.json" \
-		--tool typescript=$$(node -p "require('./web/node_modules/typescript/package.json').version") \
-		-- npm --prefix web run typecheck
-	@$(call SEAL_EVIDENCE_LANE,frontend-typecheck)
-	@uv run python -m tests.support.evidence record-command \
-		--lane frontend-lint --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-lint.json" \
-		--tool eslint=$$(node -p "require('./web/node_modules/eslint/package.json').version") \
-		-- npm --prefix web run lint:eslint
-	@$(call SEAL_EVIDENCE_LANE,frontend-lint)
-	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
-		npm run test:architecture -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
-	@uv run python -m tests.support.evidence record-vitest \
-		--lane frontend-architecture \
-		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
-		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-architecture.json"
-	@$(call SEAL_EVIDENCE_LANE,frontend-architecture)
-	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
-		npm run test:unit -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
-	@uv run python -m tests.support.evidence record-vitest \
-		--lane frontend-unit \
-		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
-		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-unit.json"
-	@$(call SEAL_EVIDENCE_LANE,frontend-unit)
-	@uv run python -m tests.support.evidence record-command \
-		--lane frontend-format --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-format.json" \
-		--tool prettier=$$(node -p "require('./web/node_modules/prettier/package.json').version") \
-		-- npm --prefix web run format:check
-	@$(call SEAL_EVIDENCE_LANE,frontend-format)
-	@uv run python -m tests.support.evidence record-command \
-		--lane frontend-build --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-build.json" \
-		--tool vite=$$(node -p "require('./web/node_modules/vite/package.json').version") \
-		-- npm --prefix web run build
-	@$(call SEAL_EVIDENCE_LANE,frontend-build)
+ci-frontend:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-frontend-python.xml" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json" \
+		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_FRONTEND_PYTHON_SELECTION),junit-frontend-python.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-frontend-python.xml"
+	@npm --prefix web run typecheck
+	@npm --prefix web run lint:eslint
+	@npm --prefix web run test:architecture -- \
+		--allowOnly=false --reporter=json \
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json"
+	@uv run python scripts/require_test_reports.py \
+		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json"
+	@npm --prefix web run test:unit -- \
+		--allowOnly=false --reporter=json \
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
+	@uv run python scripts/require_test_reports.py \
+		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
+	@npm --prefix web run format:check
+	@npm --prefix web run build
 	@uv run python -m tests.browser.run_full_stack_smoke \
-		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		--playwright-selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
-	@uv run python -m tests.support.evidence record-playwright \
-		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
-		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
-	@$(call SEAL_EVIDENCE_LANE,browser)
+		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
+	@uv run python scripts/require_test_reports.py \
+		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
-test-evidence-aggregate:
-	@uv run python -m tests.support.evidence --assert-clean
-	@uv run python -m tests.support.evidence aggregate \
-		--lane-dir "$(TRACEFOLD_TEST_LANE_DIR)" \
-		--output "$(TRACEFOLD_TEST_ARTIFACT_DIR)/manifest.json" \
-		$(if $(TRACEFOLD_CI_PLAN_PATH),--plan "$(TRACEFOLD_CI_PLAN_PATH)",$(foreach lane,$(EVIDENCE_REQUIRED_LANES),--required-lane $(lane)))
-
-test-evidence: ## exact-HEAD V3 evidence: every deterministic test has one primary lane
-	@$(MAKE) --no-print-directory test-evidence-prepare
-	@$(MAKE) --no-print-directory test-evidence-quality-static
-	@$(MAKE) --no-print-directory test-evidence-python-hermetic
-	@$(MAKE) --no-print-directory test-evidence-postgres-behavior
-	@$(MAKE) --no-print-directory test-evidence-migration
-	@$(MAKE) --no-print-directory test-evidence-runtime-process
-	@$(MAKE) --no-print-directory test-evidence-trust-root
-	@$(MAKE) --no-print-directory test-evidence-frontend
-	@$(MAKE) --no-print-directory test-evidence-aggregate
-
-test-profile: ## reproduce #335 entrypoint inventory and duration-ratchet report without running tests
-	@rm -rf artifacts/test-profile/collection
-	@uv run python -m tests.support.profile collect \
-		--output-dir artifacts/test-profile/collection
-	@uv run python -m tests.support.profile aggregate \
-		--profile-dir artifacts/test-profile/collection \
-		--baseline tests/fixtures/issue_335_test_profile_baseline.json \
-		--output artifacts/test-profile/report.json
-
-test-profile-ratchet: ## enforce #335 duration ratchets from real lane profiles plus prior reports
-	@test -d "$(TRACEFOLD_TEST_PROFILE_DIR)" || { echo "TRACEFOLD_TEST_PROFILE_DIR is required" >&2; exit 2; }
-	@uv run python -m tests.support.profile aggregate \
-		--profile-dir "$(TRACEFOLD_TEST_PROFILE_DIR)" \
-		$(TEST_PROFILE_HISTORY_ARGS) --baseline tests/fixtures/issue_335_test_profile_baseline.json \
-		--output artifacts/test-profile/ratchet-report.json \
-		--enforce-ratchets
+test-evidence: ## complete local verification; merge/release authority is exact-SHA main CI
+	@$(MAKE) --no-print-directory test-results-prepare
+	@$(MAKE) --no-print-directory ci-quality-static
+	@$(MAKE) --no-print-directory ci-python-hermetic
+	@$(MAKE) --no-print-directory ci-postgres-behavior
+	@$(MAKE) --no-print-directory ci-migration
+	@$(MAKE) --no-print-directory ci-runtime-process
+	@$(MAKE) --no-print-directory ci-frontend
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property
@@ -213,18 +143,13 @@ test-frontend: ## frontend type, architecture, unit/component tests, format, and
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
 
 test-browser-smoke: ## one real FastAPI static/bootstrap/bearer/news path in Chromium
-	@rm -f "$(TRACEFOLD_TEST_LANE_DIR)/browser.json" \
-		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		"$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 	@npm --prefix web run build:checked
-	@mkdir -p "$(TRACEFOLD_TEST_ARTIFACT_DIR)" "$(TRACEFOLD_TEST_LANE_DIR)"
 	@uv run python -m tests.browser.run_full_stack_smoke \
-		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		--playwright-selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
-	@uv run python -m tests.support.evidence record-playwright \
-		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
-		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
-		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
+		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
+	@uv run python scripts/require_test_reports.py \
+		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
 test-visual: ## explicit four-viewport Playwright interaction/screenshot diagnostics
 	@npm --prefix web run test:e2e
@@ -245,14 +170,14 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run python -m compileall src tests
 
 check: check-static ## static checks plus local architecture/contract regression
-	@$(call RUN_PROFILED_PYTEST,$(QUALITY_TEST_SELECTION))
+	@uv run python -m pytest $(QUALITY_TEST_SELECTION)
 
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
 trading-smoke: ## Decision/Capital no-key plus retained Intent evidence on real PostgreSQL (#350)
 	@echo "This focused lane proves no-key binding projection, Policy/Capital attribution, and retained Intent evidence."
-	@echo "It does not contact Binance Demo and is not a substitute for test-evidence."
+	@echo "It does not contact Binance Demo and is not a substitute for the complete verification entry."
 	@uv run python -m pytest tests/integration/test_trading_intents.py tests/integration/test_trading_binding_projection.py -m integration
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests

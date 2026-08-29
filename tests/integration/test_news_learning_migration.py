@@ -21,7 +21,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
 def _assert_prior_epochs_immutable(

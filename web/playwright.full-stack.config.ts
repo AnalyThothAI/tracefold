@@ -9,15 +9,13 @@ const jsonOutput =
 
 export default defineConfig({
   testDir: "./tests/e2e/full-stack",
+  failOnFlakyTests: true,
   forbidOnly: true,
   fullyParallel: false,
   repeatEach: 1,
   retries: 0,
-  reporter: [
-    ["list"],
-    ["json", { outputFile: jsonOutput }],
-    ["./tests/support/playwrightEvidenceReporter.ts"],
-  ],
+  updateSnapshots: "none",
+  reporter: [["list"], ["json", { outputFile: jsonOutput }]],
   workers: 1,
   use: {
     ...devices["Desktop Chrome"],

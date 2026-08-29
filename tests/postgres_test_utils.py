@@ -46,8 +46,8 @@ def connect_postgres_test(*_: Any, read_only: bool = False, dsn: str | None = No
         conn.row_factory = _compat_row
         assert_dedicated_test_database(conn, expected_database=_database_name(selected_dsn))
     except OperationalError as exc:
-        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
-            pytest.fail(f"PostgreSQL test database is required in evidence mode: {exc}", pytrace=False)
+        if os.environ.get("TRACEFOLD_TEST_RESOURCES_REQUIRED") == "1":
+            pytest.fail(f"PostgreSQL test database is required for complete verification: {exc}", pytrace=False)
         pytest.skip(f"PostgreSQL test database is not available: {exc}")
     if read_only:
         conn.execute("SET default_transaction_read_only = on")

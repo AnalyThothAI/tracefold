@@ -3378,6 +3378,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "defusedxml" },
     { name = "hypothesis" },
     { name = "mypy" },
     { name = "pre-commit" },
@@ -3416,6 +3417,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "hypothesis", specifier = "==6.165.10" },
     { name = "mypy", specifier = "==1.17.1" },
     { name = "pre-commit", specifier = ">=3.7" },

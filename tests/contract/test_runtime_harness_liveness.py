@@ -67,8 +67,6 @@ def test_browser_success_fails_when_workers_exited_after_persisting_the_fact(
             "run_full_stack_smoke.py",
             "--playwright-json",
             str(tmp_path / "playwright.json"),
-            "--playwright-selection",
-            str(tmp_path / "playwright-selection.json"),
         ],
     )
 
@@ -133,8 +131,6 @@ def test_browser_success_fails_when_serve_readiness_regresses(
             "run_full_stack_smoke.py",
             "--playwright-json",
             str(tmp_path / "playwright.json"),
-            "--playwright-selection",
-            str(tmp_path / "playwright-selection.json"),
         ],
     )
 
@@ -225,8 +221,6 @@ def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
                 "run_full_stack_smoke.py",
                 "--playwright-json",
                 str(tmp_path / "playwright.json"),
-                "--playwright-selection",
-                str(tmp_path / "playwright-selection.json"),
             ],
         )
         invoke = module.main

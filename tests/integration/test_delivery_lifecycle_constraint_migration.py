@@ -11,7 +11,7 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.postgres.migrations import alembic_config, upgrade_head
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
 def test_0324_refuses_an_invalid_lifecycle_row_admitted_by_0323_without_advancing() -> None:

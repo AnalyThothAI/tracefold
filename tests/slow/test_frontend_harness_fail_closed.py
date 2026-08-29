@@ -3,12 +3,17 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from tests.support import evidence
+from scripts.require_test_reports import (
+    ReportError,
+    require_playwright_json,
+    require_vitest_json,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 WEB = ROOT / "web"
@@ -18,35 +23,26 @@ PLAYWRIGHT = WEB / "node_modules" / "@playwright" / "test" / "cli.js"
 pytestmark = pytest.mark.slow
 
 
-def _child_env(**updates: str) -> dict[str, str]:
-    env = {**os.environ, "NO_COLOR": "1", **updates}
+def _child_env() -> dict[str, str]:
+    env = {**os.environ, "NO_COLOR": "1"}
     env.pop("FORCE_COLOR", None)
     return env
 
 
-def _run_vitest_fixture(
-    fixture: str,
-    *,
-    config: str,
-    report: Path | None = None,
-) -> subprocess.CompletedProcess[str]:
-    env = _child_env()
-    if report is not None:
-        env["TRACEFOLD_VITEST_SEMANTICS_REPORT"] = str(report)
+def _run_vitest_fixture(fixture: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             NODE,
             str(VITEST),
             "run",
             "--config",
-            config,
+            "tests/fixtures/runtime-error-guard/vitest.config.ts",
             "--no-color",
             "--allowOnly=false",
-            *(["--reporter=./tests/support/evidenceReporter.ts"] if report is not None else []),
             fixture,
         ],
         cwd=WEB,
-        env=env,
+        env=_child_env(),
         capture_output=True,
         check=False,
         text=True,
@@ -54,26 +50,166 @@ def _run_vitest_fixture(
     )
 
 
-def _record_vitest(report: Path, output: Path) -> tuple[int, dict[str, Any]]:
-    returncode = evidence.main(
-        (
-            "record-vitest",
-            "--lane",
-            "frontend-fixture",
-            "--input",
-            str(report),
-            "--output",
-            str(output),
-        )
+def _lint_required_test_source(
+    source: str, *, file_path: str = "tests/unit/fail-closed.fixture.test.ts"
+) -> list[dict[str, object]]:
+    program = """
+import { ESLint } from "eslint";
+const eslint = new ESLint({ cwd: process.cwd() });
+const [result] = await eslint.lintText(process.argv[1], {
+  filePath: process.argv[2],
+});
+process.stdout.write(JSON.stringify(result.messages));
+"""
+    result = subprocess.run(
+        [NODE, "--input-type=module", "--eval", program, source, file_path],
+        cwd=WEB,
+        env=_child_env(),
+        capture_output=True,
+        check=False,
+        text=True,
+        timeout=30,
     )
-    return returncode, json.loads(output.read_text(encoding="utf-8"))
+    assert result.returncode == 0, result.stdout + result.stderr
+    return json.loads(result.stdout)
+
+
+def _native_guard_result(guard: Callable[[Path], int], report: Path) -> tuple[int | None, str | None]:
+    try:
+        return guard(report), None
+    except ReportError as exc:
+        return None, str(exc)
+
+
+def _run_vitest_native_source(
+    source: str, *, spec_suffix: str = ".ts"
+) -> tuple[subprocess.CompletedProcess[str], int | None, str | None]:
+    with tempfile.TemporaryDirectory(prefix="native-report-", dir=WEB / "tests" / "unit") as raw_tmp:
+        tmp = Path(raw_tmp)
+        spec = tmp / f"fault.test{spec_suffix}"
+        report = tmp / "vitest.json"
+        spec.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            [
+                NODE,
+                str(VITEST),
+                "run",
+                "--config=vite.config.ts",
+                "--no-color",
+                "--allowOnly=false",
+                "--reporter=json",
+                f"--outputFile={report}",
+                str(spec.relative_to(WEB)),
+            ],
+            cwd=WEB,
+            env=_child_env(),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        count, error = _native_guard_result(require_vitest_json, report)
+    return result, count, error
+
+
+def _run_vitest_native_helper_case(
+    helper_source: str, spec_source: str, *, helper_suffix: str = ".ts"
+) -> tuple[
+    subprocess.CompletedProcess[str],
+    int | None,
+    str | None,
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
+    with (
+        tempfile.TemporaryDirectory(prefix="native-helper-", dir=WEB / "tests" / "fixtures") as raw_helper,
+        tempfile.TemporaryDirectory(prefix="native-report-", dir=WEB / "tests" / "unit") as raw_spec,
+    ):
+        helper_dir = Path(raw_helper)
+        spec_dir = Path(raw_spec)
+        helper = helper_dir / f"helper{helper_suffix}"
+        spec = spec_dir / "fault.test.ts"
+        report = spec_dir / "vitest.json"
+        helper.write_text(helper_source, encoding="utf-8")
+        helper_import = Path(os.path.relpath(helper, spec.parent)).as_posix()
+        rendered_spec = spec_source.replace("__HELPER_IMPORT__", helper_import)
+        spec.write_text(rendered_spec, encoding="utf-8")
+        result = subprocess.run(
+            [
+                NODE,
+                str(VITEST),
+                "run",
+                "--config=vite.config.ts",
+                "--no-color",
+                "--allowOnly=false",
+                "--reporter=json",
+                f"--outputFile={report}",
+                str(spec.relative_to(WEB)),
+            ],
+            cwd=WEB,
+            env=_child_env(),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        count, error = _native_guard_result(require_vitest_json, report)
+        helper_messages = _lint_required_test_source(helper_source, file_path=str(helper.relative_to(WEB)))
+        spec_messages = _lint_required_test_source(rendered_spec, file_path=str(spec.relative_to(WEB)))
+    return result, count, error, helper_messages, spec_messages
+
+
+def _run_playwright_native_source(
+    source: str, *, retries: int = 0
+) -> tuple[subprocess.CompletedProcess[str], int | None, str | None]:
+    with tempfile.TemporaryDirectory(prefix="native-report-", dir=WEB / "tests" / "e2e" / "full-stack") as raw_tmp:
+        tmp = Path(raw_tmp)
+        spec = tmp / "fault.spec.ts"
+        report = tmp / "playwright.json"
+        marker = tmp / "retry-marker"
+        spec.write_text(source, encoding="utf-8")
+        env = {
+            **_child_env(),
+            "PLAYWRIGHT_BROWSERS_PATH": str(tmp / "no-browsers"),
+            "PLAYWRIGHT_JSON_OUTPUT_NAME": str(report),
+            "TRACEFOLD_FULL_STACK_URL": "http://127.0.0.1:1",
+            "TRACEFOLD_PLAYWRIGHT_RETRY_MARKER": str(marker),
+        }
+        config_argument = "--config=playwright.full-stack.config.ts"
+        if retries:
+            config = tmp / "playwright.config.ts"
+            config.write_text(
+                'import { defineConfig } from "@playwright/test";\n'
+                "export default defineConfig({\n"
+                f"  testDir: {json.dumps(str(tmp))},\n"
+                "  failOnFlakyTests: true,\n"
+                "  forbidOnly: true,\n"
+                "  fullyParallel: false,\n"
+                "  repeatEach: 1,\n"
+                f"  retries: {retries},\n"
+                '  updateSnapshots: "none",\n'
+                f'  reporter: [["json", {{ outputFile: {json.dumps(str(report))} }}]],\n'
+                "  workers: 1,\n"
+                '  projects: [{ name: "required-chromium" }],\n'
+                "});\n",
+                encoding="utf-8",
+            )
+            config_argument = f"--config={config}"
+        result = subprocess.run(
+            [NODE, str(PLAYWRIGHT), "test", config_argument, str(spec)],
+            cwd=WEB,
+            env=env,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+        count, error = _native_guard_result(require_playwright_json, report)
+    return result, count, error
 
 
 def test_runtime_error_guard_fails_closed_and_keeps_allowances_case_local() -> None:
-    failed = _run_vitest_fixture(
-        "tests/fixtures/runtime-error-guard/fail-closed.fixture.ts",
-        config="tests/fixtures/runtime-error-guard/vitest.config.ts",
-    )
+    failed = _run_vitest_fixture("tests/fixtures/runtime-error-guard/fail-closed.fixture.ts")
     failed_output = failed.stdout + failed.stderr
 
     assert failed.returncode != 0
@@ -81,199 +217,359 @@ def test_runtime_error_guard_fails_closed_and_keeps_allowances_case_local() -> N
     assert "Unexpected unhandled rejection in test case" in failed_output
     assert "Runtime error allowlists require a non-empty reason" in failed_output
 
-    allowed = _run_vitest_fixture(
-        "tests/fixtures/runtime-error-guard/allowed-errors.fixture.ts",
-        config="tests/fixtures/runtime-error-guard/vitest.config.ts",
-    )
+    allowed = _run_vitest_fixture("tests/fixtures/runtime-error-guard/allowed-errors.fixture.ts")
     assert allowed.returncode == 0, allowed.stdout + allowed.stderr
 
-    global_allowlist = _run_vitest_fixture(
-        "tests/fixtures/runtime-error-guard/global-allowlist.fixture.ts",
-        config="tests/fixtures/runtime-error-guard/vitest.config.ts",
-    )
+    global_allowlist = _run_vitest_fixture("tests/fixtures/runtime-error-guard/global-allowlist.fixture.ts")
     assert global_allowlist.returncode != 0
     assert "Runtime error allowlists are case-local" in global_allowlist.stdout + global_allowlist.stderr
 
 
-def test_runtime_error_guard_fails_on_lifecycle_console_errors(tmp_path: Path) -> None:
-    report = tmp_path / "after-all.json"
-    result = _run_vitest_fixture(
-        "tests/fixtures/runtime-error-guard/after-all.fixture.ts",
-        config="tests/fixtures/runtime-error-guard/vitest.config.ts",
-        report=report,
-    )
+def test_runtime_error_guard_fails_on_lifecycle_console_errors() -> None:
+    result = _run_vitest_fixture("tests/fixtures/runtime-error-guard/after-all.fixture.ts")
 
     assert result.returncode != 0
-    semantic_report = json.loads(report.read_text(encoding="utf-8"))
+    assert "Unexpected console.error outside a test case" in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        (
+            'test.concurrent.fails("expected failure", () => {});',
+            "Required tests must be plain passes",
+        ),
+        (
+            'test("expected failure option", { fails: true }, () => {});',
+            "cannot mark an options object as an expected failure",
+        ),
+        (
+            'test("computed expected failure", { ["fails"]: true }, () => {});',
+            "cannot hide an expected failure behind a computed options key",
+        ),
+        (
+            'const key = "fails"; test("dynamic expected failure", { [key]: true }, () => {});',
+            "take exactly two arguments",
+        ),
+        (
+            'const options = JSON.parse(\'{"fails":true}\'); test("parsed expected failure", options, () => {});',
+            "take exactly two arguments",
+        ),
+        (
+            'test["fails"]("computed member", () => {});',
+            "computed expected failures",
+        ),
+        (
+            'const modifier = "fails"; test[modifier]("dynamic member", () => {});',
+            "modifiers must be statically named",
+        ),
+        (
+            'const check = test; check("local alias", { fails: true }, () => {});',
+            "cannot be aliased",
+        ),
+        (
+            'import * as vitest from "vitest"; vitest.test("namespace", { fails: true }, () => {});',
+            "namespace and dynamic runner imports",
+        ),
+        (
+            'const check = test.extend({}); check("extended", { fails: true }, () => {});',
+            "cannot derive or extend",
+        ),
+        (
+            'const check = test.bind(null, "bound"); check({ fails: true }, () => {});',
+            "cannot derive or extend",
+        ),
+        (
+            'const source = "vitest"; const runner = await import(source);',
+            "namespace and dynamic runner imports",
+        ),
+        (
+            'const runner = await import("vite" + "st");',
+            "namespace and dynamic runner imports",
+        ),
+        (
+            'export { expect, test as check } from "vitest";',
+            "cannot be aliased",
+        ),
+        (
+            'const { fails } = test; fails("destructured member", () => {});',
+            "cannot mark an options object as an expected failure",
+        ),
+        (
+            'test.skip("disabled", () => {});',
+            "Required tests must be plain passes",
+        ),
+        (
+            'test.only("focused", () => {});',
+            "Required tests must be plain passes",
+        ),
+        (
+            'test.concurrent("retried", { retry: 1 }, () => {});',
+            "Required tests cannot repeat or retry to green",
+        ),
+        (
+            'it("repeated", { repeats: 2 }, () => {});',
+            "Required tests cannot repeat or retry to green",
+        ),
+        (
+            "test.describe.configure({ retries: 2 });",
+            "Required tests cannot repeat or retry to green",
+        ),
+    ],
+)
+def test_required_frontend_test_policy_rejects_pseudo_green_syntax(source: str, message: str) -> None:
+    messages = _lint_required_test_source(source)
+
     assert any(
-        "Unexpected console.error outside a test case" in error["message"] for error in semantic_report["moduleErrors"]
-    )
-    record_status, manifest = _record_vitest(report, tmp_path / "after-all-lane.json")
-    assert record_status != 0
-    assert manifest["status"] == "failure"
-    assert manifest["unhandled"] > 0
+        lint_message.get("severity") == 2 and message in str(lint_message.get("message")) for lint_message in messages
+    ), messages
 
 
 @pytest.mark.parametrize(
-    ("fixture", "expected_process_status", "manifest_field", "expected_count"),
+    "source",
     [
-        ("expected-failure", 0, "xfailed", 1),
-        ("unexpected-pass", 1, "xpassed", 1),
-        ("retry-repeat", 0, "rerun", 2),
-        ("only", 1, "failed", 1),
-        ("final-failure", 1, "failed", 1),
-        ("unhandled", 1, "unhandled", 1),
+        'test("plain pass", () => {});',
+        'it.each([1])("plain %s", (_value) => {});',
+        'it.each`value\n${1}`("plain $value", ({ value: _value }) => {});',
     ],
 )
-def test_vitest_evidence_rejects_non_plain_pass_runtime_semantics(
-    tmp_path: Path,
-    fixture: str,
-    expected_process_status: int,
-    manifest_field: str,
-    expected_count: int,
-) -> None:
-    report = tmp_path / f"{fixture}.json"
-    result = _run_vitest_fixture(
-        f"tests/fixtures/evidence-reporter/{fixture}.fixture.ts",
-        config="tests/fixtures/evidence-reporter/vitest.config.ts",
-        report=report,
+def test_required_frontend_test_policy_allows_fixed_shape_tests(source: str) -> None:
+    messages = _lint_required_test_source(source)
+
+    assert messages == []
+
+
+def test_shared_playwright_fixture_policy_allows_only_the_guard_factory() -> None:
+    allowed = (
+        'import { test as base } from "@playwright/test";\nexport const test = base.extend<{ guard: void }>({});\n'
     )
+    rejected = 'import { test as base } from "@playwright/test";\nbase("hidden case", { fails: true }, () => {});\n'
 
-    assert int(result.returncode != 0) == expected_process_status, result.stdout + result.stderr
-    record_status, manifest = _record_vitest(report, tmp_path / f"{fixture}-lane.json")
-    assert record_status != 0
-    assert manifest["status"] == "failure"
-    assert manifest[manifest_field] == expected_count
+    assert _lint_required_test_source(allowed, file_path="tests/e2e/fixtures.ts") == []
+    messages = _lint_required_test_source(rejected, file_path="tests/e2e/fixtures.ts")
+    assert any(
+        message.get("ruleId") == "tracefold-required-tests/playwright-fixture-factory" and message.get("severity") == 2
+        for message in messages
+    ), messages
 
 
-def test_vitest_evidence_rejects_a_green_partial_architecture_run(tmp_path: Path) -> None:
-    report = tmp_path / "partial-architecture.json"
-    result = _run_vitest_fixture(
-        "tests/architecture/cssArchitectureHarness.test.ts",
-        config="vite.config.ts",
-        report=report,
-    )
+def test_real_vitest_native_report_accepts_one_plain_pass() -> None:
+    source = 'import { test } from "vitest";\ntest("plain pass", () => {});\n'
+    result, count, error = _run_vitest_native_source(source)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    lane = tmp_path / "frontend-architecture.json"
-    record_status = evidence.main(
-        (
-            "record-vitest",
-            "--lane",
-            "frontend-architecture",
-            "--input",
-            str(report),
-            "--output",
-            str(lane),
-        )
-    )
-    manifest = json.loads(lane.read_text(encoding="utf-8"))
-    assert record_status != 0
-    assert manifest["status"] == "failure"
-    assert manifest["selected"] == manifest["passed"] > 0
-    assert any(error.startswith("vitest_tracked_test_module_not_executed:") for error in manifest["errors"])
+    assert (count, error) == (1, None)
+    assert _lint_required_test_source(source) == []
 
 
 @pytest.mark.parametrize(
-    ("fixture", "runner_status", "manifest_field"),
+    "source",
     [
-        ("expected-failure.spec.ts", 0, "xfailed"),
-        ("unexpected-pass.spec.ts", 1, "xpassed"),
+        (
+            'import { expect, test } from "vitest";\n'
+            'test("expected failure", { fails: true }, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test } from "vitest";\n'
+            'const key = "fails";\n'
+            'test("dynamic expected failure", { [key]: true }, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test } from "vitest";\n'
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'test("parsed expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test as check } from "vitest";\n'
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'check("aliased expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test } from "vitest";\n'
+            "const check = test;\n"
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'check("local alias expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect } from "vitest";\n'
+            'import * as vitest from "vitest";\n'
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'vitest.test("namespace expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test } from "vitest";\n'
+            "const check = test.extend({});\n"
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'check("extended expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'import { expect, test } from "vitest";\n'
+            'const check = test.bind(null, "bound expected failure");\n'
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            "check(options, () => expect(1).toBe(2));\n"
+        ),
+        (
+            'const moduleName = "vitest";\n'
+            "const { expect, test: check } = await import(moduleName);\n"
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'check("dynamic import expected failure", options, () => expect(1).toBe(2));\n'
+        ),
+        (
+            'const { expect, test: check } = await import("vite" + "st");\n'
+            "const options = JSON.parse('{\"fails\":true}');\n"
+            'check("computed import expected failure", options, () => expect(1).toBe(2));\n'
+        ),
     ],
 )
-def test_playwright_evidence_reports_expected_failure_outcomes_exclusively(
-    tmp_path: Path,
-    fixture: str,
-    runner_status: int,
-    manifest_field: str,
-) -> None:
-    report = tmp_path / "playwright.json"
-    selection = tmp_path / "playwright-selection.json"
-    result = subprocess.run(
-        [
-            NODE,
-            str(PLAYWRIGHT),
-            "test",
-            "--config",
-            "tests/fixtures/playwright-semantics/playwright.config.ts",
-        ],
-        cwd=WEB,
-        env=_child_env(
-            TRACEFOLD_PLAYWRIGHT_FIXTURE=fixture,
-            TRACEFOLD_PLAYWRIGHT_SELECTION_OUTPUT=str(selection),
-            TRACEFOLD_PLAYWRIGHT_SEMANTICS_REPORT=str(report),
-        ),
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=30,
-    )
+def test_real_vitest_expected_failure_option_is_stopped_by_required_lint(source: str) -> None:
+    result, _, _ = _run_vitest_native_source(source)
+    messages = _lint_required_test_source(source)
 
-    assert int(result.returncode != 0) == runner_status, result.stdout + result.stderr
-    lane = tmp_path / "playwright-lane.json"
-    record_status = evidence.main(
+    # Vitest intentionally returns green for this expected failure. The
+    # required-test lint is therefore a necessary part of the fixed job.
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert any(
+        message.get("ruleId") == "tracefold-required-tests/fixed-declaration" and message.get("severity") == 2
+        for message in messages
+    ), messages
+
+
+@pytest.mark.parametrize("spec_suffix", [".js", ".mjs"])
+def test_real_vitest_javascript_specs_cannot_register_a_pseudo_green_case(spec_suffix: str) -> None:
+    source = (
+        'import { expect, test } from "vitest";\n'
+        "const options = JSON.parse('{\"fails\":true}');\n"
+        'test("JavaScript expected failure", options, () => expect(1).toBe(2));\n'
+    )
+    result, count, error = _run_vitest_native_source(source, spec_suffix=spec_suffix)
+    messages = _lint_required_test_source(source, file_path=f"tests/unit/fail-closed.fixture.test{spec_suffix}")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (count, error) == (1, None)
+    assert any(
+        message.get("ruleId") == "tracefold-required-tests/fixed-declaration" and message.get("severity") == 2
+        for message in messages
+    ), messages
+
+
+@pytest.mark.parametrize(
+    ("helper_source", "spec_source", "helper_suffix"),
+    [
         (
-            "record-playwright",
-            "--lane",
-            "browser-fixture",
-            "--input",
-            str(report),
-            "--selection",
-            str(selection),
-            "--output",
-            str(lane),
-        )
-    )
-    manifest = json.loads(lane.read_text(encoding="utf-8"))
-    assert record_status != 0
-    assert manifest["status"] == "failure"
-    assert manifest["selected"] == manifest[manifest_field] == 1
-    assert manifest["passed"] == manifest["failed"] == 0
-    assert manifest["xfailed"] + manifest["xpassed"] == 1
-
-
-def test_playwright_evidence_rejects_cli_grep_partial_selection(tmp_path: Path) -> None:
-    report = tmp_path / "playwright.json"
-    selection = tmp_path / "playwright-selection.json"
-    result = subprocess.run(
-        [
-            NODE,
-            str(PLAYWRIGHT),
-            "test",
-            "--config",
-            "tests/fixtures/playwright-semantics/playwright.config.ts",
-            "--grep",
-            "selected",
-        ],
-        cwd=WEB,
-        env=_child_env(
-            TRACEFOLD_PLAYWRIGHT_FIXTURE="partial-selection.spec.ts",
-            TRACEFOLD_PLAYWRIGHT_SELECTION_OUTPUT=str(selection),
-            TRACEFOLD_PLAYWRIGHT_SEMANTICS_REPORT=str(report),
+            (
+                'import { expect, test } from "vitest";\n'
+                "const options = JSON.parse('{\"fails\":true}');\n"
+                'test("helper expected failure", options, () => expect(1).toBe(2));\n'
+            ),
+            'import "__HELPER_IMPORT__";\n',
+            ".ts",
         ),
-        capture_output=True,
-        check=False,
-        text=True,
-        timeout=30,
+        (
+            'export { expect, test as check } from "vitest";\n',
+            (
+                'import { check, expect } from "__HELPER_IMPORT__";\n'
+                "const options = JSON.parse('{\"fails\":true}');\n"
+                'check("re-export expected failure", options, () => expect(1).toBe(2));\n'
+            ),
+            ".ts",
+        ),
+        (
+            (
+                'import { expect, test } from "vitest";\n'
+                "const options = JSON.parse('{\"fails\":true}');\n"
+                'test("JavaScript helper expected failure", options, () => expect(1).toBe(2));\n'
+            ),
+            'import "__HELPER_IMPORT__";\n',
+            ".js",
+        ),
+        (
+            (
+                'import { expect, test } from "vitest";\n'
+                "const options = JSON.parse('{\"fails\":true}');\n"
+                'test("ES module helper expected failure", options, () => expect(1).toBe(2));\n'
+            ),
+            'import "__HELPER_IMPORT__";\n',
+            ".mjs",
+        ),
+    ],
+)
+def test_real_vitest_imported_helpers_cannot_register_a_pseudo_green_case(
+    helper_source: str, spec_source: str, helper_suffix: str
+) -> None:
+    result, count, error, helper_messages, spec_messages = _run_vitest_native_helper_case(
+        helper_source, spec_source, helper_suffix=helper_suffix
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    lane = tmp_path / "playwright-lane.json"
-    record_status = evidence.main(
+    assert (count, error) == (1, None)
+    assert any(
+        message.get("ruleId") == "tracefold-required-tests/fixed-declaration" and message.get("severity") == 2
+        for message in helper_messages
+    ), helper_messages
+    assert not [message for message in spec_messages if message.get("severity") == 2], spec_messages
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import { test } from "vitest";\ntest.skip("disabled", () => {});\n',
+        'import { test } from "vitest";\n',
         (
-            "record-playwright",
-            "--lane",
-            "browser-fixture",
-            "--input",
-            str(report),
-            "--selection",
-            str(selection),
-            "--output",
-            str(lane),
-        )
-    )
-    manifest = json.loads(lane.read_text(encoding="utf-8"))
-    assert record_status != 0
-    assert manifest["status"] == "failure"
-    assert manifest["selected"] == manifest["passed"] == 1
-    assert "playwright_partial_selection_forbidden" in manifest["errors"]
+            'import { expect, test } from "vitest";\n'
+            "let attempts = 0;\n"
+            'test("retried", { retry: 1 }, () => { attempts += 1; expect(attempts).toBe(2); });\n'
+        ),
+    ],
+)
+def test_real_vitest_faults_cannot_pass_the_required_pipeline(source: str) -> None:
+    result, _, guard_error = _run_vitest_native_source(source)
+    lint_errors = [message for message in _lint_required_test_source(source) if message.get("severity") == 2]
+
+    assert result.returncode != 0 or guard_error is not None or lint_errors, result.stdout + result.stderr
+
+
+def test_real_playwright_native_report_accepts_one_plain_pass_without_a_browser() -> None:
+    source = 'import { test } from "@playwright/test";\ntest("plain pass", async () => {});\n'
+    result, count, error = _run_playwright_native_source(source)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (count, error) == (1, None)
+    assert _lint_required_test_source(source) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import { test } from "@playwright/test";\ntest.skip("disabled", async () => {});\n',
+        (
+            'import { expect, test } from "@playwright/test";\n'
+            'test("expected failure", async () => { test.fail(); expect(1).toBe(2); });\n'
+        ),
+        'import { test } from "@playwright/test";\n',
+        'throw new Error("module fault");\n',
+    ],
+)
+def test_real_playwright_faults_cannot_pass_the_required_pipeline(source: str) -> None:
+    result, _, guard_error = _run_playwright_native_source(source)
+    lint_errors = [message for message in _lint_required_test_source(source) if message.get("severity") == 2]
+
+    assert result.returncode != 0 or guard_error is not None or lint_errors, result.stdout + result.stderr
+
+
+def test_real_playwright_flaky_retry_is_non_green() -> None:
+    source = """
+import { existsSync, writeFileSync } from "node:fs";
+import { expect, test } from "@playwright/test";
+const marker = process.env.TRACEFOLD_PLAYWRIGHT_RETRY_MARKER!;
+test("flaky retry", async () => {
+  if (!existsSync(marker)) {
+    writeFileSync(marker, "first failure");
+    expect(1).toBe(2);
+  }
+  expect(1).toBe(1);
+});
+"""
+    result, _, guard_error = _run_playwright_native_source(source, retries=1)
+
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert guard_error is not None and "retry_policy_invalid" in guard_error

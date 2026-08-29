@@ -26,7 +26,7 @@ from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue
 from tracefold.trading.contracts import DecisionRuntimeV1, canonical_sha256
 from tracefold.trading.storage.root import TradingRepository
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 NOW = 1_900_000_000_000
 # The v2 policy identity the `trading_intents_v2_shape_check` constraint pins.

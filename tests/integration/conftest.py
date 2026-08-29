@@ -46,9 +46,9 @@ def rabbitmq_url() -> str:
             return url
     except OSError:
         message = f"RabbitMQ test broker is not reachable at {url}"
-        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
-            pytest.fail(message + " (required in evidence mode)", pytrace=False)
-        pytest.skip(message + " (local convenience skip; not verification evidence)")
+        if os.environ.get("TRACEFOLD_TEST_RESOURCES_REQUIRED") == "1":
+            pytest.fail(message + " (required test resource)", pytrace=False)
+        pytest.skip(message + " (local convenience skip; not complete verification)")
 
 
 @pytest.fixture(scope="session")
@@ -62,10 +62,10 @@ def postgres_server_dsn() -> Iterator[str]:
         return
 
     if os.environ.get("SKIP_INTEGRATION") == "1":
-        if os.environ.get("TRACEFOLD_TEST_EVIDENCE") == "1":
-            pytest.fail("SKIP_INTEGRATION cannot disable PostgreSQL in evidence mode", pytrace=False)
+        if os.environ.get("TRACEFOLD_TEST_RESOURCES_REQUIRED") == "1":
+            pytest.fail("SKIP_INTEGRATION cannot disable a required PostgreSQL run", pytrace=False)
         pytest.skip(
-            "SKIP_INTEGRATION=1 set; integration tests skipped (this run cannot serve as verification evidence)",
+            "SKIP_INTEGRATION=1 set; integration tests skipped (this run is not complete verification)",
             allow_module_level=True,
         )
 

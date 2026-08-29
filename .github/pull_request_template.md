@@ -5,7 +5,9 @@
 - F2P reproducer:
 - Production seam:
 - Targeted P2P:
-- Required larger lanes:
+- Focused / local commands:
+- Local full preflight:
+- Exact-head fixed CI run:
 - Skipped / xfail / rerun:
 - Acceptance-test contract changes:
-- Evidence manifest artifact:
+- Native report artifacts:

@@ -23,130 +23,56 @@ env:
   TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
-  ci-plan:
-    name: ci-plan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    outputs:
-      plan_sha256: ${{ steps.plan.outputs.plan_sha256 }}
-      full: ${{ steps.plan.outputs.full }}
-      quality_static: ${{ steps.plan.outputs.quality_static }}
-      python_hermetic: ${{ steps.plan.outputs.python_hermetic }}
-      trust_root: ${{ steps.plan.outputs.trust_root }}
-      postgres_behavior: ${{ steps.plan.outputs.postgres_behavior }}
-      migration: ${{ steps.plan.outputs.migration }}
-      runtime_process: ${{ steps.plan.outputs.runtime_process }}
-      frontend: ${{ steps.plan.outputs.frontend }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
-      - id: plan
-        name: Build fail-closed impact plan
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          if [ "$EVENT_NAME" = pull_request ]; then
-            python scripts/ci_plan.py plan --event "$EVENT_NAME" --base-sha "$BASE_SHA" \
-              --head-sha "$TESTED_SHA" --output artifacts/ci-plan/plan.json \
-              --github-output "$GITHUB_OUTPUT"
-          else
-            python scripts/ci_plan.py plan --event "$EVENT_NAME" --head-sha "$TESTED_SHA" \
-              --output artifacts/ci-plan/plan.json --github-output "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: ci-plan-${{ env.TESTED_SHA }}
-          path: artifacts/ci-plan/plan.json
-          if-no-files-found: error
-
   quality-static:
     name: quality-static
-    needs: ci-plan
-    if: needs.ci-plan.outputs.quality_static == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ env.TESTED_SHA }}
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with:
-          version: ${{ env.UV_VERSION }}
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Install locked Python dependencies
-        run: uv sync --locked
-      - name: Run static quality evidence
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-quality-static
-      - name: Upload quality evidence
-        if: always()
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run static quality and contract tests
+        run: make ci-quality-static
+      - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: evidence-quality-static-${{ env.TESTED_SHA }}
-          path: artifacts/test-evidence
+          name: test-results-quality-static-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
           if-no-files-found: error
 
   python-hermetic:
     name: python-hermetic
-    needs: ci-plan
-    if: needs.ci-plan.outputs.python_hermetic == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked
-      - name: Run hermetic primary lane
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-python-hermetic
+      - name: Run hermetic Python tests
+        run: make ci-python-hermetic
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-python-hermetic-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
-
-  trust-root:
-    name: trust-root
-    needs: ci-plan
-    if: needs.ci-plan.outputs.trust_root == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with: {node-version: "${{ env.NODE_VERSION }}", cache: npm, cache-dependency-path: web/package-lock.json}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - run: npm ci --prefix web
-      - name: Run trust-root primary lane
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-trust-root
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-trust-root-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+        with:
+          name: test-results-python-hermetic-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
+          if-no-files-found: error
 
   postgres-behavior:
     name: postgres-behavior
-    needs: ci-plan
-    if: needs.ci-plan.outputs.postgres_behavior == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: &postgres_service
         image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
@@ -155,56 +81,6 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U postgres -d tracefold_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - name: Run PostgreSQL behavior primary lane
-        env: {TRACEFOLD_TEST_POSTGRES_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"}
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-postgres-behavior
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-postgres-behavior-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
-
-  migration:
-    name: migration
-    needs: ci-plan
-    if: needs.ci-plan.outputs.migration == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
-    services:
-      postgres: *postgres_service
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - name: Run historical migration primary lane
-        env: {TRACEFOLD_TEST_POSTGRES_DSN: "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"}
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-migration
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-migration-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
-
-  runtime-process:
-    name: runtime-process
-    needs: ci-plan
-    if: needs.ci-plan.outputs.runtime_process == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
-    services:
-      postgres: *postgres_service
       rabbitmq: &rabbitmq_service
         image: rabbitmq:4.1-management-alpine@sha256:5ae1b436f98ed304168a55a90280dadfb0f1bfe5736d6e2e970e69f7f8fdf5e4
         env: {RABBITMQ_DEFAULT_PASS: tracefold, RABBITMQ_DEFAULT_USER: tracefold}
@@ -214,7 +90,66 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run PostgreSQL and broker behavior tests
+        env: &resource_env
+          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+          TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
+          TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
+        run: make ci-postgres-behavior
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-postgres-behavior-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
+          if-no-files-found: error
+
+  migration:
+    name: migration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres: *postgres_service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Run every historical migration test
+        env:
+          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+        run: make ci-migration
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: test-results-migration-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
+          if-no-files-found: error
+
+  runtime-process:
+    name: runtime-process
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres: *postgres_service
+      rabbitmq: *rabbitmq_service
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -223,30 +158,28 @@ jobs:
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked
       - run: npm ci --prefix web
-      - name: Run runtime and process primary lane
-        env: &resource_env
-          TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
-          TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
-          TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-runtime-process
+      - name: Run process, deployment, E2E, golden, and slow tests
+        env: *resource_env
+        run: make ci-runtime-process
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-runtime-process-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
+        with:
+          name: test-results-runtime-process-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
+          if-no-files-found: error
 
   frontend:
     name: frontend
-    needs: ci-plan
-    if: needs.ci-plan.outputs.frontend == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
     services:
       postgres: *postgres_service
       rabbitmq: *rabbitmq_service
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {fetch-depth: 0, ref: "${{ env.TESTED_SHA }}"}
+        with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with: {python-version: "${{ env.PYTHON_VERSION }}"}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
@@ -258,70 +191,42 @@ jobs:
           uv sync --locked
           npm ci --prefix web
           (cd web && npx playwright install --with-deps chromium)
-      - name: Run frontend and browser evidence
+      - name: Run frontend, generated-contract, and browser tests
         env: *resource_env
-        run: GITHUB_SHA="$TESTED_SHA" make test-evidence-prepare test-evidence-frontend
+        run: make ci-frontend
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-frontend-${{ env.TESTED_SHA }}", path: artifacts/test-evidence, if-no-files-found: error}
-
-  evidence-aggregate:
-    name: evidence-aggregate
-    needs: [ci-plan, quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend]
-    if: always()
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    env:
-      TRACEFOLD_CI_PLAN_SHA256: ${{ needs.ci-plan.outputs.plan_sha256 }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {ref: "${{ env.TESTED_SHA }}"}
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
-        with: {python-version: "${{ env.PYTHON_VERSION }}"}
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
-        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
-      - run: uv sync --locked
-      - name: Download exact impact plan
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: ci-plan-${{ env.TESTED_SHA }}
-          path: artifacts/ci-plan
-      - name: Download every lane manifest
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          pattern: evidence-*-${{ env.TESTED_SHA }}
-          path: artifacts/test-evidence
-          merge-multiple: true
-      - name: Aggregate duplicate-free V3 evidence
-        run: GITHUB_SHA="$TESTED_SHA" TRACEFOLD_CI_PLAN_PATH=artifacts/ci-plan/plan.json make test-evidence-aggregate
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with: {name: "evidence-aggregate-${{ env.TESTED_SHA }}", path: artifacts/test-evidence/manifest.json, if-no-files-found: error}
+          name: test-results-frontend-${{ env.TESTED_SHA }}
+          path: artifacts/test-results
+          if-no-files-found: error
 
   ci-gate:
     name: ci-gate
-    needs: [ci-plan, quality-static, python-hermetic, trust-root, postgres-behavior, migration, runtime-process, frontend, evidence-aggregate]
+    needs: [quality-static, python-hermetic, postgres-behavior, migration, runtime-process, frontend]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    env:
+      QUALITY_STATIC_RESULT: ${{ needs.quality-static.result }}
+      PYTHON_HERMETIC_RESULT: ${{ needs.python-hermetic.result }}
+      POSTGRES_BEHAVIOR_RESULT: ${{ needs.postgres-behavior.result }}
+      MIGRATION_RESULT: ${{ needs.migration.result }}
+      RUNTIME_PROCESS_RESULT: ${{ needs.runtime-process.result }}
+      FRONTEND_RESULT: ${{ needs.frontend.result }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with: {ref: "${{ env.TESTED_SHA }}"}
-      - name: Download exact impact plan
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ci-plan-${{ env.TESTED_SHA }}
-          path: artifacts/ci-plan
-      - name: Require the exact planned verification result
+      - name: Require every fixed job to succeed
         run: |
-          python scripts/ci_plan.py gate --plan artifacts/ci-plan/plan.json \
-            --plan-result ${{ needs.ci-plan.result }} \
-            --job-result quality-static=${{ needs.quality-static.result }} \
-            --job-result python-hermetic=${{ needs.python-hermetic.result }} \
-            --job-result trust-root=${{ needs.trust-root.result }} \
-            --job-result postgres-behavior=${{ needs.postgres-behavior.result }} \
-            --job-result migration=${{ needs.migration.result }} \
-            --job-result runtime-process=${{ needs.runtime-process.result }} \
-            --job-result frontend=${{ needs.frontend.result }} \
-            --aggregate-result ${{ needs.evidence-aggregate.result }} \
-            --summary "$GITHUB_STEP_SUMMARY"
+          for result in \
+            "$QUALITY_STATIC_RESULT" \
+            "$PYTHON_HERMETIC_RESULT" \
+            "$POSTGRES_BEHAVIOR_RESULT" \
+            "$MIGRATION_RESULT" \
+            "$RUNTIME_PROCESS_RESULT" \
+            "$FRONTEND_RESULT"
+          do
+            if [ "$result" != success ]; then
+              echo "required CI job did not succeed: $result" >&2
+              exit 1
+            fi
+          done

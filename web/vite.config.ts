@@ -24,8 +24,11 @@ export default defineConfig({
     },
   },
   test: {
+    allowOnly: false,
     environment: "jsdom",
     exclude: [...configDefaults.exclude, "tests/e2e/**"],
+    passWithNoTests: false,
+    retry: 0,
     setupFiles: "./tests/setup.ts",
     /*
      * Strictly above the 5 s `asyncUtilTimeout` in `tests/setup.ts`. Equal to it, a `findBy*` that is about

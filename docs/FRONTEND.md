@@ -497,13 +497,25 @@ error, failed request or unhandled API request fails the case. The four-project
 mock/visual lane remains valuable for responsive interaction and screenshots
 but is not evidence of a backend seam and is not required on every PR.
 
-Required Vitest runs set `allowOnly=false` and write their lane result through
-the runtime reporter in `tests/support/evidenceReporter.ts`. A plain pass is
-the only green outcome: `test.fails`, retry/repeat, `.only`, skip/todo, flaky,
-module errors, and unhandled errors all fail evidence. The deliberately failing
-fixtures that prove those semantics run under pytest's `slow` marker; they do
-not spawn nested Vitest/Playwright processes from the frontend architecture
-lane or `make check`.
+Required Vitest runs set `allowOnly=false`, disable retry/repeat, and emit the
+built-in JSON report under `artifacts/test-results/`. Required-test ESLint
+policy rejects focused, disabled, expected-failure, retry, and repeat syntax.
+Every required `test`/`it` declaration uses its unaliased named binding directly
+(including `.concurrent` and parameterized `.each`/`.for` cases) and has the
+fixed shape `(case name, callback)`. Namespace/dynamic imports, copied or
+extended bindings, computed modifiers, and options arguments are forbidden.
+This keeps an indirect or runtime-built expected-failure option from turning a
+real assertion failure green. The binding/declaration rule covers every
+`web/tests` helper and support module, not only top-level specs. The sole shared
+Playwright fixture factory is separately constrained to export exactly
+`test = base.extend(...)` and cannot register a case;
+the small native-report guard then requires a non-empty run with no failed,
+pending/todo, retried, snapshot-mutating, module, or unhandled outcome. It does
+not replace or reinterpret Vitest. Playwright likewise emits native JSON and
+the required smoke remains a non-empty, no-skip, no-retry run. Pytest's `slow`
+marker owns deliberate fault injection across real Vitest/Playwright native
+runs, the runtime-error guard, and the required-test ESLint policy; these
+nested frontend checks do not run from the architecture lane or `make check`.
 
 Repository fast gate:
 
@@ -511,8 +523,9 @@ Repository fast gate:
 
 Focused development runs select integration, backend E2E, golden, browser and
 visual lanes from the changed seam per `DEVELOPMENT.md`. `make test-evidence`
-is the one exact-HEAD aggregate used for merge/release evidence; the visual
-matrix and scheduled diagnostics remain explicit separate lanes.
+is the complete local preflight; the successful fixed GitHub Actions workflow
+for the exact main SHA is merge/release evidence. The visual matrix and
+scheduled diagnostics remain explicit separate lanes.
 
 Production bundles ship inside the same Docker image as the Python service and are served by the FastAPI static-file mount.
 

@@ -151,8 +151,8 @@ their corrections remain in #319.
 | `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
 | `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the default developer loop |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
-| `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD or fail-closed evidence claims |
-| `make test-evidence` | canonical merge/release evidence | exact-HEAD deterministic Python/resource lanes, frontend typecheck/architecture/behavior/build, required Chromium smoke | `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
+| `make test-evidence` | complete local preflight | the same six owner surfaces as fixed CI, run serially with native reports and fail-closed resources/outcomes | merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -176,16 +176,20 @@ Every bug or refactor PR records four pieces of evidence:
 3. the targeted P2P regressions for affected public or persisted boundaries;
 4. the integration, deploy, e2e, or release lane still required.
 
-### Verification Evidence Contract v3
+### Verification Contract v4
 
-`make test-evidence` is the only complete merge/release evidence entry. Every
-Python primary lane collects the complete `tests/` root with
-`TRACEFOLD_TEST_EVIDENCE=1`, explicitly excludes only `live` and `scheduled`,
-then the code-owned V3 policy selects that lane's nodeids. Static, frontend and
-Chromium owners write manifests under `artifacts/test-evidence/lanes/`. Only
-the final duplicate-free nodeid union writes
-`artifacts/test-evidence/manifest.json`. CI uploads those files; they are
-evidence for one run, not a second business or release database.
+GitHub Actions runs one fixed, complete verification set for every pull request
+to `main`, every `main` push, release event, and manual dispatch. There is no
+path planner, conditional lane, test inventory database, profile ratchet, lane
+manifest, or evidence aggregate. Test frameworks own execution truth; GitHub
+Actions owns job truth. Native reports are diagnostic artifacts for the exact
+run, not a second release database.
+
+`make test-evidence` runs the same owner surfaces serially as a complete local
+preflight. It is useful before pushing, but a local result cannot authorize a
+merge, release, or deployment. The merge/release record is the successful fixed
+CI workflow associated with the exact commit SHA being evaluated; deployment
+requires the successful `main` push workflow for that same SHA.
 
 1. **Exact HEAD.** A result belongs only to the full commit SHA it actually
    tested. Any later commit invalidates it and must run the required gate
@@ -201,17 +205,16 @@ evidence for one run, not a second business or release database.
 4. **Targeted P2P.** The F2P does not replace adjacent public or persisted
    regression coverage, and the whole-repository suite does not replace the
    issue-specific reproducer. Record both.
-5. **Resources fail closed.** In CI/evidence mode, an unavailable resource
-   that the selected lane declares—PostgreSQL, RabbitMQ, Docker/Testcontainers,
-   or Node codegen dependencies—is a failure, never a skip. Local fast mode
-   remains hermetic and starts none of them.
-6. **No pseudo-green.** Required lanes reject unexpected skip, xfail, xpass,
+5. **Resources fail closed.** In fixed CI and `make test-evidence`, an
+   unavailable required resource—PostgreSQL, RabbitMQ, Docker/Testcontainers,
+   Chromium, or Node codegen dependencies—is a failure, never a skip. Local
+   fast mode remains hermetic and starts none of them.
+6. **No pseudo-green.** Required runs reject unexpected skip, xfail, xpass,
    rerun, `--maxfail`, rerun plugins, and catch-and-continue behavior. Golden
    or snapshot outputs are checked for drift; a required run may not silently
    update them and continue green. Provider/live diagnostics are deselected by
-   the explicit `not live and not scheduled` expression. Primary-lane
-   deselection is allowed only through the code-owned V3 selector and is
-   accepted only when the aggregate proves the complete nodeid union.
+   the explicit `not live and not scheduled` expression; this exclusion is
+   visible in the canonical commands and never represents required green.
 7. **Acceptance-test changes.** When the same PR changes an existing
    acceptance test, its verification section classifies the change as a
    product-contract change, a test defect, or a fixture repair and links the
@@ -223,70 +226,64 @@ evidence for one run, not a second business or release database.
    the responsibility of frozen corpora, golden evidence,
    `CandidateEvaluator`, shadow/canary runs, and durable production evidence.
 
-Each Python lane manifest is generated by its actual pytest session. Evidence
-mode fixes collection at the repository `tests/` root, rejects
-`PYTEST_ADDOPTS`, positional subsets and collection-changing options, and
-requires every tracked `test_*.py` module to participate in every collection.
-Each manifest records the common deterministic inventory and its exact owned
-and executed nodeids. The aggregate fails on a missing, duplicate, unexpected
-or differently collected nodeid. The entry checks the
-complete tracked and non-ignored worktree before and after the run, so a test
-cannot silently update a golden/snapshot while claiming the prior HEAD. A lane
-manifest is unsealed when its runner writes it; its owning target immediately
-performs the post-run tree check and seals that one manifest. The aggregate
-rejects an unsealed or dirty manifest, including one produced before a later
-owner restored the tree. Each
-lane records the same `commit_sha` and `git_tree_sha`, its actual selected and
-outcome counts, lock and plan digests, tool/resource versions and unhandled
-errors. The plan digest binds every required Python/frontend/static/browser
-lane, its canonical command, ownership rules and resource requirements. The aggregate requires
-non-empty Python, frontend architecture, frontend behavior, typecheck, build
-and real-browser manifests. A successful aggregate has zero failed, skipped,
-xfailed, xpassed, rerun, flaky or unhandled outcomes.
-Hypothesis is a test-only dependency in the uv `dev` group and is resolved by
-`uv.lock` with the other development tools. Production images install with
-`uv sync --locked --no-dev`, so lock/source drift fails and test tools never
-enter the runtime environment.
+The six fixed jobs are `quality-static`, `python-hermetic`,
+`postgres-behavior`, `migration`, `runtime-process`, and `frontend`. They run
+without path conditions. PostgreSQL, RabbitMQ, process, and browser owners use
+isolated job-local services rather than a shared schema or runtime. Each job
+checks out `TESTED_SHA` (`pull_request.head.sha` for a pull request,
+`github.sha` otherwise), installs with `uv sync --locked` and, where needed,
+`npm ci`, and keeps Actions SHA-pinned and service images digest-pinned.
 
-The code-owned `scripts/ci_plan.py` classifies the complete PR diff and writes a
-content-addressed plan before any verification job starts. Ordinary docs,
-Python, PostgreSQL and frontend changes select the conservative owners in the
-root task matrix. CI/evidence, toolchain, deployment-verifier, router, runtime
-root, config/security, capital, new or unclassified test modules, and unknown
-surfaces expand to full. A tracked test module selects its stable path-owned
-lane; markers cannot silently move an item to a different owner. Changing the
-topology itself is trust-root/full. Planner errors and empty or unclassified
-change sets also expand to full. Main pushes and manual release runs always use
-full. Rename discovery disables rename folding so both the old and new paths
-participate in classification.
+Required pytest runs disable plugin autoload, load only the named plugins they
+need, use the deterministic Hypothesis `ci` profile, and emit JUnit XML under
+`artifacts/test-results/`. Required Vitest runs set `allowOnly=false` and emit
+native JSON; Playwright emits native JSON. Runner configuration and required-
+test lint prohibit expected-failure, focus, retry, repeat, and snapshot-update
+escapes. Required `test`/`it` declarations use unaliased named imports directly
+and have exactly two arguments (case name and callback); namespace/dynamic
+imports, copied/extended bindings, computed modifiers, and literal, computed,
+or runtime-loaded options are inadmissible. This syntax boundary covers every
+executable JavaScript and TypeScript module extension under `web/tests`,
+including helpers/support modules; the one Playwright fixture factory may only
+export `test = base.extend(...)` and may not register a case. A small
+report guard checks only that each native report exists,
+executed at least one test, and contains no failure, error, skipped/pending,
+flaky, retried, snapshot-mutating, or unhandled outcome. For pytest, strict
+xfail plus JUnit's non-green skipped/failure outcomes enforce the same rule. The
+guard may not select tests, maintain an inventory, reinterpret a pass, or write
+plan, profile, provenance, or aggregate manifests. CI uploads these native
+files as `test-results-<job>-<TESTED_SHA>` with missing files treated as an
+error.
+Hypothesis remains a test-only dependency in the uv `dev` group and is resolved
+by `uv.lock`; production images use `uv sync --locked --no-dev`, so test tools
+do not enter the runtime environment.
 
-Full CI runs `quality-static`, four backend Python owner jobs, `trust-root`, and
-`frontend` concurrently. Stable architecture and product contracts belong to
-`python-hermetic`; `trust-root` uniquely owns the evidence/profile, CI topology,
-test-resource, frontend-harness, impact-plan and deployment-verifier self-tests.
-PostgreSQL, migration, runtime/browser resources belong to isolated GitHub jobs
-rather than one shared schema. A selected PR runs only jobs marked required in
-the verified plan; every other V3 lane remains explicit as
-`not_required(reason)` in the aggregate.
+The stable `ci-gate` is deliberately thin: it reads only the six
+`needs.<job>.result` values and succeeds only when all six equal `success`.
+Failure, cancellation, skip, or an unknown result fails closed. It does not
+checkout code, download artifacts, or invoke a project-owned planner. The
+deployment verifier remains a separate real seam and requires the trusted
+GitHub Actions `ci-gate` from a successful `main` push for the exact SHA.
 
-Every executed lane binds its manifest to the plan SHA. The
-`evidence-aggregate` job verifies that identity, rejects missing required or
-present non-required manifests, and proves the duplicate-free full Python union
-whenever the plan is full. The stable `ci-gate` independently requires each
-planned job to succeed, each non-required job to be skipped, and the aggregate
-to succeed; failure, cancellation, or a skipped required job fails closed. The
-`main` ruleset requires only this stable context, binds it to GitHub Actions,
-requires the branch to be current, and allows neither force push nor deletion.
-Every Action remains SHA-pinned.
+The repository is private and the organization is currently on GitHub Free;
+as verified for #353 on 2026-08-30, the branch-protection and Rulesets APIs are
+unavailable. The repository therefore does not claim that GitHub currently
+enforces `ci-gate` before merge. `ci-gate` remains the observable full-result
+interface and deployment authorization boundary, and can become the one
+required check if the platform constraint changes. Private artifact
+attestation, branch protection, and Rulesets are separate platform work, not
+substitutes for this test contract.
 
-The pull-request run proves the exact PR-head commit, tree and selected plan. A squash merge
-creates a different `main` commit, so the post-merge push run is the first
-full evidence for that main SHA. Deployment, cutover and release work must wait
-for that exact main SHA's full-plan `ci-gate`; the deployment verifier checks the
-trusted check identity and requires its GitHub Actions run to be a successful
-`main` push for the same SHA, which the code-owned planner always expands to
-full. A green PR-head run is not pre-merge proof of a future squash SHA. This
-repository does not claim merge-queue evidence.
+Adopting `pytest-postgresql`, `pytest-alembic`, import-linter, Schemathesis,
+mutation testing, or other generic tooling requires a separate detector-by-
+detector Issue. A package's green result may not replace the real PostgreSQL,
+migration, capital, browser, or provider/order seam it is meant to protect.
+
+A pull-request run proves its exact PR-head commit. A squash merge creates a
+different `main` commit, so the post-merge push run is the first merge/release
+evidence for that SHA. Deployment, cutover, and release work must wait for that
+exact main SHA's `ci-gate`. A green PR-head run is not pre-merge proof of a
+future squash SHA. This repository does not claim merge-queue evidence.
 
 Every PR uses the repository template and completes these fields:
 
@@ -298,10 +295,12 @@ Every PR uses the repository template and completes these fields:
 - F2P reproducer:
 - Production seam:
 - Targeted P2P:
-- Required larger lanes:
+- Focused / local commands:
+- Local full preflight:
+- Exact-head fixed CI run:
 - Skipped / xfail / rerun:
 - Acceptance-test contract changes:
-- Evidence manifest artifact:
+- Native report artifacts:
 ```
 
 Mocking is not itself a problem. Mocking the risk mechanism under test is: a
@@ -317,13 +316,12 @@ narrower check that passes while `make check` fails, because the bundle runs the
 formatter and the architecture harness too. Green from a command you chose is not
 green from the command the project defines.
 
-**A lane's result binds to the tree and its isolated runner.** Evidence is bound
-to the exact tested HEAD. Editing the tree during a run, sharing one destructive
-database across lanes, or borrowing the deployment checkout's compose stack
-breaks that binding. Local `make test-evidence` therefore remains serial on a
-frozen tree. CI may run primary lanes concurrently only because each resource
-owner receives a separate job-local PostgreSQL/RabbitMQ service; the aggregate
-rejects any manifest from another commit, tree, lock or plan identity.
+**A result binds to the exact commit and its isolated runner.** Editing the tree
+during a local run, sharing one destructive database across CI jobs, or
+borrowing the deployment checkout's Compose stack breaks that binding. Local
+`make test-evidence` therefore remains serial on a frozen tree. CI jobs may run
+concurrently because each resource owner receives a separate job-local
+PostgreSQL/RabbitMQ service and checks out the same `TESTED_SHA`.
 
 **On a pull request, "no checks reported" is not "checks passed".** CI here
 triggers on `pull_request` for PRs targeting `main` with the default activity
@@ -362,39 +360,18 @@ uv run pytest -q \
 ### Test lanes and speed
 
 `make test` aliases `make test-fast` and never starts an external resource.
-`make test-profile` collects the six mutually exclusive V3 Python owner
-inventories without executing tests, then writes
-`artifacts/test-profile/report.json`. The report exposes duplicate and missing
-selection, phase-aware durations when run profiles are supplied, and the
-Issue #335 duration ratchets. A duration ratchet needs three consecutive samples
-above 125% of its pinned baseline before it can fail; a single shared-runner
-outlier is diagnostic data, not a gate failure. CI uploads one real profile from
-each current lane. To evaluate those profiles against prior reports, run
-`make test-profile-ratchet TRACEFOLD_TEST_PROFILE_DIR=<lane-profile-directory>
-TRACEFOLD_TEST_PROFILE_HISTORY_DIR=<prior-report-directory>`; this enforcing
-consumer returns non-zero only when the required consecutive regressions exist.
-The pinned PR 1 inventory remains in the report as the before-state; current CI
-uploads one real execution profile for every V3 Python owner. The V3 whole-Python
-trend is `plan:python-v3-critical-path`, the maximum recorded owner
-`wall_seconds` under the parallel plan; a missing/unknown owner or mismatched deterministic inventory
-makes the profile report fail closed rather than silently shrinking the sample.
-The bounded V2/V3 shadow receipt is
-`tests/fixtures/issue_335_evidence_v2_v3_shadow.json`: it pins the final V2
-exact-HEAD artifact, requires every V2 detector contract to remain or name its
-V3 replacement, and carries architecture, News decision, Trading capital and
-historical-migration real-seam cases into their V3 owners. V2 runtime code is
-removed after that finite comparison; there is no permanent dual evidence path.
-Tests that need PostgreSQL declare an explicit PostgreSQL resource fixture; their
-directory is not a resource trigger. `make test-integration`, `make
+Tests that need PostgreSQL declare an explicit PostgreSQL resource fixture;
+their directory is not a resource trigger. `make test-integration`, `make
 test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
 test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
 diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
 subset of the integration lane and never evidence on its own. `make test-all` remains a local
 complete-suite convenience. `make test-evidence` is the canonical local
-full-plan entry, runs every deterministic lane with fail-closed resource and
-outcome checks, and includes frontend validation. Pull requests complete
-through the checked-in impact plan; main and release still execute this full
-set.
+full-set entry, runs every deterministic owner with fail-closed resource and
+outcome checks, and includes frontend validation. It emits native reports but
+does not mint merge evidence. Pull requests, main, release, and manual runs all
+execute the fixed six-job set; the exact main SHA's successful workflow is the
+merge/release record.
 
 PostgreSQL behavior tests use a run-scoped baseline database migrated once to
 head, then receive a private function- or module-scoped clone. A test that
