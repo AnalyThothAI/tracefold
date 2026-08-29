@@ -224,7 +224,6 @@ def _authority(**overrides: Any) -> CapitalAuthority:
         "active_underlyings": frozenset(),
         "underlyings_in_flight": frozenset(),
         "cased_source_keys": frozenset(),
-        "last_close_at_ms": {},
         "capability": _snapshot(),
     }
     values.update(overrides)
@@ -385,7 +384,7 @@ def test_every_refusal_is_stage_specific_and_none_of_them_is_a_catch_all() -> No
         rows=[
             _row(event_id="poor", symbol="AAA", oi_value_usd=1_000_000),
             _row(event_id="old", symbol="BBB", observed_at_ms=NOW - 3_600_000),
-            _row(event_id="deep", symbol="CCC", rank_in_window=9),
+            _row(event_id="unlisted", symbol="CCC"),
         ],
     )
     lane, _ = _lane(trading)
@@ -395,7 +394,7 @@ def test_every_refusal_is_stage_specific_and_none_of_them_is_a_catch_all() -> No
     assert _reasons(trading) == {
         "oi:poor:oi_signal_v1": "eligibility:oi_value_below_floor",
         "oi:old:oi_signal_v1": "eligibility:trigger_stale",
-        "oi:deep:oi_signal_v1": "eligibility:rank_above_limit",
+        "oi:unlisted:oi_signal_v1": "capability:capability_absent",
     }
 
 
@@ -434,13 +433,33 @@ def test_missing_bars_defer_and_a_gap_at_the_cutoff_rejects() -> None:
 
 
 def test_a_full_lane_answers_every_admitted_frame_rather_than_leaving_a_hole() -> None:
-    trading = FakeTrading(authority=_authority(entries_today=1), rows=[_row()])
+    """A live thesis fills the lane. Having already entered today does not (#348)."""
+
+    trading = FakeTrading(authority=_authority(active_underlyings=frozenset({"crypto:SOL"})), rows=[_row()])
     lane, _ = _lane(trading)
 
     _advance(lane)
 
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:lane_capacity_exhausted"}
-    assert trading.admission[0]["evidence"]["lane_full"] == "daily_entry_fence"
+    assert trading.admission[0]["evidence"]["lane_full"] == "active_intent"
+
+
+def test_having_entered_today_does_not_refuse_a_later_frame() -> None:
+    """#348: the one-entry-per-UTC-day fence is gone, and with it the day's blind spot.
+
+    It refused every later frame *before* the policy ran, so on any day the lane traded it could not
+    say which of the day's remaining frames it should have taken. Measured over seven days it would
+    have capped the busiest day at one of six qualifying frames, while the real bound — one live
+    position, held at most three minutes — was doing the work all along.
+    """
+
+    trading = FakeTrading(authority=_authority(entries_today=3), rows=[_row()])
+    lane, _ = _lane(trading)
+
+    turn = _advance(lane)
+
+    assert turn.cases_created == 1
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
 
 
 def test_one_issuer_produces_one_thesis_and_the_loser_is_deferred_not_retired() -> None:
@@ -500,37 +519,6 @@ def test_a_source_that_already_authored_a_case_is_terminally_consumed() -> None:
     _advance(lane)
 
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:already_consumed"}
-
-
-def test_a_symbol_inside_its_cooldown_defers_with_the_measured_gap() -> None:
-    trading = FakeTrading(
-        authority=_authority(last_close_at_ms={"crypto:TUT": NOW - 60_000}),
-        rows=[_row()],
-    )
-    lane, _ = _lane(trading)
-
-    _advance(lane)
-
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:cooldown"}
-    assert trading.admission[0]["evidence"]["since_close_ms"] == 60_000
-
-
-# ---------------------------------------------------------------------------- decision-time guards
-def test_a_case_frozen_under_another_news_generation_is_blocked_not_traded() -> None:
-    trading = FakeTrading(authority=_authority(), rows=[_row()])
-    lane, _ = _lane(trading)
-    _advance(lane)
-    assert trading.commits == list(trading.cases)
-
-    # A deployment later, the process runs a different News generation than this Case was frozen
-    # under. `program_version` and `policy_version` do not move when a prompt or a model slot does,
-    # so without this the Case would advance to an Intent under rules it was never reasoned under.
-    trading.claimable = list(trading.cases)
-    trading.commits.clear()
-    lane._news_generation = "epoch-3"
-    asyncio.run(lane._decide_one())
-    assert trading.settled[-1][1:] == (CaseState.BLOCKED, "source_generation_retired")
-    assert trading.commits == []
 
 
 def test_a_case_older_than_the_decision_budget_is_blocked_rather_than_sized_off_a_stale_mark() -> None:

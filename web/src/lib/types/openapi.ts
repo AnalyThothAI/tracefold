@@ -2068,14 +2068,14 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** TradingBudgetData */
+        /**
+         * TradingBudgetData
+         * @description What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
+         *
+         *     `max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any
+         *     more, and publishing a ceiling nobody enforces is worse than publishing none.
+         */
         TradingBudgetData: {
-            /**
-             * Max Entries Per Utc Day
-             * @default 1
-             * @constant
-             */
-            max_entries_per_utc_day: 1;
             /** Target Notional Usd */
             target_notional_usd: string;
         };
@@ -2161,12 +2161,8 @@ export interface components {
             live_exchange_id: string;
             /** Max Age Ms */
             max_age_ms: number;
-            /** Max Rank In Window */
-            max_rank_in_window: number;
             /** Min Oi Value Usd */
             min_oi_value_usd: number;
-            /** Symbol Cooldown Ms */
-            symbol_cooldown_ms: number;
             /** Version */
             version: string;
         };

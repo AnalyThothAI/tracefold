@@ -62,7 +62,7 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("keeps the sole authority and entry budget visible on the trading surface", () => {
+  it("keeps the sole authority and today's entry count visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
       { label: "AUTHORITY", text: "nautilus" },
       {
@@ -70,7 +70,7 @@ describe("route-aware shell figures", () => {
         text: "READY",
         tone: undefined,
       },
-      { label: "今日入场", text: "1 / 1" },
+      { label: "今日入场", text: "1" },
     ]);
   });
 });

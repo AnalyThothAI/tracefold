@@ -89,8 +89,8 @@ export function TradingPage({ token }: { token: string }) {
               />
               <Metric
                 eyebrow="ENTRIES"
-                value={`${status.counts.entries_today} / 1`}
-                caption="每 UTC 日最多一次"
+                value={`${status.counts.entries_today}`}
+                caption="今日已入场"
               />
               <Metric
                 eyebrow="ACTIVE"

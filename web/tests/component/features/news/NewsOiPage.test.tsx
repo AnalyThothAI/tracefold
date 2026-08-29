@@ -571,7 +571,10 @@ describe("NewsOiPage", () => {
     const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
     const admissionCard = admission.closest("article") as HTMLElement;
     expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
-    expect(within(admissionCard).getByText("≤ 2")).toBeInTheDocument();
+    // #348 retired the capital rank ceiling and the per-symbol cooldown. The push gate keeps its own
+    // rank (`≤ 2 / 4h`, asserted above), and the two must not be confused for one another again.
+    expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
+    expect(admissionCard).not.toHaveTextContent("冷却");
     // One live venue, code-owned. Everything else is `RESEARCH_ONLY` and the frame table says so per row.
     expect(within(admissionCard).getByText("binance")).toBeInTheDocument();
     expect(admissionCard).toHaveTextContent("5m");

@@ -25,8 +25,13 @@ GateStage = Literal["source", "venue", "eligibility", "capability", "routing", "
 
 # ---------------------------------------------------------------------------- runtime readiness
 class TradingBudgetData(ExactApiSchema):
+    """What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
+
+    `max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any
+    more, and publishing a ceiling nobody enforces is worse than publishing none.
+    """
+
     target_notional_usd: str
-    max_entries_per_utc_day: Literal[1] = 1
 
 
 class TradingReadinessData(ExactApiSchema):
@@ -105,9 +110,7 @@ class TradingGateConfigData(ExactApiSchema):
     version: str
     config_digest: str
     max_age_ms: int
-    max_rank_in_window: int
     min_oi_value_usd: int
-    symbol_cooldown_ms: int
     live_exchange_id: str
 
 

@@ -68,19 +68,18 @@ export function NewsOiGates({
         title="准入闸 · TRADING"
       >
         <PolicyTile label="持仓规模" value={gate ? `≥${oiValueZh(gate.min_oi_value_usd)}` : "—"} />
-        <PolicyTile
-          label="交易窗口名次"
-          note="与推送名次同名不同闸"
-          value={gate ? `≤ ${gate.max_rank_in_window}` : "—"}
-        />
         <PolicyTile label="帧时效" value={gate ? compactDuration(gate.max_age_ms) : "—"} />
         <PolicyTile
           /*
            * One live venue, code-owned (#331). Everything else is `RESEARCH_ONLY`: a real market fact
            * this lane may study and never trade, and the frame table says so per row.
+           *
+           * The rank ceiling and the per-symbol cooldown used to sit in this panel and are gone with
+           * the gates themselves (#348) — a panel naming a threshold nothing enforces is worse than
+           * a shorter panel.
            */
           label="资本场所"
-          note={gate ? `冷却 ${compactDuration(gate.symbol_cooldown_ms)} · 其余仅研究` : undefined}
+          note="其余仅研究"
           value={gate?.live_exchange_id ?? "—"}
         />
       </PolicyPanel>

@@ -230,7 +230,7 @@ def test_status_publishes_readiness_and_a_policy_identity_but_no_threshold_to_co
 
     assert response.status_code == 200
     data = response.json()["data"]
-    assert data["budget"] == {"target_notional_usd": "10", "max_entries_per_utc_day": 1}
+    assert data["budget"] == {"target_notional_usd": "10"}
     assert data["readiness"]["engine_ready"] is True
     assert data["readiness"]["execution_environment"] == "BINANCE_USDM_DEMO"
     assert data["counts"]["active_intents"] == 1

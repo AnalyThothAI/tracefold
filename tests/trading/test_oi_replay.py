@@ -170,11 +170,11 @@ def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routab
     """Two cohorts under one rulebook, or the comparison between them means nothing.
 
     `research_only_venue` ends the venue stage without ending the replay. It used to also skip
-    eligibility outright, so the Hyperliquid cohort was scored with no rank ceiling, no OI-value floor
-    and no blacklist — a laxer rulebook than the Binance cohort it was being read against.
+    eligibility outright, so the Hyperliquid cohort was scored with no OI-value floor and no blacklist
+    — a laxer rulebook than the Binance cohort it was being read against.
     """
 
-    ranked_out = {"rank_in_window": 9}
+    ranked_out = {"oi_value_usd": 1_000_000}
     binance, hyperliquid = _replay(
         [
             _row(event_id="bn", **ranked_out),
@@ -182,7 +182,7 @@ def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routab
         ]
     ).outcomes
 
-    assert (binance.stage, binance.reason) == ("eligibility", "rank_above_limit")
+    assert (binance.stage, binance.reason) == ("eligibility", "oi_value_below_floor")
     assert (hyperliquid.stage, hyperliquid.reason) == (binance.stage, binance.reason)
     assert (binance.routable, hyperliquid.routable) == (True, False)
 

@@ -211,7 +211,7 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
     "fence",
     (
         EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready"),
-        EntryFence(disposition="UNAVAILABLE", reason="daily_entry_fence_taken"),
+        EntryFence(disposition="UNAVAILABLE", reason="active_intent_exists"),
         EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
         EntryFence(disposition="UNAVAILABLE", reason="intent_expired"),
     ),

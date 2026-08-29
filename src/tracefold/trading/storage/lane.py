@@ -53,7 +53,6 @@ class CapitalAuthority:
     active_underlyings: frozenset[str]
     underlyings_in_flight: frozenset[str]
     cased_source_keys: frozenset[str]
-    last_close_at_ms: Mapping[str, int]
     capability: ExecutionCapabilitySnapshotV1 | None
 
 
@@ -102,16 +101,6 @@ class LaneStorage:
             "SELECT primary_source_key FROM trading_cases WHERE observed_at_ms >= %s",
             (int(since_ms),),
         ).fetchall()
-        closes = self.conn.execute(
-            """
-            SELECT COALESCE(i.underlying_key, c.underlying_key) AS underlying_key,
-                   max(i.closed_at_ms) AS closed_at_ms
-              FROM trading_intents i
-              JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE i.terminal_outcome = 'CLOSED_FLAT' AND i.closed_at_ms IS NOT NULL
-             GROUP BY 1
-            """
-        ).fetchall()
         blacklist_rows = self.conn.execute(
             "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
             "FROM trading_symbol_blacklist ORDER BY base_symbol"
@@ -132,7 +121,6 @@ class LaneStorage:
             active_underlyings=frozenset(str(row["underlying_key"]) for row in active),
             underlyings_in_flight=frozenset(str(row["underlying_key"]) for row in in_flight),
             cased_source_keys=frozenset(str(row["primary_source_key"]) for row in cased),
-            last_close_at_ms={str(row["underlying_key"]): int(row["closed_at_ms"]) for row in closes},
             capability=capability,
         )
 
@@ -250,7 +238,6 @@ class LaneStorage:
         policy_reason: str,
         policy_checks: Mapping[str, Any],
         target_notional_usd: Decimal,
-        day_start_ms: int,
         now_ms: int,
     ) -> DecisionCommit:
         """Re-prove capital authority, then hand the Case and one Intent over atomically.
@@ -277,7 +264,7 @@ class LaneStorage:
         blacklist: BlacklistSnapshotV1 = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         if any(row.underlying_key == manifest.underlying_key for row in blacklist.active_rows):
             return self._block(case_id, run_id, "blacklisted", policy_checks, now_ms)
-        if not self._capacity_available(underlying_key=manifest.underlying_key, day_start_ms=day_start_ms):
+        if not self._capacity_available(underlying_key=manifest.underlying_key):
             return self._block(case_id, run_id, "capacity_exhausted", policy_checks, now_ms)
         capability = snapshot.included[instrument_id]
         if not _quantity_is_executable(
@@ -318,18 +305,14 @@ class LaneStorage:
             raise RuntimeError("trading_intent_case_transition_failed")
         return DecisionCommit(state=CaseState.INTENT_EMITTED, reason=policy_reason, intent_id=intent.intent_id)
 
-    def _capacity_available(self, *, underlying_key: str, day_start_ms: int) -> bool:
-        """One nonterminal Intent globally, one fenced entry per UTC day, one per underlying."""
+    def _capacity_available(self, *, underlying_key: str) -> bool:
+        """One nonterminal Intent globally, one per underlying. Re-read inside the commit."""
 
         row = self.conn.execute(
             """
             SELECT EXISTS (
                      SELECT 1 FROM trading_intents WHERE execution_state = ANY(%(active)s)
                    ) AS any_active,
-                   EXISTS (
-                     SELECT 1 FROM trading_intents
-                      WHERE entry_fenced_at_ms >= %(day_start)s AND entry_fenced_at_ms < %(day_end)s
-                   ) AS entered_today,
                    EXISTS (
                      SELECT 1 FROM trading_intents i
                        JOIN trading_cases c ON c.case_id = i.case_id
@@ -338,14 +321,12 @@ class LaneStorage:
             """,
             {
                 "active": list(ACTIVE_INTENT_STATES),
-                "day_start": int(day_start_ms),
-                "day_end": int(day_start_ms) + 86_400_000,
                 "underlying": underlying_key,
             },
         ).fetchone()
         if row is None:  # pragma: no cover - aggregate queries always return one row
             return False
-        return not (row["any_active"] or row["entered_today"] or row["underlying_active"])
+        return not (row["any_active"] or row["underlying_active"])
 
     def _block(
         self,

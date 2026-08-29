@@ -19,7 +19,7 @@ export const CAPITAL_POLICY_ID = "binance_oi_smart_money_long_v2";
  */
 export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): TradingStatus {
   return {
-    budget: { max_entries_per_utc_day: 1, target_notional_usd: "10" },
+    budget: { target_notional_usd: "10" },
     counts: {
       active_intents: 1,
       cases_24h: 7,
@@ -215,9 +215,7 @@ export function tradingGateConfigFixture(): TradingGate["config"] {
     config_digest: "c".repeat(64),
     live_exchange_id: "binance",
     max_age_ms: 300_000,
-    max_rank_in_window: 2,
     min_oi_value_usd: 5_000_000,
-    symbol_cooldown_ms: 1_800_000,
     version: "trading_admission_v2",
   };
 }

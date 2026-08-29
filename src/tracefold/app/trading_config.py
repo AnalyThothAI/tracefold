@@ -28,9 +28,7 @@ def capital_lane_config(settings: Settings) -> CapitalLaneConfig:
         oi_metric_version=NEWS_OI_METRIC_VERSION,
         admission=AdmissionConfig(
             max_age_ms=candidates.max_age_seconds * 1000,
-            max_rank_in_window=candidates.max_rank_in_window,
             min_oi_value_usd=candidates.min_oi_value_usd,
-            symbol_cooldown_ms=candidates.symbol_cooldown_seconds * 1000,
         ),
         price_window=PriceWindow(),
         policy=CAPITAL_POLICY,
