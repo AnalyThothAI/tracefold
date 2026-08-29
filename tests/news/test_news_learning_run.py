@@ -29,11 +29,6 @@ _PROGRAM = "9" * 64
 _BASELINE_REPORT = "b" * 64
 _OPTIMIZATION_REPORT = "a" * 64
 _METRIC = {"schema": "tracefold.news.compile_metric_receipt.v4", "metric_id": "m5", "weights": {"final_action": 0.45}}
-_TASK_ROUTE = {
-    "model": "qwen3-30b",
-    "baseline_endpoint_sha256": "4" * 64,
-    "optimizer_endpoint_fingerprint": "5" * 64,
-}
 
 
 # The coverage block the readiness report below publishes, agreeing with its own `corpus` counts and with
@@ -86,39 +81,17 @@ def _readiness(**updates: Any) -> dict[str, Any]:
 
 
 def _baseline(**updates: Any) -> dict[str, Any]:
-    report = {
+    """A minimal stand-in: `run` only checks the leg ran and re-reads the file it wrote.
+
+    Nothing in `news_learning_run.py` reads the report's fields any more (#343 deleted the
+    comparability summary), so a fuller fake would drift from `program_baseline_report.v3`
+    unnoticed while implying cross-checks that no longer exist.
+    """
+
+    report: dict[str, Any] = {
         "schema_id": "tracefold.news.program_baseline_report.v3",
         "report_sha256": _BASELINE_REPORT,
         "mode": "compile_live",
-        "identity": {
-            "development_dataset_sha": _DATASET,
-            "episode_projection_root_sha256": _EPISODE_ROOT,
-            "episode_count": 84,
-            "program_sha256": _PROGRAM,
-            "metric": _METRIC,
-            "runtime_model": {
-                "compile_task_model": "qwen3-30b",
-                "compile_task_endpoint_sha256": _TASK_ROUTE["baseline_endpoint_sha256"],
-            },
-        },
-        "objective": {
-            "optimizer_case_n": 65,
-            "optimizer_cluster_n": 65,
-            "optimizer_case_root_sha256": _OPTIMIZER_ROOT,
-            "split": {
-                "train": {"case_root_sha256": _TRAIN_ROOT},
-                "development_selection": {"case_root_sha256": _SELECTION_ROOT},
-            },
-        },
-        "semantic_judge": {"attempts": 19, "model_calls": 19, "failures": 0, "judge_id": "tracefold/judge"},
-        "subsets": {
-            "development_selection": {
-                "case_n": 19,
-                "answered_n": 19,
-                "case_macro_failure_as_zero": 0.412,
-                "case_macro_answered": 0.412,
-            }
-        },
     }
     report.update(updates)
     return copy.deepcopy(report)
@@ -150,9 +123,7 @@ def _optimization(**updates: Any) -> dict[str, Any]:
             "development_selection": {"case_root_sha256": _SELECTION_ROOT},
         },
         "metric": _METRIC,
-        "model_identities": {
-            "task": {"model": "qwen3-30b", "endpoint_fingerprint": _TASK_ROUTE["optimizer_endpoint_fingerprint"]}
-        },
+        "model_identities": {"task": {"model": "qwen3-30b", "endpoint_fingerprint": "5" * 64}},
         "trajectory": {"val_aggregate_scores": [0.437, 0.401], "best_idx": 0, "num_full_val_evals": 2},
         "usage": {
             "metric_calls": 96,

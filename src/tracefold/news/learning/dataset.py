@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..artifact_identity import canonical_json, canonical_sha
+from ..artifact_identity import canonical_sha
 from ..models import TRIAGE_POLICY_VERSION, TriageVerdict
 from ..program.contracts import EditorialEnvelope, ScoredJudgment, TriageContext
 from ..review.desk import (
@@ -117,7 +117,7 @@ def _text_sha(value: str) -> str:
 
 # The one named extraction seal a dataset may carry. The #300 migration carry
 # (`news_learning_migration_freeze_v1`) was deleted in #343 with no migrated dataset ever sealed.
-_EXTRACTION_LINEAGE_SHAS = frozenset((_text_sha("news_learning_freeze_query_v1"),))
+_EXTRACTION_SEAL_SHA = _text_sha("news_learning_freeze_query_v1")
 
 
 @dataclass(frozen=True)
@@ -821,7 +821,7 @@ class DevelopmentDatasetStore:
         if {name: hashes.get(name) for name in expected_hashes} != expected_hashes:
             raise ValueError("news_learning_dataset_contract_hash_mismatch")
         # One named seal exists: the freeze query. Lineage, not freedom.
-        if hashes.get("extraction_sha") not in _EXTRACTION_LINEAGE_SHAS:
+        if hashes.get("extraction_sha") != _EXTRACTION_SEAL_SHA:
             raise ValueError("news_learning_dataset_contract_hash_mismatch")
         if set(hashes) != {*expected_hashes, "extraction_sha"}:
             raise ValueError("news_learning_dataset_contract_hash_mismatch")
@@ -835,10 +835,6 @@ class DevelopmentDatasetStore:
 
 def _sha(value: Any) -> str:
     return canonical_sha(value)
-
-
-def _json(value: Any) -> str:
-    return canonical_json(value)
 
 
 __all__ = [

@@ -487,7 +487,7 @@ uv run tracefold news learning optimize --development DATASET_SHA \
   --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
 
-# Only after `optimization_report.json` says terminal=ADVANCE, and only because a human
+# Only after `optimization_report.json` says outcome=ADVANCE, and only because a human
 # decided to test the candidate on examples it was never optimized against.
 uv run tracefold news release register --development DATASET_SHA \
   --candidate artifacts/run-1/optimization/prompt_candidate.json \

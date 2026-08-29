@@ -41,7 +41,6 @@ from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
 from tracefold.news.program.artifact import (
-    ProgramStrategyPatchV1,
     apply_program_patch,
     load_stable_program_artifact,
 )
@@ -574,27 +573,6 @@ def _static_judges(
 
 def _judge_call_count(judges: Mapping[object, object]) -> int:
     return sum(len(judge.calls) for judge in {id(value): value for value in judges.values()}.values())
-
-
-def _compiled_candidate_artifact(conn, *, development, stable: ArmManifest):
-    """A real compiled child artifact, and the one record that says how it was produced."""
-
-    base = load_stable_program_artifact()
-    # What an optimizer run hands back since #306 Phase 3: two named texts, applied through the same
-    # trusted patch path a real candidate takes.
-    patch = ProgramStrategyPatchV1.issue(
-        parent=base,
-        event_semantics_instruction="A sealed replay integration candidate instruction",
-        reader_card_instruction=base.reader_card_instruction,
-    )
-    artifact = apply_program_patch(base, patch)
-    registered = _prompt_candidate(
-        conn,
-        development_sha=development.artifact_sha,
-        stable=stable,
-        patch=PromptPatchV1.of(patch),
-    )
-    return artifact, registered
 
 
 def _objective_plan(conn, *, stable: ArmManifest, development_sha: str) -> GepaObjectivePlan:

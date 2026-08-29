@@ -983,7 +983,7 @@ def _expected_delivery(should_push: str) -> bool | None:
 
 # v2 (#259): the report carries the frozen dataset's own `coverage` counts beside the plan, so one
 # document answers both "may this corpus be optimized" and "how much separable evidence is in it".
-# `run_summary` reads that block; a v1 report cannot answer it and must not be read as if it could.
+# A v1 report cannot answer the second question and must not be read as if it could.
 READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v2"] = "tracefold.news.gepa_readiness_report.v2"
 # The Program answers two Predictors per metric call, in a fixed order. Not an estimate — it is the graph.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
