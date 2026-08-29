@@ -13,7 +13,7 @@ from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 GENERATED = REPO_ROOT / "docs" / "generated"
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
 def test_make_docs_generated_clean_diff() -> None:

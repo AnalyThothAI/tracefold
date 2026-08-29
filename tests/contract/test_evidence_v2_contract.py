@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from hypothesis import settings
 
-from tests.support import evidence
+from tests.support import evidence, profile
 
 pytestmark = pytest.mark.slow
 
@@ -59,6 +59,7 @@ def evidence_repository(tmp_path: Path) -> _EvidenceRepository:
     (root / "tracefold" / "platform" / "postgres").mkdir(parents=True)
     (root / "web").mkdir()
     shutil.copy2(Path(evidence.__file__).resolve(), root / "tests" / "support" / "evidence.py")
+    shutil.copy2(Path(profile.__file__).resolve(), root / "tests" / "support" / "profile.py")
     for package in (
         root / "tests",
         root / "tests" / "support",
@@ -1019,6 +1020,27 @@ def test_python_lane_records_replay_and_tool_identity(evidence_repository: _Evid
         "print_blob": True,
         "replay_policy": "derandomize",
     }
+
+
+def test_python_lane_allows_the_code_owned_profile_recorder(evidence_repository: _EvidenceRepository) -> None:
+    profile_path = evidence_repository.root.parent / "profile.json"
+    result, manifest = evidence_repository.run(
+        "-p",
+        "tests.support.profile",
+        f"--test-profile={profile_path}",
+        "--test-profile-lane=python",
+        env={"TRACEFOLD_FIXTURE_FAIL": "0"},
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr + json.dumps(manifest, indent=2)
+    assert {plugin["name"] for plugin in manifest["pytest_plugins"]} == {
+        "hypothesis",
+        "tracefold-evidence",
+        "tracefold-test-profile",
+    }
+    profile_manifest = json.loads(profile_path.read_text(encoding="utf-8"))
+    assert profile_manifest["schema_version"] == profile.PROFILE_SCHEMA_VERSION
+    assert profile_manifest["selected"] == 2
 
 
 def test_python_lane_manifest_rejects_a_nonzero_session_exit_without_a_test_failure(

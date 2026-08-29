@@ -18,7 +18,7 @@ from tracefold.cli import main
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.usefixtures("postgres_dsn")
+@pytest.mark.usefixtures("postgres_clone_dsn")
 def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
@@ -39,7 +39,7 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> No
     assert lines[2]["data"]["mismatch_count"] == 0
 
 
-@pytest.mark.usefixtures("postgres_dsn")
+@pytest.mark.usefixtures("postgres_clone_dsn")
 def test_trading_status_reports_capability_without_claiming_runtime_readiness() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)

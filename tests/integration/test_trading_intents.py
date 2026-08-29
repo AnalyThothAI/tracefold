@@ -16,7 +16,6 @@ import pytest
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.config.models import Settings
 from tracefold.trading import (
@@ -42,7 +41,7 @@ from tracefold.trading.pipeline.candidate import CandidateRunner
 from tracefold.trading.pipeline.runtime import TradingConfig
 from tracefold.trading.strategy.root import strategies
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 NOW = 1_900_000_000_000
 
@@ -91,9 +90,8 @@ CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
 
 
 @pytest.fixture(scope="module")
-def conn():
+def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     repos = repositories_for_connection(connection)
     connection.execute(
         "UPDATE trading_runtime_state SET nautilus_ready = false, "

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TriageVerdict
@@ -11,13 +10,12 @@ from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_frame
 from tracefold.news.reader_history import build_reader_history
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def conn():
+def conn(postgres_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     yield connection
     connection.close()
 

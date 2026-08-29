@@ -2,7 +2,7 @@ import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
 def test_postgres_keeps_supported_extensions() -> None:

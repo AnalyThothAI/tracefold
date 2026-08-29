@@ -11,7 +11,6 @@ import pytest
 from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
@@ -20,7 +19,7 @@ from tracefold.news.opennews import parse_opennews_message, source_artifact_iden
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 NEWS_TABLES = {
@@ -65,9 +64,8 @@ NEWS_TABLES = {
 
 
 @pytest.fixture(scope="module")
-def conn():
+def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
-    migrate(connection)
     yield connection
     connection.close()
 

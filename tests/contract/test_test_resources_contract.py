@@ -19,6 +19,14 @@ class _DatabaseIdentityConnection:
 
 def test_destructive_test_database_helpers_require_the_exact_test_identity() -> None:
     postgres_test_utils.assert_dedicated_test_database(_DatabaseIdentityConnection("tracefold_test"))
+    postgres_test_utils.assert_dedicated_test_database(
+        _DatabaseIdentityConnection("tracefold_test_case_012345abcdef_1"),
+        expected_database="tracefold_test_case_012345abcdef_1",
+    )
+    postgres_test_utils.assert_dedicated_test_database(
+        _DatabaseIdentityConnection("tracefold_test_migration_012345abcdef"),
+        expected_database="tracefold_test_migration_012345abcdef",
+    )
 
     for unsafe_name in ("tracefold", "postgres", "test", "tracefold_test_backup"):
         with pytest.raises(RuntimeError, match="postgres_test_database_identity_invalid"):

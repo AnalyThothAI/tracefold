@@ -16,6 +16,7 @@ import sys
 import time
 import uuid
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -78,11 +79,8 @@ def golden_postgres_dsn() -> Iterator[str]:
     existing = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)
 
     if _dsn_reachable(existing):
-        from tests.postgres_test_utils import ensure_migrated_postgres_resource
-
-        ensure_migrated_postgres_resource(existing, resource_name="PostgreSQL golden resource")
-        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = existing
-        yield existing
+        with _isolated_golden_database(existing) as dsn:
+            yield dsn
         return
 
     if not _docker_available():
@@ -97,14 +95,24 @@ def golden_postgres_dsn() -> Iterator[str]:
 
     from testcontainers.postgres import PostgresContainer
 
-    from tests.postgres_test_utils import ensure_migrated_postgres_resource
     from tests.tracefold_postgres_container import tracefold_postgres_container
 
     with tracefold_postgres_container(PostgresContainer) as pg:
-        dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
-        ensure_migrated_postgres_resource(dsn, resource_name="testcontainers PostgreSQL golden resource")
-        os.environ["TRACEFOLD_TEST_POSTGRES_DSN"] = dsn
-        yield dsn
+        server_dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
+        with _isolated_golden_database(server_dsn) as dsn:
+            yield dsn
+
+
+@contextmanager
+def _isolated_golden_database(server_dsn: str) -> Iterator[str]:
+    from tests.postgres_test_utils import MigratedPostgresCloneFactory
+
+    factory = MigratedPostgresCloneFactory(server_dsn)
+    try:
+        with factory.clone() as dsn:
+            yield dsn
+    finally:
+        factory.close()
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +140,6 @@ def golden_runtime(
 ) -> Iterator[GoldenRuntime]:
     """Run the public Workers root and a real HTTP server against one isolated broker topology."""
 
-    _reset_postgres(golden_postgres_dsn)
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     name_prefix = f"tf_golden_{uuid.uuid4().hex[:10]}"
@@ -196,12 +203,6 @@ def golden_runtime(
         serve_fp.close()
         worker_fp.close()
         asyncio.run(_delete_topology(golden_rabbitmq_url, name_prefix))
-
-
-def _reset_postgres(dsn: str) -> None:
-    from tests.postgres_test_utils import reset_postgres_database
-
-    reset_postgres_database(dsn)
 
 
 def _unused_port() -> int:

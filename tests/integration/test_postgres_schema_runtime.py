@@ -11,7 +11,7 @@ from tracefold.platform.postgres.migrations import (
     upgrade_head,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 
 def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:

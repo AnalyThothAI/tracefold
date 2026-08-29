@@ -20,7 +20,7 @@ from tracefold.news.opennews import OPENNEWS_SOURCE_ID, parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item, item_identity
 from tracefold.platform.postgres.migrations import alembic_config
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
 BEFORE_EVENT_KIND = "20260827_0314"
 NOW = 1_900_000_000_000

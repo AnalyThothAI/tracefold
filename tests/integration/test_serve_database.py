@@ -8,7 +8,7 @@ from tests.postgres_test_utils import postgres_settings_storage
 from tracefold.app.serve_database import ServeDatabase
 from tracefold.platform.config.models import Settings
 
-pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
 def test_serve_session_policy_is_applied_at_connect_time() -> None:

@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.pricing import (
     QUOTE_TARGET_MAX,
@@ -19,7 +18,7 @@ from tracefold.news.market_review.pricing import (
     Quote,
 )
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow, pytest.mark.usefixtures("postgres_dsn")]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 NOW = 1_787_000_000_000
 HOUR = 3_600_000
@@ -28,9 +27,8 @@ ASSETS_PER_EVENT = 2
 
 
 @pytest.fixture(scope="module")
-def seeded():
+def seeded(postgres_module_clone_dsn: str):
     conn = connect_postgres_test(read_only=False)
-    migrate(conn)
     _seed(conn)
     _serve_session(conn)
     yield conn

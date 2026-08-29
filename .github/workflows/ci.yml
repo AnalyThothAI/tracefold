@@ -41,6 +41,8 @@ jobs:
       - name: Run quality checks
         env:
           PYTEST_ADDOPTS: --junitxml=artifacts/quality/junit.xml --durations=50
+          TRACEFOLD_TEST_PROFILE_LANE: quality
+          TRACEFOLD_TEST_PROFILE_PATH: artifacts/quality/profile.json
         run: |
           mkdir -p artifacts/quality
           set -o pipefail
@@ -74,6 +76,8 @@ jobs:
       - name: Run hermetic fast tests
         env:
           PYTEST_ADDOPTS: --junitxml=artifacts/fast/junit.xml --durations=50
+          TRACEFOLD_TEST_PROFILE_LANE: fast
+          TRACEFOLD_TEST_PROFILE_PATH: artifacts/fast/profile.json
         run: |
           mkdir -p artifacts/fast
           set -o pipefail
@@ -145,6 +149,8 @@ jobs:
           TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
           TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
           TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
+          TRACEFOLD_TEST_PROFILE_LANE: deterministic-full
+          TRACEFOLD_TEST_PROFILE_PATH: artifacts/test-evidence/profile.json
         run: |
           mkdir -p artifacts/test-evidence
           set -o pipefail

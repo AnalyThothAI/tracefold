@@ -28,6 +28,7 @@ from hypothesis import settings
 LANE_SCHEMA_VERSION = "tracefold_test_lane_v2"
 AGGREGATE_SCHEMA_VERSION = "tracefold_test_evidence_v2"
 SCHEMA_VERSION = LANE_SCHEMA_VERSION
+TEST_PROFILE_SCHEMA_VERSION = "tracefold_test_profile_v1"
 _ALLOWED_DESELECTED_MARKERS = ("live", "scheduled")
 _RESOURCE_MARKERS = ("deploy", "e2e", "external_codegen", "golden", "integration", "slow")
 _REQUIRED_MARKER_LANES = (
@@ -46,6 +47,7 @@ _NON_GREEN_OUTCOME_FIELDS = ("failed", "skipped", "xfailed", "xpassed", "rerun",
 _ALLOWED_MODULE_PLUGINS = {
     "_hypothesis_pytestplugin": ("hypothesis", hypothesis_version),
     "tests.support.evidence": ("tracefold-evidence", LANE_SCHEMA_VERSION),
+    "tests.support.profile": ("tracefold-test-profile", TEST_PROFILE_SCHEMA_VERSION),
 }
 _REQUIRED_PYTEST_CORE_MODULES = (
     "_pytest.threadexception",
