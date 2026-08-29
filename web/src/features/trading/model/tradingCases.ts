@@ -34,9 +34,12 @@ export function casesForTab(cases: readonly TradingCase[], tab: CaseTab): Tradin
 /**
  * The first tab that has rows, or `all` when nothing does.
  *
- * A default of `emitted` on a lane that legitimately emits nothing greets every reader with an empty
- * page and teaches them the console is broken. A URL that names a tab always wins: a shared link points
- * at what its author was looking at.
+ * A fixed default of `已形成意图` on a lane that legitimately emits nothing greets every reader with an
+ * empty page and teaches them the console is broken. `全部` leads the strip and therefore wins this
+ * search whenever anything has rows at all — which is the intended answer, because it shows the
+ * refusals beside the emissions. The search below it is what keeps that true if the strip ever gains a
+ * filtered tab above `全部`. A URL that names a tab always wins: a shared link points at what its
+ * author was looking at.
  */
 export function defaultCaseTab(cases: readonly TradingCase[], requested: CaseTab | null): CaseTab {
   if (requested) return requested;
