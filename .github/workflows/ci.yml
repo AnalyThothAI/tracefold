@@ -45,6 +45,13 @@ jobs:
           name: test-results-quality-static-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-quality-static-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   python-hermetic:
     name: python-hermetic
@@ -68,6 +75,13 @@ jobs:
           name: test-results-python-hermetic-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-python-hermetic-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   postgres-behavior:
     name: postgres-behavior
@@ -110,6 +124,13 @@ jobs:
           name: test-results-postgres-behavior-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-postgres-behavior-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   migration:
     name: migration
@@ -137,6 +158,13 @@ jobs:
           name: test-results-migration-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-migration-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   runtime-process:
     name: runtime-process
@@ -167,6 +195,13 @@ jobs:
           name: test-results-runtime-process-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-runtime-process-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   frontend:
     name: frontend
@@ -200,6 +235,48 @@ jobs:
           name: test-results-frontend-${{ env.TESTED_SHA }}
           path: artifacts/test-results
           if-no-files-found: error
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-frontend-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
+
+  # Report-only (#373 PR 2). It combines the coverage data the fixed jobs already produced and prints
+  # standard coverage.py reports. It reads no JUnit, Vitest, or Playwright report, re-runs no test,
+  # and is deliberately absent from `ci-gate`'s dependencies: nothing here can pass or fail a merge.
+  test-effectiveness:
+    name: test-effectiveness
+    needs: [quality-static, python-hermetic, postgres-behavior, migration, runtime-process, frontend]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
+      - name: Require the exact tested SHA
+        run: test "$(git rev-parse HEAD)" = "$TESTED_SHA"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked
+      - name: Collect the coverage every fixed job produced
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: coverage-*-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          merge-multiple: true
+      - name: Combine and report
+        run: make ci-test-effectiveness
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-report-${{ env.TESTED_SHA }}
+          path: artifacts/coverage
+          include-hidden-files: true
+          if-no-files-found: warn
 
   ci-gate:
     name: ci-gate
