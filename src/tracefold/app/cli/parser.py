@@ -161,7 +161,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="recorded",
         help=(
             "recorded: score the persisted verdict against the action that shipped, no model call; "
-            "compile_live: the graph GEPA optimizes, one task endpoint, no fallback/retry/deadline/circuit; "
+            "compile_live: the graph GEPA optimizes, one task endpoint, no route fallback/deadline/circuit; "
+            "per-call timeout and JSON format fallback remain; "
             "runtime_live: the configured four-slot production Program route (excludes consumer transaction, "
             "advisory lock, stale re-ask, degraded wire card, broker and delivery)"
         ),
@@ -181,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help=(
             "required by --mode compile_live and runtime_live: the most cases allowed to reach a provider. "
-            "runtime_live spends 2-6 real calls per case, sequentially, on the endpoints that also serve "
+            "runtime_live spends 2-8 real calls per case, sequentially, on the endpoints that also serve "
             "production Triage"
         ),
     )

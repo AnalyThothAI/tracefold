@@ -68,7 +68,12 @@ PROGRAM_INSTRUCTION_MAX_ESTIMATED_TOKENS: Final[int] = 8_192
 
 PROGRAM_SCHEMA_VERSION: Final[str] = "news_program_strategy_artifact_v1"
 
-PROGRAM_VERSION: Final[str] = "news_semantic_program_v5"
+# #344 keeps the two instruction bytes and Artifact V1 identity stable, but the
+# execution protocol is not replay-compatible: requests are now rendered by
+# DSPy, a schema parse can spend one JSON-format fallback, and physical-call
+# receipts use the typed LM contract.  Give old recordings a stable version to
+# reject instead of pretending they are requests from the same executor.
+PROGRAM_VERSION: Final[str] = "news_semantic_program_v6"
 
 # The route ceilings, deadline and breaker the graph executes under. They used to be copied into every
 # Artifact and then hashed there, which made an operator-visible budget look like optimizer-writable state.
@@ -82,6 +87,25 @@ PROGRAM_ROUTE_DEADLINE_SECONDS: Final[int] = 20
 PROGRAM_PRIMARY_BREAKER_FAILURES: Final[int] = 3
 
 PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS: Final[int] = 60
+
+# A JSON-schema-capable Predictor may make its initial call plus one stock
+# JSONAdapter format fallback.  There are two serial Predictors per route and
+# two complete routes in the primary -> fallback chain.
+PROGRAM_PREDICTOR_MAX_CALLS: Final[int] = 2
+
+PROGRAM_ROUTE_MAX_CALLS: Final[int] = 4
+
+PROGRAM_JUDGMENT_MAX_CALLS: Final[int] = 8
+
+# These exact public DSPy failures may open the primary breaker.  Routing turns
+# the names into classes; execution identity addresses the same tuple so a
+# policy change cannot silently retain the old release identity.
+PROGRAM_RETRYABLE_LM_ERROR_TYPES: Final[tuple[str, ...]] = (
+    "LMRateLimitError",
+    "LMServerError",
+    "LMTimeoutError",
+    "LMTransportError",
+)
 
 _UNTRUSTED_EVENT_OPEN: Final[str] = "<tracefold-untrusted-event-json-v1>"
 

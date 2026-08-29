@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import json
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
+import dspy  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
@@ -14,12 +17,12 @@ from ..progression_review import (
     ProgressionReview,
     compact_progression_reason,
 )
-from .transport import PredictorAdapter, PredictorRequest, PredictorSpec
+from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, program_json_adapter
 
-PROGRESSION_REVIEW_VERSION = "news_progression_review_v2"
-PROGRESSION_REVIEW_MODEL_BINDING = "progression_review.primary"
+PROGRESSION_REVIEW_VERSION = "news_progression_review_v3"
 PROGRESSION_REVIEW_MAX_CANDIDATES = 8
 PROGRESSION_REVIEW_MAX_TOKENS = 512
+PROGRESSION_REVIEW_MAX_CALLS = 2
 
 _INSTRUCTION = """You verify whether a news item already labelled progression is genuinely a material next
 development of exactly one previously delivered candidate.
@@ -57,39 +60,85 @@ class ProgressionReviewAnswer(_ExactModel):
         return self
 
 
-PROGRESSION_REVIEW_SHA256 = canonical_sha(
-    {
-        "version": PROGRESSION_REVIEW_VERSION,
-        "instruction": _INSTRUCTION,
-        "output_schema": ProgressionReviewAnswer.model_json_schema(),
-        "max_candidates": PROGRESSION_REVIEW_MAX_CANDIDATES,
-        "max_tokens": PROGRESSION_REVIEW_MAX_TOKENS,
+class ProgressionReviewSignature(dspy.Signature):  # type: ignore[misc]
+    """Verify one claimed progression against a bounded set of delivered candidates."""
+
+    evidence_json: str = dspy.InputField(
+        desc="Canonical current-item and candidate JSON; candidates contain no usable recency evidence."
+    )
+    review: ProgressionReviewAnswer = dspy.OutputField(desc="The exact typed progression relationship review.")
+
+
+_PROGRESSION_REVIEW_SIGNATURE = ProgressionReviewSignature.with_instructions(_INSTRUCTION)
+_CANONICAL_RENDER_INPUT = canonical_json({"current": {}, "candidates": []})
+_JSON_ADAPTER_RENDER_SHA256 = canonical_sha(
+    program_json_adapter().format(
+        _PROGRESSION_REVIEW_SIGNATURE,
+        demos=[],
+        inputs={"evidence_json": _CANONICAL_RENDER_INPUT},
+    )
+)
+
+_PROGRAM_IDENTITY_MATERIAL = {
+    "version": PROGRESSION_REVIEW_VERSION,
+    "dspy_version": importlib.metadata.version("dspy"),
+    "signature": _PROGRESSION_REVIEW_SIGNATURE.dump_state(),
+    "output_schema": ProgressionReviewAnswer.model_json_schema(),
+    "json_adapter": {
+        "type": "dspy.JSONAdapter",
+        "use_native_function_calling": False,
+        "canonical_render_sha256": _JSON_ADAPTER_RENDER_SHA256,
+    },
+    "max_candidates": PROGRESSION_REVIEW_MAX_CANDIDATES,
+    "max_tokens": PROGRESSION_REVIEW_MAX_TOKENS,
+    "max_calls": PROGRESSION_REVIEW_MAX_CALLS,
+    "per_call_timeout_seconds": PROGRESSION_REVIEW_TIMEOUT_SECONDS,
+}
+PROGRESSION_REVIEW_SHA256 = canonical_sha(_PROGRAM_IDENTITY_MATERIAL)
+
+
+def _effective_lm_capability(lm: dspy.BaseLM) -> dict[str, Any]:
+    return {
+        "supported_params": sorted(str(value) for value in lm.supported_params),
+        "supports_response_schema": bool(lm.supports_response_schema),
     }
-)
-PROGRESSION_VERIFIER_ID = f"tracefold.news.progression_review_v2:{PROGRESSION_REVIEW_SHA256[:16]}"
-_PROGRESSION_REVIEW_SPEC = PredictorSpec(
-    name="progression_review",
-    instruction=_INSTRUCTION,
-    input_fields=("evidence_json",),
-    output_field="review",
-    output_model=ProgressionReviewAnswer,
-    max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
-)
 
 
-class ProgressionReviewProgram:
-    """One no-retry structured model call; callers schedule it only after Telegram has receipted the send."""
+class ProgressionReviewProgram(dspy.Module):  # type: ignore[misc]
+    """One native structured Predictor scheduled only after Telegram has receipted the send."""
 
-    verifier_id = PROGRESSION_VERIFIER_ID
+    def __init__(self, lm: dspy.BaseLM) -> None:
+        super().__init__()
+        if not isinstance(lm, AuditedConfiguredLM):
+            raise TypeError("news_progression_review_lm_invalid")
+        if lm.cache is not False or lm.num_retries != 0:
+            raise dspy.LMConfigurationError("news_progression_review_lm_must_disable_cache_and_retries")
+        if (lm.predictor, lm.route, lm.model_binding) != (
+            "progression_review",
+            "primary",
+            "progression_review.primary",
+        ):
+            raise ValueError("news_progression_review_lm_binding_invalid")
+        self._lm = lm
+        self.progression_review = dspy.Predict(
+            _PROGRESSION_REVIEW_SIGNATURE,
+            max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
+        )
+        self._identity = {
+            "program": _PROGRAM_IDENTITY_MATERIAL,
+            "program_sha256": PROGRESSION_REVIEW_SHA256,
+            "effective_lm_capability": _effective_lm_capability(lm),
+            "runtime_identity": lm.runtime_identity.model_dump(mode="json"),
+            "model_binding": lm.model_binding,
+        }
+        self.identity_sha256 = canonical_sha(self._identity)
+        self.verifier_id = f"tracefold.news.progression_review_v3:{self.identity_sha256[:16]}"
 
-    def __init__(
-        self,
-        *,
-        adapter: PredictorAdapter,
-        model_binding: str = PROGRESSION_REVIEW_MODEL_BINDING,
-    ) -> None:
-        self._adapter = adapter
-        self._model_binding = str(model_binding)
+    @property
+    def identity(self) -> dict[str, Any]:
+        """Canonical verifier identity material, copied so callers cannot mutate the running identity."""
+
+        return cast(dict[str, Any], json.loads(canonical_json(self._identity)))
 
     async def review(
         self,
@@ -117,40 +166,48 @@ class ProgressionReviewProgram:
             "candidates": visible_candidates,
         }
         evidence_json = canonical_json(visible)
-        runtime = self._adapter.runtime_identity(self._model_binding)
-        request = PredictorRequest(
+        ledger = LMCallLedger(
+            max_calls_per_predictor=PROGRESSION_REVIEW_MAX_CALLS,
+            max_calls_per_route=PROGRESSION_REVIEW_MAX_CALLS,
+            max_calls_per_scope=PROGRESSION_REVIEW_MAX_CALLS,
+        )
+        call_context = LMCallContext(
             program_version=PROGRESSION_REVIEW_VERSION,
-            program_sha256=PROGRESSION_REVIEW_SHA256,
+            program_sha256=self.identity_sha256,
             context_sha256=canonical_sha(visible),
-            predictor="progression_review",
-            route="primary",
-            attempt=1,
-            model_binding=self._model_binding,
-            runtime_provider=runtime.provider,
-            runtime_model=runtime.model,
-            runtime_model_sha256=runtime.model_sha256,
-            runtime_binding_sha256=runtime.binding_sha256,
-            inputs={"evidence_json": evidence_json},
         )
-        response = await self._adapter.invoke(request, _PROGRESSION_REVIEW_SPEC)
-        raw = response.output.get("review")
-        answer = raw if isinstance(raw, ProgressionReviewAnswer) else ProgressionReviewAnswer.model_validate(raw)
-        if not answer.related:
-            return ProgressionReview(
-                state="rejected",
-                reason_zh=answer.reason_zh,
-                verifier_id=self.verifier_id,
-            )
-        candidate = next((item for item in visible_candidates if item["i"] == answer.candidate_i), None)
-        if candidate is None:
-            raise ValueError("news_progression_review_answer_candidate_missing")
-        return ProgressionReview(
-            state="confirmed",
-            candidate_i=answer.candidate_i,
-            candidate_headline_zh=str(candidate["headline_zh"]),
-            reason_zh=answer.reason_zh,
-            verifier_id=self.verifier_id,
-        )
+        with ledger.scope(call_context), dspy.context(adapter=program_json_adapter()):
+            prediction = await self.progression_review.acall(evidence_json=evidence_json, lm=self._lm)
+            try:
+                raw = prediction.review
+                answer = (
+                    raw if isinstance(raw, ProgressionReviewAnswer) else ProgressionReviewAnswer.model_validate(raw)
+                )
+                if not answer.related:
+                    return ProgressionReview(
+                        state="rejected",
+                        reason_zh=answer.reason_zh,
+                        verifier_id=self.verifier_id,
+                    )
+                candidate = next((item for item in visible_candidates if item["i"] == answer.candidate_i), None)
+                if candidate is None:
+                    raise ValueError("news_progression_review_answer_candidate_missing")
+                return ProgressionReview(
+                    state="confirmed",
+                    candidate_i=answer.candidate_i,
+                    candidate_headline_zh=str(candidate["headline_zh"]),
+                    reason_zh=answer.reason_zh,
+                    verifier_id=self.verifier_id,
+                )
+            except ValueError as exc:
+                if ledger.receipts:
+                    code = str(exc)
+                    ledger.domain_failure(
+                        code
+                        if code.startswith("news_progression_review_")
+                        else "news_progression_review_output_invalid"
+                    )
+                raise
 
     @staticmethod
     def _candidate(candidate: Mapping[str, Any]) -> dict[str, Any]:
@@ -176,12 +233,12 @@ class ProgressionReviewProgram:
 
 
 __all__ = [
+    "PROGRESSION_REVIEW_MAX_CALLS",
     "PROGRESSION_REVIEW_MAX_TOKENS",
-    "PROGRESSION_REVIEW_MODEL_BINDING",
     "PROGRESSION_REVIEW_SHA256",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "PROGRESSION_REVIEW_VERSION",
-    "PROGRESSION_VERIFIER_ID",
     "ProgressionReviewAnswer",
     "ProgressionReviewProgram",
+    "ProgressionReviewSignature",
 ]

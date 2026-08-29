@@ -1,118 +1,235 @@
-"""The computed identity of everything the Program's code decides about a model call.
+"""Computed identity of the native DSPy News execution envelope.
 
-`program_sha256` says which two instructions are running. This module says what the code around them
-does: the exact request bytes a Predictor composes, the output contract and schema the provider is held
-to, the fields the model is shown, the route budget, the breaker, and — since the #314 review found the
-hole — what the code decides once an answer arrives: the `reader_value` to delivery-decision map, the
-`actionable` conjunction, and the restatement index rule. Together they are the whole of Program behavior
-identity, and neither is a claim anybody has to remember to update.
-
-What it does not cover, and the distinction is worth keeping sharp. Three things are covered by *siblings*
-in the same bundle rather than by gaps here: operator policy (`policy_sha256`), the retrieval and
-told-selection contract (`retrieval_sha256`), and the model slots (`runtime_model_bindings_sha256`). A
-change to any of them still opens a new epoch, because the bundle is the compatibility unit and this hash
-is one of its four parts.
-
-One thing is a genuine residue: the *sequencing* of `graph._judge` — which route is attempted in what
-order, and how the degraded path is chosen. Its decision points are rendered (`fast_retry`,
-`normalize_restates`, and the assembly surface), but the order in which they are consulted is imperative
-flow that this document does not reproduce. Re-ordering the primary and fallback attempts would change
-which model answers without moving any hash. Naming it here rather than letting the docstring imply
-otherwise: the first draft of this module claimed total coverage, review found `_assemble` outside it, and
-the honest lesson is that a claim of completeness needs a list, not an adjective.
-
-It replaced a declared `factory_id` literal (#314). A hand-written version has one failure mode, and it
-is not that somebody picks the wrong string — it is that a change lands and nobody bumps anything. Three
-identity-clearing incidents in four days were exactly that, and the pin net that grew to catch them
-(nine epoch counts, four byte-equality tests, a mirrored constant module, five documents) was guarding
-the declaration rather than the behavior. `compute_execution_identity()` renders the behavior and hashes
-what it rendered, so "the deployment changed what the model sees but the identity did not move" is not a
-mistake that can be made.
-
-One contract test pins the value. Editing any material below turns it red, and the re-pinned line in
-that test is the signature on the identity migration.
+``program_sha256`` still names only the two reviewed instruction texts. This
+module addresses everything code-owned around those texts: exact framework
+versions, public Signature state, the JSONAdapter requests it actually renders,
+capability mapping, route order and budgets, failure transitions, and the pure
+News normalize/assemble surface. Runtime endpoints remain a sibling identity;
+credentials never enter either document.
 """
 
 from __future__ import annotations
 
+import ast
+import copy
+import importlib.metadata
+import logging
+from pathlib import Path
 from typing import Any, Final
 
-from ..artifact_identity import canonical_sha
-from .assembly import (
-    READER_VALUE_DECISION,
-    is_actionable,
-    is_fast_retryable,
-    normalize_restates,
-    restatement_index_error,
+from ..artifact_identity import canonical_json, canonical_sha
+from .assembly import READER_VALUE_DECISION, is_actionable, normalize_restates, restatement_index_error
+from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
+from .lm import (
+    LM_REQUEST_IDENTITY_SCHEMA,
+    LM_REQUEST_PROJECTION_SCHEMA,
+    ScriptedLM,
+    StructuredOutputMode,
+    lm_request_projection,
+    program_json_adapter,
+    structured_output_capability,
 )
-from .contracts import TRADE_CHANNEL_ORDER
+from .module import _prepare, _reader_card_semantic_view
 from .runtime import (
     _MODEL_BINDING_SLOTS,
     _UNTRUSTED_EVENT_CLOSE,
     _UNTRUSTED_EVENT_OPEN,
     _VISIBLE_INPUT,
+    PROGRAM_JUDGMENT_MAX_CALLS,
+    PROGRAM_PREDICTOR_MAX_CALLS,
     PROGRAM_PREDICTOR_MAX_TOKENS,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
     PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
+    PROGRAM_RETRYABLE_LM_ERROR_TYPES,
     PROGRAM_ROUTE_DEADLINE_SECONDS,
+    PROGRAM_ROUTE_MAX_CALLS,
     PredictorName,
 )
-from .signatures import PREDICTOR_INPUT_FIELDS, PREDICTOR_OUTPUT
-from .transport import (
-    _JSON_OBJECT_ONLY_MODEL_PREFIXES,
-    _RETRYABLE_MARKERS,
-    _RETRYABLE_STATUS,
-    _TRUNCATED_FINISH_REASONS,
-    _WIRE_MODEL_PREFIX,
-    StructuredOutputMode,
-    chat_request_body,
-)
+from .signatures import EventSemantics, EventSemanticsSignature, ReaderCardSignature
 
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v1"
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v2"
 
-# Rendered, not described. The instruction and the field values are sentinels because they are the two
-# things this identity is deliberately blind to: an instruction edit moves `program_sha256`, and an
-# Event's bytes are the question, not the envelope. Everything else in the request is real — the model
-# name goes through `wire_model_name`, the contract through `system_message`, the schema through
-# `response_format` — so a change to any of them moves the hash without anyone deciding that it should.
-_GOLDEN_MODEL: Final[str] = f"{_WIRE_MODEL_PREFIX}tracefold-execution-identity"
+_GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
 _STRUCTURED_OUTPUT_MODES: Final[tuple[StructuredOutputMode, ...]] = (
     "json_schema",
     "json_object",
     "prompt_json",
 )
+_SIGNATURES: Final[dict[PredictorName, Any]] = {
+    "event_semantics": EventSemanticsSignature,
+    "reader_card": ReaderCardSignature,
+}
+_GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
+    "event_semantics": {
+        "semantics": {
+            "novelty": "new_fact",
+            "restates": -1,
+            "event_type": "noise",
+            "assets": [],
+            "direction": "neutral",
+            "scope": "single_name",
+            "magnitude": 0,
+            "confidence": 1.0,
+            "audience": "none",
+            "relevance": {
+                "impact_breadth": "none",
+                "tradability": "none",
+                "surprise": "unknown",
+                "development_delta": "color_only",
+                "channels": [],
+                "affected_markets": [],
+                "reader_value": "none",
+            },
+        }
+    },
+    "reader_card": {"card": {"headline_zh": "示例", "why_zh": ""}},
+}
+_MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
+    "artifact.py": ("render_model_evidence_json",),
+    "assembly.py": ("decision_for", "is_actionable", "normalize_restates", "restatement_index_error"),
+    "contracts.py": (
+        "EditorialEnvelope",
+        "ProgramTrace",
+        "TriageContext",
+        "TradeRelevanceV1",
+        "_canonical_code_set",
+        "aggregate_program_usage",
+    ),
+    "lm.py": (
+        "LMCallLedger",
+        "LMCallReceipt",
+        "RuntimeModelIdentity",
+        "AuditedConfiguredLM",
+        "RecordedLM",
+        "_LedgerParseCallback",
+        "_RecordingModel",
+        "_RecordedErrorModel",
+        "_RecordedResponseModel",
+        "_RecordedUsageModel",
+        "_RequestIdentityModel",
+        "_recording",
+        "_recorded_error",
+        "_recorded_response",
+        "_replayed_error",
+        "_reject_secret_shaped_config",
+        "_error_code",
+        "_cost_microusd",
+        "_safe_retry_after",
+        "_safe_status",
+        "_safe_config_projection",
+        "_safe_extra_body",
+        "_sanitized_lm_error",
+        "_scrub_detail",
+        "_stable_error_code",
+        "_usage_values",
+        "_validate_request_defaults",
+        "lm_request_identity",
+        "lm_request_projection",
+        "lm_request_sha256",
+        "mark_active_domain_failure",
+        "program_json_adapter",
+        "structured_output_capability",
+    ),
+    "module.py": (
+        "NativeNewsProgram",
+        "_assemble",
+        "_normalize_and_validate_semantics",
+        "_prepare",
+        "_reader_card_semantic_view",
+        "_rejected",
+        "_relevance_normalizations",
+    ),
+    "routing.py": ("RoutedSemanticJudge",),
+    "signatures.py": ("EventSemantics", "ReaderCard"),
+}
 
 
-def _golden_request(predictor: PredictorName, mode: StructuredOutputMode) -> dict[str, Any]:
-    """One Predictor's complete wire envelope, in one structured-output mode, with sentinel content."""
-
-    output_field, output_model = PREDICTOR_OUTPUT[predictor]
-    fields = PREDICTOR_INPUT_FIELDS[predictor]
-    return chat_request_body(
-        model=_GOLDEN_MODEL,
-        instruction=_GOLDEN_INSTRUCTION,
-        field_order=fields,
-        values={field: f"<{field}>" for field in fields},
-        output_field=output_field,
-        output_model=output_model,
-        max_tokens=PROGRAM_PREDICTOR_MAX_TOKENS[predictor],
-        structured_output=mode,
+def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
+    context = TriageContext.from_card(
+        {
+            "event_id": "golden-event",
+            "evidence_version": 1,
+            "evidence_sha256": "a" * 64,
+            "focus_fact_id": "golden-fact",
+            "reporting_origin": "wire",
+            "provenance": ["golden"],
+            "leader_title": "Golden event",
+            "raw_first_line": "Golden event",
+            "leader_description": "Golden evidence",
+            "opened_at_ms": 1_000,
+            "member_count": 1,
+            "family": "general",
+            "provider_metadata": {},
+            "queue_priority": "normal",
+            "asset_class": "none",
+            "grounded_assets": [],
+            "storyline_key": "golden",
+        },
+        watchlist=(),
+        told_rows=(),
+        now_ms=2_000,
+        queue_lag_ms=1_000,
     )
+    prepared = _prepare(context)
+    if predictor == "event_semantics":
+        return {"evidence_json": prepared.semantics_evidence_json}
+    semantics = EventSemantics.model_validate(_GOLDEN_OUTPUTS["event_semantics"]["semantics"])
+    return {
+        "evidence_json": prepared.card_evidence_json,
+        "semantics_json": canonical_json(_reader_card_semantic_view(semantics).model_dump(mode="json")),
+    }
 
 
-# Rendered as an outcome table rather than described, for the same reason the requests are: a rule stated
-# in prose can drift from the rule that runs. `restatement_index_error` reads three inputs and
-# `is_actionable` reads three; enumerating both is small enough to read in a diff and total enough that no
-# edit to either can leave the hash still.
+def _capture_requests(predictor: PredictorName, mode: StructuredOutputMode) -> dict[str, Any]:
+    """Exercise public JSONAdapter/BaseLM APIs and retain their typed requests."""
+
+    signature = _SIGNATURES[predictor].with_instructions(_GOLDEN_INSTRUCTION)
+    inputs = _golden_inputs(predictor)
+    steps: list[Any] = [_GOLDEN_OUTPUTS[predictor]]
+    if mode == "json_schema":
+        # Stock JSONAdapter may make exactly one json_object fallback after a
+        # schema answer that cannot parse. Capturing both proves the real path.
+        steps.insert(0, "not-json")
+    lm = ScriptedLM(steps, model=_GOLDEN_MODEL, structured_output=mode)
+    adapter_logger = logging.getLogger("dspy.adapters.json_adapter")
+    previous_level = adapter_logger.level
+    try:
+        adapter_logger.setLevel(logging.ERROR)
+        program_json_adapter()(
+            lm,
+            {"max_tokens": PROGRAM_PREDICTOR_MAX_TOKENS[predictor]},
+            signature,
+            [],
+            inputs,
+        )
+    finally:
+        adapter_logger.setLevel(previous_level)
+    requests = [lm_request_projection(request) for request in lm.requests]
+    expected = 2 if mode == "json_schema" else 1
+    if len(requests) != expected:
+        raise RuntimeError("news_program_identity_adapter_path_unexpected")
+    return {
+        "initial": requests[0],
+        "format_fallback": requests[1] if len(requests) == 2 else None,
+    }
+
+
+_GOLDEN_REQUESTS: Final[dict[PredictorName, dict[str, dict[str, Any]]]] = {
+    predictor: {mode: _capture_requests(predictor, mode) for mode in _STRUCTURED_OUTPUT_MODES}
+    for predictor in _SIGNATURES
+}
+
 _NOVELTIES: Final[tuple[str, ...]] = ("new_fact", "progression", "restatement")
 _TRADABILITIES: Final[tuple[str, ...]] = ("direct", "second_order", "contextual", "none")
 
 
 def _assembly_surface() -> dict[str, Any]:
-    """Every decision the code makes about a model's answer, enumerated over the inputs that decide it."""
-
     return {
+        "normalization_capture": {
+            "source": "typed_event_semantics_pre_validation_code_order",
+            "fields": ["channels", "affected_markets", "restates"],
+        },
         "reader_value_decision": dict(READER_VALUE_DECISION),
         "actionable": {
             f"{tradability}|channels={int(channels)}|markets={int(markets)}": is_actionable(
@@ -126,7 +243,9 @@ def _assembly_surface() -> dict[str, Any]:
         },
         "restatement_index": {
             f"{novelty}|restates={restates}|told={told}": restatement_index_error(
-                novelty=novelty, restates=restates, told_count=told
+                novelty=novelty,
+                restates=restates,
+                told_count=told,
             )
             for novelty in _NOVELTIES
             for restates in (-1, 0, 1)
@@ -137,60 +256,164 @@ def _assembly_surface() -> dict[str, Any]:
             for novelty in _NOVELTIES
             for restates in (-1, 0, 1)
         },
-        # Which model answers an Event depends on this, so it decides behavior rather than describing it.
-        "fast_retry": {
-            f"retryable={int(r)}|output_failure={int(o)}|truncated={int(t)}": is_fast_retryable(
-                retryable=r, output_failure=o, truncated_finish=t
-            )
-            for r in (False, True)
-            for o in (False, True)
-            for t in (False, True)
-        },
-        # The code-owned enum the model chooses from; adding or reordering a channel changes what a
-        # judgment can say, and the canonical order decides how a set is hashed for gold and replay.
         "trade_channel_order": list(TRADE_CHANNEL_ORDER),
+        "trade_affected_market_order": list(TRADE_AFFECTED_MARKET_ORDER),
     }
 
 
-def execution_envelope() -> dict[str, Any]:
-    """The complete material `compute_execution_identity` hashes, as a readable document.
+def _capability_mapping() -> dict[str, Any]:
+    modes = {mode: structured_output_capability(mode) for mode in _STRUCTURED_OUTPUT_MODES}
+    return {slot: copy.deepcopy(modes) for slot in sorted(_MODEL_BINDING_SLOTS)}
 
-    Public so a re-pin is reviewable: when the contract test goes red the diff of this document says what
-    moved, which is the difference between signing an identity migration and pasting a hash.
-    """
+
+class _WithoutDocstrings(ast.NodeTransformer):
+    """Remove non-executable prose before material symbol identity is computed."""
+
+    @staticmethod
+    def _strip(node: Any) -> Any:
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            node.body = node.body[1:]
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> Any:
+        return self.generic_visit(self._strip(node))
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Any:
+        return self.generic_visit(self._strip(node))
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
+        return self.generic_visit(self._strip(node))
+
+
+def _implementation_ast_identities() -> dict[str, str]:
+    root = Path(__file__).resolve().parent
+    identities: dict[str, str] = {}
+    for filename, symbols in _MATERIAL_IMPLEMENTATION_SYMBOLS.items():
+        module = filename.removesuffix(".py")
+        source = (root / filename).read_text()
+        for symbol in symbols:
+            identities[f"{module}.{symbol}"] = _material_symbol_ast_sha(source, module=module, symbol=symbol)
+    return dict(sorted(identities.items()))
+
+
+def _material_symbol_ast_sha(source: str, *, module: str, symbol: str) -> str:
+    tree = ast.parse(source)
+    node = next(
+        (
+            child
+            for child in tree.body
+            if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == symbol
+        ),
+        None,
+    )
+    if node is None:
+        raise RuntimeError(f"news_program_identity_material_symbol_missing:{module}.{symbol}")
+    normalized = _WithoutDocstrings().visit(copy.deepcopy(node))
+    return canonical_sha(
+        {
+            "module": f"tracefold.news.program.{module}",
+            "symbol": symbol,
+            "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
+        }
+    )
+
+
+def execution_envelope() -> dict[str, Any]:
+    """Readable material addressed by :func:`compute_execution_identity`."""
 
     return {
         "identity_schema": EXECUTION_IDENTITY_SCHEMA,
-        "requests": {
-            predictor: {mode: _golden_request(predictor, mode) for mode in _STRUCTURED_OUTPUT_MODES}
-            for predictor in PREDICTOR_INPUT_FIELDS
+        "framework": {
+            "dspy": importlib.metadata.version("dspy"),
+            "litellm": importlib.metadata.version("litellm"),
+            "gepa": importlib.metadata.version("gepa"),
+            "public_api_only": True,
+            "adapter": "dspy.JSONAdapter(use_native_function_calling=False)",
         },
+        "implementation_ast_sha256": _implementation_ast_identities(),
+        "signatures": {
+            predictor: signature.with_instructions(_GOLDEN_INSTRUCTION).dump_state()
+            for predictor, signature in _SIGNATURES.items()
+        },
+        "requests": copy.deepcopy(_GOLDEN_REQUESTS),
+        "capabilities": _capability_mapping(),
         "model_visible_input": {
             predictor: {
                 "open": _UNTRUSTED_EVENT_OPEN,
                 "close": _UNTRUSTED_EVENT_CLOSE,
                 "schema": _VISIBLE_INPUT[predictor].model_json_schema(),
             }
-            for predictor in PREDICTOR_INPUT_FIELDS
+            for predictor in _SIGNATURES
+        },
+        "adapter_output_semantics": {
+            "business_model_extra": "forbid",
+            "outer_envelope_unknown_siblings": "filtered_by_dspy_json_adapter",
+            "schema_parse_failure": "one_json_object_format_fallback",
+            "provider_lm_error": "no_format_fallback",
+            "truncation": "typed_lm_error_no_format_fallback",
+        },
+        "request_identity": {
+            "allowlist": [
+                "endpoint_fingerprint",
+                "model_binding",
+                "model",
+                "messages",
+                "tools",
+                "response_format",
+                "safe_config",
+            ],
+            "excluded": [
+                "credential",
+                "raw_endpoint_url",
+                "secret_headers",
+                "reasoning",
+                "provider_error_body",
+            ],
+            "address_schema": LM_REQUEST_IDENTITY_SCHEMA,
+            "projection_schema": LM_REQUEST_PROJECTION_SCHEMA,
         },
         "assembly": _assembly_surface(),
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
-            "wire_model_prefix": _WIRE_MODEL_PREFIX,
-            "json_object_only_model_prefixes": list(_JSON_OBJECT_ONLY_MODEL_PREFIXES),
+            "order": ["primary", "fallback"],
+            "route_graph": ["event_semantics", "normalize_validate", "reader_card", "assemble"],
+            "fallback_restart": "event_semantics",
             "deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
-            "primary_breaker_failures": PROGRAM_PRIMARY_BREAKER_FAILURES,
-            "primary_breaker_open_seconds": PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
-            "truncated_finish_reasons": sorted(_TRUNCATED_FINISH_REASONS),
-            "retryable_status": sorted(_RETRYABLE_STATUS),
-            "retryable_markers": list(_RETRYABLE_MARKERS),
+            "primary_breaker": {
+                "failures": PROGRAM_PRIMARY_BREAKER_FAILURES,
+                "open_seconds": PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
+                "retryable_provider_failure": "increment",
+                "parse_domain_truncation_failure": "do_not_increment",
+                "success": "reset",
+                "open": "zero_physical_primary_calls_then_fallback",
+                "retryable_lm_error_types": list(PROGRAM_RETRYABLE_LM_ERROR_TYPES),
+            },
+            "call_ceiling": {
+                "common_success": len(_SIGNATURES),
+                "predictor": PROGRAM_PREDICTOR_MAX_CALLS,
+                "route": PROGRAM_ROUTE_MAX_CALLS,
+                "judgment": PROGRAM_JUDGMENT_MAX_CALLS,
+            },
+            "transitions": {
+                "provider_error_retryable": "fallback_and_primary_breaker",
+                "provider_error_nonretryable": "fallback",
+                "adapter_parse_error_after_format_fallback": "fallback_output_failure",
+                "domain_validation_error": "fallback_output_failure",
+                "output_truncated": "fallback_output_failure_no_format_retry",
+                "timeout_cancelled": "fallback_and_primary_breaker",
+                "late_completion": "fallback_and_primary_breaker",
+                "dual_route_failure": "SemanticJudgeError",
+            },
         },
     }
 
 
 def compute_execution_identity() -> str:
-    """The one intent gate over code-owned Program behavior."""
-
     return canonical_sha(execution_envelope())
 
 

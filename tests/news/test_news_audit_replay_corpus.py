@@ -81,7 +81,9 @@ _AUDIT_RAW_SHA256 = "e9d2e05055c2a78a82f7d30a31e98afb561aebde433203faaa65bef30a6
 # back to its pre-#343 value and recomputing the helper root reproduces the previous pin byte-for-byte, so
 # exactly two receipt lines and this content address move; every score, case result and dimension outcome
 # below is untouched.
-_EXPECTED_REPORT_SHA256 = "b360d35e3f6161ee7ba29f9b862ec768e514f15366e38d3e11dbe2d389d063be"
+# #344 moves the execution identity and Program display version to the native DSPy v6 hard cut. Recorded
+# mode still makes no provider call; every score and case result above remains unchanged.
+_EXPECTED_REPORT_SHA256 = "003240e97645f3b58032661461bca2c1fcb350f515ee641cecc1174e5d271150"
 
 
 @pytest.fixture(scope="module")

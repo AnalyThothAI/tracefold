@@ -922,12 +922,15 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
     )
     captured: dict[str, set[str]] = {}
 
-    def _capturing_optimize(**kwargs: Any) -> Any:
-        captured["train"] = {example.case_id for example in kwargs["trainset"]}
-        captured["val"] = {example.case_id for example in kwargs["valset"]}
-        return SimpleNamespace(
-            best_candidate={**dict(kwargs["seed_candidate"]), "event_semantics": "Learned."},
-            parents=[[None]],
+    def _capturing_optimize(student: Any, *, trainset: list[Any], valset: list[Any]) -> Any:
+        captured["train"] = {example.gold.case_id for example in trainset}
+        captured["val"] = {example.gold.case_id for example in valset}
+        optimized = student.deepcopy()
+        optimized.event_semantics.signature = optimized.event_semantics.signature.with_instructions(
+            student.event_semantics.signature.instructions + "\nLearned."
+        )
+        optimized.detailed_results = SimpleNamespace(
+            parents=[[None], [0]],
             val_aggregate_scores=[0.5],
             discovery_eval_counts=[1],
             total_metric_calls=1,
@@ -935,6 +938,7 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
             seed=129,
             best_idx=0,
         )
+        return optimized
 
     class _Judge:
         identity: ClassVar[dict[str, Any]] = {"judge_id": "test/noop", "failure_cache": False}
@@ -942,20 +946,33 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
         def retains(self, *_args: Any, **_kwargs: Any) -> bool:
             return False
 
-    from tracefold.news.learning.optimizer import build_reflection_lm, build_task_adapter
+    from tracefold.news.learning.optimizer import build_reflection_lm, build_task_lm
+    from tracefold.news.program.lm import LMCallLedger
+
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
 
     result = run_gepa(
         base_program=artifact,
         episodes=corpus,
-        task_adapter=build_task_adapter(
-            model_name="test/task", api_key="k", api_base="http://127.0.0.1:1", timeout=1.0, max_tokens=128
+        task_lm=build_task_lm(
+            model_name="test/task",
+            api_key="k",
+            api_base="http://127.0.0.1:1",
+            timeout=1.0,
+            max_tokens=128,
+            ledger=ledger,
         ),
-        reflection_lm=build_reflection_lm(model_name="test/reflection", api_key="k", api_base="http://127.0.0.1:1"),
+        reflection_lm=build_reflection_lm(
+            model_name="test/reflection",
+            api_key="k",
+            api_base="http://127.0.0.1:1",
+            ledger=ledger,
+        ),
         judge=_Judge(),
         max_metric_calls=4,
         seed=129,
         review_rubric_version="news_review_v4",
-        optimize_fn=_capturing_optimize,
+        compile_fn=_capturing_optimize,
     )
 
     seen = captured["train"] | captured["val"]

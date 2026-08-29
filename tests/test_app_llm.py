@@ -5,7 +5,9 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
+import dspy
 import pytest
+from pydantic import BaseModel
 
 from tracefold.app import learning_runtime
 from tracefold.app.llm import configured_lm_endpoint
@@ -15,9 +17,18 @@ from tracefold.news.learning.evaluate import ArmManifest, CandidateManifest, Pro
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.lm import (
+    AuditedConfiguredLM,
+    LMCallContext,
+    LMCallLedger,
+    RuntimeModelIdentity,
+    ScriptedLM,
+    lm_request_projection,
+    program_json_adapter,
+)
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_VERSION
-from tracefold.news.program.transport import ScriptedPredictorAdapter
+from tracefold.news.program.signatures import EventSemanticsSignature
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
@@ -85,6 +96,112 @@ def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
     assert "extra_body" not in endpoint.model_kwargs
 
 
+@pytest.mark.parametrize(
+    ("model", "base_url", "expected_mode", "expected_format", "expected_extra"),
+    [
+        (
+            "qwen3.8-27b",
+            "https://qwen.test/v1",
+            "json_schema",
+            "schema",
+            {"chat_template_kwargs": {"enable_thinking": False}},
+        ),
+        (
+            "deepseek-v4-flash",
+            "https://deepseek.test/v1",
+            "json_object",
+            "object",
+            {"thinking": {"type": "disabled"}},
+        ),
+        (
+            "MiniMax-M3",
+            "https://minimax.test/v1",
+            "prompt_json",
+            "prompt",
+            {"thinking": {"type": "disabled"}},
+        ),
+    ],
+)
+def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
+    model: str,
+    base_url: str,
+    expected_mode: str,
+    expected_format: str,
+    expected_extra: dict[str, Any],
+) -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="request-shape-secret", base_url=base_url))
+    endpoint = configured_lm_endpoint(settings, model_name=model)
+    valid_semantics = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "event_type": "listing",
+        "assets": [],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 1,
+        "confidence": 0.8,
+        "audience": "crypto",
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
+    }
+    delegate_kwargs: dict[str, Any] = {
+        "api_key": endpoint.api_key,
+        "api_base": endpoint.api_base,
+        "timeout": 20.0,
+        "max_tokens": 2048,
+        **endpoint.model_kwargs,
+    }
+    if endpoint.temperature is not None:
+        delegate_kwargs["temperature"] = endpoint.temperature
+    delegate = ScriptedLM(
+        [{"semantics": valid_semantics}],
+        model=endpoint.model_name,
+        structured_output=endpoint.structured_output,
+        **delegate_kwargs,
+    )
+    ledger = LMCallLedger()
+    lm = AuditedConfiguredLM(
+        delegate,
+        structured_output=endpoint.structured_output,
+        runtime_identity=RuntimeModelIdentity.issue(provider="openai", model=endpoint.model_name),
+        predictor="event_semantics",
+        route="primary",
+        model_binding="primary",
+        ledger=ledger,
+    )
+
+    with (
+        ledger.scope(LMCallContext(PROGRAM_VERSION, "a" * 64, "b" * 64)),
+        dspy.context(adapter=program_json_adapter()),
+    ):
+        prediction = dspy.Predict(EventSemanticsSignature)(evidence_json="{}", lm=lm)
+
+    assert prediction.semantics.novelty == "new_fact"
+    assert endpoint.structured_output == expected_mode
+    assert len(delegate.requests) == 1
+    request = delegate.requests[0]
+    if expected_format == "schema":
+        assert isinstance(request.config.response_format, type)
+        assert issubclass(request.config.response_format, BaseModel)
+    elif expected_format == "object":
+        assert request.config.response_format == {"type": "json_object"}
+    else:
+        assert request.config.response_format is None
+    projection = lm_request_projection(request)
+    assert projection["config"]["extensions"]["extra_body"] == expected_extra
+    visible_request = repr(projection["messages"])
+    assert "Visible event_status.told index" in visible_request
+    assert "request-shape-secret" not in repr(projection)
+    assert base_url not in repr(projection)
+
+
 def test_kimi_coding_endpoint_has_no_hidden_compatibility_profile() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.kimi.com/coding/v1"))
 
@@ -116,6 +233,40 @@ def test_operator_can_describe_a_custom_openai_compatible_request_without_endpoi
     assert endpoint.temperature is None
     assert endpoint.structured_output == "prompt_json"
     assert endpoint.model_kwargs == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+
+
+def test_configured_endpoint_rejects_unreviewed_secret_bearing_extra_body_before_call() -> None:
+    secret = "sk-abcdefghijklmnopqrstu"
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "test-key",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "news_triage_model": "my-local-model",
+                "request": {"extra_body": {"access_token": secret}},
+            }
+        }
+    )
+    endpoint = configured_lm_endpoint(settings, model_name="my-local-model")
+    delegate = ScriptedLM(
+        [],
+        model=endpoint.model_name,
+        api_key=endpoint.api_key,
+        api_base=endpoint.api_base,
+        **endpoint.model_kwargs,
+    )
+
+    with pytest.raises(dspy.LMConfigurationError) as caught:
+        AuditedConfiguredLM(
+            delegate,
+            structured_output=endpoint.structured_output,
+            runtime_identity=RuntimeModelIdentity.issue(provider="openai", model=endpoint.model_name),
+            predictor="event_semantics",
+            route="primary",
+            model_binding="event_semantics.primary",
+        )
+
+    assert secret not in str(caught.value)
 
 
 def test_endpoint_override_targets_the_fallback_gateway() -> None:
@@ -181,19 +332,43 @@ def test_news_runtime_composition_assigns_operator_request_controls_per_role() -
     assert composition.reader_card_primary.structured_output == "json_schema"
 
 
+def test_compile_baseline_uses_native_module_without_production_availability_controls() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "event-model",
+            }
+        }
+    )
+    composition = learning_runtime.compose_news_program_runtime(settings)
+    artifact = load_stable_program_artifact()
+
+    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        return ScriptedLM([], model=model, **kwargs)
+
+    compile_judge = composition.compile_semantic_judge(artifact, lm_type=scripted_factory)
+    runtime_judge = composition.semantic_judge(artifact, lm_type=scripted_factory)
+
+    assert compile_judge is not None
+    assert compile_judge.route_deadline_seconds is None
+    assert compile_judge.primary_breaker_enabled is False
+    assert compile_judge.fallback is None
+    assert runtime_judge is not None
+    assert runtime_judge.route_deadline_seconds == 20
+    assert runtime_judge.primary_breaker_enabled is True
+
+
 def test_news_runtime_composes_progression_review_from_the_event_model_endpoint() -> None:
     created: list[dict[str, Any]] = []
 
-    class ScriptedFactory:
-        @classmethod
-        def from_runtime(cls, **kwargs: Any) -> ScriptedPredictorAdapter:
-            created.append(dict(kwargs))
-            return ScriptedPredictorAdapter(
-                [{"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}],
-                model_name=str(kwargs["model_name"]),
-                provider="openai",
-                model_sha256=str(kwargs["model_sha256"]),
-            )
+    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        created.append({"model": model, **kwargs})
+        return ScriptedLM(
+            [{"review": {"related": False, "candidate_i": -1, "reason_zh": "没有同一事件链。"}}],
+            model=model,
+        )
 
     settings = Settings.model_validate(
         {
@@ -205,12 +380,10 @@ def test_news_runtime_composes_progression_review_from_the_event_model_endpoint(
         }
     )
 
-    verifier = learning_runtime.compose_news_program_runtime(settings).progression_verifier(
-        adapter_type=ScriptedFactory
-    )
+    verifier = learning_runtime.compose_news_program_runtime(settings).progression_verifier(lm_type=scripted_factory)
 
     assert verifier is not None
-    assert created[0]["model_name"] == "openai/triage-model"
+    assert created[0]["model"] == "openai/triage-model"
     assert created[0]["max_tokens"] == 512
     assert created[0]["timeout"] == 12.0
 
@@ -415,7 +588,7 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
 
 
 def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
-    created: list[tuple[str, int, ScriptedPredictorAdapter]] = []
+    created: list[tuple[str, int, ScriptedLM]] = []
     semantics = {
         "novelty": "new_fact",
         "restates": -1,
@@ -438,19 +611,11 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
     }
     card = {"headline_zh": "比特币将在新交易所上线", "why_zh": "新增交易渠道可扩大现货流动性。"}
 
-    class ScriptedFactory:
-        @classmethod
-        def from_runtime(cls, **kwargs: Any) -> ScriptedPredictorAdapter:
-            model_name = str(kwargs["model_name"])
-            step = card if "reader-model" in model_name else semantics
-            adapter = ScriptedPredictorAdapter(
-                [step],
-                model_name=model_name,
-                provider="openai",
-                model_sha256=str(kwargs["model_sha256"]),
-            )
-            created.append((model_name, int(kwargs["max_tokens"]), adapter))
-            return adapter
+    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        step: dict[str, Any] = {"card": card} if "reader-model" in model else {"semantics": semantics}
+        lm = ScriptedLM([step], model=model)
+        created.append((model, int(kwargs["max_tokens"]), lm))
+        return lm
 
     settings = Settings.model_validate(
         {
@@ -468,7 +633,7 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
     )
     artifact = load_stable_program_artifact()
     composition = learning_runtime.compose_news_program_runtime(settings)
-    judge = composition.semantic_judge(artifact, adapter_type=ScriptedFactory)
+    judge = composition.semantic_judge(artifact, lm_type=scripted_factory)
     assert judge is not None
     context = TriageContext.from_card(
         {

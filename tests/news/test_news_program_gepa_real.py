@@ -1,39 +1,39 @@
-"""#143/#306: exercise the real optimizer and the real transport, not a stand-in.
+"""#143/#344: exercise the public DSPy optimizer and native Program, not a stand-in.
 
-Every other optimizer test drives a fake `optimize`, so the governance assertions were proven while the
+Every other optimizer test drives a fake `compile`, so the governance assertions were proven while the
 claim that matters — that this Program, this metric and this proposer actually compile under the optimizer
-we ship — was only assumed. These tests run the genuine `gepa.optimize` over the genuine
-`ChatCompletionsPredictorAdapter`, `ReflectionLM` and `MetricJudgeEndpoint`, against scripted HTTP.
-
-Since #306 Phase 3 that is a stronger claim than it was: the thing GEPA evaluates is the production
-`NewsSemanticProgram`, and the bytes it sends are the bytes production sends.
+we ship — was only assumed. This test runs public `dspy.GEPA.compile` over `NativeNewsProgram`, with typed
+scripted LMs at the one public DSPy LM seam.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-import httpx
+import dspy  # type: ignore[import-untyped]
 import pytest
 
 from tests.support.news_judgment import scored_judgment, trade_relevance
 from tracefold.news.learning.contracts import (
+    METRIC_JUDGE_MAX_TOKENS,
+    METRIC_JUDGE_TIMEOUT_SECONDS,
     REFLECTION_MAX_TOKENS,
     DevelopmentDatasetRef,
+    ModelExecutionIdentity,
     OptimizationBudget,
 )
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.learning.optimizer import (
     InstructionProposer,
     build_reflection_lm,
-    build_task_adapter,
+    build_task_lm,
 )
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import (
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import TriageContext
+from tracefold.news.program.lm import LMCallLedger
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -76,52 +76,98 @@ _REFLECTION_BASE = "https://scripted-reflection.invalid/v1"
 _JUDGE_BASE = "https://scripted-judge.invalid/v1"
 
 
-class _ScriptedEndpoints:
-    """One HTTP handler standing in for all three roles, routed by the URL each builder was given.
+class _ScriptedTaskLM(dspy.BaseLM):  # type: ignore[misc]
+    """Dynamic typed task LM: the learned instruction changes its semantics answer."""
 
-    Deliberately not three fake objects: what #306 Phase 3 has to prove is that the real adapter, the real
-    reflection callable and the real judge endpoint compose requests a provider can answer, so the seam
-    under test is the socket and nothing above it.
-    """
+    forward_contract = "typed_lm"
 
     def __init__(self) -> None:
-        self.task_calls: list[dict[str, Any]] = []
-        self.reflection_calls: list[dict[str, Any]] = []
-        self.judge_calls = 0
+        super().__init__("openai/scripted-task", cache=False, num_retries=0)
+        self.requests: list[dspy.LMRequest] = []
 
-    def _reply(self, content: str) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "model": "scripted-model",
-                "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
-            },
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
+
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        from tracefold.news.artifact_identity import canonical_json
+
+        self.requests.append(request)
+        rendered = str(request.messages)
+        if "semantics_json" in rendered:
+            answer: dict[str, Any] = {"card": _CARD}
+        else:
+            magnitude = 2 if _ADVISORY in rendered else 0
+            answer = {"semantics": {**_SEMANTICS, "magnitude": magnitude}}
+        return dspy.LMResponse.from_text(
+            canonical_json(answer),
+            model=self.model,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            cost=0,
         )
 
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        host = request.url.host
-        if host == httpx.URL(_REFLECTION_BASE).host:
-            self.reflection_calls.append(body)
-            return self._reply(f"```\n{_ADVISORY}\n```")
-        if host == httpx.URL(_JUDGE_BASE).host:
-            self.judge_calls += 1
-            verdict = {"headline_equivalent": False, "why_equivalent": False, "facts_preserved": False}
-            if "supported_by_evidence" in json.dumps(body["response_format"]):
-                verdict = {"supported_by_evidence": False}
-            return self._reply(json.dumps({"verdict": verdict}))
-        self.task_calls.append(body)
-        instruction = body["messages"][0]["content"]
-        user = body["messages"][1]["content"]
-        if "## semantics_json" in user:
-            return self._reply(json.dumps({"card": _CARD}))
-        # The proposed instruction has to actually change the answer, or GEPA correctly keeps the seed and
-        # the run refuses as `no_program_change`. The accepted gold for the failing cases is magnitude 2.
-        magnitude = 2 if _ADVISORY in instruction else 0
-        return self._reply(json.dumps({"semantics": {**_SEMANTICS, "magnitude": magnitude}}))
+
+class _ScriptedReflectionLM(dspy.BaseLM):  # type: ignore[misc]
+    forward_contract = "typed_lm"
+
+    def __init__(self) -> None:
+        super().__init__("openai/scripted-reflection", cache=False, num_retries=0)
+        self.requests: list[dspy.LMRequest] = []
+
+    @property
+    def supports_response_schema(self) -> bool:
+        return True
+
+    @property
+    def supported_params(self) -> set[str]:
+        return {"response_format"}
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        from tracefold.news.artifact_identity import canonical_json
+
+        self.requests.append(request)
+        text = canonical_json({"new_instruction": _ADVISORY}) if request.config.response_format else _ADVISORY
+        return dspy.LMResponse.from_text(
+            text,
+            model=self.model,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            cost=0,
+        )
+
+
+class _ScriptedModels:
+    def __init__(self) -> None:
+        self.task = _ScriptedTaskLM()
+        self.reflection = _ScriptedReflectionLM()
+
+
+class _Judge:
+    def __init__(self) -> None:
+        binding = ModelExecutionIdentity.issue(
+            role="metric_judge",
+            model="judge/model",
+            api_base=_JUDGE_BASE,
+            max_output_tokens=METRIC_JUDGE_MAX_TOKENS,
+            timeout_seconds=METRIC_JUDGE_TIMEOUT_SECONDS,
+            temperature=0.0,
+            model_kwargs={},
+        )
+        self.identity = {
+            "judge_id": "test/noop",
+            "execution": {
+                "role_binding": binding.model_dump(mode="json"),
+                "max_model_calls": 400,
+                "timeout_seconds": METRIC_JUDGE_TIMEOUT_SECONDS,
+            },
+        }
+        self.stats = {"attempts": 0, "model_calls": 0, "failures": 0, "actual_cost_microusd": 0}
+
+    def retains(self, *_args: Any, **_kwargs: Any) -> bool:
+        return False
 
 
 def _episode(
@@ -133,6 +179,7 @@ def _episode(
     production_magnitude: int,
     reader_value: str,
 ) -> DevelopmentEpisode:
+    opened_at_ms = 1_787_000_000_000 + index * 60_000
     card = {
         "event_id": f"{index:064d}",
         "evidence_version": 1,
@@ -154,9 +201,9 @@ def _episode(
         "grounded_assets": ["TSLA"],
         "watchlist_hits": [],
         "member_count": 1,
-        "opened_at_ms": 1787000000000 + index * 60_000,
+        "opened_at_ms": opened_at_ms,
         "expires_at_ms": 1787043200000 + index * 60_000,
-        "last_member_at_ms": 1787000000000 + index * 60_000,
+        "last_member_at_ms": opened_at_ms,
         "macro_lexicon": False,
         "provenance": ["1018"],
         "trace_id": f"{index:032d}",
@@ -167,7 +214,13 @@ def _episode(
         case_id=f"{index:064x}",
         cluster_id=f"{index:064x}",
         stratum="delivered",
-        context=TriageContext.from_card(card, watchlist=(), told_rows=[], now_ms=card["opened_at_ms"], queue_lag_ms=0),
+        context=TriageContext.from_card(
+            card,
+            watchlist=(),
+            told_rows=[],
+            now_ms=opened_at_ms,
+            queue_lag_ms=0,
+        ),
         accepted_review={
             "should_push": should_push,
             "dimensions": {
@@ -255,20 +308,17 @@ def _budget(**overrides: Any) -> OptimizationBudget:
 
 
 def _optimize_real(
-    endpoints: _ScriptedEndpoints,
+    models: _ScriptedModels,
     *,
     budget: OptimizationBudget | None = None,
-    optimize_fn: Any = None,
+    compile_fn: Any = None,
 ) -> Any:
     """One real GEPA run through the one entry point, over the scripted corpus.
 
-    Until #202 this went through `ProgramCompiler` inside a sealed image against a metered proxy. The
-    algorithm, the budget arithmetic and the corpus are unchanged; what is gone is the container that used
-    to prove where the two instructions came from.
+    The task and reflection roles share one audited ledger, matching the production learning runtime.
     """
 
     from tracefold.news.artifact_identity import canonical_sha
-    from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.optimizer import FrozenDevelopmentDataset, OptimizationConfig, optimize
 
     episodes = compiler_development_corpus()
@@ -286,41 +336,37 @@ def _optimize_real(
         episodes=episodes,
         target_runtime_manifest_sha256="a" * 64,
     )
-    async_transport = httpx.MockTransport(endpoints)
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
     return optimize(
         dataset,
         OptimizationConfig(
-            task_adapter=build_task_adapter(
+            task_lm=build_task_lm(
                 model_name="openai/scripted-task",
                 api_key="k",
                 api_base=_TASK_BASE,
                 timeout=20.0,
                 max_tokens=1_200,
-                transport=async_transport,
+                ledger=ledger,
+                delegate=models.task,
             ),
             reflection_lm=build_reflection_lm(
                 model_name="openai/scripted-reflection",
                 api_key="k",
                 api_base=_REFLECTION_BASE,
-                transport=httpx.MockTransport(endpoints),
+                ledger=ledger,
+                delegate=models.reflection,
             ),
-            judge=build_judge(
-                model_name="openai/scripted-judge",
-                api_key="k",
-                api_base=_JUDGE_BASE,
-                max_model_calls=400,
-                transport=httpx.MockTransport(endpoints),
-            ),
+            judge=_Judge(),
             budget=budget or _budget(),
-            optimize_fn=optimize_fn,
+            compile_fn=compile_fn,
         ),
     )
 
 
 def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() -> None:
-    endpoints = _ScriptedEndpoints()
+    models = _ScriptedModels()
     result = _optimize_real(
-        endpoints,
+        models,
         # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
         # `max_cost / max_call_cost`. Sizing those two independently is how a run silently starves.
         budget=_budget(
@@ -334,15 +380,19 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
         ),
     )
 
+    assert result.outcome == "ADVANCE"
+    assert result.candidate is not None
     stable = load_stable_program_artifact()
-    learned = {name: result.candidate.patch.instruction_for(name) for name in ("event_semantics", "reader_card")}
-    assert any(text != stable.instruction_for(name) for name, text in learned.items()), (
-        "GEPA changed neither instruction"
-    )
-    # The real transport answered the real graph: every task request carries a Predictor instruction and a
-    # JSON-schema constraint built from the model the answer is validated against.
-    assert endpoints.task_calls and endpoints.reflection_calls
-    assert all("response_format" in body for body in endpoints.task_calls)
+    learned = {
+        "event_semantics": result.candidate.patch.instruction_for("event_semantics"),
+        "reader_card": result.candidate.patch.instruction_for("reader_card"),
+    }
+    assert learned["event_semantics"] != stable.instruction_for("event_semantics") or learned[
+        "reader_card"
+    ] != stable.instruction_for("reader_card"), "GEPA changed neither instruction"
+    # Public DSPy rendered both native Signatures with their typed response contracts.
+    assert models.task.requests and models.reflection.requests
+    assert all(request.config.response_format is not None for request in models.task.requests)
     # GEPA checks its own budget between steps, so a completed run legitimately overshoots by up to one full
     # valset evaluation; the compiler allows exactly that and no more.
     # A completed run overshoots by whatever the step in flight consumed: one reflection minibatch plus, on
@@ -357,7 +407,7 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
     assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
 
     receipt = result.report.optimizer
-    assert receipt["optimizer"]["implementation"] == "gepa.optimize"
+    assert receipt["optimizer"]["implementation"] == "dspy.GEPA"
     assert receipt["instruction_proposer"]["implementation"].endswith("InstructionProposer")
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
@@ -382,60 +432,57 @@ def test_the_reflection_brief_names_the_whole_instruction_as_the_write_set() -> 
 def test_instruction_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:
     """A writer told only "you scored zero" proposes the same rejected text again.
 
-    Until #306 Phase 3 this needed a `_FeedbackCompileProgram` subclass to convert the refusal into a
-    prediction, because DSPy's evaluator caught the raise and recorded a failure score without ever calling
-    the metric. The adapter this repository owns does it directly, and no provider call is made at all.
+    The native Program returns a Prediction carrying the stable refusal code, so DSPy's metric sees the
+    reason and no provider call is made at all.
     """
 
     from tracefold.news.learning.metric import _compile_example, bind_metric
-    from tracefold.news.learning.optimizer import NewsGepaAdapter
+    from tracefold.news.learning.optimizer import _DspyAcceptedReviewMetric
+    from tracefold.news.program.module import NativeNewsProgram
 
     artifact = load_stable_program_artifact()
-    adapter = NewsGepaAdapter(
-        adapter=_RefusingAdapter(),
-        metric=bind_metric(None),
-        proposer=InstructionProposer(reflection_lm=lambda prompt: ""),
+    program = NativeNewsProgram(artifact)
+    program.event_semantics.signature = program.event_semantics.signature.with_instructions(
+        "Judge the filing on its own mechanism. " * 1400
     )
     example = _compile_example(compiler_development_corpus()[0])
+    task = _ScriptedTaskLM()
 
-    # An oversized instruction trips a code-owned bound; the text is otherwise unremarkable. #319 removed
-    # the marker blacklist this used to trip, and the point under test is unchanged: a refusal has to reach
-    # the writer as scorable feedback rather than as a silent zero.
-    batch = adapter.evaluate(
-        [example],
-        {
-            "event_semantics": "Judge the filing on its own mechanism. " * 1400,
-            "reader_card": artifact.reader_card_instruction,
-        },
-        capture_traces=True,
+    prediction = program(context=example.context, event_lm=task, card_lm=task)
+    outcome = _DspyAcceptedReviewMetric(bind_metric(None))(
+        dspy.Example(gold=example),
+        prediction,
+        None,
+        "event_semantics",
+        None,
     )
 
-    assert batch.scores == [0.0]
-    assert batch.outputs[0].instruction_rejected == "news_program_instruction_too_large"
-    records = adapter.make_reflective_dataset({}, batch, ["event_semantics"])
-    feedback = records["event_semantics"][0]["Feedback"]
-    assert "news_program_instruction_too_large" in feedback
-    assert "under 32768 bytes" in feedback
-
-
-class _RefusingAdapter:
-    """Proves the rejection costs nothing: a provider call here is a test failure."""
-
-    def runtime_identity(self, model_binding: str) -> Any:
-        from tracefold.news.program.transport import RuntimeModelIdentity
-
-        del model_binding
-        return RuntimeModelIdentity.issue(provider="never", model="never/called")
-
-    async def invoke(self, request: Any, spec: Any) -> Any:
-        raise AssertionError("a rejected instruction must never reach a provider")
+    assert prediction.instruction_rejected == "news_program_instruction_too_large"
+    assert task.requests == []
+    assert outcome.score == 0.0
+    assert "news_program_instruction_too_large" in outcome.feedback
 
 
 def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
     from tracefold.news.learning.optimizer import require_model_identity
 
-    task = build_task_adapter(model_name="openai/x", api_key="k", api_base="http://h/v1", timeout=20.0, max_tokens=1200)
-    reflection = build_reflection_lm(model_name="openai/y", api_key="k", api_base="http://h/v1")
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
+    task = build_task_lm(
+        model_name="openai/scripted-task",
+        api_key="k",
+        api_base="http://h/v1",
+        timeout=20.0,
+        max_tokens=1200,
+        ledger=ledger,
+        delegate=_ScriptedTaskLM(),
+    )
+    reflection = build_reflection_lm(
+        model_name="openai/scripted-reflection",
+        api_key="k",
+        api_base="http://h/v1",
+        ledger=ledger,
+        delegate=_ScriptedReflectionLM(),
+    )
 
     task_identity = require_model_identity(task, role="task")
     assert (task_identity.temperature, task_identity.max_output_tokens) == (0, 1200)
@@ -450,7 +497,6 @@ def test_reflection_lm_gets_its_own_budget_and_temperature() -> None:
 @pytest.mark.parametrize("cost", [None, 7])
 def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) -> None:
     from tracefold.news.learning.optimizer import _BudgetMeter
-    from tracefold.news.program.transport import ProviderCallMetrics
 
     budget = _budget(
         max_metric_calls=10,
@@ -464,15 +510,13 @@ def test_budget_is_metered_with_or_without_a_provider_price(cost: int | None) ->
     meter = _BudgetMeter(budget, imputed_call_cost_microusd=budget.max_call_cost_microusd)
     meter.before("task")
     meter.after(
-        ProviderCallMetrics(
-            response_model="m",
-            input_tokens=100,
-            output_tokens=10,
-            cached_tokens=0,
-            total_tokens=110,
-            provider_cost_microusd=cost,
-            finish_reason="stop",
-        )
+        "task",
+        dspy.LMResponse.from_text(
+            "{}",
+            model="m",
+            usage={"input_tokens": 100, "output_tokens": 10, "total_tokens": 110},
+            cost=None if cost is None else cost / 1_000_000,
+        ),
     )
     assert meter.actual_cost_microusd > 0
     assert meter.imputed_cost_calls == (1 if cost is None else 0)
@@ -487,23 +531,25 @@ def test_a_run_that_learns_nothing_is_refused_as_no_program_change() -> None:
     write-set is a plain mapping, so the failure mode cannot occur.
     """
 
-    def _seed_only(**kwargs: Any) -> Any:
+    def _seed_only(student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
         """Stands in for a run whose Pareto front keeps the seed candidate."""
 
         from types import SimpleNamespace
 
-        return SimpleNamespace(
-            best_candidate=dict(kwargs["seed_candidate"]),
+        del trainset, valset
+        optimized = student.deepcopy()
+        optimized.detailed_results = SimpleNamespace(
             parents=[[None]],
             val_aggregate_scores=[0.5],
             discovery_eval_counts=[1],
             total_metric_calls=3,
             num_full_val_evals=1,
-            seed=kwargs["seed"],
+            seed=143,
             best_idx=0,
         )
+        return optimized
 
-    result = _optimize_real(_ScriptedEndpoints(), optimize_fn=_seed_only)
+    result = _optimize_real(_ScriptedModels(), compile_fn=_seed_only)
 
     # A terminal answer, not a traceback: the run happened, it kept the seed, and the report says so.
     assert result.outcome == "NO_OP"

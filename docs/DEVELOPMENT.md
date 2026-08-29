@@ -446,8 +446,9 @@ uv run tracefold news review submit TASK --version TASK_VERSION \
 # mean (#150 removed the ambiguous `live`):
 #   recorded     — the persisted verdict against the action that shipped. No
 #                  provider call, reproducible across policy revisions.
-#   compile_live — the graph GEPA optimizes, on one task endpoint. No fallback,
-#                  no fast retry, no deadline, no circuit breaker.
+#   compile_live — the native Program GEPA optimizes on one task endpoint. No
+#                  route fallback/deadline/breaker; per-call timeout and JSON
+#                  format fallback remain.
 #   runtime_live — the configured four-slot production Program route, run
 #                  sequentially so circuit state means something.
 uv run tracefold news learning baseline --from-ms START --to-ms END \
@@ -631,32 +632,27 @@ allowed to load the optimizer in process, and asserts what the optimizer itself
 can reach: no database session, no review plane, no canary, no promotion.
 
 `learning baseline` (#143) is the step that has to come first and did not exist
-until then: a cold, read-only run of the *production* graph over the same
-`decide()` and — literally the same function object — the same
-`accepted_review_metric`, so the number an operator reads before a prompt edit
-is the number GEPA will later try to maximize. It needs no dataset, sandbox,
-tariff or container and writes nothing. Since #306 Phase 3 `compile_live` and
-the optimizer's evaluator are the same object bound the same way — the
-production `NewsSemanticProgram` on one task endpoint, no fallback slot — so
-"the baseline measures what the optimizer maximizes" is structural rather than
-a claim two code paths have to keep agreeing on.
+until then: a cold, read-only run of the native Program over the same `decide()`
+and the same `accepted_review_metric`, so the number an operator reads before a
+prompt edit is the number GEPA will later try to maximize. It needs no dataset,
+sandbox, tariff or container and writes nothing. `compile_live` and GEPA execute
+the same `NativeNewsProgram`, two Predictor bindings, stock JSONAdapter and task
+endpoint. The SemanticJudge adapter needed by the report disables the
+whole-route deadline and cross-case breaker that GEPA does not run; the endpoint
+retains its per-call timeout. There is no fallback slot.
 
 Two facts about the optimizer are worth stating plainly, because both were
 invisible while its only tests drove a fake GEPA:
 
-- **The write-set is two strings, and there is nowhere else to write.**
-  `gepa.optimize` returns a mapping from component name to text; `run_gepa`
-  refuses a winner that is not exactly `event_semantics` and `reader_card`.
-  There is no demo bank, and the transport composes its two messages from the
-  instruction and the bounded fields, so a demonstration has no path to a
-  provider even if something produced one.
-- **A rejected instruction has to come back as a score, not as a raise.**
-  `NewsGepaAdapter.evaluate` builds the candidate's artifact first; if the
-  code-owned bounds refuse the text it returns a scored prediction carrying the
-  refusal code, which the metric turns into a repair instruction. Raised
-  instead, the engine records a failure and the reflection model is told it
-  scored zero and nothing about why — and proposes text that trips the same
-  bound again.
+- **The write-set is two strings, and there is nowhere else to write.** Public
+  `dspy.GEPA` returns an optimized native Module; `run_gepa` reads only the
+  `event_semantics` and `reader_card` named Predictor instructions and refuses
+  any demos or extra Predictor. There is no demo bank.
+- **A rejected instruction spends no task-model call.** `NativeNewsProgram`
+  validates the candidate artifact and shared growth budget at the start of
+  both sync and async entry points. That guard therefore covers proposal,
+  mutation and merge before either Predictor; the bounded refusal becomes
+  metric feedback rather than a candidate or an `ADVANCE` terminal.
 
 The reflection endpoint is configured separately from the task endpoint
 (`llm.news_compiler_reflection`) with its own 32k-token, 300 s, temperature-1.0

@@ -39,8 +39,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
-        "tracefold.news.program.transport",
-        "tracefold.news.program.graph",
+        "tracefold.news.program.lm",
+        "tracefold.news.program.module",
+        "tracefold.news.program.routing",
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
         "tracefold.news.release.canary",
@@ -64,8 +65,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.runtime",
         "tracefold.news.program.identity",
         "tracefold.news.program.artifact",
-        "tracefold.news.program.transport",
-        "tracefold.news.program.graph",
+        "tracefold.news.program.lm",
+        "tracefold.news.program.module",
+        "tracefold.news.program.routing",
         # Post-delivery relationship verification is a content-addressed model adapter composed by App.
         # It cannot change admission or the semantic Program and is scheduled only after send settlement.
         "tracefold.news.program.progression_review",
@@ -131,7 +133,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.program.identity",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
-        "tracefold.news.program.graph",
         # The News transport error vocabulary. The composition root's database adapter is the one place
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
         "tracefold.news.bus",

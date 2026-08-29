@@ -7,6 +7,7 @@ model routes and compiler state are deliberately absent from this module.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal, Protocol, cast, runtime_checkable
 
@@ -499,6 +500,23 @@ class ProgramCallTrace(_ExactContractModel):
     # Bounded, secret-scrubbed provider error body for a refused request (#310). Absent on every
     # trace written before that epoch, and on any attempt the provider answered.
     error_detail: str | None = None
+    terminal_disposition: (
+        Literal[
+            "provider_success",
+            "provider_error",
+            "adapter_parse_error",
+            "domain_validation_error",
+            "timeout_cancelled",
+            "late_completion",
+        ]
+        | None
+    ) = None
+    # The actual request address intentionally excludes logical route metadata;
+    # this second address binds the physical request to its Program invocation.
+    invocation_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    # CandidateEvaluator may persist exact record/replay material, but verdict
+    # trace JSON must continue to contain hashes and bounded metadata only.
+    recording: dict[str, Any] | None = Field(default=None, exclude=True, repr=False)
 
     @model_validator(mode="after")
     def _synthetic_entry_has_no_provider_usage(self) -> ProgramCallTrace:
@@ -521,6 +539,9 @@ class ProgramCallTrace(_ExactContractModel):
             or self.total_tokens != 0
             or self.provider_cost_microusd is not None
             or self.finish_reason is not None
+            or self.terminal_disposition is not None
+            or self.invocation_sha256 is not None
+            or self.recording is not None
         ):
             raise ValueError("news_program_synthetic_call_provider_usage_invalid")
         return self
@@ -541,14 +562,35 @@ class ProgramTrace(_ExactContractModel):
     editorial_sha256: str | None = None
     answering_route: Literal["primary", "fallback"] | None = None
     fallback_from: str | None = None
+    # Historical v5 traces may carry true. Native v6 never writes it: missing
+    # novelty is a domain validation failure and follows normal fallback.
     novelty_defaulted: bool = False
     calls: tuple[ProgramCallTrace, ...] = ()
+
+    @model_validator(mode="after")
+    def _native_physical_calls_are_addressed_and_terminal(self) -> ProgramTrace:
+        match = re.fullmatch(r"news_semantic_program_v(\d+)", self.program_version)
+        if match is None or int(match.group(1)) < 6:
+            return self
+        for call in self.calls:
+            if not call.physical_provider_call:
+                continue
+            if (
+                call.invocation_sha256 is None
+                or call.terminal_disposition is None
+                or call.runtime_provider is None
+                or call.runtime_model is None
+                or call.runtime_model_sha256 is None
+                or call.runtime_binding_sha256 is None
+            ):
+                raise ValueError("news_program_native_call_audit_incomplete")
+        return self
 
 
 class ProgramUsage(_ExactContractModel):
     wall_latency_ms: int = Field(ge=0)
-    call_count: int = Field(ge=0, le=6)
-    physical_call_count: int = Field(default=0, ge=0, le=6)
+    call_count: int = Field(ge=0, le=8)
+    physical_call_count: int = Field(default=0, ge=0, le=8)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)

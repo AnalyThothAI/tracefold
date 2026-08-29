@@ -12,9 +12,11 @@ import pytest
 from tracefold.news.review.desk import EventRubricSubmission
 from tracefold.news.review.drafter import (
     DRAFTER_ID,
+    ConfiguredDrafterLM,
     ReviewDraft,
     ReviewDrafter,
     build_draft_batch,
+    build_drafter_lm,
     submission_payload,
 )
 
@@ -46,6 +48,18 @@ class _ScriptedDrafterLM(dspy.BaseLM):  # type: ignore[misc]
         if self._fail:
             raise RuntimeError("provider unavailable")
         return [json.dumps({"draft": self._payload})]
+
+
+class _RequestSpyDrafterLM(ConfiguredDrafterLM):
+    forward_contract = "typed_lm"
+
+    def __init__(self, model: str, **kwargs: Any) -> None:
+        self.requests: list[dspy.LMRequest] = []
+        super().__init__(model, **kwargs)
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.requests.append(request)
+        return dspy.LMResponse.from_text(json.dumps({"draft": _GOOD}), model=self.model)
 
 
 def _tasks(n: int = 2) -> list[dict[str, Any]]:
@@ -118,8 +132,31 @@ def test_batch_names_the_drafter_and_disclaims_authority() -> None:
     batch = build_draft_batch(ReviewDrafter(_ScriptedDrafterLM()), _tasks(2))
     assert batch.drafter["drafter_id"] == DRAFTER_ID
     assert batch.drafter["model"] == "scripted/drafter"
+    assert batch.drafter["dspy_version"] == "3.3.1"
+    assert len(batch.drafter["signature_sha256"]) == 64
+    assert len(batch.drafter["adapter_render_sha256"]) == 64
+    assert batch.drafter["structured_output_capability"]["source"] == "configured_endpoint.structured_output"
     assert "proposal_only" in batch.drafter["authority"]
     assert batch.batch_sha256
+
+
+def test_prompt_json_drafter_uses_configured_capability_in_the_actual_request() -> None:
+    lm = build_drafter_lm(
+        model_name="openai/MiniMax-M3",
+        api_key="test-key",
+        api_base="https://minimax.test/v1",
+        model_kwargs={"extra_body": {"thinking": {"type": "disabled"}}},
+        structured_output="prompt_json",
+        temperature=1.0,
+        lm_type=_RequestSpyDrafterLM,
+    )
+
+    result = ReviewDrafter(lm).draft(evidence_json="{}", card_json="{}", told_json="[]")
+
+    assert isinstance(result, ReviewDraft)
+    assert len(lm.requests) == 1
+    assert lm.requests[0].config.response_format is None
+    assert lm.requests[0].config.extensions["extra_body"] == {"thinking": {"type": "disabled"}}
 
 
 def test_the_drafter_writes_nothing_to_the_review_plane() -> None:

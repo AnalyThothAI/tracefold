@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
 
+import dspy  # type: ignore[import-untyped]
+
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
 from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
 from tracefold.news.artifact_identity import canonical_sha
@@ -17,18 +19,15 @@ from tracefold.news.program.artifact import (
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import SemanticJudge
-from tracefold.news.program.graph import NewsSemanticProgram
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity
+from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.program.progression_review import (
     PROGRESSION_REVIEW_MAX_TOKENS,
-    PROGRESSION_REVIEW_MODEL_BINDING,
     ProgressionReviewProgram,
 )
+from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
 from tracefold.news.program.runtime import PROGRAM_ROUTE_DEADLINE_SECONDS, PROGRAM_VERSION
-from tracefold.news.program.transport import (
-    ChatCompletionsPredictorAdapter,
-    RuntimeModelIdentity,
-)
 from tracefold.platform.config.models import news_model_availability
 
 
@@ -85,80 +84,127 @@ class NewsProgramRuntimeComposition:
         self,
         artifact: ProgramStrategyArtifactV1,
         *,
-        adapter_type: Any = ChatCompletionsPredictorAdapter,
+        lm_type: Any = dspy.LM,
     ) -> SemanticJudge | None:
-        """Bind artifact slot names to Predictor-local Adapters without changing the News Interface."""
+        """Bind four configured endpoints to the native DSPy Program."""
 
         if not self.program_configured:
             return None
         timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
 
-        def adapter(endpoint: ConfiguredLMEndpoint, *, max_tokens: int) -> Any:
-            return adapter_type.from_runtime(
-                model_name=endpoint.model_name,
-                api_key=endpoint.api_key,
-                api_base=endpoint.api_base,
-                timeout=timeout,
-                max_tokens=max_tokens,
-                model_sha256=_endpoint_model_sha256(endpoint),
-                model_kwargs=endpoint.model_kwargs,
-                temperature=endpoint.temperature,
-                structured_output=endpoint.structured_output,
-            )
-
-        primary_adapters = {
-            artifact.event_semantics.model_bindings.primary: adapter(
+        primary = RouteLMs(
+            event_semantics=_configured_program_lm(
                 self.event_semantics_primary,
                 max_tokens=artifact.event_semantics.max_tokens,
+                timeout=timeout,
+                predictor="event_semantics",
+                route="primary",
+                model_binding=artifact.event_semantics.model_bindings.primary,
+                lm_type=lm_type,
             ),
-            artifact.reader_card.model_bindings.primary: adapter(
+            reader_card=_configured_program_lm(
                 self.reader_card_primary,
                 max_tokens=artifact.reader_card.max_tokens,
+                timeout=timeout,
+                predictor="reader_card",
+                route="primary",
+                model_binding=artifact.reader_card.model_bindings.primary,
+                lm_type=lm_type,
             ),
-        }
-        fallback_adapters = None
+        )
+        fallback = None
         if self.event_semantics_fallback is not None and self.reader_card_fallback is not None:
-            fallback_adapters = {
-                artifact.event_semantics.model_bindings.fallback: adapter(
+            fallback = RouteLMs(
+                event_semantics=_configured_program_lm(
                     self.event_semantics_fallback,
                     max_tokens=artifact.event_semantics.max_tokens,
+                    timeout=timeout,
+                    predictor="event_semantics",
+                    route="fallback",
+                    model_binding=artifact.event_semantics.model_bindings.fallback,
+                    lm_type=lm_type,
                 ),
-                artifact.reader_card.model_bindings.fallback: adapter(
+                reader_card=_configured_program_lm(
                     self.reader_card_fallback,
                     max_tokens=artifact.reader_card.max_tokens,
+                    timeout=timeout,
+                    predictor="reader_card",
+                    route="fallback",
+                    model_binding=artifact.reader_card.model_bindings.fallback,
+                    lm_type=lm_type,
                 ),
-            }
-        return NewsSemanticProgram(
-            artifact,
-            primary_adapter=primary_adapters,
-            fallback_adapter=fallback_adapters,
+            )
+        return RoutedSemanticJudge(
+            NativeNewsProgram(artifact),
+            primary=primary,
+            fallback=fallback,
+        )
+
+    def compile_semantic_judge(
+        self,
+        artifact: ProgramStrategyArtifactV1,
+        *,
+        lm_type: Any = dspy.LM,
+    ) -> SemanticJudge | None:
+        """Bind both Predictors to the one task endpoint used by offline GEPA.
+
+        This keeps the production native Module and audited task endpoint but
+        disables the whole-route deadline and cross-case breaker that GEPA does
+        not run. A baseline built here therefore measures the same single-endpoint
+        student without teaching the CLI how to construct model clients.
+        """
+
+        if not self.program_configured:
+            return None
+        endpoint = self.event_semantics_primary
+        timeout = float(PROGRAM_ROUTE_DEADLINE_SECONDS)
+        primary = RouteLMs(
+            event_semantics=_configured_program_lm(
+                endpoint,
+                max_tokens=artifact.event_semantics.max_tokens,
+                timeout=timeout,
+                predictor="event_semantics",
+                route="primary",
+                model_binding=artifact.event_semantics.model_bindings.primary,
+                lm_type=lm_type,
+            ),
+            reader_card=_configured_program_lm(
+                endpoint,
+                max_tokens=artifact.reader_card.max_tokens,
+                timeout=timeout,
+                predictor="reader_card",
+                route="primary",
+                model_binding=artifact.reader_card.model_bindings.primary,
+                lm_type=lm_type,
+            ),
+        )
+        return RoutedSemanticJudge(
+            NativeNewsProgram(artifact),
+            primary=primary,
+            route_deadline_seconds=None,
+            primary_breaker_enabled=False,
         )
 
     def progression_verifier(
         self,
         *,
-        adapter_type: Any = ChatCompletionsPredictorAdapter,
+        lm_type: Any = dspy.LM,
     ) -> ProgressionReviewProgram | None:
         """Bind the post-delivery relationship check to the primary event-semantics endpoint."""
 
         if not self.program_configured:
             return None
         endpoint = self.event_semantics_primary
-        adapter = adapter_type.from_runtime(
-            model_name=endpoint.model_name,
-            api_key=endpoint.api_key,
-            api_base=endpoint.api_base,
+        lm = _configured_program_lm(
+            endpoint,
             timeout=PROGRESSION_REVIEW_TIMEOUT_SECONDS,
             max_tokens=PROGRESSION_REVIEW_MAX_TOKENS,
-            model_sha256=_endpoint_model_sha256(endpoint),
-            model_kwargs=endpoint.model_kwargs,
-            temperature=endpoint.temperature,
-            structured_output=endpoint.structured_output,
+            predictor="progression_review",
+            route="primary",
+            model_binding="progression_review.primary",
+            lm_type=lm_type,
         )
-        return ProgressionReviewProgram(
-            adapter=adapter,
-            model_binding=PROGRESSION_REVIEW_MODEL_BINDING,
-        )
+        return ProgressionReviewProgram(lm)
 
 
 def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:
@@ -281,11 +327,51 @@ def artifact_valid_candidate_bundles(
     return shipped
 
 
+def _configured_program_lm(
+    endpoint: ConfiguredLMEndpoint,
+    *,
+    timeout: float,
+    max_tokens: int,
+    predictor: str,
+    route: str,
+    model_binding: str,
+    lm_type: Any = dspy.LM,
+) -> AuditedConfiguredLM:
+    """Create a stock DSPy LM and add only Tracefold's secret-free audit seam."""
+
+    request: dict[str, Any] = {
+        "api_key": endpoint.api_key,
+        "api_base": endpoint.api_base,
+        "timeout": float(timeout),
+        "max_tokens": int(max_tokens),
+        "cache": False,
+        "num_retries": 0,
+        **dict(endpoint.model_kwargs),
+    }
+    if endpoint.temperature is not None:
+        request["temperature"] = float(endpoint.temperature)
+    delegate = lm_type(str(endpoint.model_name), **request)
+    if not isinstance(delegate, dspy.BaseLM):
+        raise TypeError("news_program_configured_lm_factory_invalid")
+    return AuditedConfiguredLM(
+        delegate,
+        structured_output=endpoint.structured_output,
+        runtime_identity=RuntimeModelIdentity.issue(
+            provider=_endpoint_provider(endpoint),
+            model=str(endpoint.model_name),
+            model_sha256=_endpoint_model_sha256(endpoint),
+        ),
+        predictor=predictor,
+        route=route,
+        model_binding=model_binding,
+    )
+
+
 def _endpoint_identity(endpoint: ConfiguredLMEndpoint) -> dict[str, str]:
     """Use the same secret-free identity that each live Predictor request carries."""
 
     model = str(endpoint.model_name)
-    provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
+    provider = _endpoint_provider(endpoint)
     return RuntimeModelIdentity.issue(
         provider=provider,
         model=model,
@@ -297,7 +383,7 @@ def _endpoint_model_sha256(endpoint: ConfiguredLMEndpoint) -> str:
     """Fingerprint one configured backend and its secret-free request semantics."""
 
     model = str(endpoint.model_name)
-    provider = model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
+    provider = _endpoint_provider(endpoint)
     return canonical_sha(
         {
             "identity_schema": "configured_endpoint_model_v3",
@@ -309,6 +395,11 @@ def _endpoint_model_sha256(endpoint: ConfiguredLMEndpoint) -> str:
             "model_kwargs_sha256": canonical_sha(endpoint.model_kwargs),
         }
     )
+
+
+def _endpoint_provider(endpoint: ConfiguredLMEndpoint) -> str:
+    model = str(endpoint.model_name)
+    return model.split("/", maxsplit=1)[0] if "/" in model else "unknown"
 
 
 def _canonical_endpoint_sha256(value: str) -> str:

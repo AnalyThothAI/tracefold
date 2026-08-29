@@ -96,28 +96,27 @@ environment variables, or move code-owned safety budgets into
 The production model consumers are the News semantic Program and the optional
 post-delivery progression verifier. The Program's sole Interface is
 `SemanticJudge.judge(TriageContext) -> SemanticJudgment`. The
-production Adapter executes the fixed two-Predictor graph
+production Adapter executes the fixed two-Predictor native DSPy Program
 `EventSemantics -> deterministic SemanticNormalizer -> ReaderCard.v2 ->
 deterministic VerdictAssembler`; callers
 cannot supply instructions, topology, routes, retry policy or artifact paths. A
-normal judgment uses two serial provider calls. One fast retry is shared by a
-route (at most three calls); fallback restarts the full graph (at most six
-across the chain). The Program factory owns the route deadline and call/token
-budgets. Since #306 Phase 3 the Program composes its own request — one system
-message carrying the Predictor instruction and the output contract, one user
-message carrying the bounded fields, and an endpoint-compatible structured-output
-mode. The schema is sent as `response_format` when supported and otherwise stays
-inside the system message for prompt-only JSON; `tracefold.integrations.chat_completions`
-sends it. One `invoke` is one HTTP request, with no client cache, no client
-retry and no second call on a parse failure, so the audit trace contains every
-provider attempt by construction rather than by a disabled setting.
+normal judgment uses exactly two serial provider calls. DSPy's JSONAdapter may
+make one format fallback per Predictor, so one route is capped at four calls;
+fallback restarts the complete Program and the judgment is capped at eight. The
+Program factory owns the route deadline and call/token budgets. DSPy's public
+Signature/Predict/JSONAdapter surface owns model-visible rendering and
+structured-output parsing, while stock `dspy.LM`/LiteLLM owns provider I/O.
+Provider retry and cache are disabled. Tracefold's typed
+`AuditedConfiguredLM(dspy.BaseLM)` wrapper does not construct HTTP, messages or
+`response_format`; it records the safe request identity, usage and exactly one
+terminal disposition for every physical delegate call.
 
 EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
 endpoint unless the operator supplies the complete `llm.news_reader_card`
 triple. The fallback route likewise aliases both Predictor slots only when
 `llm.news_reader_card_fallback` is absent; a requested dedicated Reader fallback
 must validate or the entire fallback route is disabled. The two Predictors
-always receive separate Adapters and code-owned
+always receive separate explicit LM bindings and code-owned
 token caps; endpoint credentials remain application configuration and never
 enter the content-addressed Program artifact or secret-free runtime identity.
 The identity includes only a one-way endpoint fingerprint beside provider and
@@ -128,7 +127,7 @@ The Program output never decides delivery by itself: pure `decide()` rules own
 the final decision, Program failure is fail-closed, and every verdict row stores
 model intent next to the rule baseline. The Predictors have no tools, agent
 loop, retrieval, filesystem, shell, subagent or write capability; their only
-outbound capability is the Adapter's configured model endpoint. One Event
+outbound capability is the configured DSPy LM endpoint. One Event
 persists one final judgment and one card — the two internal calls do not restore the
 Analyst stage removed in #57. The card's Chinese text is the Triage verdict's
 `headline_zh` and `why_zh`; no separate title, translation, or follow-up
@@ -162,7 +161,7 @@ those bytes, non-empty because a Predictor without a prompt is not one.
 
 One secret-handling mechanism survives #319, by explicit operator decision, and
 it is worth naming because its reason is not the obvious one.
-`transport.provider_error_detail` substitutes credential-shaped text out of a
+`program.lm._scrub_detail` substitutes credential-shaped text out of a
 provider's error body before that body is carried on a failed attempt's trace.
 What it catches is not an attacker: it is a provider handing our own key back —
 `Invalid API key: sk-…` is ordinary provider behaviour — into
@@ -187,9 +186,9 @@ Worker. Issue #202 deleted the container platform that used to surround it: the
 sealed image, the launcher, the metered proxy sidecar, the seccomp policy, the
 tariff, the three-party `CompilerBuildAttestation` and the runner. That platform
 answered one question — *where were these two strings produced* — and its threat
-model was "the optimizer might return code". It cannot: `gepa.optimize` returns a
-mapping from component name to text, so the write-set is two strings and
-`run_gepa` refuses a winner that is not exactly the two. Proving provenance was
+model was "the optimizer might return code". It cannot: public `dspy.GEPA`
+optimizes the two named `dspy.Predict` instructions, and `run_gepa` refuses a
+winner that is not exactly those two with empty demos. Proving provenance was
 never what made a candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
@@ -199,11 +198,15 @@ write credential, no broker, no delivery, no canary, no promotion, no artifact
 writer. `news learning run` (#253) composes it with `readiness` and the
 standalone baseline and adds no authority of its own: three `serve` reads, the
 same endpoints, and files in a directory the operator named. The typed budget
-still bounds only the optimization leg — `run_baseline` has no meter and no
-deadline — so a composite run's spend is the declared budget plus a baseline leg
+still bounds only the optimization leg — `run_baseline` has no aggregate meter
+or whole-run/whole-route deadline, although each endpoint call keeps its
+configured timeout — so a composite run's spend is the declared budget plus a baseline leg
 bounded by its corpus, which `--max-baseline-model-cases` must cover exactly.
-Every physical provider call passes a meter that reserves the operator's
-declared per-call cost before the request and settles after it, and a wall-clock
+Every physical provider call passes a typed `AuditedConfiguredLM` seam that uses
+DSPy's public `LMRequest`/`LMResponse` contract, never stores credentials in its
+hash or trace, and scrubs bounded provider error detail. The learning meter
+reserves the operator's declared per-call cost before the request and settles
+after it, and a wall-clock
 deadline is checked before each call rather than reported after the last. Task,
 reflection and `metric_judge` are each one `ModelExecutionIdentity` — the
 complete secret-free execution contract — whose single digest is

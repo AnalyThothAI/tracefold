@@ -30,8 +30,8 @@ def _learning_program_judges(
     artifact_paths: Mapping[str, str],
     live: bool,
 ) -> dict[tuple[Literal["stable", "candidate"], str], SemanticJudge]:
-    from tracefold.news.program.graph import NewsSemanticProgram
-    from tracefold.news.program.transport import RecordReplayPredictorAdapter
+    from tracefold.news.program.module import NativeNewsProgram
+    from tracefold.news.program.routing import RoutedSemanticJudge
 
     arm_artifacts = _learning_program_arm_artifacts(
         stable=stable,
@@ -44,30 +44,141 @@ def _learning_program_judges(
             for arm_name, arm, artifact in arm_artifacts
         }
     rows = conn.execute(
-        "SELECT DISTINCT ON (request_sha256) request_sha256, request, response "
-        "FROM news_model_recordings WHERE response IS NOT NULL "
-        "AND request ? 'program_sha256' AND request ? 'runtime_binding_sha256' "
-        "ORDER BY request_sha256, created_at_ms DESC"
+        "SELECT DISTINCT ON (execution_contract_sha, predictor_name, route, provider, model, model_sha, "
+        "request_sha256) execution_contract_sha, predictor_name, route, provider, model, model_sha, "
+        "request_sha256, request, response FROM news_model_recordings WHERE response IS NOT NULL "
+        "ORDER BY execution_contract_sha, predictor_name, route, provider, model, model_sha, "
+        "request_sha256, created_at_ms DESC"
     ).fetchall()
-    recordings_by_program: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        recorded_request = dict(row["request"] or {})
-        program_sha = str(recorded_request.get("program_sha256") or "")
-        if not program_sha:
-            raise ValueError("news_learning_recording_program_identity_missing")
-        recordings_by_program.setdefault(program_sha, {})[str(row["request_sha256"])] = {
-            "request": recorded_request,
-            "response": row["response"],
-        }
     judges: dict[tuple[Literal["stable", "candidate"], str], SemanticJudge] = {}
     for arm_name, arm, artifact in arm_artifacts:
-        replay = RecordReplayPredictorAdapter(recordings_by_program.get(arm.program_sha256, {}))
-        judges[(arm_name, arm.bundle_sha)] = NewsSemanticProgram(
-            artifact,
-            primary_adapter=replay,
-            fallback_adapter=replay,
+        slots = _recorded_program_slots(rows, arm=arm)
+        judges[(arm_name, arm.bundle_sha)] = RoutedSemanticJudge(
+            NativeNewsProgram(artifact),
+            primary=_recorded_route(slots, artifact=artifact, route="primary"),
+            fallback=(
+                _recorded_route(slots, artifact=artifact, route="fallback")
+                if any(key[1] == "fallback" for key in slots)
+                else None
+            ),
         )
     return judges
+
+
+def _recorded_program_slots(rows: Any, *, arm: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    """Select and group only recordings issued under this exact Program execution contract."""
+
+    from tracefold.news.artifact_identity import canonical_sha
+    from tracefold.news.program.lm import RecordedLM, RuntimeModelIdentity
+
+    groups: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_row in rows:
+        row = dict(raw_row)
+        provider = str(row.get("provider") or "")
+        model = str(row.get("model") or "")
+        model_sha = str(row.get("model_sha") or "")
+        if not provider or not model or not model_sha:
+            continue
+        identity = RuntimeModelIdentity.issue(provider=provider, model=model, model_sha256=model_sha)
+        expected_execution_sha = canonical_sha(
+            {
+                "program_sha256": arm.program_sha256,
+                "runtime_model_bindings_sha256": arm.runtime_model_bindings_sha256,
+                "envelope_sha256": arm.envelope_sha256,
+                "runtime_binding_sha256": identity.binding_sha256,
+                "provider": provider,
+            }
+        )
+        if str(row.get("execution_contract_sha") or "") != expected_execution_sha:
+            continue
+        predictor = str(row.get("predictor_name") or "")
+        route = str(row.get("route") or "")
+        if predictor not in {"event_semantics", "reader_card"} or route not in {"primary", "fallback"}:
+            continue
+        terminal = dict(row.get("response") or {})
+        if terminal.get("schema") != "tracefold.news.recorded_lm.v1":
+            raise ValueError("news_program_recording_schema_unsupported")
+        request_sha = str(row.get("request_sha256") or "")
+        request = dict(row.get("request") or {})
+        request_identity = terminal.get("request_identity")
+        if not isinstance(request_identity, Mapping):
+            raise ValueError("news_program_recording_request_identity_invalid")
+        recorded_binding = str(request_identity.get("model_binding") or "")
+        # This is validation only; the slot-level RecordedLM below owns replay.
+        RecordedLM(
+            {request_sha: terminal},
+            model=model,
+            runtime_identity=identity,
+            model_binding=recorded_binding,
+        )
+        if terminal.get("request") != request or request.get("model") != model:
+            raise ValueError("news_program_recording_request_identity_mismatch")
+        key = (predictor, route)
+        group = groups.setdefault(key, {"identity": identity, "modes": set(), "recordings": {}})
+        if group["identity"] != identity:
+            raise ValueError("news_learning_recording_route_ambiguous")
+        group["modes"].add(_recorded_request_mode(request))
+        group["recordings"][request_sha] = terminal
+    return groups
+
+
+def _recorded_request_mode(request: Mapping[str, Any]) -> str:
+    config = request.get("config")
+    response_format = config.get("response_format") if isinstance(config, Mapping) else None
+    if response_format is None:
+        return "prompt_json"
+    if response_format == {"type": "json_object"}:
+        return "json_object"
+    return "json_schema"
+
+
+def _recorded_route(slots: Mapping[tuple[str, str], dict[str, Any]], *, artifact: Any, route: str) -> Any:
+    from tracefold.news.program.lm import (
+        AuditedConfiguredLM,
+        RecordedLM,
+        RuntimeModelIdentity,
+        StructuredOutputMode,
+    )
+    from tracefold.news.program.routing import RouteLMs
+
+    route_groups = [value for key, value in slots.items() if key[1] == route]
+    default_identity = (
+        route_groups[0]["identity"]
+        if route_groups
+        else RuntimeModelIdentity.issue(provider="recorded", model=f"recorded/{route}")
+    )
+
+    def lm_for(predictor: str) -> AuditedConfiguredLM:
+        group = slots.get((predictor, route))
+        identity = default_identity if group is None else group["identity"]
+        modes = set() if group is None else set(group["modes"])
+        mode: StructuredOutputMode
+        if "json_schema" in modes:
+            mode = "json_schema"
+        elif modes == {"json_object"}:
+            mode = "json_object"
+        elif not modes or modes == {"prompt_json"}:
+            mode = "prompt_json" if modes else "json_schema"
+        else:
+            raise ValueError("news_learning_recording_capability_ambiguous")
+        recordings = {} if group is None else group["recordings"]
+        binding = getattr(getattr(artifact, predictor).model_bindings, route)
+        return AuditedConfiguredLM(
+            RecordedLM(
+                recordings,
+                model=identity.model,
+                runtime_identity=identity,
+                model_binding=binding,
+                structured_output=mode,
+            ),
+            structured_output=mode,
+            runtime_identity=identity,
+            predictor=predictor,
+            route=route,
+            model_binding=binding,
+        )
+
+    return RouteLMs(event_semantics=lm_for("event_semantics"), reader_card=lm_for("reader_card"))
 
 
 def _learning_program_arm_artifacts(

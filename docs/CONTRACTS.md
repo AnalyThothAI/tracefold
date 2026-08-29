@@ -657,7 +657,7 @@ demo digest. A told-only re-ask may restore
 the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
-`news_semantic_program_v5` (or `news_oi_signal_v1` for deterministic OI),
+`news_semantic_program_v6` (or `news_oi_signal_v1` for deterministic OI),
 `news_triage_policy_v10`, `news_delivery_card_v10`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
 `opennews_source_classifier_v1`. The epoch is the running bundle's
@@ -703,18 +703,18 @@ The optimizer can emit only a typed patch carrying the two Predictor
 instructions; there is no DemoBank to write to. The trusted side reconstructs
 the final Artifact from the exact active stable root. Pickle, cloudpickle,
 dynamic Python/classes, endpoints and credentials are not artifact formats.
-One `invoke` is one HTTP request with no client cache, no client retry and no
-second call on a parse failure, so every provider attempt appears in the trace
-by construction.
+One typed `AuditedConfiguredLM` invocation is one stock DSPy/LiteLLM provider
+call, with no client cache or provider retry. JSONAdapter may make one additional
+format call per Predictor, and every physical invocation appears in the trace.
 There is no legacy Prompt runtime, dual stack, compatibility Adapter or
 production operator-selected artifact path. Nullable Prompt-era fields remain
 audit-only.
 The current execution contract is `EventSemantics.v2 -> deterministic
 SemanticNormalizer -> ReaderCard.v2 -> deterministic assembler`: normally two
 serial calls because the normalizer and assembler make no provider request;
-one fast retry is shared by the whole route, so at most three calls per route;
-fallback restarts the full
-graph, so primary plus fallback is at most six. The code-owned 20-second
+JSONAdapter may make one format fallback per Predictor, so at most four calls
+per route; fallback restarts the full Program, so primary plus fallback is at
+most eight. The code-owned 20-second
 deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
@@ -1120,12 +1120,14 @@ The three modes answer three different questions and are never interchangeable
 | Mode | Executes | Question |
 | --- | --- | --- |
 | `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is metric wiring reproducible over history? |
-| `compile_live` | the production `NewsSemanticProgram` on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
-| `runtime_live` | the configured four-slot `NewsSemanticProgram` | does the production Program route answer these cases? |
+| `compile_live` | the production native DSPy Program on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
+| `runtime_live` | the configured four-slot native DSPy Program | does the production Program route answer these cases? |
 
-`compile_live` is exactly the graph GEPA maximizes and deliberately has no
-fallback route, no fast retry, no per-route deadline and no circuit breaker, so
-its failure rate is not the reader's. `runtime_live` is built by the same seam
+`compile_live` is exactly the native Program GEPA maximizes and deliberately has
+no fallback route. It disables the production whole-route deadline and
+cross-case primary breaker that GEPA does not run, while retaining the task
+endpoint's per-call timeout and DSPy JSONAdapter's single format fallback per
+Predictor, so its failure rate is not the reader's. `runtime_live` is built by the same seam
 the Workers use — a dedicated ReaderCard binding is honoured rather than
 silently aliased to the EventSemantics primary — and runs cases sequentially in
 `(opened_at_ms, case_id)` order so circuit state is a property of the run rather
@@ -1156,7 +1158,7 @@ the other: `recorded` outside `--mode recorded` short-circuits the policy replay
 so a live mode would generate a fresh verdict and score it against the action a
 *different* verdict shipped, silently emptying the metric's heaviest component.
 `--max-model-cases N` is required by both live modes and caps the corpus read —
-`runtime_live` spends two to six sequential provider calls per case on the
+`runtime_live` spends two to eight sequential provider calls per case on the
 endpoints that also serve production Triage, and every other model-spending
 command in this plane makes its budget mandatory.
 
@@ -1217,7 +1219,7 @@ and `latency_ms` p50/p95/max over answered cases, with `p95_with_failures` /
 case there is, and hiding it would understate the tail an operator bounds the
 run against. A case that failed still reports what it spent, read
 from the `SemanticJudgeError` partial trace: a route that exhausts the chain
-costs six calls, and counting zero made the receipt least accurate exactly where
+can cost eight calls, and counting zero made the receipt least accurate exactly where
 the route was worst.
 `report_sha256` covers the measurement with wall-clock latency excluded, so two
 runs with identical predictions publish the same address; `latency_sha256`
@@ -1225,9 +1227,10 @@ addresses the timings separately. `identity.case_root_sha256` answers "the same
 cases?" and `identity.corpus_sha256` answers "the same inputs?" — hashing ids
 alone let one address describe two corpora, because any evidence edit that kept
 the ids left the receipt untouched.
-Both live modes report the same route and latency facts, because since #306
-Phase 3 both execute the same graph; what separates them is what was bound to it,
-and `execution_scope` is where the report says so. Neither receipt contains a
+Both live modes report the same route and latency facts and execute the same
+native Module. What separates them is both the endpoint binding and availability
+controls: `compile_live` disables the whole-route deadline and cross-case breaker
+that only `runtime_live` runs. `execution_scope` says so. Neither receipt contains a
 credential or an endpoint URL.
 
 Policy is frozen into each scored example rather than read from process-global

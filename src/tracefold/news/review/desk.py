@@ -2453,7 +2453,7 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         now_ms=int(now_ms),
         cohort=MarketReviewCohort(
             bundle_sha256="0" * 64,
-            program_version="news_semantic_program_v5",
+            program_version="news_semantic_program_v6",
             program_sha256="1" * 64,
             policy_version="news_triage_policy_v10",
             model="audit-model",
