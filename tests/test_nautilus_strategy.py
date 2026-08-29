@@ -473,7 +473,7 @@ def test_entry_is_submitted_only_after_the_database_grants_the_durable_fence() -
         "nt-v1",
         Decimal("0.001"),
     )
-    assert request.q1_evidence["stage"] == "Q1"
+    assert request.q1_evidence.stage == "Q1"
     assert strategy.submitted == []
 
     fenced = _outcome(
@@ -549,8 +549,8 @@ def test_q2_quote_rejection_is_typed_and_never_submits(
     no_submit = queues.events.get_nowait()
     assert isinstance(no_submit, EntryNoSubmitRequested)
     assert no_submit.reason_code == reason
-    assert no_submit.q2_evidence["stage"] == "Q2"
-    assert no_submit.q2_evidence["reason"] == reason
+    assert no_submit.q2_evidence.stage == "Q2"
+    assert no_submit.q2_evidence.reason == reason
     assert strategy.submitted == []
 
 
@@ -559,7 +559,6 @@ def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick(
     intent = _intent()
     request = _adopt_and_request_fence(strategy, queues, intent)
 
-    queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
     queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
     strategy.on_timer(None)
     queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
@@ -573,13 +572,12 @@ def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick(
     fresh_strategy, fresh_queues = _registered_strategy()
     fresh_intent = _intent(case_id="case-new-generation")
     fresh_queues.commands.put_nowait(AdoptIntent(intent=fresh_intent, outcome=_outcome(fresh_intent)))
-    fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
     fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
     fresh_strategy.on_timer(None)
     _deliver_current_quote(fresh_strategy)
     fresh_request = fresh_queues.events.get_nowait()
     assert isinstance(fresh_request, EntryFenceRequested)
-    assert fresh_request.q1_evidence["stream_generation"] == 1
+    assert fresh_request.q1_evidence.stream_generation == 1
 
 
 def test_dynamic_subscription_waits_for_its_first_quote_before_requesting_the_fence() -> None:
@@ -625,7 +623,7 @@ def test_missing_active_intent_quote_terminalizes_after_the_bounded_wait() -> No
     rejected = queues.events.get_nowait()
     assert isinstance(rejected, EntryPreflightRejected)
     assert rejected.reason_code == "quote_missing"
-    assert rejected.q1_evidence["stage"] == "Q1"
+    assert rejected.q1_evidence.stage == "Q1"
     assert strategy.submitted == []
 
 
@@ -655,7 +653,7 @@ def test_entry_preflight_refuses_quantity_below_the_venue_min_notional() -> None
         reason_code="quantity_unexecutable",
         q1_evidence=rejection.q1_evidence,
     )
-    assert rejection.q1_evidence["reason"] == "accepted"
+    assert rejection.q1_evidence.reason == "accepted"
     assert strategy.submitted == []
 
 

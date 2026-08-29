@@ -8,6 +8,11 @@ from queue import Queue
 from typing import Literal
 
 from tracefold.trading import IntentOutcome, IntentReasonCode, RejectedReason, TradeIntent
+from tracefold.trading.quote_authority import (
+    ExecutionQuoteAuditV1,
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
+)
 
 OrderLeg = Literal["entry", "stop", "close"]
 
@@ -126,7 +131,7 @@ class EntryFenceRequested:
     intent_id: str
     engine_identity: str
     quantity: Decimal
-    q1_evidence: dict[str, str | int]
+    q1_evidence: ExecutionQuoteSnapshotV1
     requested_at_ms: int
 
 
@@ -134,14 +139,14 @@ class EntryFenceRequested:
 class EntryPreflightRejected:
     intent_id: str
     reason_code: IntentReasonCode
-    q1_evidence: dict[str, str | int]
+    q1_evidence: ExecutionQuoteAuditV1
 
 
 @dataclass(frozen=True, slots=True)
 class EntrySubmissionRequested:
     intent_id: str
     client_order_id: str
-    q2_evidence: dict[str, str | int]
+    q2_evidence: ExecutionQuoteSnapshotV1
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,7 +154,7 @@ class EntryNoSubmitRequested:
     intent_id: str
     client_order_id: str
     reason_code: RejectedReason
-    q2_evidence: dict[str, str | int]
+    q2_evidence: ExecutionQuoteRejectionV1
 
 
 @dataclass(frozen=True, slots=True)

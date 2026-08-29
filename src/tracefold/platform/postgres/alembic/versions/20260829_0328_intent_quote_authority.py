@@ -97,10 +97,13 @@ def upgrade() -> None:
               )
               AND entry_quote_q1 ->> 'stage' = 'Q1'
               AND entry_quote_q1 ->> 'reason' IS NOT NULL
+              AND entry_quote_q1 ->> 'intent_id' = intent_id
+              AND entry_quote_q1 ->> 'instrument_id' = instrument_id
+              AND entry_quote_q1 ->> 'side' = CASE side WHEN 'long' THEN 'buy' ELSE 'sell' END
               AND (
                 entry_quote_q1 ->> 'reason' <> 'accepted'
                 OR entry_quote_q1 ?& ARRAY[
-                  'instrument_id', 'side', 'side_price', 'bid', 'ask',
+                  'side_price', 'bid', 'ask',
                   'ts_event_ns', 'ts_init_ns', 'evaluated_at_ns', 'stream_generation',
                   'receive_age_ns', 'event_age_ns', 'source_latency_ns',
                   'spread_bps', 'reference_drift_bps'
@@ -117,10 +120,13 @@ def upgrade() -> None:
               )
               AND entry_quote_q2 ->> 'stage' = 'Q2'
               AND entry_quote_q2 ->> 'reason' IS NOT NULL
+              AND entry_quote_q2 ->> 'intent_id' = intent_id
+              AND entry_quote_q2 ->> 'instrument_id' = instrument_id
+              AND entry_quote_q2 ->> 'side' = CASE side WHEN 'long' THEN 'buy' ELSE 'sell' END
               AND (
                 entry_quote_q2 ->> 'reason' <> 'accepted'
                 OR entry_quote_q2 ?& ARRAY[
-                  'instrument_id', 'side', 'side_price', 'bid', 'ask',
+                  'side_price', 'bid', 'ask',
                   'ts_event_ns', 'ts_init_ns', 'evaluated_at_ns', 'stream_generation',
                   'receive_age_ns', 'event_age_ns', 'source_latency_ns',
                   'spread_bps', 'reference_drift_bps'

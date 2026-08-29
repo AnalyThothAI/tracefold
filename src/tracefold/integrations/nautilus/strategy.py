@@ -24,6 +24,14 @@ from tracefold.trading import (
     deterministic_client_order_id,
 )
 from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
+from tracefold.trading.quote_authority import (
+    MAX_RECEIVE_AGE_NS,
+    ExecutionQuote,
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
+    SubmissionFenceV1,
+    validate_entry_quote,
+)
 
 from .capabilities import instrument_matches_capability
 from .messages import (
@@ -61,14 +69,7 @@ from .messages import (
     VenueFlatProofRequested,
     VenueFlatUnproven,
 )
-from .quote_authority import (
-    MAX_RECEIVE_AGE_NS,
-    ExecutionQuote,
-    ExecutionQuoteSnapshot,
-    QuoteRejection,
-    SubmissionFenceV1,
-    validate_entry_quote,
-)
+from .quote_authority import execution_quote_from_nautilus
 
 _FLAT_PROOF_RETRY_MS = 5_000
 
@@ -126,7 +127,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._active_intent: TradeIntent | None = None
         self._active_outcome: IntentOutcome | None = None
         self._pending_fence_quantity: Decimal | None = None
-        self._pending_fence_quote: ExecutionQuoteSnapshot | None = None
+        self._pending_fence_quote: ExecutionQuoteSnapshotV1 | None = None
         self._latest_entry_quote: ExecutionQuote | None = None
         self._last_accepted_quote_ts_event_ns: int | None = None
         self._quote_wait_started_at_ns: int | None = None
@@ -355,7 +356,7 @@ class TracefoldNautilusStrategy(Strategy):
                 intent_id=intent.intent_id,
                 engine_identity=self._engine_identity,
                 quantity=quantity,
-                q1_evidence=quote.as_payload(stage="Q1"),
+                q1_evidence=quote,
                 requested_at_ms=quote.evaluated_at_ns // 1_000_000,
             )
         )
@@ -378,12 +379,12 @@ class TracefoldNautilusStrategy(Strategy):
             or (self._active_outcome is not None and self._active_outcome.entry_fenced_at_ms is not None)
         ):
             return
-        self._latest_entry_quote = ExecutionQuote.from_nautilus(
+        self._latest_entry_quote = execution_quote_from_nautilus(
             tick,
             stream_generation=self._quote_stream_generation,
         )
 
-    def _entry_preflight(self, intent: TradeIntent) -> tuple[Decimal, ExecutionQuoteSnapshot] | None:
+    def _entry_preflight(self, intent: TradeIntent) -> tuple[Decimal, ExecutionQuoteSnapshotV1] | None:
         now_ms = int(self.clock.timestamp_ms())
         if now_ms >= intent.valid_until_ms:
             self._refuse_intent(intent, "intent_expired")
@@ -414,14 +415,15 @@ class TracefoldNautilusStrategy(Strategy):
         validation = validate_entry_quote(
             intent=intent,
             quote=quote,
+            stage="Q1",
             now_ns=now_ns,
             last_accepted_ts_event_ns=self._last_accepted_quote_ts_event_ns,
         )
-        if isinstance(validation, QuoteRejection):
+        if isinstance(validation, ExecutionQuoteRejectionV1):
             self._reject_entry_preflight(
                 intent,
                 validation.reason,
-                validation.as_payload(stage="Q1", evaluated_at_ns=now_ns),
+                validation,
             )
             return None
         self._last_accepted_quote_ts_event_ns = validation.ts_event_ns
@@ -444,7 +446,7 @@ class TracefoldNautilusStrategy(Strategy):
             self._reject_entry_preflight(
                 intent,
                 decision.reason,
-                validation.as_payload(stage="Q1"),
+                validation,
             )
             return None
         return decision.quantity, validation
@@ -453,7 +455,7 @@ class TracefoldNautilusStrategy(Strategy):
         self,
         intent: TradeIntent,
         reason_code: IntentReasonCode,
-        q1_evidence: dict[str, str | int],
+        q1_evidence: ExecutionQuoteSnapshotV1 | ExecutionQuoteRejectionV1,
     ) -> None:
         self._emit(EntryPreflightRejected(intent.intent_id, reason_code, q1_evidence))
         self._clear_active_without_exposure(intent.intent_id)
@@ -495,7 +497,7 @@ class TracefoldNautilusStrategy(Strategy):
             or outcome.intent_id != intent.intent_id
             or outcome.entry_fenced_at_ms is None
             or fence.client_order_id != expected_id
-            or fence.q1_evidence != q1.as_payload(stage="Q1")
+            or fence.q1_evidence != q1
             or outcome.execution_state != "IN_FLIGHT"
             or outcome.execution_phase != "ENTRY"
         ):
@@ -504,19 +506,20 @@ class TracefoldNautilusStrategy(Strategy):
         validation = validate_entry_quote(
             intent=intent,
             quote=self._latest_entry_quote,
+            stage="Q2",
             now_ns=now_ns,
             last_accepted_ts_event_ns=q1.ts_event_ns,
         )
         self._active_outcome = outcome
         self._pending_fence_quantity = None
         self._pending_fence_quote = None
-        if isinstance(validation, QuoteRejection):
+        if isinstance(validation, ExecutionQuoteRejectionV1):
             self._emit(
                 EntryNoSubmitRequested(
                     intent_id=intent.intent_id,
                     client_order_id=expected_id,
                     reason_code=validation.reason,
-                    q2_evidence=validation.as_payload(stage="Q2", evaluated_at_ns=now_ns),
+                    q2_evidence=validation,
                 )
             )
             return
@@ -525,7 +528,7 @@ class TracefoldNautilusStrategy(Strategy):
             EntrySubmissionRequested(
                 intent_id=intent.intent_id,
                 client_order_id=expected_id,
-                q2_evidence=validation.as_payload(stage="Q2"),
+                q2_evidence=validation,
             )
         )
 
@@ -542,7 +545,7 @@ class TracefoldNautilusStrategy(Strategy):
             or outcome.intent_id != intent.intent_id
             or fence.client_order_id != expected_id
             or outcome.entry_quote_q2 is None
-            or outcome.entry_quote_q2.get("reason") != "accepted"
+            or outcome.entry_quote_q2.reason != "accepted"
             or outcome.entry_submitted_at_ms is not None
             or outcome.execution_state != "IN_FLIGHT"
             or outcome.execution_phase != "ENTRY"
@@ -595,7 +598,7 @@ class TracefoldNautilusStrategy(Strategy):
             or outcome.terminal_outcome != "REJECTED"
             or outcome.entry_fenced_at_ms is None
             or outcome.entry_quote_q2 is None
-            or outcome.entry_quote_q2.get("reason") != outcome.reason_code
+            or outcome.entry_quote_q2.reason != outcome.reason_code
             or outcome.entry_submitted_at_ms is not None
         ):
             raise ValueError("nautilus_entry_no_submit_finalization_invalid")

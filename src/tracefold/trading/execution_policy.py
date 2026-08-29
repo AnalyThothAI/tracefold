@@ -15,6 +15,7 @@ MAX_HOLDING_MS: Final = 180_000
 MAX_ENTRY_DRIFT_BPS: Final = 25
 MAX_SPREAD_BPS: Final = 30
 TARGET_NOTIONAL_CEILING_USD: Final = Decimal("10")
+_BPS: Final = Decimal(10_000)
 EXECUTION_POLICY_SHA256: Final = canonical_sha256(
     {
         "version": EXECUTION_POLICY_VERSION,
@@ -62,9 +63,8 @@ def evaluate_entry(
         return EntryPolicyDecision(None, "intent_expired")
     if quote_at_ms < created_at_ms or quote_at_ms > now_ms or bid <= 0 or ask <= 0 or ask < bid:
         return EntryPolicyDecision(None, "market_unacceptable")
-    mid = (bid + ask) / 2
-    spread_bps = (ask - bid) / mid * 10_000
-    drift_bps = abs(ask - reference_price) / reference_price * 10_000
+    spread_bps = entry_spread_bps(bid=bid, ask=ask)
+    drift_bps = abs(ask - reference_price) / reference_price * _BPS
     if spread_bps > max_spread_bps or drift_bps > max_drift_bps:
         return EntryPolicyDecision(None, "market_unacceptable")
     raw_quantity = target_notional / ask
@@ -76,6 +76,12 @@ def evaluate_entry(
     ):
         return EntryPolicyDecision(None, "quantity_unexecutable")
     return EntryPolicyDecision(quantity, "accepted")
+
+
+def entry_spread_bps(*, bid: Decimal, ask: Decimal) -> Decimal:
+    """Return the frozen execution-policy spread over the exact Decimal midpoint."""
+
+    return (ask - bid) / ((bid + ask) / 2) * _BPS
 
 
 def stop_price(*, entry_price: Decimal, stop_loss_bps: int, price_increment: Decimal) -> Decimal:

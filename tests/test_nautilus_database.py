@@ -33,14 +33,10 @@ from tracefold.integrations.nautilus.messages import (
     strategy_queues,
 )
 from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading.quote_authority import ExecutionQuoteRejectionV1, ExecutionQuoteSnapshotV1
 from tracefold.trading.storage.intents import EntryFence
 
 NOW_MS = 1_900_000_000_000
-Q1_EVIDENCE: dict[str, str | int] = {
-    "snapshot_version": "execution_quote_snapshot_v1",
-    "stage": "Q1",
-    "reason": "accepted",
-}
 
 
 def _settings() -> Any:
@@ -72,12 +68,33 @@ def _outcome(intent: TradeIntent, **values: object) -> IntentOutcome:
     return IntentOutcome.model_validate(payload)
 
 
+def _accepted_quote(intent: TradeIntent, *, stage: str = "Q1") -> ExecutionQuoteSnapshotV1:
+    return ExecutionQuoteSnapshotV1(
+        stage=stage,  # type: ignore[arg-type]
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        side_price=Decimal("10000"),
+        bid=Decimal("9999"),
+        ask=Decimal("10000"),
+        ts_event_ns=NOW_MS * 1_000_000,
+        ts_init_ns=NOW_MS * 1_000_000,
+        evaluated_at_ns=NOW_MS * 1_000_000,
+        stream_generation=0,
+        receive_age_ns=0,
+        event_age_ns=0,
+        source_latency_ns=0,
+        spread_bps=Decimal("1.00005"),
+        reference_drift_bps=Decimal(0),
+    )
+
+
 def _fence_request(intent: TradeIntent, quantity: Decimal = Decimal("0.001")) -> EntryFenceRequested:
     return EntryFenceRequested(
         intent_id=intent.intent_id,
         engine_identity="nt-v1",
         quantity=quantity,
-        q1_evidence=Q1_EVIDENCE,
+        q1_evidence=_accepted_quote(intent),
         requested_at_ms=NOW_MS,
     )
 
@@ -210,7 +227,7 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         entry_fenced_at_ms=NOW_MS,
         submission_fence_version="submission_fence_v1",
         submission_quantity=quantity,
-        entry_quote_q1=Q1_EVIDENCE,
+        entry_quote_q1=_accepted_quote(intent),
     )
 
     def fence(*_args: object, **_kwargs: object) -> EntryFence:
@@ -285,7 +302,7 @@ def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_reje
 def test_q2_evidence_commits_before_the_strategy_receives_submission_authority() -> None:
     intent = _intent()
     client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
-    q2 = {**Q1_EVIDENCE, "stage": "Q2"}
+    q2 = _accepted_quote(intent, stage="Q2")
     authorized = _outcome(
         intent,
         execution_state="IN_FLIGHT",
@@ -294,7 +311,7 @@ def test_q2_evidence_commits_before_the_strategy_receives_submission_authority()
         entry_fenced_at_ms=NOW_MS,
         submission_fence_version="submission_fence_v1",
         submission_quantity=Decimal("0.001"),
-        entry_quote_q1=Q1_EVIDENCE,
+        entry_quote_q1=_accepted_quote(intent),
         entry_quote_q2=q2,
     )
     queues = strategy_queues()
@@ -318,12 +335,14 @@ def test_q2_evidence_commits_before_the_strategy_receives_submission_authority()
 def test_q2_no_submit_terminal_commits_before_the_strategy_releases_the_intent() -> None:
     intent = _intent()
     client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
-    q2 = {
-        "snapshot_version": "execution_quote_rejection_v1",
-        "stage": "Q2",
-        "reason": "quote_receive_stale",
-        "evaluated_at_ns": NOW_MS * 1_000_000,
-    }
+    q2 = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_receive_stale",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=NOW_MS * 1_000_000,
+    )
     rejected = _outcome(
         intent,
         execution_state="TERMINAL",
@@ -333,7 +352,7 @@ def test_q2_no_submit_terminal_commits_before_the_strategy_releases_the_intent()
         entry_fenced_at_ms=NOW_MS,
         submission_fence_version="submission_fence_v1",
         submission_quantity=Decimal("0.001"),
-        entry_quote_q1=Q1_EVIDENCE,
+        entry_quote_q1=_accepted_quote(intent),
         entry_quote_q2=q2,
     )
     queues = strategy_queues()
@@ -358,7 +377,7 @@ def test_q2_no_submit_terminal_commits_before_the_strategy_releases_the_intent()
 def test_q2_projection_failure_never_grants_submission_authority() -> None:
     intent = _intent()
     client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
-    q2 = {**Q1_EVIDENCE, "stage": "Q2"}
+    q2 = _accepted_quote(intent, stage="Q2")
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()

@@ -633,11 +633,10 @@ def test_db_migrate_enforces_the_v2_preflight_from_the_endpoint_epoch(tmp_path: 
     assert "Trading hard-cut preflight passed" in result.stdout
 
 
-def test_db_migrate_enforces_the_quote_authority_preflight_from_0327(tmp_path: Path) -> None:
+def test_db_migrate_enforces_the_db_only_quote_authority_preflight_without_nautilus(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260829_0327|t|t"
-    env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
-    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0|0|0"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "PAUSED|0"
 
     result = subprocess.run(
         ["make", "db-migrate"],
@@ -649,7 +648,29 @@ def test_db_migrate_enforces_the_quote_authority_preflight_from_0327(tmp_path: P
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Trading hard-cut preflight passed" in result.stdout
+    assert "Intent Quote preflight passed: PAUSED and no recovery obligations" in result.stdout
+
+
+@pytest.mark.parametrize("cut_state", ("RUNNING|0", "PAUSED|1"))
+def test_db_migrate_refuses_0328_when_its_database_invariants_are_not_met(
+    tmp_path: Path,
+    cut_state: str,
+) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260829_0327|t|t"
+    env["TRACEFOLD_TEST_DB_HEAD"] = cut_state
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert f"Intent Quote cut requires PAUSED|nonterminal_intents=0; observed {cut_state}" in result.stderr
 
 
 def test_db_migrate_does_not_invent_a_cutover_for_a_fresh_database(tmp_path: Path) -> None:

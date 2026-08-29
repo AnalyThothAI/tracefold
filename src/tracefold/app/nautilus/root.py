@@ -6,12 +6,12 @@ import asyncio
 import hashlib
 import json
 import signal
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from decimal import Decimal
 from queue import Full
-from typing import Any
+from typing import Any, cast
 
 import uvicorn
 from loguru import logger
@@ -119,11 +119,11 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             ),
         )
         node.trader.add_strategy(strategy)
-        node.add_data_client_factory(BINANCE, BinanceLiveDataClientFactory)
+        node.add_data_client_factory(BINANCE, _quote_stream_data_client_factory(queues))
         node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
         node.build()
         server = _probe_server(bridge.readiness)
-        loop.run_until_complete(_run_runtime(node=node, bridge=bridge, server=server, queues=queues))
+        loop.run_until_complete(_run_runtime(node=node, bridge=bridge, server=server))
     finally:
         if node is not None:
             node.dispose()
@@ -136,7 +136,6 @@ async def _run_runtime(
     node: TradingNode,
     bridge: NautilusDatabaseBridge,
     server: uvicorn.Server,
-    queues: StrategyQueues,
 ) -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -154,8 +153,6 @@ async def _run_runtime(
             node_task=node_task,
             probe_task=probe_task,
             bridge=bridge,
-            node=node,
-            queues=queues,
         )
     finally:
         server.should_exit = True
@@ -181,10 +178,7 @@ async def _supervise(
     node_task: asyncio.Task[None],
     probe_task: asyncio.Task[None],
     bridge: NautilusDatabaseBridge,
-    node: TradingNode,
-    queues: StrategyQueues,
 ) -> None:
-    quote_stream = _QuoteStreamMonitor()
     while not stop_event.is_set():
         if bridge.error is not None:
             raise RuntimeError("nautilus_database_failed") from bridge.error
@@ -194,25 +188,69 @@ async def _supervise(
         if probe_task.done():
             await probe_task
             raise RuntimeError("nautilus_probe_returned")
-        transition = quote_stream.observe(bool(node.kernel.data_engine.check_connected()))
-        if transition is not None:
-            await _enqueue_strategy_command(queues, transition)
         with suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=0.1)
 
 
 @dataclass(slots=True)
-class _QuoteStreamMonitor:
+class _QuoteStreamGeneration:
     generation: int = 0
-    connected: bool | None = None
 
-    def observe(self, connected: bool) -> QuoteStreamChanged | None:
-        if connected == self.connected:
-            return None
-        if connected:
-            self.generation += 1
-        self.connected = connected
-        return QuoteStreamChanged(connected=connected, generation=self.generation)
+    def reconnected(self) -> QuoteStreamChanged:
+        self.generation += 1
+        return QuoteStreamChanged(connected=True, generation=self.generation)
+
+
+def _quote_stream_data_client_factory(queues: StrategyQueues) -> type[BinanceLiveDataClientFactory]:
+    generation = _QuoteStreamGeneration()
+
+    async def on_reconnect() -> None:
+        await _enqueue_strategy_command(queues, generation.reconnected())
+
+    class QuoteStreamBinanceLiveDataClientFactory(BinanceLiveDataClientFactory):
+        @staticmethod
+        def create(
+            loop: asyncio.AbstractEventLoop,
+            name: str,
+            config: Any,
+            msgbus: Any,
+            cache: Any,
+            clock: Any,
+        ) -> Any:
+            client = BinanceLiveDataClientFactory.create(
+                loop=loop,
+                name=name,
+                config=config,
+                msgbus=msgbus,
+                cache=cache,
+                clock=clock,
+            )
+            _chain_binance_reconnect_callbacks(client, on_reconnect)
+            return client
+
+    return QuoteStreamBinanceLiveDataClientFactory
+
+
+def _chain_binance_reconnect_callbacks(
+    client: Any,
+    on_reconnect: Callable[[], Awaitable[None]],
+) -> None:
+    """Chain Tracefold invalidation onto both reconnect callbacks in the pinned adapter."""
+
+    for name in ("_ws_client", "_ws_public_client"):
+        websocket = getattr(client, name, None)
+        if websocket is None:
+            raise RuntimeError("nautilus_binance_reconnect_callback_unavailable")
+        original = getattr(websocket, "_handler_reconnect", None)
+        if original is None or not callable(original):
+            raise RuntimeError("nautilus_binance_reconnect_callback_unavailable")
+        typed_original = cast(Callable[[], Awaitable[None]], original)
+
+        async def chained(original: Callable[[], Awaitable[None]] = typed_original) -> None:
+            await on_reconnect()
+            await original()
+
+        websocket._handler_reconnect = chained
 
 
 def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:

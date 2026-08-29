@@ -2052,16 +2052,22 @@ emit an Intent, and there is no `accept_intents` rollout flag.
 
 Migration `20260829_0328` requires PAUSED with no nonterminal Intent, because a
 pre-quote-authority fence cannot reconstruct the exact quote or quantity that
-authorized it. For each later active Intent, the Nautilus strategy subscribes
-only to that exact instrument and accepts only side-aware `QuoteTick` bid/ask.
-The pure validator applies code-owned receive/event/source-latency/future-skew,
-monotonicity, spread, and reference-drift ceilings. Q1 computes quantity; the
-existing Intent row atomically freezes `SubmissionFenceV1` (deterministic client
-identity, exact quantity, and bounded Q1 evidence). Only after that commit does
-the strategy reread and validate Q2. Accepted Q2 evidence commits before the
-provider write; rejected Q2 becomes a typed, durable fenced-no-submit terminal.
-A failed Q2 projection sends nothing, leaving the fence for query-first recovery.
-Data-client reconnect increments an in-process generation and clears the active
+authorized it. Its automatic `0327` preflight checks only those two database
+facts, so a no-key deployment does not need to invent a Nautilus replica. For
+each later active Intent, the Nautilus strategy subscribes only to that exact
+instrument and the adapter converts only a real `QuoteTick`; the provider-neutral
+Trading validator owns side-aware bid/ask semantics plus code-owned
+receive/event/source-latency/future-skew, monotonicity, midpoint-spread, and
+reference-drift ceilings. Q1 computes quantity; the existing Intent row
+atomically freezes `SubmissionFenceV1` (deterministic client identity, exact
+quantity, and a Trading-owned frozen/versioned Q1 audit). The App bridge carries
+that typed value, and Trading storage maps its fields explicitly while checking
+intent, instrument, side, stage, and reason against the durable row. Only after
+that commit does the strategy reread and validate Q2. Accepted Q2 evidence
+commits before the provider write; rejected Q2 becomes a typed, durable
+fenced-no-submit terminal. A failed Q2 projection sends nothing, leaving the
+fence for query-first recovery. The pinned Binance market and public WebSocket
+reconnect callbacks each increment an in-process generation and clear the active
 Intent quote; a tick delivered in the new generation is required before quote
 authority can resume. No quote tick is written to PostgreSQL, and quote state is
 neither binding readiness nor a global readiness claim.

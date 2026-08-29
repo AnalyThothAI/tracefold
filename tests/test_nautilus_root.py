@@ -47,7 +47,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
             captured["config"] = config
             captured["loop"] = loop
             self.trader = FakeTrader()
-            self.kernel = SimpleNamespace(data_engine=SimpleNamespace(check_connected=lambda: True))
+            self.kernel = SimpleNamespace()
             self.is_running = False
             self._stopped = asyncio.Event()
 
@@ -179,7 +179,9 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     }
     assert captured["bridge_settings"] is settings
     assert captured["bridge_capability_snapshot_sha256"] == (None if snapshot_missing else "c" * 64)
-    assert captured["data_factory"] == (root.BINANCE, root.BinanceLiveDataClientFactory)
+    data_name, data_factory = captured["data_factory"]  # type: ignore[misc]
+    assert data_name == root.BINANCE
+    assert issubclass(data_factory, root.BinanceLiveDataClientFactory)
     assert captured["exec_factory"] == (root.BINANCE, root.BinanceLiveExecClientFactory)
     strategy_args = captured["strategy_args"]
     assert isinstance(strategy_args, dict)
@@ -209,17 +211,48 @@ def test_nautilus_probe_is_bound_to_its_one_internal_port() -> None:
     assert server.config.port == 8767
 
 
-def test_quote_stream_monitor_requires_a_new_tick_generation_after_reconnect() -> None:
+def test_binance_reconnect_callbacks_advance_quote_generation_before_resnapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from tracefold.app.nautilus import root
 
-    monitor = root._QuoteStreamMonitor()
+    calls: list[str] = []
 
-    assert monitor.observe(False) == root.QuoteStreamChanged(connected=False, generation=0)
-    assert monitor.observe(False) is None
-    assert monitor.observe(True) == root.QuoteStreamChanged(connected=True, generation=1)
-    assert monitor.observe(True) is None
-    assert monitor.observe(False) == root.QuoteStreamChanged(connected=False, generation=1)
-    assert monitor.observe(True) == root.QuoteStreamChanged(connected=True, generation=2)
+    async def original() -> None:
+        calls.append("resnapshot")
+
+    market = SimpleNamespace(_handler_reconnect=original)
+    public = SimpleNamespace(_handler_reconnect=original)
+    client = SimpleNamespace(_ws_client=market, _ws_public_client=public)
+    monkeypatch.setattr(root.BinanceLiveDataClientFactory, "create", lambda **_kwargs: client)
+    queues = root.strategy_queues()
+    factory = root._quote_stream_data_client_factory(queues)
+    callback_loop = asyncio.new_event_loop()
+    try:
+        assert (
+            factory.create(
+                loop=callback_loop,
+                name="BINANCE",
+                config=object(),
+                msgbus=object(),
+                cache=object(),
+                clock=object(),
+            )
+            is client
+        )
+    finally:
+        callback_loop.close()
+
+    async def reconnect_both() -> None:
+        await market._handler_reconnect()
+        calls.append("market-returned")
+        await public._handler_reconnect()
+
+    asyncio.run(reconnect_both())
+
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=1)
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=2)
+    assert calls == ["resnapshot", "market-returned", "resnapshot"]
 
 
 def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(

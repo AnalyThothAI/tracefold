@@ -38,6 +38,11 @@ from tracefold.trading.contracts import (
     TradingCaseManifest,
 )
 from tracefold.trading.policy import CAPITAL_POLICY
+from tracefold.trading.quote_authority import (
+    ExecutionQuoteRejectionV1,
+    ExecutionQuoteSnapshotV1,
+    QuoteStage,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -171,27 +176,30 @@ def _allow_entry(connection: Any) -> None:
     )
 
 
-def _accepted_q1(intent: TradeIntent, *, evaluated_at_ms: int) -> dict[str, str | int]:
-    price = str(intent.reference_price)
-    return {
-        "snapshot_version": "execution_quote_snapshot_v1",
-        "stage": "Q1",
-        "reason": "accepted",
-        "instrument_id": intent.instrument_id,
-        "side": "buy",
-        "side_price": price,
-        "bid": price,
-        "ask": price,
-        "ts_event_ns": evaluated_at_ms * 1_000_000,
-        "ts_init_ns": evaluated_at_ms * 1_000_000,
-        "evaluated_at_ns": evaluated_at_ms * 1_000_000,
-        "stream_generation": 1,
-        "receive_age_ns": 0,
-        "event_age_ns": 0,
-        "source_latency_ns": 0,
-        "spread_bps": "0",
-        "reference_drift_bps": "0",
-    }
+def _accepted_q1(
+    intent: TradeIntent,
+    *,
+    evaluated_at_ms: int,
+    stage: QuoteStage = "Q1",
+) -> ExecutionQuoteSnapshotV1:
+    return ExecutionQuoteSnapshotV1(
+        stage=stage,
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        side_price=intent.reference_price,
+        bid=intent.reference_price,
+        ask=intent.reference_price,
+        ts_event_ns=evaluated_at_ms * 1_000_000,
+        ts_init_ns=evaluated_at_ms * 1_000_000,
+        evaluated_at_ns=evaluated_at_ms * 1_000_000,
+        stream_generation=1,
+        receive_age_ns=0,
+        event_age_ns=0,
+        source_latency_ns=0,
+        spread_bps=Decimal(0),
+        reference_drift_bps=Decimal(0),
+    )
 
 
 def _fence(
@@ -1051,7 +1059,7 @@ def test_q2_acceptance_preserves_the_fenced_quantity_before_submit(conn: Any) ->
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
-    q2 = {**_accepted_q1(intent, evaluated_at_ms=NOW + 2_000), "stage": "Q2"}
+    q2 = _accepted_q1(intent, evaluated_at_ms=NOW + 2_000, stage="Q2")
 
     authorized = repos.trading.authorize_entry_submission(
         intent.intent_id,
@@ -1094,13 +1102,15 @@ def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
-    q2: dict[str, str | int] = {
-        "snapshot_version": "execution_quote_rejection_v1",
-        "stage": "Q2",
-        "reason": "quote_receive_stale",
-        "evaluated_at_ns": (NOW + 3_001) * 1_000_000,
-        "receive_age_ns": 2_001_000_000,
-    }
+    q2 = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_receive_stale",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 3_001) * 1_000_000,
+        receive_age_ns=2_001_000_000,
+    )
 
     rejected = repos.trading.record_fenced_quote_no_submit(
         intent.intent_id,
@@ -1132,6 +1142,48 @@ def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
         is None
     )
     conn.commit()
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        {"intent_id": "f" * 64},
+        {"instrument_id": "BTCUSDT-PERP.BINANCE"},
+        {"side": "sell"},
+        {"stage": "Q1"},
+        {"reason": "quote_missing"},
+    ),
+    ids=("intent", "instrument", "side", "stage", "reason"),
+)
+def test_repository_rejects_quote_audit_that_does_not_match_the_durable_intent(
+    conn: Any,
+    change: dict[str, str],
+) -> None:
+    _case(conn)
+    intent = _intent()
+    repos = repositories_for_connection(conn)
+    assert repos.trading.insert_intent(intent) is True
+    _allow_entry(conn)
+    fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
+    assert fenced is not None and fenced.entry_client_order_id is not None
+    audit = ExecutionQuoteRejectionV1(
+        stage="Q2",
+        reason="quote_receive_stale",
+        intent_id=intent.intent_id,
+        instrument_id=intent.instrument_id,
+        side="buy",
+        evaluated_at_ns=(NOW + 3_001) * 1_000_000,
+    ).model_copy(update=change)
+
+    with pytest.raises(ValueError, match="entry_quote_audit_invalid"):
+        repos.trading.record_fenced_quote_no_submit(
+            intent.intent_id,
+            entry_client_order_id=fenced.entry_client_order_id,
+            reason_code="quote_receive_stale",
+            q2_evidence=audit,
+            now_ms=NOW + 3_001,
+        )
+    conn.rollback()
 
 
 def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fence(conn: Any) -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from decimal import Decimal
 from typing import Any, Final, Literal, Self
@@ -25,6 +24,7 @@ from .execution_policy import (
     TARGET_NOTIONAL_CEILING_USD,
     deterministic_client_order_id,
 )
+from .quote_authority import ExecutionQuoteAuditV1, QuoteRejectionReason
 
 TRADE_INTENT_VERSION: Final[Literal["trade_intent_v2"]] = "trade_intent_v2"
 BINANCE_USDM_DEMO: Final[Literal["BINANCE_USDM_DEMO"]] = "BINANCE_USDM_DEMO"
@@ -49,35 +49,23 @@ ACTIVE_INTENT_STATES: Final[tuple[IntentExecutionState, ...]] = (
     "OPEN_PROTECTED",
     "MANUAL_REVIEW",
 )
-IntentReasonCode = Literal[
-    "intent_expired",
-    "runtime_not_ready",
-    "external_exposure",
-    "blacklisted",
-    "capability_mismatch",
-    "market_unacceptable",
-    "quantity_unexecutable",
-    "risk_denied",
-    "quote_missing",
-    "quote_type_invalid",
-    "quote_instrument_mismatch",
-    "quote_book_invalid",
-    "quote_side_unsupported",
-    "quote_intent_not_active",
-    "quote_intent_expired",
-    "quote_clock_invalid",
-    "quote_receive_stale",
-    "quote_event_stale",
-    "quote_source_latency_exceeded",
-    "quote_future_skew",
-    "quote_event_out_of_order",
-    "quote_spread_exceeded",
-    "quote_reference_drift_exceeded",
-    "entry_outcome_unknown",
-    "protection_unproven",
-    "close_outcome_unknown",
-    "operator_intervention",
-]
+IntentReasonCode = (
+    Literal[
+        "intent_expired",
+        "runtime_not_ready",
+        "external_exposure",
+        "blacklisted",
+        "capability_mismatch",
+        "market_unacceptable",
+        "quantity_unexecutable",
+        "risk_denied",
+        "entry_outcome_unknown",
+        "protection_unproven",
+        "close_outcome_unknown",
+        "operator_intervention",
+    ]
+    | QuoteRejectionReason
+)
 ManualReviewReason = Literal[
     "entry_outcome_unknown",
     "protection_unproven",
@@ -86,30 +74,18 @@ ManualReviewReason = Literal[
 ]
 _CURRENCY_RE = re.compile(r"^[A-Z0-9]{1,12}$")
 _DECIMAL_STRING_RE = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
-RejectedReason = Literal[
-    "runtime_not_ready",
-    "external_exposure",
-    "blacklisted",
-    "capability_mismatch",
-    "market_unacceptable",
-    "quantity_unexecutable",
-    "risk_denied",
-    "quote_missing",
-    "quote_type_invalid",
-    "quote_instrument_mismatch",
-    "quote_book_invalid",
-    "quote_side_unsupported",
-    "quote_intent_not_active",
-    "quote_intent_expired",
-    "quote_clock_invalid",
-    "quote_receive_stale",
-    "quote_event_stale",
-    "quote_source_latency_exceeded",
-    "quote_future_skew",
-    "quote_event_out_of_order",
-    "quote_spread_exceeded",
-    "quote_reference_drift_exceeded",
-]
+RejectedReason = (
+    Literal[
+        "runtime_not_ready",
+        "external_exposure",
+        "blacklisted",
+        "capability_mismatch",
+        "market_unacceptable",
+        "quantity_unexecutable",
+        "risk_denied",
+    ]
+    | QuoteRejectionReason
+)
 
 
 def executable_instrument_id(instrument: InstrumentRef) -> str:
@@ -301,8 +277,8 @@ class IntentOutcome(BaseModel):
     entry_client_order_id: str | None = None
     entry_fenced_at_ms: int | None = None
     submission_quantity: Decimal | None = None
-    entry_quote_q1: dict[str, str | int] | None = None
-    entry_quote_q2: dict[str, str | int] | None = None
+    entry_quote_q1: ExecutionQuoteAuditV1 | None = None
+    entry_quote_q2: ExecutionQuoteAuditV1 | None = None
     entry_submitted_at_ms: int | None = None
     entry_accepted_at_ms: int | None = None
     stop_client_order_id: str | None = None
@@ -325,25 +301,6 @@ class IntentOutcome(BaseModel):
     realized_pnl_currency: str | None = None
     commissions_by_currency: dict[str, str] | None = None
     updated_at_ms: int
-
-    @field_validator("entry_quote_q1", "entry_quote_q2")
-    @classmethod
-    def validate_entry_quote_audit(
-        cls,
-        value: dict[str, str | int] | None,
-    ) -> dict[str, str | int] | None:
-        if value is None:
-            return None
-        if value.get("snapshot_version") not in {
-            "execution_quote_snapshot_v1",
-            "execution_quote_rejection_v1",
-        }:
-            raise ValueError("intent_entry_quote_audit_version_invalid")
-        if value.get("stage") not in {"Q1", "Q2"} or not isinstance(value.get("reason"), str):
-            raise ValueError("intent_entry_quote_audit_shape_invalid")
-        if len(json.dumps(value, sort_keys=True, separators=(",", ":"))) > 2_048:
-            raise ValueError("intent_entry_quote_audit_too_large")
-        return value
 
     @field_validator("commissions_by_currency")
     @classmethod
