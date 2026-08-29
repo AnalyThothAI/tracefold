@@ -347,6 +347,25 @@ def test_the_gate_surface_names_a_research_only_source_and_links_a_case_without_
         assert retired not in decision
 
 
+def test_the_gate_surface_keeps_a_retired_capability_row_readable(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    api, trading = client
+    monkeypatch.setattr(
+        trading,
+        "gate_decisions_since",
+        lambda **_kwargs: [_gate_row(status="EXPIRED", stage="capability", reason="capability_absent")],
+    )
+
+    response = api.get("/api/trading/gate", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    decision = response.json()["data"]["decisions"][0]
+    assert (decision["gate_status"], decision["gate_stage"], decision["gate_reason"]) == (
+        "EXPIRED",
+        "capability",
+        "capability_absent",
+    )
+
+
 def test_one_source_can_be_asked_about_by_event_id_and_an_unanswerable_lane_says_so(client) -> None:
     api, trading = client
     data = api.get("/api/trading/gate/evt-oi-hl", params={"token": TOKEN, "lane": "oi"}).json()["data"]

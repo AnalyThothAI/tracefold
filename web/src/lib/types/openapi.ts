@@ -2324,7 +2324,7 @@ export interface components {
             /** Gate Retryable */
             gate_retryable?: boolean | null;
             /** Gate Stage */
-            gate_stage?: ("source" | "venue" | "eligibility" | "catalog" | "routing" | "market_context" | "freeze") | null;
+            gate_stage?: ("source" | "venue" | "eligibility" | "capability" | "catalog" | "routing" | "market_context" | "freeze") | null;
             /** Gate Status */
             gate_status?: ("DEFERRED" | "REJECTED" | "RESEARCH_ONLY" | "CASE_CREATED" | "EXPIRED") | null;
             /** Gate Version */

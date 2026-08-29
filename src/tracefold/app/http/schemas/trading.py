@@ -19,8 +19,9 @@ from pydantic import Field
 from .common import ExactApiSchema
 
 GateStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
-# `routing` is retained for rows written before #331; the current stages are the other five.
-GateStage = Literal["source", "venue", "eligibility", "catalog", "routing", "market_context", "freeze"]
+# `capability` and `routing` are read-only history from earlier Admission contracts. Current writers
+# use the remaining stages, and the 0327 database trigger rejects every new `capability` byte.
+GateStage = Literal["source", "venue", "eligibility", "capability", "catalog", "routing", "market_context", "freeze"]
 
 
 # ---------------------------------------------------------------------------- Decision / Capital / binding runtime
