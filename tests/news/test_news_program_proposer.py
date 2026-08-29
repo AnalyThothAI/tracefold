@@ -102,3 +102,76 @@ def test_the_brief_tells_the_writer_it_is_replacing_the_whole_instruction() -> N
     assert "a shorter instruction that lost a" in brief and "calibration is a regression" in brief
     # And it no longer carries a copy of the prompt: that is the component text itself.
     assert "RULEPACK" not in brief and "LEARNEDSTRATEGY" not in brief
+
+
+def test_proposer_prices_instruction_growth_during_selection() -> None:
+    """#334: the offline gate's token constraint, delivered while the writer is still in the loop.
+
+    #199's first ADVANCE scored +2.60 and died at the release gate for +4.7KB of instruction — nothing in
+    GEPA's world had said bytes cost anything. The budget makes the first oversized proposal come back as
+    a re-ask that names the numbers, so the reflection model compresses instead of the run wasting four
+    hours to learn the same thing.
+    """
+
+    lm = _ScriptedReflectionLM(
+        [
+            f"```\n{'Add a well-meant but long clarification. ' * 40}\n```",  # safe, but over seed+budget
+            "```\nMerge the two overlapping magnitude rules into one sentence.\n```",  # compressed
+        ]
+    )
+    proposer = InstructionProposer(
+        reflection_lm=lm,
+        seed_instructions={"event_semantics": "Seed rule. " * 30},
+        max_growth_tokens=50,
+    )
+    updated = proposer(
+        candidate={"event_semantics": _CURRENT["event_semantics"]},
+        reflective_dataset={"event_semantics": _EXAMPLES},
+        components_to_update=["event_semantics"],
+    )
+
+    assert proposer.rejections == ["news_program_instruction_growth_budget"]
+    assert len(lm.prompts) == 2
+    assert "news_program_instruction_growth_budget" in lm.prompts[1]
+    assert "per-call tokens" in lm.prompts[1], "the re-ask must name the release gate's reason, not just a code"
+    assert updated["event_semantics"].startswith("Merge the two overlapping magnitude rules")
+
+
+def test_growth_budget_is_anchored_to_the_seed_not_the_current_candidate() -> None:
+    """An anchor that moved with each accepted round would let the allowance ratchet upward."""
+
+    seed = "Seed rule. " * 30  # ~90 estimated tokens
+    grown_candidate = "Previously accepted growth. " * 80  # far past seed + 50 already
+    shorter_than_candidate = "```\n" + "Still too long for the seed budget. " * 40 + "\n```"
+
+    lm = _ScriptedReflectionLM([shorter_than_candidate, shorter_than_candidate])
+    proposer = InstructionProposer(
+        reflection_lm=lm,
+        seed_instructions={"event_semantics": seed},
+        max_growth_tokens=50,
+    )
+    updated = proposer(
+        candidate={"event_semantics": grown_candidate},
+        reflective_dataset={"event_semantics": _EXAMPLES},
+        components_to_update=["event_semantics"],
+    )
+
+    # Shorter than the candidate it replaces, yet rejected twice: the budget reads the seed, not the drift.
+    assert updated == {}
+    assert proposer.rejections == ["news_program_instruction_growth_budget"]
+
+
+def test_without_seed_instructions_only_the_safety_bounds_apply() -> None:
+    """Direct constructions (tests, probes) opt in to the budget; `run_gepa` always supplies the seeds."""
+
+    long_but_valid = "```\n" + "A long yet lawful instruction. " * 200 + "\n```"
+    lm = _ScriptedReflectionLM([long_but_valid])
+    proposer = InstructionProposer(reflection_lm=lm)
+    updated = proposer(
+        candidate={"event_semantics": _CURRENT["event_semantics"]},
+        reflective_dataset={"event_semantics": _EXAMPLES},
+        components_to_update=["event_semantics"],
+    )
+
+    assert proposer.rejections == []
+    assert updated["event_semantics"].startswith("A long yet lawful instruction.")

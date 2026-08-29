@@ -29,7 +29,7 @@ import math
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -44,7 +44,7 @@ from ..program.artifact import (
 )
 from ..program.graph import NewsSemanticProgram
 from ..program.identity import EXECUTION_ENVELOPE_SHA256
-from ..program.runtime import PredictorName
+from ..program.runtime import PredictorName, _estimated_tokens
 from ..program.transport import (
     ChatCompletionsPredictorAdapter,
     PredictorAdapter,
@@ -202,6 +202,14 @@ Rules for what you write:
 """
 
 
+# The offline release gate refuses a candidate whose mean per-case tokens grow more than 10% over stable.
+# #199's first ADVANCE died exactly there: +2.60 selection points, +4.7KB of instruction, rejected after a
+# four-hour run — because nothing in GEPA's world said bytes cost anything. ~10% of a baseline case is about
+# 800 estimated tokens, and the instruction rides every event_semantics call, so this budget prices the
+# growth during selection, where the reflection model can still compress, instead of at release (#334).
+INSTRUCTION_GROWTH_BUDGET_TOKENS: Final[int] = 800
+
+
 class InstructionProposer:
     """A `ProposalFn` that asks for a complete replacement instruction and applies the code-owned bounds.
 
@@ -212,11 +220,24 @@ class InstructionProposer:
     an input to that.
     """
 
-    def __init__(self, *, reflection_lm: Any) -> None:
+    def __init__(
+        self,
+        *,
+        reflection_lm: Any,
+        seed_instructions: Mapping[str, str] | None = None,
+        max_growth_tokens: int = INSTRUCTION_GROWTH_BUDGET_TOKENS,
+    ) -> None:
         # Injected rather than resolved from ambient framework state. `dspy.GEPA` invoked a custom proposer
         # inside `dspy.context(lm=reflection_lm)`, so the previous version reached into `dspy.settings` to
         # find the budgeted endpoint — which meant the proposer only worked inside that context manager.
         self._reflection_lm = reflection_lm
+        # The growth budget is anchored to the *seed* instruction, never the current candidate: an anchor
+        # that moved with each accepted round would let the allowance ratchet upward across a run. Only
+        # components with a seed are budgeted; `run_gepa` supplies both, so the production path always is.
+        self._seed_tokens: dict[str, int] = {
+            component: _estimated_tokens(text) for component, text in dict(seed_instructions or {}).items()
+        }
+        self._max_growth_tokens = int(max_growth_tokens)
         self.calls = 0
         self.components_seen: list[str] = []
         self.rejections: list[str] = []
@@ -259,32 +280,54 @@ class InstructionProposer:
                 },
             )
             text = str(proposal.get("new_instruction") or "").strip()
-            rejection = _instruction_rejection(text)
-            if rejection is not None:
+            rejected = self._rejection(component, text)
+            if rejected is not None:
                 # Validate here, where the model that wrote the text is still in the loop.
                 #
                 # A rejected instruction never reaches a provider, so the reflective dataset for the next
                 # round carries the *previous* candidate's outputs and the metric's repair instruction is
                 # real but unreachable. It can only be delivered by asking again, here, with the code.
-                self.rejections.append(rejection)
+                code, guidance = rejected
+                self.rejections.append(code)
                 retry = InstructionProposalSignature.run(
                     lm=self._reflection_lm,
                     input_dict={
                         "current_instruction_doc": (
-                            f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n"
-                            f"Code-owned instruction safety rejected it: {rejection}.\n"
-                            "Keep it valid NFC, non-empty, and under 32768 bytes."
+                            f"{doc}\n\n===== YOUR PREVIOUS PROPOSAL WAS REJECTED =====\n{guidance}"
                         ),
                         "dataset_with_feedback": examples,
                         "prompt_template": None,
                     },
                 )
                 text = str(retry.get("new_instruction") or "").strip()
-                if _instruction_rejection(text) is not None:
+                if self._rejection(component, text) is not None:
                     continue
             if text:
                 updated[component] = text
         return updated
+
+    def _rejection(self, component: str, text: str) -> tuple[str, str] | None:
+        """The (code, re-ask guidance) this text is refused with, or `None`. Safety first, then the budget."""
+
+        code = _instruction_rejection(text)
+        if code is not None:
+            return code, (
+                f"Code-owned instruction safety rejected it: {code}.\n"
+                "Keep it valid NFC, non-empty, and under 32768 bytes."
+            )
+        seed = self._seed_tokens.get(component)
+        if seed is not None:
+            budget = seed + self._max_growth_tokens
+            grown = _estimated_tokens(text)
+            if grown > budget:
+                return "news_program_instruction_growth_budget", (
+                    f"news_program_instruction_growth_budget: {grown} estimated tokens against a budget of "
+                    f"{budget} (seed {seed} + headroom {self._max_growth_tokens}).\n"
+                    "The offline release gate refuses a candidate whose per-call tokens grow more than 10%, "
+                    "however well it scores. Compress rather than cut substance: merge overlapping rules and "
+                    "drop restatements of what the instruction already says."
+                )
+        return None
 
 
 def _instruction_rejection(text: str) -> str | None:
@@ -556,7 +599,10 @@ def run_gepa(
 
     metric = bind_metric(judge)
     metric_receipt = _metric_receipt(metric, review_rubric_version=review_rubric_version)
-    proposer = InstructionProposer(reflection_lm=reflection_lm)
+    proposer = InstructionProposer(
+        reflection_lm=reflection_lm,
+        seed_instructions={component: base_program.instruction_for(component) for component in COMPONENTS},
+    )
     gepa_adapter = NewsGepaAdapter(
         adapter=task_adapter,
         metric=metric,
