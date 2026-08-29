@@ -26,7 +26,10 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
   ).toBe(true);
 
   const feedResponse = await feedResponsePromise;
-  expect(feedResponse.ok()).toBe(true);
+  const feedFailure = feedResponse.ok()
+    ? ""
+    : `Initial News feed failed: status=${feedResponse.status()} url=${feedResponse.url()} body=${await feedResponse.text()}`;
+  expect(feedResponse.ok(), feedFailure).toBe(true);
   expect(new URL(feedResponse.url()).origin).toBe(new URL(documentResponse?.url() ?? "").origin);
   const feed = asObject(await feedResponse.json());
   const feedData = asObject(feed.data);

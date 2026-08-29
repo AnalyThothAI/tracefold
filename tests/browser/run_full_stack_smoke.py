@@ -108,6 +108,9 @@ def main() -> int:
                 },
                 check=False,
             )
+            if result.returncode != 0:
+                print(f"browser smoke Workers log:\n{_log(worker_log)}", file=sys.stderr)
+                print(f"browser smoke FastAPI log:\n{_log(serve_log)}", file=sys.stderr)
             if result.returncode == 0:
                 _assert_runtime_ready(
                     (

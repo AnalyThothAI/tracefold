@@ -58,7 +58,7 @@ class ServeDatabase:
         )
         pool = create_pool(
             dsn,
-            min_size=1,
+            min_size=_SERVE_POOL_SIZE,
             max_size=_SERVE_POOL_SIZE,
             connect_timeout_seconds=postgres.connect_timeout_seconds,
             application_name="tracefold_serve",
