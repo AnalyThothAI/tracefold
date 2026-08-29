@@ -320,8 +320,10 @@ def task_surface_for_path(path: str) -> str:
     if normalized.startswith("web/"):
         return "frontend"
     _, _, requires_full = _classify_path(normalized)
-    if requires_full or normalized.startswith((".github/", "tests/", "scripts/")):
+    if requires_full or normalized.startswith((".github/", "scripts/")):
         return "CI/evidence"
+    if normalized.startswith("tests/"):
+        return "test module"
     if normalized.startswith("src/") and normalized.endswith(".py"):
         return "pure Python"
     if normalized.endswith(".md") and normalized.startswith(("docs/", "notebooks/", "README")):

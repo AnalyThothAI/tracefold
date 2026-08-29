@@ -18,7 +18,9 @@ else:
 
 _BEGIN = "<!-- BEGIN SHARED AGENT ROUTER -->"
 _END = "<!-- END SHARED AGENT ROUTER -->"
-_SURFACES = frozenset({"docs-only", "pure Python", "PostgreSQL", "frontend", "CI/evidence", "deploy/capital"})
+_SURFACES = frozenset(
+    {"docs-only", "pure Python", "PostgreSQL", "frontend", "test module", "CI/evidence", "deploy/capital"}
+)
 
 
 def _shared_block(source: str) -> str:
@@ -79,7 +81,7 @@ def _identity_errors(root: Path, *, changed_path: str, tested_sha: str, base_sha
 
 def _plan_route_errors(surface: str, plan: dict[str, Any]) -> list[str]:
     required_jobs = {job for job, required in plan["jobs"].items() if required}
-    expected_jobs = {
+    expected_jobs_by_surface = {
         "docs-only": {"quality-static"},
         "pure Python": {"quality-static", "python-hermetic", "postgres-behavior", "runtime-process"},
         "PostgreSQL": {
@@ -92,7 +94,19 @@ def _plan_route_errors(surface: str, plan: dict[str, Any]) -> list[str]:
         "frontend": {"quality-static", "frontend"},
         "CI/evidence": set(ci_plan.JOB_LANES),
         "deploy/capital": set(ci_plan.JOB_LANES),
-    }[surface]
+    }
+    if surface == "test module":
+        allowed_test_jobs = (
+            {"quality-static", "python-hermetic"},
+            {"quality-static", "postgres-behavior"},
+            {"quality-static", "migration"},
+            {"quality-static", "runtime-process"},
+            {"quality-static", "frontend"},
+        )
+        if bool(plan["full"]) or required_jobs not in allowed_test_jobs:
+            return ["route_plan_mismatch:test module"]
+        return []
+    expected_jobs = expected_jobs_by_surface[surface]
     expects_full = surface in {"CI/evidence", "deploy/capital"}
     if bool(plan["full"]) != expects_full or required_jobs != expected_jobs:
         return [f"route_plan_mismatch:{surface}"]

@@ -136,6 +136,7 @@ def test_agent_task_router_executes_the_complete_task_matrix_without_conflict() 
                 "browser",
             },
         ),
+        "tests/news/test_news_v3_pure.py": ("test module", {"quality-static", "python-hermetic"}),
         ".github/workflows/ci.yml": ("CI/evidence", set(evidence.REQUIRED_LANES)),
         "docs/DEVELOPMENT.md": ("CI/evidence", set(evidence.REQUIRED_LANES)),
         "src/tracefold/trading/__init__.py": ("deploy/capital", set(evidence.REQUIRED_LANES)),

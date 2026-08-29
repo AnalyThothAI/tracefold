@@ -35,6 +35,7 @@ Tracefold is one Python service and CLI that persists audited News and Trading f
 | pure Python | relevant Architecture section; Development | `make sync` | focused pytest; `make test-fast` | quality + hermetic + owner PostgreSQL/runtime lanes |
 | PostgreSQL | Architecture DB section; Operations; Development | `make sync`; isolated PostgreSQL | focused real-PostgreSQL tests | quality + hermetic + postgres/migration/runtime lanes |
 | frontend | Frontend; Contracts | `npm ci` in `web/` | focused Vitest; affected lint/type/build | quality + frontend lanes |
+| test module | relevant production seam; Development | dependencies for its stable owner lane | focused module | quality + stable owner lane |
 | CI/evidence | Development Verification Evidence Contract | `make sync`; Node only for affected harness/toolchain | trust-root and focused contract tests | full |
 | deploy/capital | Operations; Security; relevant Architecture section and Issue | full task bootstrap | affected production seam | full plus live receipt |
 
