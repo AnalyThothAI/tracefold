@@ -13,10 +13,9 @@ Two conventions carried over from News on purpose:
 **The #331 vocabulary.** One word, one meaning, and the writer and every read surface use the same
 one:
 
-    Source        a persisted, citable market fact. The live trigger is a Binance OI frame and
-                  nothing else.
+    Source        a persisted, citable provider-native OI market fact.
     Admission     the durable Gate answer taken *before* a Case exists.
-    RESEARCH_ONLY a legitimate research source with no live capital authority (Hyperliquid).
+    RESEARCH_ONLY a legacy terminal archive value; current writers never produce it.
     Case          a frozen candidate that passed live Admission and may run the capital policy.
     Decision      the one terminal business answer about a Case: NO_TRADE, BLOCKED, INTENT_EMITTED.
     Intent        the immutable capital request handed to Nautilus. Not an order.
@@ -41,9 +40,8 @@ from typing import Any, Final, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout or the pure policy changes shape: a Case frozen under one
-# version is not comparable with a Case frozen under another. v8 is #350's no-key hard cut: a Case
-# pins the credential-free public catalogue it resolved from, never an execution capability that
-# requires a configured binding and belongs to #355.
+# version is not comparable with a Case frozen under another. v9 is #376's source-native dual-binding
+# hard cut: the Case pins the source venue and the matching provider-native public catalogue.
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v9"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
@@ -80,9 +78,15 @@ class VenueBindingRuntimeV1:
     credential_fingerprint: str | None
     runtime_state: Literal["faulted", "ready", "stale", "starting", "stopped"]
     account_state: Literal["exposure_present", "reconciled_flat", "unknown"]
+    account_generation: int
     catalog_state: Literal["error", "missing", "ready", "stale"]
     catalog_snapshot_sha256: str | None
     catalog_captured_at_ms: int | None
+    capability_state: Literal["error", "missing", "ready", "stale"]
+    capability_snapshot_sha256: str | None
+    capability_compiled_at_ms: int | None
+    capability_compile_error: str | None
+    execution_binding_sha256: str | None
     heartbeat_at_ms: int | None
     reason: str | None
     updated_at_ms: int
@@ -173,11 +177,6 @@ class InstrumentCandidateRow(TypedDict):
 # the writer only ever produces `oi`.
 TriggerKind = Literal["oi"]
 ExchangeId = Literal["binance", "hyperliquid"]
-# The one venue that may carry live capital. Hyperliquid is `RESEARCH_ONLY`: a legitimate source of
-# facts with no capital authority, and the Gate says so before a Case exists rather than letting the
-# Intent writer discover it four stages later.
-LIVE_EXCHANGE_ID: Final[ExchangeId] = "binance"
-LIVE_VENUE: Final = "binance.perp"
 PolicyDecision = Literal["no_trade", "long"]
 
 
@@ -283,6 +282,7 @@ class InstrumentRef(_Frozen):
     """
 
     exchange_id: ExchangeId
+    binding: VenueBinding
     venue: str
     provider_symbol: str
     base_symbol: str
@@ -373,7 +373,7 @@ class CapitalDecision(_Frozen):
     checks: tuple[PolicyCheck, ...]
     policy_id: str
     # Required, and always the deciding policy's own version. It defaulted to a separate
-    # `trading_capital_policy_v2` constant, so one Case row said `binance_oi_smart_money_long_v2` in
+    # `trading_capital_policy_v2` constant, so one legacy Case row carried two conflicting identities in
     # `strategy_version` and something else in `policy_checks.policy_version` — two names for one
     # version in one row, on the surface whose whole job is being readable against the exact identity
     # that decided it.
@@ -463,8 +463,6 @@ class TradingCaseManifest(_Frozen):
 
 __all__ = [
     "CURRENT_TERMINAL_STATES",
-    "LIVE_EXCHANGE_ID",
-    "LIVE_VENUE",
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "Bar",

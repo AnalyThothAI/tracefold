@@ -10,35 +10,30 @@ Intent" from "no Case", and a failed request fell through an empty array into a 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from decimal import Decimal
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.trading_v3_fixtures import trade_intent
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
 from tracefold.trading.contracts import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
 
 TOKEN = "trading-contract-token"
 NOW = 1_790_000_000_000
-POLICY_ID = "binance_oi_smart_money_long_v2"
+POLICY_ID = "source_native_oi_smart_money_long_v3"
 
 
 def _intent(**overrides: Any) -> dict[str, Any]:
-    row = {
-        "intent_id": "intent-sol",
-        "intent_version": "trade_intent_v2",
-        "case_id": "case-sol",
-        "case_manifest_sha256": "a" * 64,
-        "execution_environment": "BINANCE_USDM_DEMO",
-        "execution_capability_snapshot_sha256": "c" * 64,
-        "blacklist_revision_at_emission": 3,
-        "blacklist_snapshot_sha256_at_emission": "d" * 64,
-        "instrument_id": "SOLUSDT-PERP.BINANCE",
-        "side": "long",
-        "target_notional_usd": "10",
-        "reference_price": "200",
-        "valid_until_ms": NOW + 60_000,
+    intent = trade_intent(
+        case_id="case-sol",
+        case_manifest_sha256="a" * 64,
+        created_at_ms=NOW - 180_000,
+        reference_price=Decimal("200"),
+    )
+    row = intent.model_dump(mode="python") | {
         "execution_state": "PENDING",
         "execution_phase": None,
         "terminal_outcome": None,
@@ -56,9 +51,7 @@ def _intent(**overrides: Any) -> dict[str, Any]:
         "realized_pnl_amount": None,
         "realized_pnl_currency": None,
         "commissions_by_currency": {},
-        "created_at_ms": NOW - 180_000,
         "updated_at_ms": NOW - 60_000,
-        "underlying_key": "crypto:SOL",
         "strategy_id": POLICY_ID,
         "strategy_version": POLICY_ID,
         "primary_source_key": "oi:evt-oi-sol:oi_signal_v1",
@@ -155,9 +148,15 @@ class _Trading:
                 credential_fingerprint=None,
                 runtime_state="stopped",
                 account_state="unknown",
+                account_generation=0,
                 catalog_state="ready",
                 catalog_snapshot_sha256=digest,
                 catalog_captured_at_ms=NOW - 1_000,
+                capability_state="missing",
+                capability_snapshot_sha256=None,
+                capability_compiled_at_ms=None,
+                capability_compile_error=None,
+                execution_binding_sha256=None,
                 heartbeat_at_ms=None,
                 reason="credentials_unconfigured",
                 updated_at_ms=NOW,
@@ -287,15 +286,17 @@ def test_status_never_reads_credentials_or_calls_a_provider(
     assert response.json()["data"]["decision"]["state"] == "RUNNING"
 
 
-def test_intents_publish_execution_lifecycle_and_never_a_case_list(client) -> None:
+def test_intents_publish_current_v3_execution_lifecycle_and_never_a_case_list(client) -> None:
     api, _ = client
     data = api.get("/api/trading/intents", params={"token": TOKEN}).json()["data"]
 
     assert data["complete"] is True
     intent = data["intents"][0]
     assert intent["execution_state"] == "PENDING"
-    assert intent["intent_version"] == "trade_intent_v2"
+    assert intent["intent_version"] == "trade_intent_v3"
     assert (intent["instrument_id"], intent["side"]) == ("SOLUSDT-PERP.BINANCE", "long")
+    assert (intent["source_venue"], intent["binding"]) == ("binance.usdm", "BINANCE_USDM")
+    assert intent["target_notional"] == "10"
     assert intent["policy_id"] == POLICY_ID
     assert data["state_counts_24h"] == {"PENDING": 1}
     # The mixed shape is gone in the same change rather than kept as a second synonym.
@@ -331,7 +332,7 @@ def test_cases_publish_the_frozen_evidence_each_decision_was_taken_on(client) ->
         assert retired not in case
 
 
-def test_the_gate_surface_names_a_research_only_source_and_links_a_case_without_inferring_one(client) -> None:
+def test_the_gate_surface_keeps_a_terminal_research_only_archive_row_readable(client) -> None:
     api, _ = client
     data = api.get("/api/trading/gate", params={"token": TOKEN}).json()["data"]
 
@@ -341,7 +342,11 @@ def test_the_gate_surface_names_a_research_only_source_and_links_a_case_without_
     assert decision["research_only"] is True
     assert decision["case_id"] is None
     assert data["status_counts_24h"]["RESEARCH_ONLY"] == 4
-    assert data["config"]["live_exchange_id"] == "binance"
+    assert data["config"]["source_native_bindings"] == {
+        "BINANCE_USDM": "binance.usdm",
+        "HYPERLIQUID_PERP": "hyperliquid.perp",
+    }
+    assert "live_exchange_id" not in data["config"]
     assert "venue_priority" not in data["config"]
     for retired in ("execution_state", "policy_reason", "state"):
         assert retired not in decision

@@ -25,7 +25,7 @@ from typing import Any, cast
 from ..admission import AdmissionRow
 from ..blacklist import Blacklist
 from ..catalog import VenueInstrumentCatalogSnapshotV1
-from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest
+from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest, VenueBinding
 from ..intent import ACTIVE_INTENT_STATES
 from .sql_values import _dumps
 
@@ -45,8 +45,8 @@ class CapitalAuthority:
     active_underlyings: frozenset[str]
     underlyings_in_flight: frozenset[str]
     cased_source_keys: frozenset[str]
-    binding: BindingAuthority
-    catalog: VenueInstrumentCatalogSnapshotV1 | None
+    bindings: Mapping[VenueBinding, BindingAuthority]
+    catalogs: Mapping[VenueBinding, VenueInstrumentCatalogSnapshotV1 | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,25 +101,32 @@ class LaneStorage:
             "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
             "FROM trading_symbol_blacklist ORDER BY base_symbol"
         ).fetchall()
-        binding_row = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
-        if binding_row is None:
-            raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
-        catalog = cast(Any, self).active_venue_catalog(binding="BINANCE_USDM")
+        closed_bindings: tuple[VenueBinding, ...] = ("BINANCE_USDM", "HYPERLIQUID_PERP")
+        binding_rows = {
+            binding: cast(Any, self).binding_runtime(binding=binding, now_ms=now_ms) for binding in closed_bindings
+        }
+        if any(row is None for row in binding_rows.values()):
+            raise RuntimeError("trading_binding_runtime_missing")
+        catalogs = {binding: cast(Any, self).active_venue_catalog(binding=binding) for binding in closed_bindings}
         return CapitalAuthority(
             capital_control=str(runtime["control"]),
             blacklist=Blacklist.from_rows([dict(row) for row in blacklist_rows]),
             active_underlyings=frozenset(str(row["underlying_key"]) for row in active),
             underlyings_in_flight=frozenset(str(row["underlying_key"]) for row in in_flight),
             cased_source_keys=frozenset(str(row["primary_source_key"]) for row in cased),
-            binding=BindingAuthority(
-                credential_state=binding_row.credential_state,
-                runtime_state=binding_row.runtime_state,
-                account_state=binding_row.account_state,
-                catalog_state=binding_row.catalog_state,
-                catalog_snapshot_sha256=binding_row.catalog_snapshot_sha256,
-                reason=binding_row.reason,
-            ),
-            catalog=catalog,
+            bindings={
+                binding: BindingAuthority(
+                    credential_state=row.credential_state,
+                    runtime_state=row.runtime_state,
+                    account_state=row.account_state,
+                    catalog_state=row.catalog_state,
+                    catalog_snapshot_sha256=row.catalog_snapshot_sha256,
+                    reason=row.reason,
+                )
+                for binding, row in binding_rows.items()
+                if row is not None
+            },
+            catalogs=catalogs,
         )
 
     # ------------------------------------------------------------------ freeze
@@ -252,9 +259,9 @@ class LaneStorage:
         runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
         if runtime is None:
             raise RuntimeError("trading_runtime_state_missing")
-        binding = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
+        binding = cast(Any, self).binding_runtime(binding=manifest.instrument.binding, now_ms=now_ms)
         if binding is None:
-            raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
+            raise RuntimeError(f"trading_binding_runtime_missing:{manifest.instrument.binding}")
         if runtime["control"] == "PAUSED":
             reason = "capital_paused"
         elif runtime["control"] == "CLOSE_ONLY":

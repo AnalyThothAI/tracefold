@@ -11,7 +11,8 @@ from unittest.mock import Mock
 import pytest
 from psycopg import OperationalError
 
-from tracefold.app.nautilus.database import NautilusDatabaseBridge
+from tests.trading_v3_fixtures import trade_intent
+from tracefold.app.nautilus.database import NautilusDatabaseBridge as _NautilusDatabaseBridge
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
@@ -32,11 +33,18 @@ from tracefold.integrations.nautilus.messages import (
     StopSubmitted,
     strategy_queues,
 )
-from tracefold.trading import BlacklistSnapshotV1, IntentOutcome, TradeIntent, deterministic_client_order_id
+from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 from tracefold.trading.quote_authority import ExecutionQuoteRejectionV1, ExecutionQuoteSnapshotV1
 from tracefold.trading.storage.intents import EntryFence
 
 NOW_MS = 1_900_000_000_000
+
+
+class NautilusDatabaseBridge(_NautilusDatabaseBridge):
+    """Test constructor with the one binding exercised by this module made explicit."""
+
+    def __init__(self, settings: Any, queues: Any, **kwargs: Any) -> None:
+        super().__init__(settings, queues, binding="BINANCE_USDM", **kwargs)
 
 
 def _settings() -> Any:
@@ -44,16 +52,12 @@ def _settings() -> Any:
 
 
 def _intent() -> TradeIntent:
-    return TradeIntent.create(
+    return trade_intent(
         case_id="case-1",
         case_manifest_sha256="1" * 64,
-        execution_capability_snapshot_sha256="2" * 64,
-        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
-        instrument_id="SOLUSDT-PERP.BINANCE",
-        underlying_key="crypto:SOL",
         created_at_ms=NOW_MS,
         reference_price=Decimal("10000"),
-        target_notional_usd=Decimal("10"),
+        target_notional=Decimal("10"),
     )
 
 
@@ -103,6 +107,11 @@ class _Repositories:
     def __init__(self) -> None:
         self.order: list[str] = []
         self.trading = Mock()
+        self.trading.binding_execution_runtime.return_value = {
+            "control": "PAUSED",
+            "capability_snapshot_sha256": None,
+        }
+        self.trading.active_intent.return_value = None
 
     @contextmanager
     def transaction(self):
@@ -122,7 +131,7 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.set_nautilus_bootstrap_account_zero.return_value = True
+    repos.trading.set_binding_bootstrap_account_zero.return_value = True
 
     assert bridge._handle_event(
         repos,
@@ -132,7 +141,8 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
         ),
     )
 
-    repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
+    repos.trading.set_binding_bootstrap_account_zero.assert_called_once_with(
+        binding="BINANCE_USDM",
         verified_at_ms=NOW_MS - 1,
         now_ms=NOW_MS,
         expected_capability_snapshot_sha256=None,
@@ -149,7 +159,7 @@ def test_failed_bootstrap_clears_the_proof_before_projecting_unexpected_exposure
         now_ms=lambda: NOW_MS,
     )
     repos = _Repositories()
-    repos.trading.set_nautilus_bootstrap_account_zero.return_value = True
+    repos.trading.set_binding_bootstrap_account_zero.return_value = True
 
     assert bridge._handle_event(
         repos,
@@ -160,7 +170,8 @@ def test_failed_bootstrap_clears_the_proof_before_projecting_unexpected_exposure
         ReadinessChanged(ready=False, reason="external_exposure", unexpected_exposure=True),
     )
 
-    repos.trading.set_nautilus_bootstrap_account_zero.assert_called_once_with(
+    repos.trading.set_binding_bootstrap_account_zero.assert_called_once_with(
+        binding="BINANCE_USDM",
         verified_at_ms=None,
         now_ms=NOW_MS,
         expected_capability_snapshot_sha256="c" * 64,
@@ -175,7 +186,10 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
     repos.trading.active_intent.return_value = (intent, outcome)
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.mark_intent_adopted.return_value = outcome
 
     bridge._cycle(repos)
@@ -187,7 +201,7 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
 
     assert queues.commands.get_nowait() == AdoptIntent(intent=intent, outcome=outcome)
     assert queues.commands.empty()
-    assert repos.trading.set_nautilus_runtime.call_count == 3
+    assert repos.trading.set_binding_execution_runtime.call_count == 3
 
 
 def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> None:
@@ -199,17 +213,17 @@ def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> Non
         now_ms=lambda: NOW_MS,
     )
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {
+    repos.trading.binding_execution_runtime.return_value = {
         "control": "PAUSED",
-        "active_capability_snapshot_sha256": "3" * 64,
+        "capability_snapshot_sha256": "3" * 64,
     }
 
     with pytest.raises(RuntimeError, match="nautilus_capability_snapshot_changed"):
         bridge._cycle(repos)
 
-    repos.trading.nautilus_runtime_state.assert_called_once_with(for_update=True)
+    repos.trading.binding_execution_runtime.assert_called_once_with(binding="BINANCE_USDM", for_update=True)
     repos.trading.active_intent.assert_not_called()
-    repos.trading.set_nautilus_runtime.assert_not_called()
+    repos.trading.set_binding_execution_runtime.assert_not_called()
 
 
 def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> None:
@@ -589,7 +603,10 @@ def test_projection_event_is_retried_after_a_transient_database_disconnect() -> 
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.active_intent.return_value = None
     stop_id = deterministic_client_order_id(intent.intent_id, "stop")
     submitted = StopSubmitted(
@@ -628,7 +645,10 @@ def test_expiry_projection_failure_blocks_admission_until_the_same_row_updates()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: intent.valid_until_ms)
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.active_intent.return_value = (intent, _outcome(intent))
     expired = _outcome(
         intent,
@@ -654,7 +674,10 @@ def test_successful_expiry_cannot_clear_a_blocked_execution_projection() -> None
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: intent.valid_until_ms)
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.active_intent.return_value = (intent, _outcome(intent))
     repos.trading.expire_unfenced_intent.return_value = _outcome(
         intent,
@@ -680,8 +703,11 @@ def test_successful_expiry_cannot_clear_a_blocked_execution_projection() -> None
 
     assert bridge._pending_event == submitted
     assert bridge.readiness()["reason"] == "execution_projection_rejected"
-    assert repos.trading.set_nautilus_runtime.call_args.kwargs["ready"] is False
-    assert repos.trading.set_nautilus_runtime.call_args.kwargs["readiness_reason"] == "execution_projection_rejected"
+    assert repos.trading.set_binding_execution_runtime.call_args.kwargs["ready"] is False
+    assert (
+        repos.trading.set_binding_execution_runtime.call_args.kwargs["readiness_reason"]
+        == "execution_projection_rejected"
+    )
 
 
 def test_logically_rejected_projection_blocks_admission_and_retries_in_place() -> None:
@@ -689,7 +715,10 @@ def test_logically_rejected_projection_blocks_admission_and_retries_in_place() -
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.active_intent.return_value = None
     repos.trading.record_stop_submitted.return_value = None
     repos.trading.intent_outcome.return_value = _outcome(
@@ -719,7 +748,7 @@ def test_logically_rejected_projection_blocks_admission_and_retries_in_place() -
     assert bridge.readiness()["ok"] is False
     assert bridge.readiness()["reason"] == "execution_projection_rejected"
     assert bridge._pending_event == submitted
-    assert repos.trading.set_nautilus_runtime.call_count == 2
+    assert repos.trading.set_binding_execution_runtime.call_count == 2
 
 
 def test_ambiguous_commit_is_accepted_when_the_same_projection_is_already_durable() -> None:
@@ -727,7 +756,10 @@ def test_ambiguous_commit_is_accepted_when_the_same_projection_is_already_durabl
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.nautilus_runtime_state.return_value = {"control": "RUNNING"}
+    repos.trading.binding_execution_runtime.return_value = {
+        "control": "RUNNING",
+        "capability_snapshot_sha256": None,
+    }
     repos.trading.active_intent.return_value = None
     stop_id = deterministic_client_order_id(intent.intent_id, "stop")
     repos.trading.record_stop_submitted.return_value = None

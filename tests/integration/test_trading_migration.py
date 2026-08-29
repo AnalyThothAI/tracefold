@@ -902,6 +902,88 @@ def test_0329_adds_the_bounded_submission_fence_contract() -> None:
             conn.close()
 
 
+def test_0330_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> None:
+    """#376 PR 1 cannot orphan a live V1/V2 Intent; a terminal archive may cross."""
+
+    conn: Any | None = None
+    intent_id = "9" * 64
+    try:
+        _fresh_schema_at("20260829_0329")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.execute(
+            """
+            INSERT INTO trading_execution_capability_snapshots (
+              snapshot_sha256, created_at_ms, execution_environment,
+              included_count, excluded_count, payload
+            ) VALUES (%s, %s, 'BINANCE_USDM_DEMO', 1, 0, '{}'::jsonb)
+            """,
+            ("4" * 64, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
+              strategy_config_digest, primary_source_key, supplemental_source_keys,
+              manifest, manifest_sha256, state, policy_decision, policy_reason,
+              capital_disposition, capital_reason, observed_at_ms, created_at_ms, updated_at_ms
+            ) VALUES ('v3-cutover-case', 'crypto:SOL', 'oi', 'binance_oi_smart_money_long_v2',
+                      'binance_oi_smart_money_long_v2', %s, 'source-v3-cutover', '[]'::jsonb,
+                      '{}'::jsonb, %s, 'INTENT_EMITTED', 'long', 'smart_money_momentum_long',
+                      'allowed', NULL, %s, %s, %s)
+            """,
+            ("0" * 64, "3" * 64, NOW, NOW, NOW),
+        )
+        conn.execute(
+            """
+            INSERT INTO trading_intents (
+              intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+              execution_environment, execution_capability_snapshot_sha256,
+              blacklist_revision_at_emission, blacklist_snapshot_sha256_at_emission,
+              blacklist_snapshot_payload_at_emission, instrument_id, underlying_key, side,
+              created_at_ms, valid_until_ms, reference_price, target_notional_usd,
+              stop_loss_bps, max_holding_ms, max_entry_drift_bps, max_spread_bps,
+              execution_state
+            ) VALUES (%s, 'trade_intent_v2', 'v3-cutover-case', %s, %s,
+                      'BINANCE_USDM_DEMO', %s, 0, %s,
+                      '{"snapshot_version": "blacklist_snapshot_v1"}'::jsonb,
+                      'SOLUSDT-PERP.BINANCE', 'crypto:SOL', 'long', %s, %s, 100, 10,
+                      200, 180000, 25, 30, 'PENDING')
+            """,
+            (intent_id, "3" * 64, INTENT_POLICY_SHA256, "4" * 64, "5" * 64, NOW, NOW + 60_000),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match="trading_v3_contract_cutover_legacy_obligation"):
+            _upgrade("20260830_0330")
+
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            "UPDATE trading_intents SET execution_state = 'TERMINAL', "
+            "terminal_outcome = 'EXPIRED', reason_code = 'intent_expired', updated_at_ms = %s "
+            "WHERE intent_id = %s",
+            (NOW + 1, intent_id),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("20260830_0330")
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
+        assert (
+            conn.execute("SELECT intent_version FROM trading_intents WHERE intent_id = %s", (intent_id,)).fetchone()[
+                "intent_version"
+            ]
+            == "trade_intent_v2"
+        )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def test_0327_preserves_historical_capability_stage_but_rejects_new_alias_writes() -> None:
     conn: Any | None = None
     insert_decision = """

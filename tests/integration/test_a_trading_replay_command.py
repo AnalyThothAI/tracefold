@@ -14,8 +14,8 @@ import yaml
 from psycopg import conninfo, sql
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tests.trading_v3_fixtures import binance_capability, binance_catalog
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.trading import ExecutionCapabilitySnapshotV1, ExecutionInstrumentCapabilityV1
 
 pytestmark = pytest.mark.integration
 
@@ -30,27 +30,11 @@ def conn(postgres_module_clone_dsn: str):
         "WHERE id = 1",
         (now_ms,),
     )
-    snapshot = ExecutionCapabilitySnapshotV1(
-        app_revision="test-revision",
-        app_image_digest="test-image",
-        nautilus_wheel_identity="test-wheel",
-        news_universe_digest="a" * 64,
-        provider_universe_digest="b" * 64,
-        included={
-            "SOLUSDT-PERP.BINANCE": ExecutionInstrumentCapabilityV1(
-                instrument_id="SOLUSDT-PERP.BINANCE",
-                native_symbol="SOLUSDT",
-                underlying_key="crypto:SOL",
-                quote_currency="USDT",
-                price_precision=2,
-                size_precision=3,
-                price_increment="0.01",
-                size_increment="0.001",
-                min_quantity="0.001",
-                min_notional="5",
-            )
-        },
-        excluded={},
+    catalog = binance_catalog(captured_at_ms=now_ms)
+    snapshot = binance_capability(catalog=catalog, app_revision="test-revision")
+    repositories_for_connection(connection).trading.store_venue_catalog_snapshot(
+        snapshot=catalog,
+        now_ms=now_ms,
     )
     assert repositories_for_connection(connection).trading.append_and_activate_execution_capability_snapshot(
         snapshot,

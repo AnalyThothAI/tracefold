@@ -2182,6 +2182,8 @@ export interface components {
         };
         /** TradingBindingRuntimeData */
         TradingBindingRuntimeData: {
+            /** Account Generation */
+            account_generation: number;
             /**
              * Account State
              * @enum {string}
@@ -2192,6 +2194,17 @@ export interface components {
              * @enum {string}
              */
             binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /** Capability Compile Error */
+            capability_compile_error?: string | null;
+            /** Capability Compiled At Ms */
+            capability_compiled_at_ms?: number | null;
+            /** Capability Snapshot Sha256 */
+            capability_snapshot_sha256?: string | null;
+            /**
+             * Capability State
+             * @enum {string}
+             */
+            capability_state: "missing" | "ready" | "stale" | "error";
             /** Catalog Captured At Ms */
             catalog_captured_at_ms?: number | null;
             /** Catalog Snapshot Sha256 */
@@ -2208,6 +2221,8 @@ export interface components {
              * @enum {string}
              */
             credential_state: "unconfigured" | "configured" | "invalid";
+            /** Execution Binding Sha256 */
+            execution_binding_sha256?: string | null;
             /** Heartbeat At Ms */
             heartbeat_at_ms?: number | null;
             /** Reason */
@@ -2343,12 +2358,14 @@ export interface components {
         TradingGateConfigData: {
             /** Config Digest */
             config_digest: string;
-            /** Live Exchange Id */
-            live_exchange_id: string;
             /** Max Age Ms */
             max_age_ms: number;
             /** Min Oi Value Usd */
             min_oi_value_usd: number;
+            /** Source Native Bindings */
+            source_native_bindings: {
+                [key: string]: string;
+            };
             /** Version */
             version: string;
         };
@@ -2503,6 +2520,8 @@ export interface components {
         };
         /** TradingIntentData */
         TradingIntentData: {
+            /** Account Generation */
+            account_generation?: number | null;
             /** Actual Quantity */
             actual_quantity?: string | null;
             /** Avg Entry Price */
@@ -2511,12 +2530,22 @@ export interface components {
             avg_exit_price?: string | null;
             /** Base Symbol */
             base_symbol: string;
+            /** Binding */
+            binding?: ("BINANCE_USDM" | "HYPERLIQUID_PERP") | null;
             /** Blacklist Revision At Emission */
             blacklist_revision_at_emission?: number | null;
             /** Blacklist Snapshot Sha256 At Emission */
             blacklist_snapshot_sha256_at_emission?: string | null;
+            /** Canonical Asset */
+            canonical_asset?: string | null;
+            /** Capability Entry Id */
+            capability_entry_id?: string | null;
+            /** Capital Authorization Receipt Sha256 */
+            capital_authorization_receipt_sha256?: string | null;
             /** Case Id */
             case_id: string;
+            /** Close Leg Id */
+            close_leg_id?: string | null;
             /** Closed At Ms */
             closed_at_ms?: number | null;
             /** Commissions By Currency */
@@ -2525,19 +2554,24 @@ export interface components {
             } | null;
             /** Created At Ms */
             created_at_ms: number;
+            /** Economic Lifecycle Id */
+            economic_lifecycle_id?: string | null;
             /** Entry Fenced At Ms */
             entry_fenced_at_ms?: number | null;
+            /** Entry Leg Id */
+            entry_leg_id?: string | null;
             /** Event Id */
             event_id?: string | null;
+            /** Execution Binding Sha256 */
+            execution_binding_sha256?: string | null;
             /** Execution Capability Snapshot Sha256 */
             execution_capability_snapshot_sha256?: string | null;
-            /**
-             * Execution Environment
-             * @constant
-             */
-            execution_environment: "BINANCE_USDM_DEMO";
+            /** Execution Environment */
+            execution_environment?: "BINANCE_USDM_DEMO" | null;
             /** Execution Phase */
             execution_phase?: ("ENTRY" | "PROTECTION" | "EXIT") | null;
+            /** Execution Policy Sha256 */
+            execution_policy_sha256?: string | null;
             /**
              * Execution State
              * @enum {string}
@@ -2549,11 +2583,17 @@ export interface components {
             instrument_id: string;
             /** Intent Id */
             intent_id: string;
+            /** Intent Policy Sha256 */
+            intent_policy_sha256?: string | null;
             /**
              * Intent Version
              * @enum {string}
              */
-            intent_version: "trade_intent_v1" | "trade_intent_v2";
+            intent_version: "trade_intent_v1" | "trade_intent_v2" | "trade_intent_v3";
+            /** Leverage */
+            leverage?: number | null;
+            /** Max Risk Amount */
+            max_risk_amount?: string | null;
             /** Opened At Ms */
             opened_at_ms?: number | null;
             /** Policy Id */
@@ -2564,6 +2604,14 @@ export interface components {
             protected_at_ms?: number | null;
             /** Protected Quantity */
             protected_quantity?: string | null;
+            /** Protection Contract Sha256 */
+            protection_contract_sha256?: string | null;
+            /** Protection Leg Id */
+            protection_leg_id?: string | null;
+            /** Provider Instrument Id */
+            provider_instrument_id?: string | null;
+            /** Quote Contract Sha256 */
+            quote_contract_sha256?: string | null;
             /** Realized Pnl Amount */
             realized_pnl_amount?: string | null;
             /** Realized Pnl Currency */
@@ -2572,15 +2620,25 @@ export interface components {
             reason_code?: string | null;
             /** Reference Price */
             reference_price: string;
+            /** Risk Currency */
+            risk_currency?: string | null;
+            /** Settlement Asset */
+            settlement_asset?: string | null;
             /**
              * Side
              * @constant
              */
             side: "long";
+            /** Source Identity */
+            source_identity?: string | null;
+            /** Source Venue */
+            source_venue?: ("binance.usdm" | "hyperliquid.perp") | null;
             /** Stop Price */
             stop_price?: string | null;
+            /** Target Notional */
+            target_notional?: string | null;
             /** Target Notional Usd */
-            target_notional_usd: string;
+            target_notional_usd?: string | null;
             /** Terminal Outcome */
             terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
             /** Underlying Key */
@@ -2589,6 +2647,8 @@ export interface components {
             updated_at_ms: number;
             /** Valid Until Ms */
             valid_until_ms: number;
+            /** Venue Catalog Snapshot Sha256 */
+            venue_catalog_snapshot_sha256?: string | null;
         };
         /** TradingIntentsData */
         TradingIntentsData: {

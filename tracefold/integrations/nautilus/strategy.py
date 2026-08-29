@@ -1,4 +1,4 @@
-"""Public-v1 Nautilus adapter for capability-governed Binance Demo intents."""
+"""Nautilus adapter for capability-governed Binance USD-M Production V3 intents."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from nautilus_trader.trading.strategy import Strategy
 
 from tracefold.trading import (
     MAX_RECEIVE_AGE_NS,
-    ExecutionInstrumentCapabilityV1,
+    ExecutionInstrumentCapabilityV2,
     ExecutionQuote,
     ExecutionQuoteRejectionV1,
     ExecutionQuoteSnapshotV1,
@@ -92,7 +92,7 @@ class TracefoldNautilusStrategy(Strategy):
         *,
         engine_identity: str,
         instrument_ids: Sequence[InstrumentId],
-        capabilities: Mapping[str, ExecutionInstrumentCapabilityV1],
+        capabilities: Mapping[str, ExecutionInstrumentCapabilityV2],
         queues: StrategyQueues,
         quote_stream_generation: Callable[[], int],
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
@@ -437,7 +437,7 @@ class TracefoldNautilusStrategy(Strategy):
             bid=validation.bid,
             ask=validation.ask,
             reference_price=intent.reference_price,
-            target_notional=intent.target_notional_usd,
+            target_notional=intent.target_notional,
             size_increment=instrument.size_increment.as_decimal(),
             min_quantity=None if instrument.min_quantity is None else instrument.min_quantity.as_decimal(),
             min_notional=None if instrument.min_notional is None else instrument.min_notional.as_decimal(),

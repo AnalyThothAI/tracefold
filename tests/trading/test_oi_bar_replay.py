@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from tests.trading_v3_fixtures import binance_capability
 from tracefold.app.cli.commands import trading_replay as trading_replay_command
 from tracefold.app.trading_config import capital_lane_config
 from tracefold.integrations.nautilus.replay import run_bar_episode
@@ -12,8 +13,7 @@ from tracefold.integrations.venues import VenueBar
 from tracefold.platform.config.models import Settings
 from tracefold.trading import (
     BlacklistSnapshotV1,
-    ExecutionCapabilitySnapshotV1,
-    ExecutionInstrumentCapabilityV1,
+    ExecutionCapabilitySnapshotV2,
     InstrumentRef,
     ReplayBarV1,
     replay,
@@ -58,29 +58,8 @@ def _source() -> OiTradeCandidate:
     )
 
 
-def _snapshot() -> ExecutionCapabilitySnapshotV1:
-    return ExecutionCapabilitySnapshotV1(
-        app_revision="revision-1",
-        app_image_digest="image-1",
-        nautilus_wheel_identity="wheel-1",
-        news_universe_digest="1" * 64,
-        provider_universe_digest="2" * 64,
-        included={
-            INSTRUMENT_ID: ExecutionInstrumentCapabilityV1(
-                instrument_id=INSTRUMENT_ID,
-                native_symbol="TUTUSDT",
-                underlying_key="crypto:TUT",
-                quote_currency="USDT",
-                price_precision=4,
-                size_precision=0,
-                price_increment="0.0001",
-                size_increment="1",
-                min_quantity="1",
-                min_notional="5",
-            )
-        },
-        excluded={},
-    )
+def _snapshot() -> ExecutionCapabilitySnapshotV2:
+    return binance_capability(symbol="TUTUSDT")
 
 
 def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) -> None:
@@ -89,6 +68,7 @@ def test_market_slice_excludes_a_candle_not_closed_at_captured_now(monkeypatch) 
         instrument=InstrumentRef(
             exchange_id="binance",
             venue="binance.perp",
+            binding="BINANCE_USDM",
             provider_symbol="TUTUSDT",
             base_symbol="TUT",
             instrument_class="crypto",
@@ -122,6 +102,7 @@ def _directional_market_slice() -> ReplayMarketSlice:
         instrument=InstrumentRef(
             exchange_id="binance",
             venue="binance.perp",
+            binding="BINANCE_USDM",
             provider_symbol="TUTUSDT",
             base_symbol="TUT",
             instrument_class="crypto",

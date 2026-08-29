@@ -239,7 +239,7 @@ with no version and no frozen evidence. Unknown retired keys fail strict
 settings validation. The capital lane's poll cadence is App-owned and the
 Nautilus cadence is code-owned.
 
-The one production policy, `binance_oi_smart_money_long_v2`, is
+The one production policy, `source_native_oi_smart_money_long_v3`, is
 code-owned and frozen onto every Case it decides, together with the per-check
 evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
 It answers `long` or `no_trade` only; it cannot express a permission, an
@@ -952,7 +952,7 @@ reader/writer.
   changes the other binding. There is no operator refresh command and no
   execution authorization in this operation.
 - `tracefold trading replay-oi --days 7 --strategy
-  binance_oi_smart_money_long_v2 --venues binance.perp,hl.perp --fidelity bar_v1`
+  source_native_oi_smart_money_long_v3 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
   reports decision, independent capital admission, execution/coverage,
   gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The

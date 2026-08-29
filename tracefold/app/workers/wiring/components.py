@@ -8,8 +8,13 @@ from tracefold.app.trading_bindings import project_binding_credentials
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
+from tracefold.app.workers.wiring.execution_capabilities import ExecutionCapabilityCompiler
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
-from tracefold.app.workers.wiring.trading import _wire_capital_lane, _wire_venue_catalog
+from tracefold.app.workers.wiring.trading import (
+    _wire_capital_lane,
+    _wire_execution_capability_compiler,
+    _wire_venue_catalog,
+)
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
@@ -26,6 +31,7 @@ class _Components:
     news_bus: RabbitMQBus | None
     capital_lane: CapitalLane | None = None
     venue_catalog: VenueCatalog | None = None
+    execution_capability_compiler: ExecutionCapabilityCompiler | None = None
     telemetry: TelemetryRegistry | None = None
 
 
@@ -66,10 +72,12 @@ async def _wire_components(
         if not updated:
             raise RuntimeError("trading_decision_runtime_missing")
     venue_catalog = _wire_venue_catalog(db=db, telemetry=telemetry)
+    execution_capability_compiler = _wire_execution_capability_compiler(db=db)
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
         capital_lane=capital_lane,
         venue_catalog=venue_catalog,
+        execution_capability_compiler=execution_capability_compiler,
         telemetry=telemetry,
     )

@@ -15,11 +15,10 @@ from psycopg import OperationalError
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.trading_v3_fixtures import binance_binding, binance_capability, binance_catalog, trade_intent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading import (
     BlacklistSnapshotV1,
-    ExecutionCapabilitySnapshotV1,
-    ExecutionInstrumentCapabilityV1,
     IntentOutcome,
     ReplayReceiptV1,
     TradeIntent,
@@ -27,7 +26,6 @@ from tracefold.trading import (
 )
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.capital_lane import CapitalLane, CapitalLaneConfig
-from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
 from tracefold.trading.contracts import (
     CaseState,
     FrozenMarketContext,
@@ -52,57 +50,12 @@ NOW = 1_900_000_000_000
 # The bundle epoch the fixture Cases are frozen under, and the one the runner is composed with.
 NEWS_GENERATION = "bundle_00000000"
 AUTHORITY: dict[str, BlacklistSnapshotV1] = {}
-CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
-    app_revision="test-revision",
-    app_image_digest="test-image",
-    nautilus_wheel_identity="test-wheel",
-    news_universe_digest="a" * 64,
-    provider_universe_digest="b" * 64,
-    included={
-        symbol: ExecutionInstrumentCapabilityV1(
-            instrument_id=symbol,
-            native_symbol=symbol.removesuffix("-PERP.BINANCE"),
-            underlying_key=f"crypto:{symbol.removesuffix('USDT-PERP.BINANCE')}",
-            quote_currency="USDT",
-            price_precision=2,
-            size_precision=3,
-            price_increment="0.01",
-            size_increment="0.001",
-            min_quantity="0.001",
-            min_notional="5",
-        )
-        for symbol in (
-            "BTCUSDT-PERP.BINANCE",
-            "DOGEUSDT-PERP.BINANCE",
-            "ETHUSDT-PERP.BINANCE",
-            "SOLUSDT-PERP.BINANCE",
-        )
-    },
-    excluded={},
-)
-CATALOG_SNAPSHOT = build_venue_catalog_snapshot(
-    binding="BINANCE_USDM",
+CATALOG_SNAPSHOT = binance_catalog(
     captured_at_ms=NOW,
-    stale_after_ms=86_400_000,
-    instruments=tuple(
-        VenueInstrumentCatalogEntryV1(
-            provider_instrument_id=f"{symbol}USDT",
-            provider_symbol=f"{symbol}USDT",
-            venue="binance.usdm",
-            canonical_asset=symbol,
-            canonical_namespace="crypto",
-            product_kind="linear_perpetual",
-            active=True,
-            settlement_asset="USDT",
-            margin_asset="USDT",
-            price_increment="0.01",
-            size_increment="0.001",
-            min_quantity="0.001",
-            raw_metadata_sha256=(str(index) * 64),
-        )
-        for index, symbol in enumerate(("BTC", "DOGE", "ETH", "SOL"), start=1)
-    ),
+    symbols=("BTCUSDT", "DOGEUSDT", "ETHUSDT", "SOLUSDT"),
 )
+CAPABILITY_SNAPSHOT = binance_capability(catalog=CATALOG_SNAPSHOT, app_revision="test-revision")
+EXECUTION_BINDING = binance_binding(catalog=CATALOG_SNAPSHOT, capability=CAPABILITY_SNAPSHOT)
 
 
 @pytest.fixture(scope="module")
@@ -115,11 +68,18 @@ def conn(postgres_module_clone_dsn: str):
         "WHERE id = 1",
         (NOW,),
     )
+    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
+    connection.execute(
+        "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', "
+        "credential_state = 'configured', credential_fingerprint = %s, account_generation = 1 "
+        "WHERE binding = 'BINANCE_USDM'",
+        (EXECUTION_BINDING.credential_fingerprint,),
+    )
     assert repos.trading.append_and_activate_execution_capability_snapshot(
         CAPABILITY_SNAPSHOT,
         created_at_ms=NOW,
     )
-    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
+    assert repos.trading.append_and_activate_execution_binding(EXECUTION_BINDING)
     AUTHORITY["blacklist"] = repos.trading.blacklist_snapshot(now_ms=NOW, materialize_expiry=True)
     connection.commit()
     yield connection
@@ -136,8 +96,8 @@ def _case(connection: Any, *, case_id: str = "case-intent-1") -> None:
           strategy_config_digest, primary_source_key, supplemental_source_keys,
           manifest, manifest_sha256, state, policy_decision, policy_reason,
           capital_disposition, capital_reason, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, 'crypto:SOL', 'oi', 'binance_oi_smart_money_long_v2',
-                  'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
+        ) VALUES (%s, 'crypto:SOL', 'oi', 'source_native_oi_smart_money_long_v3',
+                  'source_native_oi_smart_money_long_v3', %s, %s, '[]'::jsonb,
                   '{}'::jsonb, %s, 'RUNNING', 'not_run', 'not_run',
                   'not_applicable', NULL, %s, %s, %s)
         """,
@@ -153,16 +113,16 @@ def _intent(
     created_at_ms: int = NOW,
 ) -> TradeIntent:
     blacklist = AUTHORITY["blacklist"]
-    return TradeIntent.create(
+    return trade_intent(
         case_id=case_id,
         case_manifest_sha256=case_manifest_sha256,
-        execution_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
         blacklist_snapshot=blacklist,
-        instrument_id="SOLUSDT-PERP.BINANCE",
-        underlying_key="crypto:SOL",
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
         created_at_ms=created_at_ms,
         reference_price=Decimal("60000"),
-        target_notional_usd=Decimal("10"),
+        target_notional=Decimal("10"),
     )
 
 
@@ -174,6 +134,7 @@ def _allow_entry(connection: Any) -> None:
          WHERE id = 1
         """
     )
+    _set_binance_binding_flat(connection)
 
 
 def _accepted_q1(
@@ -242,10 +203,26 @@ def _reset_authority(connection: Any) -> None:
         UPDATE trading_binding_runtime
            SET credential_state = 'unconfigured', credential_fingerprint = NULL,
                runtime_state = 'stopped', account_state = 'unknown',
+               capability_state = 'ready', capability_snapshot_sha256 = %s,
+               capability_compiled_at_ms = %s, capability_compile_error = NULL,
+               execution_binding_sha256 = %s,
                heartbeat_at_ms = NULL, reason = 'credentials_unconfigured', updated_at_ms = %s
          WHERE binding = 'BINANCE_USDM'
         """,
-        (NOW,),
+        (CAPABILITY_SNAPSHOT.snapshot_sha256, NOW, EXECUTION_BINDING.binding_sha256, NOW),
+    )
+
+
+def _set_binance_binding_flat(connection: Any, *, runtime_state: str = "ready") -> None:
+    connection.execute(
+        """
+        UPDATE trading_binding_runtime
+           SET credential_state = 'configured', credential_fingerprint = %s,
+               account_generation = 1, runtime_state = %s,
+               account_state = 'reconciled_flat', reason = NULL, updated_at_ms = %s
+         WHERE binding = 'BINANCE_USDM'
+        """,
+        (EXECUTION_BINDING.credential_fingerprint, runtime_state, NOW),
     )
 
 
@@ -315,7 +292,8 @@ def _executable_manifest(
 ) -> TradingCaseManifest:
     selected = instrument or InstrumentRef(
         exchange_id="binance",
-        venue="binance.perp",
+        venue="binance.usdm",
+        binding="BINANCE_USDM",
         provider_symbol="SOLUSDT",
         base_symbol="SOL",
         instrument_class="crypto",
@@ -527,7 +505,8 @@ def test_no_key_lane_persists_long_and_capital_block_without_an_intent(conn: Any
 def test_running_capital_still_blocks_no_key_long_as_credentials_unconfigured(conn: Any) -> None:
     doge = InstrumentRef(
         exchange_id="binance",
-        venue="binance.perp",
+        venue="binance.usdm",
+        binding="BINANCE_USDM",
         provider_symbol="DOGEUSDT",
         base_symbol="DOGE",
         instrument_class="crypto",
@@ -745,174 +724,78 @@ def test_a_case_that_settles_only_to_the_three_current_terminal_states(conn: Any
     conn.rollback()
 
 
-def test_capability_replacement_requires_a_fresh_zero_proof_and_no_nonterminal_intent(conn: Any) -> None:
+def test_capability_activation_requires_paused_flat_and_no_nonterminal_intent(conn: Any) -> None:
     _case(conn)
     repos = repositories_for_connection(conn)
     replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "replacement-revision"})
 
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW - 15_001,),
-    )
-    assert not repos.trading.append_and_activate_execution_capability_snapshot(
-        replacement,
-        created_at_ms=NOW,
-    )
-
-    assert repos.trading.insert_intent(_intent())
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
-    assert not repos.trading.append_and_activate_execution_capability_snapshot(
-        replacement,
-        created_at_ms=NOW,
-    )
-    conn.execute("DELETE FROM trading_intents")
-
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
-    assert (
-        conn.execute(
-            "SELECT count(*) AS n FROM trading_intents WHERE execution_state IN "
-            "('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')"
-        ).fetchone()["n"]
-        == 0
-    )
-    assert repos.trading.append_and_activate_execution_capability_snapshot(
-        replacement,
-        created_at_ms=NOW,
-    )
-    runtime = repos.trading.runtime_state()
-    assert runtime is not None
-    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
-    assert runtime["nautilus_ready"] is False
-    assert runtime["nautilus_readiness_reason"] == "capability_snapshot_changed"
-    _reset_authority(conn)
-
-
-def test_capability_replacement_accepts_a_fresh_zero_claim_recovery_proof(conn: Any) -> None:
-    _case(conn)
-    repos = repositories_for_connection(conn)
-    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "recovered-revision"})
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
-        "nautilus_bootstrap_account_zero_at_ms = NULL WHERE id = 1"
-    )
-    assert not repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=NOW,
-        now_ms=NOW,
-        expected_capability_snapshot_sha256="f" * 64,
-    )
-    assert repos.trading.runtime_state()["nautilus_bootstrap_account_zero_at_ms"] is None
-
-    assert repos.trading.insert_intent(_intent())
-    assert not repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=NOW,
-        now_ms=NOW,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
-    conn.execute("DELETE FROM trading_intents")
-
-    assert repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=NOW,
-        now_ms=NOW,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
-
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
+    _set_binance_binding_flat(conn)
     conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
-    assert repos.trading.insert_intent(_intent())
-    assert repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=None,
-        now_ms=NOW + 1,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
-    assert repos.trading.runtime_state()["nautilus_bootstrap_account_zero_at_ms"] is None
-    conn.execute("DELETE FROM trading_intents")
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
+
     conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
-    assert repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=NOW + 2,
-        now_ms=NOW + 2,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
+    assert repos.trading.insert_intent(_intent())
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
+    conn.execute("DELETE FROM trading_intents")
 
-    assert repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW + 2)
-    runtime = repos.trading.runtime_state()
+    assert repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
+    runtime = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW)
     assert runtime is not None
-    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
-    assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
+    assert runtime.capability_snapshot_sha256 == replacement.snapshot_sha256
+    assert runtime.capability_state == "ready"
+    assert runtime.execution_binding_sha256 is None
+    assert runtime.runtime_state == "stale"
+    assert runtime.reason == "capability_snapshot_changed"
     _reset_authority(conn)
 
 
-def test_capability_replacement_accepts_zero_proof_across_bounded_provider_load(conn: Any) -> None:
-    _case(conn)
-    repos = repositories_for_connection(conn)
-    replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "provider-load-revision"})
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
-        "nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
-
-    assert repos.trading.append_and_activate_execution_capability_snapshot(
-        replacement,
-        created_at_ms=NOW + 60_000,
-    )
-    _reset_authority(conn)
-
-
-def test_initial_capability_activation_also_requires_a_fresh_zero_proof(conn: Any) -> None:
+def test_initial_capability_activation_requires_the_exact_catalog_and_flat_account(conn: Any) -> None:
     repos = repositories_for_connection(conn)
     initial = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "initial-revision"})
+    conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
     conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', active_capability_snapshot_sha256 = NULL, "
-        "active_capability_included_count = 0, nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = NULL, "
-        "nautilus_bootstrap_account_zero_at_ms = NULL WHERE id = 1"
-    )
-
-    assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
-    assert repos.trading.runtime_state()["active_capability_snapshot_sha256"] is None
-
-    conn.execute(
-        "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
-        (NOW - 300_001,),
+        "UPDATE trading_binding_runtime SET capability_state = 'missing', "
+        "capability_snapshot_sha256 = NULL, capability_compiled_at_ms = NULL, "
+        "execution_binding_sha256 = NULL, account_state = 'unknown' "
+        "WHERE binding = 'BINANCE_USDM'"
     )
     assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
 
-    conn.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = true, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
+    _set_binance_binding_flat(conn, runtime_state="stopped")
+    other_catalog = binance_catalog(captured_at_ms=NOW + 1, symbols=("BTCUSDT",))
+    repos.trading.store_venue_catalog_snapshot(snapshot=other_catalog, now_ms=NOW + 1)
     assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
-
     conn.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = false, "
-        "nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
-        (NOW,),
+        "UPDATE trading_binding_runtime SET catalog_snapshot_sha256 = %s WHERE binding = 'BINANCE_USDM'",
+        (CATALOG_SNAPSHOT.snapshot_sha256,),
     )
     assert repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
-    runtime = repos.trading.runtime_state()
-    assert runtime["active_capability_snapshot_sha256"] == initial.snapshot_sha256
-    assert runtime["nautilus_bootstrap_account_zero_at_ms"] is None
+    assert repos.trading.active_execution_capability_snapshot(binding="BINANCE_USDM") == initial
     _reset_authority(conn)
 
 
-def test_capability_activation_cannot_be_overwritten_by_old_engine_readiness(conn: Any) -> None:
+def test_execution_binding_activation_is_atomic_with_current_generation_and_capability(conn: Any) -> None:
+    _case(conn)
     repos = repositories_for_connection(conn)
+    _set_binance_binding_flat(conn)
+    candidate = EXECUTION_BINDING.model_copy(update={"created_at_ms": NOW + 1})
+    wrong_generation = candidate.model_copy(update={"account_generation": 2, "created_at_ms": NOW + 2})
+
+    assert not repos.trading.append_and_activate_execution_binding(wrong_generation)
+    assert repos.trading.insert_intent(_intent())
+    assert not repos.trading.append_and_activate_execution_binding(candidate)
+    conn.execute("DELETE FROM trading_intents")
+    assert repos.trading.append_and_activate_execution_binding(candidate)
+    assert repos.trading.active_execution_binding(binding="BINANCE_USDM") == candidate
+    _reset_authority(conn)
+
+
+def test_capability_activation_serializes_against_account_exposure(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    _set_binance_binding_flat(conn)
     replacement = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "serialized-replacement"})
-    conn.execute(
-        "UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = true, "
-        "nautilus_unexpected_exposure = false, nautilus_heartbeat_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
     started = Event()
 
     def activate() -> bool:
@@ -931,28 +814,21 @@ def test_capability_activation_cannot_be_overwritten_by_old_engine_readiness(con
     pool = ThreadPoolExecutor(max_workers=1)
     try:
         with conn.transaction():
-            runtime = repos.trading.nautilus_runtime_state(for_update=True)
-            assert runtime is not None
+            conn.execute(
+                "SELECT binding FROM trading_binding_runtime WHERE binding = 'BINANCE_USDM' FOR UPDATE"
+            ).fetchone()
             future = pool.submit(activate)
             assert started.wait(timeout=5)
             with pytest.raises(FutureTimeoutError):
                 future.result(timeout=0.5)
-            repos.trading.set_nautilus_runtime(
-                heartbeat_at_ms=NOW,
-                ready=True,
-                readiness_reason="ready",
-                unexpected_exposure=False,
-                now_ms=NOW,
+            conn.execute(
+                "UPDATE trading_binding_runtime SET account_state = 'exposure_present' WHERE binding = 'BINANCE_USDM'"
             )
-        assert future.result(timeout=5) is True
+        assert future.result(timeout=5) is False
     finally:
         pool.shutdown(wait=True)
 
-    runtime = repos.trading.runtime_state()
-    assert runtime is not None
-    assert runtime["active_capability_snapshot_sha256"] == replacement.snapshot_sha256
-    assert runtime["nautilus_ready"] is False
-    assert runtime["nautilus_readiness_reason"] == "capability_snapshot_changed"
+    assert repos.trading.active_execution_capability_snapshot(binding="BINANCE_USDM") == CAPABILITY_SNAPSHOT
     _reset_authority(conn)
 
 
@@ -1440,6 +1316,15 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
               has_column_privilege('tracefold_nautilus', 'trading_intents', 'case_id', 'UPDATE')
                 AS nautilus_identity_update,
               has_table_privilege('tracefold_nautilus', 'trading_cases', 'UPDATE') AS nautilus_case_update,
+              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'SELECT')
+                AS nautilus_bindings_select,
+              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'INSERT')
+                AS nautilus_bindings_insert,
+              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'DELETE')
+                AS nautilus_bindings_delete,
+              has_column_privilege(
+                'tracefold_nautilus', 'trading_binding_runtime', 'execution_binding_sha256', 'UPDATE'
+              ) AS nautilus_binding_pointer_update,
               has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'id', 'SELECT')
                 AS nautilus_runtime_id_select,
               has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'control', 'SELECT')
@@ -1476,6 +1361,10 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
         "nautilus_execution_update": True,
         "nautilus_identity_update": False,
         "nautilus_case_update": False,
+        "nautilus_bindings_select": True,
+        "nautilus_bindings_insert": True,
+        "nautilus_bindings_delete": False,
+        "nautilus_binding_pointer_update": True,
         "nautilus_runtime_id_select": True,
         "nautilus_control_select": True,
         "nautilus_counter_select": False,
@@ -1520,6 +1409,28 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     conn.rollback()
     conn.execute("RESET ROLE")
     conn.commit()
+
+
+def test_real_nautilus_role_can_append_and_activate_but_not_mutate_a_binding(conn: Any) -> None:
+    _case(conn)
+    _set_binance_binding_flat(conn)
+    candidate = EXECUTION_BINDING.model_copy(update={"created_at_ms": NOW + 10})
+    repos = repositories_for_connection(conn)
+    conn.commit()
+
+    conn.execute("SET ROLE tracefold_nautilus")
+    assert repos.trading.append_and_activate_execution_binding(candidate)
+    conn.commit()
+    assert repos.trading.active_execution_binding(binding="BINANCE_USDM") == candidate
+    with pytest.raises(InsufficientPrivilege):
+        conn.execute(
+            "DELETE FROM trading_execution_bindings WHERE binding_sha256 = %s",
+            (candidate.binding_sha256,),
+        )
+    conn.rollback()
+    conn.execute("RESET ROLE")
+    conn.commit()
+    _reset_authority(conn)
 
 
 def test_unfenced_expiry_is_terminal_and_releases_the_single_active_slot(conn: Any) -> None:
@@ -1788,7 +1699,7 @@ def test_the_case_projection_links_its_intent_without_joining_the_execution_life
     row = next(item for item in rows if item["case_id"] == "case-intent-1")
     assert row["intent_id"] == intent.intent_id
     assert row["state"] == "RUNNING"
-    assert row["strategy_id"] == "binance_oi_smart_money_long_v2"
+    assert row["strategy_id"] == "source_native_oi_smart_money_long_v3"
     for retired in ("execution_state", "terminal_outcome", "reason_code", "intent_version", "mode", "regime"):
         assert retired not in row
 
@@ -1802,8 +1713,8 @@ def _case_without_reset(connection: Any, *, case_id: str) -> None:
           strategy_config_digest, primary_source_key, supplemental_source_keys,
           manifest, manifest_sha256, state, policy_decision, policy_reason,
           capital_disposition, capital_reason, observed_at_ms, created_at_ms, updated_at_ms
-        ) VALUES (%s, 'crypto:BTC', 'oi', 'binance_oi_smart_money_long_v2',
-                  'binance_oi_smart_money_long_v2', %s, %s, '[]'::jsonb,
+        ) VALUES (%s, 'crypto:BTC', 'oi', 'source_native_oi_smart_money_long_v3',
+                  'source_native_oi_smart_money_long_v3', %s, %s, '[]'::jsonb,
                   '{}'::jsonb, %s, 'RUNNING', 'not_run', 'not_run',
                   'not_applicable', NULL, %s, %s, %s)
         """,

@@ -25,11 +25,17 @@ from ..quote_authority import (
 from .sql_values import _dumps
 
 _IMMUTABLE_COLUMNS = """
-intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
-execution_environment, execution_capability_snapshot_sha256,
+intent_id, intent_version, case_id, case_manifest_sha256,
+source_venue, source_identity, canonical_asset, underlying_key, binding, account_generation,
+execution_binding_sha256, venue_catalog_snapshot_sha256, execution_capability_snapshot_sha256,
+capability_entry_id, provider_instrument_id, instrument_id, settlement_asset,
+intent_policy_sha256, execution_policy_sha256, quote_contract_sha256, protection_contract_sha256,
+capital_authorization_receipt_sha256,
 blacklist_revision_at_emission, blacklist_snapshot_sha256_at_emission,
-blacklist_snapshot_payload_at_emission, instrument_id, underlying_key, side, created_at_ms, valid_until_ms,
-reference_price, target_notional_usd, stop_loss_bps, max_holding_ms,
+blacklist_snapshot_payload_at_emission,
+economic_lifecycle_id, entry_leg_id, protection_leg_id, close_leg_id,
+side, leverage, created_at_ms, valid_until_ms,
+reference_price, target_notional, max_risk_amount, risk_currency, stop_loss_bps, max_holding_ms,
 max_entry_drift_bps, max_spread_bps
 """
 _OUTCOME_COLUMNS = """
@@ -43,6 +49,7 @@ position_id, protection_order_id,
 stop_price, opened_at_ms, protected_at_ms, closed_at_ms, flat_verified_at_ms,
 realized_pnl_amount, realized_pnl_currency, commissions_by_currency, updated_at_ms
 """
+_INTENT_OUTCOME_COLUMNS = ", ".join(f"intent.{column.strip()}" for column in _OUTCOME_COLUMNS.split(","))
 
 
 EntryFenceDisposition = Literal["GRANTED", "REFUSED", "UNAVAILABLE"]
@@ -183,20 +190,25 @@ class IntentStorage:
     def insert_intent(self, intent: TradeIntent) -> bool:
         values = intent.model_dump()
         blacklist_snapshot = intent.blacklist_snapshot_payload_at_emission
-        if blacklist_snapshot is None:
-            raise ValueError("new_trade_intent_v1_forbidden")
         values["blacklist_snapshot_payload_at_emission"] = _dumps(blacklist_snapshot.model_dump(mode="json"))
         row = self.conn.execute(
             f"""
             INSERT INTO trading_intents ({_IMMUTABLE_COLUMNS})
             VALUES (
               %(intent_id)s, %(intent_version)s, %(case_id)s, %(case_manifest_sha256)s,
-              %(intent_policy_sha256)s, %(execution_environment)s,
-              %(execution_capability_snapshot_sha256)s, %(blacklist_revision_at_emission)s,
+              %(source_venue)s, %(source_identity)s, %(canonical_asset)s, %(underlying_key)s,
+              %(binding)s, %(account_generation)s, %(execution_binding_sha256)s,
+              %(venue_catalog_snapshot_sha256)s, %(execution_capability_snapshot_sha256)s,
+              %(capability_entry_id)s, %(provider_instrument_id)s, %(instrument_id)s, %(settlement_asset)s,
+              %(intent_policy_sha256)s, %(execution_policy_sha256)s, %(quote_contract_sha256)s,
+              %(protection_contract_sha256)s, %(capital_authorization_receipt_sha256)s,
+              %(blacklist_revision_at_emission)s,
               %(blacklist_snapshot_sha256_at_emission)s,
               %(blacklist_snapshot_payload_at_emission)s::jsonb,
-              %(instrument_id)s, %(underlying_key)s, %(side)s,
-              %(created_at_ms)s, %(valid_until_ms)s, %(reference_price)s, %(target_notional_usd)s,
+              %(economic_lifecycle_id)s, %(entry_leg_id)s, %(protection_leg_id)s, %(close_leg_id)s,
+              %(side)s, %(leverage)s,
+              %(created_at_ms)s, %(valid_until_ms)s, %(reference_price)s, %(target_notional)s,
+              %(max_risk_amount)s, %(risk_currency)s,
               %(stop_loss_bps)s, %(max_holding_ms)s, %(max_entry_drift_bps)s, %(max_spread_bps)s
             )
             ON CONFLICT (intent_id) DO NOTHING
@@ -208,7 +220,8 @@ class IntentStorage:
 
     def intent(self, intent_id: str) -> TradeIntent | None:
         row = self.conn.execute(
-            f"SELECT {_IMMUTABLE_COLUMNS} FROM trading_intents WHERE intent_id = %s",
+            f"SELECT {_IMMUTABLE_COLUMNS} FROM trading_intents "
+            "WHERE intent_id = %s AND intent_version = 'trade_intent_v3'",
             (intent_id,),
         ).fetchone()
         return None if row is None else TradeIntent.model_validate(dict(row))
@@ -222,7 +235,8 @@ class IntentStorage:
 
     def intent_for_case(self, *, case_id: str) -> tuple[TradeIntent, IntentOutcome] | None:
         row = self.conn.execute(
-            f"SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS} FROM trading_intents WHERE case_id = %s",
+            f"SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS} FROM trading_intents "
+            "WHERE case_id = %s AND intent_version = 'trade_intent_v3'",
             (case_id,),
         ).fetchone()
         if row is None:
@@ -240,7 +254,7 @@ class IntentStorage:
             f"""
             SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS}
              FROM trading_intents
-             WHERE execution_state = ANY(%s)
+             WHERE intent_version = 'trade_intent_v3' AND execution_state = ANY(%s)
              ORDER BY created_at_ms, intent_id
              LIMIT 1
                FOR UPDATE SKIP LOCKED
@@ -301,13 +315,14 @@ class IntentStorage:
                    intent.side,
                    intent.valid_until_ms,
                    intent.execution_capability_snapshot_sha256,
-                   runtime.active_capability_snapshot_sha256,
-                   (snapshot.payload -> 'included' ? intent.instrument_id) AS instrument_in_snapshot
+                   binding.capability_snapshot_sha256 AS active_capability_snapshot_sha256,
+                   (snapshot.payload -> 'included' ? intent.capability_entry_id) AS instrument_in_snapshot
               FROM trading_intents intent
-              JOIN trading_runtime_state runtime ON runtime.id = 1
+              JOIN trading_binding_runtime binding ON binding.binding = intent.binding
               LEFT JOIN trading_execution_capability_snapshots snapshot
                 ON snapshot.snapshot_sha256 = intent.execution_capability_snapshot_sha256
              WHERE intent.intent_id = %s
+               AND intent.intent_version = 'trade_intent_v3'
                AND intent.execution_state = 'PENDING'
                AND intent.entry_fenced_at_ms IS NULL
             """,
@@ -386,27 +401,31 @@ class IntentStorage:
                    blacklist_snapshot_payload_at_fence = %(blacklist_payload)s::jsonb,
                    updated_at_ms = %(now)s
               FROM (
-                    SELECT id, control, nautilus_ready, nautilus_unexpected_exposure,
-                           active_capability_snapshot_sha256
+                    SELECT id, control
                       FROM trading_runtime_state
                      WHERE id = 1
                        FOR UPDATE
-                   ) runtime
+                   ) runtime,
+                   trading_binding_runtime binding
              WHERE intent.intent_id = %(intent_id)s
+               AND intent.intent_version = 'trade_intent_v3'
                AND intent.execution_state = 'PENDING'
                AND intent.entry_fenced_at_ms IS NULL
                AND intent.valid_until_ms > %(now)s
                AND runtime.id = 1
                AND runtime.control = 'RUNNING'
-               AND runtime.nautilus_ready
-               AND NOT runtime.nautilus_unexpected_exposure
-               AND intent.execution_capability_snapshot_sha256 = runtime.active_capability_snapshot_sha256
+               AND binding.binding = intent.binding
+               AND binding.runtime_state = 'ready'
+               AND binding.account_state = 'reconciled_flat'
+               AND binding.capability_state = 'ready'
+               AND intent.execution_capability_snapshot_sha256 = binding.capability_snapshot_sha256
+               AND intent.execution_binding_sha256 = binding.execution_binding_sha256
                AND NOT EXISTS (
                      SELECT 1 FROM trading_symbol_blacklist denied
                       WHERE ('crypto:' || denied.base_symbol) = intent.underlying_key
                         AND (denied.expires_at_ms IS NULL OR denied.expires_at_ms > %(now)s)
                    )
-         RETURNING {_OUTCOME_COLUMNS}
+         RETURNING {_INTENT_OUTCOME_COLUMNS}
             """,
             {
                 "intent_id": intent_id,

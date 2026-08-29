@@ -18,8 +18,8 @@ from tracefold.trading.intent import INTENT_POLICY_PAYLOAD, INTENT_POLICY_SHA256
 
 pytestmark = pytest.mark.contract
 
-EXPECTED_VERSION = "trade_intent_policy_v3"
-EXPECTED_SHA256 = "a3d1bca03fd4d47373d3460a0ea684c6c96747755d0600997f37d037994bf65d"
+EXPECTED_VERSION = "trade_intent_policy_v4"
+EXPECTED_SHA256 = "3dd0c0acaf97b8dbeada593625e8709802634b69fc36133fadfd8614a90d3c09"
 
 
 def test_the_execution_policy_identity_is_the_one_this_release_signed_for() -> None:
@@ -27,15 +27,17 @@ def test_the_execution_policy_identity_is_the_one_this_release_signed_for() -> N
     assert INTENT_POLICY_SHA256 == EXPECTED_SHA256
 
 
-def test_the_payload_carries_execution_numbers_and_no_throughput_ceiling() -> None:
-    """#348 removed `max_entries_per_utc_day`. What stays is what one entry may cost."""
+def test_the_payload_carries_source_native_v3_execution_ceilings() -> None:
 
     assert "max_entries_per_utc_day" not in INTENT_POLICY_PAYLOAD
     assert set(INTENT_POLICY_PAYLOAD) == {
         "version",
-        "execution_environment",
+        "bindings",
+        "source_native",
         "side",
-        "target_notional_usd_ceiling",
+        "leverage_ceiling",
+        "global_active_lifecycle_ceiling",
+        "target_notional_ceiling",
         "ttl_ms",
         "stop_loss_bps",
         "max_holding_ms",

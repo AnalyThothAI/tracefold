@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from tracefold.app.workers.wiring import trading as trading_wiring
+from tracefold.app.workers.wiring.execution_capabilities import ExecutionCapabilityCompileError
 from tracefold.integrations.trading_catalog import VenueExpectedError
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.trading.catalog import (
@@ -29,6 +30,21 @@ def _row(instrument_id: str, *, raw: str, error: str | None = None) -> VenueInst
         margin_asset=None if error else "USDT",
         raw_metadata_sha256=canonical_sha256({"raw": raw}),
         normalization_error=error,
+    )
+
+
+def _hyperliquid_row(instrument_id: str, *, raw: str) -> VenueInstrumentCatalogEntryV1:
+    return VenueInstrumentCatalogEntryV1(
+        provider_instrument_id=instrument_id,
+        provider_symbol="BTC",
+        venue="hyperliquid.perp",
+        canonical_asset="BTC",
+        canonical_namespace="main",
+        product_kind="linear_perpetual",
+        active=True,
+        settlement_asset="USDC",
+        margin_asset="USDC",
+        raw_metadata_sha256=canonical_sha256({"raw": raw}),
     )
 
 
@@ -106,3 +122,58 @@ def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_othe
     assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in metrics
     assert 'tracefold_external_data_source_count{name="trading_venue_catalog"} 2.0' in metrics
     assert 'tracefold_external_data_target_count{name="trading_venue_catalog"} 1.0' in metrics
+
+
+def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_venue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compiled: list[str] = []
+    stop = asyncio.Event()
+
+    class Trading:
+        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
+            del snapshot, now_ms
+
+    class Database:
+        async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
+            del timeout_seconds
+            return fn(type("Repositories", (), {"trading": Trading()})())
+
+    class Compiler:
+        async def compile(self, snapshot: Any) -> None:
+            compiled.append(snapshot.binding)
+            if snapshot.binding == "BINANCE_USDM":
+                raise ExecutionCapabilityCompileError(
+                    "execution_capability_compile_failed:BINANCE_USDM:provider_parse_failed"
+                )
+            stop.set()
+
+    async def binance() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        return (_row("BTCUSDT", raw="binance"),)
+
+    async def hyperliquid() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        return (_hyperliquid_row("main:BTC", raw="hyperliquid"),)
+
+    monkeypatch.setattr(trading_wiring, "fetch_binance_usdm_catalog", binance)
+    monkeypatch.setattr(trading_wiring, "fetch_hyperliquid_perp_catalog", hyperliquid)
+    telemetry = TelemetryRegistry()
+    catalog = VenueCatalog(
+        db=Database(),  # type: ignore[arg-type]
+        clock=lambda: 1_900_000_000_000,
+        stale_after_ms=21_600_000,
+        telemetry=telemetry,
+    )
+
+    asyncio.run(
+        trading_wiring.run_venue_catalog(
+            catalog,
+            capability_compiler=Compiler(),  # type: ignore[arg-type]
+            stop_event=stop,
+            period_seconds=0.05,
+        )
+    )
+
+    assert compiled == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in (
+        telemetry.render_prometheus_text()
+    )

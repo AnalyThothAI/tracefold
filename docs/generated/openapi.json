@@ -5026,6 +5026,11 @@
       "TradingBindingRuntimeData": {
         "additionalProperties": false,
         "properties": {
+          "account_generation": {
+            "minimum": 0.0,
+            "title": "Account Generation",
+            "type": "integer"
+          },
           "account_state": {
             "enum": [
               "unknown",
@@ -5041,6 +5046,49 @@
               "HYPERLIQUID_PERP"
             ],
             "title": "Binding",
+            "type": "string"
+          },
+          "capability_compile_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Compile Error"
+          },
+          "capability_compiled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Compiled At Ms"
+          },
+          "capability_snapshot_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Snapshot Sha256"
+          },
+          "capability_state": {
+            "enum": [
+              "missing",
+              "ready",
+              "stale",
+              "error"
+            ],
+            "title": "Capability State",
             "type": "string"
           },
           "catalog_captured_at_ms": {
@@ -5095,6 +5143,17 @@
             "title": "Credential State",
             "type": "string"
           },
+          "execution_binding_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Binding Sha256"
+          },
           "heartbeat_at_ms": {
             "anyOf": [
               {
@@ -5134,7 +5193,9 @@
           "credential_state",
           "runtime_state",
           "account_state",
-          "catalog_state"
+          "account_generation",
+          "catalog_state",
+          "capability_state"
         ],
         "title": "TradingBindingRuntimeData",
         "type": "object"
@@ -5516,10 +5577,6 @@
             "title": "Config Digest",
             "type": "string"
           },
-          "live_exchange_id": {
-            "title": "Live Exchange Id",
-            "type": "string"
-          },
           "max_age_ms": {
             "title": "Max Age Ms",
             "type": "integer"
@@ -5527,6 +5584,13 @@
           "min_oi_value_usd": {
             "title": "Min Oi Value Usd",
             "type": "integer"
+          },
+          "source_native_bindings": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Source Native Bindings",
+            "type": "object"
           },
           "version": {
             "title": "Version",
@@ -5538,7 +5602,7 @@
           "config_digest",
           "max_age_ms",
           "min_oi_value_usd",
-          "live_exchange_id"
+          "source_native_bindings"
         ],
         "title": "TradingGateConfigData",
         "type": "object"
@@ -6015,6 +6079,17 @@
       "TradingIntentData": {
         "additionalProperties": false,
         "properties": {
+          "account_generation": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Generation"
+          },
           "actual_quantity": {
             "anyOf": [
               {
@@ -6052,6 +6127,21 @@
             "title": "Base Symbol",
             "type": "string"
           },
+          "binding": {
+            "anyOf": [
+              {
+                "enum": [
+                  "BINANCE_USDM",
+                  "HYPERLIQUID_PERP"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding"
+          },
           "blacklist_revision_at_emission": {
             "anyOf": [
               {
@@ -6074,9 +6164,53 @@
             ],
             "title": "Blacklist Snapshot Sha256 At Emission"
           },
+          "canonical_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Asset"
+          },
+          "capability_entry_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability Entry Id"
+          },
+          "capital_authorization_receipt_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capital Authorization Receipt Sha256"
+          },
           "case_id": {
             "title": "Case Id",
             "type": "string"
+          },
+          "close_leg_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Leg Id"
           },
           "closed_at_ms": {
             "anyOf": [
@@ -6107,6 +6241,17 @@
             "title": "Created At Ms",
             "type": "integer"
           },
+          "economic_lifecycle_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Economic Lifecycle Id"
+          },
           "entry_fenced_at_ms": {
             "anyOf": [
               {
@@ -6118,6 +6263,17 @@
             ],
             "title": "Entry Fenced At Ms"
           },
+          "entry_leg_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Leg Id"
+          },
           "event_id": {
             "anyOf": [
               {
@@ -6128,6 +6284,17 @@
               }
             ],
             "title": "Event Id"
+          },
+          "execution_binding_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Binding Sha256"
           },
           "execution_capability_snapshot_sha256": {
             "anyOf": [
@@ -6141,9 +6308,16 @@
             "title": "Execution Capability Snapshot Sha256"
           },
           "execution_environment": {
-            "const": "BINANCE_USDM_DEMO",
-            "title": "Execution Environment",
-            "type": "string"
+            "anyOf": [
+              {
+                "const": "BINANCE_USDM_DEMO",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Environment"
           },
           "execution_phase": {
             "anyOf": [
@@ -6160,6 +6334,17 @@
               }
             ],
             "title": "Execution Phase"
+          },
+          "execution_policy_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Policy Sha256"
           },
           "execution_state": {
             "enum": [
@@ -6191,13 +6376,47 @@
             "title": "Intent Id",
             "type": "string"
           },
+          "intent_policy_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Policy Sha256"
+          },
           "intent_version": {
             "enum": [
               "trade_intent_v1",
-              "trade_intent_v2"
+              "trade_intent_v2",
+              "trade_intent_v3"
             ],
             "title": "Intent Version",
             "type": "string"
+          },
+          "leverage": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Leverage"
+          },
+          "max_risk_amount": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Risk Amount"
           },
           "opened_at_ms": {
             "anyOf": [
@@ -6240,6 +6459,50 @@
             ],
             "title": "Protected Quantity"
           },
+          "protection_contract_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection Contract Sha256"
+          },
+          "protection_leg_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection Leg Id"
+          },
+          "provider_instrument_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Instrument Id"
+          },
+          "quote_contract_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quote Contract Sha256"
+          },
           "realized_pnl_amount": {
             "anyOf": [
               {
@@ -6277,10 +6540,58 @@
             "title": "Reference Price",
             "type": "string"
           },
+          "risk_currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Currency"
+          },
+          "settlement_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settlement Asset"
+          },
           "side": {
             "const": "long",
             "title": "Side",
             "type": "string"
+          },
+          "source_identity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Identity"
+          },
+          "source_venue": {
+            "anyOf": [
+              {
+                "enum": [
+                  "binance.usdm",
+                  "hyperliquid.perp"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Venue"
           },
           "stop_price": {
             "anyOf": [
@@ -6293,9 +6604,27 @@
             ],
             "title": "Stop Price"
           },
+          "target_notional": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Notional"
+          },
           "target_notional_usd": {
-            "title": "Target Notional Usd",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Notional Usd"
           },
           "terminal_outcome": {
             "anyOf": [
@@ -6324,6 +6653,17 @@
           "valid_until_ms": {
             "title": "Valid Until Ms",
             "type": "integer"
+          },
+          "venue_catalog_snapshot_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Venue Catalog Snapshot Sha256"
           }
         },
         "required": [
@@ -6332,10 +6672,8 @@
           "case_id",
           "underlying_key",
           "base_symbol",
-          "execution_environment",
           "instrument_id",
           "side",
-          "target_notional_usd",
           "reference_price",
           "valid_until_ms",
           "execution_state",

@@ -107,9 +107,9 @@ describe("NewsOiPage", () => {
      */
     renderOi();
     expect(
-      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v3 · Alpha 阈值随案例冻结/),
+      await screen.findByText(/SOURCE_NATIVE · trading_admission_v4 · Alpha 阈值随案例冻结/),
     ).toBeInTheDocument();
-    expect(screen.getByText("binance")).toBeInTheDocument();
+    expect(screen.getByText(/binance\.usdm → BINANCE_USDM/)).toBeInTheDocument();
     expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();
   });
 
@@ -119,7 +119,7 @@ describe("NewsOiPage", () => {
       http.get(/.*\/api\/trading\/gate$/, () => HttpResponse.json({ ok: false }, { status: 503 })),
     );
     renderOi();
-    expect(await screen.findByText("BINANCE_USDM_DEMO · 准入规则未读到")).toBeInTheDocument();
+    expect(await screen.findByText("SOURCE_NATIVE · 准入规则未读到")).toBeInTheDocument();
     expect(await screen.findByText(/准入台账读取失败/)).toBeInTheDocument();
   });
 
@@ -575,8 +575,10 @@ describe("NewsOiPage", () => {
     // rank (`≤ 2 / 4h`, asserted above), and the two must not be confused for one another again.
     expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
     expect(admissionCard).not.toHaveTextContent("冷却");
-    // One live venue, code-owned. Everything else is `RESEARCH_ONLY` and the frame table says so per row.
-    expect(within(admissionCard).getByText("binance")).toBeInTheDocument();
+    // #376: both closed source-native bindings are visible and there is no venue fallback priority.
+    expect(admissionCard).toHaveTextContent("binance.usdm → BINANCE_USDM");
+    expect(admissionCard).toHaveTextContent("hyperliquid.perp → HYPERLIQUID_PERP");
+    expect(admissionCard).toHaveTextContent("禁止跨场所回退");
     expect(admissionCard).toHaveTextContent("5m");
     expect(admissionCard).toHaveTextContent("Alpha 阈值随案例冻结");
     expect(admissionCard).not.toHaveTextContent("≥95%");
@@ -619,7 +621,7 @@ describe("NewsOiPage", () => {
     expect(alert).toHaveTextContent("准入台账读取失败");
     expect(within(alert).getByRole("button", { name: "重试" })).toBeInTheDocument();
     // And the panel says the same thing where the missing numbers are.
-    expect(screen.getByText("BINANCE_USDM_DEMO · 准入规则未读到")).toBeInTheDocument();
+    expect(screen.getByText("SOURCE_NATIVE · 准入规则未读到")).toBeInTheDocument();
   });
 
   it("names why a frame has no case, instead of one 未成案 for four different facts", async () => {

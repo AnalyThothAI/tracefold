@@ -394,10 +394,10 @@ tracefold.trading
   contracts.py        App-facing values plus the Source/Case/Decision vocabulary
   admission.py        the one place a Source is admitted, and its closed reason set
   sources.py          one projected OI row -> one typed Source, or a named failure
-  policy.py           `binance_oi_smart_money_long_v2`: pure, long-only, frozen evidence
+  policy.py           `source_native_oi_smart_money_long_v3`: pure, long-only, frozen evidence
   market_context.py   the price window a Case is frozen against
   blacklist.py        the canonical deny-list
-  routing.py          venue identity, and the research-only catalogue resolver
+  routing.py          source-venue identity and the provider-native replay catalogue resolver
   capabilities.py     the frozen Binance Demo instrument universe
   intent.py           immutable TradeIntent and current Outcome contract
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
@@ -1782,6 +1782,9 @@ obligation; removing it would erase the exact state the no-key binding projectio
 Program v7/taxonomy-v1 epoch hard cut.
 `20260829_0329` installs Intent-level Q1/fence/Q2 quote authority after a
 paused, zero-recovery-obligation cutover.
+`20260830_0330` hard-cuts current execution truth to per-binding Capability V2,
+immutable ExecutionBinding V1, source-native routing, and TradeIntent V3 while
+retaining only terminal V1/V2 rows as archive facts.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -1812,17 +1815,17 @@ One word, one meaning, shared by the writer and every read surface:
 
 | Term | Meaning |
 | --- | --- |
-| **Source** | a persisted, citable market fact. The live trigger is a Binance OI frame and nothing else |
+| **Source** | a persisted, citable provider-native OI market fact |
 | **Admission** | the durable Gate answer taken *before* a Case exists |
-| **RESEARCH_ONLY** | a legitimate research source with no live capital authority; Hyperliquid is one |
+| **RESEARCH_ONLY** | a legacy terminal archive value; current writers never produce it |
 | **Case** | a frozen candidate that passed live Admission and may run the capital policy |
 | **Decision Plane** | process lifecycle: `DISABLED`, `STARTING`, `RUNNING`, or `FAULTED` |
 | **Policy decision** | pure `long`, `no_trade`, or `not_run`; never execution permission |
-| **Capital disposition** | independent `blocked`, `allowed`, or `not_applicable`; #350 has no allowed writer |
+| **Capital disposition** | independent `blocked`, `allowed`, or `not_applicable`; `allowed` requires an exact authorization receipt |
 | **NO_TRADE** | the policy ran to completion and declined |
 | **BLOCKED** | a system fact, a capital authority or an invariant stopped the decision completing safely |
-| **INTENT_EMITTED** | read-only history until #360 owns the new reservation + Intent transaction |
-| **Intent** | immutable capital request; existing rows are recovery evidence, not a #350 output |
+| **INTENT_EMITTED** | an atomically authorized reservation + immutable Intent, or historical recovery evidence |
+| **Intent** | immutable capital request bound to source, account generation, capability and authorization receipt |
 | **Outcome** | the durable result of execution and the position lifecycle |
 
 `POLICY_REJECTED` and `ORDER_PREPARED` are read-only history: production holds
@@ -1833,25 +1836,24 @@ rows in both and they stay readable, but `settle_case` refuses to write either.
 ```text
 bounded OI projection snapshot
   -> normalize source
-  -> Binance-live / research-only split
+  -> closed source-venue partition
   -> deterministic admission
-  -> resolve the active credential-free Binance catalog
-  -> fetch closed Binance bars (outside every transaction)
+  -> resolve the matching credential-free provider-native catalog
+  -> fetch closed provider-native bars (outside every transaction)
   -> one transaction: Case + CASE_CREATED admission row
   -> pure deterministic OI policy
   -> NO_TRADE + capital NOT_APPLICABLE
-     or LONG + exact capital BLOCKED reason
-  -> zero new Intent, entry fence, or provider economic write
+     or LONG + exact capital BLOCKED or INTENT_EMITTED answer
+  -> zero provider economic write without a current authorization receipt
   -> Source / Case read contracts plus independent runtime facts
 ```
 
 **Editorial News does not trigger automatic capital (#331).** It remains a
 sibling bounded context; the App seam maps one public OI projection into the
-lane and nothing else. Hyperliquid is answered `RESEARCH_ONLY` at admission
-rather than being carried four stages further to fail as
-`intent_instrument_not_allowed`. There is no online liquidation shadow runner,
-no Trading DSPy program, no strategy registry, and no venue priority — one live
-venue is code-owned.
+lane and nothing else. Binance and Hyperliquid sources each bind only to their
+matching provider-native catalog and execution binding. There is no online
+liquidation shadow runner, no Trading DSPy program, no strategy registry, and no
+venue priority or cross-venue fallback.
 
 News and Trading remain sibling contexts. Trading reads only the public News
 projections supplied by the app composition root; neither package imports the
@@ -2063,6 +2065,13 @@ Intent quote; a tick delivered in the new generation is required before quote
 authority can resume. No quote tick is written to PostgreSQL, and quote state is
 neither binding readiness nor a global readiness claim.
 
+Migration `20260830_0330` repeats the PAUSED/zero-nonterminal cutover and then
+removes Demo from every current writer and lifecycle reader. The active
+capability pointer is per closed binding, the complete provider universe is an
+included/excluded V2 partition, and a verified mainnet process activates an
+immutable binding before any TradeIntent V3 can exist. Older V1/V2 facts remain
+readable only through archive projections.
+
 Rollback is allowed only with venue-proven flat and a schema-compatible image.
 When exposure exists, the only safe direction is roll-forward: Nautilus retains
 sole authority until it protects or closes the position.
@@ -2088,7 +2097,7 @@ executed — threshold, operator, measured value, pass/fail — so a Case decide
 week ago can be explained without today's configuration.
 
 Production runs exactly one pure policy,
-`binance_oi_smart_money_long_v2`: pure, deterministic, long-only, code-owned
+`source_native_oi_smart_money_long_v3`: pure, deterministic, long-only, code-owned
 thresholds, and it answers `long` or `no_trade` only. It cannot express a
 permission, an execution environment or a venue. Capital authority is a
 separate durable decision; until #360 it always blocks LONG before Intent.

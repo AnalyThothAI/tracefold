@@ -19,6 +19,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .bindings import binding_for_source_venue, venue_for_binding
 from .contracts import (
     OiCandidateRow,
     OiTradeCandidate,
@@ -86,6 +87,9 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
         return SourceRejected(rule="source_rule_missing", symbol=symbol)
 
     venue = str(row.get("venue") or "").strip().lower()
+    binding = binding_for_source_venue(venue)
+    if binding is not None:
+        venue = venue_for_binding(binding)
     try:
         return OiTradeCandidate(
             event_id=str(row.get("event_id") or ""),

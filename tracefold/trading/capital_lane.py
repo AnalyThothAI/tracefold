@@ -1,4 +1,4 @@
-"""The Decision lane: one Binance OI Source to independent Policy and Capital facts (#350).
+"""The Decision lane: one source-native OI Source to independent Policy and Capital facts (#350).
 
 **One business action.** `await lane.advance()` is the whole App-facing interface. The caller does not
 learn the admission order, the underlying de-duplication, the bar cutoff, the manifest construction,
@@ -9,15 +9,15 @@ the poll interval, the stop event and the process lifecycle, and nothing else.
 
     bounded OI projection snapshot
     -> normalize source
-    -> Binance-live / research-only split
+    -> closed source-venue partition
     -> deterministic admission
-    -> resolve the active credential-free Binance public catalog
-    -> fetch closed Binance bars (outside every transaction)
+    -> resolve the matching credential-free provider-native public catalog
+    -> fetch closed provider-native bars (outside every transaction)
     -> Case + CASE_CREATED admission row, atomically
     -> pure deterministic OI policy
     -> NO_TRADE + Capital NOT_APPLICABLE
-       or LONG + exact Capital BLOCKED reason
-    -> zero new Intent, entry fence, or provider economic write before #360
+       or LONG + exact Capital BLOCKED or INTENT_EMITTED answer
+    -> zero provider economic write without a current authorization receipt
 
 **What replaced what (#331).** This module is the replacement for `TradingPipeline`, `CandidateRunner`,
 the News/OI trigger fusion, the strategy registry, the DSPy decision program and the liquidation shadow
@@ -25,9 +25,8 @@ runner — not a facade over them. Everything the old cluster did that this does
 the product decided it should be:
 
 * an editorial News verdict is not a Source of this lane and there is no code path that offers one;
-* a Hyperliquid frame is answered `RESEARCH_ONLY` at admission instead of being carried four stages
-  further to fail as `intent_instrument_not_allowed`;
-* a live instrument is resolved from the active public catalog owned by Trading rather than a News
+* each closed source venue is bound to its matching execution binding before a Case exists;
+* a live instrument is resolved from that binding's active public catalog owned by Trading rather than a News
   projection; the catalog states public truth and grants no execution permission;
 * the polling-driven funnel is gone: every number a product surface reports is a bounded aggregation
   over durable rows.
@@ -63,9 +62,8 @@ from .admission import (
     reject,
     source_rejected,
 )
+from .bindings import binding_for_source_venue, venue_for_binding
 from .contracts import (
-    LIVE_EXCHANGE_ID,
-    LIVE_VENUE,
     TRADING_MANIFEST_VERSION,
     Bar,
     CaseState,
@@ -135,7 +133,7 @@ class TradingDatabasePort(Protocol):
     async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
 
 
-BarFetcher = Callable[[str, int, int], Awaitable[Sequence[Bar]]]
+BarFetcher = Callable[[InstrumentRef, int, int], Awaitable[Sequence[Bar]]]
 # `(repos, metric_version, after_ms, until_ms) -> the OI source rows`. The repository session stays
 # opaque: this context never learns which repositories it carries, and no Trading threshold crosses
 # the seam — the projection answers "which facts exist", admission answers "which of them may trigger".
@@ -152,8 +150,8 @@ def now_ms() -> int:
 class CapitalLaneConfig:
     """Everything one turn executes that is not a collaborator. One object, so a turn is reproducible.
 
-    No venue list: there is one live venue and it is code-owned. No model budget: the lane makes no
-    model call. No poll interval: the process owns its own loop.
+    No venue priority: the source selects one closed binding and fallback is forbidden. No model
+    budget: the lane makes no model call. No poll interval: the process owns its own loop.
     """
 
     oi_metric_version: str = "oi_signal_v1"
@@ -174,7 +172,6 @@ class LaneTurn:
     outcome: LaneOutcome
     reason: str
     sources: int = 0
-    research_only: int = 0
     cases_created: int = 0
     no_trade: int = 0
     blocked: int = 0
@@ -184,7 +181,6 @@ class LaneTurn:
             "outcome": self.outcome,
             "reason": self.reason,
             "sources": self.sources,
-            "research_only": self.research_only,
             "cases_created": self.cases_created,
             "no_trade": self.no_trade,
             "blocked": self.blocked,
@@ -299,7 +295,6 @@ class CapitalLane:
             outcome="ADVANCED",
             reason="advanced",
             sources=len(rows),
-            research_only=sum(1 for item in results.values() if item.status == "RESEARCH_ONLY"),
             cases_created=created,
             no_trade=no_trade,
             blocked=blocked,
@@ -397,7 +392,10 @@ class CapitalLane:
         records what was rejected instead of the frame disappearing before anything durable saw it.
         """
 
-        snapshot = authority.catalog
+        binding = binding_for_source_venue(candidate.venue)
+        if binding is None:  # pragma: no cover - admission proves the closed venue first
+            raise RuntimeError("trading_source_binding_unresolved")
+        snapshot = authority.catalogs.get(binding)
         instrument_row = None if snapshot is None else snapshot.resolve(candidate.base_symbol)
         if snapshot is None or instrument_row is None:
             # Retryable: a public catalog refresh can list this issuer, and the expiry sweep closes
@@ -405,8 +403,9 @@ class CapitalLane:
             results[candidate.source_key] = defer(candidate, stage="catalog", reason="catalog_absent")
             return False
         instrument = InstrumentRef(
-            exchange_id=LIVE_EXCHANGE_ID,
-            venue=LIVE_VENUE,
+            exchange_id="binance" if binding == "BINANCE_USDM" else "hyperliquid",
+            binding=binding,
+            venue=venue_for_binding(binding),
             provider_symbol=instrument_row.provider_symbol,
             base_symbol=candidate.base_symbol,
             instrument_class="crypto",
@@ -493,8 +492,8 @@ class CapitalLane:
             bars = await observe_provider_call(
                 self._telemetry,
                 name="trading_capital_lane",
-                source="binance",
-                call=self._bars(instrument.provider_symbol, start, anchor_at_ms + BAR_INTERVAL_MS),
+                source="binance" if instrument.binding == "BINANCE_USDM" else "hyperliquid",
+                call=self._bars(instrument, start, anchor_at_ms + BAR_INTERVAL_MS),
             )
         except Exception:
             log.warning("trading bar fetch failed symbol=%s", instrument.provider_symbol)

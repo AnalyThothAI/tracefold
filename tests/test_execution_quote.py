@@ -13,10 +13,11 @@ from nautilus_trader.test_kit.providers import TestInstrumentProvider
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from pydantic import ValidationError
 
+from tests.trading_v3_fixtures import trade_intent
 from tracefold.integrations.nautilus.quote_authority import (
     execution_quote_from_nautilus,
 )
-from tracefold.trading import BlacklistSnapshotV1, TradeIntent
+from tracefold.trading import TradeIntent
 from tracefold.trading.quote_authority import (
     MAX_EVENT_AGE_NS,
     MAX_FUTURE_SKEW_NS,
@@ -33,16 +34,12 @@ INSTRUMENT = InstrumentId.from_str("SOLUSDT-PERP.BINANCE")
 
 
 def _intent() -> TradeIntent:
-    return TradeIntent.create(
+    return trade_intent(
         case_id="case-quote",
         case_manifest_sha256="1" * 64,
-        execution_capability_snapshot_sha256="2" * 64,
-        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
-        instrument_id=INSTRUMENT.value,
-        underlying_key="crypto:SOL",
         created_at_ms=NOW_NS // 1_000_000,
         reference_price=Decimal("100"),
-        target_notional_usd=Decimal("10"),
+        target_notional=Decimal("10"),
     )
 
 

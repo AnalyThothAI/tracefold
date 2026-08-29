@@ -1,4 +1,4 @@
-"""The one process entry point for the Binance USD-M Demo execution authority."""
+"""The one process entry point for the Production V3 execution authority."""
 
 from __future__ import annotations
 

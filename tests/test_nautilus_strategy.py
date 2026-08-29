@@ -1,4 +1,4 @@
-"""Public-v1 Nautilus strategy seam for the one-instrument Demo process."""
+"""Production V3 Nautilus lifecycle seam for one Binance instrument."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from nautilus_trader.test_kit.stubs.execution import TestExecStubs
 
+from tests.trading_v3_fixtures import binance_capability, trade_intent
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
@@ -71,8 +72,7 @@ from tracefold.integrations.nautilus.strategy import (
     tracefold_strategy_config,
 )
 from tracefold.trading import (
-    BlacklistSnapshotV1,
-    ExecutionInstrumentCapabilityV1,
+    ExecutionInstrumentCapabilityV2,
     IntentOutcome,
     TradeIntent,
     deterministic_client_order_id,
@@ -101,33 +101,29 @@ def _solusdt_perp_binance() -> CryptoPerpetual:
     return CryptoPerpetual.from_dict(values)
 
 
-def _capability(instrument: CryptoPerpetual | None = None) -> ExecutionInstrumentCapabilityV1:
+def _capability(instrument: CryptoPerpetual | None = None) -> ExecutionInstrumentCapabilityV2:
     selected = instrument or _solusdt_perp_binance()
-    return ExecutionInstrumentCapabilityV1(
-        instrument_id=selected.id.value,
-        native_symbol=selected.raw_symbol.value,
-        underlying_key=f"crypto:{selected.base_currency.code}",
-        quote_currency=selected.quote_currency.code,
-        price_precision=selected.price_precision,
-        size_precision=selected.size_precision,
-        price_increment=str(selected.price_increment.as_decimal()),
-        size_increment=str(selected.size_increment.as_decimal()),
-        min_quantity=None if selected.min_quantity is None else str(selected.min_quantity.as_decimal()),
-        min_notional=None if selected.min_notional is None else str(selected.min_notional.as_decimal()),
+    base = next(iter(binance_capability(symbol=selected.raw_symbol.value).included.values()))
+    return ExecutionInstrumentCapabilityV2.model_validate(
+        base.model_dump()
+        | {
+            "price_precision": selected.price_precision,
+            "size_precision": selected.size_precision,
+            "price_increment": str(selected.price_increment.as_decimal()),
+            "size_increment": str(selected.size_increment.as_decimal()),
+            "min_quantity": (None if selected.min_quantity is None else str(selected.min_quantity.as_decimal())),
+            "min_notional": (None if selected.min_notional is None else str(selected.min_notional.as_decimal())),
+        }
     )
 
 
 def _intent(*, case_id: str = "case-1") -> TradeIntent:
-    return TradeIntent.create(
+    return trade_intent(
         case_id=case_id,
         case_manifest_sha256="1" * 64,
-        execution_capability_snapshot_sha256="2" * 64,
-        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
-        instrument_id=SOLUSDT_PERP.value,
-        underlying_key="crypto:SOL",
         created_at_ms=NOW_MS,
         reference_price=Decimal("10000"),
-        target_notional_usd=Decimal("10"),
+        target_notional=Decimal("10"),
     )
 
 
@@ -181,7 +177,7 @@ class RecordingStrategy(TracefoldNautilusStrategy):
         self,
         *,
         queues: StrategyQueues,
-        capability: ExecutionInstrumentCapabilityV1 | None = None,
+        capability: ExecutionInstrumentCapabilityV2 | None = None,
         quote_stream_generation: Callable[[], int] = lambda: 0,
     ) -> None:
         self.flat_requests: list[VenueFlatProofRequested] = []

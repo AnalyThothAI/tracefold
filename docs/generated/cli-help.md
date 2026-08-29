@@ -12,7 +12,7 @@ positional arguments:
   {serve,workers,nautilus,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
-    nautilus            run the Binance USD-M Demo execution authority
+    nautilus            run the Production V3 execution authority
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
@@ -67,8 +67,8 @@ usage: tracefold nautilus run [-h] [--bootstrap-zero-claims]
 options:
   -h, --help            show this help message and exit
   --bootstrap-zero-claims
-                        prove a paused Demo account is empty before rotating
-                        the capability snapshot
+                        prove a paused bound account is empty before
+                        activating execution truth
 
 ```
 
@@ -838,7 +838,7 @@ options:
 
 ```
 usage: tracefold trading replay-oi [-h] [--days DAYS]
-                                   [--strategy {binance_oi_smart_money_long_v2}]
+                                   [--strategy {source_native_oi_smart_money_long_v3}]
                                    [--venues VENUES] [--fidelity {bar_v1}]
                                    [--out OUT]
 
@@ -846,7 +846,7 @@ options:
   -h, --help            show this help message and exit
   --days DAYS           how far back to replay; the OI ledger holds 30 days of
                         parsed frames
-  --strategy {binance_oi_smart_money_long_v2}
+  --strategy {source_native_oi_smart_money_long_v3}
                         the one production capital policy; a replay may only
                         run the identity the lane runs
   --venues VENUES       comma-separated exact source-native venue scenarios

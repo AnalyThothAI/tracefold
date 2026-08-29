@@ -42,6 +42,7 @@ from tracefold.integrations.nautilus.messages import (
     StrategyQueues,
 )
 from tracefold.platform.config.models import Settings
+from tracefold.trading import ExecutionBindingV1, VenueBinding
 
 _RepositoryFactory = Callable[..., AbstractContextManager[Any]]
 NAUTILUS_POLL_SECONDS = 1.0
@@ -55,12 +56,16 @@ class NautilusDatabaseBridge:
         settings: Settings,
         queues: StrategyQueues,
         *,
+        binding: VenueBinding,
+        pending_execution_binding: ExecutionBindingV1 | None = None,
         capability_snapshot_sha256: str | None = None,
         repository_factory: _RepositoryFactory = repositories,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._settings = settings
         self._queues = queues
+        self._binding = binding
+        self._pending_execution_binding = pending_execution_binding
         self._capability_snapshot_sha256 = capability_snapshot_sha256
         self._repository_factory = repository_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
@@ -175,8 +180,8 @@ class NautilusDatabaseBridge:
         now_ms = self._now_ms()
         command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
-            runtime = repos.trading.nautilus_runtime_state(for_update=True)
-            if runtime is None or runtime.get("active_capability_snapshot_sha256") != self._capability_snapshot_sha256:
+            runtime = repos.trading.binding_execution_runtime(binding=self._binding, for_update=True)
+            if runtime is None or runtime.get("capability_snapshot_sha256") != self._capability_snapshot_sha256:
                 raise RuntimeError("nautilus_capability_snapshot_changed")
             active = repos.trading.active_intent()
             if active is None:
@@ -198,7 +203,8 @@ class NautilusDatabaseBridge:
                         outcome = adopted
                     command = AdoptIntent(intent=intent, outcome=outcome)
                     self._dispatched_intent_id = intent.intent_id
-            repos.trading.set_nautilus_runtime(
+            repos.trading.set_binding_execution_runtime(
+                binding=self._binding,
                 heartbeat_at_ms=now_ms,
                 ready=self._engine_ready and self._projection_healthy,
                 readiness_reason=(
@@ -207,6 +213,10 @@ class NautilusDatabaseBridge:
                 unexpected_exposure=self._unexpected_exposure,
                 now_ms=now_ms,
             )
+            if self._engine_ready and self._projection_healthy and self._pending_execution_binding is not None:
+                if not repos.trading.append_and_activate_execution_binding(self._pending_execution_binding):
+                    raise RuntimeError("nautilus_execution_binding_activation_failed")
+                self._pending_execution_binding = None
         with self._lock:
             self._heartbeat_at_ms = now_ms
         if command is not None:
@@ -227,7 +237,8 @@ class NautilusDatabaseBridge:
         if isinstance(event, BootstrapAccountZeroChanged):
             with repos.transaction():
                 return bool(
-                    repos.trading.set_nautilus_bootstrap_account_zero(
+                    repos.trading.set_binding_bootstrap_account_zero(
+                        binding=self._binding,
                         verified_at_ms=event.verified_at_ms,
                         now_ms=event.observed_at_ms,
                         expected_capability_snapshot_sha256=self._capability_snapshot_sha256,

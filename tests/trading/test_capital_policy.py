@@ -1,4 +1,4 @@
-"""`binance_oi_smart_money_long_v2`: the one production capital policy, and its frozen evidence.
+"""`source_native_oi_smart_money_long_v3`: the one production capital policy, and its frozen evidence.
 
 The arithmetic is carried over unchanged from `oi_smart_money_momentum_v1`, deliberately — #331 is a
 product hard cut, not a threshold move — so these tests pin exactly the boundaries #273 shipped, plus
@@ -66,7 +66,7 @@ def _context(pre_move_bps: int | None = 200, **oi_overrides: Any) -> FrozenPolic
 
 
 def test_the_shipped_identity_is_the_one_name_the_lane_and_the_replay_share() -> None:
-    assert CAPITAL_POLICY.policy_id == CAPITAL_POLICY_ID == "binance_oi_smart_money_long_v2"
+    assert CAPITAL_POLICY.policy_id == CAPITAL_POLICY_ID == "source_native_oi_smart_money_long_v3"
     assert CAPITAL_POLICY.policy_version == CAPITAL_POLICY_ID
     # The digest is half a Case's identity: editing a threshold starts a new record rather than
     # rewriting what the previous threshold decided.

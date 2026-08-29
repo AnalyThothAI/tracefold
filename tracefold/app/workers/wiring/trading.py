@@ -28,15 +28,16 @@ from tracefold.integrations.trading_catalog import (
     fetch_binance_usdm_catalog,
     fetch_hyperliquid_perp_catalog,
 )
-from tracefold.integrations.venues import fetch_binance_candles
+from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.trading import VenueBinding
+from tracefold.trading import InstrumentRef, VenueBinding
 from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
-from tracefold.trading.contracts import LIVE_VENUE
 from tracefold.trading.contracts import Bar as TradingBar
+
+from .execution_capabilities import ExecutionCapabilityCompileError, ExecutionCapabilityCompiler
 
 CAPITAL_LANE_TASK_NAME = "trading-capital-lane"
 VENUE_CATALOG_TASK_NAME = "trading-venue-catalog"
@@ -54,6 +55,10 @@ def _wire_venue_catalog(*, db: WorkerDatabase, telemetry: TelemetryRegistry | No
         stale_after_ms=int(VENUE_CATALOG_PERIOD_SECONDS * 1_000),
         telemetry=telemetry,
     )
+
+
+def _wire_execution_capability_compiler(*, db: WorkerDatabase) -> ExecutionCapabilityCompiler:
+    return ExecutionCapabilityCompiler(WorkerTradingDatabase(db))
 
 
 def _wire_capital_lane(
@@ -74,7 +79,7 @@ def _wire_capital_lane(
     return CapitalLane(
         db=WorkerTradingDatabase(db),
         config=capital_lane_config(settings),
-        bars=_binance_bars,
+        bars=_source_native_bars,
         oi_projection=news_oi_sources,
         # The one place that may tell Trading which News generation is running (#314). Trading
         # holds no News literal and reads no News table; this seam derives the label from the same
@@ -84,21 +89,32 @@ def _wire_capital_lane(
     )
 
 
-async def _binance_bars(provider_symbol: str, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
-    """Closed Binance USD-M perp candles. One venue, because one venue carries live capital.
+async def _source_native_bars(instrument: InstrumentRef, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
+    """Fetch only the exact venue frozen by the source-native Case; never reroute or fall back."""
 
-    There is deliberately no `exchange_id` parameter and no factory. A live Hyperliquid bar fetch was
-    reachable from the old wiring purely because the same factory served both venues, and a research
-    venue that can be priced by the live lane is one refactor away from being traded by it.
-    """
-
-    candles = await fetch_binance_candles(provider_symbol, venue=LIVE_VENUE, start_ms=start_ms, end_ms=end_ms)
+    if instrument.binding == "BINANCE_USDM":
+        candles = await fetch_binance_candles(
+            instrument.provider_symbol,
+            venue="binance.perp",
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+    elif instrument.binding == "HYPERLIQUID_PERP":
+        candles = await fetch_hyperliquid_candles(
+            instrument.provider_symbol,
+            venue="hl.perp",
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+    else:  # pragma: no cover - InstrumentRef carries the closed union
+        raise RuntimeError("trading_source_binding_unresolved")
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
 
 
 async def run_venue_catalog(
     catalog: VenueCatalog,
     *,
+    capability_compiler: ExecutionCapabilityCompiler | None = None,
     stop_event: asyncio.Event,
     period_seconds: float = VENUE_CATALOG_PERIOD_SECONDS,
 ) -> None:
@@ -123,7 +139,17 @@ async def run_venue_catalog(
                     complete = False
                     await catalog.unavailable(binding=binding, reason=exc.code)
                 else:
-                    await catalog.publish(binding=binding, instruments=instruments)
+                    snapshot = await catalog.publish(binding=binding, instruments=instruments)
+                    if capability_compiler is not None:
+                        try:
+                            await capability_compiler.compile(snapshot)
+                        except ExecutionCapabilityCompileError as exc:
+                            complete = False
+                            logger.warning(
+                                "Execution capability compile failed for binding={}: {}",
+                                binding,
+                                exc,
+                            )
                     target_count += len(instruments)
         except BaseException:
             catalog.record_turn(

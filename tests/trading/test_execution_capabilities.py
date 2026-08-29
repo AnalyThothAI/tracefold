@@ -1,244 +1,177 @@
-"""The frozen instrument universe: what may carry capital, and what each exclusion actually proves.
-
-#331 §3 closes four contract holes that let an instrument acquire capital authority nobody granted:
-the News row's venue is verified rather than trusted from the caller's name, increments must parse as
-positive Decimals, a conflicting duplicate fails the whole refresh instead of being resolved by row
-order, and `supports_native_stop` has to be produced by the provider.
-"""
-
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
+from pydantic import ValidationError
 
-from tracefold.trading import ProviderInstrumentCandidateV1
-from tracefold.trading.capabilities import build_execution_capability_snapshot
+from tracefold.trading import (
+    ExecutionCapabilitySnapshotV2,
+    ExecutionInstrumentEvidenceV1,
+    VenueBinding,
+    VenueInstrumentCatalogEntryV1,
+    build_execution_capability_snapshot,
+    build_venue_catalog_snapshot,
+)
+
+SHA = "a" * 64
+IDENTITIES = {
+    "app_revision": "revision",
+    "app_image_digest": "sha256:image",
+    "adapter_contract_sha256": "1" * 64,
+    "quote_contract_sha256": "2" * 64,
+    "protection_contract_sha256": "3" * 64,
+    "client_runtime_identity": "client-runtime",
+}
 
 
-def _news(symbol: str, base: str) -> dict[str, object]:
-    return {
-        "venue": "binance.perp",
-        "venue_symbol": symbol,
-        "base_symbol": base,
-        "instrument_class": "crypto",
-        "quote_asset": "USDT",
-        "status": "trading",
-        "last_seen_ms": 1_900_000_000_000,
+def _catalog_row(
+    provider_id: str = "BTCUSDT",
+    *,
+    binding: VenueBinding = "BINANCE_USDM",
+    raw_sha: str = SHA,
+    **overrides: Any,
+) -> VenueInstrumentCatalogEntryV1:
+    values: dict[str, Any] = {
+        "provider_instrument_id": provider_id,
+        "provider_symbol": "BTCUSDT" if binding == "BINANCE_USDM" else "BTC",
+        "venue": "binance.usdm" if binding == "BINANCE_USDM" else "hyperliquid.perp",
+        "canonical_asset": "BTC",
+        "canonical_namespace": "native" if binding == "BINANCE_USDM" else "main",
+        "product_kind": "linear_perpetual",
+        "active": True,
+        "settlement_asset": "USDT" if binding == "BINANCE_USDM" else "USDC",
+        "margin_asset": "USDT" if binding == "BINANCE_USDM" else "USDC",
+        "multiplier": "1",
+        "price_increment": "0.1",
+        "size_increment": "0.001",
+        "min_quantity": "0.001",
+        "min_notional": "5",
+        "raw_metadata_sha256": raw_sha,
     }
+    return VenueInstrumentCatalogEntryV1.model_validate(values | overrides)
 
 
-def _provider(symbol: str, base: str) -> ProviderInstrumentCandidateV1:
-    return ProviderInstrumentCandidateV1(
-        instrument_id=f"{symbol}-PERP.BINANCE",
-        native_symbol=symbol,
-        base_currency=base,
-        quote_currency="USDT",
-        active=True,
-        linear=True,
-        inverse=False,
-        perpetual=True,
-        price_precision=2,
-        size_precision=3,
-        price_increment="0.01",
-        size_increment="0.001",
-        min_quantity="0.001",
-        min_notional="5",
-        supports_native_stop=True,
-    )
-
-
-def test_snapshot_partitions_the_full_provider_news_union_without_a_target_allowlist() -> None:
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[_news("XRPUSDT", "XRP"), _news("ETHUSDT", "ETH"), _news("SOLUSDT", "SOL")],
-        provider_rows=[_provider("DOGEUSDT", "DOGE"), _provider("SOLUSDT", "SOL"), _provider("ETHUSDT", "ETH")],
-        app_revision="revision-1",
-        app_image_digest="image-1",
-        nautilus_wheel_identity="wheel-1",
-    )
-
-    assert set(snapshot.included) == {
-        "ETHUSDT-PERP.BINANCE",
-        "SOLUSDT-PERP.BINANCE",
+def _evidence(row: VenueInstrumentCatalogEntryV1, **overrides: Any) -> ExecutionInstrumentEvidenceV1:
+    values: dict[str, Any] = {
+        "provider_instrument_id": row.provider_instrument_id,
+        "catalog_raw_metadata_sha256": row.raw_metadata_sha256,
+        "instrument_id": (
+            f"{row.provider_symbol}-PERP.BINANCE"
+            if row.venue == "binance.usdm"
+            else f"{row.provider_symbol}-PERP.HYPERLIQUID"
+        ),
+        "native_symbol": row.provider_symbol,
+        "price_precision": 1,
+        "size_precision": 3,
+        "price_increment": "0.1",
+        "size_increment": "0.001",
+        "min_quantity": "0.001",
+        "min_notional": "5",
+        "execution_eligible": True,
+        "protection_eligible": True,
     }
-    assert snapshot.included["ETHUSDT-PERP.BINANCE"].quote_currency == "USDT"
-    assert snapshot.included["ETHUSDT-PERP.BINANCE"].price_increment == "0.01"
-    assert snapshot.included["ETHUSDT-PERP.BINANCE"].size_increment == "0.001"
-    assert {key: row.reason for key, row in snapshot.excluded.items()} == {
-        "DOGEUSDT-PERP.BINANCE": "missing_news_projection",
-        "XRPUSDT-PERP.BINANCE": "missing_provider_instrument",
-    }
-    assert set(snapshot.included) | set(snapshot.excluded) == {
-        "DOGEUSDT-PERP.BINANCE",
-        "ETHUSDT-PERP.BINANCE",
-        "SOLUSDT-PERP.BINANCE",
-        "XRPUSDT-PERP.BINANCE",
-    }
+    return ExecutionInstrumentEvidenceV1.model_validate(values | overrides)
 
 
-def test_snapshot_identity_is_byte_stable_when_both_providers_return_a_different_order() -> None:
-    news = [_news("ETHUSDT", "ETH"), _news("SOLUSDT", "SOL")]
-    provider = [_provider("ETHUSDT", "ETH"), _provider("SOLUSDT", "SOL")]
-    kwargs = {
-        "app_revision": "revision-1",
-        "app_image_digest": "image-1",
-        "nautilus_wheel_identity": "wheel-1",
-    }
+def _build(
+    rows: list[VenueInstrumentCatalogEntryV1],
+    evidence: list[ExecutionInstrumentEvidenceV1],
+    *,
+    binding: VenueBinding = "BINANCE_USDM",
+) -> ExecutionCapabilitySnapshotV2:
+    catalog = build_venue_catalog_snapshot(
+        binding=binding,
+        captured_at_ms=1_000,
+        stale_after_ms=10_000,
+        instruments=rows,
+    )
+    return build_execution_capability_snapshot(catalog=catalog, execution_rows=evidence, **IDENTITIES)
 
-    forward = build_execution_capability_snapshot(news_rows=news, provider_rows=provider, **kwargs)
-    reversed_rows = build_execution_capability_snapshot(
-        news_rows=list(reversed(news)),
-        provider_rows=list(reversed(provider)),
-        **kwargs,
+
+@pytest.mark.parametrize("binding", ["BINANCE_USDM", "HYPERLIQUID_PERP"])
+def test_each_closed_binding_compiles_its_own_source_native_partition(binding: VenueBinding) -> None:
+    row = _catalog_row(
+        "BTCUSDT" if binding == "BINANCE_USDM" else "main:BTC",
+        binding=binding,
     )
 
-    assert reversed_rows == forward
-    assert reversed_rows.snapshot_sha256 == forward.snapshot_sha256
+    snapshot = _build([row], [_evidence(row)], binding=binding)
+
+    capability = next(iter(snapshot.included.values()))
+    assert snapshot.binding == binding
+    assert snapshot.venue == ("binance.usdm" if binding == "BINANCE_USDM" else "hyperliquid.perp")
+    assert capability.binding == binding
+    assert capability.canonical_asset == "BTC"
+    assert snapshot.catalog_instrument_count == snapshot.included_count + snapshot.excluded_count == 1
 
 
-def test_inactive_provider_rows_are_in_the_frozen_candidate_partition() -> None:
-    inactive = _provider("OLDUSDT", "OLD").model_copy(update={"active": False})
-    matching_inactive = _provider("XRPUSDT", "XRP").model_copy(update={"active": False})
+def test_every_catalog_occurrence_has_one_visible_disposition() -> None:
+    included = _catalog_row()
+    missing_evidence = _catalog_row("ETHUSDT", raw_sha="b" * 64, provider_symbol="ETHUSDT", canonical_asset="ETH")
+    unprotected = _catalog_row("SOLUSDT", raw_sha="c" * 64, provider_symbol="SOLUSDT", canonical_asset="SOL")
+    duplicate_a = _catalog_row("DOGEUSDT", raw_sha="d" * 64, provider_symbol="DOGEUSDT", canonical_asset="DOGE")
+    duplicate_b = _catalog_row("DOGEUSDT", raw_sha="e" * 64, provider_symbol="DOGEUSDT", canonical_asset="DOGE")
 
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[_news("ETHUSDT", "ETH"), _news("XRPUSDT", "XRP")],
-        provider_rows=[_provider("ETHUSDT", "ETH"), matching_inactive, inactive],
-        app_revision="revision-1",
-        app_image_digest="image-1",
-        nautilus_wheel_identity="wheel-1",
+    snapshot = _build(
+        [included, missing_evidence, unprotected, duplicate_a, duplicate_b],
+        [_evidence(included), _evidence(unprotected, protection_eligible=False)],
     )
 
-    assert "OLDUSDT-PERP.BINANCE" not in snapshot.included
-    assert snapshot.excluded["OLDUSDT-PERP.BINANCE"].reason == "missing_news_projection"
-    assert snapshot.excluded["XRPUSDT-PERP.BINANCE"].reason == "not_active"
+    assert snapshot.catalog_instrument_count == 5
+    assert snapshot.included_count == 1
+    assert snapshot.excluded_count == 4
+    assert sorted(row.reason for row in snapshot.excluded.values()) == [
+        "ADAPTER_EVIDENCE_MISSING",
+        "DUPLICATE_PROVIDER_INSTRUMENT",
+        "DUPLICATE_PROVIDER_INSTRUMENT",
+        "PROTECTION_CONTRACT_UNPROVEN",
+    ]
 
 
-def test_non_stablecoin_contract_is_mechanically_excluded_from_usdm_execution() -> None:
-    provider = _provider("ETHBTC", "ETH").model_copy(update={"quote_currency": "BTC"})
-    news = _news("ETHBTC", "ETH")
-    news["quote_asset"] = "BTC"
+def test_partition_and_snapshot_are_provider_order_independent() -> None:
+    btc = _catalog_row()
+    eth = _catalog_row("ETHUSDT", raw_sha="b" * 64, provider_symbol="ETHUSDT", canonical_asset="ETH")
 
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[news, _news("ETHUSDT", "ETH")],
-        provider_rows=[provider, _provider("ETHUSDT", "ETH")],
-        app_revision="revision-1",
-        app_image_digest="image-1",
-        nautilus_wheel_identity="wheel-1",
-    )
+    forward = _build([btc, eth], [_evidence(btc), _evidence(eth)])
+    reverse = _build([eth, btc], [_evidence(eth), _evidence(btc)])
 
-    assert set(snapshot.included) == {"ETHUSDT-PERP.BINANCE"}
-    assert snapshot.excluded["ETHBTC-PERP.BINANCE"].reason == "unsupported_quote"
+    assert forward == reverse
+    assert forward.snapshot_sha256 == reverse.snapshot_sha256
 
 
-def _kwargs() -> dict[str, str]:
-    return {
-        "app_revision": "revision-1",
-        "app_image_digest": "image-1",
-        "nautilus_wheel_identity": "wheel-1",
-    }
+def test_zero_included_is_an_honest_complete_partition() -> None:
+    row = _catalog_row()
+
+    snapshot = _build([row], [_evidence(row, protection_eligible=False)])
+
+    assert snapshot.included_count == 0
+    assert snapshot.excluded_count == 1
+    assert next(iter(snapshot.excluded.values())).reason == "PROTECTION_CONTRACT_UNPROVEN"
 
 
-def test_a_news_row_from_another_venue_can_never_grant_binance_demo_authority() -> None:
-    """#331 comment F2P 6. The caller's name is not a contract; the row's own venue is."""
+def test_conflicting_adapter_evidence_fails_closed() -> None:
+    row = _catalog_row()
 
-    news = _news("ETHUSDT", "ETH")
-    news["venue"] = "hl.perp"
-
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[news, _news("SOLUSDT", "SOL")],
-        provider_rows=[_provider("ETHUSDT", "ETH"), _provider("SOLUSDT", "SOL")],
-        **_kwargs(),
-    )
-
-    assert set(snapshot.included) == {"SOLUSDT-PERP.BINANCE"}
-    assert snapshot.excluded["ETHUSDT-PERP.BINANCE"].reason == "not_binance_perp_venue"
+    with pytest.raises(ValueError, match="execution_capability_evidence_conflict:BTCUSDT"):
+        _build([row], [_evidence(row), _evidence(row, instrument_id="other")])
 
 
-@pytest.mark.parametrize("increment", ["0", "-0.01", "", "abc"])
-def test_a_non_positive_or_unparseable_increment_is_refused_before_it_can_size_anything(increment: str) -> None:
-    """#331 comment F2P 7. Quantity is `notional / price` floored to the lot size."""
+def test_snapshot_rejects_manufactured_conservation_or_partition_digest() -> None:
+    row = _catalog_row()
+    snapshot = _build([row], [_evidence(row)])
+    values = snapshot.model_dump(mode="json")
 
-    base = _provider("ETHUSDT", "ETH").model_dump()
-    with pytest.raises(ValueError, match="execution_capability_size_increment_invalid"):
-        ProviderInstrumentCandidateV1.model_validate(base | {"size_increment": increment})
-    with pytest.raises(ValueError, match="execution_capability_price_increment_invalid"):
-        ProviderInstrumentCandidateV1.model_validate(base | {"price_increment": increment})
-
-
-def test_a_negative_minimum_is_refused_and_an_absent_one_is_allowed() -> None:
-    base = _provider("ETHUSDT", "ETH").model_dump()
-    assert ProviderInstrumentCandidateV1.model_validate(base | {"min_quantity": None, "min_notional": None})
-    with pytest.raises(ValueError, match="execution_capability_min_quantity_invalid"):
-        ProviderInstrumentCandidateV1.model_validate(base | {"min_quantity": "-1"})
+    with pytest.raises(ValidationError, match="execution_capability_snapshot_conservation_failed"):
+        ExecutionCapabilitySnapshotV2.model_validate(values | {"catalog_instrument_count": 2})
+    with pytest.raises(ValidationError, match="execution_capability_partition_identity_invalid"):
+        ExecutionCapabilitySnapshotV2.model_validate(values | {"partition_sha256": "f" * 64})
 
 
-def test_identical_duplicates_collapse_to_one_byte_stable_snapshot() -> None:
-    """#331 comment F2P 8. Two identical rows are one instrument, not a coin toss over row order."""
+@pytest.mark.parametrize("field", ["price_increment", "size_increment"])
+@pytest.mark.parametrize("value", ["0", "-1", "nan", ""])
+def test_unusable_mechanical_increment_never_enters_adapter_evidence(field: str, value: str) -> None:
+    row = _catalog_row()
 
-    once = build_execution_capability_snapshot(
-        news_rows=[_news("ETHUSDT", "ETH")],
-        provider_rows=[_provider("ETHUSDT", "ETH")],
-        **_kwargs(),
-    )
-    twice = build_execution_capability_snapshot(
-        news_rows=[_news("ETHUSDT", "ETH"), _news("ETHUSDT", "ETH")],
-        provider_rows=[_provider("ETHUSDT", "ETH"), _provider("ETHUSDT", "ETH")],
-        **_kwargs(),
-    )
-    assert twice.included == once.included
-
-
-def test_a_conflicting_duplicate_fails_the_refresh_rather_than_picking_one() -> None:
-    """The previous `setdefault` made the snapshot digest a function of query order."""
-
-    conflicting = _news("ETHUSDT", "ETH")
-    conflicting["base_symbol"] = "ETHW"
-
-    with pytest.raises(ValueError, match="execution_capability_news_row_conflict"):
-        build_execution_capability_snapshot(
-            news_rows=[_news("ETHUSDT", "ETH"), conflicting],
-            provider_rows=[_provider("ETHUSDT", "ETH")],
-            **_kwargs(),
-        )
-
-    with pytest.raises(ValueError, match="execution_capability_provider_row_conflict"):
-        build_execution_capability_snapshot(
-            news_rows=[_news("ETHUSDT", "ETH")],
-            provider_rows=[
-                _provider("ETHUSDT", "ETH"),
-                _provider("ETHUSDT", "ETH").model_copy(update={"price_precision": 8}),
-            ],
-            **_kwargs(),
-        )
-
-
-def test_an_instrument_with_no_proven_native_stop_is_excluded_rather_than_defaulted_in() -> None:
-    """#331 comment F2P 9. A native stop is the only protection this lane has."""
-
-    unproven = _provider("ETHUSDT", "ETH").model_copy(update={"supports_native_stop": False})
-
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[_news("ETHUSDT", "ETH"), _news("SOLUSDT", "SOL")],
-        provider_rows=[unproven, _provider("SOLUSDT", "SOL")],
-        **_kwargs(),
-    )
-
-    assert set(snapshot.included) == {"SOLUSDT-PERP.BINANCE"}
-    assert snapshot.excluded["ETHUSDT-PERP.BINANCE"].reason == "native_stop_unsupported"
-
-
-def test_one_issuer_listed_against_two_quotes_resolves_deterministically_to_usdt() -> None:
-    """The lane resolves a Case's instrument from this snapshot, so the choice may not be arbitrary."""
-
-    usdc_news = _news("ETHUSDC", "ETH")
-    usdc_news["quote_asset"] = "USDC"
-    usdc_provider = _provider("ETHUSDC", "ETH").model_copy(update={"quote_currency": "USDC"})
-
-    snapshot = build_execution_capability_snapshot(
-        news_rows=[usdc_news, _news("ETHUSDT", "ETH")],
-        provider_rows=[usdc_provider, _provider("ETHUSDT", "ETH")],
-        **_kwargs(),
-    )
-
-    resolved = snapshot.resolve("crypto:ETH")
-    assert resolved is not None and resolved.instrument_id == "ETHUSDT-PERP.BINANCE"
-    assert snapshot.resolve("crypto:NOPE") is None
-    assert snapshot.resolve("") is None
+    with pytest.raises(ValidationError, match=r"execution_capability_.*_invalid"):
+        _evidence(row, **{field: value})

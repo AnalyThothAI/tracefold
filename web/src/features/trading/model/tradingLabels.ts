@@ -71,6 +71,8 @@ export function policyReasonLabel(reason: string | null | undefined): string {
 
 /** The one production capital policy, and the historical identities a stored Case may still name. */
 export const POLICY_ZH: Record<string, string> = {
+  source_native_oi_smart_money_long_v3: "来源原生 OI × 聪明钱 · 做多",
+  // Historical Case identity; current writers use the source-native V3 identity above.
   binance_oi_smart_money_long_v2: "Binance OI × 聪明钱 · 做多",
   liquidation_continuation_shadow_v1: "清算延续（影子）",
   liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",

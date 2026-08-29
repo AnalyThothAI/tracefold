@@ -1,48 +1,54 @@
-"""Immutable execution capability snapshots and their one active pointer."""
+"""Immutable V2 execution capabilities and one active pointer per closed binding."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from ..blacklist import Blacklist, BlacklistSnapshotV1
-from ..capabilities import ExecutionCapabilitySnapshotV1
+from ..capabilities import ExecutionCapabilitySnapshotV2
+from ..contracts import VenueBinding
 from .sql_values import _dumps
-
-_NAUTILUS_ZERO_PROOF_MAX_AGE_MS = 15_000
-_NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS = 5 * 60_000
 
 
 class CapabilityStorage:
     conn: Any
 
-    def execution_capability_snapshot(self, snapshot_sha256: str) -> ExecutionCapabilitySnapshotV1 | None:
+    def execution_capability_snapshot(self, snapshot_sha256: str) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT payload FROM trading_execution_capability_snapshots WHERE snapshot_sha256 = %s",
+            "SELECT payload FROM trading_execution_capability_snapshots "
+            "WHERE snapshot_sha256 = %s AND payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'",
             (snapshot_sha256,),
         ).fetchone()
-        return None if row is None else ExecutionCapabilitySnapshotV1.model_validate(row["payload"])
+        return None if row is None else ExecutionCapabilitySnapshotV2.model_validate(row["payload"])
 
-    def active_execution_capability_snapshot(self, *, for_update: bool = False) -> ExecutionCapabilitySnapshotV1 | None:
+    def active_execution_capability_snapshot(
+        self,
+        *,
+        binding: VenueBinding,
+        for_update: bool = False,
+    ) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"
-            + (" FOR UPDATE" if for_update else "")
+            "SELECT capability_snapshot_sha256 FROM trading_binding_runtime WHERE binding = %s"
+            + (" FOR UPDATE" if for_update else ""),
+            (binding,),
         ).fetchone()
-        digest = None if row is None else row["active_capability_snapshot_sha256"]
+        digest = None if row is None else row["capability_snapshot_sha256"]
         return None if digest is None else self.execution_capability_snapshot(str(digest))
 
     def replay_authority_snapshot(
         self,
         *,
+        binding: VenueBinding,
         now_ms: int,
-    ) -> tuple[ExecutionCapabilitySnapshotV1, BlacklistSnapshotV1]:
-        """Read the active capability and blacklist from one PostgreSQL statement snapshot."""
+    ) -> tuple[ExecutionCapabilitySnapshotV2, BlacklistSnapshotV1]:
+        """Read one binding capability and the global deny-list from one statement snapshot."""
 
         row = self.conn.execute(
             """
             SELECT s.payload, r.blacklist_revision,
                    EXISTS (
                      SELECT 1 FROM trading_symbol_blacklist expired
-                      WHERE expired.expires_at_ms IS NOT NULL AND expired.expires_at_ms <= %s
+                      WHERE expired.expires_at_ms IS NOT NULL AND expired.expires_at_ms <= %(now)s
                    ) AS has_unmaterialized_expiry,
                    COALESCE(
                      jsonb_agg(
@@ -56,20 +62,22 @@ class CapabilityStorage:
                      '[]'::jsonb
                    ) AS blacklist_rows
               FROM trading_runtime_state r
+              JOIN trading_binding_runtime binding ON binding.binding = %(binding)s
               JOIN trading_execution_capability_snapshots s
-                ON s.snapshot_sha256 = r.active_capability_snapshot_sha256
+                ON s.snapshot_sha256 = binding.capability_snapshot_sha256
+               AND s.payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'
               LEFT JOIN trading_symbol_blacklist b
-                ON b.expires_at_ms IS NULL OR b.expires_at_ms > %s
+                ON b.expires_at_ms IS NULL OR b.expires_at_ms > %(now)s
              WHERE r.id = 1
              GROUP BY s.payload, r.blacklist_revision
             """,
-            (int(now_ms), int(now_ms)),
+            {"binding": binding, "now": int(now_ms)},
         ).fetchone()
         if row is None:
-            raise RuntimeError("execution_capability_snapshot_unavailable")
+            raise RuntimeError(f"execution_capability_snapshot_unavailable:{binding}")
         if bool(row["has_unmaterialized_expiry"]):
             raise RuntimeError("blacklist_expiry_not_materialized")
-        snapshot = ExecutionCapabilitySnapshotV1.model_validate(row["payload"])
+        snapshot = ExecutionCapabilitySnapshotV2.model_validate(row["payload"])
         blacklist = Blacklist.from_rows(row["blacklist_rows"]).snapshot(
             revision=int(row["blacklist_revision"]),
             now_ms=now_ms,
@@ -78,58 +86,53 @@ class CapabilityStorage:
 
     def append_and_activate_execution_capability_snapshot(
         self,
-        snapshot: ExecutionCapabilitySnapshotV1,
+        snapshot: ExecutionCapabilitySnapshotV2,
         *,
         created_at_ms: int,
     ) -> bool:
+        """Append complete truth, then activate only while globally paused and account-flat."""
+
         digest = snapshot.snapshot_sha256
         self.conn.execute(
             """
             INSERT INTO trading_execution_capability_snapshots (
               snapshot_sha256, created_at_ms, execution_environment,
-              included_count, excluded_count, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+              binding, venue, catalog_snapshot_sha256, catalog_instrument_count,
+              included_count, excluded_count, partition_sha256, payload
+            ) VALUES (%s, %s, NULL, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             ON CONFLICT (snapshot_sha256) DO NOTHING
             """,
             (
                 digest,
                 int(created_at_ms),
-                snapshot.execution_environment,
-                len(snapshot.included),
-                len(snapshot.excluded),
+                snapshot.binding,
+                snapshot.venue,
+                snapshot.catalog_snapshot_sha256,
+                snapshot.catalog_instrument_count,
+                snapshot.included_count,
+                snapshot.excluded_count,
+                snapshot.partition_sha256,
                 _dumps(snapshot.model_dump(mode="json")),
             ),
         )
-        runtime = self.conn.execute(
+        runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
+        binding = self.conn.execute(
             """
-            SELECT control, active_capability_snapshot_sha256, nautilus_heartbeat_at_ms,
-                   nautilus_ready, nautilus_unexpected_exposure,
-                   nautilus_bootstrap_account_zero_at_ms
-              FROM trading_runtime_state WHERE id = 1 FOR UPDATE
-            """
+            SELECT account_state, catalog_snapshot_sha256, capability_snapshot_sha256
+              FROM trading_binding_runtime
+             WHERE binding = %s
+               FOR UPDATE
+            """,
+            (snapshot.binding,),
         ).fetchone()
-        if runtime is None or runtime["control"] != "PAUSED":
+        if runtime is None or runtime["control"] != "PAUSED" or binding is None:
             return False
-        current = runtime["active_capability_snapshot_sha256"]
-        if current == digest:
+        if binding["catalog_snapshot_sha256"] != snapshot.catalog_snapshot_sha256:
+            return False
+        if binding["account_state"] != "reconciled_flat":
+            return False
+        if binding["capability_snapshot_sha256"] == digest:
             return True
-        bootstrap_at_ms = runtime["nautilus_bootstrap_account_zero_at_ms"]
-        bootstrap_proved_flat = (
-            bootstrap_at_ms is not None
-            and int(bootstrap_at_ms) >= int(created_at_ms) - _NAUTILUS_BOOTSTRAP_ZERO_PROOF_MAX_AGE_MS
-            and not runtime["nautilus_unexpected_exposure"]
-        )
-        runtime_proved_flat = bootstrap_proved_flat
-        if current is not None and not runtime_proved_flat:
-            heartbeat_at_ms = runtime["nautilus_heartbeat_at_ms"]
-            proof_is_fresh = heartbeat_at_ms is not None and int(heartbeat_at_ms) >= (
-                int(created_at_ms) - _NAUTILUS_ZERO_PROOF_MAX_AGE_MS
-            )
-            runtime_proved_flat = (
-                proof_is_fresh and runtime["nautilus_ready"] and not runtime["nautilus_unexpected_exposure"]
-            )
-        if not runtime_proved_flat:
-            return False
         nonterminal = self.conn.execute(
             """
             SELECT EXISTS (
@@ -142,18 +145,40 @@ class CapabilityStorage:
             return False
         self.conn.execute(
             """
-            UPDATE trading_runtime_state
-               SET active_capability_snapshot_sha256 = %s,
-                   active_capability_included_count = %s,
-                   nautilus_bootstrap_account_zero_at_ms = NULL,
-                   nautilus_ready = false,
-                   nautilus_readiness_reason = 'capability_snapshot_changed',
+            UPDATE trading_binding_runtime
+               SET capability_state = 'ready',
+                   capability_snapshot_sha256 = %s,
+                   capability_compiled_at_ms = %s,
+                   capability_compile_error = NULL,
+                   execution_binding_sha256 = NULL,
+                   runtime_state = CASE WHEN runtime_state = 'ready' THEN 'stale' ELSE runtime_state END,
+                   reason = 'capability_snapshot_changed',
                    updated_at_ms = %s
-             WHERE id = 1
+             WHERE binding = %s
             """,
-            (digest, len(snapshot.included), int(created_at_ms)),
+            (digest, int(created_at_ms), int(created_at_ms), snapshot.binding),
         )
         return True
+
+    def mark_execution_capability_compile_error(
+        self,
+        *,
+        binding: VenueBinding,
+        reason: str,
+        now_ms: int,
+    ) -> None:
+        if not reason or len(reason) > 128:
+            raise ValueError("execution_capability_compile_error_invalid")
+        self.conn.execute(
+            """
+            UPDATE trading_binding_runtime
+               SET capability_state = 'error',
+                   capability_compile_error = %s,
+                   updated_at_ms = %s
+             WHERE binding = %s
+            """,
+            (reason, int(now_ms), binding),
+        )
 
     def blacklist_snapshot(self, *, now_ms: int, materialize_expiry: bool) -> BlacklistSnapshotV1:
         runtime = self.conn.execute(

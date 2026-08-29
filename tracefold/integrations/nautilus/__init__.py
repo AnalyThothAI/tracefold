@@ -1,6 +1,6 @@
-"""Pinned NautilusTrader concrete configuration for Binance USD-M Demo."""
+"""Pinned NautilusTrader concrete configuration for Binance USD-M."""
 
-from .capabilities import instrument_matches_capability, load_binance_usdm_demo_capabilities
+from .capabilities import instrument_matches_capability, load_binance_usdm_execution_evidence
 from .config import (
     NAUTILUS_LINUX_WHEELS,
     NAUTILUS_RELEASE,
@@ -17,7 +17,7 @@ __all__ = [
     "build_node_config",
     "installed_nautilus_wheel_identity",
     "instrument_matches_capability",
-    "load_binance_usdm_demo_capabilities",
+    "load_binance_usdm_execution_evidence",
     "load_complete_account_reports",
     "single_execution_client",
 ]
