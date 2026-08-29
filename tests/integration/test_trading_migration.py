@@ -859,6 +859,67 @@ def test_0327_preserves_a_nonterminal_intent_as_a_no_key_recovery_obligation() -
             conn.close()
 
 
+def test_0327_preserves_historical_capability_stage_but_rejects_new_alias_writes() -> None:
+    conn: Any | None = None
+    insert_decision = """
+        INSERT INTO trading_candidate_gate_decisions (
+          source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+          source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+          first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+        ) VALUES (%s, 'trading_admission_v2', %s, 'oi', 'crypto:SOL', %s, 'DEFERRED', %s, %s,
+                  false, '{}'::jsonb, NULL, %s, %s, 1)
+    """
+    try:
+        _fresh_schema_at("20260829_0326")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.execute(
+            insert_decision,
+            ("oi:historical-capability:v1", "0" * 64, NOW, "capability", "capability_absent", NOW, NOW),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("20260829_0327")
+        conn = connect_postgres_test(read_only=False)
+        historical = conn.execute(
+            "SELECT status, stage, reason FROM trading_candidate_gate_decisions "
+            "WHERE source_key = 'oi:historical-capability:v1'"
+        ).fetchone()
+        assert dict(historical) == {"status": "DEFERRED", "stage": "capability", "reason": "capability_absent"}
+
+        repos = TradingRepository(conn)
+        assert repos.expire_stale_gate_decisions(stale_before_ms=NOW + 1, now_ms=NOW + 2) == 1
+        expired = conn.execute(
+            "SELECT status, stage, reason FROM trading_candidate_gate_decisions "
+            "WHERE source_key = 'oi:historical-capability:v1'"
+        ).fetchone()
+        assert dict(expired) == {"status": "EXPIRED", "stage": "capability", "reason": "capability_absent"}
+        conn.commit()
+
+        with pytest.raises(RaiseException, match="trading_candidate_gate_stage_retired"):
+            conn.execute(
+                insert_decision,
+                ("oi:new-capability:v1", "1" * 64, NOW + 1, "capability", "capability_absent", NOW, NOW),
+            )
+        conn.rollback()
+        conn.execute(
+            insert_decision,
+            ("oi:new-catalog:v1", "1" * 64, NOW + 1, "catalog", "catalog_absent", NOW, NOW),
+        )
+        conn.commit()
+        with pytest.raises(RaiseException, match="trading_candidate_gate_stage_retired"):
+            conn.execute(
+                "UPDATE trading_candidate_gate_decisions SET stage = 'capability' "
+                "WHERE source_key = 'oi:new-catalog:v1'"
+            )
+        conn.rollback()
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
     conn: Any | None = None
     try:

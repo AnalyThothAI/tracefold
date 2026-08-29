@@ -163,13 +163,43 @@ def upgrade() -> None:
         "CHECK (capital_disposition IN ('allowed', 'blocked', 'not_applicable'))"
     )
     op.execute("ALTER TABLE trading_candidate_gate_decisions DROP CONSTRAINT trading_candidate_gate_stage_check")
+    # Historical `capability` rows remain lifecycle-owned ledger facts: expiry and
+    # re-evaluation may still update them without rewriting their reason. Admit the
+    # byte in the row constraint, then use a transition trigger to reject it on
+    # every new row or transition after the hard cut.
     op.execute(
         """
         ALTER TABLE trading_candidate_gate_decisions
           ADD CONSTRAINT trading_candidate_gate_stage_check CHECK (
-            stage IN ('source', 'venue', 'eligibility', 'catalog', 'routing', 'market_context', 'freeze')
+            stage IN (
+              'source', 'venue', 'eligibility', 'capability', 'catalog', 'routing', 'market_context', 'freeze'
+            )
           )
         """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION reject_retired_candidate_gate_stage()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $function$
+        BEGIN
+          IF TG_OP = 'INSERT' AND NEW.stage = 'capability' THEN
+            RAISE EXCEPTION 'trading_candidate_gate_stage_retired';
+          ELSIF TG_OP = 'UPDATE'
+                AND NEW.stage = 'capability'
+                AND OLD.stage IS DISTINCT FROM 'capability' THEN
+            RAISE EXCEPTION 'trading_candidate_gate_stage_retired';
+          END IF;
+          RETURN NEW;
+        END
+        $function$
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER trg_trading_candidate_gate_stage_hard_cut "
+        "BEFORE INSERT OR UPDATE ON trading_candidate_gate_decisions "
+        "FOR EACH ROW EXECUTE FUNCTION reject_retired_candidate_gate_stage()"
     )
 
     op.execute(
