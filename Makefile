@@ -87,30 +87,37 @@ test-evidence-quality-static:
 	@uv run python -m tests.support.evidence record-command \
 		--lane quality-static --output "$(TRACEFOLD_TEST_LANE_DIR)/quality-static.json" \
 		-- make check-static
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-python-hermetic:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,python-hermetic)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-postgres-behavior:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,postgres-behavior)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-migration:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,migration)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-runtime-process:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,runtime-process)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-frontend-python:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,frontend-python)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-trust-root:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,trust-root)
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-frontend: test-evidence-frontend-python
 	@uv run python -m tests.support.evidence record-command \
@@ -148,6 +155,7 @@ test-evidence-frontend: test-evidence-frontend-python
 		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
 		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
+	@uv run python -m tests.support.evidence --assert-clean
 
 test-evidence-aggregate:
 	@uv run python -m tests.support.evidence --assert-clean

@@ -193,7 +193,7 @@ def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
     assert "lock" in result.stderr.lower()
 
 
-def test_evidence_entrypoint_checks_the_tested_head_before_and_after_the_suite() -> None:
+def test_evidence_entrypoint_checks_the_tested_head_before_and_after_every_owner() -> None:
     result = subprocess.run(
         ["make", "-n", "test-evidence"],
         cwd=ROOT,
@@ -202,7 +202,7 @@ def test_evidence_entrypoint_checks_the_tested_head_before_and_after_the_suite()
         text=True,
     )
 
-    assert result.stdout.count("python -m tests.support.evidence --assert-clean") == 2
+    assert result.stdout.count("python -m tests.support.evidence --assert-clean") == 10
 
 
 def test_tested_head_changes_include_tracked_and_untracked_files(tmp_path: Path) -> None:
