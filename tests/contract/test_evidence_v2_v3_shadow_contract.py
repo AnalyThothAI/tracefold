@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -12,6 +13,8 @@ from tests.support import evidence
 ROOT = Path(__file__).resolve().parents[2]
 RECEIPT = ROOT / "tests" / "fixtures" / "issue_335_evidence_v2_v3_shadow.json"
 pytestmark = pytest.mark.contract
+FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _test_functions(source: str) -> set[str]:
@@ -63,3 +66,47 @@ def test_v2_v3_shadow_receipt_keeps_each_critical_real_seam_in_its_v3_owner() ->
         assert seam["fault"]
 
     assert classes == {"architecture", "news-decision", "trading-capital", "migration"}
+
+
+def test_shadow_receipt_pins_exact_v3_evidence_and_real_mutation_outcomes() -> None:
+    receipt = json.loads(RECEIPT.read_text(encoding="utf-8"))
+    windows = receipt["window"]
+    v3 = windows["v3"]
+
+    assert FULL_SHA.fullmatch(v3["commit_sha"])
+    assert FULL_SHA.fullmatch(v3["git_tree_sha"])
+    assert SHA256.fullmatch(v3["plan_sha256"])
+    assert v3["github_run_id"] > 0
+    assert v3["artifact_id"] > 0
+    assert v3["schema_version"] == "tracefold_test_evidence_v3"
+    assert v3["overall"] == "success"
+    assert v3["python_inventory"] == {
+        "expected": 2113,
+        "executed": 2113,
+        "executions": 2113,
+        "missing": [],
+        "duplicates": [],
+        "unclassified": [],
+        "unexpected": [],
+    }
+    assert v3["critical_path"]["metric"] == "max Python owner profile wall_seconds"
+    assert v3["critical_path"]["lane"] in evidence.PYTHON_LANES
+    assert v3["critical_path"]["seconds"] > 0.0
+
+    expected_exit_codes = {
+        "architecture": 1,
+        "news-decision": 0,
+        "trading-capital": 0,
+        "migration": 1,
+    }
+    for seam in receipt["critical_seams"]:
+        mutation = seam["mutation"]
+        assert mutation["operation"]
+        assert mutation["command"]
+        assert mutation["detector"]
+        for version in ("v2", "v3"):
+            result = mutation[version]
+            assert result["commit_sha"] == windows[version]["commit_sha"]
+            assert result["pytest_exit_code"] == expected_exit_codes[seam["class"]]
+            assert result["outcome"] == "detector_rejected_mutation"
+            assert mutation["detector"] in result["observed"]

@@ -12,6 +12,7 @@ from tests.support.evidence import PYTHON_LANES
 from tests.support.profile import PROFILE_REPORT_SCHEMA_VERSION, PROFILE_SCHEMA_VERSION, build_report, main
 
 pytestmark = pytest.mark.contract
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _profile(lane: str, nodeids: list[str]) -> dict[str, object]:
@@ -144,6 +145,21 @@ def test_v3_profile_proves_the_full_owner_union_and_critical_path_observation() 
     assert report["inventory"]["duplicate_executions"] == 0
     assert report["inventory"]["missing_from_deterministic_full"] == []
     assert report["duration_observations"]["plan:python-v3-critical-path"] == 7.0
+
+
+def test_issue_335_critical_path_baseline_names_its_exact_v3_profile_source() -> None:
+    baseline = json.loads((ROOT / "tests/fixtures/issue_335_test_profile_baseline.json").read_text(encoding="utf-8"))
+    receipt = json.loads((ROOT / "tests/fixtures/issue_335_evidence_v2_v3_shadow.json").read_text(encoding="utf-8"))
+    budget = baseline["duration_ratchets"]["plan:python-v3-critical-path"]
+    source = budget["source"]
+
+    assert budget["baseline_seconds"] == source["wall_seconds"]
+    assert source["commit_sha"] == receipt["window"]["v3"]["commit_sha"]
+    assert source["github_run_id"] == receipt["window"]["v3"]["github_run_id"]
+    assert source["artifact_id"] > 0
+    assert source["lane"] == receipt["window"]["v3"]["critical_path"]["lane"]
+    assert source["profile_path"] == "profiles/runtime-process.json"
+    assert source["field"] == "wall_seconds"
 
 
 def test_v3_profile_fails_closed_on_a_missing_owner_lane_or_nodeid() -> None:
