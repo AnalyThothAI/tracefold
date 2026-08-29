@@ -214,7 +214,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260829_0326|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260829_0327|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -255,7 +255,7 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     }.isdisjoint(targets)
 
 
-def test_up_bootstraps_a_missing_capability_before_final_nautilus_recreation(tmp_path: Path) -> None:
+def test_up_never_bootstraps_legacy_capability_or_starts_an_adapter(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
@@ -271,13 +271,13 @@ def test_up_bootstraps_a_missing_capability_before_final_nautilus_recreation(tmp
     )
 
     assert result.returncode == 0, result.stderr
-    assert "--bootstrap-zero-claims" in Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).read_text()
-    assert Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"), ids=("make-up", "deploy-image"))
-def test_deploy_reuses_an_existing_capability_without_refresh(tmp_path: Path, target: str) -> None:
+def test_deploy_does_not_consult_a_legacy_capability_pointer(tmp_path: Path, target: str) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
@@ -299,11 +299,11 @@ def test_deploy_reuses_an_existing_capability_without_refresh(tmp_path: Path, ta
     assert result.returncode == 0, result.stderr
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert control.read_text(encoding="utf-8").strip() == "RUNNING"
 
 
-def test_up_bounds_bootstrap_proof_wait_with_the_compose_budget(tmp_path: Path) -> None:
+def test_up_does_not_wait_for_a_retired_execution_bootstrap(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
@@ -319,8 +319,8 @@ def test_up_bounds_bootstrap_proof_wait_with_the_compose_budget(tmp_path: Path) 
         text=True,
     )
 
-    assert result.returncode != 0
-    assert "did not establish a fresh bootstrap account-zero proof" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
 
 
@@ -533,7 +533,7 @@ def test_trading_hard_cut_preflight_fails_closed(
     assert message in result.stderr
 
 
-def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
+def test_up_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
@@ -548,7 +548,7 @@ def test_up_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path)
     )
 
     assert result.returncode == 0, result.stderr
-    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
 def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tmp_path: Path) -> None:
@@ -651,7 +651,7 @@ def test_db_migrate_does_not_invent_a_cutover_for_a_fresh_database(tmp_path: Pat
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"))
-def test_deploy_refuses_enabled_trading_without_demo_credentials_before_stopping_services(
+def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     tmp_path: Path,
     target: str,
 ) -> None:
@@ -663,20 +663,22 @@ def test_deploy_refuses_enabled_trading_without_demo_credentials_before_stopping
 
     result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
 
-    assert result.returncode != 0
-    assert "Trading is enabled but Binance Demo Nautilus credentials are not configured" in result.stderr
-    assert not services_stopped.exists()
+    assert result.returncode == 0, result.stderr
+    assert services_stopped.exists()
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
+    assert "execution adapters: not required (#356/#357 pending; capital paused)" in result.stdout
 
 
 @pytest.mark.parametrize(
     ("trading_enabled", "credentials_configured", "expected_ok", "expected_message"),
     (
-        ("true", "true", False, "nautilus: expected exactly one replica, found 0"),
-        ("true", "false", False, "Trading enabled but Demo credentials are not configured"),
-        ("false", "false", True, "nautilus: not required (Trading disabled)"),
+        ("true", "true", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
+        ("true", "false", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
+        ("false", "false", True, "execution adapters: not required (Trading disabled)"),
     ),
 )
-def test_status_requires_one_nautilus_for_enabled_trading(
+def test_status_does_not_require_an_adapter_before_its_owner_issue(
     tmp_path: Path,
     trading_enabled: str,
     credentials_configured: str,
@@ -700,7 +702,7 @@ def test_status_requires_one_nautilus_for_enabled_trading(
     assert expected_message in result.stdout + result.stderr
 
 
-def test_exact_image_deploy_starts_nautilus_when_demo_credentials_are_configured(tmp_path: Path) -> None:
+def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
@@ -715,7 +717,7 @@ def test_exact_image_deploy_starts_nautilus_when_demo_credentials_are_configured
     )
 
     assert result.returncode == 0, result.stderr
-    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
 def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(tmp_path: Path) -> None:

@@ -489,13 +489,13 @@ class TradingOrderSettings(BaseModel):
         return self
 
 
-class TradingNautilusSettings(BaseModel):
-    """Credential paths for the sole Binance USD-M Demo execution authority."""
+class TradingBinanceUsdmSettings(BaseModel):
+    """Operator-owned credential paths; #356 owns any provider client that may use them."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    api_key_file: str | None = "binance_demo_api_key"
-    api_secret_file: str | None = "binance_demo_api_secret"
+    api_key_file: str | None = "binance_usdm_api_key"
+    api_secret_file: str | None = "binance_usdm_api_secret"
 
     @field_validator("api_key_file", "api_secret_file", mode="before")
     @classmethod
@@ -506,15 +506,39 @@ class TradingNautilusSettings(BaseModel):
         return normalized or None
 
 
+class TradingHyperliquidPerpSettings(BaseModel):
+    """Agent-wallet inputs only; #357 owns account preflight and adapter construction."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    private_key_file: str | None = "hyperliquid_private_key"
+    account_address: str | None = None
+
+    @field_validator("private_key_file", "account_address", mode="before")
+    @classmethod
+    def parse_optional_value(cls, value: Any) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class TradingBindingsSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    binance_usdm: TradingBinanceUsdmSettings = Field(default_factory=TradingBinanceUsdmSettings)
+    hyperliquid_perp: TradingHyperliquidPerpSettings = Field(default_factory=TradingHyperliquidPerpSettings)
+
+
 class TradingSettings(BaseModel):
-    """`tracefold.trading`: decision plane plus one Binance USD-M Demo Intent sink."""
+    """Decision Plane configuration plus two closed, credential-optional bindings (#350)."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
-    nautilus: TradingNautilusSettings = Field(default_factory=TradingNautilusSettings)
+    bindings: TradingBindingsSettings = Field(default_factory=TradingBindingsSettings)
 
 
 class Settings(BaseModel):
@@ -554,11 +578,14 @@ class Settings(BaseModel):
     def news_telegram_bot_token_file(self) -> Path | None:
         return self._configured_path(self.news.push.telegram_bot_token_file)
 
-    def trading_nautilus_api_key_file(self) -> Path | None:
-        return self._configured_path(self.trading.nautilus.api_key_file)
+    def trading_binance_usdm_api_key_file(self) -> Path | None:
+        return self._configured_path(self.trading.bindings.binance_usdm.api_key_file)
 
-    def trading_nautilus_api_secret_file(self) -> Path | None:
-        return self._configured_path(self.trading.nautilus.api_secret_file)
+    def trading_binance_usdm_api_secret_file(self) -> Path | None:
+        return self._configured_path(self.trading.bindings.binance_usdm.api_secret_file)
+
+    def trading_hyperliquid_private_key_file(self) -> Path | None:
+        return self._configured_path(self.trading.bindings.hyperliquid_perp.private_key_file)
 
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:

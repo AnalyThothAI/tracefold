@@ -27,14 +27,15 @@ import pytest
 from tracefold.app.http.schemas.trading import TradingGateEvidenceData
 from tracefold.trading.admission import AdmissionConfig
 from tracefold.trading.blacklist import Blacklist
-from tracefold.trading.capabilities import (
-    ExecutionCapabilitySnapshotV1,
-    ExecutionInstrumentCapabilityV1,
-)
 from tracefold.trading.capital_lane import CapitalLane, CapitalLaneConfig
+from tracefold.trading.catalog import (
+    VenueInstrumentCatalogEntryV1,
+    VenueInstrumentCatalogSnapshotV1,
+    build_venue_catalog_snapshot,
+)
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest
 from tracefold.trading.policy import CAPITAL_POLICY
-from tracefold.trading.storage.lane import CapitalAuthority, DecisionCommit
+from tracefold.trading.storage.lane import BindingAuthority, CapitalAuthority, CapitalDispositionCommit
 
 NOW = 1_787_000_000_000
 DIGEST = "a" * 64
@@ -74,30 +75,30 @@ def _row(**overrides: Any) -> OiCandidateRow:
     return OiCandidateRow(**values)  # type: ignore[typeddict-item]
 
 
-def _capability(symbol: str = "TUTUSDT") -> ExecutionInstrumentCapabilityV1:
-    return ExecutionInstrumentCapabilityV1(
-        instrument_id=f"{symbol}-PERP.BINANCE",
-        native_symbol=symbol,
-        underlying_key=f"crypto:{symbol.removesuffix('USDT')}",
-        quote_currency="USDT",
-        price_precision=4,
-        size_precision=1,
+def _catalog_entry(symbol: str = "TUTUSDT") -> VenueInstrumentCatalogEntryV1:
+    return VenueInstrumentCatalogEntryV1(
+        provider_instrument_id=symbol,
+        provider_symbol=symbol,
+        venue="binance.usdm",
+        canonical_asset=symbol.removesuffix("USDT"),
+        canonical_namespace="crypto",
+        product_kind="linear_perpetual",
+        active=True,
+        settlement_asset="USDT",
+        margin_asset="USDT",
         price_increment="0.0001",
         size_increment="0.1",
         min_quantity="0.1",
+        raw_metadata_sha256=DIGEST,
     )
 
 
-def _snapshot(*capabilities: ExecutionInstrumentCapabilityV1) -> ExecutionCapabilitySnapshotV1:
-    rows = capabilities or (_capability(),)
-    return ExecutionCapabilitySnapshotV1(
-        app_revision="rev",
-        app_image_digest="sha256:image",
-        nautilus_wheel_identity="wheel",
-        news_universe_digest=DIGEST,
-        provider_universe_digest=DIGEST,
-        included={row.instrument_id: row for row in rows},
-        excluded={},
+def _catalog(*instruments: VenueInstrumentCatalogEntryV1) -> VenueInstrumentCatalogSnapshotV1:
+    return build_venue_catalog_snapshot(
+        binding="BINANCE_USDM",
+        captured_at_ms=NOW - 1_000,
+        stale_after_ms=86_400_000,
+        instruments=instruments or (_catalog_entry(),),
     )
 
 
@@ -126,13 +127,25 @@ class FakeTrading:
         self.cases: dict[str, dict[str, Any]] = {}
         self.settled: list[tuple[str, CaseState, str]] = []
         self.commits: list[str] = []
-        self.commit_result: Callable[[str], DecisionCommit] | None = None
+        self.commit_result: Callable[[str], CapitalDispositionCommit] | None = None
         self.claimable: list[str] = []
         self.maintained = 0
+        self.runtime_states: list[tuple[str, str | None]] = []
 
     # -- read
     def capital_authority(self, *, since_ms: int, now_ms: int) -> CapitalAuthority | None:
         return self._authority
+
+    def set_decision_runtime(
+        self,
+        *,
+        state: str,
+        heartbeat_at_ms: int | None,
+        reason: str | None,
+        now_ms: int,
+    ) -> bool:
+        self.runtime_states.append((state, reason))
+        return True
 
     # -- freeze
     def create_case(
@@ -182,6 +195,8 @@ class FakeTrading:
         state: CaseState,
         policy_decision: str | None,
         policy_reason: str,
+        capital_disposition: str,
+        capital_reason: str | None,
         policy_checks: Any = None,
         now_ms: int,
     ) -> bool:
@@ -189,11 +204,11 @@ class FakeTrading:
         self.cases[case_id]["state"] = state
         return True
 
-    def commit_long_decision(self, *, case_id: str, **_: Any) -> DecisionCommit:
+    def commit_capital_disposition(self, *, case_id: str, **_: Any) -> CapitalDispositionCommit:
         self.commits.append(case_id)
         if self.commit_result is not None:
             return self.commit_result(case_id)
-        return DecisionCommit(state=CaseState.INTENT_EMITTED, reason="smart_money_momentum_long", intent_id="i" * 64)
+        return CapitalDispositionCommit(state=CaseState.BLOCKED, reason="credentials_unconfigured")
 
 
 class FakeRepos:
@@ -219,12 +234,20 @@ class FakeDb:
 
 def _authority(**overrides: Any) -> CapitalAuthority:
     values: dict[str, Any] = {
-        "control": "RUNNING",
+        "capital_control": "PAUSED",
         "blacklist": Blacklist.from_rows([]),
         "active_underlyings": frozenset(),
         "underlyings_in_flight": frozenset(),
         "cased_source_keys": frozenset(),
-        "capability": _snapshot(),
+        "binding": BindingAuthority(
+            credential_state="unconfigured",
+            runtime_state="stopped",
+            account_state="unknown",
+            catalog_state="ready",
+            catalog_snapshot_sha256=_catalog().snapshot_sha256,
+            reason="credentials_unconfigured",
+        ),
+        "catalog": _catalog(),
     }
     values.update(overrides)
     return CapitalAuthority(**values)
@@ -267,28 +290,28 @@ def _reasons(trading: FakeTrading) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------- the happy path
-def test_a_binance_frame_becomes_one_case_and_one_intent_in_the_fixed_order() -> None:
+def test_a_no_key_binance_frame_becomes_one_case_and_an_independent_capital_block() -> None:
     trading = FakeTrading(authority=_authority(), rows=[_row()])
     calls: list[tuple[str, int, int]] = []
     lane, db = _lane(trading, provider_calls=calls)
 
     turn = _advance(lane)
 
-    assert (turn.outcome, turn.cases_created, turn.intents_emitted) == ("ADVANCED", 1, 1)
+    assert (turn.outcome, turn.cases_created, turn.blocked) == ("ADVANCED", 1, 1)
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
-    # The instrument came from the active capability snapshot, not from a second catalogue, and the
+    # The instrument came from the active public catalogue, and the
     # window starts at the open of the candle that closed immediately before the lookback target.
     cutoff = NOW - 60_000
     expected_start = ((cutoff - 3_600_000) // 300_000 - 1) * 300_000
     assert calls == [("TUTUSDT", expected_start, cutoff + 300_000)]
     manifest = next(iter(trading.cases.values()))["manifest"]
     assert manifest.instrument.provider_symbol == "TUTUSDT"
-    assert manifest.execution_capability_snapshot_sha256 == _snapshot().snapshot_sha256
+    assert manifest.venue_catalog_snapshot_sha256 == _catalog().snapshot_sha256
     assert manifest.policy_id == "binance_oi_smart_money_long_v2"
     # Every provider call happens outside a transaction: the read, the freeze and the commit are the
     # only database names in the turn, and the bar fetch sits between the first and the second.
     assert "trading_case_create" in db.names
-    assert "trading_intent_commit" in db.names
+    assert "trading_capital_disposition_commit" in db.names
 
 
 def test_a_policy_no_trade_is_a_no_trade_case_with_frozen_checks_and_no_intent() -> None:
@@ -297,7 +320,7 @@ def test_a_policy_no_trade_is_a_no_trade_case_with_frozen_checks_and_no_intent()
 
     turn = _advance(lane)
 
-    assert (turn.cases_created, turn.no_trade, turn.intents_emitted) == (1, 1, 0)
+    assert (turn.cases_created, turn.no_trade) == (1, 1)
     _case_id, state, reason = trading.settled[0]
     assert state is CaseState.NO_TRADE
     assert reason == "smart_money_ratio_below_or_equal_floor"
@@ -314,7 +337,7 @@ def test_a_hyperliquid_frame_with_complete_bars_is_research_only_and_creates_no_
 
     turn = _advance(lane)
 
-    assert (turn.cases_created, turn.intents_emitted, turn.research_only) == (0, 0, 1)
+    assert (turn.cases_created, turn.research_only) == (0, 1)
     assert trading.cases == {}
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "venue:research_only_venue"}
     assert trading.admission[0]["status"] == "RESEARCH_ONLY"
@@ -334,28 +357,40 @@ def test_an_unrecognised_venue_tag_is_rejected_rather_than_routed() -> None:
 
 
 # ---------------------------------------------------------------------------- F2P: infrastructure
-def test_a_missing_runtime_authority_row_halts_before_any_scan_case_or_provider_call() -> None:
+def test_a_missing_runtime_authority_row_faults_before_any_scan_case_or_provider_call() -> None:
     """#331 comment F2P 4. The old reader defaulted the absent row to `control = RUNNING`."""
 
     trading = FakeTrading(authority=None, rows=[_row()])
     calls: list[tuple[str, int, int]] = []
     lane, db = _lane(trading, provider_calls=calls)
 
-    turn = _advance(lane)
-
-    assert (turn.outcome, turn.reason) == ("HALTED", "runtime_state_missing")
+    with pytest.raises(RuntimeError, match="trading_runtime_state_missing"):
+        _advance(lane)
     assert (trading.cases, trading.admission, calls) == ({}, [], [])
-    assert db.names == ["trading_capital_authority"]
+    assert db.names == [
+        "trading_decision_runtime",
+        "trading_capital_authority",
+        "trading_decision_runtime",
+    ]
+    assert trading.runtime_states == [
+        ("STARTING", None),
+        ("FAULTED", "decision_turn_fault"),
+    ]
 
 
-def test_a_paused_lane_scans_nothing_and_creates_nothing() -> None:
-    trading = FakeTrading(authority=_authority(control="PAUSED"), rows=[_row()])
+def test_a_paused_capital_plane_still_runs_policy_but_emits_no_intent() -> None:
+    trading = FakeTrading(authority=_authority(capital_control="PAUSED"), rows=[_row()])
     lane, db = _lane(trading)
 
     turn = _advance(lane)
 
-    assert (turn.outcome, turn.reason) == ("HALTED", "control_paused")
-    assert db.names == ["trading_capital_authority"]
+    assert (turn.outcome, turn.reason, turn.cases_created, turn.blocked) == (
+        "ADVANCED",
+        "advanced",
+        1,
+        1,
+    )
+    assert "trading_capital_disposition_commit" in db.names
 
 
 def test_an_unknown_repository_error_propagates_and_terminalises_nothing() -> None:
@@ -364,13 +399,17 @@ def test_an_unknown_repository_error_propagates_and_terminalises_nothing() -> No
     trading = FakeTrading(authority=_authority(), rows=[_row()])
     lane, _ = _lane(trading)
 
-    def explode(**_: Any) -> DecisionCommit:
+    def explode(**_: Any) -> CapitalDispositionCommit:
         raise RuntimeError("deadlock detected")
 
     trading.commit_result = lambda case_id: explode()
 
     with pytest.raises(RuntimeError, match="deadlock detected"):
         _advance(lane)
+    assert trading.runtime_states == [
+        ("STARTING", None),
+        ("FAULTED", "decision_turn_fault"),
+    ]
     assert trading.settled == []
     assert [row["reason"] for row in trading.admission] == ["case_created"]
 
@@ -394,27 +433,28 @@ def test_every_refusal_is_stage_specific_and_none_of_them_is_a_catch_all() -> No
     assert _reasons(trading) == {
         "oi:poor:oi_signal_v1": "eligibility:oi_value_below_floor",
         "oi:old:oi_signal_v1": "eligibility:trigger_stale",
-        "oi:unlisted:oi_signal_v1": "capability:capability_absent",
+        "oi:unlisted:oi_signal_v1": "catalog:catalog_absent",
     }
 
 
-def test_an_issuer_absent_from_the_active_capability_snapshot_defers_at_the_capability_stage() -> None:
-    trading = FakeTrading(authority=_authority(capability=_snapshot(_capability("BTCUSDT"))), rows=[_row()])
+def test_an_issuer_absent_from_the_active_catalog_defers_at_the_catalog_stage() -> None:
+    catalog = _catalog(_catalog_entry("BTCUSDT"))
+    trading = FakeTrading(authority=_authority(catalog=catalog), rows=[_row()])
     lane, _ = _lane(trading)
 
     _advance(lane)
 
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "capability:capability_absent"}
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "catalog:catalog_absent"}
     assert trading.cases == {}
 
 
-def test_no_active_capability_snapshot_defers_every_source_by_name() -> None:
-    trading = FakeTrading(authority=_authority(capability=None), rows=[_row()])
+def test_no_active_catalog_snapshot_defers_every_source_by_name() -> None:
+    trading = FakeTrading(authority=_authority(catalog=None), rows=[_row()])
     lane, _ = _lane(trading)
 
     _advance(lane)
 
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "capability:capability_absent"}
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "catalog:catalog_absent"}
 
 
 def test_missing_bars_defer_and_a_gap_at_the_cutoff_rejects() -> None:
@@ -432,16 +472,17 @@ def test_missing_bars_defer_and_a_gap_at_the_cutoff_rejects() -> None:
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "market_context:market_data_invalid"}
 
 
-def test_a_full_lane_answers_every_admitted_frame_rather_than_leaving_a_hole() -> None:
-    """A live thesis fills the lane. Having already entered today does not (#348)."""
+def test_a_recovery_obligation_does_not_stop_another_source_reaching_policy() -> None:
+    """#350: existing capital recovery cannot turn the Decision Plane into a blind spot."""
 
     trading = FakeTrading(authority=_authority(active_underlyings=frozenset({"crypto:SOL"})), rows=[_row()])
     lane, _ = _lane(trading)
 
-    _advance(lane)
+    turn = _advance(lane)
 
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "eligibility:lane_capacity_exhausted"}
-    assert trading.admission[0]["evidence"]["lane_full"] == "active_intent"
+    assert turn.cases_created == 1
+    assert turn.blocked == 1
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
 
 
 def test_having_entered_today_does_not_refuse_a_later_frame() -> None:
@@ -464,7 +505,7 @@ def test_having_entered_today_does_not_refuse_a_later_frame() -> None:
     turn = _advance(lane)
 
     assert turn.cases_created == 1
-    assert turn.intents_emitted == 1
+    assert turn.blocked == 1
     assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
 
 
@@ -496,7 +537,7 @@ def test_a_second_issuer_in_one_turn_is_deferred_rather_than_frozen_into_a_doome
     """
 
     trading = FakeTrading(
-        authority=_authority(capability=_snapshot(_capability(), _capability("DOGEUSDT"))),
+        authority=_authority(catalog=_catalog(_catalog_entry(), _catalog_entry("DOGEUSDT"))),
         rows=[_row(), _row(event_id="evt-2", symbol="DOGE")],
     )
     lane, _ = _lane(trading)
@@ -512,7 +553,7 @@ def test_a_second_issuer_in_one_turn_is_deferred_rather_than_frozen_into_a_doome
     assert surplus["status"] == "DEFERRED"
     assert surplus["evidence"]["lane_full"] == "freezes_per_turn"
     # And no Case was opened only to be closed against a fence its own turn had just consumed: the one
-    # Case that exists committed an Intent, and nothing was settled by the lane at all.
+    # Case that exists preserved the LONG decision beside a capital block, with no Intent.
     assert trading.commits == list(trading.cases)
     assert trading.settled == []
 
@@ -586,15 +627,15 @@ def test_a_case_older_than_the_decision_budget_is_blocked_rather_than_sized_off_
 
 
 def test_a_commit_time_denial_is_a_typed_blocked_reason_and_emits_no_intent() -> None:
-    """#331 F2P 4/5: blacklist and capability races are named, not `intent_admission_blocked`."""
+    """#350: a changed public catalog is named, not `intent_admission_blocked`."""
 
     trading = FakeTrading(authority=_authority(), rows=[_row()])
-    trading.commit_result = lambda case_id: DecisionCommit(state=CaseState.BLOCKED, reason="capability_mismatch")
+    trading.commit_result = lambda case_id: CapitalDispositionCommit(state=CaseState.BLOCKED, reason="catalog_mismatch")
     lane, _ = _lane(trading)
 
     turn = _advance(lane)
 
-    assert (turn.blocked, turn.intents_emitted) == (1, 0)
+    assert turn.blocked == 1
     assert trading.commits == list(trading.cases)
 
 
@@ -611,7 +652,9 @@ def test_a_backlog_case_that_loses_the_fence_at_commit_is_blocked_by_name() -> N
     lane, _ = _lane(trading)
     _advance(lane)
     trading.claimable.append(next(iter(trading.cases)))
-    trading.commit_result = lambda case_id: DecisionCommit(state=CaseState.BLOCKED, reason="capacity_exhausted")
+    trading.commit_result = lambda case_id: CapitalDispositionCommit(
+        state=CaseState.BLOCKED, reason="capacity_exhausted"
+    )
 
     state = asyncio.run(lane._decide_one())
 

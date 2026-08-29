@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading.capabilities import build_execution_capability_snapshot
+from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
 from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
@@ -24,8 +22,6 @@ def _now_ms() -> int:
 def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     command = str(getattr(args, "trading_command", "") or "")
-    if command == "refresh-capabilities":
-        return _refresh_capabilities(settings)
     now = _now_ms()
     if command == "replay-oi":
         from .trading_replay import handle_oi_replay
@@ -38,22 +34,29 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         trading = repos.trading
 
         if command == "status":
-            runtime = trading.runtime_state() or {}
+            decision = trading.decision_runtime() or DecisionRuntimeV1(
+                state="FAULTED",
+                heartbeat_at_ms=None,
+                reason="decision_runtime_missing",
+                updated_at_ms=now,
+            )
+            capital = trading.capital_runtime() or CapitalRuntimeV1(
+                control="PAUSED", blacklist_revision=0, updated_at_ms=now
+            )
             return 0, {
                 "ok": True,
                 "data": {
-                    "enabled": settings.trading.enabled,
-                    "control": runtime.get("control", "RUNNING"),
-                    "execution_authority": "nautilus",
-                    "execution_environment": "BINANCE_USDM_DEMO",
-                    "active_capability_snapshot_sha256": runtime.get("active_capability_snapshot_sha256"),
-                    "active_capability_included_count": int(runtime.get("active_capability_included_count") or 0),
-                    "blacklist_revision": int(runtime.get("blacklist_revision") or 0),
+                    "decision": {
+                        "state": decision.state,
+                        "heartbeat_at_ms": decision.heartbeat_at_ms,
+                        "reason": decision.reason,
+                    },
+                    "capital": {
+                        "control": capital.control,
+                        "blacklist_revision": capital.blacklist_revision,
+                    },
+                    "bindings": [_binding_runtime(binding) for binding in trading.binding_runtime_rows(now_ms=now)],
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
-                    "nautilus_heartbeat_at_ms": runtime.get("nautilus_heartbeat_at_ms"),
-                    "nautilus_ready": bool(runtime.get("nautilus_ready")),
-                    "nautilus_readiness_reason": runtime.get("nautilus_readiness_reason"),
-                    "nautilus_unexpected_exposure": bool(runtime.get("nautilus_unexpected_exposure")),
                     # #211: where the 24 h of work actually spent its time, stage by stage. `n` per
                     # stage says how much evidence each number rests on.
                     "stage_latency_ms": trading.stage_latency_ms(since_ms=now - _STATUS_WINDOW_MS),
@@ -64,6 +67,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     **trading.runtime_summary(since_ms=now - _STATUS_WINDOW_MS, now_ms=now),
                     "cases_by_state_24h": trading.case_counts(since_ms=now - _STATUS_WINDOW_MS),
                     "case_reasons_24h": trading.case_reason_counts(since_ms=now - _STATUS_WINDOW_MS),
+                    "capital_reasons_24h": trading.case_capital_reason_counts(since_ms=now - _STATUS_WINDOW_MS),
                     "intents_24h": trading.intent_counts(since_ms=now - _STATUS_WINDOW_MS),
                 },
             }
@@ -83,6 +87,8 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                         "state": row["state"],
                         "policy_decision": row["policy_decision"],
                         "policy_reason": row["policy_reason"],
+                        "capital_disposition": row["capital_disposition"],
+                        "capital_reason": row["capital_reason"],
                         "created_at_ms": row["created_at_ms"],
                     }
                     for row in rows
@@ -134,51 +140,19 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
 
 
-def _refresh_capabilities(settings: Any) -> tuple[int, dict[str, Any]]:
-    from tracefold.app.workers.wiring.news_to_trading import news_execution_instruments
-    from tracefold.integrations.nautilus import (
-        installed_nautilus_wheel_identity,
-        load_binance_usdm_demo_capabilities,
-    )
-
-    with repositories(settings, role="workers") as repos, repos.transaction():
-        runtime = repos.trading.runtime_state()
-        if runtime is None or runtime.get("control") != "PAUSED":
-            return 1, {"ok": False, "error": "execution_capability_refresh_requires_paused"}
-        news_rows = news_execution_instruments(repos)
-    try:
-        provider_rows = asyncio.run(load_binance_usdm_demo_capabilities())
-    except Exception:
-        return 1, {"ok": False, "error": "execution_capability_provider_load_failed"}
-    identity = runtime_identity()
-    try:
-        snapshot = build_execution_capability_snapshot(
-            news_rows=news_rows,
-            provider_rows=provider_rows,
-            app_revision=identity.runtime_revision,
-            app_image_digest=identity.image_digest,
-            nautilus_wheel_identity=installed_nautilus_wheel_identity(),
-        )
-    except (RuntimeError, ValueError):
-        return 1, {"ok": False, "error": "execution_capability_snapshot_invalid"}
-    try:
-        with repositories(settings, role="workers") as repos, repos.transaction():
-            activation_at_ms = _now_ms()
-            activated = repos.trading.append_and_activate_execution_capability_snapshot(
-                snapshot,
-                created_at_ms=activation_at_ms,
-            )
-            if not activated:
-                raise RuntimeError("execution_capability_activation_blocked")
-    except RuntimeError as exc:
-        return 1, {"ok": False, "error": str(exc)}
-    return 0, {
-        "ok": True,
-        "data": {
-            "snapshot_sha256": snapshot.snapshot_sha256,
-            "included_count": len(snapshot.included),
-            "excluded_count": len(snapshot.excluded),
-        },
+def _binding_runtime(binding: VenueBindingRuntimeV1) -> dict[str, Any]:
+    return {
+        "binding": binding.binding,
+        "credential_state": binding.credential_state,
+        "credential_fingerprint": binding.credential_fingerprint,
+        "runtime_state": binding.runtime_state,
+        "account_state": binding.account_state,
+        "catalog_state": binding.catalog_state,
+        "catalog_snapshot_sha256": binding.catalog_snapshot_sha256,
+        "catalog_captured_at_ms": binding.catalog_captured_at_ms,
+        "heartbeat_at_ms": binding.heartbeat_at_ms,
+        "reason": binding.reason,
+        "updated_at_ms": binding.updated_at_ms,
     }
 
 

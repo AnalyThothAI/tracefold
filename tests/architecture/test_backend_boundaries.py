@@ -149,6 +149,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.triage_rules",
         "tracefold.trading.capabilities",
         "tracefold.trading.capital_lane",
+        "tracefold.trading.catalog",
         "tracefold.trading.contracts",
     ),
     "app.nautilus": ("tracefold.trading.intent",),
@@ -169,6 +170,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "nautilus": {"trading"},
     "opentrade": {"trading"},
+    "trading_catalog": {"trading"},
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge
 # would have to be named here; no News module may write another business package's tables.

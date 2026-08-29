@@ -32,6 +32,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -40,12 +41,52 @@ from typing import Any, Final, Literal, TypedDict
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # Bumped whenever the manifest layout or the pure policy changes shape: a Case frozen under one
-# version is not comparable with a Case frozen under another. v7 is #331's hard cut — the manifest
-# lost `mode`, the News counterpart, the liquidation contexts and the OI/price quadrant, and gained
-# nothing, because a Case is now one Binance OI frame plus the price window it was frozen against.
-TRADING_MANIFEST_VERSION: Final = "trading_manifest_v7"
+# version is not comparable with a Case frozen under another. v8 is #350's no-key hard cut: a Case
+# pins the credential-free public catalogue it resolved from, never an execution capability that
+# requires a configured binding and belongs to #355.
+TRADING_MANIFEST_VERSION: Final = "trading_manifest_v8"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
+
+VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
+
+
+@dataclass(frozen=True, slots=True)
+class DecisionRuntimeV1:
+    """The durable Decision Plane heartbeat projected across the App seam."""
+
+    state: Literal["DISABLED", "FAULTED", "RUNNING", "STARTING"]
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class CapitalRuntimeV1:
+    """The narrow durable Capital control projected across the App seam."""
+
+    control: ControlState
+    blacklist_revision: int
+    updated_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class VenueBindingRuntimeV1:
+    """The public, secret-free runtime facts for one closed execution binding."""
+
+    binding: VenueBinding
+    credential_state: Literal["configured", "invalid", "unconfigured"]
+    credential_fingerprint: str | None
+    runtime_state: Literal["faulted", "ready", "stale", "starting", "stopped"]
+    account_state: Literal["exposure_present", "reconciled_flat", "unknown"]
+    catalog_state: Literal["error", "missing", "ready", "stale"]
+    catalog_snapshot_sha256: str | None
+    catalog_captured_at_ms: int | None
+    heartbeat_at_ms: int | None
+    reason: str | None
+    updated_at_ms: int
+
 
 # No `NewsLearningEpoch` literal (#314). Trading pins the two upstream contracts it actually reasons
 # about — `program_version` and `policy_version` — and a News epoch label is neither: it names *when* a
@@ -128,7 +169,6 @@ class InstrumentCandidateRow(TypedDict):
     last_seen_ms: int
 
 
-ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
 # One live trigger kind. The column keeps its name and its historical `news` / `liquidation` values;
 # the writer only ever produces `oi`.
 TriggerKind = Literal["oi"]
@@ -161,29 +201,30 @@ class CaseState(StrEnum):
     ORDER_PREPARED = "ORDER_PREPARED"
 
 
-# Exactly three answers a new Case may end in (#331). `NO_TRADE` means the policy ran to completion and
-# declined; `BLOCKED` means a system fact, a capital authority or an invariant stopped the decision from
-# completing safely; `INTENT_EMITTED` means the Case and one immutable Intent were handed over in the
-# same transaction.
-CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
-    {CaseState.NO_TRADE, CaseState.BLOCKED, CaseState.INTENT_EMITTED}
-)
+# Exactly two answers the #350 writer may reach. `INTENT_EMITTED` remains readable history but is
+# deliberately absent until #360 owns reservation + Intent in one transaction.
+CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset({CaseState.NO_TRADE, CaseState.BLOCKED})
 
-# Why a Case that ran could not reach a decision. Closed on purpose: `BLOCKED` used to carry
-# `intent_admission_blocked`, a catch-all that a PostgreSQL timeout, a serialization failure and a
-# genuine capability change all arrived under — which made an infrastructure fault indistinguishable
-# from a business refusal and consumed the source forever. An unknown repository error is now an
-# exception that rolls back and leaves the Case claimable, never one of these.
-BlockedReason = Literal[
-    "capability_absent",
-    "capability_mismatch",
-    "blacklisted",
-    "capacity_exhausted",
-    "quantity_unexecutable",
+# Decision could not safely run; Policy stays `not_run` and Capital is not applicable.
+DecisionBlockReason = Literal[
     "case_stale",
     "manifest_invalid",
     "policy_identity_retired",
     "source_generation_retired",
+]
+
+# Policy answered LONG, but independent capital authority refused it. #360 will extend this closed
+# vocabulary with grant, arm and risk reasons while keeping Policy attribution unchanged.
+CapitalBlockReason = Literal[
+    "capital_paused",
+    "capital_close_only",
+    "credentials_unconfigured",
+    "credentials_invalid",
+    "catalog_mismatch",
+    "catalog_stale",
+    "unexpected_exposure",
+    "binding_unready",
+    "promotion_authority_unavailable",
 ]
 
 
@@ -379,7 +420,7 @@ class FrozenPolicyContext(_Frozen):
 class TradingCaseManifest(_Frozen):
     """The frozen, content-addressed input to one decision. Nothing later than `cutoff_ms` may enter."""
 
-    manifest_version: Literal["trading_manifest_v7"] = TRADING_MANIFEST_VERSION
+    manifest_version: Literal["trading_manifest_v8"] = TRADING_MANIFEST_VERSION
     primary_trigger: OiMarketTrigger
     contexts: FrozenPolicyContext
     policy_id: str
@@ -390,10 +431,9 @@ class TradingCaseManifest(_Frozen):
     base_symbol: str
     cutoff_ms: int
     instrument: InstrumentRef
-    # The capability snapshot the instrument was resolved from. A Case whose Intent is later refused
-    # for `capability_mismatch` can then be read against the exact universe that admitted it, instead
-    # of against whichever snapshot happens to be active when someone asks.
-    execution_capability_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Public instrument truth only. #355 later compiles execution capability from this catalogue and
+    # a closed binding; the Decision Plane may freeze and run policy without either credential.
+    venue_catalog_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def _config_digest_matches_snapshot(self) -> TradingCaseManifest:
@@ -428,10 +468,11 @@ __all__ = [
     "TRADING_COLD_WRITE_TIMEOUT_SECONDS",
     "TRADING_MANIFEST_VERSION",
     "Bar",
-    "BlockedReason",
+    "CapitalBlockReason",
     "CapitalDecision",
     "CaseState",
     "ControlState",
+    "DecisionBlockReason",
     "ExchangeId",
     "FrozenMarketContext",
     "FrozenPolicyContext",

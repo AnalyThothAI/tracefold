@@ -299,22 +299,27 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     )
     assert any("postgres_workers_password" in volume for volume in worker_volumes)
     assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
+    assert "${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro" in worker_volumes
+    assert "${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro" in worker_volumes
+    assert "${HOME}/.tracefold/hyperliquid_private_key:/root/.tracefold/hyperliquid_private_key:ro" in worker_volumes
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert not any(
         "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
     )
     assert any("postgres_nautilus_password" in volume for volume in nautilus_volumes)
-    assert any("binance_demo_api_key" in volume for volume in nautilus_volumes)
-    assert any("binance_demo_api_secret" in volume for volume in nautilus_volumes)
+    assert any("binance_usdm_api_key" in volume for volume in nautilus_volumes)
+    assert any("binance_usdm_api_secret" in volume for volume in nautilus_volumes)
     assert not any(
         role_password in volume
         for volume in nautilus_volumes
         for role_password in ("postgres_serve_password", "postgres_workers_password", "postgres_migrate_password")
     )
     for service_name, service in compose["services"].items():
-        if service_name != "nautilus":
+        if service_name not in {"workers", "nautilus"}:
             assert not any(
-                "binance_demo_api_key" in volume or "binance_demo_api_secret" in volume
+                "binance_usdm_api_key" in volume
+                or "binance_usdm_api_secret" in volume
+                or "hyperliquid_private_key" in volume
                 for volume in service.get("volumes", [])
             )
     assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])

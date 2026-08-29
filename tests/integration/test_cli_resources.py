@@ -40,7 +40,7 @@ def test_db_audit_query_audit_and_validate_projections_use_postgres_only() -> No
 
 
 @pytest.mark.usefixtures("postgres_clone_dsn")
-def test_trading_status_reports_capability_without_claiming_runtime_readiness() -> None:
+def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         home = Path(tmpdir)
         write_runtime_config(home, postgres_dsn=_test_postgres_dsn())
@@ -51,11 +51,10 @@ def test_trading_status_reports_capability_without_claiming_runtime_readiness() 
     response = json.loads(stdout.getvalue())
     assert exit_code == 0
     data = response["data"]
-    assert data["execution_authority"] == "nautilus"
-    assert data["execution_environment"] == "BINANCE_USDM_DEMO"
-    assert data["active_capability_snapshot_sha256"] is None or len(data["active_capability_snapshot_sha256"]) == 64
-    assert data["active_capability_included_count"] >= 0
-    assert data["blacklist_revision"] >= 0
+    assert data["decision"]["state"] in {"DISABLED", "STARTING", "RUNNING", "FAULTED"}
+    assert data["capital"]["control"] in {"PAUSED", "CLOSE_ONLY", "RUNNING"}
+    assert data["capital"]["blacklist_revision"] >= 0
+    assert [row["binding"] for row in data["bindings"]] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
     assert data["target_notional_usd"] == "10"
     # #211: the stage report is keyed by stage and by nothing else — no symbol, event or order id can
     # enter it — and every stage says how much evidence it rests on.

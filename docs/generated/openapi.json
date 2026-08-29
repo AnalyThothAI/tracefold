@@ -4679,6 +4679,122 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
+      "TradingBindingRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "account_state": {
+            "enum": [
+              "unknown",
+              "reconciled_flat",
+              "exposure_present"
+            ],
+            "title": "Account State",
+            "type": "string"
+          },
+          "binding": {
+            "enum": [
+              "BINANCE_USDM",
+              "HYPERLIQUID_PERP"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "catalog_captured_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Captured At Ms"
+          },
+          "catalog_snapshot_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Snapshot Sha256"
+          },
+          "catalog_state": {
+            "enum": [
+              "missing",
+              "ready",
+              "stale",
+              "error"
+            ],
+            "title": "Catalog State",
+            "type": "string"
+          },
+          "credential_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Fingerprint"
+          },
+          "credential_state": {
+            "enum": [
+              "unconfigured",
+              "configured",
+              "invalid"
+            ],
+            "title": "Credential State",
+            "type": "string"
+          },
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "runtime_state": {
+            "enum": [
+              "stopped",
+              "starting",
+              "ready",
+              "stale",
+              "faulted"
+            ],
+            "title": "Runtime State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "credential_state",
+          "runtime_state",
+          "account_state",
+          "catalog_state"
+        ],
+        "title": "TradingBindingRuntimeData",
+        "type": "object"
+      },
       "TradingBudgetData": {
         "additionalProperties": false,
         "description": "What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).\n\n`max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any\nmore, and publishing a ceiling nobody enforces is worse than publishing none.",
@@ -4694,12 +4810,57 @@
         "title": "TradingBudgetData",
         "type": "object"
       },
+      "TradingCapitalRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "blacklist_revision": {
+            "minimum": 0.0,
+            "title": "Blacklist Revision",
+            "type": "integer"
+          },
+          "control": {
+            "enum": [
+              "RUNNING",
+              "CLOSE_ONLY",
+              "PAUSED"
+            ],
+            "title": "Control",
+            "type": "string"
+          }
+        },
+        "required": [
+          "control",
+          "blacklist_revision"
+        ],
+        "title": "TradingCapitalRuntimeData",
+        "type": "object"
+      },
       "TradingCaseData": {
         "additionalProperties": false,
         "properties": {
           "base_symbol": {
             "title": "Base Symbol",
             "type": "string"
+          },
+          "capital_disposition": {
+            "enum": [
+              "allowed",
+              "blocked",
+              "not_applicable"
+            ],
+            "title": "Capital Disposition",
+            "type": "string"
+          },
+          "capital_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capital Reason"
           },
           "case_id": {
             "title": "Case Id",
@@ -4809,15 +4970,13 @@
             "type": "string"
           },
           "policy_decision": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "enum": [
+              "long",
+              "no_trade",
+              "not_run"
             ],
-            "title": "Policy Decision"
+            "title": "Policy Decision",
+            "type": "string"
           },
           "policy_id": {
             "title": "Policy Id",
@@ -4904,6 +5063,8 @@
           "policy_version",
           "policy_config_digest",
           "state",
+          "policy_decision",
+          "capital_disposition",
           "observed_at_ms",
           "created_at_ms"
         ],
@@ -4913,6 +5074,13 @@
       "TradingCasesData": {
         "additionalProperties": false,
         "properties": {
+          "capital_reason_counts_24h": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Capital Reason Counts 24H",
+            "type": "object"
+          },
           "cases": {
             "items": {
               "$ref": "#/components/schemas/TradingCaseData"
@@ -4953,6 +5121,48 @@
           "measured_at_ms"
         ],
         "title": "TradingCasesData",
+        "type": "object"
+      },
+      "TradingDecisionRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "heartbeat_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ms"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "state": {
+            "enum": [
+              "DISABLED",
+              "STARTING",
+              "RUNNING",
+              "FAULTED"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "TradingDecisionRuntimeData",
         "type": "object"
       },
       "TradingGateConfigData": {
@@ -5173,7 +5383,7 @@
                   "source",
                   "venue",
                   "eligibility",
-                  "capability",
+                  "catalog",
                   "routing",
                   "market_context",
                   "freeze"
@@ -5917,102 +6127,6 @@
         "title": "TradingPolicyIdentityData",
         "type": "object"
       },
-      "TradingReadinessData": {
-        "additionalProperties": false,
-        "properties": {
-          "active_capability_included_count": {
-            "minimum": 0.0,
-            "title": "Active Capability Included Count",
-            "type": "integer"
-          },
-          "active_capability_snapshot_sha256": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Active Capability Snapshot Sha256"
-          },
-          "blacklist_revision": {
-            "minimum": 0.0,
-            "title": "Blacklist Revision",
-            "type": "integer"
-          },
-          "control": {
-            "enum": [
-              "RUNNING",
-              "CLOSE_ONLY",
-              "PAUSED"
-            ],
-            "title": "Control",
-            "type": "string"
-          },
-          "credentials_configured": {
-            "title": "Credentials Configured",
-            "type": "boolean"
-          },
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
-          },
-          "engine_readiness_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Engine Readiness Reason"
-          },
-          "engine_ready": {
-            "title": "Engine Ready",
-            "type": "boolean"
-          },
-          "execution_authority": {
-            "const": "nautilus",
-            "default": "nautilus",
-            "title": "Execution Authority",
-            "type": "string"
-          },
-          "execution_environment": {
-            "const": "BINANCE_USDM_DEMO",
-            "default": "BINANCE_USDM_DEMO",
-            "title": "Execution Environment",
-            "type": "string"
-          },
-          "heartbeat_at_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Heartbeat At Ms"
-          },
-          "unexpected_exposure": {
-            "title": "Unexpected Exposure",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "enabled",
-          "control",
-          "active_capability_included_count",
-          "blacklist_revision",
-          "credentials_configured",
-          "engine_ready",
-          "unexpected_exposure"
-        ],
-        "title": "TradingReadinessData",
-        "type": "object"
-      },
       "TradingRuntimeCountsData": {
         "additionalProperties": false,
         "description": "Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold.",
@@ -6109,11 +6223,24 @@
       "TradingStatusData": {
         "additionalProperties": false,
         "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/TradingBindingRuntimeData"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
           "budget": {
             "$ref": "#/components/schemas/TradingBudgetData"
           },
+          "capital": {
+            "$ref": "#/components/schemas/TradingCapitalRuntimeData"
+          },
           "counts": {
             "$ref": "#/components/schemas/TradingRuntimeCountsData"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/TradingDecisionRuntimeData"
           },
           "measured_at_ms": {
             "title": "Measured At Ms",
@@ -6122,9 +6249,6 @@
           "policy": {
             "$ref": "#/components/schemas/TradingPolicyIdentityData"
           },
-          "readiness": {
-            "$ref": "#/components/schemas/TradingReadinessData"
-          },
           "window_hours": {
             "title": "Window Hours",
             "type": "integer"
@@ -6132,7 +6256,9 @@
         },
         "required": [
           "budget",
-          "readiness",
+          "decision",
+          "capital",
+          "bindings",
           "policy",
           "counts",
           "window_hours",
@@ -6859,7 +6985,7 @@
     },
     "/api/trading/status": {
       "get": {
-        "description": "Control, execution readiness, active capability, and bounded durable totals. No thresholds.",
+        "description": "Durable Decision, Capital and per-binding runtime facts. No secret or provider reads.",
         "operationId": "get_trading_status_api_trading_status_get",
         "responses": {
           "200": {

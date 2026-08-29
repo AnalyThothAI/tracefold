@@ -16,7 +16,7 @@ import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChro
 import "./trading.css";
 
 /**
- * 执行与持仓 — runtime readiness, immutable Intents, and what execution did with them (#331).
+ * Decision / Capital observer, immutable Intents, and what execution did with them (#350).
  *
  * Two reads, two aggregates, and no third. The Case list this page used to carry came from
  * `/api/trading/intents.cases_without_intents`, which meant a page about execution was also the page
@@ -36,18 +36,17 @@ export function TradingPage({ token }: { token: string }) {
 
   const coldFailure = statusQuery.isError && !status;
   return (
-    <TradingShell label="执行与持仓 · Binance USD-M Demo">
+    <TradingShell label="Decision / Capital · 双场地 observer">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <h1>执行与持仓</h1>
-          <p>唯一执行权威：Nautilus · Binance USD-M Demo · capability snapshot − blacklist</p>
+          <h1>Decision / Capital</h1>
+          <p>决策面、资本控制与每个 execution binding 是三类独立事实。</p>
         </div>
         {status ? (
-          <div className="trading-heading-aside" data-tone={readinessTone(status.readiness)}>
+          <div className="trading-heading-aside" data-tone={runtimeTone(status)}>
             <span>{status.counts.day_key || "日期未知"} · UTC 预算日</span>
             <small>
-              {status.readiness.control} ·{" "}
-              {status.readiness.engine_ready ? "ENGINE READY" : "ENGINE NOT READY"}
+              DECISION {status.decision.state} · CAPITAL {status.capital.control}
             </small>
           </div>
         ) : null}
@@ -71,16 +70,23 @@ export function TradingPage({ token }: { token: string }) {
           updating={statusQuery.isFetching || intentsQuery.isFetching}
         >
           <div className="trading-body">
-            <MetricRow className="trading-mandate" columns={5} label="冻结执行契约">
-              <Metric eyebrow="VENUE" value="Binance" caption="USD-M Demo" />
+            {observerNotice(status) ? (
+              <Card title="当前资本状态">
+                <p>{observerNotice(status)}</p>
+              </Card>
+            ) : null}
+            <MetricRow className="trading-mandate" columns={6} label="独立运行事实">
+              <Metric eyebrow="DECISION" value={status.decision.state} caption="策略决策面" />
               <Metric
-                eyebrow="CAPABILITY"
-                value={`${status.readiness.active_capability_included_count} 合约`}
-                caption={
-                  status.readiness.active_capability_snapshot_sha256
-                    ? status.readiness.active_capability_snapshot_sha256.slice(0, 12)
-                    : "尚未激活快照"
-                }
+                eyebrow="CAPITAL"
+                value={status.capital.control}
+                caption="新 economic Intent"
+                tone={status.capital.control === "PAUSED" ? "caution" : undefined}
+              />
+              <Metric
+                eyebrow="BINDINGS"
+                value={`${configuredBindings(status)} / ${status.bindings.length}`}
+                caption="凭证已配置"
               />
               <Metric
                 eyebrow="NOTIONAL"
@@ -96,16 +102,17 @@ export function TradingPage({ token }: { token: string }) {
                 eyebrow="ACTIVE"
                 value={status.counts.active_intents}
                 caption="非终态 Intent"
-                tone={status.readiness.unexpected_exposure ? "caution" : "accent"}
+                tone={hasUnexpectedExposure(status) ? "caution" : "accent"}
               />
             </MetricRow>
+
+            <BindingList status={status} />
 
             <IntentList
               empty={
                 <>
-                  当前没有非终态 Intent；Nautilus 不持有待执行工作。过去 24 小时资本通道成案{" "}
-                  <b>{status.counts.cases_24h}</b> 个、形成 Intent{" "}
-                  <b>{status.counts.intents_24h}</b> 个；判定过程在{" "}
+                  当前没有非终态 Intent。过去 24 小时 Decision 成案 <b>{status.counts.cases_24h}</b>{" "}
+                  个、形成 Intent <b>{status.counts.intents_24h}</b> 个；判定过程在{" "}
                   <Link to={newsLeveragePath()}>资本判定</Link>。
                 </>
               }
@@ -143,6 +150,38 @@ export function TradingPage({ token }: { token: string }) {
         </PageState.Stale>
       ) : null}
     </TradingShell>
+  );
+}
+
+function BindingList({ status }: { status: TradingStatus }) {
+  return (
+    <Card
+      flush
+      hint="PostgreSQL durable projection；不含 secret、provider client 或推断 readiness"
+      title="Execution bindings"
+    >
+      <div className="trading-table">
+        {status.bindings.map((binding) => (
+          <article className="trading-binding-row" key={binding.binding}>
+            <b>{binding.binding}</b>
+            <span>credentials {binding.credential_state}</span>
+            <span>runtime {binding.runtime_state}</span>
+            <span>account {binding.account_state}</span>
+            <span>catalog {binding.catalog_state}</span>
+            <code title={binding.catalog_snapshot_sha256 ?? undefined}>
+              {binding.catalog_snapshot_sha256 ?? "digest —"}
+            </code>
+            <span>
+              {binding.catalog_captured_at_ms == null
+                ? "catalog time —"
+                : caseClock(binding.catalog_captured_at_ms)}
+            </span>
+            <span>{binding.reason ?? "reason —"}</span>
+          </article>
+        ))}
+      </div>
+      <TradingSourceLine path="GET /api/trading/status → bindings[]" />
+    </Card>
   );
 }
 
@@ -218,9 +257,32 @@ function outcome(intent: TradingIntent): string {
   return `${intent.realized_pnl_amount} ${intent.realized_pnl_currency ?? ""}`.trim();
 }
 
-function readinessTone(readiness: {
-  engine_ready: boolean;
-  unexpected_exposure: boolean;
-}): "caution" | undefined {
-  return readiness.engine_ready && !readiness.unexpected_exposure ? undefined : "caution";
+type TradingStatus = NonNullable<ReturnType<typeof useTradingStatusWithToken>["data"]>;
+
+function configuredBindings(status: TradingStatus): number {
+  return status.bindings.filter((binding) => binding.credential_state === "configured").length;
+}
+
+function hasUnexpectedExposure(status: TradingStatus): boolean {
+  return status.bindings.some((binding) => binding.account_state === "exposure_present");
+}
+
+function observerNotice(status: TradingStatus): string | undefined {
+  if (
+    status.decision.state === "RUNNING" &&
+    status.capital.control === "PAUSED" &&
+    status.bindings.some((binding) => binding.credential_state === "unconfigured")
+  ) {
+    return "决策运行、资本暂停、凭证未配置，当前无法交易";
+  }
+  if (status.decision.state === "FAULTED")
+    return `决策故障：${status.decision.reason ?? "原因未知"}`;
+  if (hasUnexpectedExposure(status)) return "binding 报告未预期敞口；当前不能推断账户已平。";
+  return undefined;
+}
+
+function runtimeTone(status: TradingStatus): "caution" | undefined {
+  return status.decision.state === "RUNNING" && !hasUnexpectedExposure(status)
+    ? undefined
+    : "caution";
 }

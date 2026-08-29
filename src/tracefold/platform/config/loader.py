@@ -142,9 +142,13 @@ trading:
   enabled: false
   order:
     fixed_notional_usd: 10
-  nautilus:
-    api_key_file: "binance_demo_api_key"
-    api_secret_file: "binance_demo_api_secret"
+  bindings:
+    binance_usdm:
+      api_key_file: "binance_usdm_api_key"
+      api_secret_file: "binance_usdm_api_secret"
+    hyperliquid_perp:
+      private_key_file: "hyperliquid_private_key"
+      account_address:
 """
 
 

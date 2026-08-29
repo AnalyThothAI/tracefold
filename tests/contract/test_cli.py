@@ -137,6 +137,7 @@ class CliTests(unittest.TestCase):
             ["news", "replay-decisions"],
             ["news", "corpus", "freeze"],
             ["news", "validate-candidate"],
+            ["trading", "refresh-capabilities"],
         ):
             with self.assertRaises(SystemExit):
                 parser.parse_args(command)
@@ -268,18 +269,20 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("title_presentation", news)
         trading = payload["data"]["trading"]
         self.assertFalse(trading["enabled"])
-        self.assertEqual(trading["execution_environment"], "BINANCE_USDM_DEMO")
-        self.assertEqual(
-            trading["instrument_permission"],
-            "active_capability_snapshot_minus_blacklist",
-        )
         self.assertEqual(trading["target_notional_usd"], "10")
         self.assertEqual(
-            trading["nautilus"],
+            trading["bindings"],
             {
-                "api_key_file": str(home / ".tracefold" / "binance_demo_api_key"),
-                "api_secret_file": str(home / ".tracefold" / "binance_demo_api_secret"),
-                "credentials_configured": False,
+                "BINANCE_USDM": {
+                    "credential_state": "unconfigured",
+                    "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
+                    "api_secret_file": str(home / ".tracefold" / "binance_usdm_api_secret"),
+                },
+                "HYPERLIQUID_PERP": {
+                    "credential_state": "unconfigured",
+                    "private_key_file": str(home / ".tracefold" / "hyperliquid_private_key"),
+                    "account_address_configured": False,
+                },
             },
         )
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())
@@ -354,21 +357,27 @@ class CliTests(unittest.TestCase):
             {
                 "enabled": False,
                 "order": {"fixed_notional_usd": 10},
-                "nautilus": {
-                    "api_key_file": "binance_demo_api_key",
-                    "api_secret_file": "binance_demo_api_secret",
+                "bindings": {
+                    "binance_usdm": {
+                        "api_key_file": "binance_usdm_api_key",
+                        "api_secret_file": "binance_usdm_api_secret",
+                    },
+                    "hyperliquid_perp": {
+                        "private_key_file": "hyperliquid_private_key",
+                        "account_address": None,
+                    },
                 },
             },
         )
 
-    def test_config_reports_nautilus_credentials_without_disclosing_them(self):
+    def test_config_reports_binding_credentials_without_disclosing_them(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             write_runtime_config(home)
             app_home = home / ".tracefold"
             key = "demo-key-value"
             secret = "demo-secret-value"
-            for name, value in (("binance_demo_api_key", key), ("binance_demo_api_secret", secret)):
+            for name, value in (("binance_usdm_api_key", key), ("binance_usdm_api_secret", secret)):
                 path = app_home / name
                 path.write_text(value, encoding="utf-8")
                 path.chmod(0o600)
@@ -378,7 +387,10 @@ class CliTests(unittest.TestCase):
 
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
-        self.assertTrue(payload["data"]["trading"]["nautilus"]["credentials_configured"])
+        self.assertEqual(
+            payload["data"]["trading"]["bindings"]["BINANCE_USDM"]["credential_state"],
+            "configured",
+        )
         self.assertNotIn(key, stdout.getvalue())
         self.assertNotIn(secret, stdout.getvalue())
 
@@ -463,6 +475,9 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "telegram_bot_token",
+        "binance_usdm_api_key",
+        "binance_usdm_api_secret",
+        "hyperliquid_private_key",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
@@ -473,6 +488,10 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
+    assert all(
+        (app_home / name).read_bytes() == b""
+        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
+    )
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -485,6 +504,9 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     tracked_names = (
         "config.yaml",
         "telegram_bot_token",
+        "binance_usdm_api_key",
+        "binance_usdm_api_secret",
+        "hyperliquid_private_key",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",

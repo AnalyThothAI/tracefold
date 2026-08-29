@@ -12,7 +12,11 @@ class map consults only when no real venue knows the symbol. It is never a price
 
 from __future__ import annotations
 
-from .binance import BINANCE_FUTURES_BASE_URL, BINANCE_SPOT_BASE_URL, fetch_binance_instruments
+from .binance import (
+    BINANCE_FUTURES_BASE_URL,
+    BINANCE_SPOT_BASE_URL,
+    fetch_binance_instruments,
+)
 from .bitget import BITGET_BASE_URL, fetch_bitget_instruments
 from .candles import (
     VenueBar,

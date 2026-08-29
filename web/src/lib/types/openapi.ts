@@ -230,7 +230,7 @@ export interface paths {
         };
         /**
          * Get Trading Status
-         * @description Control, execution readiness, active capability, and bounded durable totals. No thresholds.
+         * @description Durable Decision, Capital and per-binding runtime facts. No secret or provider reads.
          */
         get: operations["get_trading_status_api_trading_status_get"];
         put?: never;
@@ -2068,6 +2068,44 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
+        /** TradingBindingRuntimeData */
+        TradingBindingRuntimeData: {
+            /**
+             * Account State
+             * @enum {string}
+             */
+            account_state: "unknown" | "reconciled_flat" | "exposure_present";
+            /**
+             * Binding
+             * @enum {string}
+             */
+            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /** Catalog Captured At Ms */
+            catalog_captured_at_ms?: number | null;
+            /** Catalog Snapshot Sha256 */
+            catalog_snapshot_sha256?: string | null;
+            /**
+             * Catalog State
+             * @enum {string}
+             */
+            catalog_state: "missing" | "ready" | "stale" | "error";
+            /** Credential Fingerprint */
+            credential_fingerprint?: string | null;
+            /**
+             * Credential State
+             * @enum {string}
+             */
+            credential_state: "unconfigured" | "configured" | "invalid";
+            /** Heartbeat At Ms */
+            heartbeat_at_ms?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Runtime State
+             * @enum {string}
+             */
+            runtime_state: "stopped" | "starting" | "ready" | "stale" | "faulted";
+        };
         /**
          * TradingBudgetData
          * @description What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
@@ -2079,10 +2117,27 @@ export interface components {
             /** Target Notional Usd */
             target_notional_usd: string;
         };
+        /** TradingCapitalRuntimeData */
+        TradingCapitalRuntimeData: {
+            /** Blacklist Revision */
+            blacklist_revision: number;
+            /**
+             * Control
+             * @enum {string}
+             */
+            control: "RUNNING" | "CLOSE_ONLY" | "PAUSED";
+        };
         /** TradingCaseData */
         TradingCaseData: {
             /** Base Symbol */
             base_symbol: string;
+            /**
+             * Capital Disposition
+             * @enum {string}
+             */
+            capital_disposition: "allowed" | "blocked" | "not_applicable";
+            /** Capital Reason */
+            capital_reason?: string | null;
             /** Case Id */
             case_id: string;
             /** Created At Ms */
@@ -2111,8 +2166,11 @@ export interface components {
             };
             /** Policy Config Digest */
             policy_config_digest: string;
-            /** Policy Decision */
-            policy_decision?: string | null;
+            /**
+             * Policy Decision
+             * @enum {string}
+             */
+            policy_decision: "long" | "no_trade" | "not_run";
             /** Policy Id */
             policy_id: string;
             /** Policy Reason */
@@ -2136,6 +2194,10 @@ export interface components {
         };
         /** TradingCasesData */
         TradingCasesData: {
+            /** Capital Reason Counts 24H */
+            capital_reason_counts_24h?: {
+                [key: string]: number;
+            };
             /** Cases */
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
@@ -2152,6 +2214,18 @@ export interface components {
             };
             /** Window Hours */
             window_hours: number;
+        };
+        /** TradingDecisionRuntimeData */
+        TradingDecisionRuntimeData: {
+            /** Heartbeat At Ms */
+            heartbeat_at_ms?: number | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "DISABLED" | "STARTING" | "RUNNING" | "FAULTED";
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {
@@ -2215,7 +2289,7 @@ export interface components {
             /** Gate Retryable */
             gate_retryable?: boolean | null;
             /** Gate Stage */
-            gate_stage?: ("source" | "venue" | "eligibility" | "capability" | "routing" | "market_context" | "freeze") | null;
+            gate_stage?: ("source" | "venue" | "eligibility" | "catalog" | "routing" | "market_context" | "freeze") | null;
             /** Gate Status */
             gate_status?: ("DEFERRED" | "REJECTED" | "RESEARCH_ONLY" | "CASE_CREATED" | "EXPIRED") | null;
             /** Gate Version */
@@ -2459,44 +2533,6 @@ export interface components {
             /** Policy Version */
             policy_version: string;
         };
-        /** TradingReadinessData */
-        TradingReadinessData: {
-            /** Active Capability Included Count */
-            active_capability_included_count: number;
-            /** Active Capability Snapshot Sha256 */
-            active_capability_snapshot_sha256?: string | null;
-            /** Blacklist Revision */
-            blacklist_revision: number;
-            /**
-             * Control
-             * @enum {string}
-             */
-            control: "RUNNING" | "CLOSE_ONLY" | "PAUSED";
-            /** Credentials Configured */
-            credentials_configured: boolean;
-            /** Enabled */
-            enabled: boolean;
-            /** Engine Readiness Reason */
-            engine_readiness_reason?: string | null;
-            /** Engine Ready */
-            engine_ready: boolean;
-            /**
-             * Execution Authority
-             * @default nautilus
-             * @constant
-             */
-            execution_authority: "nautilus";
-            /**
-             * Execution Environment
-             * @default BINANCE_USDM_DEMO
-             * @constant
-             */
-            execution_environment: "BINANCE_USDM_DEMO";
-            /** Heartbeat At Ms */
-            heartbeat_at_ms?: number | null;
-            /** Unexpected Exposure */
-            unexpected_exposure: boolean;
-        };
         /**
          * TradingRuntimeCountsData
          * @description Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold.
@@ -2545,12 +2581,15 @@ export interface components {
         };
         /** TradingStatusData */
         TradingStatusData: {
+            /** Bindings */
+            bindings: components["schemas"]["TradingBindingRuntimeData"][];
             budget: components["schemas"]["TradingBudgetData"];
+            capital: components["schemas"]["TradingCapitalRuntimeData"];
             counts: components["schemas"]["TradingRuntimeCountsData"];
+            decision: components["schemas"]["TradingDecisionRuntimeData"];
             /** Measured At Ms */
             measured_at_ms: number;
             policy: components["schemas"]["TradingPolicyIdentityData"];
-            readiness: components["schemas"]["TradingReadinessData"];
             /** Window Hours */
             window_hours: number;
         };

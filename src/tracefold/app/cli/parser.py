@@ -379,11 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     trading = subcommands.add_parser("trading", help="Trading Case -> Intent -> Outcome and safety controls")
     trading_subcommands = trading.add_subparsers(dest="trading_command", required=True)
-    trading_subcommands.add_parser("status", help="Nautilus readiness, intent outcomes, and the daily funnel")
-    trading_subcommands.add_parser(
-        "refresh-capabilities",
-        help="cold refresh of the Binance Demo execution capability snapshot; requires PAUSED",
-    )
+    trading_subcommands.add_parser("status", help="Decision, Capital, binding facts, and durable outcomes")
     trading_cases = trading_subcommands.add_parser("cases", help="list Trading cases newest first")
     trading_cases.add_argument(
         "--state",

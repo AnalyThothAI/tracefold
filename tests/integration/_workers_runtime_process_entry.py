@@ -55,6 +55,9 @@ def _arguments() -> argparse.Namespace:
             "control_transient_runtime",
             "shutdown_stopping_control_never_returns",
             "provider_publication",
+            "trading_bindings",
+            "trading_missing_authority",
+            "trading_wiring_fault",
         ),
     )
     return parser.parse_args()
@@ -358,6 +361,20 @@ async def _main() -> None:
 
         return _components(workers, due_turns=((provider_publication, 1.0),))
 
+    if arguments.mode in {
+        "manifest_barrier",
+        "trading_bindings",
+        "trading_missing_authority",
+        "trading_wiring_fault",
+    }:
+        from tracefold.app.workers.wiring import trading as trading_wiring
+
+        async def empty_catalog() -> tuple[()]:
+            return ()
+
+        trading_wiring.fetch_binance_usdm_catalog = empty_catalog
+        trading_wiring.fetch_hyperliquid_perp_catalog = empty_catalog
+
     if arguments.mode == "manifest_barrier":
         release_gate = Path(os.environ["TRACEFOLD_TEST_MANIFEST_GATE"])
 
@@ -365,10 +382,31 @@ async def _main() -> None:
             return None, _ManifestBarrierPipeline(dsn=arguments.dsn, release_gate=release_gate)
 
         workers_wiring._wire_news_pipeline = wire_news_pipeline
+    elif arguments.mode in {"trading_bindings", "trading_missing_authority", "trading_wiring_fault"}:
+        if arguments.mode == "trading_wiring_fault":
+
+            def fail_trading_wiring(**_kwargs: Any) -> None:
+                raise RuntimeError("test_trading_wiring_fault")
+
+            workers_wiring._wire_capital_lane = fail_trading_wiring
     else:
         workers._wire_components = wire_components
+    trading_process = arguments.mode in {
+        "trading_bindings",
+        "trading_missing_authority",
+        "trading_wiring_fault",
+    }
+    binding_variant = os.environ.get("TRACEFOLD_TEST_BINDING_VARIANT", "none")
     settings = Settings(
         news={"enabled": arguments.mode == "manifest_barrier"},
+        trading={
+            "enabled": trading_process,
+            "bindings": {
+                "hyperliquid_perp": {
+                    "account_address": "0x" + "22" * 20 if binding_variant in {"dual", "invalid"} else None,
+                }
+            },
+        },
         storage={
             "postgres": {
                 "serve_dsn": arguments.dsn,
@@ -380,6 +418,17 @@ async def _main() -> None:
             }
         },
     )
+    if trading_process:
+        settings.set_config_dir(Path(os.environ["TRACEFOLD_TEST_CONFIG_DIR"]))
+    if arguments.mode == "trading_missing_authority":
+        from psycopg import connect
+
+        connection = connect(arguments.dsn)
+        try:
+            connection.execute("DELETE FROM trading_runtime_state WHERE id = 1")
+            connection.commit()
+        finally:
+            connection.close()
     await workers.run_workers(settings)
 
 

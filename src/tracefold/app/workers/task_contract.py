@@ -6,9 +6,15 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from tracefold.app.workers.wiring.trading import CAPITAL_LANE_TASK_NAME, run_capital_lane
+from tracefold.app.workers.wiring.trading import (
+    CAPITAL_LANE_TASK_NAME,
+    VENUE_CATALOG_TASK_NAME,
+    run_capital_lane,
+    run_venue_catalog,
+)
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading.capital_lane import CapitalLane
+from tracefold.trading.catalog import VenueCatalog
 
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
@@ -21,6 +27,7 @@ def worker_business_runners(
     *,
     news_pipeline: NewsPipeline | None,
     capital_lane: CapitalLane | None,
+    venue_catalog: VenueCatalog | None = None,
     telemetry: Any | None = None,
 ) -> tuple[WorkerRunner, ...]:
     """Return the ordered task declarations consumed by the Workers root.
@@ -38,6 +45,14 @@ def worker_business_runners(
             (
                 CAPITAL_LANE_TASK_NAME,
                 lambda stop: run_capital_lane(lane, stop_event=stop, telemetry=telemetry),
+            )
+        )
+    if venue_catalog is not None:
+        catalog = venue_catalog
+        runners.append(
+            (
+                VENUE_CATALOG_TASK_NAME,
+                lambda stop: run_venue_catalog(catalog, stop_event=stop),
             )
         )
     return tuple(runners)

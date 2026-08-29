@@ -1,4 +1,4 @@
-"""The capital lane's three concrete database operations, and their transaction boundaries.
+"""The Decision lane's concrete database operations and transaction boundaries (#350).
 
 Three named operations, not a repository abstraction (#331 §4): one bounded read of the whole capital
 authority, one atomic Case creation, and one atomic decision commit. They live here because a
@@ -7,10 +7,9 @@ connection across a provider call, or discover an invariant by catching an excep
 
     capital_authority      one statement snapshot of everything the turn plans against
     create_case            Case row and its `CASE_CREATED` admission row, together or not at all
-    commit_long_decision   final capability, blacklist, capacity and sizing recheck, then either the
-                           Intent plus `INTENT_EMITTED` or a typed `BLOCKED`, in one transaction
+    commit_capital_disposition  preserve Policy LONG and write the exact independent capital block
 
-`commit_long_decision` returns a closed typed disposition and never `None`/`False`. The old
+`commit_capital_disposition` returns a closed typed disposition and never `None`/`False`. The old
 `_emit_intent` caught every `Exception` and returned `False`, and the caller wrote
 `BLOCKED / intent_admission_blocked` — so a PostgreSQL timeout, a serialization failure and a genuine
 capability change all became the same business refusal, and the Source that caused it was consumed
@@ -21,19 +20,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
 from typing import Any, cast
 
 from ..admission import AdmissionRow
-from ..blacklist import Blacklist, BlacklistSnapshotV1
-from ..capabilities import ExecutionCapabilitySnapshotV1
-from ..contracts import (
-    CURRENT_TERMINAL_STATES,
-    BlockedReason,
-    CaseState,
-    TradingCaseManifest,
-)
-from ..intent import ACTIVE_INTENT_STATES, TradeIntent, executable_instrument_id, is_executable_instrument
+from ..blacklist import Blacklist
+from ..catalog import VenueInstrumentCatalogSnapshotV1
+from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest
+from ..intent import ACTIVE_INTENT_STATES
 from .sql_values import _dumps
 
 
@@ -42,26 +35,36 @@ class CapitalAuthority:
     """Everything one turn plans against, read in a single bounded transaction.
 
     A missing `trading_runtime_state` row is not represented here at all: `capital_authority` returns
-    `None`, and the lane halts without scanning, without a Case and without a provider call. The old
+    `None`, and the lane faults without scanning, without a Case and without a provider call. The old
     reader defaulted the absent row to `{"control": "RUNNING"}`, which let a lane with no runtime
     authority create Cases and spend budget on the strength of a dictionary literal.
     """
 
-    control: str
+    capital_control: str
     blacklist: Blacklist
     active_underlyings: frozenset[str]
     underlyings_in_flight: frozenset[str]
     cased_source_keys: frozenset[str]
-    capability: ExecutionCapabilitySnapshotV1 | None
+    binding: BindingAuthority
+    catalog: VenueInstrumentCatalogSnapshotV1 | None
 
 
 @dataclass(frozen=True, slots=True)
-class DecisionCommit:
-    """The one terminal answer `commit_long_decision` reached, and what it wrote."""
+class BindingAuthority:
+    credential_state: str
+    runtime_state: str
+    account_state: str
+    catalog_state: str
+    catalog_snapshot_sha256: str | None
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class CapitalDispositionCommit:
+    """The one terminal answer `commit_capital_disposition` reached, and what it wrote."""
 
     state: CaseState
     reason: str
-    intent_id: str | None = None
 
 
 class LaneStorage:
@@ -76,9 +79,7 @@ class LaneStorage:
         business snapshot filed one refusal per frame against a database problem.
         """
 
-        runtime = self.conn.execute(
-            "SELECT control, active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"
-        ).fetchone()
+        runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
         if runtime is None:
             return None
         active = self.conn.execute(
@@ -100,22 +101,25 @@ class LaneStorage:
             "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
             "FROM trading_symbol_blacklist ORDER BY base_symbol"
         ).fetchall()
-        digest = runtime["active_capability_snapshot_sha256"]
-        capability: ExecutionCapabilitySnapshotV1 | None = None
-        if digest is not None:
-            payload = self.conn.execute(
-                "SELECT payload FROM trading_execution_capability_snapshots WHERE snapshot_sha256 = %s",
-                (str(digest),),
-            ).fetchone()
-            if payload is not None:
-                capability = ExecutionCapabilitySnapshotV1.model_validate(payload["payload"])
+        binding_row = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
+        if binding_row is None:
+            raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
+        catalog = cast(Any, self).active_venue_catalog(binding="BINANCE_USDM")
         return CapitalAuthority(
-            control=str(runtime["control"]),
+            capital_control=str(runtime["control"]),
             blacklist=Blacklist.from_rows([dict(row) for row in blacklist_rows]),
             active_underlyings=frozenset(str(row["underlying_key"]) for row in active),
             underlyings_in_flight=frozenset(str(row["underlying_key"]) for row in in_flight),
             cased_source_keys=frozenset(str(row["primary_source_key"]) for row in cased),
-            capability=capability,
+            binding=BindingAuthority(
+                credential_state=binding_row.credential_state,
+                runtime_state=binding_row.runtime_state,
+                account_state=binding_row.account_state,
+                catalog_state=binding_row.catalog_state,
+                catalog_snapshot_sha256=binding_row.catalog_snapshot_sha256,
+                reason=binding_row.reason,
+            ),
+            catalog=catalog,
         )
 
     # ------------------------------------------------------------------ freeze
@@ -144,10 +148,11 @@ class LaneStorage:
             INSERT INTO trading_cases (
               case_id, underlying_key, trigger_kind, strategy_id, strategy_version,
               strategy_config_digest, primary_source_key, supplemental_source_keys,
-              manifest, manifest_sha256, state, observed_at_ms, source_observed_at_ms,
+              manifest, manifest_sha256, state, policy_decision, policy_reason,
+              capital_disposition, capital_reason, observed_at_ms, source_observed_at_ms,
               trigger_persisted_at_ms, created_at_ms, updated_at_ms
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s,
-                      'PENDING', %s, %s, %s, %s, %s)
+                      'PENDING', 'not_run', 'not_run', 'not_applicable', NULL, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
             (
@@ -182,6 +187,8 @@ class LaneStorage:
         state: CaseState,
         policy_decision: str | None,
         policy_reason: str,
+        capital_disposition: str,
+        capital_reason: str | None,
         policy_checks: Mapping[str, Any] | None = None,
         now_ms: int,
     ) -> bool:
@@ -206,6 +213,8 @@ class LaneStorage:
                    policy_decision = %s,
                    policy_reason = %s,
                    policy_checks = coalesce(%s::jsonb, policy_checks),
+                   capital_disposition = %s,
+                   capital_reason = %s,
                    decided_at_ms = %s,
                    updated_at_ms = %s
              WHERE case_id = %s AND run_id = %s AND state IN ('PENDING', 'RUNNING')
@@ -215,6 +224,8 @@ class LaneStorage:
                 policy_decision,
                 policy_reason,
                 None if policy_checks is None else _dumps(dict(policy_checks)),
+                capital_disposition,
+                capital_reason,
                 int(now_ms),
                 int(now_ms),
                 case_id,
@@ -223,7 +234,7 @@ class LaneStorage:
         )
         return int(getattr(cursor, "rowcount", 0) or 0) > 0
 
-    def commit_long_decision(
+    def commit_capital_disposition(
         self,
         *,
         case_id: str,
@@ -231,152 +242,61 @@ class LaneStorage:
         manifest: TradingCaseManifest,
         policy_reason: str,
         policy_checks: Mapping[str, Any],
-        target_notional_usd: Decimal,
         now_ms: int,
-    ) -> DecisionCommit:
-        """Re-prove capital authority, then hand the Case and one Intent over atomically.
+    ) -> CapitalDispositionCommit:
+        """Re-prove authority and preserve a Policy LONG beside the exact capital refusal.
 
-        Everything read here is read *inside* the commit: the active capability pointer, the deny-list
-        and the lane's capacity can all move while a Case waits to be decided, and a decision that
-        trusted the scan-time snapshot would emit an Intent against authority that no longer exists.
-
-        Every refusal is a named `BlockedReason` written onto the Case in this same transaction, so a
-        rolled-back attempt cannot leave a Case claimed-but-undecided. An unknown error is not one of
-        them: it propagates, the transaction rolls back, and the Case stays claimable.
+        #360 uniquely owns grant, arm, risk reservation and Intent creation. Until it lands there is
+        no allowed branch here: control, a Key, a ready runtime, or all three can never emit capital.
         """
-
-        instrument_id = executable_instrument_id(manifest.instrument)
-        snapshot = cast(Any, self).active_execution_capability_snapshot(for_update=True)
-        if snapshot is None:
-            return self._block(case_id, run_id, "capability_absent", policy_checks, now_ms)
-        if snapshot.snapshot_sha256 != manifest.execution_capability_snapshot_sha256:
-            # The pointer moved between the freeze and the decision. The Case's instrument was resolved
-            # from a universe that is no longer authoritative, so it is not this Case's to trade.
-            return self._block(case_id, run_id, "capability_mismatch", policy_checks, now_ms)
-        if not instrument_id or not is_executable_instrument(manifest.instrument, snapshot):
-            return self._block(case_id, run_id, "capability_mismatch", policy_checks, now_ms)
-        blacklist: BlacklistSnapshotV1 = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
-        if any(row.underlying_key == manifest.underlying_key for row in blacklist.active_rows):
-            return self._block(case_id, run_id, "blacklisted", policy_checks, now_ms)
-        if not self._capacity_available():
-            return self._block(case_id, run_id, "capacity_exhausted", policy_checks, now_ms)
-        capability = snapshot.included[instrument_id]
-        if not _quantity_is_executable(
-            reference_price=manifest.mark_price,
-            target_notional_usd=target_notional_usd,
-            size_increment=capability.size_increment,
-            min_quantity=capability.min_quantity,
-        ):
-            return self._block(case_id, run_id, "quantity_unexecutable", policy_checks, now_ms)
-
-        intent = TradeIntent.create(
-            case_id=case_id,
-            case_manifest_sha256=manifest.digest(),
-            execution_capability_snapshot_sha256=snapshot.snapshot_sha256,
-            blacklist_snapshot=blacklist,
-            instrument_id=instrument_id,
-            underlying_key=manifest.underlying_key,
-            created_at_ms=now_ms,
-            reference_price=manifest.mark_price,
-            target_notional_usd=target_notional_usd,
-        )
-        if not cast(Any, self).insert_intent(intent):
-            # Content-addressed identity: the same Case and the same instant produce the same Intent.
-            # A conflict therefore means another worker already handed this Case over, and the Case's
-            # own terminal transition below is what settles which of the two owns the receipt.
-            raise RuntimeError("trading_intent_insert_conflict")
-        if not self.settle_case(
-            case_id=case_id,
-            run_id=run_id,
-            state=CaseState.INTENT_EMITTED,
-            policy_decision="long",
-            policy_reason=policy_reason,
-            policy_checks=policy_checks,
-            now_ms=now_ms,
-        ):
-            # The caller owns the transaction; raising here rolls the Intent insert back too. A Case
-            # that could not transition must never leave an Intent behind.
-            raise RuntimeError("trading_intent_case_transition_failed")
-        return DecisionCommit(state=CaseState.INTENT_EMITTED, reason=policy_reason, intent_id=intent.intent_id)
-
-    def _capacity_available(self) -> bool:
-        """One nonterminal Intent globally, re-read inside the commit.
-
-        Not "one per underlying" as well: that leg was a strict subset of this one — both filter on
-        `ACTIVE_INTENT_STATES`, and the per-underlying variant only narrows further — so it could
-        never refuse anything the global check had not already refused. It read as a second rule and
-        was dead SQL for its whole life; #348 removed it rather than leave a maintainer relying on it
-        after relaxing the global one. Whoever does relax it owes a real per-underlying check, and
-        this docstring is where they should notice that it is not here.
-        """
-
-        row = self.conn.execute(
-            """
-            SELECT EXISTS (
-                     SELECT 1 FROM trading_intents WHERE execution_state = ANY(%(active)s)
-                   ) AS any_active
-            """,
-            {"active": list(ACTIVE_INTENT_STATES)},
-        ).fetchone()
-        if row is None:  # pragma: no cover - aggregate queries always return one row
-            return False
-        return not row["any_active"]
+        runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
+        if runtime is None:
+            raise RuntimeError("trading_runtime_state_missing")
+        binding = cast(Any, self).binding_runtime(binding="BINANCE_USDM", now_ms=now_ms)
+        if binding is None:
+            raise RuntimeError("trading_binding_runtime_missing:BINANCE_USDM")
+        if runtime["control"] == "PAUSED":
+            reason = "capital_paused"
+        elif runtime["control"] == "CLOSE_ONLY":
+            reason = "capital_close_only"
+        elif binding.credential_state == "unconfigured":
+            reason = "credentials_unconfigured"
+        elif binding.credential_state == "invalid":
+            reason = "credentials_invalid"
+        elif binding.catalog_snapshot_sha256 != manifest.venue_catalog_snapshot_sha256:
+            reason = "catalog_mismatch"
+        elif binding.catalog_state != "ready":
+            reason = "catalog_stale"
+        elif binding.account_state == "exposure_present":
+            reason = "unexpected_exposure"
+        elif binding.runtime_state != "ready" or binding.account_state != "reconciled_flat":
+            reason = "binding_unready"
+        else:
+            reason = "promotion_authority_unavailable"
+        return self._block(case_id, run_id, policy_reason, reason, policy_checks, now_ms)
 
     def _block(
         self,
         case_id: str,
         run_id: str,
-        reason: BlockedReason,
+        policy_reason: str,
+        capital_reason: str,
         policy_checks: Mapping[str, Any],
         now_ms: int,
-    ) -> DecisionCommit:
+    ) -> CapitalDispositionCommit:
         if not self.settle_case(
             case_id=case_id,
             run_id=run_id,
             state=CaseState.BLOCKED,
-            policy_decision="no_trade",
-            policy_reason=reason,
+            policy_decision="long",
+            policy_reason=policy_reason,
             policy_checks=policy_checks,
+            capital_disposition="blocked",
+            capital_reason=capital_reason,
             now_ms=now_ms,
         ):
             raise RuntimeError("trading_case_block_transition_failed")
-        return DecisionCommit(state=CaseState.BLOCKED, reason=reason)
+        return CapitalDispositionCommit(state=CaseState.BLOCKED, reason=capital_reason)
 
 
-def _quantity_is_executable(
-    *,
-    reference_price: Decimal,
-    target_notional_usd: Decimal,
-    size_increment: str,
-    min_quantity: str | None,
-) -> bool:
-    """Whether the venue's own lot size leaves anything to buy at this notional.
-
-    `min_notional` is deliberately not re-checked here. The execution authority sizes from a *fresh*
-    price bounded by `max_entry_drift_bps`, and that is the only price the venue will accept an order
-    at; re-deciding a notional floor against the frozen mark would refuse Cases the venue would take.
-    What this does prove is that flooring to the lot size leaves a positive, submittable quantity —
-    a question the frozen capability answers on its own.
-    """
-
-    try:
-        increment = Decimal(size_increment)
-    except (InvalidOperation, TypeError, ValueError):
-        return False
-    if not increment.is_finite() or increment <= 0 or reference_price <= 0:
-        return False
-    raw = target_notional_usd / reference_price
-    quantity = (raw // increment) * increment
-    if quantity <= 0:
-        return False
-    if min_quantity is not None:
-        try:
-            floor = Decimal(min_quantity)
-        except (InvalidOperation, TypeError, ValueError):
-            return False
-        if quantity < floor:
-            return False
-    return True
-
-
-__all__ = ["CapitalAuthority", "DecisionCommit", "LaneStorage"]
+__all__ = ["BindingAuthority", "CapitalAuthority", "CapitalDispositionCommit", "LaneStorage"]

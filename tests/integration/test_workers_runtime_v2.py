@@ -378,6 +378,126 @@ def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize(
+    ("variant", "expected_credentials", "expected_runtimes"),
+    [
+        ("none", ("unconfigured", "unconfigured"), ("stopped", "stopped")),
+        ("single", ("configured", "unconfigured"), ("stopped", "stopped")),
+        ("dual", ("configured", "configured"), ("stopped", "stopped")),
+        ("invalid", ("invalid", "invalid"), ("faulted", "faulted")),
+    ],
+)
+def test_real_workers_process_projects_each_credential_matrix_without_leaking_secrets(
+    tmp_path: Path,
+    variant: str,
+    expected_credentials: tuple[str, str],
+    expected_runtimes: tuple[str, str],
+) -> None:
+    secrets = _write_trading_binding_secrets(tmp_path, variant)
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_bindings",
+        port,
+        extra_env={
+            "TRACEFOLD_TEST_BINDING_VARIANT": variant,
+            "TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path),
+        },
+    )
+    try:
+        _wait_ready(process, port)
+        projected = _wait_trading_binding_projection(expected_credentials)
+        assert projected["decision_state"] == "RUNNING"
+        assert projected["capital_control"] == "PAUSED"
+        assert projected["credentials"] == expected_credentials
+        assert projected["runtimes"] == expected_runtimes
+        assert tuple(value is not None for value in projected["fingerprints"]) == tuple(
+            state == "configured" for state in expected_credentials
+        )
+
+        process.send_signal(signal.SIGTERM)
+        output, _ = process.communicate(timeout=5.0)
+        assert process.returncode == 0
+        assert all(secret not in output for secret in secrets)
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_trading_wiring_fault_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_wiring_fault",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "startup_failed"
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_real_missing_trading_authority_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_missing_authority",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "startup_failed"
+        conn = connect_postgres_test(read_only=False)
+        try:
+            decision = conn.execute("SELECT state, reason FROM trading_decision_runtime WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        assert dict(decision) == {"state": "DISABLED", "reason": "trading_disabled"}
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
+def test_lost_trading_authority_faults_decision_and_closes_running_workers_readiness(tmp_path: Path) -> None:
+    port = _free_port()
+    process = _start_workers_process(
+        "trading_bindings",
+        port,
+        extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
+    )
+    try:
+        _wait_ready(process, port)
+        _wait_trading_binding_projection(("unconfigured", "unconfigured"))
+        conn = connect_postgres_test(read_only=False)
+        try:
+            conn.execute("DELETE FROM trading_runtime_state WHERE id = 1")
+            conn.commit()
+        finally:
+            conn.close()
+
+        assert process.wait(timeout=10.0) != 0
+        _assert_probe_closed(port)
+        row = _runtime_row()
+        assert row["lifecycle_state"] == "failed"
+        assert row["fatal_code"] == "child_failed"
+        conn = connect_postgres_test(read_only=False)
+        try:
+            decision = conn.execute("SELECT state, reason FROM trading_decision_runtime WHERE id = 1").fetchone()
+        finally:
+            conn.close()
+        assert dict(decision) == {"state": "FAULTED", "reason": "decision_turn_fault"}
+    finally:
+        _ensure_process_stopped(process)
+
+
+@pytest.mark.slow
 def test_real_workers_startup_recovers_transient_pooled_heartbeat_failures() -> None:
     port = _free_port()
     process = _start_workers_process("control_transient_startup", port)
@@ -666,6 +786,50 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         return int(listener.getsockname()[1])
+
+
+def _write_trading_binding_secrets(path: Path, variant: str) -> tuple[str, ...]:
+    values: list[tuple[str, str]] = []
+    if variant in {"single", "dual", "invalid"}:
+        values.append(("binance_usdm_api_key", "process-binance-key"))
+    if variant in {"single", "dual"}:
+        values.append(("binance_usdm_api_secret", "process-binance-secret"))
+    if variant == "dual":
+        values.append(("hyperliquid_private_key", "11" * 32))
+    elif variant == "invalid":
+        values.append(("hyperliquid_private_key", "invalid-private-key"))
+    for name, value in values:
+        secret = path / name
+        secret.write_text(value, encoding="utf-8")
+        secret.chmod(0o600)
+    return tuple(value for _name, value in values)
+
+
+def _wait_trading_binding_projection(expected: tuple[str, str]) -> dict[str, object]:
+    deadline = time.monotonic() + 10.0
+    latest: dict[str, object] = {}
+    while time.monotonic() < deadline:
+        conn = connect_postgres_test(read_only=False)
+        try:
+            decision = conn.execute("SELECT state FROM trading_decision_runtime WHERE id = 1").fetchone()
+            capital = conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
+            rows = conn.execute(
+                "SELECT credential_state, credential_fingerprint, runtime_state "
+                "FROM trading_binding_runtime ORDER BY binding"
+            ).fetchall()
+        finally:
+            conn.close()
+        latest = {
+            "decision_state": None if decision is None else decision["state"],
+            "capital_control": None if capital is None else capital["control"],
+            "credentials": tuple(row["credential_state"] for row in rows),
+            "fingerprints": tuple(row["credential_fingerprint"] for row in rows),
+            "runtimes": tuple(row["runtime_state"] for row in rows),
+        }
+        if latest["decision_state"] == "RUNNING" and latest["credentials"] == expected:
+            return latest
+        time.sleep(0.02)
+    raise AssertionError(f"trading binding projection did not converge: {latest!r}")
 
 
 def _start_workers_process(

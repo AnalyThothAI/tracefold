@@ -2,9 +2,7 @@ UV_CACHE_DIR ?= /tmp/tracefold-uv-cache
 export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
-READ_NAUTILUS_CREDENTIALS_CONFIGURED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["nautilus"]["credentials_configured"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid credentials_configured")'
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
-READ_TRADING_ACTIVE_CAPABILITY := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["active_capability_snapshot_sha256"]; print(value or "") if value is None or isinstance(value, str) else sys.exit("invalid active capability")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -46,7 +44,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_TEST_EVIDENCE=1 uv run python -m pyte
 	--junitxml="$(TRACEFOLD_TEST_ARTIFACT_DIR)/junit-$(1).xml" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked _trading-capability-bootstrap-if-needed verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-evidence-prepare test-evidence-quality-static test-evidence-python-hermetic test-evidence-postgres-behavior test-evidence-migration test-evidence-runtime-process test-evidence-frontend-python test-evidence-trust-root test-evidence-frontend test-evidence-aggregate test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-evidence test-evidence-prepare test-evidence-quality-static test-evidence-python-hermetic test-evidence-postgres-behavior test-evidence-migration test-evidence-runtime-process test-evidence-frontend-python test-evidence-trust-root test-evidence-frontend test-evidence-aggregate test-profile test-profile-ratchet test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -252,10 +250,10 @@ check: check-static ## static checks plus local architecture/contract regression
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
-trading-smoke: ## Case -> Intent atomicity and Nautilus outcome acceptance on real PostgreSQL (#283)
-	@echo "This focused lane proves the native Intent ledger and atomic Case handoff."
+trading-smoke: ## Decision/Capital no-key plus retained Intent evidence on real PostgreSQL (#350)
+	@echo "This focused lane proves no-key binding projection, Policy/Capital attribution, and retained Intent evidence."
 	@echo "It does not contact Binance Demo and is not a substitute for test-evidence."
-	@uv run python -m pytest tests/integration/test_trading_intents.py -m integration
+	@uv run python -m pytest tests/integration/test_trading_intents.py tests/integration/test_trading_binding_projection.py -m integration
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy
@@ -438,13 +436,6 @@ _up-locked:
 			echo "Startup failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		runtime_config=$$($(TRACEFOLD) config); \
-		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
-		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
-		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
-			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured." >&2; \
-			exit 1; \
-		fi; \
 		docker compose build migrate || fail; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
@@ -461,48 +452,8 @@ _up-locked:
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
-		if [ "$$trading_enabled" = true ]; then \
-			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
-		fi; \
 		make --no-print-directory status || fail; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
-
-_trading-capability-bootstrap-if-needed:
-	@set -eu; \
-		runtime_status=$$(docker compose run --rm --no-deps --entrypoint tracefold serve trading status); \
-		active_capability=$$(printf '%s\n' "$$runtime_status" | $(READ_TRADING_ACTIVE_CAPABILITY)); \
-		if [ -n "$$active_capability" ]; then \
-			echo "Reusing the active Trading execution capability snapshot."; \
-		else \
-			echo "Bootstrapping the first Trading execution capability snapshot."; \
-			bootstrap_name="tracefold-nautilus-capability-bootstrap-$$$$"; \
-			bootstrap_started_at_ms=$$(python3 -c 'import time; print(time.time_ns() // 1000000)'); \
-			cleanup_bootstrap() { docker stop -t 40 "$$bootstrap_name" >/dev/null 2>&1 || true; }; \
-			trap cleanup_bootstrap EXIT; trap 'exit 130' INT; trap 'exit 143' TERM; \
-			docker compose run -d --rm --no-deps --name "$$bootstrap_name" \
-				nautilus tracefold nautilus run --bootstrap-zero-claims >/dev/null; \
-			bootstrap_ready=; attempt=0; \
-			while [ "$$attempt" -lt $(TRACEFOLD_COMPOSE_WAIT_SECONDS) ]; do \
-				bootstrap_ready=$$(docker compose exec -T postgres sh -eu -c \
-					'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-					PGOPTIONS="-c default_transaction_read_only=on"; \
-					export PGPASSWORD PGOPTIONS; \
-					exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
-					"SELECT CASE WHEN nautilus_bootstrap_account_zero_at_ms >= $$bootstrap_started_at_ms \
-					AND NOT nautilus_unexpected_exposure THEN 'ready' ELSE '' END \
-					FROM trading_runtime_state WHERE id = 1"); \
-				[ "$$bootstrap_ready" = ready ] && break; \
-				attempt=$$((attempt + 1)); sleep 1; \
-			done; \
-			if [ "$$bootstrap_ready" != ready ]; then \
-				echo "Nautilus did not establish a fresh bootstrap account-zero proof." >&2; \
-				exit 1; \
-			fi; \
-			cleanup_bootstrap; trap - EXIT INT TERM; \
-			docker compose run --rm --no-deps --entrypoint tracefold workers trading refresh-capabilities; \
-		fi; \
-		docker compose up -d --no-build --force-recreate --wait \
-			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) nautilus
 
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _deploy-image-locked
@@ -550,6 +501,7 @@ _deploy-image-locked:
 			echo "deploy-image requires primary main HEAD to equal origin/main; fetch and pull --ff-only first." >&2; \
 			exit 2; \
 		fi; \
+		$(TRACEFOLD) init >/dev/null; \
 		if [ "$(origin IMAGE_ID)" != "command line" ]; then \
 			echo "Pass an explicit local image ID: make deploy-image IMAGE_ID=sha256:<64 lowercase hex>." >&2; \
 			exit 2; \
@@ -601,18 +553,6 @@ _deploy-image-locked:
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
-		if ! nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); then \
-			echo "Target image did not report Nautilus credential availability; no services were stopped." >&2; \
-			exit 2; \
-		fi; \
-		if ! trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); then \
-			echo "Target image did not report whether Trading is enabled; no services were stopped." >&2; \
-			exit 2; \
-		fi; \
-		if [ "$$trading_enabled" = true ] && [ "$$nautilus_configured" != true ]; then \
-			echo "Trading is enabled but Binance Demo Nautilus credentials are not configured; no services were stopped." >&2; \
-			exit 2; \
-		fi; \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
@@ -620,13 +560,9 @@ _deploy-image-locked:
 		}; \
 		runtime_services="migrate serve workers"; \
 		base_services="$$runtime_services"; \
-		if [ "$$trading_enabled" = true ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
-		if [ "$$trading_enabled" = true ]; then \
-			make --no-print-directory _trading-capability-bootstrap-if-needed || fail; \
-		fi; \
 		for service in $$runtime_services; do \
 			container_id=$$(docker compose ps --all -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
@@ -698,7 +634,6 @@ status: preflight ## fail closed unless every enabled runtime is ready
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
-		nautilus_configured=$$(printf '%s\n' "$$runtime_config" | $(READ_NAUTILUS_CREDENTIALS_CONFIGURED)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -715,28 +650,9 @@ status: preflight ## fail closed unless every enabled runtime is ready
 			fi; \
 		done; \
 		if [ "$$trading_enabled" = true ]; then \
-			if [ "$$nautilus_configured" != true ]; then \
-				echo "nautilus: Trading enabled but Demo credentials are not configured" >&2; \
-				failed=1; \
-			else \
-				nautilus_ids=$$(docker compose ps --all -q nautilus); \
-				nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
-				if [ "$$nautilus_count" -ne 1 ]; then \
-					echo "nautilus: expected exactly one replica, found $$nautilus_count" >&2; \
-					failed=1; \
-				else \
-					nautilus_state=$$(docker inspect --format '{{.State.Status}}' "$$nautilus_ids"); \
-					nautilus_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$nautilus_ids"); \
-					if [ "$$nautilus_state" != "running" ] || [ "$$nautilus_health" != "healthy" ]; then \
-						echo "nautilus: state=$$nautilus_state health=$$nautilus_health" >&2; \
-						failed=1; \
-					else \
-						curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
-					fi; \
-				fi; \
-			fi; \
+			echo "execution adapters: not required (#356/#357 pending; capital paused)"; \
 		else \
-			echo "nautilus: not required (Trading disabled)"; \
+			echo "execution adapters: not required (Trading disabled)"; \
 		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
@@ -765,7 +681,7 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		fi
 
 logs: preflight ## tail all product runtime and dependency logs
-	@docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
+	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
 	@docker compose down

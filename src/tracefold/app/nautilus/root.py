@@ -204,7 +204,7 @@ def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:
 
 
 def _read_credentials(settings: Settings) -> tuple[str, str]:
-    key_file = settings.trading_nautilus_api_key_file()
+    key_file = settings.trading_binance_usdm_api_key_file()
     if key_file is None:
         raise ValueError("nautilus_api_key_file_missing")
     try:
@@ -212,7 +212,7 @@ def _read_credentials(settings: Settings) -> tuple[str, str]:
     except SecretFileError as exc:
         raise ValueError(f"nautilus_api_key_file_{exc.code}") from None
 
-    secret_file = settings.trading_nautilus_api_secret_file()
+    secret_file = settings.trading_binance_usdm_api_secret_file()
     if secret_file is None:
         raise ValueError("nautilus_api_secret_file_missing")
     try:

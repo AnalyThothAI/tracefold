@@ -38,8 +38,10 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
-provider/name. The two `trading.nautilus` file references point only to the
-dedicated Binance Demo API key and secret consumed by the Nautilus process.
+provider/name. `trading.bindings` has closed file references for Binance USD-M
+and Hyperliquid credentials. Workers reads them only to project a redacted
+fingerprint/state; it never constructs an execution provider client. Serve has
+no mount and no secret-reading path.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
@@ -50,9 +52,12 @@ fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
 `news.push.telegram_bot_token_file`, the five PostgreSQL password files
-(bootstrap, Serve, Workers, migrate, Nautilus), and the Binance Demo files named
-by `trading.nautilus.api_key_file` and `api_secret_file`.
-There is no other provider key or credential.
+(bootstrap, Serve, Workers, migrate, Nautilus), the Binance files named by
+`trading.bindings.binance_usdm.api_key_file` / `api_secret_file`, and the
+Hyperliquid file named by
+`trading.bindings.hyperliquid_perp.private_key_file`. The corresponding
+Hyperliquid account address is public identity, not a secret. There is no other
+provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
 `~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
@@ -61,9 +66,10 @@ secret files with mode `0600`; reruns repair those permissions. Without
 only the generated config and does not rotate existing PostgreSQL passwords.
 Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create an empty mode-`0600`
-`telegram_bot_token` placeholder so the Workers-only read-only bind mount is
-stable; an empty file is never treated as configured. They do not create or
-populate the Binance Demo credential files. A live
+`telegram_bot_token`, `binance_usdm_api_key`, `binance_usdm_api_secret`, and
+`hyperliquid_private_key` placeholders so Workers' read-only bind mounts are
+stable; an empty file is `unconfigured`, never a credential. They do not create
+or populate an execution key. A live
 operator populates each required provider file as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
@@ -76,12 +82,12 @@ explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
 
-Only the Nautilus container mounts the Binance Demo key and secret. During each
-TradingNode connection, the pinned Binance adapter queries the signed account
-position-mode endpoint; its configured `use_reduce_only=true` rejects Hedge
-Mode before reconciliation, strategy readiness, or an entry fence. The
-credential stays inside that adapter. No Binance credential is exposed to
-Serve, Workers, News, RabbitMQ, or public HTTP.
+Workers mounts the three optional execution secret files read-only and records
+only `unconfigured|configured|invalid` plus a one-way SHA-256 fingerprint.
+Neither plaintext nor path enters PostgreSQL, HTTP, logs, artifacts, or Issues.
+The dormant Nautilus container also has the Binance pair for recovery of
+existing Intent obligations, but is not a required deployment runtime. No
+execution credential is exposed to Serve, News, RabbitMQ, or public HTTP.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model
@@ -294,6 +300,12 @@ INSERT/UPDATE/DELETE privilege on the blacklist. The same migration grants
 Workers SELECT/INSERT and Serve SELECT on immutable instrument-listing events;
 neither runtime role can update or delete that replay evidence, and Nautilus
 has no access to it.
+Migration `0327` grants Serve SELECT on Decision, binding, and public catalog
+facts; Workers may update Decision/binding projections and insert immutable
+catalog snapshots but cannot update/delete them. The Nautilus role can read
+binding facts and update only its own non-secret runtime/account columns.
+Catalog payloads are public metadata and their append-only trigger also applies
+to the database owner.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as

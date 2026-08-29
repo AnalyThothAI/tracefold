@@ -518,6 +518,22 @@
 | `novelty_defaulted` | `BOOLEAN` | True | `None` |
 | `seen_scope` | `TEXT` | True | `None` |
 
+## `trading_binding_runtime`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `binding` | `TEXT` | False | `None` |
+| `credential_state` | `TEXT` | False | `None` |
+| `credential_fingerprint` | `TEXT` | True | `None` |
+| `runtime_state` | `TEXT` | False | `None` |
+| `account_state` | `TEXT` | False | `None` |
+| `catalog_state` | `TEXT` | False | `None` |
+| `catalog_snapshot_sha256` | `TEXT` | True | `None` |
+| `catalog_captured_at_ms` | `BIGINT` | True | `None` |
+| `heartbeat_at_ms` | `BIGINT` | True | `None` |
+| `reason` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
 ## `trading_candidate_gate_decisions`
 
 | Column | Type | Nullable | Default |
@@ -557,7 +573,7 @@
 | `program_version` | `TEXT` | True | `None` |
 | `program_sha256` | `TEXT` | True | `None` |
 | `program_output` | `JSONB` | True | `None` |
-| `policy_decision` | `TEXT` | True | `None` |
+| `policy_decision` | `TEXT` | False | `None` |
 | `policy_reason` | `TEXT` | True | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
@@ -569,6 +585,18 @@
 | `strategy_version` | `TEXT` | False | `None` |
 | `strategy_config_digest` | `TEXT` | False | `None` |
 | `policy_checks` | `JSONB` | True | `None` |
+| `capital_disposition` | `TEXT` | False | `None` |
+| `capital_reason` | `TEXT` | True | `None` |
+
+## `trading_decision_runtime`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `SMALLINT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `heartbeat_at_ms` | `BIGINT` | True | `None` |
+| `reason` | `TEXT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_execution_capability_snapshots`
 
@@ -729,6 +757,18 @@
 | `expires_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_venue_catalog_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `snapshot_sha256` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `captured_at_ms` | `BIGINT` | False | `None` |
+| `stale_after_ms` | `BIGINT` | False | `None` |
+| `provider_instrument_count` | `INTEGER` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `workers_runtime`
 

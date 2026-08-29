@@ -334,7 +334,7 @@ def _preconditions(
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     try:
         postgres_config = config["storage"]["postgres"]
-        nautilus_config = config["trading"]["nautilus"]
+        nautilus_config = config["trading"]["bindings"]["binance_usdm"]
         dsn = conninfo.conninfo_to_dict(str(postgres_config["nautilus_dsn"]))
         config_bound = bool(
             dsn.get("user") == "tracefold_nautilus"
@@ -344,8 +344,8 @@ def _preconditions(
             and "password" not in dsn
             and postgres_config.get("nautilus_password_file", "postgres_nautilus_password")
             == "postgres_nautilus_password"
-            and nautilus_config.get("api_key_file", "binance_demo_api_key") == "binance_demo_api_key"
-            and nautilus_config.get("api_secret_file", "binance_demo_api_secret") == "binance_demo_api_secret"
+            and nautilus_config.get("api_key_file", "binance_usdm_api_key") == "binance_usdm_api_key"
+            and nautilus_config.get("api_secret_file", "binance_usdm_api_secret") == "binance_usdm_api_secret"
         )
     except Exception:
         pytest.fail("Binance Demo harness config is not bound to the isolated Nautilus role", pytrace=False)
@@ -358,8 +358,8 @@ def _preconditions(
         and inspected["Config"]["Cmd"] == ["tracefold", "nautilus", "run"]
         and config_bound
         and _mounted(inspected, config_path, "/root/.tracefold/config.yaml", read_only=True)
-        and _mounted(inspected, key_path, "/root/.tracefold/binance_demo_api_key", read_only=True)
-        and _mounted(inspected, secret_path, "/root/.tracefold/binance_demo_api_secret", read_only=True)
+        and _mounted(inspected, key_path, "/root/.tracefold/binance_usdm_api_key", read_only=True)
+        and _mounted(inspected, secret_path, "/root/.tracefold/binance_usdm_api_secret", read_only=True)
         and _mounted(
             inspected,
             postgres_password_path,
@@ -397,8 +397,8 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
     with suppress(OSError):
         if config_path.samefile(operator_config):
             pytest.fail("Binance Demo harness refuses the operator runtime config", pytrace=False)
-    key_path = settings.trading_nautilus_api_key_file()
-    secret_path = settings.trading_nautilus_api_secret_file()
+    key_path = settings.trading_binance_usdm_api_key_file()
+    secret_path = settings.trading_binance_usdm_api_secret_file()
     postgres_password_path = settings.postgres_password_file("nautilus")
     if key_path is None or secret_path is None or postgres_password_path is None:
         pytest.fail("operator Binance Demo credential files are not configured", pytrace=False)

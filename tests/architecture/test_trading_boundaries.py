@@ -42,6 +42,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/market_context.py",
     "trading/contracts.py",
     "trading/capabilities.py",
+    "trading/catalog.py",
     "trading/intent.py",
     "trading/execution_policy.py",
     "trading/telemetry.py",
@@ -50,6 +51,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/storage/cases.py",
     "trading/storage/control.py",
     "trading/storage/capabilities.py",
+    "trading/storage/catalog.py",
     "trading/storage/gate.py",
     "trading/storage/intents.py",
     "trading/storage/queries.py",
@@ -411,7 +413,7 @@ def test_the_retired_lane_cluster_has_no_executable_reference() -> None:
 
 
 def test_live_wiring_reaches_no_hyperliquid_bar_no_model_and_no_shadow_runner() -> None:
-    """#331 F2P 12 and the live-wiring deletion clause, checked on the composition seam itself."""
+    """The Decision catalog may read HL metadata; the Binance capital path may not read HL bars."""
 
     wiring = SRC / "app/workers/wiring/trading.py"
     reachable = {name.lower() for name in _executable_names(wiring) if isinstance(name, str)}
@@ -419,7 +421,8 @@ def test_live_wiring_reaches_no_hyperliquid_bar_no_model_and_no_shadow_runner() 
         assert banned not in reachable, banned
     modules = _imported_modules(wiring)
     assert "tracefold.integrations.venues.fetch_binance_candles" in modules
-    assert not any("hyperliquid" in module.lower() for module in modules)
+    assert "tracefold.integrations.trading_catalog.fetch_hyperliquid_perp_catalog" in modules
+    assert not any("fetch_hyperliquid_candles" in module.lower() for module in modules)
     assert not any("dspy" in module.lower() for module in modules)
 
 
@@ -432,7 +435,9 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "INTENT_POLICY_SHA256",
         "Bar",
         "BlacklistSnapshotV1",
+        "CapitalRuntimeV1",
         "CaseState",
+        "DecisionRuntimeV1",
         "ExecutionCapabilitySnapshotV1",
         "ExecutionInstrumentCapabilityV1",
         "ExecutionUniverseCandidateRow",
@@ -450,6 +455,11 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "StableCapabilityExclusionV1",
         "TradeIntent",
         "TradingCaseManifest",
+        "VenueBinding",
+        "VenueBindingRuntimeV1",
+        "VenueInstrumentCatalogEntryV1",
+        "VenueInstrumentCatalogSnapshotV1",
+        "build_venue_catalog_snapshot",
         "deterministic_client_order_id",
     ]
     assert "TradingRepository" not in trading.__dict__
@@ -457,13 +467,40 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     assert "__getattr__" not in trading.__dict__
 
 
-def test_a_disabled_trading_context_constructs_nothing() -> None:
-    from tracefold.app.workers.wiring.trading import _wire_capital_lane
+def test_trading_enabled_controls_only_decision_not_the_public_catalog() -> None:
+    from tracefold.app.workers.wiring.trading import _wire_capital_lane, _wire_venue_catalog
     from tracefold.platform.config.models import Settings
+    from tracefold.trading.catalog import VenueCatalog
 
     settings = Settings()
     assert settings.trading.enabled is False
     assert _wire_capital_lane(settings=settings, db=object()) is None  # type: ignore[arg-type]
+
+    class Database:
+        def heavy_business(self) -> object:
+            return object()
+
+    assert isinstance(_wire_venue_catalog(db=Database()), VenueCatalog)  # type: ignore[arg-type]
+
+
+def test_an_enabled_trading_wiring_fault_propagates_instead_of_becoming_observer_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.app.workers.wiring import trading as wiring
+    from tracefold.platform.config.models import Settings
+
+    settings = Settings(trading={"enabled": True})
+
+    def fail_generation(_settings: Settings) -> object:
+        raise RuntimeError("generation_wiring_fault")
+
+    class Database:
+        def heavy_business(self) -> object:
+            return object()
+
+    monkeypatch.setattr(wiring, "active_arm_manifest", fail_generation)
+    with pytest.raises(RuntimeError, match="generation_wiring_fault"):
+        wiring._wire_capital_lane(settings=settings, db=Database())  # type: ignore[arg-type]
 
 
 def test_the_workers_process_declares_exactly_one_capital_task_and_app_owns_its_loop() -> None:
