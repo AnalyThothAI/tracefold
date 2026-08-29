@@ -9,6 +9,7 @@ from typing import Any, Literal, cast
 from ..intent import (
     ACTIVE_INTENT_STATES,
     IntentOutcome,
+    IntentReasonCode,
     ManualReviewReason,
     RejectedReason,
     TradeIntent,
@@ -43,6 +44,9 @@ EntryFenceUnavailable = Literal[
     "runtime_not_ready",
     "intent_expired",
 ]
+# Serialisation is deliberately absent: `ux_trading_intents_one_active` is a unique index, so a second
+# live Intent cannot exist to be refused here (#348).
+type EntryFenceReason = EntryFenceUnavailable | Literal["entry_fence_granted"] | IntentReasonCode
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +59,7 @@ class EntryFence:
                      after this row commits may a provider entry be sent.
         REFUSED      a terminal `REJECTED` was written at zero exposure, with a durable reason.
         UNAVAILABLE  nothing was written. The Intent is not claimable *now* — a stale dispatch, a
-                     runtime that is not ready, the day's entry already taken, or an expired TTL.
+                     runtime that is not ready, or an expired TTL.
 
     `fence_entry` used to return `IntentOutcome | None`, and `None` carried every one of the
     `UNAVAILABLE` cases plus the race where another engine already fenced. The caller could only
@@ -64,7 +68,10 @@ class EntryFence:
     """
 
     disposition: EntryFenceDisposition
-    reason: str
+    # Typed, because a bare `str` made `EntryFenceUnavailable` decorative: #348 invented an
+    # `active_intent_exists` reason, documented it and parametrised a test with it, and nothing
+    # objected because no annotation connected the Literal to this field. It cannot happen twice.
+    reason: EntryFenceReason
     outcome: IntentOutcome | None = None
 
     @property
@@ -181,7 +188,7 @@ class IntentStorage:
         if permission is None:
             # Not PENDING, already fenced, or gone. Nothing was written and nothing should be sent.
             return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
-        reason: str | None = None
+        reason: IntentReasonCode | None = None
         if (
             permission["execution_capability_snapshot_sha256"] != permission["active_capability_snapshot_sha256"]
             or not permission["instrument_in_snapshot"]

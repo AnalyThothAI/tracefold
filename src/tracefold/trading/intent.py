@@ -181,21 +181,22 @@ class TradeIntent(BaseModel):
             "max_entry_drift_bps": INTENT_POLICY_PAYLOAD["max_entry_drift_bps"],
             "max_spread_bps": INTENT_POLICY_PAYLOAD["max_spread_bps"],
         }
-        intent = cls(intent_id=canonical_sha256(values), **values)
-        if intent.intent_policy_sha256 != INTENT_POLICY_SHA256:  # pragma: no cover - constructed above
-            raise ValueError("trade_intent_policy_identity_invalid")
-        return intent
+        return cls(intent_id=canonical_sha256(values), **values)
 
     @model_validator(mode="after")
     def validate_identity(self) -> TradeIntent:
         if self.valid_until_ms != self.created_at_ms + ENTRY_TTL_MS:
             raise ValueError("trade_intent_ttl_invalid")
-        # Deliberately *not* asserted here. This validator runs on every load, so pinning the stored
-        # sha to the current constant meant that changing the execution policy made every Intent
-        # written under the previous one unreadable — the row would raise instead of saying which
-        # policy it was created under. #331 settled the same question for Case states: history stays
-        # readable, the writer is what is constrained. The assertion now lives in `create()`, which is
-        # the only place an Intent may be *emitted* under a stale policy (#348).
+        # The stored digest is deliberately *not* compared to the current constant here. This
+        # validator runs on every load, so pinning it meant that changing the execution policy made
+        # every Intent written under the previous one unreadable — the row would raise instead of
+        # saying which policy it was created under. #331 settled the same question for Case states:
+        # history stays readable, the writer is what is constrained.
+        #
+        # `create()` cannot be that constraint either: it assigns `INTENT_POLICY_SHA256` and would be
+        # comparing the constant to itself. The real one is the release pin in
+        # `tests/contract/test_trading_intent_policy_identity.py`, which fails when the digest moves
+        # without someone re-signing for it — the same evidence shape Program identity uses (#348).
         if self.intent_version == "trade_intent_v2":
             if (
                 self.execution_capability_snapshot_sha256 is None

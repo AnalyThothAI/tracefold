@@ -107,7 +107,7 @@ describe("NewsOiPage", () => {
      */
     renderOi();
     expect(
-      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v2 · Alpha 阈值随案例冻结/),
+      await screen.findByText(/BINANCE_USDM_DEMO · trading_admission_v3 · Alpha 阈值随案例冻结/),
     ).toBeInTheDocument();
     expect(screen.getByText("binance")).toBeInTheDocument();
     expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();

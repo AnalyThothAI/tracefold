@@ -305,9 +305,9 @@ class NewsOiSettings(BaseModel):
     @model_validator(mode="after")
     def validate_bounds(self) -> NewsOiSettings:
         # A 1-10 band, because this is "the opening N moves of a run": a mistyped 1000 would silently
-        # mean "every frame". Trading carried a rank ceiling of its own until #348 removed it; this one
-        # is the *notification* gate's and is unrelated to capital. It also
-        # also renders a rank slot per unit in the 持仓异动 window card. Fail at startup instead.
+        # mean "every frame", and the 持仓异动 window card renders one rank slot per unit. Fail at
+        # startup instead. Trading carried a rank ceiling of its own until #348 retired it; this one
+        # is the *notification* gate's and is unrelated to capital.
         if not 1 <= self.max_rank_in_window <= 10:
             raise ValueError("news_oi_max_rank_invalid")
         if not 300_000 <= self.window_ms <= 86_400_000:

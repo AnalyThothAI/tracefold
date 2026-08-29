@@ -200,7 +200,7 @@ export function tradingGateDecisionFixture(
     gate_retryable: false,
     gate_stage: "eligibility",
     gate_status: "REJECTED",
-    gate_version: "trading_admission_v2",
+    gate_version: "trading_admission_v3",
     research_only: false,
     source_key: "oi:evt-oi-storj:oi_signal_v1",
     source_observed_at_ms: TRADING_NOW_MS - 120_000,
@@ -216,7 +216,7 @@ export function tradingGateConfigFixture(): TradingGate["config"] {
     live_exchange_id: "binance",
     max_age_ms: 300_000,
     min_oi_value_usd: 5_000_000,
-    version: "trading_admission_v2",
+    version: "trading_admission_v3",
   };
 }
 

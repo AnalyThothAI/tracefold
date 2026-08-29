@@ -114,7 +114,7 @@ def _case(**overrides: Any) -> dict[str, Any]:
 def _gate_row(**overrides: Any) -> dict[str, Any]:
     row = {
         "source_key": "oi:evt-oi-hl:oi_signal_v1",
-        "gate_version": "trading_admission_v2",
+        "gate_version": "trading_admission_v3",
         "gate_config_digest": "f" * 64,
         "trigger_kind": "oi",
         "underlying_key": "crypto:HL",

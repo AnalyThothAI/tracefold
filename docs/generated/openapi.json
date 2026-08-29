@@ -5300,6 +5300,11 @@
             ],
             "title": "Floor"
           },
+          "holds": {
+            "default": "",
+            "title": "Holds",
+            "type": "string"
+          },
           "lane_full": {
             "default": "",
             "title": "Lane Full",

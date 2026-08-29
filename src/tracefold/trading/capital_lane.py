@@ -98,9 +98,11 @@ _SCAN_OVERLAP_FACTOR: Final = 3
 _CASE_LEASE_MS: Final = 60_000
 # One freeze per turn, and it is a capital rule rather than a throughput choice.
 #
-# The lane's global fence is one nonterminal Intent and one fenced entry per UTC day, so at most one
-# frozen Case can reach `INTENT_EMITTED` at a time. Freezing four meant that when the first answered
-# `long`, the other three were decided against a fence the first had just taken and settled
+# `ux_trading_intents_one_active` admits a single nonterminal Intent, so at most one frozen Case can
+# reach `INTENT_EMITTED` at a time. (Until #348 this paragraph said "one fenced entry per UTC day"
+# instead, and that rule is gone — but the conclusion does not depend on it, and the reason to keep
+# this constant at 1 is unchanged.) Freezing four meant that when the first answered `long`, the
+# other three were decided against a fence the first had just taken and settled
 # `BLOCKED / capacity_exhausted` — a *terminal* state, which put their `primary_source_key` beyond
 # re-admission forever. That is precisely the confusion admission refuses to make one stage earlier:
 # the lane was full, the Source was not unusable. At one freeze per turn the loser is answered
@@ -145,10 +147,6 @@ LaneOutcome = Literal["ADVANCED", "HALTED"]
 
 def now_ms() -> int:
     return int(datetime.now(tz=UTC).timestamp() * 1000)
-
-
-def _day_start_ms(now: int) -> int:
-    return now // 86_400_000 * 86_400_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,7 +235,6 @@ class CapitalLane:
             "trading_capital_authority",
             lambda repos: _trading(repos).capital_authority(
                 since_ms=now - self._config.scan_horizon_ms,
-                day_start_ms=_day_start_ms(now),
                 now_ms=now,
             ),
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,

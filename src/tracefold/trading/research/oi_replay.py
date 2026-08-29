@@ -244,7 +244,7 @@ def replay_oi_facts(
         # `research_only_venue` is the one venue answer that must not end the replay — a Hyperliquid
         # frame is a real market fact this lane studies — but it must not skip eligibility either. When
         # it did (`venue or admit_trigger(...)` short-circuits), the research cohort was scored under a
-        # laxer rulebook than the routable one: no rank ceiling, no OI-value floor, no blacklist. The two
+        # laxer rulebook than the routable one: no OI-value floor and no blacklist. The two
         # cohorts then answered different questions and the comparison between them meant nothing.
         refused = None if venue is None or venue.reason == "research_only_venue" else venue
         if refused is None:

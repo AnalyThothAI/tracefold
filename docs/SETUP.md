@@ -56,6 +56,28 @@ EOF
 uv run tracefold config   # confirm it parses before make up
 ```
 
+`trading.candidates.symbol_cooldown_seconds` and
+`trading.candidates.max_rank_in_window` are retired in #348. A per-symbol
+re-entry delay is what a lane needs when several positions can be open at once,
+and this lane holds one at a time for at most three minutes; a rank ceiling is
+selectivity, which the policy already owns. Delete either line if present:
+
+```bash
+python3 - <<'EOF'
+import re, pathlib
+p = pathlib.Path.home() / ".tracefold" / "config.yaml"
+s = p.read_text()
+p.with_suffix(".yaml.bak").write_text(s)
+p.write_text(re.sub(r"^ *(symbol_cooldown_seconds|max_rank_in_window):.*\n", "", s, flags=re.M))
+EOF
+uv run tracefold config   # confirm it parses before make up
+```
+
+Note the same key name lives under `news.oi.max_rank_in_window` and is **not**
+retired — that one is the notification gate's rank and is unrelated to capital.
+The regex above is indentation-blind, so check the diff before `make up` if your
+file sets both.
+
 `news.triage.deadline_seconds` is retired in #129. Remove that line from an
 existing `news.triage` mapping before `make up`; keep `concurrency` and the
 optional whole-chain `circuit_failures` / `circuit_open_seconds`. The Program

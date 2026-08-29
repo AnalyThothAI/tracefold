@@ -284,7 +284,7 @@ def _assert_two_day_evidence(conn: Any) -> None:
         return
     rows = conn.execute(
         """
-        SELECT instrument_id, entry_fenced_at_ms / 86400000 AS utc_day
+        SELECT instrument_id
           FROM trading_intents
          WHERE terminal_outcome = 'CLOSED_FLAT'
            AND entry_fenced_at_ms IS NOT NULL
@@ -292,7 +292,12 @@ def _assert_two_day_evidence(conn: Any) -> None:
         """
     ).fetchall()
     assert len({str(row["instrument_id"]) for row in rows}) >= 2
-    assert len({int(row["utc_day"]) for row in rows}) >= 2
+    # Two *instruments*, not two UTC days. Until #348 an entry fence admitted one entry per UTC day,
+    # so "two closed round-trips" implied two days for free and this assertion cost nothing. With the
+    # fence gone a correct busy day closes two round-trips inside it, and asserting otherwise would
+    # make the release-evidence lane fail on exactly the behaviour it exists to validate. What the
+    # drill actually needs to prove is that the lane re-arms after a thesis closes, and two distinct
+    # instruments already prove that.
 
 
 def _preconditions(
@@ -428,16 +433,9 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
             """
             SELECT count(*) FILTER (
                      WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
-                   ) AS nonterminal_intents,
-                   count(*) FILTER (
-                     WHERE entry_fenced_at_ms >= %s AND entry_fenced_at_ms < %s
-                   ) AS entries_today
+                   ) AS nonterminal_intents
               FROM trading_intents
-            """,
-            (
-                venue.now_ms() // 86_400_000 * 86_400_000,
-                (venue.now_ms() // 86_400_000 + 1) * 86_400_000,
-            ),
+            """
         ).fetchone()
         runtime = conn.execute(
             "SELECT control, active_capability_snapshot_sha256 FROM trading_runtime_state WHERE id = 1"
@@ -447,8 +445,11 @@ def test_binance_demo_entry_restart_and_max_holding_close() -> None:
             and version["database_name"] == "tracefold_286_live"
             and version["version_num"] == latest_migration_version()
             and counts
+            # `entries_today == 0` was a precondition only because a single daily entry, once taken,
+            # could never be released; #348 removed that rule, so requiring an untouched day would
+            # refuse a re-run for a reason the lane no longer has. Zero nonterminal Intents is the
+            # real precondition — it is what says no capital is in flight.
             and counts["nonterminal_intents"] == 0
-            and counts["entries_today"] == 0
             and runtime
             and runtime["control"] == "PAUSED"
             and runtime["active_capability_snapshot_sha256"] is not None

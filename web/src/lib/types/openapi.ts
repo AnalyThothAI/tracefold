@@ -2250,6 +2250,11 @@ export interface components {
             /** Floor */
             floor?: number | null;
             /**
+             * Holds
+             * @default
+             */
+            holds: string;
+            /**
              * Lane Full
              * @default
              */

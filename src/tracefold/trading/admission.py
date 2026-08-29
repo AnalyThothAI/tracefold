@@ -52,7 +52,7 @@ from .sources import SourceRejected
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
 # so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
 # v2 is #331: `RESEARCH_ONLY` exists, News triggers do not, and capability replaced the catalogue.
-ADMISSION_VERSION: Final = "trading_admission_v2"
+ADMISSION_VERSION: Final = "trading_admission_v3"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "capability", "market_context", "freeze"]
@@ -84,8 +84,9 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
-        # The per-turn Case budget and the one-entry-per-day fence refuse a Source that passed every
-        # rule about itself; calling that `active_underlying` would blame the frame's own issuer.
+        # The per-turn Case budget and the lane's one live thesis refuse a Source that passed every
+        # rule about itself; calling that `underlying_busy` would blame the frame's own issuer for a
+        # different name being in the way.
         "lane_capacity_exhausted",
         "case_created",
     }

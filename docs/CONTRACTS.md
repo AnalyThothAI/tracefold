@@ -957,7 +957,9 @@ lifecycle and a `case_id` back-reference; the status surface carries readiness
 and bounded durable totals and no threshold at all.
 
 - `GET /api/trading/status` — runtime and execution readiness. `budget` exposes
-  only target notional and the code-owned one-entry-per-UTC-day ceiling.
+  target notional and nothing else: #348 retired the one-entry-per-UTC-day
+  ceiling, and publishing a ceiling nobody enforces is worse than publishing
+  none. The lane's bound is one live thesis, held by a unique index.
   `readiness` exposes enabled/control, `nautilus`, `BINANCE_USDM_DEMO`, active
   capability digest/count, canonical blacklist revision, redacted credential
   availability, engine readiness/reason, heartbeat, and unexpected exposure.
