@@ -83,9 +83,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
         "tracefold.news.market_review.storage",
-        "tracefold.news.query_specs",
+        "tracefold.news.storage.query_specs",
         "tracefold.news.program.contracts",
         "tracefold.news.storage.root",
+        "tracefold.news.search",
         "tracefold.trading.storage.root",
         # #269/#286. Three surfaces have to describe the *same* capital rules — the Workers wiring that
         # executes them, the CLI replay that reports what they did, and the HTTP status the console
@@ -321,6 +322,23 @@ def test_business_dependency_dag_is_one_way() -> None:
             if unexpected:
                 violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
+
+
+def test_news_search_planner_is_consumed_only_by_the_news_read_path() -> None:
+    """#336: processing lanes and Trading must not acquire a dependency on feed search semantics."""
+
+    consumers = {
+        _module_name(path)
+        for path in _python_files(SRC)
+        if any(
+            imported == "tracefold.news.search" or imported.startswith("tracefold.news.search.")
+            for imported in _imports(path)
+        )
+    }
+    assert consumers == {
+        "tracefold.app.repository_session",
+        "tracefold.news.storage.feed",
+    }
 
 
 def test_relative_sibling_imports_are_resolved_before_dag_classification() -> None:

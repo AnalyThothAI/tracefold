@@ -158,11 +158,23 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         "NewsFunnelData",
         "NewsReasonCountData",
         "NewsFeedCountsData",
+        "NewsFeedSearchData",
     ):
         assert components[name]["additionalProperties"] is False
 
-    assert set(components["NewsFeedData"]["properties"]) == {"events", "next_cursor", "counts", "filters"}
+    assert set(components["NewsFeedData"]["properties"]) == {
+        "events",
+        "next_cursor",
+        "counts",
+        "filters",
+        "search",
+    }
     assert set(components["NewsFeedCountsData"]["properties"]) == {"total", "pushed", "held", "pending"}
+    assert set(components["NewsFeedSearchData"]["properties"]) == {
+        "mode",
+        "normalized_query",
+        "resolved_symbols",
+    }
     assert set(components["NewsEventDetailData"]["properties"]) == {
         "event",
         "outcome",
@@ -280,6 +292,7 @@ def test_news_feed_contract_exposes_bounded_event_filters() -> None:
         "channel",
     }
     assert parameters["q"]["schema"]["maxLength"] == 200
+    assert parameters["symbol"]["schema"]["maxLength"] == 32
     assert parameters["outcome"]["schema"]["pattern"] == "^(pushed|held|pending)?$"
     assert parameters["hours"]["schema"]["maximum"] == 168
     assert parameters["oi"]["schema"]["maxLength"] == 40

@@ -355,6 +355,14 @@ per-message ack are the fences.
 resource signals. Use shared resource and PostgreSQL activity/lock evidence for
 diagnosis; CPU alone is not a root-cause claim.
 
+News Feed search adds
+`tracefold_news_search_requests_total{mode="asset|text",result="nonzero|zero"}`
+and `tracefold_news_search_duration_seconds{mode="asset|text"}`. They record
+successful first-page requests only; cursor pages are excluded, while repeated
+browser polling remains repeated operational load. These counters are not
+distinct user-search or user-session analytics. Labels never carry the raw
+query, symbol, resolved identity, route, or user-controlled text.
+
 ## Durable state and transaction rules
 
 - PostgreSQL facts/control rows plus the durable broker queues are the only
@@ -1160,8 +1168,10 @@ supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
 approximation is not accepted.
 
-Read/return amplification uses the root result-row count for every hot query;
-no News query uses aggregate-input amplification.
+Read/return amplification uses the root result-row count for hot page queries. The two bounded News search
+count specs use aggregate-input amplification because their production contract deliberately returns one
+aggregate row after scanning the same 168-hour AssetSearch or TextSearch predicate as the first page; the
+catalog rejects that basis for every other query.
 
 Use ad hoc `EXPLAIN (ANALYZE, BUFFERS)` only on a representative bounded
 query. Since `ANALYZE` executes mutating SQL, wrap `INSERT`, `UPDATE`, `DELETE`,

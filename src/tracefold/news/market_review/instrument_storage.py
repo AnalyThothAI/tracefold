@@ -16,12 +16,37 @@ from .instruments import (
     ALIAS_SEEDS,
     REFERENCE_VENUES,
     Instrument,
+    InstrumentSearchIdentity,
     InstrumentStatus,
     instruments_from_rows,
     normalize_symbol,
+    pair_base_symbol,
     resolve_base_symbol,
 )
 from .pricing import source_rank_sql
+
+SEARCH_IDENTITY_SQL = """
+    SELECT base_symbol, priority
+      FROM (
+        SELECT base_symbol, 0 AS priority
+          FROM news_symbol_aliases
+         WHERE alias = %s
+        UNION ALL
+        SELECT DISTINCT base_symbol, 1 AS priority
+          FROM news_symbol_aliases
+         WHERE base_symbol = %s
+        UNION ALL
+        SELECT DISTINCT base_symbol, 1 AS priority
+          FROM news_market_instruments
+         WHERE status = 'trading' AND base_symbol = %s
+        UNION ALL
+        SELECT DISTINCT base_symbol, 2 AS priority
+          FROM news_market_instruments
+         WHERE status = 'trading' AND venue_symbol = %s
+      ) matches
+     ORDER BY priority, base_symbol
+"""
+SEARCH_EVENT_SYMBOLS_SQL = "SELECT alias FROM news_symbol_aliases WHERE base_symbol = %s ORDER BY alias"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +72,44 @@ class InstrumentsRepository:
     def alias_map(self) -> dict[str, str]:
         rows = self.conn.execute("SELECT alias, base_symbol FROM news_symbol_aliases").fetchall()
         return {str(row["alias"]).upper(): str(row["base_symbol"]).upper() for row in rows}
+
+    def search_identity(self, symbol: str) -> InstrumentSearchIdentity | None:
+        """Resolve one exact search token through the catalog owner, never through fuzzy text rules."""
+
+        token = str(symbol or "").strip().upper()
+        if not token:
+            return None
+        candidates = [token]
+        normalized = normalize_symbol(token)
+        if normalized and normalized != token:
+            candidates.append(normalized)
+        for candidate in candidates:
+            base = self._search_base_symbol(candidate)
+            if base is not None:
+                return self._search_identity_result(base)
+        pair_base = pair_base_symbol(token)
+        if pair_base is not None:
+            base = self._search_base_symbol(pair_base)
+            if base is not None:
+                return self._search_identity_result(base)
+        return None
+
+    def _search_base_symbol(self, token: str) -> str | None:
+        rows = self.conn.execute(SEARCH_IDENTITY_SQL, (token, token, token, token)).fetchall()
+        if not rows:
+            return None
+        best_priority = int(rows[0]["priority"])
+        matches = {str(row["base_symbol"]).upper() for row in rows if int(row["priority"]) == best_priority}
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    def _search_identity_result(self, base_symbol: str) -> InstrumentSearchIdentity:
+        base = str(base_symbol).upper()
+        rows = self.conn.execute(SEARCH_EVENT_SYMBOLS_SQL, (base,)).fetchall()
+        aliases = {str(row["alias"]).upper() for row in rows}
+        return InstrumentSearchIdentity(
+            base_symbol=base,
+            event_symbols=(base, *tuple(sorted(aliases - {base}))),
+        )
 
     def instrument_classes(self) -> dict[str, str]:
         """base_symbol -> instrument_class, in two tiers: venues we poll first, reference directories after.

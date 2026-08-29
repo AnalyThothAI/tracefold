@@ -29,12 +29,16 @@ ExternalDataSource = Literal[
 ExternalDataOutcome = Literal["error", "partial", "success"]
 ExternalDataProviderOutcome = Literal["error", "success"]
 ExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
+NewsSearchMode = Literal["asset", "text"]
+NewsSearchResult = Literal["zero", "nonzero"]
 
 _EXTERNAL_DATA_NAMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataName))
 _EXTERNAL_DATA_SOURCES: Final[frozenset[str]] = frozenset(get_args(ExternalDataSource))
 _EXTERNAL_DATA_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataOutcome))
 _EXTERNAL_DATA_PROVIDER_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataProviderOutcome))
 _EXTERNAL_DATA_SKIP_REASONS: Final[frozenset[str]] = frozenset(get_args(ExternalDataSkipReason))
+_NEWS_SEARCH_MODES: Final[frozenset[str]] = frozenset(get_args(NewsSearchMode))
+_NEWS_SEARCH_RESULTS: Final[frozenset[str]] = frozenset(get_args(NewsSearchResult))
 
 
 class TelemetryRegistry:
@@ -105,6 +109,19 @@ class TelemetryRegistry:
             "tracefold_news_story_projection_value",
             "Aggregate, content-free diagnostics for the current News Story projection.",
             ("measure",),
+            registry=self.registry,
+        )
+        self.news_search_requests = Counter(
+            "tracefold_news_search_requests",
+            "Successful first-page News feed searches by deterministic mode and result shape.",
+            ("mode", "result"),
+            registry=self.registry,
+        )
+        self.news_search_duration_seconds = Histogram(
+            "tracefold_news_search_duration_seconds",
+            "Successful first-page News feed search request duration in seconds.",
+            ("mode",),
+            buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0),
             registry=self.registry,
         )
         self.queue_oldest_delay_seconds = Gauge(
@@ -243,6 +260,18 @@ class TelemetryRegistry:
 
     def set_news_story_projection_value(self, measure: str, value: int) -> None:
         self.news_story_projection_value.labels(measure=_label(measure)).set(max(0, int(value)))
+
+    def record_news_search(
+        self,
+        mode: NewsSearchMode,
+        *,
+        result: NewsSearchResult,
+        seconds: float,
+    ) -> None:
+        mode_label = _bounded_label(mode, allowed=_NEWS_SEARCH_MODES, field="news_search_mode")
+        result_label = _bounded_label(result, allowed=_NEWS_SEARCH_RESULTS, field="news_search_result")
+        self.news_search_requests.labels(mode=mode_label, result=result_label).inc()
+        self.news_search_duration_seconds.labels(mode=mode_label).observe(max(0.0, float(seconds)))
 
     def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
         self.queue_oldest_delay_seconds.labels(

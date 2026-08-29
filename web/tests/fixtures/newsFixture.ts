@@ -127,6 +127,7 @@ export function newsFeedFixture(overrides: Partial<NewsFeed> = {}): NewsFeed {
       symbol: null,
     },
     next_cursor: null,
+    search: null,
     ...overrides,
   };
 }

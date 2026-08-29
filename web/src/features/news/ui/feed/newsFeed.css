@@ -35,6 +35,23 @@
     margin-top: -12px;
   }
 
+  .news-search-scope {
+    display: flex;
+    gap: 8px 14px;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 9px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    color: var(--text-strong);
+    background: var(--accent-band);
+    font-size: var(--font-size-meta);
+  }
+
+  .news-search-scope span {
+    color: var(--text-subtle);
+  }
+
   /*
    * The hour heading (#256). A tinted hairline band whose ink is quiet enough that a scan down the OUTCOME
    * column is uninterrupted. The first band carries no top rule — the list header is already one.
@@ -103,6 +120,11 @@
   }
 
   @media (max-width: 767px) {
+    .news-search-scope {
+      display: grid;
+      gap: 3px;
+    }
+
     .news-event-list {
       display: grid;
       gap: 7px;

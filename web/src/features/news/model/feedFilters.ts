@@ -137,7 +137,7 @@ export function toggleFilterValue<T extends NewsFeedDirection | NewsFeedChannel>
 
 export function normalizeSymbol(value: string | null | undefined): string | null {
   const normalized = value?.trim().toUpperCase() ?? "";
-  return normalized ? normalized.slice(0, 16) : null;
+  return normalized || null;
 }
 
 export function withSelectedOption(options: readonly string[], selected: string | null): string[] {

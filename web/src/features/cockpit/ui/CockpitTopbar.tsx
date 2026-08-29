@@ -8,7 +8,7 @@ import "./CockpitTopbar.css";
 
 const NEWS_SEARCH_ARIA_LABEL = "news search";
 /** Approved copy, now on every route (#256). Server-side `q` stays the authority over which fields match. */
-const NEWS_SEARCH_PLACEHOLDER = "事件 / base_symbol / 场所";
+const NEWS_SEARCH_PLACEHOLDER = "标的 / 事件关键词";
 
 /**
  * One route-context fact from a status read. `value` is undefined until the poll answers.

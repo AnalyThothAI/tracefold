@@ -44,7 +44,7 @@ def get_news_feed(
     family: Annotated[str, Query(max_length=32)] = "",
     admission: Annotated[str, Query(max_length=40)] = "",
     decision: Annotated[str, Query(max_length=16)] = "",
-    symbol: Annotated[str, Query(max_length=16)] = "",
+    symbol: Annotated[str, Query(max_length=32)] = "",
     q: Annotated[str, Query(max_length=200)] = "",
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: Annotated[str, Query(max_length=200)] = "",
@@ -84,15 +84,18 @@ def get_news_feed(
         direction, allowed=_DIRECTIONS, error="news_feed_direction_invalid", field="direction"
     )
     channels = _parse_csv_filter(channel, allowed=_CHANNELS, error="news_feed_channel_invalid", field="channel")
+    if q.strip() and symbol.strip():
+        raise ApiBadRequest("news_feed_search_conflict", field="q")
     runtime = _authenticated_runtime(request)
+    search_started_at = time.perf_counter()
     with runtime.repositories() as repos:
+        search = repos.compile_news_search(q=q or None, symbol=symbol or None)
         try:
             data = repos.news.list_feed(
                 family=family or None,
                 admission=admission or None,
                 decision=decision or None,
-                symbol=symbol or None,
-                q=q or None,
+                search=search,
                 limit=limit,
                 cursor=cursor or None,
                 outcome=outcome or None,
@@ -107,6 +110,12 @@ def get_news_feed(
             raise ApiBadRequest(str(exc), field="cursor") from exc
         _attach_asset_refs(data["events"], repos.news, repos.instruments)
         _attach_reactions(data["events"], repos.price, now_ms=int(time.time() * 1000))
+    if search is not None and not cursor:
+        runtime.telemetry.record_news_search(
+            search.mode,
+            result="zero" if not data["events"] else "nonzero",
+            seconds=time.perf_counter() - search_started_at,
+        )
     return _etagged(data, request, envelope=_FeedEnvelope)
 
 

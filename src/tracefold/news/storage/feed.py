@@ -20,6 +20,7 @@ from ..outcome import (
     novelty_zh,
     scope_zh,
 )
+from ..search import NewsSearchPlan
 from ..source_contracts import (
     EVENT_KINDS,
     OI_SOURCE_IDENTITY,
@@ -28,20 +29,14 @@ from ..source_contracts import (
     EventKind,
 )
 from ..timeline import event_timeline
-from .sql_values import _ADMITTED_SQL
-
-# Feed task tabs mirror OUTCOME_GROUP in outcome.py over the feed's joined rows.
-_PENDING_CORE_SQL: Final = (
-    "COALESCE(d.state = 'sending', false) OR ("
-    "d.state IS NULL"
-    f" AND e.admission IN ({_ADMITTED_SQL})"
-    " AND (t.final_decision IS NULL OR t.final_decision IN ('push', 'escalate')))"
+from .feed_sql import (
+    ADMITTED_SQL,
+    ASSET_SEARCH_PREDICATE,
+    OUTCOME_GROUP_SQL,
+    TEXT_SEARCH_PREDICATE,
+    feed_counts_sql,
+    feed_page_sql,
 )
-_OUTCOME_GROUP_SQL: Final = {
-    "pushed": "d.state = 'sent'",
-    "pending": f"COALESCE(d.state, '') <> 'sent' AND ({_PENDING_CORE_SQL})",
-    "held": f"COALESCE(d.state, '') <> 'sent' AND NOT ({_PENDING_CORE_SQL})",
-}
 
 # The deterministic OI lane's own rule names, grouped the three ways the monitor asks about them. These are
 # `oi_signals.evaluate_oi` / `oi_parse_failure` keys verbatim: the reader-facing tab has no vocabulary of its
@@ -58,10 +53,6 @@ OI_FILTERS: Final[dict[str, tuple[str, ...]]] = {
 # value the caller can send: it is how a request says "I am the 持仓异动 monitor", which is what lets the
 # outcome-group count be skipped for the tab that is displayed most.
 OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
-# Both feed laterals expose the judged rule under this one alias, so the page query and the tab-count query
-# share the predicate verbatim. A count that filtered differently from the rows it counts is the whole bug
-# this alias exists to prevent.
-_OI_RULE_SQL: Final = "v.trace -> 'oi_signal' ->> 'rule' AS oi_rule"
 # The lane the key can only come from. `triage.py` enters its OI branch under
 # `admission == 'telemetry_deterministic'` and nothing else writes `trace['oi_signal']`, so pairing the rule
 # with the admission narrows nothing semantically — measured live on 2026-08-25, all 298 verdicts carrying
@@ -85,8 +76,7 @@ class FeedStorage:
         family: str | None,
         admission: str | None,
         decision: str | None,
-        symbol: str | None,
-        q: str | None,
+        search: NewsSearchPlan | None,
         limit: int,
         cursor: str | None,
         outcome: str | None = None,
@@ -114,41 +104,13 @@ class FeedStorage:
         if admission:
             where.append("e.admission = %s")
             params.append(admission)
-        if symbol:
-            # The filter names an *identity*, not one spelling. `news_event_assets` stores the normalized
-            # provider tag, so an Event the Gate grounded on `SKHX` carries `SKHX` — but #87 collapsed SKHX,
-            # SKHY and SKHYNIX into one base, the asset chip renders that base, and the token page is keyed
-            # on it. Matching the tag exactly would leave the Event that supplied the link missing from its
-            # own symbol page.
-            #
-            # The alias lookup is a primary-key probe on `news_symbol_aliases` per candidate row, which is
-            # why it sits inside the same EXISTS rather than expanding to a list the caller has to build.
-            where.append(
-                "EXISTS (SELECT 1 FROM news_event_assets a"
-                " WHERE a.event_id = e.event_id"
-                "   AND (a.symbol = %s"
-                "        OR COALESCE((SELECT n.base_symbol FROM news_symbol_aliases n WHERE n.alias = a.symbol), '')"
-                "            = %s))"
-            )
-            params.extend([symbol.upper(), symbol.upper()])
-        if q:
-            pattern = f"%{q}%"
-            where.append(
-                "(e.search_doc @@ plainto_tsquery('simple', %s)"
-                " OR e.leader_title ILIKE %s"
-                " OR i.reporting_origin ILIKE %s"
-                " OR EXISTS ("
-                "   SELECT 1 FROM news_event_assets a"
-                "   LEFT JOIN news_symbol_aliases n ON n.alias = a.symbol"
-                "   LEFT JOIN news_market_instruments m"
-                "     ON m.base_symbol = COALESCE(n.base_symbol, a.symbol)"
-                "  WHERE a.event_id = e.event_id"
-                "    AND (a.symbol ILIKE %s OR COALESCE(n.base_symbol, '') ILIKE %s"
-                "         OR COALESCE(m.venue, '') ILIKE %s"
-                "         OR COALESCE(m.venue_symbol, '') ILIKE %s)"
-                "))"
-            )
-            params.extend([q, pattern, pattern, pattern, pattern, pattern, pattern])
+        if search is not None:
+            if search.mode == "asset":
+                where.append(ASSET_SEARCH_PREDICATE)
+                params.append(list(search.event_symbols))
+            else:
+                where.append(TEXT_SEARCH_PREDICATE)
+                params.append(search.normalized_query)
         if decision:
             where.append("t.final_decision = %s")
             params.append(decision)
@@ -177,38 +139,13 @@ class FeedStorage:
         # this would be the file's own "19 ms over the entire table" aggregate run for a field nobody reads.
         wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
         counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
-        if outcome in _OUTCOME_GROUP_SQL:
-            where.append(_OUTCOME_GROUP_SQL[outcome])
+        if outcome in OUTCOME_GROUP_SQL:
+            where.append(OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
             where.append("(e.opened_at_ms, e.event_id) < (%s, %s)")
             params.extend([cursor_opened, cursor_id])
         rows = self.conn.execute(
-            f"""
-            SELECT e.event_id, e.family, e.event_kind, e.source_contract_reason, e.leader_title,
-                   e.opened_at_ms, e.last_member_at_ms, e.member_count,
-                   e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
-                   e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
-                   i.canonical_url AS leader_url, i.reporting_origin, i.provenance,
-                   t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
-                   t.error_code AS triage_error_code,
-                   t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
-                   t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
-                   t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
-                   t.model_decision, t.verdict AS triage_verdict, t.trace -> 'oi_signal' AS oi_signal,
-                   d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
-              FROM news_events e
-              JOIN news_items i ON i.item_id = e.leader_item_id
-              LEFT JOIN LATERAL (
-                SELECT v.*, v.verdict ->> 'direction' AS direction, {_OI_RULE_SQL}
-                  FROM news_verdicts v
-                 WHERE v.event_id = e.event_id AND v.stage = 'triage'
-                 ORDER BY v.created_at_ms DESC LIMIT 1
-              ) t ON true
-              LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
-             WHERE {" AND ".join(where)}
-             ORDER BY e.opened_at_ms DESC, e.event_id DESC
-             LIMIT %s
-            """,
+            feed_page_sql(" AND ".join(where)),
             (*params, int(limit) + 1),
         ).fetchall()
         items = [_feed_row(dict(r)) for r in rows[: int(limit)]]
@@ -224,21 +161,22 @@ class FeedStorage:
                 "family": family,
                 "admission": admission,
                 "decision": decision,
-                "symbol": symbol,
-                "q": q,
+                "symbol": search.symbol if search is not None else None,
+                "q": search.q if search is not None else None,
                 "limit": int(limit),
-                "outcome": outcome if outcome in _OUTCOME_GROUP_SQL else None,
+                "outcome": outcome if outcome in OUTCOME_GROUP_SQL else None,
                 "hours": window_hours,
                 "oi": oi if oi in OI_OUTCOMES else None,
                 "direction": ",".join(directions) if directions else None,
                 "channel": ",".join(channels) if channels else None,
             },
+            "search": search.public_metadata() if search is not None else None,
         }
 
     def _feed_counts(self, *, where: list[str], params: list[Any]) -> dict[str, int]:
         """How the reader's current filter splits across the three outcome groups.
 
-        The three predicates partition the feed exactly (see `_OUTCOME_GROUP_SQL`), so one pass with FILTER
+        The three predicates partition the feed exactly (see `OUTCOME_GROUP_SQL`), so one pass with FILTER
         aggregates answers all four tabs. The joins mirror the feed query so a row counts here if and only if
         it would be served there, but the lateral takes only the column the predicates read rather than the
         whole verdict row.
@@ -249,22 +187,7 @@ class FeedStorage:
         grow much, and cap the window here if it stops being free.
         """
         row = self.conn.execute(
-            f"""
-            SELECT count(*) AS total,
-                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
-                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["held"]}) AS held,
-                   count(*) FILTER (WHERE {_OUTCOME_GROUP_SQL["pending"]}) AS pending
-              FROM news_events e
-              JOIN news_items i ON i.item_id = e.leader_item_id
-              LEFT JOIN LATERAL (
-                SELECT v.final_decision, v.verdict ->> 'direction' AS direction, {_OI_RULE_SQL}
-                  FROM news_verdicts v
-                 WHERE v.event_id = e.event_id AND v.stage = 'triage'
-                 ORDER BY v.created_at_ms DESC LIMIT 1
-              ) t ON true
-              LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
-             WHERE {" AND ".join(where)}
-            """,
+            feed_counts_sql(" AND ".join(where)),
             tuple(params),
         ).fetchone()
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
@@ -743,7 +666,7 @@ class FeedStorage:
         suppressed = self.conn.execute(
             f"""
             SELECT admission, count(*) AS n FROM news_events
-             WHERE opened_at_ms >= %s AND admission NOT IN ({_ADMITTED_SQL})
+             WHERE opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
              GROUP BY admission ORDER BY n DESC
             """,
             (day_ago,),
@@ -806,16 +729,16 @@ class FeedStorage:
         totals = self.conn.execute(
             f"""
             SELECT count(*) AS events,
-                   count(*) FILTER (WHERE admission IN ({_ADMITTED_SQL})) AS admitted,
+                   count(*) FILTER (WHERE admission IN ({ADMITTED_SQL})) AS admitted,
                    count(*) FILTER (
-                     WHERE admission IN ({_ADMITTED_SQL})
+                     WHERE admission IN ({ADMITTED_SQL})
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
                           WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
                        )
                    ) AS triaged,
                    count(*) FILTER (
-                     WHERE admission IN ({_ADMITTED_SQL})
+                     WHERE admission IN ({ADMITTED_SQL})
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
                           WHERE v.event_id = news_events.event_id AND v.stage = 'triage'

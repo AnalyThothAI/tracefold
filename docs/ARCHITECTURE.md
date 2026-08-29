@@ -380,9 +380,10 @@ tracefold.news
   storage/
     events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
     feed.py / operations.py   bounded public reads and ingest/retention operations
+    feed_sql.py / query_specs.py  production Feed SQL and its audited bound statements
     trade_projection.py       News-owned point-in-time handoff queried by App for Trading
     learning.py / root.py     learning persistence and the concrete repository composition
-  query_specs.py      audited News read statements
+  search.py           pure News Feed search planning over the instrument identity catalogue
   eval/               provider-hits Deduper+Gate replay only
 
 tracefold.trading
@@ -602,6 +603,16 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
+
+Feed search is a Serve-only read concern. A pure News-owned planner classifies
+each request as either exact asset identity or Event text, using the existing
+instrument catalogue for canonical symbol, alias, venue-symbol, and bounded
+pair resolution. The PostgreSQL feed repository then applies exactly one
+predicate before counts and cursor pagination: the durable
+`news_event_assets.symbol` ledger for asset identity, or the persisted Event
+search document for text. Search creates no Event or business row, publishes no
+broker message, and is absent from Judge, Gate, Delivery, Learning, and Trading;
+those pipelines therefore have no search dependency or alternate truth.
 
 #### Price Review plane (#88, #304)
 
@@ -1409,7 +1420,7 @@ News storage is split by meaning, not by a fragile table count. Material
 evidence and current Event state remain in the ingestion/Event tables;
 judgment, delivery and exact evidence snapshots are immutable observations;
 reviews and learning artifacts form the cold learning plane. Read queries are
-registered in `tracefold.news.query_specs` for the query audit.
+registered in `tracefold.news.storage.query_specs` for the query audit.
 
 Learning loop (#112): `ReviewDesk` draws deterministic, version-homogeneous
 tasks from sent, model-drop, Gate-suppressed, throttled, delivery-failed,

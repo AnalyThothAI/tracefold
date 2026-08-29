@@ -7,6 +7,7 @@ import { useSearchParams } from "react-router-dom";
 
 import {
   type NewsFeedFilters,
+  type NewsFeedSearch,
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
   useNewsQuotesWithToken,
@@ -19,7 +20,7 @@ import {
   type FeedFilterChanges,
 } from "../../model/feedFilters";
 import { newsFeedGroups } from "../../model/feedGroups";
-import { absoluteTime, formatCount, hoursLabel } from "../../model/newsLabels";
+import { absoluteTime, formatCount, hoursLabel, outcomeTabLabel } from "../../model/newsLabels";
 import { useAnchoredEventFeed } from "../../state/useAnchoredEventFeed";
 import { NewsPageHeader, NewsPageShell, NewsPageStamp } from "../chrome/NewsChrome";
 import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
@@ -126,6 +127,8 @@ export function NewsFeedPage({ token }: { token: string }) {
         visibleCount={events.length}
       />
 
+      {firstPage?.search ? <NewsSearchScope filters={filters} search={firstPage.search} /> : null}
+
       {query.isLoading && !query.data ? (
         <PageState.Loading label="正在读取新闻事件" layout="panel" rows={6} />
       ) : null}
@@ -151,16 +154,12 @@ export function NewsFeedPage({ token }: { token: string }) {
                   })
                 }
               >
-                清除筛选，查看全部时间
+                清除搜索与筛选
               </ActionButton>
             ) : null
           }
-          hint={
-            hasAdvanced || filters.outcome !== null || filters.hours !== 24
-              ? "换个时间范围、切到「全部」标签或减少筛选条件后再试。"
-              : "事件会在 Strategy 命中并完成入库后出现。"
-          }
-          title={emptyTitle(filters)}
+          hint={emptyHint(filters, firstPage?.search ?? null)}
+          title={emptyTitle(filters, firstPage?.search ?? null)}
         />
       ) : null}
       {events.length ? (
@@ -240,9 +239,54 @@ export function NewsFeedPage({ token }: { token: string }) {
   );
 }
 
-function emptyTitle(filters: NewsFeedFilters): string {
+function NewsSearchScope({
+  filters,
+  search,
+}: {
+  filters: NewsFeedFilters;
+  search: NewsFeedSearch;
+}) {
+  const subject = search.mode === "asset" ? assetSearchSubject(search) : search.normalized_query;
+  return (
+    <div aria-label="当前检索" className="news-search-scope" role="region">
+      <b>{search.mode === "asset" ? `按标的匹配：${subject}` : `全文匹配：${subject}`}</b>
+      <span>{searchScope(filters)}</span>
+    </div>
+  );
+}
+
+function assetSearchSubject(search: NewsFeedSearch): string {
+  const resolved = search.resolved_symbols.join(" / ");
+  if (!resolved || resolved === search.normalized_query) return search.normalized_query;
+  return `${search.normalized_query} → ${resolved}`;
+}
+
+function searchScope(filters: NewsFeedFilters): string {
+  const outcome = filters.outcome === null ? "全部结果" : `${outcomeTabLabel(filters.outcome)}结果`;
+  return `${outcome} · ${hoursLabel(filters.hours)}`;
+}
+
+function emptyTitle(filters: NewsFeedFilters, search: NewsFeedSearch | null): string {
+  if (search?.mode === "asset") {
+    const subject = search.resolved_symbols.join(" / ") || search.normalized_query;
+    return `当前范围没有 ${subject} 的精确标的命中`;
+  }
+  if (search?.mode === "text") return "当前范围没有全文命中";
   if (filters.outcome === "pushed") return `${hoursLabel(filters.hours)}没有推送`;
   if (filters.outcome === "held") return `${hoursLabel(filters.hours)}没有被拦截的事件`;
   if (filters.outcome === "pending") return "没有正在处理的事件";
   return `${hoursLabel(filters.hours)}没有匹配的事件`;
+}
+
+function emptyHint(filters: NewsFeedFilters, search: NewsFeedSearch | null): string {
+  if (search?.mode === "asset") {
+    const subject = search.resolved_symbols.join(" / ") || search.normalized_query;
+    return `已按标的 ${subject} 精确查询；${searchScope(filters)}内没有关联 Event。`;
+  }
+  if (search?.mode === "text") {
+    return `已按全文检索“${search.normalized_query}”；${searchScope(filters)}内没有文字命中。`;
+  }
+  return hasAdvancedFilters(filters) || filters.outcome !== null || filters.hours !== 24
+    ? "换个时间范围、切到「全部」标签或减少筛选条件后再试。"
+    : "事件会在 Strategy 命中并完成入库后出现。";
 }

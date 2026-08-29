@@ -231,6 +231,24 @@ def test_venue_learned_aliases_survive_seed_reconciliation(conn) -> None:
     )
 
 
+def test_search_identity_uses_exact_catalog_alias_and_pair_resolution(conn) -> None:
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [_inst("binance.perp", "BTCUSDT", "BTC", "USDT")],
+            now_ms=NOW,
+        )
+        repos.instruments.reconcile_seed_aliases(now_ms=NOW, seeds={"XBT": "BTC"})
+
+    for token in ("BTC", "BTCUSDT", "BTC/USDT", "BTC-USDT", "BTC_USDT", "XBT"):
+        identity = repos.instruments.search_identity(token)
+        assert identity is not None
+        assert identity.base_symbol == "BTC"
+        assert identity.event_symbols == ("BTC", "XBT")
+    assert repos.instruments.search_identity("BTCT") is None
+    assert repos.instruments.search_identity("ABTC") is None
+
+
 def test_dangling_seed_aliases_are_reported(conn) -> None:
     """`1810.HK -> XIAOMI` pointed at a symbol no venue lists, and nothing said so for a week (#89)."""
 

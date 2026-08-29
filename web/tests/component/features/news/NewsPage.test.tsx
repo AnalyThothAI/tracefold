@@ -500,6 +500,61 @@ describe("NewsPage", () => {
     expect(screen.getByTestId("location")).toHaveTextContent("hours=1");
   });
 
+  it("explains the server-owned search mode, canonical asset, and visible scope", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            search: {
+              mode: "asset",
+              normalized_query: "BTCUSDT",
+              resolved_symbols: ["BTC"],
+            },
+          }),
+        }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage token="test-token" view="feed" />,
+      "/news?q=BTCUSDT&outcome=all&hours=168",
+    );
+
+    const explanation = await screen.findByRole("region", { name: "当前检索" });
+    expect(explanation).toHaveTextContent("按标的匹配：BTCUSDT → BTC");
+    expect(explanation).toHaveTextContent("全部结果 · 最近 7 天");
+  });
+
+  it("uses search metadata to explain a scoped zero result", async () => {
+    server.use(
+      http.get(/.*\/api\/news\/feed$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: newsFeedFixture({
+            events: [],
+            counts: { total: 0, pushed: 0, held: 0, pending: 0 },
+            search: {
+              mode: "text",
+              normalized_query: "Bitcoin spot ETF",
+              resolved_symbols: [],
+            },
+          }),
+        }),
+      ),
+    );
+
+    renderNews(
+      <NewsPage token="test-token" view="feed" />,
+      "/news?q=Bitcoin+spot+ETF&outcome=all&hours=168",
+    );
+
+    expect(await screen.findByText("当前范围没有全文命中")).toBeInTheDocument();
+    expect(screen.getByText(/已按全文检索“Bitcoin spot ETF”/)).toHaveTextContent(
+      "全部结果 · 最近 7 天内没有文字命中",
+    );
+  });
+
   it("does not forward retired priority/sort or unknown decision, outcome, and hours values", async () => {
     const observed: Record<string, string | null> = {};
     server.use(
