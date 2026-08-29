@@ -193,7 +193,7 @@ def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
     assert "lock" in result.stderr.lower()
 
 
-def test_evidence_entrypoint_checks_the_tested_head_before_and_after_every_owner() -> None:
+def test_evidence_entrypoint_seals_every_owner_and_checks_the_aggregate_tree() -> None:
     result = subprocess.run(
         ["make", "-n", "test-evidence"],
         cwd=ROOT,
@@ -202,7 +202,23 @@ def test_evidence_entrypoint_checks_the_tested_head_before_and_after_every_owner
         text=True,
     )
 
-    assert result.stdout.count("python -m tests.support.evidence --assert-clean") == 10
+    assert result.stdout.count("python -m tests.support.evidence --assert-clean") == 2
+    for lane in evidence.REQUIRED_LANES:
+        seal = f'seal-clean --manifest "artifacts/test-evidence/lanes/{lane}.json"'
+        assert result.stdout.count(seal) == 1, lane
+
+
+def test_make_required_lanes_match_the_code_owned_full_plan() -> None:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    python_match = re.search(r"^PYTHON_EVIDENCE_LANES := (.+)$", makefile, flags=re.MULTILINE)
+    required_match = re.search(r"^EVIDENCE_REQUIRED_LANES := (.+)$", makefile, flags=re.MULTILINE)
+
+    assert python_match is not None
+    assert tuple(python_match.group(1).split()) == evidence.PYTHON_LANES
+    assert required_match is not None
+    expanded = required_match.group(1).replace("$(PYTHON_EVIDENCE_LANES)", python_match.group(1))
+    assert tuple(expanded.split()) == evidence.REQUIRED_LANES
+    assert set(evidence._FULL_PLAN_COMMANDS) == set(evidence.REQUIRED_LANES)
 
 
 def test_tested_head_changes_include_tracked_and_untracked_files(tmp_path: Path) -> None:

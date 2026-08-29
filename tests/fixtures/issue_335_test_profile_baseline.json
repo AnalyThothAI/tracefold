@@ -2,11 +2,11 @@
   "ci_run": 33234381220,
   "commit_sha": "0e2c515f8f4bc5309362f306593e11f9bb1447e3",
   "duration_ratchets": {
-    "lane:deterministic-full": {
-      "baseline_seconds": 537.7,
+    "plan:python-v3-critical-path": {
+      "baseline_seconds": 140.0,
       "regression_multiplier": 1.25,
       "required_consecutive_samples": 3,
-      "target_seconds": 300.0
+      "target_seconds": 120.0
     },
     "module:tests/integration/test_news_candidate_evaluator.py": {
       "baseline_seconds": 102.9,

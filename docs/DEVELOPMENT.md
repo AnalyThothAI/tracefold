@@ -263,10 +263,15 @@ Each manifest records the common deterministic inventory and its exact owned
 and executed nodeids. The aggregate fails on a missing, duplicate, unexpected
 or differently collected nodeid. The entry checks the
 complete tracked and non-ignored worktree before and after the run, so a test
-cannot silently update a golden/snapshot while claiming the prior HEAD. Each
+cannot silently update a golden/snapshot while claiming the prior HEAD. A lane
+manifest is unsealed when its runner writes it; its owning target immediately
+performs the post-run tree check and seals that one manifest. The aggregate
+rejects an unsealed or dirty manifest, including one produced before a later
+owner restored the tree. Each
 lane records the same `commit_sha` and `git_tree_sha`, its actual selected and
 outcome counts, lock and plan digests, tool/resource versions and unhandled
-errors. The aggregate requires
+errors. The plan digest binds every required Python/frontend/static/browser
+lane, its canonical command, ownership rules and resource requirements. The aggregate requires
 non-empty Python, frontend architecture, frontend behavior, typecheck, build
 and real-browser manifests. A successful aggregate has zero failed, skipped,
 xfailed, xpassed, rerun, flaky or unhandled outcomes.
@@ -276,7 +281,9 @@ Hypothesis is a test-only dependency in the uv `dev` group and is resolved by
 enter the runtime environment.
 
 Required CI runs `quality-static`, four backend Python owner jobs, `trust-root`,
-and `frontend` concurrently. PostgreSQL, migration, runtime/browser resources
+and `frontend` concurrently. Stable architecture and product contracts belong
+to `python-hermetic`; `trust-root` owns only the evidence/profile, CI topology,
+test-resource, frontend-harness and deployment-verifier self-tests. PostgreSQL, migration, runtime/browser resources
 belong to isolated GitHub jobs rather than one shared schema. An
 `evidence-aggregate` job downloads every exact-SHA manifest and proves the V3
 union; the stable `ci-gate` uses `needs` with `if: always()` and fails when any
@@ -380,7 +387,16 @@ each current lane. To evaluate those profiles against prior reports, run
 TRACEFOLD_TEST_PROFILE_HISTORY_DIR=<prior-report-directory>`; this enforcing
 consumer returns non-zero only when the required consecutive regressions exist.
 The pinned PR 1 baseline remains in the report as the before-state; current CI
-uploads one real execution profile for every V3 Python owner.
+uploads one real execution profile for every V3 Python owner. The V3 whole-Python
+trend is `plan:python-v3-critical-path`, the maximum owner duration under the
+parallel plan; a missing/unknown owner or mismatched deterministic inventory
+makes the profile report fail closed rather than silently shrinking the sample.
+The bounded V2/V3 shadow receipt is
+`tests/fixtures/issue_335_evidence_v2_v3_shadow.json`: it pins the final V2
+exact-HEAD artifact, requires every V2 detector contract to remain or name its
+V3 replacement, and carries architecture, News decision, Trading capital and
+historical-migration real-seam cases into their V3 owners. V2 runtime code is
+removed after that finite comparison; there is no permanent dual evidence path.
 Tests that need PostgreSQL declare an explicit PostgreSQL resource fixture; their
 directory is not a resource trigger. `make test-integration`, `make
 test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make

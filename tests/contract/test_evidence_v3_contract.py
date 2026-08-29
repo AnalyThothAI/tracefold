@@ -352,6 +352,7 @@ def _lane_payload(lane: str, *, selected: int = 1, passed: int = 1, **overrides:
         "unhandled": 0,
         "errors": [],
         "tool_versions": {"fixture": "1"},
+        "worktree": {"sealed": True, "clean": True, "changes": []},
     }
     if lane in evidence.PYTHON_LANES:
         nodeids = [f"tests/test_fixture.py::test_{index}" for index in range(selected)]
@@ -503,6 +504,86 @@ def test_record_command_writes_a_green_nonempty_lane(tmp_path: Path) -> None:
     assert manifest["selected"] == manifest["passed"] == 1
     assert manifest["failed"] == manifest["skipped"] == manifest["unhandled"] == 0
     assert manifest["tool_versions"]["fixture"] == "1.0"
+    assert manifest["worktree"] == {"sealed": False, "clean": False, "changes": []}
+
+
+def test_lane_manifest_is_accepted_only_after_the_exact_tree_is_sealed(tmp_path: Path) -> None:
+    output = tmp_path / "lane.json"
+    unsealed = _lane_payload("frontend-unit", worktree={"sealed": False, "clean": False, "changes": []})
+    output.write_text(json.dumps(unsealed), encoding="utf-8")
+
+    assert evidence.main(("seal-clean", "--manifest", str(output))) == 0
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "success"
+    assert manifest["worktree"] == {"sealed": True, "clean": True, "changes": []}
+
+
+def test_aggregate_rejects_an_unsealed_green_lane(tmp_path: Path) -> None:
+    lane_dir = tmp_path / "lanes"
+    lane_dir.mkdir()
+    payload = _lane_payload(
+        "frontend-unit",
+        worktree={"sealed": False, "clean": False, "changes": []},
+    )
+    (lane_dir / "frontend-unit.json").write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "manifest.json"
+
+    result = evidence.main(
+        (
+            "aggregate",
+            "--lane-dir",
+            str(lane_dir),
+            "--output",
+            str(output),
+            "--required-lane",
+            "frontend-unit",
+        )
+    )
+
+    assert result != 0
+    assert "required_lane_worktree_not_clean:frontend-unit" in json.loads(output.read_text(encoding="utf-8"))["errors"]
+
+
+def test_seal_clean_persists_dirty_state_and_invalidates_the_lane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "repository"
+    (root / "web").mkdir(parents=True)
+    (root / "uv.lock").write_text("uv\n", encoding="utf-8")
+    (root / "web" / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (root / "tracked.txt").write_text("clean\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(["git", "add", "."], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Tracefold Test",
+            "-c",
+            "user.email=tests@tracefold.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        cwd=root,
+        check=True,
+    )
+    monkeypatch.setattr(evidence, "_REPO_ROOT", root)
+    output = root / "lane.json"
+    output.write_text(
+        json.dumps(evidence._lane_payload(lane="fixture", selected=1, passed=1, root=root)), encoding="utf-8"
+    )
+    (root / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+
+    assert evidence.main(("seal-clean", "--manifest", str(output))) != 0
+
+    manifest = json.loads(output.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failure"
+    assert manifest["worktree"]["sealed"] is True
+    assert manifest["worktree"]["clean"] is False
+    assert " M tracked.txt" in manifest["worktree"]["changes"]
+    assert "evidence_tested_head_dirty" in manifest["errors"]
 
 
 def test_record_command_persists_failure_and_returns_the_command_status(tmp_path: Path) -> None:
@@ -1132,18 +1213,30 @@ def test_v3_union_fails_closed_on_missing_or_duplicate_nodeids(
     ("path", "markers", "owner"),
     [
         ("tests/news/test_news_v3_pure.py", set(), "python-hermetic"),
-        ("tests/contract/test_cli.py", {"contract"}, "trust-root"),
+        ("tests/contract/test_cli.py", {"contract"}, "python-hermetic"),
+        ("tests/contract/test_evidence_v3_contract.py", {"contract", "slow"}, "trust-root"),
+        ("tests/deploy/test_main_ci_gate.py", {"deploy"}, "trust-root"),
         ("tests/contract/test_openapi_codegen.py", {"contract", "external_codegen"}, "frontend-python"),
         ("tests/integration/test_news_v3_pipeline.py", {"integration"}, "postgres-behavior"),
         ("tests/integration/test_trading_migration.py", {"integration"}, "migration"),
         ("tests/integration/test_workers_runtime_v2.py", {"integration", "slow"}, "runtime-process"),
         ("tests/integration/test_news_bus_rabbitmq.py", {"integration"}, "runtime-process"),
-        ("tests/slow/test_frontend_harness_fail_closed.py", {"slow"}, "frontend-python"),
+        ("tests/slow/test_frontend_harness_fail_closed.py", {"slow"}, "trust-root"),
     ],
 )
 def test_phase_one_ownership_has_one_explicit_primary_lane(path: str, markers: set[str], owner: str) -> None:
     assert evidence.primary_lane_owner(path, markers) == owner
     assert owner in evidence.PYTHON_LANES
+
+
+def test_plan_identity_binds_every_required_lane_and_its_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = evidence._plan_sha256()
+    commands = dict(evidence._FULL_PLAN_COMMANDS)
+    commands["frontend-build"] = ("npm --prefix web run build:mutated",)
+    monkeypatch.setattr(evidence, "_FULL_PLAN_COMMANDS", commands)
+
+    assert set(commands) == set(evidence.REQUIRED_LANES)
+    assert evidence._plan_sha256() != original
 
 
 def test_canonical_aggregate_requires_every_primary_resource_owner() -> None:

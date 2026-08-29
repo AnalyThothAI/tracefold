@@ -40,10 +40,33 @@ PYTHON_LANES = (
     "frontend-python",
     "trust-root",
 )
+REQUIRED_LANES = (
+    "quality-static",
+    *PYTHON_LANES,
+    "frontend-typecheck",
+    "frontend-lint",
+    "frontend-architecture",
+    "frontend-unit",
+    "frontend-format",
+    "frontend-build",
+    "browser",
+)
+_TRUST_ROOT_MODULES = frozenset(
+    {
+        "tests/architecture/test_docs_surface.py",
+        "tests/architecture/test_test_resource_declarations.py",
+        "tests/contract/test_evidence_v3_contract.py",
+        "tests/contract/test_evidence_v2_v3_shadow_contract.py",
+        "tests/contract/test_test_profile.py",
+        "tests/contract/test_test_resources_contract.py",
+        "tests/contract/test_verification_gate_contract.py",
+        "tests/deploy/test_main_ci_gate.py",
+        "tests/slow/test_frontend_harness_fail_closed.py",
+    }
+)
 _OWNERSHIP_RULES = (
     "external_codegen=>frontend-python",
-    "tests/slow/test_frontend_harness_fail_closed.py=>frontend-python",
-    "tests/architecture/**|tests/contract/**=>trust-root",
+    "verification self-test modules=>trust-root",
     "tests/integration/*_migration.py|tests/integration/test_postgres_schema_runtime.py=>migration",
     "deploy|e2e|golden|slow|tests/integration/test_news_bus_rabbitmq.py=>runtime-process",
     "integration=>postgres-behavior",
@@ -103,6 +126,20 @@ _REQUIRED_VITEST_ROOTS = {
     "frontend-unit": ("web/tests/unit", "web/tests/component", "web/tests/routes"),
 }
 _REQUIRED_PLAYWRIGHT_ROOTS = {"browser": ("web/tests/e2e/full-stack",)}
+_FULL_PLAN_COMMANDS = {
+    "quality-static": ("make check-static",),
+    **{
+        lane: (f"pytest tests -m 'not live and not scheduled' --evidence-lane={lane} --evidence-manifest=<lane>.json",)
+        for lane in PYTHON_LANES
+    },
+    "frontend-typecheck": ("npm --prefix web run typecheck",),
+    "frontend-lint": ("npm --prefix web run lint:eslint",),
+    "frontend-architecture": ("npm --prefix web run test:architecture -- --allowOnly=false",),
+    "frontend-unit": ("npm --prefix web run test:unit -- --allowOnly=false",),
+    "frontend-format": ("npm --prefix web run format:check",),
+    "frontend-build": ("npm --prefix web run build",),
+    "browser": ("python -m tests.browser.run_full_stack_smoke",),
+}
 _VITEST_TEST_FILE_SUFFIXES = tuple(
     f".{kind}.{extension}"
     for kind in ("test", "spec")
@@ -325,9 +362,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 def primary_lane_owner(path: str, markers: set[str]) -> str:
     """Return the one Phase-1 owner for a deterministic Python test item."""
 
-    if "external_codegen" in markers or path == "tests/slow/test_frontend_harness_fail_closed.py":
+    if "external_codegen" in markers:
         return "frontend-python"
-    if path.startswith(("tests/architecture/", "tests/contract/")):
+    if path in _TRUST_ROOT_MODULES:
         return "trust-root"
     if path.startswith("tests/integration/") and (
         path.endswith("_migration.py") or path == "tests/integration/test_postgres_schema_runtime.py"
@@ -923,6 +960,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     if arguments and arguments[0] == "aggregate":
         return _aggregate(arguments[1:])
+    if arguments and arguments[0] == "seal-clean":
+        return _seal_clean(arguments[1:])
     if arguments and arguments[0] == "record-command":
         return _record_command(arguments[1:])
     if arguments and arguments[0] == "record-vitest":
@@ -931,6 +970,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _record_playwright(arguments[1:])
     sys.stderr.write(
         "usage: python -m tests.support.evidence --assert-clean | "
+        "seal-clean --manifest PATH | "
         "aggregate --lane-dir DIR --output PATH --required-lane NAME [...]\n"
     )
     return 2
@@ -1464,6 +1504,7 @@ def _lane_payload(
         "unhandled": unhandled,
         "errors": sorted(set(payload_errors)),
         "tool_versions": tool_versions or _parse_tool_versions(()),
+        "worktree": {"sealed": False, "clean": False, "changes": []},
     }
     if metadata:
         payload["metadata"] = metadata
@@ -1478,12 +1519,51 @@ def _nodeids_sha256(nodeids: Sequence[str]) -> str:
 def _plan_sha256() -> str:
     payload = {
         "schema_version": AGGREGATE_SCHEMA_VERSION,
+        "required_lanes": list(REQUIRED_LANES),
+        "commands": {lane: list(commands) for lane, commands in _FULL_PLAN_COMMANDS.items()},
         "python_lanes": list(PYTHON_LANES),
         "ownership_rules": list(_OWNERSHIP_RULES),
+        "trust_root_modules": sorted(_TRUST_ROOT_MODULES),
         "ownership_function": inspect.getsource(primary_lane_owner),
         "resource_requirements": {lane: list(resources) for lane, resources in _RESOURCE_REQUIREMENTS.items()},
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _seal_clean(arguments: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(prog="python -m tests.support.evidence seal-clean")
+    parser.add_argument("--manifest", required=True, type=Path)
+    options = parser.parse_args(arguments)
+    manifest = _read_json_report(options.manifest)
+    if manifest is None:
+        sys.stderr.write(f"evidence_lane_manifest_invalid:{options.manifest}\n")
+        return 1
+    changes = list(tested_head_changes(_REPO_ROOT))
+    binding_errors: list[str] = []
+    expected = {
+        "commit_sha": _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT),
+        "git_tree_sha": _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT),
+        "uv_lock_sha256": _sha256(_REPO_ROOT / "uv.lock"),
+        "package_lock_sha256": _sha256(_REPO_ROOT / "web" / "package-lock.json"),
+        "plan_sha256": _plan_sha256(),
+    }
+    for field_name, expected_value in expected.items():
+        if manifest.get(field_name) != expected_value:
+            binding_errors.append(f"evidence_seal_{field_name}_mismatch")
+    if changes:
+        binding_errors.append("evidence_tested_head_dirty")
+    raw_errors = manifest.get("errors")
+    prior_errors = [str(value) for value in raw_errors] if isinstance(raw_errors, list) else []
+    errors = sorted(set([*prior_errors, *binding_errors]))
+    clean = not changes and not binding_errors
+    manifest["worktree"] = {"sealed": True, "clean": clean, "changes": changes}
+    manifest["errors"] = errors
+    if errors:
+        manifest["status"] = "failure"
+    _write_json(options.manifest, manifest)
+    if changes:
+        sys.stderr.write("evidence_tested_head_dirty:\n" + "\n".join(changes) + "\n")
+    return int(not clean or manifest.get("status") != "success")
 
 
 def _aggregate(arguments: Sequence[str]) -> int:
@@ -1494,6 +1574,9 @@ def _aggregate(arguments: Sequence[str]) -> int:
     options = parser.parse_args(arguments)
     required_lanes = tuple(dict.fromkeys(options.required_lane))
     errors: list[str] = []
+    worktree_changes = list(tested_head_changes(_REPO_ROOT))
+    if worktree_changes:
+        errors.append("evidence_tested_head_dirty")
     lanes: dict[str, Any] = {}
     commit_sha = _capture(("git", "rev-parse", "HEAD"), cwd=_REPO_ROOT)
     git_tree_sha = _capture(("git", "rev-parse", "HEAD^{tree}"), cwd=_REPO_ROOT)
@@ -1529,6 +1612,11 @@ def _aggregate(arguments: Sequence[str]) -> int:
         status = lane_manifest.get("status")
         if status != "success":
             errors.append(f"required_lane_status_not_success:{lane}:{status}")
+        worktree = lane_manifest.get("worktree")
+        if not isinstance(worktree, dict) or worktree.get("sealed") is not True or worktree.get("clean") is not True:
+            errors.append(f"required_lane_worktree_not_clean:{lane}")
+        elif worktree.get("changes") != []:
+            errors.append(f"required_lane_worktree_changes_invalid:{lane}")
         for field_name in _NON_GREEN_OUTCOME_FIELDS:
             value = lane_manifest.get(field_name, 0)
             if value != 0:
@@ -1598,6 +1686,7 @@ def _aggregate(arguments: Sequence[str]) -> int:
         "plan_sha256": plan_sha256,
         "migration_head": migration_head,
         "required_lanes": list(required_lanes),
+        "worktree": {"clean": not worktree_changes, "changes": worktree_changes},
         "overall": "failure" if errors else "success",
         "errors": sorted(set(errors)),
         "inventory": {

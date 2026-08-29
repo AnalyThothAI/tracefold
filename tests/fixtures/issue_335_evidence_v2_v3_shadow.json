@@ -1,0 +1,55 @@
+{
+  "schema_version": "tracefold_evidence_shadow_receipt_v1",
+  "issue": 335,
+  "window": {
+    "v2": {
+      "commit_sha": "2a6d88e91ffc95a79198f3b6cd553bf45f44c770",
+      "git_tree_sha": "5c291704390781e945cc8bd72857ec23f4fb8a2b",
+      "github_run_id": 33239224949,
+      "artifact_id": 9710923847,
+      "schema_version": "tracefold_test_evidence_v2",
+      "overall": "success",
+      "python_selected": 2124,
+      "python_passed": 2124
+    },
+    "v3": {
+      "schema_version": "tracefold_test_evidence_v3",
+      "exact_head_source": "artifacts/test-evidence/manifest.json"
+    }
+  },
+  "replaced_detector_contracts": {
+    "test_canonical_aggregate_requires_an_independent_resource_lane": "test_canonical_aggregate_requires_every_primary_resource_owner",
+    "test_python_lane_rejects_an_empty_declared_required_marker": "test_split_python_lane_records_an_empty_cross_lane_marker_without_failing",
+    "test_record_playwright_uses_the_reporters_actual_outcomes": "test_record_playwright_uses_the_reporters_actual_outcomes_and_resource_identity"
+  },
+  "critical_seams": [
+    {
+      "class": "architecture",
+      "v2_test": "tests/architecture/test_trading_boundaries.py::test_trading_writes_only_trading_tables",
+      "v3_test": "tests/architecture/test_trading_boundaries.py::test_trading_writes_only_trading_tables",
+      "v3_owner": "python-hermetic",
+      "fault": "a capital-path module writes a non-trading table"
+    },
+    {
+      "class": "news-decision",
+      "v2_test": "tests/integration/test_news_v3_pipeline.py::test_evidence_snapshots_are_append_only_and_outlive_event_retention",
+      "v3_test": "tests/integration/test_news_v3_pipeline.py::test_evidence_snapshots_are_append_only_and_outlive_event_retention",
+      "v3_owner": "postgres-behavior",
+      "fault": "a News decision evidence row can be mutated or lost with event retention"
+    },
+    {
+      "class": "trading-capital",
+      "v2_test": "tests/integration/test_trading_intents.py::test_replay_success_receipt_is_idempotent_content_bound_and_append_only",
+      "v3_test": "tests/integration/test_trading_intents.py::test_replay_success_receipt_is_idempotent_content_bound_and_append_only",
+      "v3_owner": "postgres-behavior",
+      "fault": "a capital receipt can be rebound or updated"
+    },
+    {
+      "class": "migration",
+      "v2_test": "tests/integration/test_news_learning_migration.py::test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte",
+      "v3_test": "tests/integration/test_news_learning_migration.py::test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte",
+      "v3_owner": "migration",
+      "fault": "a historical migration rewrites a preserved audit byte"
+    }
+  ]
+}

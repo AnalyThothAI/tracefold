@@ -28,6 +28,10 @@ DETERMINISTIC_TEST_SELECTION := tests -m "not live and not scheduled"
 PYTHON_EVIDENCE_LANES := python-hermetic postgres-behavior migration runtime-process frontend-python trust-root
 EVIDENCE_REQUIRED_LANES := quality-static $(PYTHON_EVIDENCE_LANES) frontend-typecheck frontend-lint frontend-architecture frontend-unit frontend-format frontend-build browser
 
+define SEAL_EVIDENCE_LANE
+uv run python -m tests.support.evidence seal-clean --manifest "$(TRACEFOLD_TEST_LANE_DIR)/$(1).json"
+endef
+
 define RUN_PROFILED_PYTEST
 uv run python -m pytest $(TEST_PROFILE_ARGS) $(1) $(2)
 endef
@@ -87,67 +91,73 @@ test-evidence-quality-static:
 	@uv run python -m tests.support.evidence record-command \
 		--lane quality-static --output "$(TRACEFOLD_TEST_LANE_DIR)/quality-static.json" \
 		-- make check-static
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,quality-static)
 
 test-evidence-python-hermetic:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,python-hermetic)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,python-hermetic)
 
 test-evidence-postgres-behavior:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,postgres-behavior)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,postgres-behavior)
 
 test-evidence-migration:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,migration)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,migration)
 
 test-evidence-runtime-process:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,runtime-process)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,runtime-process)
 
 test-evidence-frontend-python:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,frontend-python)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,frontend-python)
 
 test-evidence-trust-root:
 	@mkdir -p "$(TRACEFOLD_TEST_LANE_DIR)" "$(TRACEFOLD_TEST_PROFILE_DIR)"
 	@$(call RUN_EVIDENCE_PYTEST,trust-root)
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,trust-root)
 
 test-evidence-frontend: test-evidence-frontend-python
 	@uv run python -m tests.support.evidence record-command \
 		--lane frontend-typecheck --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-typecheck.json" \
 		--tool typescript=$$(node -p "require('./web/node_modules/typescript/package.json').version") \
 		-- npm --prefix web run typecheck
+	@$(call SEAL_EVIDENCE_LANE,frontend-typecheck)
 	@uv run python -m tests.support.evidence record-command \
 		--lane frontend-lint --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-lint.json" \
 		--tool eslint=$$(node -p "require('./web/node_modules/eslint/package.json').version") \
 		-- npm --prefix web run lint:eslint
+	@$(call SEAL_EVIDENCE_LANE,frontend-lint)
 	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
 		npm run test:architecture -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
 	@uv run python -m tests.support.evidence record-vitest \
 		--lane frontend-architecture \
 		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-architecture.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-architecture.json"
+	@$(call SEAL_EVIDENCE_LANE,frontend-architecture)
 	@cd web && TRACEFOLD_VITEST_SEMANTICS_REPORT="$(CURDIR)/$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
 		npm run test:unit -- --allowOnly=false --reporter=./tests/support/evidenceReporter.ts
 	@uv run python -m tests.support.evidence record-vitest \
 		--lane frontend-unit \
 		--input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/vitest-unit.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-unit.json"
+	@$(call SEAL_EVIDENCE_LANE,frontend-unit)
 	@uv run python -m tests.support.evidence record-command \
 		--lane frontend-format --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-format.json" \
 		--tool prettier=$$(node -p "require('./web/node_modules/prettier/package.json').version") \
 		-- npm --prefix web run format:check
+	@$(call SEAL_EVIDENCE_LANE,frontend-format)
 	@uv run python -m tests.support.evidence record-command \
 		--lane frontend-build --output "$(TRACEFOLD_TEST_LANE_DIR)/frontend-build.json" \
 		--tool vite=$$(node -p "require('./web/node_modules/vite/package.json').version") \
 		-- npm --prefix web run build
+	@$(call SEAL_EVIDENCE_LANE,frontend-build)
 	@uv run python -m tests.browser.run_full_stack_smoke \
 		--playwright-json "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
 		--playwright-selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json"
@@ -155,7 +165,7 @@ test-evidence-frontend: test-evidence-frontend-python
 		--lane browser --input "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright.json" \
 		--selection "$(TRACEFOLD_TEST_ARTIFACT_DIR)/playwright-selection.json" \
 		--output "$(TRACEFOLD_TEST_LANE_DIR)/browser.json"
-	@uv run python -m tests.support.evidence --assert-clean
+	@$(call SEAL_EVIDENCE_LANE,browser)
 
 test-evidence-aggregate:
 	@uv run python -m tests.support.evidence --assert-clean
