@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail when a repository Markdown document links to a missing local target."""
+"""Fail when a mandatory agent/operator Markdown document has a missing local link."""
 
 from __future__ import annotations
 
@@ -11,17 +11,22 @@ _MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\((?P<target>[^)]+)\)")
 
 
 def documentation_sources(root: Path) -> tuple[Path, ...]:
-    docs = root / "docs"
-    sources = {
+    candidates = {
         root / "README.md",
         root / "AGENTS.md",
         root / "CLAUDE.md",
-        root / "notebooks" / "README.md",
-        *docs.glob("*.md"),
-        *(docs / "agents").glob("*.md"),
-        docs / "generated" / "README.md",
+        *(root / ".github").rglob("*.md"),
+        *(root / "docs").rglob("*.md"),
+        *(root / "notebooks").rglob("*.md"),
     }
-    return tuple(sorted(source for source in sources if source.is_file()))
+    research = root / "docs" / "research"
+    return tuple(
+        sorted(
+            source
+            for source in candidates
+            if source.is_file() and not source.resolve().is_relative_to(research.resolve())
+        )
+    )
 
 
 def missing_links(root: Path) -> tuple[str, ...]:
@@ -41,9 +46,9 @@ def main() -> int:
     root = Path(__file__).resolve().parents[1]
     missing = missing_links(root)
     if missing:
-        sys.stderr.write("documentation links missing:\n" + "\n".join(missing) + "\n")
+        sys.stderr.write("mandatory documentation links missing:\n" + "\n".join(missing) + "\n")
         return 1
-    print(f"documentation links valid: {len(documentation_sources(root))} sources")
+    print(f"mandatory documentation links valid: {len(documentation_sources(root))} sources")
     return 0
 
 

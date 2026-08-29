@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ else:
 
 _BEGIN = "<!-- BEGIN SHARED AGENT ROUTER -->"
 _END = "<!-- END SHARED AGENT ROUTER -->"
-_SURFACES = frozenset({"docs-only", "pure Python", "PostgreSQL", "frontend"})
+_SURFACES = frozenset({"docs-only", "pure Python", "PostgreSQL", "frontend", "CI/evidence", "deploy/capital"})
 
 
 def _shared_block(source: str) -> str:
@@ -46,16 +47,56 @@ def _task_rows(shared: str) -> dict[str, dict[str, str]]:
     return rows
 
 
-def _surface_for_path(changed_path: str) -> str:
-    if changed_path.startswith("web/"):
-        return "frontend"
-    if changed_path.startswith("src/tracefold/platform/postgres/"):
-        return "PostgreSQL"
-    if changed_path.startswith("src/") and changed_path.endswith(".py"):
-        return "pure Python"
-    if changed_path.endswith(".md") and changed_path.startswith(("docs/", "notebooks/", "README")):
-        return "docs-only"
-    raise ValueError(f"agent_router_dry_run_surface_unknown:{changed_path}")
+def _git(root: Path, *arguments: str) -> str:
+    return subprocess.run(
+        ("git", *arguments),
+        cwd=root,
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=10,
+    ).stdout.strip()
+
+
+def _identity_errors(root: Path, *, changed_path: str, tested_sha: str, base_sha: str) -> list[str]:
+    errors: list[str] = []
+    head = _git(root, "rev-parse", "HEAD")
+    if tested_sha != head:
+        errors.append("agent_router_tested_sha_not_head")
+    expected_base = _git(root, "merge-base", "origin/main", "HEAD")
+    if base_sha != expected_base:
+        errors.append("agent_router_base_not_origin_main_merge_base")
+    try:
+        tracked = _git(root, "ls-files", "--error-unmatch", "--", changed_path)
+    except subprocess.CalledProcessError:
+        tracked = ""
+    if tracked != changed_path or not (root / changed_path).is_file():
+        errors.append("agent_router_path_not_tracked")
+    if _git(root, "status", "--porcelain=v1", "--untracked-files=all"):
+        errors.append("agent_router_worktree_dirty")
+    return errors
+
+
+def _plan_route_errors(surface: str, plan: dict[str, Any]) -> list[str]:
+    required_jobs = {job for job, required in plan["jobs"].items() if required}
+    expected_jobs = {
+        "docs-only": {"quality-static"},
+        "pure Python": {"quality-static", "python-hermetic", "postgres-behavior", "runtime-process"},
+        "PostgreSQL": {
+            "quality-static",
+            "python-hermetic",
+            "postgres-behavior",
+            "migration",
+            "runtime-process",
+        },
+        "frontend": {"quality-static", "frontend"},
+        "CI/evidence": set(ci_plan.JOB_LANES),
+        "deploy/capital": set(ci_plan.JOB_LANES),
+    }[surface]
+    expects_full = surface in {"CI/evidence", "deploy/capital"}
+    if bool(plan["full"]) != expects_full or required_jobs != expected_jobs:
+        return [f"route_plan_mismatch:{surface}"]
+    return []
 
 
 def build_receipt(
@@ -65,6 +106,14 @@ def build_receipt(
     tested_sha: str,
     base_sha: str,
 ) -> dict[str, Any]:
+    identity_errors = _identity_errors(
+        root,
+        changed_path=changed_path,
+        tested_sha=tested_sha,
+        base_sha=base_sha,
+    )
+    if identity_errors:
+        raise ValueError(";".join(identity_errors))
     shared_source = (root / "docs" / "agents" / "shared-router.md").read_text(encoding="utf-8")
     canonical = _shared_block(shared_source)
     conflicts: list[str] = []
@@ -75,7 +124,7 @@ def build_receipt(
         appendix = router.split(_END, 1)[1]
         if "| Task surface |" in appendix:
             conflicts.append(f"duplicate_task_matrix:{router_name}")
-    surface = _surface_for_path(changed_path)
+    surface = ci_plan.task_surface_for_path(changed_path)
     route = _task_rows(canonical)[surface]
     plan = ci_plan.build_plan(
         event="pull_request",
@@ -83,6 +132,7 @@ def build_receipt(
         tested_sha=tested_sha,
         base_sha=base_sha,
     )
+    conflicts.extend(_plan_route_errors(surface, plan))
     required_lanes = [lane for lane in ci_plan.REQUIRED_LANES if plan["lanes"][lane]["status"] == "required"]
     return {
         "schema_version": "tracefold_agent_task_dry_run_v1",
@@ -118,7 +168,7 @@ def main(arguments: list[str] | None = None) -> int:
             raise ValueError("agent_router_conflict")
         print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
         return 0
-    except (OSError, ValueError) as exc:
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
         print(f"agent task dry-run refused: {exc}", file=sys.stderr)
         return 1
 

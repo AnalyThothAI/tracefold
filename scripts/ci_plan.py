@@ -20,6 +20,8 @@ if __package__:
         PYTHON_LANES,
         REQUIRED_LANES,
         impact_policy_sha256,
+        is_declared_test_module,
+        module_primary_lane_owner,
     )
 else:
     from verification_topology import (  # type: ignore[import-not-found]
@@ -27,6 +29,8 @@ else:
         PYTHON_LANES,
         REQUIRED_LANES,
         impact_policy_sha256,
+        is_declared_test_module,
+        module_primary_lane_owner,
     )
 
 SCHEMA_VERSION = "tracefold_ci_plan_v1"
@@ -65,22 +69,12 @@ _GOVERNANCE_PATHS = frozenset(
         "web/package-lock.json",
         "scripts/ci_plan.py",
         "scripts/verification_topology.py",
-        "scripts/check_docs_links.py",
+        "scripts/check_mandatory_docs_links.py",
         "scripts/agent_task_dry_run.py",
         "scripts/require_main_ci.py",
         "scripts/sync_agent_router.py",
         "docs/agents/shared-router.md",
         "docs/agents/worktrees.md",
-        "tests/architecture/test_docs_surface.py",
-        "tests/architecture/test_test_resource_declarations.py",
-        "tests/contract/test_ci_impact_plan.py",
-        "tests/contract/test_evidence_v3_contract.py",
-        "tests/contract/test_evidence_v2_v3_shadow_contract.py",
-        "tests/contract/test_test_profile.py",
-        "tests/contract/test_test_resources_contract.py",
-        "tests/contract/test_verification_gate_contract.py",
-        "tests/deploy/test_main_ci_gate.py",
-        "tests/slow/test_frontend_harness_fail_closed.py",
     }
 )
 _HEX_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -96,6 +90,7 @@ def build_plan(
     *,
     event: str,
     changed_paths: Sequence[str],
+    added_paths: Sequence[str] = (),
     tested_sha: str,
     base_sha: str | None,
     planner_error: str | None = None,
@@ -103,6 +98,7 @@ def build_plan(
     """Return a deterministic plan; uncertainty expands to the full plan."""
 
     normalized_paths = tuple(sorted({_normalize_path(path) for path in changed_paths if path.strip()}))
+    normalized_added_paths = tuple(sorted({_normalize_path(path) for path in added_paths if path.strip()}))
     lane_reasons: dict[str, set[str]] = defaultdict(set)
     full_reasons: set[str] = set()
     if event in _FULL_EVENTS:
@@ -113,10 +109,12 @@ def build_plan(
         full_reasons.add(f"planner_error:{planner_error}")
     if not normalized_paths:
         full_reasons.add("empty_or_unavailable_change_set")
+    if not set(normalized_added_paths) <= set(normalized_paths):
+        full_reasons.add("added_path_not_in_change_set")
 
     lane_reasons["quality-static"].add("all_changes_require_quality")
     for path in normalized_paths:
-        lanes, reason, requires_full = _classify_path(path)
+        lanes, reason, requires_full = _classify_path(path, added=path in normalized_added_paths)
         if requires_full:
             full_reasons.add(reason)
         for lane in lanes:
@@ -150,6 +148,7 @@ def build_plan(
         "tested_sha": tested_sha,
         "base_sha": base_sha,
         "changed_paths": list(normalized_paths),
+        "added_paths": list(normalized_added_paths),
         "full": full,
         "full_reasons": sorted(full_reasons),
         "lanes": lanes_payload,
@@ -170,6 +169,21 @@ def verify_plan(plan: Mapping[str, Any]) -> None:
     base_sha = plan.get("base_sha")
     if base_sha is not None and not _HEX_SHA.fullmatch(str(base_sha)):
         raise ValueError("ci_plan_base_sha_invalid")
+    changed_paths = plan.get("changed_paths")
+    added_paths = plan.get("added_paths")
+    if (
+        not isinstance(changed_paths, list)
+        or changed_paths != sorted(set(changed_paths))
+        or not all(isinstance(path, str) and path for path in changed_paths)
+    ):
+        raise ValueError("ci_plan_changed_paths_invalid")
+    if (
+        not isinstance(added_paths, list)
+        or added_paths != sorted(set(added_paths))
+        or not all(isinstance(path, str) and path for path in added_paths)
+        or not set(added_paths) <= set(changed_paths)
+    ):
+        raise ValueError("ci_plan_added_paths_invalid")
     lanes = plan.get("lanes")
     if not isinstance(lanes, dict) or set(lanes) != set(REQUIRED_LANES):
         raise ValueError("ci_plan_lanes_invalid")
@@ -221,18 +235,31 @@ def full_plan_receipt(plan: Mapping[str, Any]) -> str:
 
 
 def discover_changed_paths(root: Path, *, base_sha: str, head_sha: str) -> tuple[str, ...]:
+    return discover_changes(root, base_sha=base_sha, head_sha=head_sha)[0]
+
+
+def discover_changes(root: Path, *, base_sha: str, head_sha: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     result = subprocess.run(
-        ("git", "diff", "--no-renames", "--name-only", "--diff-filter=ACDMRTUXB", f"{base_sha}...{head_sha}"),
+        ("git", "diff", "--no-renames", "--name-status", "--diff-filter=ACDMRTUXB", f"{base_sha}...{head_sha}"),
         cwd=root,
         capture_output=True,
         check=True,
         text=True,
         timeout=30,
     )
-    return tuple(line for line in result.stdout.splitlines() if line)
+    changes: list[str] = []
+    added: list[str] = []
+    for line in result.stdout.splitlines():
+        status, separator, path = line.partition("\t")
+        if not separator or status not in {"A", "C", "D", "M", "R", "T", "U", "X", "B"} or not path:
+            raise ValueError("ci_plan_git_diff_status_invalid")
+        changes.append(path)
+        if status == "A":
+            added.append(path)
+    return tuple(sorted(changes)), tuple(sorted(added))
 
 
-def _classify_path(path: str) -> tuple[frozenset[str], str, bool]:
+def _classify_path(path: str, *, added: bool = False) -> tuple[frozenset[str], str, bool]:
     if path in _GOVERNANCE_PATHS or path in _CORE_SPECS or path.startswith("docs/agents/"):
         return frozenset(), f"governance_or_core_spec:{path}", True
     if path.startswith((".github/", "tests/support/", "web/tests/support/", "tests/browser/")):
@@ -249,7 +276,16 @@ def _classify_path(path: str) -> tuple[frozenset[str], str, bool]:
     if path.startswith(("src/tracefold/platform/config/", "src/tracefold/platform/observability/")):
         return frozenset(), f"config_security_or_runtime:{path}", True
     if path.startswith("tests/") and path.endswith(".py"):
-        return frozenset(), f"acceptance_test_surface:{path}", True
+        if not is_declared_test_module(path):
+            return frozenset(), f"unclassified_test_surface:{path}", True
+        if added:
+            return frozenset(), f"new_test_module:{path}", True
+        owner = module_primary_lane_owner(path)
+        if owner == "trust-root":
+            return frozenset(), f"verification_trust_root:{path}", True
+        if owner == "frontend-python":
+            return frozenset({"quality-static", *FRONTEND_LANES}), f"test_owner:{owner}:{path}", False
+        return frozenset({"quality-static", owner}), f"test_owner:{owner}:{path}", False
     if path.startswith("src/tracefold/platform/postgres/"):
         return (
             frozenset({"quality-static", "python-hermetic", "postgres-behavior", "migration", "runtime-process"}),
@@ -271,6 +307,26 @@ def _classify_path(path: str) -> tuple[frozenset[str], str, bool]:
     if path.endswith(".md") and (path == "README.md" or path.startswith(("docs/", "notebooks/"))):
         return frozenset({"quality-static"}), f"ordinary_docs:{path}", False
     return frozenset(), f"unknown_surface:{path}", True
+
+
+def task_surface_for_path(path: str) -> str:
+    """Return the one root-router task surface for a normalized tracked path."""
+
+    normalized = _normalize_path(path)
+    if normalized.startswith(("src/tracefold/app/", "src/tracefold/trading/", "src/tracefold/integrations/")):
+        return "deploy/capital"
+    if normalized.startswith("src/tracefold/platform/postgres/"):
+        return "PostgreSQL"
+    if normalized.startswith("web/"):
+        return "frontend"
+    _, _, requires_full = _classify_path(normalized)
+    if requires_full or normalized.startswith((".github/", "tests/", "scripts/")):
+        return "CI/evidence"
+    if normalized.startswith("src/") and normalized.endswith(".py"):
+        return "pure Python"
+    if normalized.endswith(".md") and normalized.startswith(("docs/", "notebooks/", "README")):
+        return "docs-only"
+    raise ValueError(f"agent_router_dry_run_surface_unknown:{normalized}")
 
 
 def _normalize_path(path: str) -> str:
@@ -323,7 +379,6 @@ def main(arguments: Sequence[str] | None = None) -> int:
     plan_parser.add_argument("--event", required=True)
     plan_parser.add_argument("--base-sha")
     plan_parser.add_argument("--head-sha", required=True)
-    plan_parser.add_argument("--changed-path", action="append", default=[])
     plan_parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     plan_parser.add_argument("--output", type=Path, required=True)
     plan_parser.add_argument("--github-output", type=Path)
@@ -337,13 +392,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
 
     try:
         if options.command == "plan":
-            changed_paths = tuple(options.changed_path)
+            changed_paths: tuple[str, ...] = ()
+            added_paths: tuple[str, ...] = ()
             planner_error = None
-            if options.event == "pull_request" and not changed_paths:
+            if options.event == "pull_request":
                 try:
                     if not options.base_sha:
                         raise ValueError("base_sha_missing")
-                    changed_paths = discover_changed_paths(
+                    changed_paths, added_paths = discover_changes(
                         options.root,
                         base_sha=options.base_sha,
                         head_sha=options.head_sha,
@@ -353,6 +409,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             plan = build_plan(
                 event=options.event,
                 changed_paths=changed_paths,
+                added_paths=added_paths,
                 tested_sha=options.head_sha,
                 base_sha=options.base_sha,
                 planner_error=planner_error,
@@ -391,9 +448,12 @@ __all__ = [
     "REQUIRED_LANES",
     "RESOURCE_LANES",
     "build_plan",
+    "discover_changed_paths",
+    "discover_changes",
     "full_plan_receipt",
     "main",
     "policy_sha256",
+    "task_surface_for_path",
     "validate_gate",
     "verify_plan",
 ]

@@ -53,6 +53,11 @@ def test_docs_only_plan_starts_no_external_resource_or_frontend_job() -> None:
             {"quality-static", "python-hermetic", "postgres-behavior", "migration", "runtime-process"},
         ),
         ("web/src/routes/News.tsx", {"quality-static", *ci_plan.FRONTEND_LANES}),
+        ("tests/news/test_news_v3_pure.py", {"quality-static", "python-hermetic"}),
+        ("tests/integration/test_news_v3_pipeline.py", {"quality-static", "postgres-behavior"}),
+        ("tests/integration/test_trading_migration.py", {"quality-static", "migration"}),
+        ("tests/contract/test_hook_installer.py", {"quality-static", "runtime-process"}),
+        ("tests/contract/test_openapi_codegen.py", {"quality-static", *ci_plan.FRONTEND_LANES}),
     ],
 )
 def test_known_task_surface_selects_its_conservative_owner_lanes(path: str, expected: set[str]) -> None:
@@ -89,9 +94,6 @@ def test_known_task_surface_selects_its_conservative_owner_lanes(path: str, expe
         "src/tracefold/trading/domain.py",
         "unknown/new_surface.py",
         "tests/new_surface/test_unclassified.py",
-        "tests/news/test_news_v3_pure.py",
-        "tests/contract/test_openapi_codegen.py",
-        "tests/contract/test_hook_installer.py",
     ],
 )
 def test_governance_capital_runtime_and_unknown_paths_fail_closed_to_full(path: str) -> None:
@@ -120,6 +122,33 @@ def test_main_release_and_manual_events_always_use_full_plan(event: str) -> None
     assert plan["full"] is True
     assert _required(plan) == set(ci_plan.REQUIRED_LANES)
     ci_plan.verify_plan(plan)
+
+
+def test_new_test_module_fails_closed_but_a_tracked_domain_test_stays_risk_scoped() -> None:
+    new_test = "tests/news/test_new_policy.py"
+    plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=("src/tracefold/news/events/facts.py", "tests/news/test_news_v3_pure.py"),
+        tested_sha="1" * 40,
+        base_sha="0" * 40,
+    )
+    new_test_plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=(new_test,),
+        added_paths=(new_test,),
+        tested_sha="1" * 40,
+        base_sha="0" * 40,
+    )
+
+    assert plan["full"] is False
+    assert _required(plan) == {
+        "quality-static",
+        "python-hermetic",
+        "postgres-behavior",
+        "runtime-process",
+    }
+    assert new_test_plan["full"] is True
+    assert "new_test_module:tests/news/test_new_policy.py" in new_test_plan["full_reasons"]
 
 
 def test_planner_error_fails_closed_to_full() -> None:
@@ -198,6 +227,29 @@ def test_git_change_discovery_keeps_both_sides_of_a_cross_surface_rename(tmp_pat
 
     assert changed_paths == ("docs/capital.md", "src/tracefold/trading/capital.py")
     assert plan["full"] is True
+
+    new_test = tmp_path / "tests" / "news" / "test_new_policy.py"
+    new_test.parent.mkdir(parents=True)
+    new_test.write_text("def test_new_policy(): assert True\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "add a new test module")
+    new_head_sha = git("rev-parse", "HEAD")
+    all_changes, added_paths = ci_plan.discover_changes(
+        tmp_path,
+        base_sha=base_sha,
+        head_sha=new_head_sha,
+    )
+    new_plan = ci_plan.build_plan(
+        event="pull_request",
+        changed_paths=all_changes,
+        added_paths=added_paths,
+        tested_sha=new_head_sha,
+        base_sha=base_sha,
+    )
+
+    assert added_paths == ("tests/news/test_new_policy.py",)
+    assert new_plan["full"] is True
+    assert "new_test_module:tests/news/test_new_policy.py" in new_plan["full_reasons"]
 
 
 def test_gate_requires_planned_jobs_and_rejects_unplanned_execution() -> None:
