@@ -247,7 +247,7 @@ def test_git_change_discovery_keeps_both_sides_of_a_cross_surface_rename(tmp_pat
         base_sha=base_sha,
     )
 
-    assert added_paths == ("tests/news/test_new_policy.py",)
+    assert added_paths == ("docs/capital.md", "tests/news/test_new_policy.py")
     assert new_plan["full"] is True
     assert "new_test_module:tests/news/test_new_policy.py" in new_plan["full_reasons"]
 
