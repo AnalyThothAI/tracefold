@@ -3,7 +3,7 @@ BEGIN READ ONLY;
 
 -- News classification baseline discovery, 2026-08-29. Run as tracefold_serve against the
 -- operator-owned database. Companion snapshot: news-classification-baseline-snapshot-2026-08-29.json.
--- Captured for docs/research/news-classification-deep-research-2026-08-29.md, the day #117 was
+-- Captured for docs/research/news-classification-audit-and-survey-2026-08-29.md, the day #117 was
 -- reopened: what the 17-class mixed-axis `event_type` actually produces in production, before any
 -- `news_taxonomy_v1` work lands.
 --
