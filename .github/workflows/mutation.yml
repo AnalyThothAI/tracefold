@@ -67,8 +67,14 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked --group mutation
-      - name: Require a green baseline before mutating it
-        run: uv run --no-sync python -m pytest -x -q -p no:cacheprovider tests/trading tests/mutation
+      # `cosmic-ray baseline` runs `mutation.toml`'s own test-command over unmutated source. A
+      # hand-written pytest line here would be a different command — the earlier one omitted
+      # `tests/test_execution_quote.py`, which lives at the tests/ root rather than under
+      # tests/trading — and a baseline that does not exercise the command being measured proves
+      # nothing: Cosmic Ray records a KILLED for any non-zero exit, so a command that is red or
+      # uncollectable reports a perfect score from a suite that asserted nothing.
+      - name: Require the batch's own command to be green before mutating anything
+        run: uv run --no-sync cosmic-ray baseline mutation.toml
       - name: Build the session and reserve this shard
         run: |
           mkdir -p artifacts/mutation
@@ -89,6 +95,11 @@ jobs:
   classify:
     name: classify
     needs: mutate
+    # `always()` because a shard that times out must not silently discard the other five. The
+    # classifier detects that the union of verdicts is short of the population, says so, and checks
+    # only for unclassified survivors — a partial measurement reported as partial beats no
+    # measurement reported as nothing.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -100,6 +111,9 @@ jobs:
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked --group mutation
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with: {pattern: "mutation-shard-*-${{ github.sha }}", path: artifacts/mutation, merge-multiple: true}
+        with:
+          pattern: "mutation-shard-*-${{ github.sha }}"
+          path: artifacts/mutation
+          merge-multiple: true
       - name: Require every survivor to be classified
         run: uv run --no-sync python scripts/mutation_survivors.py artifacts/mutation/shard-*.sqlite

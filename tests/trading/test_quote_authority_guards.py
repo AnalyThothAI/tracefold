@@ -387,6 +387,21 @@ def test_a_book_priced_below_one_is_a_valid_book() -> None:
     assert isinstance(result, ExecutionQuoteSnapshotV1), result
 
 
+def test_reference_drift_is_a_difference_and_not_a_remainder() -> None:
+    """`side_price - reference` and not `side_price % reference`, in both directions.
+
+    Every other drift fixture sits inside `ref <= price < 2*ref`, where `a % b` and `a - b` are the
+    same number — which is why a mutant swapping them survived the batch and was filed as
+    equivalent. It is not. Below the reference the remainder is the whole price, so a fill 10 bps
+    *better* than intended reads as 9990 bps of drift and is refused. At exactly twice the reference
+    the remainder is zero, so a quote at double the intended price reports no drift at all and is
+    admitted — against a bound of 25 bps.
+    """
+
+    assert _reason(_quote(bid=Decimal("99.85"), ask=Decimal("99.90"))) is None
+    assert _reason(_quote(bid=Decimal("199.90"), ask=Decimal("200.00"))) == "quote_reference_drift_exceeded"
+
+
 def test_reference_drift_is_reported_in_basis_points() -> None:
     """Pins the `_BPS` scale.
 

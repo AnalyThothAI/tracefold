@@ -79,6 +79,30 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
                 assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), action
 
 
+@pytest.mark.parametrize("workflow_path", sorted((ROOT / ".github" / "workflows").glob("*.y*ml")), ids=lambda p: p.name)
+def test_every_workflow_pins_its_actions_and_keeps_its_credentials(workflow_path: Path) -> None:
+    """The supply-chain invariants belong to every workflow, not to the one they were written beside.
+
+    `test_the_gate_is_thin_and_owns_the_required_set` walks only `ci.yml`, so a workflow added later
+    inherits none of it — `mutation.yml` and `scheduled-diagnostics.yml` between them run a dozen
+    actions that nothing held to a SHA pin, and a `@v5` tag or a `persist-credentials` default could
+    land with the whole required suite green. Parametrised over the directory so the next workflow
+    is covered by existing.
+    """
+
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            action = step.get("uses")
+            if not action:
+                continue
+            assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), f"{workflow_path.name}: {action} is not SHA-pinned"
+            if action.startswith("actions/checkout@"):
+                assert step.get("with", {}).get("persist-credentials") is False, (
+                    f"{workflow_path.name}: checkout must not leave the token in .git/config"
+                )
+
+
 def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
     """#373 PR 2 is measurement without authority: no merge power, no execution, no re-adjudication.
 

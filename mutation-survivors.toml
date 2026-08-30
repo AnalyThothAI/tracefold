@@ -27,7 +27,7 @@ would.
 this rule is false. `quote_authority.py`'s `ExecutionQuoteAuditV1` builds a runtime type alias — `Annotated[A | B,
 Field(...)]` — whose `|` *is* evaluated at import, and the batch kills its mutants while every
 annotation `|` survives. Excluding the operator family by name, which is what an earlier draft of
-`mutation.toml` did, would have thrown away 13 mutants the tests genuinely catch. The classifier
+`mutation.toml` did, would have thrown away 11 mutants the tests genuinely catch. The classifier
 therefore parses the module and accepts the mutation only on a line where no `|` is evaluated.
 """
 

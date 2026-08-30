@@ -5,7 +5,7 @@ because both mutated modules use `from __future__ import annotations` and never 
 premise is checked per site rather than asserted, and this is why: the `ExecutionQuoteAuditV1`
 alias in `quote_authority.py` builds a runtime type alias, its `|` *is* evaluated at import, and
 the batch kills its mutants. A rule phrased
-as "BitOr is always an annotation" would have accepted those as equivalent and hidden 13 real kills.
+as "BitOr is always an annotation" would have accepted those as equivalent and hidden 11 real kills.
 
 So the detector has to be able to tell the two apart, and it has to be able to fail. The first test
 falsifies it in both directions on sources written here; the rest hold the batch's own premises.
@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.mutation_survivors import evaluated_bit_or_lines
 
@@ -42,6 +43,20 @@ def test_the_detector_separates_an_evaluated_bitwise_or_from_a_union_annotation(
 
     real_operator = "from __future__ import annotations\ndef f(a: int) -> int:\n    return a | 3\n"
     assert evaluated_bit_or_lines(real_operator) == {3}
+
+
+def test_a_wrapped_runtime_alias_is_evaluated_on_every_line_it_spans() -> None:
+    """Cosmic Ray anchors on the `|` token; `ast` anchors on the leftmost operand.
+
+    They agree until the expression wraps, and then the disagreement fails open — the classifier
+    would look up the token's row, find no evaluated `|` recorded there, and exempt eleven mutants
+    of a union that really is built at import. Covering the whole span makes the two anchors agree
+    for any formatting. `ruff format` reflowing the `ExecutionQuoteAuditV1` alias is exactly how
+    this would have arrived.
+    """
+
+    wrapped = "from __future__ import annotations\nAlias = (\n    int\n    | str\n)\n"
+    assert evaluated_bit_or_lines(wrapped) == {3, 4}
 
 
 @pytest.mark.parametrize("module_path", _config()["module-path"])
@@ -84,13 +99,22 @@ def test_the_command_runs_the_tests_that_actually_constrain_the_mutated_modules(
     assert test_file in _config()["test-command"]
 
 
-def test_the_shard_count_covers_the_measured_batch_within_the_bound() -> None:
-    """~5.9 s/mutant over 628 mutants is ~61 minutes; the workflow caps a shard at 30."""
+def test_the_matrix_covers_every_shard_the_workflow_declares() -> None:
+    """Parsed, not substring-matched, and cross-checked rather than asserted twice.
 
-    workflow = (REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8")
-    assert 'SHARDS: "6"' in workflow
-    assert "shard: [0, 1, 2, 3, 4, 5]" in workflow
-    assert "timeout-minutes: 30" in workflow
+    The first version compared raw text, which false-passes in both directions that matter:
+    `"timeout-minutes: 30" in "timeout-minutes: 300"` is true, so a tenfold cap increase reads as
+    green, and the shard list and `SHARDS` were two independent literals for one invariant — a
+    five-entry matrix beside `SHARDS: "6"` satisfied both while silently dropping a sixth of the
+    population from the score.
+    """
+
+    workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "mutation.yml").read_text(encoding="utf-8"))
+    mutate = workflow["jobs"]["mutate"]
+    declared = int(workflow["env"]["SHARDS"])
+    assert list(mutate["strategy"]["matrix"]["shard"]) == list(range(declared))
+    assert mutate["strategy"]["fail-fast"] is False
+    assert mutate["timeout-minutes"] == 30
 
 
 def test_every_triage_rule_names_a_kind_the_classifier_can_check() -> None:

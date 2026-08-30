@@ -178,19 +178,31 @@ ci-test-effectiveness:
 #
 # Mutating in place means the working tree holds a mutant for the whole run, and an interrupted run
 # leaves one behind — which is a live defect sitting in a tracked file, one `git add -A` away from
-# being committed. So the batch refuses to start unless the modules it rewrites are clean, and
+# being committed. So the batch refuses to start unless the files it rewrites are clean, and
 # restores them on the way out however it exits. The clean check is what makes the restore safe:
 # it is only ever discarding a mutant this target wrote.
+#
+# Two details the first version got wrong. The sentinel rewrites a *third* tracked file — the canary
+# under `tests/support/` — so `$(TRACEFOLD_MUTATION_FILES)` covers it as well as `mutation.toml`'s
+# two kernels; leaving it out meant a kill during the sentinel could strand a mutated canary that
+# then silently defeats the next run's harness proof. And an EXIT trap alone does not fire when the
+# shell is killed by an untrapped signal under dash, which is `/bin/sh` on Debian and Ubuntu — so
+# Ctrl-C during the hour-long batch, by far the likeliest way this ends, would leave the mutant in
+# place. INT, TERM and HUP are trapped too.
+TRACEFOLD_MUTATION_FILES = $$(uv run --no-sync python -c 'import tomllib, pathlib; \
+	print(" ".join([*tomllib.loads(pathlib.Path("mutation.toml").read_text())["cosmic-ray"]["module-path"], \
+	"tests/support/mutation_canary.py"]))')
+
 mutation: ## scheduled-lane mutation batch: sentinel, then the batch, then survivor triage
 	@set -eu; \
-		modules="$$(uv run --no-sync python -c 'import tomllib, pathlib; print(" ".join(tomllib.loads(pathlib.Path("mutation.toml").read_text())["cosmic-ray"]["module-path"]))')"; \
-		if ! git diff --quiet -- $$modules; then \
-			echo "mutation: these modules have uncommitted changes and the batch rewrites them in place:" >&2; \
-			echo "  $$modules" >&2; \
+		files="$(TRACEFOLD_MUTATION_FILES)"; \
+		if ! git diff --quiet -- $$files; then \
+			echo "mutation: these files have uncommitted changes and the batch rewrites them in place:" >&2; \
+			echo "  $$files" >&2; \
 			echo "commit or set the changes aside first." >&2; \
 			exit 1; \
 		fi; \
-		trap 'git checkout -- '"$$modules" EXIT; \
+		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
 		mkdir -p "$(TRACEFOLD_MUTATION_DIR)"; \
 		uv sync --locked --group mutation; \
 		uv run --no-sync python scripts/mutation_sentinel.py; \
@@ -202,9 +214,20 @@ mutation: ## scheduled-lane mutation batch: sentinel, then the batch, then survi
 		uv run --no-sync cosmic-ray exec mutation.toml "$$session"; \
 		uv run --no-sync python scripts/mutation_survivors.py "$$session"
 
+# Same guard as `mutation`: the sentinel rewrites the canary in place, so an interrupted run leaves
+# a mutated tracked file behind — and a stranded canary is the one file whose corruption makes the
+# harness proof itself meaningless.
 mutation-sentinel: ## prove the mutation harness executes mutated code, without running a batch
-	@uv sync --locked --group mutation
-	@uv run --no-sync python scripts/mutation_sentinel.py
+	@set -eu; \
+		files="$(TRACEFOLD_MUTATION_FILES)"; \
+		if ! git diff --quiet -- $$files; then \
+			echo "mutation-sentinel: the canary or a mutated module has uncommitted changes:" >&2; \
+			echo "  $$files" >&2; \
+			exit 1; \
+		fi; \
+		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
+		uv sync --locked --group mutation; \
+		uv run --no-sync python scripts/mutation_sentinel.py
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property

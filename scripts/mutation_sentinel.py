@@ -54,15 +54,27 @@ def main(argv: list[str] | None = None) -> int:
         session = Path(workspace) / "sentinel.sqlite"
         config.write_text(_SESSION_CONFIG.format(module=CANARY_MODULE, test=CANARY_TEST), encoding="utf-8")
 
-        for stage in ("init", "exec"):
-            completed = subprocess.run(
-                ["cosmic-ray", stage, str(config), str(session)],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
+        # `baseline` first, and it is not a formality. Cosmic Ray records a KILLED for *any*
+        # non-zero exit, so "nothing survived" is equally satisfied by "every mutant was caught" and
+        # by "the command never ran an assertion" — a collection error under `tests/mutation/`, a
+        # missing `env`, a failed `uv` resolution. Both report zero survivors and the sentinel would
+        # have called that proof. `baseline` runs the same command over unmutated source and fails
+        # if it is not green, which is the half that makes the zero mean something.
+        stages = (
+            ("baseline", ["cosmic-ray", "baseline", str(config)]),
+            ("init", ["cosmic-ray", "init", str(config), str(session)]),
+            ("exec", ["cosmic-ray", "exec", str(config), str(session)]),
+        )
+        for stage, argv in stages:
+            completed = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
             if completed.returncode != 0:
+                if stage == "baseline":
+                    sys.stderr.write(
+                        "sentinel: the test command does not pass on unmutated source, so a run of it\n"
+                        "would report every mutant as killed for a reason that is not the mutation.\n"
+                        f"{completed.stdout}{completed.stderr}"
+                    )
+                    return 1
                 sys.stderr.write(f"sentinel: `cosmic-ray {stage}` failed\n{completed.stderr}")
                 return 1
 

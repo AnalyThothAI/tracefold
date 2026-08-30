@@ -12,7 +12,7 @@
 #    every `|` in these modules is a PEP 604 union in an annotation that `from __future__ import
 #    annotations` never evaluates. That is true of all but one site: `quote_authority.py`'s `ExecutionQuoteAuditV1` builds
 #    a runtime type alias, its `|` *is* evaluated at import, and its mutants are KILLED while every
-#    annotation `|` survives. Excluding the family by name would have skipped 13 mutants the tests
+#    annotation `|` survives. Excluding the family by name would have skipped 11 mutants the tests
 #    genuinely catch. Annotation survivors are classified after the fact in
 #    `mutation-survivors.toml`, by a rule whose premise is checked per site against the source.
 #

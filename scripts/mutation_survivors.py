@@ -59,7 +59,16 @@ class Mutant(NamedTuple):
 
 
 def _annotation_nodes(tree: ast.AST) -> set[int]:
-    """Every node reachable from an annotation, by identity."""
+    """Every node reachable from an annotation, by identity.
+
+    The `AnnAssign` branch is defensive rather than load-bearing, and it is worth saying which is
+    which. Cosmic Ray's `operator_is_pipe_in_assignment_annotation` refuses to mutate a `|` whose
+    parent is an annotated assignment, so a variable annotation emits no mutants at all: measured in
+    the batch, `market_context.py:63` — `best: Bar | None = None` — produces zero, while the
+    function signatures at 55, 72 and 85 produce eleven each. Only signatures and runtime aliases
+    reach the classifier today. The branch stays because the classifier's answer should not depend
+    on a filter inside the tool, but nothing in the current population exercises it.
+    """
 
     annotations: list[ast.AST] = []
     for node in ast.walk(tree):
@@ -79,16 +88,27 @@ def _annotation_nodes(tree: ast.AST) -> set[int]:
 def evaluated_bit_or_lines(source: str) -> set[int]:
     """Lines holding a `|` the interpreter actually evaluates, i.e. one outside every annotation.
 
+    Every line the expression spans, not just where it starts. The two sides of this comparison come
+    from different tools and anchor differently: Cosmic Ray records the row of the `|` *token*, while
+    `ast` reports `lineno` for the leftmost operand. They agree on a single-line union and diverge
+    the moment one wraps — `Alias = (\\n    int\\n    | str\\n)` is token row 3 against `lineno` 2 —
+    and the divergence fails open, quietly exempting a `|` that really is evaluated. Taking the
+    whole `lineno..end_lineno` span removes the disagreement, and errs toward calling a line
+    evaluated, which is the direction that refuses an exemption rather than granting one.
+
     Only sound for a module with `from __future__ import annotations`; callers check that separately.
     """
 
     tree = ast.parse(source)
     inside_annotation = _annotation_nodes(tree)
-    return {
-        node.lineno
-        for node in ast.walk(tree)
-        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr) and id(node) not in inside_annotation
-    }
+    spanned: set[int] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)):
+            continue
+        if id(node) in inside_annotation:
+            continue
+        spanned.update(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    return spanned
 
 
 @cache
@@ -107,28 +127,40 @@ def _is_unevaluated_annotation_union(mutant: Mutant) -> bool:
 _RULE_PREMISES = {"annotation-union": _is_unevaluated_annotation_union}
 
 
-def _survivors(session: Path) -> list[Mutant]:
-    with sqlite3.connect(f"file:{session}?mode=ro", uri=True) as connection:
-        rows = connection.execute(
-            "SELECT s.module_path, s.definition_name, s.start_pos_row, s.operator_name, s.occurrence "
-            "FROM mutation_specs s JOIN work_results r ON r.job_id = s.job_id "
-            "WHERE r.test_outcome = 'SURVIVED'"
-        ).fetchall()
+_SPEC_COLUMNS = "s.module_path, s.definition_name, s.start_pos_row, s.operator_name, s.occurrence"
+
+
+def _as_mutants(rows: list[tuple[Any, ...]]) -> list[Mutant]:
     return [
         Mutant(module, function or "<module>", int(line), operator, int(occurrence))
         for module, function, line, operator, occurrence in rows
     ]
 
 
-def _outcomes(session: Path) -> dict[str, int]:
+def _by_outcome(session: Path) -> dict[str, list[Mutant]]:
+    """Every mutant that reached an outcome, grouped by what that outcome was.
+
+    Identities rather than counts, because the shard databases each hold the *whole* population —
+    `mutation_shard.py` marks the other shards' jobs SKIPPED, it does not delete their specs — so
+    summing per-session `count(*)` reports six times the mutants that exist. The union of
+    identities is the only figure that survives being sharded.
+    """
+
     with sqlite3.connect(f"file:{session}?mode=ro", uri=True) as connection:
-        total = connection.execute("SELECT count(*) FROM mutation_specs").fetchone()[0]
         rows = connection.execute(
-            "SELECT coalesce(test_outcome, worker_outcome), count(*) FROM work_results GROUP BY 1"
+            f"SELECT coalesce(r.test_outcome, r.worker_outcome), {_SPEC_COLUMNS} "
+            "FROM mutation_specs s JOIN work_results r ON r.job_id = s.job_id"
         ).fetchall()
-    counts = {str(outcome): int(count) for outcome, count in rows}
-    counts["generated"] = int(total)
-    return counts
+    grouped: dict[str, list[Mutant]] = {}
+    for outcome, *spec in rows:
+        grouped.setdefault(str(outcome), []).extend(_as_mutants([tuple(spec)]))
+    return grouped
+
+
+def _population(session: Path) -> set[Mutant]:
+    with sqlite3.connect(f"file:{session}?mode=ro", uri=True) as connection:
+        rows = connection.execute(f"SELECT {_SPEC_COLUMNS.replace('s.', '')} FROM mutation_specs").fetchall()
+    return set(_as_mutants(rows))
 
 
 def _triage(path: Path) -> tuple[list[Mutant], list[dict[str, Any]]]:
@@ -183,7 +215,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sessions", type=Path, nargs="+", help="cosmic-ray session databases, one per shard")
     parser.add_argument("--triage", type=Path, default=DEFAULT_TRIAGE, help="checked-in survivor classification")
-    parser.add_argument("--report-only", action="store_true", help="print the score without failing")
     args = parser.parse_args(argv)
 
     missing = [str(session) for session in args.sessions if not session.is_file()]
@@ -191,42 +222,65 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"no mutation session at {', '.join(missing)}\n")
         return 1
 
-    counts: dict[str, int] = {}
-    survivors: list[Mutant] = []
+    population: set[Mutant] = set()
+    outcomes: dict[str, set[Mutant]] = {}
     for session in args.sessions:
-        survivors.extend(_survivors(session))
-        for outcome, count in _outcomes(session).items():
-            counts[outcome] = counts.get(outcome, 0) + count
+        population |= _population(session)
+        for outcome, mutants in _by_outcome(session).items():
+            outcomes.setdefault(outcome, set()).update(mutants)
 
-    killed = counts.get("KILLED", 0)
-    scored = killed + len(survivors)
+    survivors = sorted(outcomes.get("SURVIVED", set()))
+    killed = outcomes.get("KILLED", set())
+    scored = len(killed) + len(survivors)
+    if not scored:
+        sys.stdout.write("no mutants were scored\n")
+        return 1
+
     accepted, rules = _triage(args.triage)
-    # Partition the survivor list itself rather than a set of it. Several mutants can share one
-    # identity — same module, function, line and operator at different occurrences — and a report
-    # whose parts do not sum to its total is one nobody can check.
     by_rule = [mutant for mutant in survivors if _matched_by_rule(mutant, rules)]
     matched = set(by_rule)
     real = [mutant for mutant in survivors if mutant not in matched]
 
     sys.stdout.write(
-        f"mutation score {killed / scored:.1%} — {killed} killed, {len(survivors)} survived "
-        f"({len(by_rule)} by rule, {len(real)} to classify at {len(set(real))} sites), "
-        f"{counts.get('generated', 0)} generated "
-        f"across {len(args.sessions)} shard(s)\n"
-        if scored
-        else "no mutants were scored\n"
+        f"mutation score {len(killed) / scored:.1%} — {len(killed)} killed, {len(survivors)} survived "
+        f"({len(by_rule)} by rule, {len(real)} to classify), "
+        f"{len(population)} generated across {len(args.sessions)} shard(s)\n"
     )
-    if args.report_only:
-        return 0
 
+    # Anything that is neither killed nor survived never produced a verdict — a mutant that could
+    # not be launched, timed out at the harness level, or raised before the tests. It is not in the
+    # score's denominator, so it has to be named or a batch that mostly failed to run reads as a
+    # batch that mostly passed.
+    unresolved = {
+        outcome: len(mutants) for outcome, mutants in outcomes.items() if outcome not in {"KILLED", "SURVIVED"}
+    }
+    if unresolved:
+        named = ", ".join(f"{count} {outcome}" for outcome, count in sorted(unresolved.items()))
+        sys.stdout.write(f"outcomes outside the score: {named}\n")
+
+    # A shard's own database holds the whole population with the other shards' jobs marked SKIPPED,
+    # so completeness is about the *union*: did every mutant reach a verdict in some session? Only
+    # then is "listed but no longer surviving" a statement about the tests rather than about which
+    # slice happened to run — which is what makes `make mutation TRACEFOLD_MUTATION_SHARDS=6` usable
+    # locally instead of reporting three quarters of a correct triage file as stale.
+    verdicts = killed | set(survivors)
+    complete = verdicts >= population
     unclassified = sorted(set(real) - set(accepted))
-    stale = sorted(set(accepted) - set(real))
+    # Against every survivor, not just the hand-classified ones: an entry written beside a rule that
+    # also matches its mutant is still describing something that survived, and calling it stale would
+    # push the maintainer to delete a correct classification.
+    stale = sorted(set(accepted) - set(survivors)) if complete else []
     unused = [rule for rule in rules if not any(_matched_by_rule(mutant, [rule]) for mutant in survivors)]
 
     _report("SURVIVED and unclassified", unclassified)
     _report(f"listed in {args.triage.name} but no longer surviving", stale)
     for rule in unused:
         sys.stderr.write(f"\n[[rule]] {rule['kind']} / {rule['operator']} matched no survivor; drop it\n")
+    if not complete:
+        sys.stdout.write(
+            f"partial population ({len(verdicts)} of {len(population)} reached a verdict); "
+            "checking only for unclassified survivors\n"
+        )
     if unclassified or stale or unused:
         sys.stderr.write(
             f"\nEvery survivor needs an entry in {args.triage.name} giving a reason, or a test that kills it.\n"

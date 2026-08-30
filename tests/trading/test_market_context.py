@@ -70,10 +70,23 @@ def test_move_bps_rounds_half_to_even(p1: str, expected: int) -> None:
 
 @pytest.mark.parametrize(
     ("p0", "p1"),
-    [(None, "100"), ("100", None), (None, None), ("0", "100"), ("-5", "100")],
+    [
+        (None, "100"),
+        ("100", None),
+        (None, None),
+        ("0", "100"),
+        ("-5", "100"),
+        ("100", "0"),
+        ("100", "-5"),
+    ],
 )
-def test_move_bps_reads_an_uncomputable_price_as_missing(p0: str | None, p1: str | None) -> None:
-    """Each guard independently, including p0 exactly at zero, which is a division and not a rule."""
+def test_move_bps_reads_an_unpriced_end_as_missing(p0: str | None, p1: str | None) -> None:
+    """Both ends, not just the denominator.
+
+    `p0 <= 0` is a division problem and was guarded from the start; `p1 <= 0` is not, and was not.
+    A halted or delisted interval reporting `close = 0` returned `-10000` — a confident −100% move
+    rather than an absence — which is precisely the mark this module exists to refuse to invent.
+    """
 
     assert move_bps(None if p0 is None else Decimal(p0), None if p1 is None else Decimal(p1)) is None
 
