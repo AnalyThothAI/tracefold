@@ -795,10 +795,11 @@ Broker contract: topic exchange `news`, dead-letter exchange `news.dlx`, three
 quorum business queues — `news.raw` (`raw.#`; single-active), `news.triage`
 (`event.#`) and `news.deliver` (`verdict.push`; single-active) — and `news.dead`
 (delivery limit 1,000,000 so nothing can lose terminal evidence by returning it). All names take
-`news.broker.name_prefix`. Declaring the topology deletes the retired Analyst
-queue `news.deep` (issue #57); it never declares or deletes the removed retry
-lane `news.retry` (issue #400), which `tracefold news bus-check` reports as
-topology drift for an operator to delete by hand.
+`news.broker.name_prefix`. Declaring the topology declares exactly those names
+and deletes nothing else: any other name under the prefix — the retired Analyst
+queue `news.deep` (issue #57), the removed retry lane `news.retry` (issue #400),
+another deployment's queue — is reported by `tracefold news bus-check` as
+topology drift for an operator to act on by hand.
 
 Queue arguments carry only what a policy cannot express: the queue type,
 single-active consumption and the dead-letter queue's evidence-preserving delivery limit.
@@ -1544,7 +1545,12 @@ Deduper+Gate over saved provider hits without broker or model and lists every
 Event with admission, grounded assets, and preliminary storyline. `news why
 <event_id>` prints the Event's chain (item, gate, triage, decide, delivery)
 and a one-line `outcome`. `news dlq inspect|replay|purge [--limit]`
-peeks, republishes, or purges `news.dead`.
+peeks, republishes, or purges `news.dead`. `replay` verifies the effective
+policy and the topology first and exits non-zero without reading a message if
+either is unknown or drifted; a dead letter it cannot decode is returned to the
+queue and ends the batch with a non-zero exit naming the message, the decode
+code and the number already replayed. `purge` is the only command that removes
+evidence.
 
 The `trading` family is read-mostly and has no provider-execution write command.
 `trading status` reports Decision state/heartbeat, Capital control, both

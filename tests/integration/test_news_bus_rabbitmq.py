@@ -12,16 +12,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import itertools
 import json
 import os
 import socket
 import subprocess
+import threading
 import time
 import urllib.request
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.parse import quote, unquote, urlsplit
 
@@ -31,9 +34,10 @@ from aio_pika import DeliveryMode, ExchangeType
 
 from tracefold.app.cli.commands.db import _observe_drained_news_broker
 from tracefold.integrations.rabbitmq import (
+    MANAGEMENT_READ_TIMEOUT_SECONDS,
     POLICY_EFFECTIVE_TIMEOUT_SECONDS,
-    REMOVED_RETRY_LANE,
     BrokerPolicyMismatch,
+    DeadLetterReplayRefused,
     RabbitMQBus,
     topology,
 )
@@ -51,6 +55,7 @@ from tracefold.news.bus import (
     TransientError,
     new_trace_id,
 )
+from tracefold.news.pipeline.maintenance import _BROKER_SNAPSHOT_DEADLINE_SECONDS
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
@@ -64,6 +69,10 @@ MANAGEMENT_URL = os.environ.get(
 # fits in an integration budget. The production 30 s value is asserted directly from the checked-in
 # document, and one test runs the whole frozen contract at its real timing.
 FAST_DELAY_MS = 500
+# Lane names the runtime no longer knows (#407): `news.retry` was the self-built TTL retry lane cut in
+# #400, `news.deep` the Analyst lane retired in #57. They live on here, in the migration test that proves
+# the application only reports them, and nowhere in `tracefold/`.
+RETIRED_LANE_NAMES = ("news.retry", "news.deep")
 
 
 @asynccontextmanager
@@ -88,6 +97,50 @@ async def _bus(*, delay_ms: int = FAST_DELAY_MS, apply_policies: bool = True) ->
         deleted = await bus.delete_topology()
         assert set(deleted) >= set(topology(prefix).queue_names)
         await bus.close()
+
+
+@contextmanager
+def _stub_management(*, status: int = 200, rows: object = (), delay_seconds: float = 0.0) -> Iterator[str]:
+    """A management API that answers however this test needs, while AMQP still reaches the real broker.
+
+    The two halves of `broker_snapshot` cannot be separated any other way: only the management side is
+    replaced, so what the snapshot reports about AMQP stays the broker's own answer.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if delay_seconds:
+                time.sleep(delay_seconds)
+            body = json.dumps(rows).encode()
+            with contextlib.suppress(OSError):  # the client may have given up on a delayed answer
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def _bus_against(management_url: str, *, prefix: str) -> RabbitMQBus:
+    return RabbitMQBus(
+        url=AMQP_URL,
+        name_prefix=prefix,
+        connect_timeout_seconds=5,
+        management_url=management_url,
+        retry_delay_ms=FAST_DELAY_MS,
+    )
 
 
 def _event(
@@ -212,14 +265,20 @@ def test_topology_is_three_business_queues_one_dlq_and_no_retry_lane() -> None:
     asyncio.run(scenario())
 
 
-def test_a_leftover_retry_lane_is_reported_as_drift_and_never_declared() -> None:
-    """The application must not recreate the cut lane, and must not silently delete an undrained one."""
+@pytest.mark.parametrize("retired", RETIRED_LANE_NAMES)
+def test_a_leftover_lane_is_reported_as_drift_and_never_declared_or_deleted(retired: str) -> None:
+    """The application must not recreate a cut lane, and must not silently delete an undrained one.
+
+    Both names were once known to the runtime: `news.retry` was the self-built TTL lane (#400) and
+    `news.deep` the retired Analyst lane (#57), which every topology declaration used to force-drop.
+    Neither is a name this image declares any more, so both are only ever reported.
+    """
 
     async def scenario() -> None:
         async with _bus() as bus:
             connection = await aio_pika.connect_robust(AMQP_URL, timeout=5)
             channel = await connection.channel(publisher_confirms=True)
-            leftover = bus.queue_name(REMOVED_RETRY_LANE)
+            leftover = bus.queue_name(retired)
             try:
                 exchange = await channel.declare_exchange(leftover, ExchangeType.FANOUT, durable=True)
                 queue = await channel.declare_queue(leftover, durable=True, arguments={"x-queue-type": "quorum"})
@@ -240,17 +299,98 @@ def test_a_leftover_retry_lane_is_reported_as_drift_and_never_declared() -> None
                 while asyncio.get_running_loop().time() < deadline and await _stranded_count() < 1:
                     await asyncio.sleep(0.2)
                 assert await _stranded_count() == 1
+                # The production path, not just the declaration: Workers connects, and connecting is
+                # what used to force-drop a retired queue before anyone could look at it.
+                await bus.close()
+                await bus.connect()
                 await bus.declare_topology()
                 drift = await bus.topology_drift()
                 assert leftover in drift["queues"]
                 assert leftover in drift["exchanges"]
-                # Declaring the topology must not have consumed or destroyed the stranded message.
+                # Connecting and declaring must not have consumed or destroyed the stranded message.
                 assert await _stranded_count() == 1
             finally:
                 await channel.queue_delete(leftover, if_unused=False, if_empty=False)
                 await channel.exchange_delete(leftover)
                 await channel.close()
                 await connection.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["hangs", "errors"])
+def test_a_management_api_that_stops_answering_is_unknown_and_never_a_disconnected_broker(failure: str) -> None:
+    """The distinction the snapshot exists to make, against a management API that hangs or 500s.
+
+    AMQP is answering the whole time, so `connected` is true and the depths are real; what the
+    management API owns is simply not known this tick. A hung read is bounded well inside the deadline a
+    caller puts on the snapshot, because a caller's timeout firing first would report this healthy
+    broker as disconnected.
+    """
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            hangs = failure == "hangs"
+            stub = (
+                {"delay_seconds": MANAGEMENT_READ_TIMEOUT_SECONDS * 3} if hangs else {"status": 500, "rows": {"e": 1}}
+            )
+            with _stub_management(**stub) as stub_url:  # type: ignore[arg-type]
+                stalled = _bus_against(stub_url, prefix=bus.prefix)
+                await stalled.connect()
+                try:
+                    started = time.monotonic()
+                    snapshot = await stalled.broker_snapshot()
+                    elapsed = time.monotonic() - started
+                finally:
+                    await stalled.close()
+
+            assert elapsed < _BROKER_SNAPSHOT_DEADLINE_SECONDS
+            if hangs:  # the read timeout is what stopped it, not the caller's deadline
+                assert elapsed >= MANAGEMENT_READ_TIMEOUT_SECONDS
+            for name in topology(bus.prefix).queue_names:
+                row = snapshot[name]
+                assert row["missing"] is False, name
+                assert row["messages"] == 0, name  # AMQP answered
+                assert row["policy_ok"] is None, name
+                assert row["ready"] is None and row["dead_letter_pending"] is None, name
+
+    asyncio.run(scenario())
+
+
+def test_management_rows_covering_part_of_the_topology_leave_the_rest_unknown() -> None:
+    """A partial answer is a partial answer: the queues it skipped are unknown, not healthy."""
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            expected = broker_policy.expected_effective_definitions(name_prefix=bus.prefix, delay_ms=FAST_DELAY_MS)
+            answered = sorted(expected)[:2]
+            rows = [
+                {
+                    "name": name,
+                    "consumers": 1,
+                    "messages": 0,
+                    "messages_ready": 0,
+                    "messages_unacknowledged": 0,
+                    "messages_delayed": 0,
+                    "messages_dlx": 0,
+                    "message_bytes": 0,
+                    "effective_policy_definition": expected[name],
+                }
+                for name in answered
+            ]
+            with _stub_management(rows=rows) as stub_url:
+                partial = _bus_against(stub_url, prefix=bus.prefix)
+                await partial.connect()
+                try:
+                    snapshot = await partial.broker_snapshot()
+                finally:
+                    await partial.close()
+
+            for name in answered:
+                assert snapshot[name]["policy_ok"] is True, name
+            for name in sorted(set(expected) - set(answered)):
+                assert snapshot[name]["missing"] is False, name
+                assert snapshot[name]["policy_ok"] is None, name
 
     asyncio.run(scenario())
 
@@ -631,20 +771,126 @@ def test_permanent_failure_and_decode_failure_reach_the_dead_letter_queue() -> N
             dead = await bus.dead_letters(limit=5)
             assert {row["reason"] for row in dead} == {"rejected"}
             assert "permanent:1" in {row["message_id"] for row in dead}
-            # Replay returns the decodable dead letter to the topic exchange and drops the one that can
-            # never be decoded, so the DLQ empties and the Event is queued again for a human-fixed run.
-            assert await bus.replay_dead_letters(limit=5) == 1
-            await _wait_for_depth(bus, Q_DEAD, 0)
+            # Replay returns the decodable dead letter to the topic exchange and then stops on the one
+            # it cannot decode, which stays where it is. The count of what already moved is part of the
+            # refusal, because the operator has to know the batch was half applied.
+            with pytest.raises(DeadLetterReplayRefused) as refused:
+                await bus.replay_dead_letters(limit=5)
+            assert refused.value.replayed == 1
+            assert refused.value.reason == "news_bus_body_invalid"
             await _wait_for_depth(bus, Q_TRIAGE, 1)
+            await _wait_for_depth(bus, Q_DEAD, 1)
+            # And it stays blocked there: a second attempt moves nothing and destroys nothing.
+            with pytest.raises(DeadLetterReplayRefused) as again:
+                await bus.replay_dead_letters(limit=5)
+            assert again.value.replayed == 0
+            await _wait_for_depth(bus, Q_DEAD, 1)
 
             consumer2 = asyncio.create_task(bus.consume(Q_TRIAGE, reject, prefetch=1, stop_event=stop))
             stop.clear()
             await bus.publish(_event("permanent:2", {}))
-            await _wait_for_depth(bus, Q_DEAD, 2, timeout=30)
+            await _wait_for_depth(bus, Q_DEAD, 3, timeout=30)
             stop.set()
             await asyncio.wait_for(consumer2, timeout=10)
-            assert await bus.purge_dead_letters() == 2
+            # Purge is the only thing that removes evidence, and it is the operator's own command.
+            assert await bus.purge_dead_letters() == 3
             await _wait_for_depth(bus, Q_DEAD, 0)
+
+    asyncio.run(scenario())
+
+
+async def _dead_letter_raw(bus: RabbitMQBus, bodies: list[tuple[str, bytes]]) -> None:
+    """Put exact bytes into `news.dead`, in order, as durable dead letters.
+
+    Publishing through the DLX is what a real terminal settlement does, so the messages that arrive are
+    indistinguishable from ones the pipeline dead-lettered — including a body no version of this image
+    can decode, which is the case a replay has to survive without destroying anything.
+    """
+
+    connection = await aio_pika.connect_robust(AMQP_URL, timeout=5)
+    channel = await connection.channel(publisher_confirms=True)
+    try:
+        dlx = await channel.get_exchange(topology(bus.prefix).dlx)
+        for message_id, body in bodies:
+            await dlx.publish(
+                aio_pika.Message(body, delivery_mode=DeliveryMode.PERSISTENT, message_id=message_id),
+                routing_key="event.general.normal",
+            )
+    finally:
+        await channel.close()
+        await connection.close()
+
+
+def test_replay_stops_on_a_malformed_dead_letter_without_touching_it_or_the_ones_behind_it() -> None:
+    """The evidence stays byte for byte, and nothing queued behind it is replayed past it.
+
+    `news.dead` is terminal — no dead-letter exchange of its own — so rejecting a message here deletes
+    the only copy, and skipping it would strand exactly the message that needs a human while quietly
+    replaying everything else. Only an explicit `purge` may remove any of this.
+    """
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            # The production encoder, so the message behind the malformed one is genuinely replayable
+            # and its staying put is a decision rather than a second decode failure.
+            payload = _event("replay:decodable", {"probe": 1}).body()
+            await _dead_letter_raw(bus, [("replay:malformed", b"{not json"), ("replay:decodable", payload)])
+            await _wait_for_depth(bus, Q_DEAD, 2)
+
+            with pytest.raises(DeadLetterReplayRefused) as refused:
+                await bus.replay_dead_letters(limit=5)
+
+            assert refused.value.replayed == 0
+            assert refused.value.message_id == "replay:malformed"
+            assert refused.value.reason == "news_bus_body_invalid"
+            # Nothing moved: not the message it refused, and not the decodable one behind it.
+            await _wait_for_depth(bus, Q_DEAD, 2)
+            assert (await bus.queue_depths())[bus.queue_name(Q_TRIAGE)]["messages"] == 0
+            held = await bus.dead_letters(limit=5)
+            assert [row["message_id"] for row in held] == ["replay:malformed", "replay:decodable"]
+            assert held[0]["body"] == "{not json"
+
+    asyncio.run(scenario())
+
+
+def test_replay_leaves_the_dead_letter_in_place_when_the_confirmed_publish_is_rejected() -> None:
+    """Publish, confirm, then ack — so a refused republish costs nothing but the attempt."""
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            vhost = quote(_management_vhost(), safe="")
+            name = f"{bus.prefix}-triage-tiny"
+            # A bound only rejects once the queue is at it, so the queue has to hold something first.
+            await bus.publish(_event("replay:filler", {"probe": 0}))
+            await _wait_for_depth(bus, Q_TRIAGE, 1)
+            _management_put(
+                f"/api/policies/{vhost}/{quote(name, safe='')}",
+                {
+                    "pattern": f"^{bus.queue_name(Q_TRIAGE).replace('.', chr(92) + '.')}$",
+                    "apply-to": "queues",
+                    "priority": broker_policy.POLICY_PRIORITY + 10,
+                    "definition": {"max-length-bytes": 1, "overflow": "reject-publish"},
+                },
+            )
+            try:
+                deadline = asyncio.get_running_loop().time() + 20
+                while asyncio.get_running_loop().time() < deadline:
+                    row = await bus.effective_policies()
+                    if row[bus.queue_name(Q_TRIAGE)].get("max-length-bytes") == 1:
+                        break
+                    await asyncio.sleep(0.3)
+                payload = _event("replay:rejected", {"probe": 1}).body()
+                await _dead_letter_raw(bus, [("replay:rejected", payload)])
+                await _wait_for_depth(bus, Q_DEAD, 1)
+
+                with pytest.raises(BrokerBackpressure):
+                    await bus.replay_dead_letters(limit=5)
+
+                # Unacked when the publish failed, requeued when the channel closed: still evidence.
+                await _wait_for_depth(bus, Q_DEAD, 1)
+                assert [row["message_id"] for row in await bus.dead_letters(limit=5)] == ["replay:rejected"]
+            finally:
+                _management_delete(f"/api/policies/{vhost}/{quote(name, safe='')}")
 
     asyncio.run(scenario())
 

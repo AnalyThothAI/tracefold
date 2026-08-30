@@ -55,10 +55,15 @@ from tracefold.platform.docker_host import local_docker_host_amqp_url
 
 log = logging.getLogger("tracefold.news.bus")
 
-# A definitions import is a cluster-wide write and a queue listing is a statistics read; both can take
-# seconds on a loaded node. The Janitor bounds its own snapshot separately, so this only has to be
-# generous enough that a busy broker does not fail a deploy-time policy apply.
-_MANAGEMENT_TIMEOUT_SECONDS: Final = 20.0
+# A definitions import is a cluster-wide write, and the policy document read that confirms it is the
+# deploy's own read-after-write. Both can take seconds on a loaded node, and neither may fail a deploy
+# because the broker was busy.
+_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS: Final = 20.0
+# Statistics reads — queue rows, name listings — answer a status question instead, so they are bounded
+# far shorter. A management API that has stopped answering has to become *unknown* quickly: waiting on
+# it until the caller's own deadline expires reports a healthy broker as disconnected, which is the one
+# distinction `broker_snapshot` exists to make. Public because a caller's outer bound must exceed it.
+MANAGEMENT_READ_TIMEOUT_SECONDS: Final = 3.0
 _DEFAULT_MANAGEMENT_PORT: Final = 15672
 # How long a freshly declared topology may take to become visible to a management read before
 # verification calls it a failure. The management API publishes queue rows and their effective policy
@@ -108,15 +113,6 @@ class Topology:
         return (self.exchange, self.dlx)
 
 
-# The retired Analyst lane (#57). It has been empty for a year and its declaration is force-dropped.
-RETIRED_QUEUES: Final = ("news.deep",)
-# The self-built TTL retry lane replaced by broker-native delayed retry (#400); one name covered both a
-# queue and a fanout exchange. The application never publishes to it, never declares it and never
-# deletes it in production: the cutover runbook proves it drained to zero and then deletes it by hand,
-# because an automatic delete could destroy a message that never drained.
-REMOVED_RETRY_LANE: Final = "news.retry"
-
-
 def topology(prefix: str = "") -> Topology:
     """One topic exchange, one DLX, three business queues and the dead-letter queue.
 
@@ -150,6 +146,31 @@ def _policy_mismatch(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> 
         for name, want in expected.items()
         if actual.get(name) != want
     }
+
+
+class DeadLetterReplayRefused(RuntimeError):
+    """A dead letter this image cannot decode stopped the replay, with every message still in the queue.
+
+    Carries what an operator needs to act and nothing that would copy evidence into a log: the decode
+    failure's own code, the message id, and how many messages the batch had already replayed.
+    """
+
+    def __init__(self, *, message_id: str, reason: str, replayed: int) -> None:
+        self.message_id = message_id
+        self.reason = reason
+        self.replayed = replayed
+        # Deliberately unsorted, most-actionable first: a caller that truncates this message loses the
+        # message id rather than the count of what already moved.
+        super().__init__(
+            json.dumps(
+                {
+                    "code": "news_dead_letter_replay_refused",
+                    "replayed": replayed,
+                    "reason": reason,
+                    "message_id": message_id,
+                }
+            )
+        )
 
 
 class BrokerPolicyMismatch(RuntimeError):
@@ -230,6 +251,13 @@ class RabbitMQBus:
                 raise
 
     async def declare_topology(self, channel: AbstractRobustChannel | None = None) -> dict[str, Any]:
+        """Declare the current topology, and only ever that.
+
+        The application never deletes a queue it does not declare. A name it does not recognise is
+        either an operator's or another deployment's, and `topology_drift` reports it for a human to
+        act on; force-dropping one here would destroy messages nobody agreed to lose.
+        """
+
         ch = channel or self._publish_channel
         if ch is None:
             raise news_bus.BrokerUnavailable("news_broker_not_connected")
@@ -242,9 +270,6 @@ class RabbitMQBus:
                 await queue.bind(dlx, routing_key="#")
             for key in queue_spec.bindings:
                 await queue.bind(exchange, routing_key=key)
-        for retired in RETIRED_QUEUES:
-            with contextlib.suppress(Exception):
-                await ch.queue_delete(self.queue_name(retired), if_unused=False, if_empty=False)
         self._exchange = exchange
         return {
             "exchange": spec.exchange,
@@ -253,18 +278,22 @@ class RabbitMQBus:
         }
 
     async def delete_topology(self) -> list[str]:
-        """Delete every queue and exchange of this prefix (test teardown / operator reset)."""
+        """Delete this prefix's declared queues and exchanges (test teardown / operator reset).
+
+        Symmetric with `declare_topology`: it removes what this image declares and nothing else, so a
+        name that only drift reporting knows about survives an operator reset.
+        """
 
         await self.connect()
         channel = await self._channel()
         spec = topology(self._prefix)
         deleted: list[str] = []
         try:
-            for name in (*spec.queue_names, self.queue_name(REMOVED_RETRY_LANE)):
+            for name in spec.queue_names:
                 with contextlib.suppress(Exception):
                     await channel.queue_delete(name)
                     deleted.append(name)
-            for name in (*spec.exchange_names, self.queue_name(REMOVED_RETRY_LANE)):
+            for name in spec.exchange_names:
                 with contextlib.suppress(Exception):
                     await channel.exchange_delete(name)
                     deleted.append(name)
@@ -547,9 +576,10 @@ class RabbitMQBus:
     async def topology_drift(self) -> dict[str, list[str]]:
         """Names under this prefix that the final topology does not contain.
 
-        The cut retry lane is the reason this exists: after #400 the repository has no code that can
-        recreate `news.retry`, so anything still carrying that name is leftover broker state an operator
-        has to see and delete, not something the application may quietly remove.
+        Reporting, never repair. A name under this prefix that the current topology does not contain is
+        leftover broker state — a retired lane, another deployment's queue, an operator's experiment —
+        and it may hold messages this image has no way to interpret. An operator decides what happens to
+        it; nothing in the application deletes what it does not declare.
         """
 
         spec = topology(self._prefix)
@@ -695,7 +725,19 @@ class RabbitMQBus:
         return out
 
     async def replay_dead_letters(self, *, limit: int) -> int:
-        """Republish up to ``limit`` dead letters to the topic exchange with a fresh delivery counter."""
+        """Republish up to ``limit`` dead letters to the topic exchange with a fresh delivery counter.
+
+        Evidence-preserving and fail closed. A message is published with confirms and only then acked, so
+        a publish failure leaves it unacked and the broker requeues it when the channel closes.
+
+        A message this image cannot decode stops the whole batch. It goes back with `basic.nack`, which —
+        measured on 4.3.5 — returns it to the head of the quorum queue without spending a delivery, and
+        the caller is told which message and why. The two alternatives both destroy something: rejecting
+        it deletes the only copy, because `news.dead` is terminal and has no dead-letter exchange of its
+        own, and skipping past it replays everything behind it while stranding the one message that
+        actually needs a human. Nothing but an explicit `purge` removes evidence from this queue, so a
+        replay stays blocked on that message until an operator decides what it is.
+        """
 
         await self.connect()
         channel = await self._channel()
@@ -713,12 +755,21 @@ class RabbitMQBus:
                         priority=int(incoming.priority or 0),
                         headers={},
                     )
-                except BusDecodeError:
-                    await incoming.reject(requeue=False)
-                    continue
+                except BusDecodeError as exc:
+                    await incoming.nack(requeue=True)
+                    raise DeadLetterReplayRefused(
+                        message_id=str(incoming.message_id or "")[:64],
+                        reason=str(exc)[:64],
+                        replayed=replayed,
+                    ) from exc
                 await self.publish(message)
                 await incoming.ack()
                 replayed += 1
+        except DeadLetterReplayRefused:
+            raise
+        except Exception:
+            log.warning("news dlq replay stopped after replayed=%d; the rest stay in the queue", replayed)
+            raise
         finally:
             with contextlib.suppress(Exception):
                 await channel.close()
@@ -756,10 +807,10 @@ class _Management:
         token = base64.b64encode(f"{self._username}:{self._password}".encode()).decode("ascii")
         return {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
 
-    async def _request(self, method: str, path: str, body: Any | None = None) -> Any:
+    async def _request(self, method: str, path: str, body: Any | None = None, *, timeout_seconds: float) -> Any:
         url = f"{self._base}{path}"
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_MANAGEMENT_TIMEOUT_SECONDS)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
                 response = await client.request(method, url, headers=self._headers(), json=body)
         except httpx.HTTPError as exc:
             raise news_bus.BrokerUnavailable(f"news_broker_management_failed:{type(exc).__name__}") from exc
@@ -779,16 +830,24 @@ class _Management:
         """
 
         wanted = set(names)
-        rows = await self._request("GET", f"/api/queues/{quote(self.vhost, safe='')}?columns={_QUEUE_COLUMNS}")
+        rows = await self._request(
+            "GET",
+            f"/api/queues/{quote(self.vhost, safe='')}?columns={_QUEUE_COLUMNS}",
+            timeout_seconds=MANAGEMENT_READ_TIMEOUT_SECONDS,
+        )
         return {str(row["name"]): row for row in rows or [] if isinstance(row, dict) and row.get("name") in wanted}
 
     async def import_definitions(self, document: Mapping[str, Any]) -> None:
-        await self._request("POST", "/api/definitions", dict(document))
+        await self._request(
+            "POST", "/api/definitions", dict(document), timeout_seconds=_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS
+        )
 
     async def policies(self) -> dict[str, dict[str, Any]]:
         """Name -> the complete policy entry, shaped like a definitions-document row for direct diffing."""
 
-        rows = await self._request("GET", f"/api/policies/{quote(self.vhost, safe='')}")
+        rows = await self._request(
+            "GET", f"/api/policies/{quote(self.vhost, safe='')}", timeout_seconds=_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS
+        )
         return {
             str(row["name"]): {
                 "vhost": row.get("vhost"),
@@ -803,17 +862,25 @@ class _Management:
         }
 
     async def queue_names(self) -> tuple[str, ...]:
-        rows = await self._request("GET", f"/api/queues/{quote(self.vhost, safe='')}")
+        rows = await self._request(
+            "GET", f"/api/queues/{quote(self.vhost, safe='')}", timeout_seconds=MANAGEMENT_READ_TIMEOUT_SECONDS
+        )
         return tuple(str(row.get("name")) for row in rows or [] if isinstance(row, dict))
 
     async def exchange_names(self) -> tuple[str, ...]:
-        rows = await self._request("GET", f"/api/exchanges/{quote(self.vhost, safe='')}")
+        rows = await self._request(
+            "GET", f"/api/exchanges/{quote(self.vhost, safe='')}", timeout_seconds=MANAGEMENT_READ_TIMEOUT_SECONDS
+        )
         return tuple(str(row.get("name")) for row in rows or [] if isinstance(row, dict))
 
     async def delete_policies(self, names: list[str]) -> None:
         vhost = quote(self.vhost, safe="")
         for name in names:
-            await self._request("DELETE", f"/api/policies/{vhost}/{quote(name, safe='')}")
+            await self._request(
+                "DELETE",
+                f"/api/policies/{vhost}/{quote(name, safe='')}",
+                timeout_seconds=_MANAGEMENT_DEPLOY_TIMEOUT_SECONDS,
+            )
 
 
 def _dead_letter_view(incoming: aio_pika.abc.AbstractIncomingMessage) -> dict[str, Any]:
@@ -838,8 +905,10 @@ async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
 
 
 __all__ = [
+    "MANAGEMENT_READ_TIMEOUT_SECONDS",
     "POLICY_EFFECTIVE_TIMEOUT_SECONDS",
     "BrokerPolicyMismatch",
+    "DeadLetterReplayRefused",
     "QueueSpec",
     "RabbitMQBus",
     "Topology",

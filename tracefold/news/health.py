@@ -123,7 +123,9 @@ def broker_health(broker: Mapping[str, Any], *, open_causes: frozenset[str] = fr
     # delivery limit; nothing else on this page would show that.
     absent = sorted(name for name, row in queues.items() if (row or {}).get("missing"))
     policy_drift = [name for name, row in queues.items() if (row or {}).get("policy_ok") is False]
-    policy_unknown = queues and all((row or {}).get("policy_ok") is None for row in queues.values())
+    # One unverifiable queue is already an unverifiable contract: the other three saying "fine" proves
+    # nothing about the delivery this one governs, so any unknown is reported and named.
+    policy_unknown = sorted(name for name, row in queues.items() if (row or {}).get("policy_ok") is None)
     stuck_dead_letters = {
         name: int((row or {}).get("dead_letter_pending") or 0)
         for name, row in queues.items()
@@ -147,14 +149,17 @@ def broker_health(broker: Mapping[str, Any], *, open_causes: frozenset[str] = fr
         return HealthItem("warn", f"{over_bytes[0]} 已用 {over_bytes[1] / 100:.1f}% 字节额度", "")
     if worst_depth >= QUEUE_DEPTH_WARN:
         return HealthItem("warn", f"{worst_name} 积压 {worst_depth} 条", "")
+    # AMQP answered but the management API did not: depths are real, retry policy and delayed/dead-letter
+    # state are simply not known this tick. That is a warning, never a silent pass — and it is reported
+    # ahead of the dead-letter count, which is a standing condition that would otherwise hide it for as
+    # long as anything sits in `news.dead`.
+    if policy_unknown:
+        detail = f"{'、'.join(policy_unknown)}：RabbitMQ 管理 API 读不到，重试契约无法核对"
+        return HealthItem("warn", "队列策略未知", detail)
     if dead > 0:
         return HealthItem("warn", f"死信队列有 {dead} 条", "需要人工查看 news.dead")
     if broker.get("connected") is None:
         return HealthItem("warn", "队列状态未知", "Janitor 还没有上报快照")
-    # AMQP answered but the management API did not: depths are real, retry policy and delayed/dead-letter
-    # state are simply not known this tick. That is a warning, never a silent pass.
-    if policy_unknown:
-        return HealthItem("warn", "队列策略未知", "RabbitMQ 管理 API 读不到，重试契约无法核对")
     summary = f"raw {depths['news.raw']} · triage {depths['news.triage']} · deliver {depths['news.deliver']}"
     return HealthItem("ok", "队列畅通", summary)
 

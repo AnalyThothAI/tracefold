@@ -142,10 +142,11 @@ def test_the_application_never_publishes_to_the_cut_retry_lane() -> None:
     from tracefold.integrations import rabbitmq
 
     source = (REPO / "tracefold" / "integrations" / "rabbitmq.py").read_text(encoding="utf-8")
-    # The cut lane appears exactly once in the adapter: the constant that names what must never be
-    # declared. Everything else refers to that constant.
-    assert source.count('"news.retry"') == 1
-    assert rabbitmq.REMOVED_RETRY_LANE == "news.retry"
+    # #407: the adapter does not name the cut lane at all any more. It used to hold the one constant
+    # that said "never declare this", which was also what let it delete the name on an operator's
+    # behalf; a name the runtime does not know cannot be declared *or* destroyed by it, and
+    # `topology_drift` reports whatever is actually on the broker.
+    assert source.count("news.retry") == 0
     declared = {spec.name for spec in rabbitmq.topology().queues}
     assert declared == {Q_RAW, Q_TRIAGE, Q_DELIVER, Q_DEAD}
     assert rabbitmq.topology().exchange_names == ("news", "news.dlx")

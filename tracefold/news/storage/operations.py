@@ -181,7 +181,7 @@ class OperationsStorage:
         """Open the one incident of this cause class, or return the one already open.
 
         This is a single idempotent statement resting on the partial unique index
-        `ux_news_opennews_incidents_open_cause` (migration 0334), not a read-then-write. Two writers
+        `ux_news_opennews_incidents_open_cause` (migration 0335), not a read-then-write. Two writers
         racing therefore converge in PostgreSQL rather than through application locking, and no caller
         needs to remember whether it already opened this incident.
         """
