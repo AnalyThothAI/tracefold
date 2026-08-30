@@ -12,6 +12,11 @@ from tracefold.integrations.trading_catalog import (
     fetch_binance_usdm_catalog,
     fetch_hyperliquid_perp_catalog,
 )
+from tracefold.trading import (
+    ExecutionInstrumentEvidenceV1,
+    build_execution_capability_snapshot,
+    build_venue_catalog_snapshot,
+)
 
 
 def test_binance_catalog_keeps_inactive_and_malformed_provider_rows() -> None:
@@ -50,6 +55,96 @@ def test_binance_catalog_keeps_inactive_and_malformed_provider_rows() -> None:
         fetch_binance_usdm_catalog(transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=reordered)))
     )
     assert sorted(row.raw_metadata_sha256 for row in rows) == sorted(row.raw_metadata_sha256 for row in reordered_rows)
+
+
+def test_binance_catalog_keeps_non_ascii_assets_as_explicit_capability_exclusions() -> None:
+    payload = {
+        "symbols": [
+            {
+                "symbol": symbol,
+                "pair": symbol,
+                "contractType": "PERPETUAL",
+                "status": "TRADING",
+                "baseAsset": base,
+                "quoteAsset": "USDT",
+                "marginAsset": "USDT",
+                "filters": [
+                    {"filterType": "PRICE_FILTER", "tickSize": "0.0001"},
+                    {"filterType": "LOT_SIZE", "stepSize": "1", "minQty": "1"},
+                    {"filterType": "MIN_NOTIONAL", "notional": "5"},
+                ],
+            }
+            for base, symbol in (
+                ("BTC", "BTCUSDT"),
+                ("币安人生", "币安人生USDT"),
+                ("我踏马来了", "我踏马来了USDT"),
+                ("牛来", "牛来USDT"),
+                ("龙虾", "龙虾USDT"),
+            )
+        ]
+    }
+
+    rows = asyncio.run(
+        fetch_binance_usdm_catalog(transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=payload)))
+    )
+    catalog = build_venue_catalog_snapshot(
+        binding="BINANCE_USDM",
+        captured_at_ms=1_000,
+        stale_after_ms=21_600_000,
+        instruments=rows,
+    )
+    evidence = tuple(
+        ExecutionInstrumentEvidenceV1(
+            provider_instrument_id=row.provider_instrument_id,
+            catalog_raw_metadata_sha256=row.raw_metadata_sha256,
+            instrument_id=f"{row.provider_symbol}-PERP.BINANCE",
+            native_symbol=row.provider_symbol,
+            price_precision=4,
+            size_precision=0,
+            price_increment="0.0001",
+            size_increment="1",
+            min_quantity="1",
+            min_notional="5",
+            execution_eligible=True,
+            protection_eligible=True,
+        )
+        for row in rows
+    )
+
+    snapshot = build_execution_capability_snapshot(
+        catalog=catalog,
+        execution_rows=evidence,
+        app_revision="revision",
+        app_image_digest="sha256:image",
+        adapter_contract_sha256="1" * 64,
+        quote_contract_sha256="2" * 64,
+        protection_contract_sha256="3" * 64,
+        client_runtime_identity="client-runtime",
+    )
+
+    assert [row.provider_instrument_id for row in rows] == [
+        "BTCUSDT",
+        "币安人生USDT",
+        "我踏马来了USDT",
+        "牛来USDT",
+        "龙虾USDT",
+    ]
+    assert [row.canonical_asset for row in rows] == ["BTC", None, None, None, None]
+    assert [row.normalization_error for row in rows] == [
+        None,
+        "canonical_asset_invalid",
+        "canonical_asset_invalid",
+        "canonical_asset_invalid",
+        "canonical_asset_invalid",
+    ]
+    assert snapshot.catalog_instrument_count == snapshot.included_count + snapshot.excluded_count == 5
+    assert [row.provider_instrument_id for row in snapshot.included.values()] == ["BTCUSDT"]
+    assert {row.provider_instrument_id: row.reason for row in snapshot.excluded.values()} == {
+        "币安人生USDT": "CATALOG_NORMALIZATION_FAILED",
+        "我踏马来了USDT": "CATALOG_NORMALIZATION_FAILED",
+        "牛来USDT": "CATALOG_NORMALIZATION_FAILED",
+        "龙虾USDT": "CATALOG_NORMALIZATION_FAILED",
+    }
 
 
 def test_hyperliquid_catalog_preserves_dex_namespace() -> None:

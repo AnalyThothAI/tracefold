@@ -25,7 +25,7 @@ HYPERLIQUID_BASE_URL: Final = "https://api.hyperliquid.xyz"
 _TIMEOUT_SECONDS: Final = 20.0
 _MAX_BYTES: Final = 48 * 1024 * 1024
 _MAX_BUILDER_DEXS: Final = 32
-_ASSET = re.compile(r"^[^\s\x00-\x1f]{1,32}$")
+_ASSET = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,31}$")
 
 
 async def fetch_binance_usdm_catalog(
