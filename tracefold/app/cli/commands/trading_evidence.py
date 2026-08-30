@@ -773,7 +773,12 @@ def _verify_window(
     checks = fixed_window_verification_checks(spec, snapshot, sources=sources, serve=serve, now_ms=now_ms)
     by_binding = fixed_window_binding_report(snapshot["by_binding"], sources, snapshot["gate_source_keys"])
     return _verification_answer(
-        verification_report(subject=f"fixed-window:{spec.window_sha256}", verified_at_ms=now_ms, checks=checks),
+        verification_report(
+            subject=f"fixed-window:{spec.window_sha256}",
+            verified_at_ms=now_ms,
+            checks=checks,
+            binding_report=by_binding,
+        ),
         snapshot={"by_binding": by_binding},
     )
 
@@ -851,7 +856,12 @@ def _verify_release(
         now_ms=now_ms,
     )
     return _verification_answer(
-        verification_report(subject=f"release:{release.release_sha256}", verified_at_ms=now_ms, checks=checks),
+        verification_report(
+            subject=f"release:{release.release_sha256}",
+            verified_at_ms=now_ms,
+            checks=checks,
+            binding_report=by_binding,
+        ),
         snapshot={"by_binding": by_binding},
     )
 

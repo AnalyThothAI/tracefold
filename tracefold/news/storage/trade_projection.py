@@ -536,6 +536,7 @@ class TradeProjectionStorage:
                AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
                      IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_current_events_v1 e ON e.event_id = v.event_id
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
@@ -546,6 +547,7 @@ class TradeProjectionStorage:
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
                AND v.degraded = false
+               AND e.ingest_mode = 'live'
                AND s.observed_at_ms >= %s AND s.observed_at_ms < %s
                AND s.available_at_ms <= %s AND v.created_at_ms <= %s
              ORDER BY s.observed_at_ms, v.event_id

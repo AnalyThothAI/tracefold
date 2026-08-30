@@ -471,7 +471,10 @@ input rows, translated field by field in `news_to_trading.py`, so a rename on
 either side fails at the seam rather than inside a runner. Version 12 publishes
 the deterministic OI judgment, frozen source-availability clock, a bounded bulk
 point-in-time instrument catalogue, and the complete fixed-window OI source
-universe used by Trading; editorial News and liquidation have no capital-lane projection.
+universe used by Trading. That universe reuses the production Gate's exact
+current-Event and live-ingest eligibility, so recovery or archived rows cannot
+manufacture a missing Gate disposition; editorial News and liquidation have no
+capital-lane projection.
 
 `tracefold.app` decides how capabilities are assembled and run, never what a
 business fact means. It reads business projections; it does not write business
@@ -504,7 +507,9 @@ SQL ownership follows the same boundary: News owns `news_*`; Trading owns
 read-only seam (`macro_module_current` as Analyst evidence) went with the
 Analyst lane in #57, and the Macro tables themselves went in #68. The
 architecture gate checks SQL table references against the generated current
-schema.
+schema. SQL functions follow the same ownership rule: a Trading trigger may
+call only Trading/platform helpers, including its own canonical-JSON seal
+helper, never a News-prefixed function.
 
 ## Transaction ownership
 

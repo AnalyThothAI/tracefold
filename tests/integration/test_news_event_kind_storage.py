@@ -321,6 +321,18 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         limit=20,
     )
     assert [(row["event_id"], row["source_venue"]) for row in source_rows] == [("projection-oi-event", "binance")]
+    conn.execute("UPDATE news_events SET ingest_mode = 'recovery' WHERE event_id = 'projection-oi-event'")
+    assert (
+        news.trade_fixed_window_oi_sources(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=NOW,
+            end_observed_at_ms=NOW + 1,
+            drain_cutoff_ms=NOW,
+            limit=20,
+        )
+        == []
+    )
+    conn.execute("UPDATE news_events SET ingest_mode = 'live' WHERE event_id = 'projection-oi-event'")
     conn.execute("UPDATE news_oi_signals SET rank_in_window = 2 WHERE event_id = 'projection-oi-event'")
     assert projected() == []
     conn.execute(
@@ -328,6 +340,23 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         "WHERE event_id = 'projection-oi-event'"
     )
     assert projected() == []
+    with repos.transaction():
+        # Reproduce a pre-hard-cut archived row.  Production forbids changing this marker, so the
+        # regression fixture bypasses triggers only while creating that historical database state.
+        conn.execute("SET LOCAL session_replication_role = 'replica'")
+        conn.execute(
+            "UPDATE news_events SET current_contract_archive_only = true WHERE event_id = 'projection-oi-event'"
+        )
+    assert (
+        news.trade_fixed_window_oi_sources(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=NOW,
+            end_observed_at_ms=NOW + 1,
+            drain_cutoff_ms=NOW,
+            limit=20,
+        )
+        == []
+    )
     conn.execute(
         "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "
         "source_strategy_id = '1019', source_contract_version = 'opennews_oi_source_v1', "

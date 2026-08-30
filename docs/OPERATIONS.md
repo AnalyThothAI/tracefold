@@ -145,7 +145,10 @@ state. The rollback receipt names and re-hashes the exact release-candidate
 artifact, covers its exact binding/grant scope, and cannot predate that release
 window's drain cutoff. The v2 rollback receipt also names new Workers and Serve
 runtime ids; both must differ from the registered release generations and must
-start at or after rollback before zero-refill and observer-continuity checks can pass.
+start at or after rollback. Every enabled binding must then report `ready`,
+`reconciled_flat`, and a query-first reconciliation heartbeat no earlier than
+both rollback and the new Workers start before zero-refill and
+observer-continuity checks can pass.
 
 These commands implement the clock and verification mechanism. Until the
 calendar window, human approval, venue receipts, fixed seven-day accounting,

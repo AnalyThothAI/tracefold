@@ -111,6 +111,7 @@ def test_release_approval_digest_covers_every_identity_and_window() -> None:
 
 
 def test_verification_report_is_canonical_and_any_failed_check_is_terminal() -> None:
+    binding_report = ({"binding": "BINANCE_USDM", "case_count": 1},)
     report = verification_report(
         subject="fixed-window:test",
         verified_at_ms=START,
@@ -118,11 +119,20 @@ def test_verification_report_is_canonical_and_any_failed_check_is_terminal() -> 
             EvidenceVerificationCheckV1(code="z_pass", passed=True),
             EvidenceVerificationCheckV1(code="a_failure", passed=False),
         ],
+        binding_report=binding_report,
     )
 
     assert report.terminal == "FAILED"
     assert report.failure_codes == ("a_failure",)
     assert tuple(check.code for check in report.checks) == ("a_failure", "z_pass")
+    changed = verification_report(
+        subject="fixed-window:test",
+        verified_at_ms=START,
+        checks=list(report.checks),
+        binding_report=({"binding": "BINANCE_USDM", "case_count": 2},),
+    )
+    assert changed.binding_report_sha256 != report.binding_report_sha256
+    assert changed.report_sha256 != report.report_sha256
 
 
 def test_rollback_requires_new_workers_and_serve_generations() -> None:
@@ -163,8 +173,10 @@ def test_rollback_requires_new_workers_and_serve_generations() -> None:
         "bindings": [
             {
                 "binding": "BINANCE_USDM",
+                "runtime_state": "ready",
                 "account_state": "reconciled_flat",
                 "active_arm_receipt_sha256": None,
+                "heartbeat_at_ms": rolled_back_at_ms,
                 "catalog_state": "ready",
                 "capability_state": "ready",
             }
@@ -184,6 +196,20 @@ def test_rollback_requires_new_workers_and_serve_generations() -> None:
     old_serve = serve.model_copy(update={"runtime_id": snapshot["release_registration"]["serve_runtime_id"]})
     failed = rollback_verification_checks(receipt, release, snapshot, serve=old_serve, now_ms=rolled_back_at_ms)
     assert {check.code: check.passed for check in failed}["rollback_observer_continues"] is False
+    stale_flat = {
+        **snapshot,
+        "bindings": [{**snapshot["bindings"][0], "heartbeat_at_ms": rolled_back_at_ms - 1}],
+    }
+    stale_checks = rollback_verification_checks(receipt, release, stale_flat, serve=serve, now_ms=rolled_back_at_ms)
+    assert {check.code: check.passed for check in stale_checks}["rollback_bindings_authoritatively_flat"] is False
+    missing_heartbeat = {
+        **snapshot,
+        "bindings": [{**snapshot["bindings"][0], "heartbeat_at_ms": None}],
+    }
+    missing_checks = rollback_verification_checks(
+        receipt, release, missing_heartbeat, serve=serve, now_ms=rolled_back_at_ms
+    )
+    assert {check.code: check.passed for check in missing_checks}["rollback_bindings_authoritatively_flat"] is False
 
 
 def test_case_verifier_rejects_an_allowed_case_without_its_one_intent() -> None:

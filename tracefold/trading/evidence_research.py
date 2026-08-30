@@ -799,7 +799,12 @@ def _future_metrics(
         insufficient.append("maximum_symbol_concentration_exceeded")
     if concentrations["max_day"] > candidate.execution.max_day_concentration_bps:
         insufficient.append("maximum_day_concentration_exceeded")
-    allowed_external_incidents = {"protection_contract_invalid", "clock_or_known_at_violation"}
+    allowed_external_incidents = {
+        "bar_or_funding_missing",
+        "clock_or_known_at_violation",
+        "protection_contract_invalid",
+        "source_mass_missingness",
+    }
     if set(external_incidents).difference(allowed_external_incidents):
         raise ValueError("evidence_future_external_incident_invalid")
     observed_incidents = {incident for row in drain.rows for incident in row.incidents}

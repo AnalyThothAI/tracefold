@@ -1043,6 +1043,9 @@ reader/writer.
   observer continued after rollback, zero refill/provider submission occurred,
   and no terminal Intent was revived. Any unknown or missing link is a stable
   failed check and a nonzero exit; zero activity never verifies a release.
+  The canonical window/release verifier report includes the digest of the full
+  per-binding policy/capital/Q1/Q2/risk/stage/latency/financial/missingness
+  report; changing any of those figures changes the verifier report identity.
 **One HTTP owner per durable aggregate (#331, #350).** Nothing crosses: a Case
 carries frozen evidence plus independent Policy and Capital attribution; an
 Intent carries its lifecycle and a `case_id` back-reference; status carries
@@ -1619,7 +1622,8 @@ clock, a bounded bulk point-in-time public instrument catalogue, and the complet
 cutoff-bounded OI source universe used for fixed-window Gate conservation. Editorial News
 and liquidation do not cross this capital seam. OI rows freeze `ingest_mode`,
 so Item retention cannot erase live/recovery provenance; recovery rows are not
-eligible triggers.
+eligible triggers. The fixed-window universe joins the same current-Event view
+and requires `ingest_mode=live`, matching Gate eligibility exactly.
 
 `trading_manifest_v9` freezes the learning epoch, OI Program v2 version and
 SHA, policy v11, judgment contract/origin/SHA, runtime-manifest SHA, and the OI

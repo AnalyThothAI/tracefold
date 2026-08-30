@@ -24,6 +24,7 @@ from tracefold.trading.evidence_clock import (
     EvidenceCaptureArtifactV1,
     EvidenceCaptureSpecV1,
     EvidenceDrainArtifactV1,
+    EvidenceIncident,
     FundingRateV1,
     FutureCaptureBatchV1,
     FutureStatisticalProtocolV1,
@@ -849,7 +850,11 @@ def test_future_long_return_adds_the_signed_funding_cashflow() -> None:
     )
     pre_entry_funding = paid_funding.model_copy(update={"funding_at_ms": observed_at_ms + 1})
 
-    def evaluate(funding: tuple[FundingRateV1, ...], *, protection_invalid: bool = False):
+    def evaluate(
+        funding: tuple[FundingRateV1, ...],
+        *,
+        external_incidents: tuple[EvidenceIncident, ...] = (),
+    ):
         drain = build_evidence_drain(
             future_capture,
             market_slices=[market_slice],
@@ -873,13 +878,14 @@ def test_future_long_return_adds_the_signed_funding_cashflow() -> None:
             target_notional=Decimal("10"),
             run_episode=run_bar_episode,
             evaluated_at_ms=candidate.statistics.drain_cutoff_ms,
-            external_incidents=("protection_contract_invalid",) if protection_invalid else (),
+            external_incidents=external_incidents,
         )
 
     without_funding = evaluate(())
     with_paid_funding = evaluate((paid_funding,))
     with_pre_entry_funding = evaluate((pre_entry_funding,))
-    invalid_protection = evaluate((), protection_invalid=True)
+    invalid_protection = evaluate((), external_incidents=("protection_contract_invalid",))
+    capture_health_failed = evaluate((paid_funding,), external_incidents=("source_mass_missingness",))
     assert without_funding.metrics.mean_net_including_funding_return_bps is not None
     paid_delta = (
         without_funding.metrics.mean_net_including_funding_return_bps
@@ -892,6 +898,8 @@ def test_future_long_return_adds_the_signed_funding_cashflow() -> None:
     )
     assert invalid_protection.terminal == "INSUFFICIENT_EVIDENCE"
     assert "protection_contract_invalid_incident" in invalid_protection.reasons
+    assert capture_health_failed.terminal == "INSUFFICIENT_EVIDENCE"
+    assert "source_mass_missingness_incident" in capture_health_failed.reasons
     assert without_funding.metrics.estimated_power_bps == 10_000
 
 

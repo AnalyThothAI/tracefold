@@ -440,7 +440,9 @@ bar/funding boundaries, News-source-to-Gate conservation, Case/Intent conservati
 fixed-window accounting, pre-window release registration against exact
 Workers/Serve generations, append-only Nautilus process generations,
 signed-tag/restart/canary release binding, and release-bound rollback snapshots
-that require new Workers and Serve generations.
+that require new Workers and Serve generations plus a binding reconciliation
+heartbeat from the new Workers generation. The canonical fixed-window/release
+report also binds the complete per-binding accounting digest.
 Pure verifier tests own interpretation of receipt artifacts and the bounded
 DB/runtime/Git facts; App integration tests use real PostgreSQL, raw artifact bytes,
 and real Git identities to prove the public handler supplies those facts and cannot

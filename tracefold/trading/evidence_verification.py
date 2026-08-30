@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Self
 from uuid import UUID
@@ -547,6 +548,7 @@ class EvidenceVerificationReportV1(_Frozen):
     verified_at_ms: int = Field(gt=0)
     checks: tuple[EvidenceVerificationCheckV1, ...]
     failure_codes: tuple[str, ...]
+    binding_report_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
     def validate_report(self) -> Self:
@@ -559,6 +561,9 @@ class EvidenceVerificationReportV1(_Frozen):
             raise ValueError("evidence_verification_failure_codes_invalid")
         if (self.terminal == "VERIFIED") != (not self.failure_codes):
             raise ValueError("evidence_verification_terminal_invalid")
+        binds_window = self.subject.startswith("fixed-window:") or self.subject.startswith("release:")
+        if binds_window != (self.binding_report_sha256 is not None):
+            raise ValueError("evidence_verification_binding_report_identity_invalid")
         return self
 
     @property
@@ -571,6 +576,7 @@ def verification_report(
     subject: str,
     verified_at_ms: int,
     checks: list[EvidenceVerificationCheckV1],
+    binding_report: Sequence[Mapping[str, Any]] | None = None,
 ) -> EvidenceVerificationReportV1:
     ordered = tuple(sorted(checks, key=lambda row: row.code))
     failures = tuple(row.code for row in ordered if not row.passed)
@@ -580,6 +586,7 @@ def verification_report(
         verified_at_ms=verified_at_ms,
         checks=ordered,
         failure_codes=failures,
+        binding_report_sha256=None if binding_report is None else canonical_sha256(binding_report),
     )
 
 
@@ -865,10 +872,15 @@ def rollback_verification_checks(
         verification_check("rollback_zero_provider_write", snapshot["post_rollback_submission_count"] == 0),
         verification_check(
             "rollback_bindings_authoritatively_flat",
-            all(
+            workers_runtime is not None
+            and all(
                 binding in bindings
+                and bindings[binding]["runtime_state"] == "ready"
                 and bindings[binding]["account_state"] == "reconciled_flat"
                 and bindings[binding]["active_arm_receipt_sha256"] is None
+                and bindings[binding]["heartbeat_at_ms"] is not None
+                and int(bindings[binding]["heartbeat_at_ms"]) >= receipt.rolled_back_at_ms
+                and int(bindings[binding]["heartbeat_at_ms"]) >= int(workers_runtime["started_at_ms"])
                 and bindings[binding]["catalog_state"] in {"ready", "stale", "error", "missing"}
                 and bindings[binding]["capability_state"] in {"ready", "stale", "error", "missing"}
                 for binding in receipt.bindings

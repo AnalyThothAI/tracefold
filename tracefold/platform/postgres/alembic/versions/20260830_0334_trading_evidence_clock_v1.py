@@ -184,6 +184,45 @@ def upgrade() -> None:
     op.execute("REVOKE ALL ON FUNCTION trading_evidence_now_ms() FROM PUBLIC")
     op.execute("GRANT EXECUTE ON FUNCTION trading_evidence_now_ms() TO tracefold_workers")
 
+    # Trading owns the bytes used to seal its future-capture health ledger.  Keeping this helper
+    # here avoids making a Trading trigger depend on News-owned SQL merely because both domains use
+    # the same canonical JSON algorithm.
+    op.execute(
+        """
+        CREATE FUNCTION trading_canonical_jsonb(value JSONB) RETURNS TEXT
+        LANGUAGE plpgsql IMMUTABLE STRICT PARALLEL SAFE AS $$
+        DECLARE
+          result TEXT;
+          item RECORD;
+          first_item BOOLEAN := true;
+        BEGIN
+          CASE jsonb_typeof(value)
+            WHEN 'object' THEN
+              result := '{';
+              FOR item IN SELECT key, val FROM jsonb_each(value) AS e(key, val) ORDER BY key COLLATE "C" LOOP
+                IF NOT first_item THEN result := result || ','; END IF;
+                result := result || to_jsonb(item.key)::text || ':' || trading_canonical_jsonb(item.val);
+                first_item := false;
+              END LOOP;
+              RETURN result || '}';
+            WHEN 'array' THEN
+              result := '[';
+              FOR item IN SELECT val FROM jsonb_array_elements(value) WITH ORDINALITY AS e(val, ord) ORDER BY ord LOOP
+                IF NOT first_item THEN result := result || ','; END IF;
+                result := result || trading_canonical_jsonb(item.val);
+                first_item := false;
+              END LOOP;
+              RETURN result || ']';
+            ELSE
+              RETURN value::text;
+          END CASE;
+        END;
+        $$
+        """
+    )
+    op.execute("REVOKE ALL ON FUNCTION trading_canonical_jsonb(JSONB) FROM PUBLIC")
+    op.execute("GRANT EXECUTE ON FUNCTION trading_canonical_jsonb(JSONB) TO tracefold_workers")
+
     op.execute(
         """
         CREATE TABLE trading_evidence_clock_receipts (
@@ -323,7 +362,7 @@ def upgrade() -> None:
             expected_batch_count :=
               ((future_end - future_start + capture_interval - 1) / capture_interval)::INTEGER;
             SELECT count(*), min(batch_start_ms), max(batch_end_ms),
-                   encode(sha256(convert_to(news_canonical_jsonb(
+                   encode(sha256(convert_to(trading_canonical_jsonb(
                      COALESCE(jsonb_agg(payload -> 'health' ORDER BY batch_start_ms), '[]'::jsonb)
                    ), 'UTF8')), 'hex'),
                    COALESCE(bool_or(
