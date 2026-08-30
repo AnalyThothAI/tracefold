@@ -36,9 +36,11 @@ DDL.
 
 ## 0330–0332 authority audit
 
-Audit baseline: exact `main` `17338e78dbf0c99dc98e876433790adf02e1bd70`,
-implementation-start head `20260830_0333`; this governance change adds forward
-revision `20260830_0335` to freeze explicit current-view columns. The audit found no object that can be removed
+Audit-start baseline: exact `main` `17338e78dbf0c99dc98e876433790adf02e1bd70`,
+head `20260830_0333`. The implementation was reconciled with
+`main@651ba997d43d0046660ac5dd84f221782b6e1a63` / `20260830_0334`, then added
+forward revision `20260830_0335` to freeze explicit current-view columns. The
+audit found no object that can be removed
 without changing the News current contract or Trading capital/execution truth,
 so no published revision was edited and no forward-removal revision is
 warranted. Every object below is retained. Objects grouped in one row inherit

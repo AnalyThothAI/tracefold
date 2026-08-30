@@ -873,8 +873,11 @@ lines and pinned wire source labels/suffixes; exchange names and `@handles`
 are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
 `tracefold.news.events.identity`
 normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce the
-band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
-is the single Deduper transaction. Fingerprints of at most two tokens never
+band keys stored in `news_event_bands`. Admission prepares fact units, Gate output and MinHash outside PostgreSQL,
+then one short transaction owns the Item/Event assignment. It commits before the evidence rows are loaded,
+serialized and hashed; a compare-and-append transaction installs that prepared snapshot before any Event is
+published to RabbitMQ. A crash between those steps is safe because the redelivered Item assignment is idempotent
+and the snapshot append is content-addressed. Fingerprints of at most two tokens never
 share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
 non-News Event identity. Current cross-Item exact/artifact/near joins require
 the same source-contract reason. Archive-only Events are never dedupe
@@ -2291,8 +2294,9 @@ magnitude-2 presentation and a push result; a rejected one has a magnitude-0
 presentation and a drop result.
 
 The rule counts, while ordinary-News `decide()` deliberately does not.
-Counting eligible history in PostgreSQL inside the Triage transaction and
-persisting the typed result keeps one action authority and the shared delivery, receipts,
+Counting and reserving the eligible rank in PostgreSQL under the per-asset lock keeps one rank authority. The
+typed arithmetic judgment is then materialized outside PostgreSQL and follows the same prepared Verdict write as
+ordinary News, preserving the shared delivery, receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
 they were built for.
 
@@ -2308,12 +2312,13 @@ collapsed upstream by the exact fingerprint. Listing frames keep the different
 exemption they were given in #72, which is per instrument rather than blanket,
 because two notices for the same instrument really are one fact.
 
-Rank, ledger row and verdict are written in one transaction under the storyline's
-advisory lock. PostgreSQL filters the complete `(cutoff, observed_at]` range by
+Rank and the idempotent ledger row are written in one transaction under the asset
+advisory lock; the prepared verdict follows in its own short transaction. PostgreSQL filters the complete `(cutoff, observed_at]` range by
 the same strict whale-ratio and inclusive absolute-change thresholds before
 `count(*)`; ineligible frames stay in the ledger for audit but never spend a
 later signal's rank. Reading that count outside the lock would let two frames for
-one symbol both see a history without the other and both claim the same rank.
+one symbol both see a history without the other and both claim the same rank. If the process stops between the
+ledger commit and Verdict commit, broker redelivery reads the already-stored rank and completes the Verdict.
 
 `news_oi_signals` is the rank ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and

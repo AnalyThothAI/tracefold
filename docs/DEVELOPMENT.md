@@ -446,7 +446,7 @@ The #377 Trading evidence clock is verified at three distinct seams. Pure tests
 prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
 scope/sign, actual database-stamped receipt clocks, finite candidate selection,
 append-only blind-batch continuity/health, deterministic block bootstrap and declared
-power. PostgreSQL tests prove the irreversible `0335` cutover, the append-only
+power. PostgreSQL tests prove the irreversible `0334` evidence-clock cutover, the append-only
 corpus -> candidate -> future capture -> future drain -> result parent chain,
 one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
 link, database-recomputed complete future chains/health incidents, gap-free

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 # S608 exemption below appends one fixed optional predicate; incident values remain bound parameters.
 from .sql_values import _dumps
@@ -72,6 +72,73 @@ def pending_recovery_incidents_statement(*, limit: int) -> tuple[str, tuple[int]
 
 class OperationsStorage:
     conn: Any
+
+    def seed_restore_drill_facts(self, *, current_event_id: str, archive_event_id: str) -> str:
+        """Seed the bounded News truth used only by the isolated restore drill."""
+
+        self.conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, raw_first_line, description,
+              reporting_origin, published_at_ms, observed_at_ms, provider_metadata,
+              provenance, first_ingest_mode, trace_id, created_at_ms, updated_at_ms
+            ) VALUES
+              ('restore-current', 'restore', 'restore-current', 'restore current',
+               'restore current', 'current durable fact', 'restore', 10, 10,
+               '{"strategies":["restore"]}'::jsonb, '["restore"]'::jsonb, 'live',
+               'restore-current-trace', 10, 10),
+              ('restore-archive', 'restore', 'restore-archive', 'restore archive',
+               'restore archive', 'archive durable fact', 'restore', 20, 20,
+               '{}'::jsonb, '["restore"]'::jsonb, 'live', 'restore-archive-trace', 20, 20)
+            """
+        )
+        self.conn.execute(
+            """
+            INSERT INTO news_events (
+              event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
+              leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+              ingest_mode, trace_id, created_at_ms, updated_at_ms, focus_fact_id,
+              focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start,
+              focus_span_end, event_kind, current_contract_archive_only
+            ) VALUES
+              (%s, 'restore-current', 'general', 'restore-current-fingerprint', 'restore current',
+               'restore current', 10, 10, 100, 'candidate', 'live', 'restore-current-trace',
+               10, 10, 'restore-current-fact', 'restore current', 'current durable fact',
+               'whole_item', 0, 15, 'news', false),
+              (%s, 'restore-archive', 'general', 'restore-archive-fingerprint', 'restore archive',
+               'restore archive', 20, 20, 100, 'candidate', 'live', 'restore-archive-trace',
+               20, 20, 'restore-archive-fact', 'restore archive', 'archive durable fact',
+               'whole_item', 0, 15, 'news', true)
+            """,
+            (current_event_id, archive_event_id),
+        )
+        self.conn.execute(
+            """
+            INSERT INTO news_event_members (
+              event_id, item_id, joined_at_ms, match_kind, fact_id, fact_text
+            ) VALUES (%s, 'restore-current', 10, 'leader', 'restore-current-fact', 'restore current')
+            """,
+            (current_event_id,),
+        )
+        repository = cast(Any, self)
+        evidence = repository.append_evidence_snapshot(event_id=current_event_id, now_ms=11)
+        if repository.begin_delivery(
+            event_id=current_event_id,
+            kind="first",
+            card={"event_id": current_event_id, "evidence_sha256": evidence["evidence_sha256"]},
+            now_ms=12,
+        ) != "new":
+            raise RuntimeError("postgres_restore_drill_delivery_seed_conflict")
+        if not repository.settle_delivery(
+            event_id=current_event_id,
+            kind="first",
+            state="terminal",
+            receipt=None,
+            error_code="restore_drill",
+            now_ms=13,
+        ):
+            raise RuntimeError("postgres_restore_drill_delivery_seed_failed")
+        return str(evidence["evidence_sha256"])
 
     def update_ingest_state(
         self,

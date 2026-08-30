@@ -50,6 +50,7 @@ from .pricing import (
     select_candle,
     source_rank,
 )
+from .storage import PriceRepository
 
 log = logging.getLogger("tracefold.news.price")
 
@@ -68,20 +69,27 @@ _DB_WRITE_TIMEOUT_SECONDS = 10.0
 _MAX_MERGED_SPAN_MS = 1000 * CANDLE_INTERVAL_MS
 
 
+class PriceRepositories(Protocol):
+    """The Market Review callback capability; it cannot reach News or Trading storage."""
+
+    @property
+    def price(self) -> PriceRepository: ...
+
+
 class QuoteDatabasePort(Protocol):
     """Bounded quote plan/store; the composition root maps it to ordinary business admission."""
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T: ...
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def read[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 class ReactionDatabasePort(Protocol):
     """Bounded reaction read/write; the composition root maps it to heavy business admission."""
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T: ...
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def read[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:

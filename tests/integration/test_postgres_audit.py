@@ -37,7 +37,8 @@ def test_operational_audit_fast_path_uses_catalog_estimates_and_exact_schema(
     assert payload["migration_status"] == "ready"
     assert payload["mode"] == "fast"
     assert payload["database_identity"]["server_version_num"] >= 180_000
-    assert payload["database_identity"]["image_identity"] == "postgres:18-bookworm@sha256:test"
+    assert payload["database_identity"]["declared_image_identity"] == "postgres:18-bookworm@sha256:test"
+    assert payload["database_identity"]["image_identity_source"] == "TRACEFOLD_POSTGRES_IMAGE"
     assert "plpgsql" in payload["database_identity"]["extensions"]
     assert set(payload["database_identity"]["settings"]) == {
         "transaction_isolation",

@@ -9,10 +9,11 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal
 
 from .. import liquidations, oi_signals
-from ..artifact_identity import canonical_sha
+from ..artifact_identity import canonical_json, canonical_sha
 from ..bus import (
     Q_TRIAGE,
     RK_VERDICT_PUSH,
@@ -38,6 +39,7 @@ from ..telemetry import NewsWorkSemantics
 from ..triage_rules import (
     DEFAULT_POLICY,
     DecidePolicy,
+    DecisionResult,
     GateFacts,
     decide,
     grounded_restatement,
@@ -70,6 +72,20 @@ from .triage_route import (
 log = logging.getLogger("tracefold.news")
 
 _INSTRUMENT_CACHE_TTL_MS = 10 * 60_000
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedTriageSettlement:
+    decision: DecisionResult
+    trace: dict[str, Any]
+    verdict: dict[str, Any]
+    verdict_json: str
+    model_editorial: dict[str, Any] | None
+    model_editorial_json: str | None
+    judgment_sha256: str
+    context_line: str
+    event_assets: tuple[tuple[str, str | None], ...]
+    trace_json: str
 
 
 async def publish_verdict(
@@ -125,38 +141,6 @@ def _close_circuit_incidents(repos: Any, *, now_ms: int) -> Any:
 
 def _evaluate_canary_rolling_slo(repos: Any, *, activation_id: str, now_ms: int) -> dict[str, Any]:
     return dict(repos.news.evaluate_canary_rolling_slo(activation_id=activation_id, now_ms=now_ms))
-
-
-def _record_deterministic_assets(repos: Any, s: _TriageSettle) -> None:
-    """Give the telemetry lanes the Event assets their Gate could not ground (#267).
-
-    A deterministic judge resolves its symbol from the provider's own fixed template — the leading
-    token of `NVDA OI Rise 4.55%, OI Value 32.17M, …`, or the typed liquidation fact — and writes it
-    into the verdict as a primary. The admission Gate, reading the same wire text minutes earlier,
-    grounds nothing at all, so these Events carried `grounded_assets = []` and no `news_event_assets`
-    row: 112 of 112 in a production day. Everything keyed on that table was consequently blind to the
-    whole lane — the Reaction planner (so `p0`, 1 H and 4 H were empty on every OI frame ever judged,
-    and the Price Review's sample described only the model lane), the feed's `?symbol=` filter behind
-    the token page, and the instrument-grounding funnel.
-
-    Written *after* `insert_verdict`, in the same transaction, and for every decision rather than only
-    the pushed ones: a Reaction the reader never received is exactly what the potential-miss review
-    reads (#88 §6), and `due_reactions` already scopes itself to live Events on its own.
-
-    Restricted to the deterministic origin on purpose. For a model-lane Event this table is the Gate's
-    grounding evidence, provenance-checked against the Item; verdict primaries there are a model's
-    reading, and promoting them here would let a hallucinated ticker seed a price measurement and
-    enter reader history as a canonical asset.
-    """
-
-    if s.origin not in {"oi", "liquidation"}:
-        return
-    assets = [(asset.symbol, asset.market_type) for asset in s.verdict.assets if asset.role == "primary"]
-    if not assets:
-        # A frame that did not match the template names no symbol, and the parse failure is the whole
-        # verdict. There is nothing to measure a price against.
-        return
-    repos.news.record_event_assets(event_id=s.event_id, assets=assets)
 
 
 class TriageConsumer:
@@ -307,7 +291,35 @@ class TriageConsumer:
             judged = await self._judge_once(route=route, arm=arm, attempts=attempts, trace=trace)
             _sync_program_audit(trace, executions=attempts.executions, selected_execution_index=attempts.selected_index)
             settle = self._settle_for(route, arm=arm, attempts=attempts, judged=judged, trace=trace)
-            outcome = await self.db.tx("news_triage_persist", functools.partial(self._decide_and_persist, s=settle))
+
+            def _refresh_history(repos: Any, current: _TriageSettle = settle) -> ReaderHistorySnapshot:
+                return _read_history(
+                    repos.news,
+                    event_id=current.event_id,
+                    card=current.card,
+                    now_ms=current.stamp,
+                )
+
+            refreshed_history = await self.db.read(
+                "news_triage_history_refresh",
+                _refresh_history,
+            )
+            settle = replace(settle, history=refreshed_history)
+            history_changed = (
+                isinstance(settle.judgment, ScoredJudgment)
+                and _novelty_context_sha(settle.card, refreshed_history, now_ms=settle.stamp)
+                != settle.novelty_context_sha
+            )
+            if history_changed:
+                if not settle.allow_stale:
+                    raise TransientError("news_reader_history_changed")
+                outcome = _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
+            else:
+                prepared = self._prepare_settlement(settle)
+                outcome = await self.db.tx(
+                    "news_triage_persist",
+                    functools.partial(self._persist_prepared_settlement, s=settle, prepared=prepared),
+                )
             if outcome.stale:
                 if not isinstance(judged.judgment, ScoredJudgment):
                     raise RuntimeError("news_stale_non_model_judgment")
@@ -733,7 +745,7 @@ class TriageConsumer:
         Rank, ledger and verdict are one transaction under one storyline lock. The rank is a count of
         this symbol's other eligible frames in the window, so reading it outside the lock lets two frames for
         one symbol both see a history without the other, both claim the same rank, and both qualify —
-        three cards in a window that allows two. The lock is the same key `_decide_and_persist` takes,
+        three cards in a window that allows two. The lock is the same key the persist step takes,
         and `pg_advisory_xact_lock` is re-entrant within a transaction, so it takes it again for free.
         """
 
@@ -786,19 +798,28 @@ class TriageConsumer:
                 program_sha256=oi_signals.program_sha256(self.oi_policy),
             )
 
-            def _settle_failure(repos: Any) -> _TriageOutcome:
-                return self._decide_and_persist(repos, s=settle)
-
-            outcome = await self.db.tx("news_triage_persist", _settle_failure)
+            prepared = self._prepare_settlement(settle)
+            outcome = await self.db.tx(
+                "news_triage_persist",
+                functools.partial(self._persist_prepared_settlement, s=settle, prepared=prepared),
+            )
         else:
             # What the provider proves about *how* the frame was measured, kept beside what it measured
             # (#265). `None` is a real answer — the interval is unproven — and the frame is still a
             # perfectly good reader card; it simply may not be read as a claim about an interval.
             source = oi_signals.oi_source_contract(card.get("provider_metadata"))
 
-            def _rank_and_settle(repos: Any) -> _TriageOutcome:
+            provider_metadata = card.get("provider_metadata")
+            source_venue = (
+                str(provider_metadata.get("source") or "") or None
+                if isinstance(provider_metadata, Mapping)
+                else None
+            )
+
+            def _rank_and_insert(repos: Any) -> int:
                 # The key is a pure function of the symbol for this admission, so it is known before
-                # the verdict exists and can be locked first.
+                # the verdict exists and can be locked first. The callback performs only SQL and
+                # immediate scalar mapping; arithmetic judgment happens after commit.
                 repos.news.lock_storyline(f"asset:{signal.symbol}")
                 earlier_eligible_count = repos.news.count_recent_eligible_oi_signals(
                     symbol=signal.symbol,
@@ -809,18 +830,8 @@ class TriageConsumer:
                     oi_change_at_least_bps=self.oi_policy.oi_change_at_least_bps,
                     exclude_event_id=event_id,
                 )
-                judgment = oi_signals.evaluate_oi(
-                    signal,
-                    earlier_eligible_count=earlier_eligible_count,
-                    policy=self.oi_policy,
-                )
-                provider_metadata = card.get("provider_metadata")
-                source_venue = (
-                    str(provider_metadata.get("source") or "") or None
-                    if isinstance(provider_metadata, Mapping)
-                    else None
-                )
-                repos.news.insert_oi_signal(
+                rank = earlier_eligible_count + 1
+                stored_rank = repos.news.insert_oi_signal(
                     event_id=event_id,
                     metric_version=oi_signals.METRIC_VERSION,
                     symbol=signal.symbol,
@@ -830,7 +841,7 @@ class TriageConsumer:
                     whale_long_profit_bps=signal.whale_long_profit_bps,
                     whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
                     observed_at_ms=observed,
-                    rank_in_window=judgment.rank_in_window,
+                    rank_in_window=rank,
                     now_ms=stamp,
                     source_strategy_id=None if source is None else source.strategy_id,
                     source_contract_version=None if source is None else source.contract_version,
@@ -838,23 +849,35 @@ class TriageConsumer:
                     source_item_id=str(card["leader_item_id"]),
                     source_venue=source_venue,
                 )
-                trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
-                return self._decide_and_persist(
-                    repos,
-                    s=self._deterministic_settle(
-                        event_id=event_id,
-                        card=card,
-                        facts=facts,
-                        judgment=judgment,
-                        history=history,
-                        trace=trace,
-                        stamp=stamp,
-                        program_version=oi_signals.PROGRAM_VERSION,
-                        program_sha256=oi_signals.program_sha256(self.oi_policy),
-                    ),
-                )
+                return rank if stored_rank is None else int(stored_rank)
 
-            outcome = await self.db.tx("news_signal_judge", _rank_and_settle)
+            rank_in_window = await self.db.tx("news_signal_rank", _rank_and_insert)
+            judgment = oi_signals.evaluate_oi(
+                signal,
+                earlier_eligible_count=rank_in_window - 1,
+                policy=self.oi_policy,
+            )
+            trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
+            settle = self._deterministic_settle(
+                event_id=event_id,
+                card=card,
+                facts=facts,
+                judgment=judgment,
+                history=history,
+                trace=trace,
+                stamp=stamp,
+                program_version=oi_signals.PROGRAM_VERSION,
+                program_sha256=oi_signals.program_sha256(self.oi_policy),
+            )
+            prepared = self._prepare_settlement(settle)
+            outcome = await self.db.tx(
+                "news_triage_persist",
+                functools.partial(
+                    self._persist_prepared_settlement,
+                    s=settle,
+                    prepared=prepared,
+                )
+            )
         if outcome.final in {"push", "escalate"}:
             await publish_verdict(
                 self.bus,
@@ -895,73 +918,75 @@ class TriageConsumer:
             "told_count": 0,
         }
 
-        def _settle(repos: Any) -> _TriageOutcome:
-            row = repos.news.market_liquidation(
+        row = await self.db.read(
+            "news_liquidation_fact",
+            lambda repos: repos.news.market_liquidation(
                 item_id=str(card.get("leader_item_id") or ""),
                 fact_id=str(card.get("focus_fact_id") or ""),
                 parser_version=liquidations.PARSER_VERSION,
+            ),
+        )
+        error_code = None
+        if row is None:
+            judgment, fact_trace = liquidations.parse_failure(
+                str(card.get("leader_title") or ""), provider_source=provider_source
             )
-            error_code = None
-            if row is None:
-                judgment, fact_trace = liquidations.parse_failure(
-                    str(card.get("leader_title") or ""), provider_source=provider_source
-                )
-                error_code = "liquidation_parse_failed"
-                log.warning(
-                    "news_liquidation_parse_failed event_id=%s strategy_id=%s provider=opennews "
-                    "title_sha256=%s parser_version=%s failure_stage=source_contract_drift",
-                    event_id,
-                    LIQUIDATION_SOURCE_IDENTITY.strategy_id,
-                    fact_trace["title_sha256"],
-                    fact_trace["parser_version"],
-                )
-            else:
-                fact = liquidations.LiquidationFact(
-                    source_key=str(row["source_key"]),
-                    item_id=str(row["item_id"]),
-                    fact_id=str(row["fact_id"]),
-                    symbol=str(row["symbol"]),
-                    venue=str(row["venue"]),  # type: ignore[arg-type]
-                    liquidated_position_side=str(row["liquidated_position_side"]),  # type: ignore[arg-type]
-                    forced_order_side=str(row["forced_order_side"]),  # type: ignore[arg-type]
-                    notional_usd=row["notional_usd"],
-                    quantity=row["quantity"],
-                    price=row["price"],
-                    event_at_ms=int(row["event_at_ms"]),
-                    received_at_ms=int(row["received_at_ms"]),
-                    provider_record_identity=str(row["provider_record_identity"]),
-                    symbol_contract_identity=str(row["symbol_contract_identity"]),
-                    position_side_semantics=str(row["position_side_semantics"]),
-                    quantity_semantics=str(row["quantity_semantics"]),
-                    notional_semantics=str(row["notional_semantics"]),
-                    price_semantics=str(row["price_semantics"]),
-                    completeness_assumption=str(row["completeness_assumption"]),
-                    throttle_assumption=str(row["throttle_assumption"]),
-                    source_contract_version=str(row["source_contract_version"]),
-                    source_contract_complete=bool(row["source_contract_complete"]),
-                    parser_version=str(row["parser_version"]),
-                )
-                judgment = liquidations.judge(fact)
-                fact_trace = liquidations.trace(fact)
-            trace = {**base_trace, "liquidation": fact_trace}
-            return self._decide_and_persist(
-                repos,
-                s=self._deterministic_settle(
-                    event_id=event_id,
-                    card=card,
-                    facts=facts,
-                    judgment=judgment,
-                    history=history,
-                    trace=trace,
-                    stamp=stamp,
-                    error_code=error_code,
-                    program_version=liquidations.PROGRAM_VERSION,
-                    program_sha256=liquidations.program_sha256(),
-                    policy_version=liquidations.TRIAGE_POLICY_VERSION,
-                ),
+            error_code = "liquidation_parse_failed"
+            log.warning(
+                "news_liquidation_parse_failed event_id=%s strategy_id=%s provider=opennews "
+                "title_sha256=%s parser_version=%s failure_stage=source_contract_drift",
+                event_id,
+                LIQUIDATION_SOURCE_IDENTITY.strategy_id,
+                fact_trace["title_sha256"],
+                fact_trace["parser_version"],
             )
-
-        outcome = await self.db.tx("news_liquidation_judge", _settle)
+        else:
+            fact = liquidations.LiquidationFact(
+                source_key=str(row["source_key"]),
+                item_id=str(row["item_id"]),
+                fact_id=str(row["fact_id"]),
+                symbol=str(row["symbol"]),
+                venue=str(row["venue"]),  # type: ignore[arg-type]
+                liquidated_position_side=str(row["liquidated_position_side"]),  # type: ignore[arg-type]
+                forced_order_side=str(row["forced_order_side"]),  # type: ignore[arg-type]
+                notional_usd=row["notional_usd"],
+                quantity=row["quantity"],
+                price=row["price"],
+                event_at_ms=int(row["event_at_ms"]),
+                received_at_ms=int(row["received_at_ms"]),
+                provider_record_identity=str(row["provider_record_identity"]),
+                symbol_contract_identity=str(row["symbol_contract_identity"]),
+                position_side_semantics=str(row["position_side_semantics"]),
+                quantity_semantics=str(row["quantity_semantics"]),
+                notional_semantics=str(row["notional_semantics"]),
+                price_semantics=str(row["price_semantics"]),
+                completeness_assumption=str(row["completeness_assumption"]),
+                throttle_assumption=str(row["throttle_assumption"]),
+                source_contract_version=str(row["source_contract_version"]),
+                source_contract_complete=bool(row["source_contract_complete"]),
+                parser_version=str(row["parser_version"]),
+            )
+            judgment = liquidations.judge(fact)
+            fact_trace = liquidations.trace(fact)
+        trace = {**base_trace, "liquidation": fact_trace}
+        settle = self._deterministic_settle(
+            event_id=event_id,
+            card=card,
+            facts=facts,
+            judgment=judgment,
+            history=history,
+            trace=trace,
+            stamp=stamp,
+            error_code=error_code,
+            program_version=liquidations.PROGRAM_VERSION,
+            program_sha256=liquidations.program_sha256(),
+            policy_version=liquidations.TRIAGE_POLICY_VERSION,
+        )
+        prepared = self._prepare_settlement(settle)
+        outcome = await self.db.tx(
+            "news_triage_persist",
+            functools.partial(self._persist_prepared_settlement, s=settle, prepared=prepared),
+        )
         if outcome.final in {"push", "escalate"}:
             await publish_verdict(
                 self.bus,
@@ -1026,32 +1051,12 @@ class TriageConsumer:
             stamp=stamp,
         )
 
-    def _decide_and_persist(self, repos: Any, s: _TriageSettle) -> _TriageOutcome:
-        """Inside one transaction, under the storyline's advisory lock: re-read the newest reader evidence and
-        told entry, decide, and insert the verdict. Reports ``stale`` (no write) when a card landed after the model
-        saw the ledger and the caller may still re-ask."""
+    def _prepare_settlement(self, s: _TriageSettle) -> _PreparedTriageSettlement:
+        """Materialize the decision, Pydantic payloads and hashes before a database transaction opens."""
 
-        repos.news.lock_storyline(s.final_key)
-        latest_evidence = repos.news.latest_evidence_snapshot(s.event_id)
-        if latest_evidence is None:
-            raise PermanentError("news_event_evidence_missing")
-        evidence_changed = (
-            int(latest_evidence["evidence_version"]) != s.evidence_version
-            or str(latest_evidence["evidence_sha256"]) != s.evidence_sha256
-        )
-        if evidence_changed:
-            if s.allow_stale:
-                return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="evidence")
-            # A second concurrent evidence change is not safe to bind to the
-            # already-produced verdict.  Reconsume after the durable retry lane
-            # rather than publishing a judgment over evidence it did not read.
-            raise TransientError("news_event_evidence_changed")
-        history = _read_history(repos.news, event_id=s.event_id, card=s.card, now_ms=s.stamp)
-        seen = _recent_seen(history)
-        if s.allow_stale and _novelty_context_sha(s.card, history, now_ms=s.stamp) != s.novelty_context_sha:
-            return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
+        seen = _recent_seen(s.history)
         status = storyline_status(s.final_key, told=s.told, seen=seen)
-        trace = s.trace
+        trace = dict(s.trace)
         if isinstance(s.judgment, ScoredJudgment):
             decision = decide(s.judgment, s.facts, status, policy=s.policy)
         else:
@@ -1061,7 +1066,8 @@ class TriageConsumer:
         trace["verdict_sha256"] = canonical_sha(s.verdict.model_dump(mode="json"))
         trace["judgment_contract_version"] = s.judgment.judgment_contract_version
         trace["judgment_origin"] = s.origin
-        trace["judgment_sha256"] = s.judgment_sha256
+        judgment_sha256 = s.judgment_sha256
+        trace["judgment_sha256"] = judgment_sha256
         model_editorial = None
         if isinstance(s.judgment, ScoredJudgment):
             trace["editorial_sha256"] = s.judgment.editorial.editorial_sha256
@@ -1101,35 +1107,81 @@ class TriageConsumer:
             f"[{s.origin}:{classification}/{s.verdict.audience}/{s.verdict.direction} m{s.verdict.magnitude}"
             f" → {final}·{reason}] {s.verdict.headline_zh}"
         )
+        event_assets = (
+            tuple((asset.symbol, asset.market_type) for asset in s.verdict.assets if asset.role == "primary")
+            if s.origin in {"oi", "liquidation"}
+            else ()
+        )
+        verdict = json_ready(s.verdict)
+        return _PreparedTriageSettlement(
+            decision=decision,
+            trace=trace,
+            verdict=verdict,
+            verdict_json=canonical_json(verdict),
+            model_editorial=model_editorial,
+            model_editorial_json=None if model_editorial is None else canonical_json(model_editorial),
+            judgment_sha256=judgment_sha256,
+            context_line=context_line,
+            event_assets=event_assets,
+            trace_json=canonical_json(trace),
+        )
+
+    def _persist_prepared_settlement(
+        self,
+        repos: Any,
+        *,
+        s: _TriageSettle,
+        prepared: _PreparedTriageSettlement,
+    ) -> _TriageOutcome:
+        """Re-check the locked snapshot and persist only already-materialized values."""
+
+        repos.news.lock_storyline(s.final_key)
+        latest_evidence = repos.news.latest_evidence_identity(s.event_id)
+        if latest_evidence is None:
+            raise PermanentError("news_event_evidence_missing")
+        evidence_changed = latest_evidence != (s.evidence_version, s.evidence_sha256)
+        if evidence_changed:
+            if s.allow_stale:
+                return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="evidence")
+            raise TransientError("news_event_evidence_changed")
         repos.news.insert_verdict(
             event_id=s.event_id,
             stage="triage",
             policy_version=s.policy_version,
             judgment_contract_version=s.judgment.judgment_contract_version,
             judgment_origin=s.origin,
-            rule_baseline_decision=decision.rule_baseline,
-            final_decision=final,
-            override_rule=decision.override_rule,
-            throttled_by=decision.throttled_by,
-            verdict=json_ready(s.verdict),
-            model_editorial=model_editorial,
-            judgment_sha256=s.judgment_sha256,
+            rule_baseline_decision=prepared.decision.rule_baseline,
+            final_decision=prepared.decision.final,
+            override_rule=prepared.decision.override_rule,
+            throttled_by=prepared.decision.throttled_by,
+            verdict=prepared.verdict,
+            verdict_json=prepared.verdict_json,
+            model_editorial=prepared.model_editorial,
+            model_editorial_json=prepared.model_editorial_json,
+            judgment_sha256=prepared.judgment_sha256,
             runtime_manifest_sha=s.runtime_manifest_sha,
             model=s.model_name,
             program_version=s.program_version,
             program_sha256=s.program_sha256,
             degraded=s.degraded,
             error_code=s.error_code,
-            trace=trace,
+            trace=prepared.trace,
+            trace_json=prepared.trace_json,
             evidence_version=s.evidence_version,
             evidence_sha256=s.evidence_sha256,
             focus_fact_id=s.focus_fact_id,
             now_ms=s.stamp,
         )
         repos.news.set_storyline_key(event_id=s.event_id, storyline_key=s.final_key, now_ms=s.stamp)
-        repos.news.set_context_line(event_id=s.event_id, context_line=context_line, followup_of=None, now_ms=s.stamp)
-        _record_deterministic_assets(repos, s)
-        return _TriageOutcome(stale=False, final=final, decision=decision)
+        repos.news.set_context_line(
+            event_id=s.event_id,
+            context_line=prepared.context_line,
+            followup_of=None,
+            now_ms=s.stamp,
+        )
+        if prepared.event_assets:
+            repos.news.record_event_assets(event_id=s.event_id, assets=prepared.event_assets)
+        return _TriageOutcome(stale=False, final=prepared.decision.final, decision=prepared.decision)
 
     async def _trip_canary(self, activation_id: str, reason: str, stamp: int) -> None:
         with contextlib.suppress(ValueError, TransientError, DeferError):

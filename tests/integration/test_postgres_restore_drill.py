@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.platform.postgres.restore_drill import POSTGRES_PRODUCTION_IMAGE, run_restore_drill
+from tracefold.app.restore_storage import run_restore_drill
+from tracefold.platform.postgres.restore_drill import POSTGRES_PRODUCTION_IMAGE
 
 pytestmark = [pytest.mark.integration, pytest.mark.scheduled]
 

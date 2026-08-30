@@ -16,6 +16,12 @@ from psycopg_pool import PoolTimeout
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool, with_password_from_file
+from tracefold.platform.postgres.maintenance_gate import (
+    acquire_maintenance_gate,
+    acquire_steady_gate,
+    release_maintenance_gate,
+    release_steady_gate,
+)
 from tracefold.platform.resource import (
     ResourceAdmissionTimeout,
     ResourceCapability,
@@ -49,7 +55,6 @@ _WORKER_POOL_MIN_SIZE = 2
 _WORKER_POOL_MAX_SIZE = 8
 _WORKER_POOL_MAX_WAITING = 3
 _NEWS_LANE_WIDTH = 4
-_RUNTIME_MAINTENANCE_GATE_LOCK_KEYS = (0x54524644, 0)
 _STEADY_WORKERS_SINGLETON_LOCK_KEYS = (0x54524644, 1)
 
 
@@ -427,21 +432,13 @@ class WorkerDatabase:
     def acquire_steady_runtime_lock(self) -> Any:
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         try:
-            gate_row = conn.execute(
-                "SELECT pg_try_advisory_lock_shared(%s, %s) AS acquired",
-                _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS,
-            ).fetchone()
-            if gate_row is None or not bool(gate_row["acquired"]):
-                raise RuntimeError("maintenance_runtime_active")
+            acquire_steady_gate(conn)
             row = conn.execute(
                 "SELECT pg_try_advisory_lock(%s, %s) AS acquired",
                 _STEADY_WORKERS_SINGLETON_LOCK_KEYS,
             ).fetchone()
             if row is None or not bool(row["acquired"]):
-                conn.execute(
-                    "SELECT pg_advisory_unlock_shared(%s, %s)",
-                    _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS,
-                )
+                release_steady_gate(conn)
                 raise RuntimeError("steady_workers_runtime_already_active")
             conn.commit()
             return conn
@@ -456,10 +453,7 @@ class WorkerDatabase:
                 "SELECT pg_advisory_unlock(%s, %s)",
                 _STEADY_WORKERS_SINGLETON_LOCK_KEYS,
             )
-            conn.execute(
-                "SELECT pg_advisory_unlock_shared(%s, %s)",
-                _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS,
-            )
+            release_steady_gate(conn)
             conn.commit()
         finally:
             self.worker_pool.putconn(conn)
@@ -467,7 +461,7 @@ class WorkerDatabase:
     def acquire_maintenance_runtime_lock(self) -> Any:
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         try:
-            acquire_maintenance_advisory_lock(conn)
+            acquire_maintenance_gate(conn)
             conn.commit()
             return conn
         except Exception:
@@ -477,7 +471,7 @@ class WorkerDatabase:
 
     def release_maintenance_runtime_lock(self, conn: Any) -> None:
         try:
-            release_maintenance_advisory_lock(conn)
+            release_maintenance_gate(conn)
             conn.commit()
         finally:
             self.worker_pool.putconn(conn)
@@ -569,24 +563,6 @@ class _HeavyBusinessDatabase:
 
 def _normalize_operation_name(name: str) -> str:
     return (str(name).strip().replace(" ", "_") or "unknown")[:96]
-
-
-def acquire_maintenance_advisory_lock(conn: Any) -> None:
-    row = conn.execute(
-        "SELECT pg_try_advisory_lock(%s, %s) AS acquired",
-        _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS,
-    ).fetchone()
-    if row is None or not bool(row["acquired"]):
-        raise RuntimeError("steady_workers_runtime_active")
-
-
-def release_maintenance_advisory_lock(conn: Any) -> None:
-    row = conn.execute(
-        "SELECT pg_advisory_unlock(%s, %s) AS released",
-        _RUNTIME_MAINTENANCE_GATE_LOCK_KEYS,
-    ).fetchone()
-    if row is None or not bool(row["released"]):
-        raise RuntimeError("maintenance_runtime_lock_not_owned")
 
 
 def _statement_timeout_value(seconds: float) -> str:

@@ -339,6 +339,51 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
         pool.close()
 
 
+def test_20k_catalog_write_keeps_materialization_outside_the_transaction() -> None:
+    """Production-size catalog validation/serialization is complete before the one SQL write."""
+
+    instruments = tuple(
+        VenueInstrumentCatalogEntryV1(
+            provider_instrument_id=f"ASSET{index}USDT",
+            provider_symbol=f"ASSET{index}USDT",
+            venue="binance.usdm",
+            canonical_asset=f"ASSET{index}",
+            canonical_namespace="native",
+            product_kind="linear_perpetual",
+            active=True,
+            settlement_asset="USDT",
+            margin_asset="USDT",
+            raw_metadata_sha256=canonical_sha256({"index": index}),
+        )
+        for index in range(20_000)
+    )
+    prepared = prepare_venue_catalog_snapshot(
+        build_venue_catalog_snapshot(
+            binding="BINANCE_USDM",
+            captured_at_ms=NOW + 20_000,
+            stale_after_ms=60_000,
+            instruments=instruments,
+        )
+    )
+    pool = _pool()
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    tight_writes = _TightWriteIdleTimeout(WorkerTradingDatabase(database))
+
+    async def store() -> None:
+        await tight_writes.tx(
+            "trading_venue_catalog_20k",
+            lambda repos: repos.trading.store_venue_catalog_snapshot(prepared=prepared, now_ms=NOW + 20_001),
+            timeout_seconds=30.0,
+        )
+
+    try:
+        asyncio.run(store())
+        assert tight_writes.repository_statement_counts == [1]
+    finally:
+        database.close_executors()
+        pool.close()
+
+
 def test_prepared_catalog_rejects_an_unbound_first_write_identity() -> None:
     """A forged digest or metadata tuple must fail before a transaction can open."""
 

@@ -159,6 +159,45 @@ class RecordingNews:
                     "evidence_sha256": str(card.get("evidence_sha256") or "e" * 64),
                     "focus_fact_id": str(card.get("focus_fact_id") or "fact-1"),
                 }
+            if name == "latest_evidence_identity" and name not in self.responses:
+                evidence = self.responses.get("latest_evidence_snapshot")
+                card = self.responses.get("event_card") or {}
+                source = evidence if isinstance(evidence, dict) else card
+                return (
+                    int(source.get("evidence_version") or 1),
+                    str(source.get("evidence_sha256") or "e" * 64),
+                )
+            if name == "evidence_snapshot_material" and name not in self.responses:
+                event_id = str(kwargs.get("event_id") or "event")
+                focused_item = kwargs.get("focus_item_id")
+                return {
+                    "card": {
+                        "event_id": event_id,
+                        "leader_item_id": focused_item or "item",
+                        "leader_title": "fixture event",
+                        "focus_fact_id": "fact-1",
+                        "focus_fact_text": "fixture event",
+                        "focus_fact_method": "whole_item",
+                    },
+                    "members": [],
+                    "latest": None,
+                    "focus_item_id": focused_item,
+                    "focus_source": (
+                        {
+                            "leader_item_id": focused_item,
+                            "leader_url": None,
+                            "reporting_origin": "opennews",
+                            "provider_metadata": {},
+                            "provenance": [],
+                            "leader_published_at_ms": NOW_MS,
+                            "raw_first_line": "fixture event",
+                        }
+                        if focused_item is not None
+                        else None
+                    ),
+                }
+            if name == "append_prepared_evidence_snapshot" and name not in self.responses:
+                return {}
             if name == "event_admission" and name not in self.responses:
                 response = self.responses.get("event_card") or {}
                 card = response if isinstance(response, dict) else {}
@@ -263,6 +302,7 @@ class FakeWorkerDatabase:
         self.price = price or RecordingPrice()
         self.operations: list[str] = []
         self.heavy_operations: list[str] = []
+        self.operation_timeouts: list[tuple[str, float]] = []
         self.admission_timeout_for = admission_timeout_for or set()
         self._port = WorkerNewsDatabase(self)
         self.cold_port = WorkerNewsColdDatabase(self)
@@ -284,7 +324,7 @@ class FakeWorkerDatabase:
         )
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
-        del operation_timeout_seconds
+        self.operation_timeouts.append((name, operation_timeout_seconds))
         self.operations.append(name)
         if name in self.admission_timeout_for:
             raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
@@ -294,7 +334,7 @@ class FakeWorkerDatabase:
         return self
 
     async def run_business(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
-        del operation_timeout_seconds
+        self.operation_timeouts.append((name, operation_timeout_seconds))
         self.heavy_operations.append(name)
         if name in self.admission_timeout_for:
             raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
@@ -441,7 +481,9 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     assert bus.published[0].payload == {"event_id": "ev-1"}
     assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
     assert bus.published[1].payload == {"event_id": "ev-3"}
-    assert news.names() == ["mark_event_published"] * 3
+    assert news.names().count("evidence_snapshot_material") == 5
+    assert news.names().count("append_prepared_evidence_snapshot") == 5
+    assert news.names().count("mark_event_published") == 3
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 
@@ -3230,6 +3272,9 @@ def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transa
     assert telemetry.raw_retention[0]["deleted_rows"] == 501
     assert telemetry.raw_retention[0]["batches"] == 2
     assert telemetry.raw_retention[0]["backlog_rows"] == 0
+    raw_timeouts = [timeout for name, timeout in db.operation_timeouts if name == "news_raw_retention"]
+    assert len(raw_timeouts) == 2
+    assert all(0 < timeout <= 1.0 for timeout in raw_timeouts)
 
 
 def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
@@ -3731,7 +3776,7 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
         "total_tokens": 50,
         "provider_cost_microusd": 60,
     }
-    assert news.names().count("lock_storyline") == 2
+    assert news.names().count("lock_storyline") == 1  # stale material is discarded before opening a write transaction
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2
     assert bus.published == []
@@ -4655,7 +4700,7 @@ def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() 
     recorded = news.kwargs_of("record_event_assets")
     assert recorded["event_id"] == "ev-oi"
     # The judge's own primary, with the contract it named — not the Gate's empty `grounded_assets`.
-    assert recorded["assets"] == [("TRUMP", "perp")]
+    assert recorded["assets"] == (("TRUMP", "perp"),)
 
 
 def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:

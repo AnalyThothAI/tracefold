@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Literal, Protocol, Self
+from typing import ClassVar, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -216,8 +216,19 @@ def prepare_venue_catalog_snapshot(snapshot: VenueInstrumentCatalogSnapshotV1) -
     )
 
 
+class CatalogRepository(Protocol):
+    def store_venue_catalog_snapshot(self, *, prepared: PreparedVenueCatalogSnapshot, now_ms: int) -> bool: ...
+
+    def mark_venue_catalog_unavailable(self, *, binding: VenueBinding, reason: str, now_ms: int) -> None: ...
+
+
+class CatalogRepositories(Protocol):
+    @property
+    def trading(self) -> CatalogRepository: ...
+
+
 class CatalogDatabasePort(Protocol):
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[CatalogRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 class VenueCatalog:

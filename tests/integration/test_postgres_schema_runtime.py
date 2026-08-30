@@ -10,6 +10,7 @@ from tracefold.platform.postgres.migrations import (
     latest_migration_version,
     upgrade_head,
 )
+from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
@@ -205,3 +206,15 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
 
     assert after == before
     assert version == latest_migration_version() == "20260830_0335"
+
+
+def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        acquire_steady_gate(conn)
+        with pytest.raises(RuntimeError, match="steady_workers_runtime_active"):
+            upgrade_head(_test_postgres_dsn())
+    finally:
+        release_steady_gate(conn)
+        conn.close()

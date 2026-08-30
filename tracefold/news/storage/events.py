@@ -64,6 +64,143 @@ _EVENT_HANDOFF_STATE_SQL = f"""
 """  # noqa: S608
 
 
+def prepare_evidence_snapshot(
+    material: Mapping[str, Any],
+    *,
+    event_id: str,
+    now_ms: int,
+    focus_fact: Any | None,
+) -> dict[str, Any]:
+    """Build and hash an evidence snapshot with no database transaction open."""
+
+    card = dict(material["card"])
+    members = list(material["members"])
+    latest_value = material.get("latest")
+    latest = dict(latest_value) if isinstance(latest_value, Mapping) else None
+    previous = dict(latest["snapshot"] or {}) if latest is not None else {}
+    focus_item_id = material.get("focus_item_id")
+    if (focus_item_id is None) != (focus_fact is None):
+        raise ValueError("news_event_evidence_focus_incomplete")
+    if focus_fact is not None:
+        focus = {
+            "fact_id": str(focus_fact.fact_id),
+            "text": str(focus_fact.text),
+            "context": str(focus_fact.context),
+            "method": str(focus_fact.method),
+            "span_start": int(focus_fact.span_start),
+            "span_end": int(focus_fact.span_end),
+        }
+        focus_source = dict(material["focus_source"])
+    elif previous:
+        focus = dict(previous.get("focus_fact") or {})
+        focus_source = dict(previous.get("card") or {})
+    else:
+        focus = {
+            "fact_id": str(card.get("focus_fact_id") or ""),
+            "text": str(card.get("focus_fact_text") or card.get("leader_title") or ""),
+            "context": str(card.get("focus_fact_context") or ""),
+            "method": str(card.get("focus_fact_method") or "whole_item"),
+            "span_start": int(card.get("focus_span_start") or 0),
+            "span_end": int(card.get("focus_span_end") or 0),
+        }
+        focus_source = card
+    snapshot_card = {
+        key: card.get(key)
+        for key in (
+            "event_id",
+            "leader_item_id",
+            "dedupe_family",
+            "event_kind",
+            "source_contract_reason",
+            "comparison_fingerprint",
+            "comparison_title",
+            "opened_at_ms",
+            "last_member_at_ms",
+            "expires_at_ms",
+            "member_count",
+            "admission",
+            "queue_priority",
+            "provider_score_max",
+            "engine_type",
+            "asset_class",
+            "grounded_assets",
+            "watchlist_hits",
+            "macro_lexicon",
+            "storyline_key",
+            "ingest_mode",
+            "trace_id",
+            "leader_url",
+            "reporting_origin",
+            "provider_metadata",
+            "provenance",
+            "leader_published_at_ms",
+            "raw_first_line",
+        )
+    }
+    snapshot_card.update(
+        {
+            key: focus_source.get(key)
+            for key in (
+                "leader_item_id",
+                "leader_url",
+                "reporting_origin",
+                "provider_metadata",
+                "provenance",
+                "leader_published_at_ms",
+                "raw_first_line",
+            )
+        }
+    )
+    snapshot_card.update(
+        {
+            "leader_title": focus["text"],
+            "leader_description": focus["context"],
+            "focus_fact_id": focus["fact_id"],
+        }
+    )
+    if focus.get("method") == "explicit_numbered":
+        snapshot_card["raw_first_line"] = ""
+    _, artifact_published_at_ms = source_artifact_identity(str(snapshot_card.get("leader_url") or ""))
+    pushed_at_ms = snapshot_card.get("leader_published_at_ms")
+    if artifact_published_at_ms is not None and pushed_at_ms:
+        snapshot_card["source_age_s"] = max(0, (int(pushed_at_ms) - artifact_published_at_ms) // 1000)
+    snapshot = {
+        "schema_version": "news_event_evidence_v3",
+        "event_id": event_id,
+        "focus_fact": focus,
+        "card": snapshot_card,
+        "members": [
+            {
+                "item_id": str(row["item_id"]),
+                "fact_id": str(row["fact_id"]),
+                "fact_text": str(row["fact_text"]),
+                "joined_at_ms": int(row["joined_at_ms"]),
+                "match_kind": str(row["match_kind"]),
+                "jaccard_estimate": row["jaccard_estimate"],
+                "reporting_origin": str(row["reporting_origin"] or ""),
+                "canonical_url": row["canonical_url"],
+                "provider_metadata": dict(row["provider_metadata"] or {}),
+                "provenance": list(row["provenance"] or []),
+            }
+            for row in members
+        ],
+        "provenance": "observed",
+    }
+    serialized = _dumps(snapshot)
+    evidence_sha = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    previous_version = None if latest is None else int(latest["evidence_version"])
+    return {
+        "event_id": event_id,
+        "previous_version": previous_version,
+        "previous_sha256": None if latest is None else str(latest["evidence_sha256"]),
+        "evidence_version": 1 if previous_version is None else previous_version + 1,
+        "focus_fact_id": str(focus["fact_id"]),
+        "evidence_sha256": evidence_sha,
+        "snapshot_json": serialized,
+        "now_ms": int(now_ms),
+    }
+
+
 class EventStorage:
     conn: Any
 
@@ -599,17 +736,24 @@ class EventStorage:
         focus_item_id: str | None = None,
         focus_fact: Any | None = None,
     ) -> dict[str, Any]:
-        """Append the current focused evidence when its canonical content changed.
+        material = self.evidence_snapshot_material(event_id=event_id, focus_item_id=focus_item_id)
+        prepared = prepare_evidence_snapshot(
+            material,
+            event_id=event_id,
+            now_ms=now_ms,
+            focus_fact=focus_fact,
+        )
+        return self.append_prepared_evidence_snapshot(prepared)
 
-        The hash excludes timestamps and the version counter.  Re-consuming the
-        same member is therefore a zero-write, while a stronger/new member gets
-        a new immutable version.  The table trigger rejects UPDATE and DELETE.
-        """
+    def evidence_snapshot_material(self, *, event_id: str, focus_item_id: str | None) -> dict[str, Any]:
+        """Load the primitive rows needed to build one immutable snapshot."""
 
         card = self._current_event_card(event_id)
         if card is None:
             raise ValueError("news_event_missing")
-        members = self.conn.execute(
+        members = [
+            dict(row)
+            for row in self.conn.execute(
             """
             SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
                    i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance
@@ -619,7 +763,8 @@ class EventStorage:
              ORDER BY m.joined_at_ms, m.item_id, m.fact_id
             """,
             (event_id,),
-        ).fetchall()
+            ).fetchall()
+        ]
         latest = self.conn.execute(
             """
             SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
@@ -629,23 +774,14 @@ class EventStorage:
             """,
             (event_id,),
         ).fetchone()
-        if (focus_item_id is None) != (focus_fact is None):
-            raise ValueError("news_event_evidence_focus_incomplete")
+        latest_value = None if latest is None else dict(latest)
         if latest is not None and (
             str(latest["provenance"]) != "observed"
             or str(dict(latest["snapshot"] or {}).get("schema_version") or "") != "news_event_evidence_v3"
         ):
             raise ValueError("news_event_archive_only")
-        previous = dict(latest["snapshot"] or {}) if latest is not None else {}
-        if focus_fact is not None:
-            focus = {
-                "fact_id": str(focus_fact.fact_id),
-                "text": str(focus_fact.text),
-                "context": str(focus_fact.context),
-                "method": str(focus_fact.method),
-                "span_start": int(focus_fact.span_start),
-                "span_end": int(focus_fact.span_end),
-            }
+        focus_source = None
+        if focus_item_id is not None:
             source = self.conn.execute(
                 """
                 SELECT item_id AS leader_item_id, canonical_url AS leader_url, reporting_origin,
@@ -657,111 +793,33 @@ class EventStorage:
             if source is None:
                 raise ValueError("news_event_evidence_focus_item_missing")
             focus_source = dict(source)
-        elif previous:
-            focus = dict(previous.get("focus_fact") or {})
-            focus_source = dict(previous.get("card") or {})
-        else:
-            focus = {
-                "fact_id": str(card.get("focus_fact_id") or ""),
-                "text": str(card.get("focus_fact_text") or card.get("leader_title") or ""),
-                "context": str(card.get("focus_fact_context") or ""),
-                "method": str(card.get("focus_fact_method") or "whole_item"),
-                "span_start": int(card.get("focus_span_start") or 0),
-                "span_end": int(card.get("focus_span_end") or 0),
-            }
-            focus_source = card
-        snapshot_card = {
-            key: card.get(key)
-            for key in (
-                "event_id",
-                "leader_item_id",
-                "dedupe_family",
-                "event_kind",
-                "source_contract_reason",
-                "comparison_fingerprint",
-                "comparison_title",
-                "opened_at_ms",
-                "last_member_at_ms",
-                "expires_at_ms",
-                "member_count",
-                "admission",
-                "queue_priority",
-                "provider_score_max",
-                "engine_type",
-                "asset_class",
-                "grounded_assets",
-                "watchlist_hits",
-                "macro_lexicon",
-                "storyline_key",
-                "ingest_mode",
-                "trace_id",
-                "leader_url",
-                "reporting_origin",
-                "provider_metadata",
-                "provenance",
-                "leader_published_at_ms",
-                "raw_first_line",
-            )
+        return {
+            "card": card,
+            "members": members,
+            "latest": latest_value,
+            "focus_item_id": focus_item_id,
+            "focus_source": focus_source,
         }
-        snapshot_card.update(
-            {
-                key: focus_source.get(key)
-                for key in (
-                    "leader_item_id",
-                    "leader_url",
-                    "reporting_origin",
-                    "provider_metadata",
-                    "provenance",
-                    "leader_published_at_ms",
-                    "raw_first_line",
-                )
-            }
+
+    def append_prepared_evidence_snapshot(self, prepared: Mapping[str, Any]) -> dict[str, Any]:
+        """Compare-and-append already serialized snapshot bytes."""
+
+        current = self.conn.execute(
+            "SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible, "
+            "created_at_ms FROM news_event_evidence_snapshots WHERE event_id = %s "
+            "ORDER BY evidence_version DESC LIMIT 1 FOR UPDATE",
+            (str(prepared["event_id"]),),
+        ).fetchone()
+        expected = (prepared.get("previous_version"), prepared.get("previous_sha256"))
+        actual = (
+            (None, None)
+            if current is None
+            else (int(current["evidence_version"]), str(current["evidence_sha256"]))
         )
-        # The SemanticJudge sees one question, never the parent digest.  `raw_first_line` exists to recover a
-        # subject that title normalization dropped; on a split digest `leader_title` is already the bullet's own
-        # unnormalized text, and the parent's first line is a *different* bullet — it can only mislead.
-        snapshot_card.update(
-            {
-                "leader_title": focus["text"],
-                "leader_description": focus["context"],
-                "focus_fact_id": focus["fact_id"],
-            }
-        )
-        if focus.get("method") == "explicit_numbered":
-            snapshot_card["raw_first_line"] = ""
-        # #154: how old the source artifact already was when the provider pushed it. Derived from the same
-        # parse that produces the artifact identity, so there is one owner of the rule and nothing to persist.
-        _, artifact_published_at_ms = source_artifact_identity(str(snapshot_card.get("leader_url") or ""))
-        pushed_at_ms = snapshot_card.get("leader_published_at_ms")
-        if artifact_published_at_ms is not None and pushed_at_ms:
-            snapshot_card["source_age_s"] = max(0, (int(pushed_at_ms) - artifact_published_at_ms) // 1000)
-        snapshot = {
-            "schema_version": "news_event_evidence_v3",
-            "event_id": event_id,
-            "focus_fact": focus,
-            "card": snapshot_card,
-            "members": [
-                {
-                    "item_id": str(row["item_id"]),
-                    "fact_id": str(row["fact_id"]),
-                    "fact_text": str(row["fact_text"]),
-                    "joined_at_ms": int(row["joined_at_ms"]),
-                    "match_kind": str(row["match_kind"]),
-                    "jaccard_estimate": row["jaccard_estimate"],
-                    "reporting_origin": str(row["reporting_origin"] or ""),
-                    "canonical_url": row["canonical_url"],
-                    "provider_metadata": dict(row["provider_metadata"] or {}),
-                    "provenance": list(row["provenance"] or []),
-                }
-                for row in members
-            ],
-            "provenance": "observed",
-        }
-        serialized = _dumps(snapshot)
-        evidence_sha = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-        if latest is not None and str(latest["evidence_sha256"]) == evidence_sha:
-            return dict(latest)
-        version = int(latest["evidence_version"]) + 1 if latest is not None else 1
+        if actual != expected:
+            raise RuntimeError("news_event_evidence_snapshot_changed")
+        if current is not None and str(current["evidence_sha256"]) == str(prepared["evidence_sha256"]):
+            return dict(current)
         row = self.conn.execute(
             """
             INSERT INTO news_event_evidence_snapshots (
@@ -771,7 +829,14 @@ class EventStorage:
             RETURNING evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible,
                       created_at_ms
             """,
-            (event_id, version, focus["fact_id"], evidence_sha, serialized, int(now_ms)),
+            (
+                str(prepared["event_id"]),
+                int(prepared["evidence_version"]),
+                str(prepared["focus_fact_id"]),
+                str(prepared["evidence_sha256"]),
+                str(prepared["snapshot_json"]),
+                int(prepared["now_ms"]),
+            ),
         ).fetchone()
         if row is None:
             raise RuntimeError("news_event_evidence_insert_failed")
@@ -793,6 +858,18 @@ class EventStorage:
             (event_id,),
         ).fetchone()
         return dict(row) if row else None
+
+    def latest_evidence_identity(self, event_id: str) -> tuple[int, str] | None:
+        """The two scalars a locked verdict write must compare; no snapshot JSON is materialized."""
+
+        row = self.conn.execute(
+            "SELECT evidence_version, evidence_sha256 FROM news_event_evidence_snapshots "
+            "WHERE event_id = %s AND provenance = 'observed' "
+            "AND snapshot ->> 'schema_version' = 'news_event_evidence_v3' "
+            "ORDER BY evidence_version DESC LIMIT 1",
+            (event_id,),
+        ).fetchone()
+        return None if row is None else (int(row["evidence_version"]), str(row["evidence_sha256"]))
 
     def event_card(self, event_id: str) -> dict[str, Any] | None:
         """The exact latest immutable evidence card the SemanticJudge may read."""

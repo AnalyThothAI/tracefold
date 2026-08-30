@@ -178,24 +178,6 @@ class _FakeNewsRepository:
         }
 
 
-class _FakeCursor:
-    @staticmethod
-    def fetchone() -> None:
-        return None
-
-    @staticmethod
-    def fetchall() -> list[Any]:
-        return []
-
-
-class _FakeConnection:
-    """`repos.conn` is a live read on this surface: `/api/news/status` reads the Workers runtime row."""
-
-    @staticmethod
-    def execute(*_args: Any, **_kwargs: Any) -> _FakeCursor:
-        return _FakeCursor()
-
-
 class _FakeInstrumentsRepository:
     """#75 universe as the status route sees it before any snapshot has landed."""
 
@@ -348,7 +330,10 @@ class _FakeRepositories:
         self.news = news
         self.instruments = _FakeInstrumentsRepository()
         self.price = _FakePriceRepository()
-        self.conn = _FakeConnection()
+
+    @staticmethod
+    def workers_runtime_row() -> None:
+        return None
 
     def compile_news_search(self, *, q: str | None, symbol: str | None):
         from tracefold.news.search import compile_news_search

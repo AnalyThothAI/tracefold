@@ -1464,8 +1464,8 @@ assigned to a bounded read-query family (`/readyz`, `/api/status`,
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
 `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
-scan, any temporary read/write blocks, or read/return amplification above
-20:1. An empty development database proves only SQL and route coverage;
+scan, any temporary read/write blocks, or read/return amplification above the
+budget declared by that production query. An empty development database proves only SQL and route coverage;
 production-scale plans need a production-sized database. Each runtime owner
 supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
@@ -1477,8 +1477,8 @@ extension and key-session-setting checks; it does not issue exact `COUNT(*)`
 against every business table. `uv run tracefold db audit --deep` adds those
 exact counts and is reserved for offline migration/restore evidence.
 
-Read/return amplification uses the root result-row count for hot page queries. The two bounded News search
-count specs use aggregate-input amplification because their production contract deliberately returns one
+Read/return amplification uses the root result-row count for hot page queries, and each query spec owns its
+budget. The two bounded News search count specs use aggregate-input amplification because their production contract deliberately returns one
 aggregate row after scanning the same 168-hour AssetSearch or TextSearch predicate as the first page; the
 catalog rejects that basis for every other query.
 

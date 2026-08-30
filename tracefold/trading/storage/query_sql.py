@@ -6,12 +6,29 @@ from typing import Final
 
 from ..intent import ACTIVE_INTENT_STATES
 
-# The builder accepts only predicates selected from QueryStorage's closed option set; request values are parameters.
 DEFAULT_CONSOLE_INTENT_STATES: Final = ACTIVE_INTENT_STATES
-DEFAULT_CONSOLE_INTENT_RECENCY_SQL: Final = (
-    "(i.execution_state = ANY(%s) OR "
-    "coalesce(i.closed_at_ms, i.flat_verified_at_ms, i.updated_at_ms, i.created_at_ms) >= %s)"
+TRADING_STATUS_COUNTS_SQL: Final = (
+    "SELECT execution_state, count(*) AS n FROM trading_intents "
+    "WHERE created_at_ms >= %s GROUP BY execution_state"
 )
+GATE_DECISION_FOR_SOURCE_KEY_SQL: Final = """
+    SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+           source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+           first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+      FROM trading_candidate_gate_decisions
+     WHERE source_key = %s
+     ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
+     LIMIT 1
+"""
+LATEST_GATE_DECISION_PER_SOURCE_SQL: Final = """
+    SELECT DISTINCT ON (source_key)
+           source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+           source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+           first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+      FROM trading_candidate_gate_decisions
+     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
+     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
+"""
 BINDING_RUNTIME_ROWS_SQL: Final = """
     SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
            runtime.runtime_state, runtime.account_state, runtime.account_generation,
@@ -118,7 +135,28 @@ CAPITAL_AUTHORITY_SNAPSHOT_SQL: Final = """
 """
 
 
-def console_intents_sql(where_sql: str) -> str:
+def console_intents_sql(
+    *,
+    closed_window: bool = False,
+    underlying: bool = False,
+    states: bool = False,
+    before: bool = False,
+) -> str:
+    recency = (
+        "(i.execution_state = ANY(%s) OR "
+        "(i.execution_state = 'TERMINAL' AND i.closed_at_ms >= %s AND i.closed_at_ms < %s))"
+        if closed_window
+        else "(i.execution_state = ANY(%s) OR "
+        "coalesce(i.closed_at_ms, i.flat_verified_at_ms, i.updated_at_ms, i.created_at_ms) >= %s)"
+    )
+    predicates = [recency]
+    if underlying:
+        predicates.append("c.underlying_key = %s")
+    if states:
+        predicates.append("i.execution_state = ANY(%s)")
+    if before:
+        predicates.append("(i.created_at_ms, i.intent_id) < (%s, %s)")
+    where_clause = " AND ".join(predicates)
     return f"""
         SELECT i.intent_id, i.intent_version, i.case_id, i.execution_environment,
                i.source_venue, i.source_identity, i.canonical_asset, i.binding,
@@ -140,14 +178,56 @@ def console_intents_sql(where_sql: str) -> str:
                c.underlying_key, c.primary_source_key, c.strategy_id, c.strategy_version
           FROM trading_intents i
           JOIN trading_cases c ON c.case_id = i.case_id
-         WHERE {where_sql}
+         WHERE {where_clause}
          ORDER BY i.created_at_ms DESC, i.intent_id DESC
          LIMIT %s
     """  # noqa: S608
 
 
-def console_capital_evidence_sql(where_sql: str = "") -> str:
-    where_clause = f"WHERE {where_sql}" if where_sql else ""
+def console_cases_sql(*, underlying: bool = False, states: bool = False, before: bool = False) -> str:
+    predicates = ["c.created_at_ms >= %s"]
+    if underlying:
+        predicates.append("c.underlying_key = %s")
+    if states:
+        predicates.append("c.state = ANY(%s)")
+    if before:
+        predicates.append("(c.created_at_ms, c.case_id) < (%s, %s)")
+    where_clause = " AND ".join(predicates)
+    return f"""
+        SELECT c.case_id, c.underlying_key, c.primary_source_key,
+               c.trigger_kind, c.strategy_id, c.strategy_version, c.strategy_config_digest,
+               c.state, c.policy_decision, c.policy_reason, c.policy_checks,
+               c.capital_disposition, c.capital_reason,
+               c.manifest -> 'policy_config' AS policy_config,
+               (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::bigint AS pre_move_bps,
+               (c.manifest -> 'contexts' -> 'market' ->> 'mark_price') AS mark_price,
+               (c.manifest -> 'contexts' -> 'oi' ->> 'oi_change_bps')::bigint AS oi_change_bps,
+               (c.manifest -> 'contexts' -> 'oi' ->> 'oi_value_usd')::bigint AS oi_value_usd,
+               (c.manifest -> 'contexts' -> 'oi' ->> 'whale_oi_ratio_bps')::bigint AS whale_oi_ratio_bps,
+               (c.manifest -> 'contexts' -> 'oi' ->> 'whale_long_profit_bps')::bigint AS whale_long_profit_bps,
+               (c.manifest -> 'instrument' ->> 'provider_symbol') AS provider_symbol,
+               (c.manifest ->> 'manifest_version') AS manifest_version,
+               c.observed_at_ms, c.created_at_ms AS case_created_at_ms, c.decided_at_ms,
+               i.intent_id
+          FROM trading_cases c
+          LEFT JOIN trading_intents i ON i.case_id = c.case_id
+         WHERE {where_clause}
+         ORDER BY c.created_at_ms DESC, c.case_id DESC
+         LIMIT %s
+    """  # noqa: S608
+
+
+def console_capital_evidence_sql(
+    *, binding: bool = False, statuses: bool = False, before: bool = False
+) -> str:
+    predicates: list[str] = []
+    if binding:
+        predicates.append("reservation.binding = %s")
+    if statuses:
+        predicates.append("state.status = ANY(%s)")
+    if before:
+        predicates.append("(state.updated_at_ms, reservation.reservation_sha256) < (%s, %s)")
+    where_clause = f"WHERE {' AND '.join(predicates)}" if predicates else ""
     return f"""
         SELECT reservation.reservation_sha256, reservation.case_id,
                reservation.economic_lifecycle_id, reservation.binding,
@@ -173,13 +253,28 @@ def console_capital_evidence_sql(where_sql: str = "") -> str:
     """  # noqa: S608
 
 
+def gate_decisions_since_sql() -> str:
+    return f"""
+        SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
+               source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
+               first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
+          FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest
+         ORDER BY source_observed_at_ms DESC, source_key
+         LIMIT %s
+    """  # noqa: S608
+
+
 __all__ = [
     "AUTHORITY_PROJECTION_SQL",
     "BINDING_RUNTIME_ROWS_SQL",
     "CAPITAL_AUTHORITY_SNAPSHOT_SQL",
-    "DEFAULT_CONSOLE_INTENT_RECENCY_SQL",
     "DEFAULT_CONSOLE_INTENT_STATES",
     "EXECUTION_CAPABILITY_SNAPSHOT_SQL",
+    "GATE_DECISION_FOR_SOURCE_KEY_SQL",
+    "LATEST_GATE_DECISION_PER_SOURCE_SQL",
+    "TRADING_STATUS_COUNTS_SQL",
     "console_capital_evidence_sql",
+    "console_cases_sql",
     "console_intents_sql",
+    "gate_decisions_since_sql",
 ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,14 @@ def test_query_audit_covers_every_public_openapi_route():
     )
 
 
+def test_audited_public_and_high_risk_queries_name_their_columns():
+    select_star = re.compile(r"\bSELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?\*", re.IGNORECASE)
+    catalog = query_audit_catalog(now_ms=0)
+    public_names = {name for names in catalog.query_routes.values() for name in names}
+
+    assert [query.name for query in catalog.queries if query.name in public_names and select_star.search(query.sql)] == []
+
+
 def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
     conn = RecordingJsonPlanConn(
         {
@@ -302,6 +311,21 @@ def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
     assert facets["metrics"]["amplification_basis_rows"] == 500
     assert facets["metrics"]["read_return_amplification"] == 1.0
     assert facets["violations"] == []
+
+
+def test_each_query_owns_its_amplification_budget():
+    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=10, returned_rows=1))
+    query = ReadQuerySpec(
+        name="tight_read",
+        sql="SELECT 1",
+        max_read_return_amplification=5.0,
+    )
+
+    payload = PostgresQueryAudit(conn, catalog=_single_query_catalog(query)).run(analyze=True)
+
+    audited = payload["queries"][0]
+    assert audited["budget"] == {"max_read_return_amplification": 5.0}
+    assert audited["violations"] == ["read_return_amplification_exceeded"]
 
 
 class RecordingJsonPlanConn:

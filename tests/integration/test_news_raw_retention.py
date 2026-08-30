@@ -160,6 +160,41 @@ def test_raw_retention_deletes_stable_bounded_batches_and_reports_backlog(
         conn.close()
 
 
+def test_raw_retention_keeps_a_2001_item_backlog_bounded_to_500_rows(
+    tmp_path,
+    postgres_clone_dsn: str,
+) -> None:
+    del postgres_clone_dsn
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    repos = repositories_for_connection(conn)
+    try:
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+              provider_metadata, first_ingest_mode, created_at_ms, updated_at_ms
+            )
+            SELECT 'scale-' || value, 'opennews', 'scale-key-' || value, 'scale ' || value,
+                   value, value, '{}'::jsonb, 'live', value, value
+              FROM generate_series(0, 2000) AS value
+            """
+        )
+        conn.commit()
+
+        batches: list[dict[str, object]] = []
+        for _ in range(4):
+            with repos.transaction():
+                conn.execute("SET LOCAL statement_timeout = '1s'")
+                batches.append(repos.news.purge_before(cutoff_ms=10_000, batch_size=500))
+
+        assert [batch["deleted_items"] for batch in batches] == [500, 500, 500, 500]
+        assert [batch["backlog_items"] for batch in batches] == [501, 501, 501, 1]
+        assert [batch["backlog_capped"] for batch in batches] == [True, True, True, False]
+        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone() == {"n": 1}
+    finally:
+        conn.close()
+
+
 def test_raw_retention_keeps_30_day_judged_corpus_and_expires_it_after_365_days(
     tmp_path,
     postgres_clone_dsn: str,

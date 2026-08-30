@@ -32,6 +32,7 @@ _DAY_MS = 24 * 3600_000
 _RAW_RETENTION_BATCH_SIZE = 500
 _RAW_RETENTION_MAX_BATCHES = 4
 _RAW_RETENTION_MAX_WALL_SECONDS = 3.0
+_RAW_RETENTION_BATCH_TIMEOUT_SECONDS = 1.0
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
 _INSTRUMENT_RETRY_SECONDS = 15 * 60.0
 _OPENNEWS_INCIDENT_CAUSES: tuple[NewsOpenNewsIncidentCause, ...] = (
@@ -232,12 +233,14 @@ class JanitorLoop:
                 await self._refresh_incident_telemetry(stamp)
             except (TransientError, DeferError) as exc:
                 log.warning("news OpenNews incident telemetry deferred error=%s", type(exc).__name__)
-        with contextlib.suppress(Exception):
+        try:
             await self.cold_db.tx(
                 "news_expire_bands",
                 lambda repos: repos.news.expire_bands(now_ms=stamp, batch_size=_RAW_RETENTION_BATCH_SIZE),
                 timeout_seconds=3.0,
             )
+        except Exception as exc:
+            log.warning("news band expiry failed code=band_expiry_failed:%s", type(exc).__name__)
         try:
             await self._purge_raw_retention(stamp)
         except Exception as exc:
@@ -288,7 +291,8 @@ class JanitorLoop:
         backlog_capped = False
         oldest_observed_at_ms: int | None = None
         for _ in range(_RAW_RETENTION_MAX_BATCHES):
-            if time.perf_counter() - started >= _RAW_RETENTION_MAX_WALL_SECONDS:
+            remaining_seconds = _RAW_RETENTION_MAX_WALL_SECONDS - (time.perf_counter() - started)
+            if remaining_seconds <= 0:
                 break
             result = await self.cold_db.tx(
                 "news_raw_retention",
@@ -299,7 +303,7 @@ class JanitorLoop:
                         batch_size=_RAW_RETENTION_BATCH_SIZE,
                     )
                 ),
-                timeout_seconds=5.0,
+                timeout_seconds=min(_RAW_RETENTION_BATCH_TIMEOUT_SECONDS, remaining_seconds),
             )
             batches += 1
             deleted_rows += int(result.get("deleted_items") or 0)

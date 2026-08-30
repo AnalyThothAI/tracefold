@@ -47,7 +47,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, ClassVar, Final, Literal, Protocol
+from typing import ClassVar, Final, Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -81,7 +81,7 @@ from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import CapitalPolicy
 from .sources import SourceRejected, normalize_oi_source
 from .storage.lane import CapitalAuthority, materialize_capital_authority
-from .storage.root import TradingRepository
+from .storage.root import TradingRepositories, TradingRepository
 from .telemetry import TradingExternalDataTelemetryPort, TradingWorkSemantics, observe_provider_call
 
 log = logging.getLogger("tracefold.trading")
@@ -129,9 +129,9 @@ class TradingDatabasePort(Protocol):
     compete for the four News lane slots.
     """
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T: ...
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+    async def read[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 BarFetcher = Callable[[InstrumentRef, int, int], Awaitable[Sequence[Bar]]]
@@ -635,7 +635,7 @@ class CapitalLane:
             return
         rows = [self._admission_row(result) for result in results.values()]
 
-        def _write(repos: Any) -> None:
+        def _write(repos: TradingRepositories) -> None:
             trading = _trading(repos)
             for row in rows:
                 trading.record_gate_decision(now_ms=now, release_revision=self._release_revision, **row)
@@ -648,7 +648,7 @@ class CapitalLane:
         stale_before = now - self._config.admission.max_age_ms
         purge_before = now - _ADMISSION_RETENTION_MS
 
-        def _maintain(repos: Any) -> None:
+        def _maintain(repos: TradingRepositories) -> None:
             trading = _trading(repos)
             trading.expire_stale_gate_decisions(stale_before_ms=stale_before, now_ms=now)
             trading.purge_gate_decisions(observed_before_ms=purge_before)
@@ -656,7 +656,7 @@ class CapitalLane:
         await self._db.tx("trading_admission_maintenance", _maintain, timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS)
 
 
-def _trading(repos: Any) -> TradingRepository:
+def _trading(repos: TradingRepositories) -> TradingRepository:
     trading: TradingRepository = repos.trading
     return trading
 

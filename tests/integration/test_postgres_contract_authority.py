@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 import pytest
@@ -15,12 +16,14 @@ from tracefold.news.program.contracts import EditorialEnvelope, TradeRelevanceV1
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
 
-def _python_accepts(model: Any, payload: dict[str, Any]) -> bool:
+def _python_persisted_form_accepts(model: Any, payload: dict[str, Any]) -> bool:
+    """Match the exact JSON shape the application writes after Pydantic materialization."""
+
     try:
-        model.model_validate(payload)
+        materialized = model.model_validate(payload).model_dump(mode="json")
     except ValidationError:
         return False
-    return True
+    return materialized == payload
 
 
 def test_news_current_json_validators_match_the_python_contract() -> None:
@@ -53,18 +56,32 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
             source_authority="reputable_secondary",
         ),
     ).model_dump(mode="json")
-    verdict_corpus = (
+    verdict_corpus = [
         verdict,
         verdict | {"retired": True},
         verdict | {"direction": "sideways"},
         verdict | {"why_zh": "x" * 141},
-    )
-    editorial_corpus = (
+        verdict | {"assets": [*verdict["assets"], verdict["assets"][0]]},
+    ]
+    verdict_corpus.extend({key: value for key, value in verdict.items() if key != removed} for removed in verdict)
+    verdict_asset_extra = copy.deepcopy(verdict)
+    verdict_asset_extra["assets"][0]["retired"] = True
+    verdict_corpus.append(verdict_asset_extra)
+    editorial_corpus = [
         editorial,
         editorial | {"retired": True},
         editorial | {"editorial_sha256": "0" * 64},
         editorial | {"editorial_origin": "operator"},
+    ]
+    editorial_corpus.extend(
+        {key: value for key, value in editorial.items() if key != removed} for removed in editorial
     )
+    editorial_relevance_extra = copy.deepcopy(editorial)
+    editorial_relevance_extra["relevance"]["retired"] = True
+    editorial_corpus.append(editorial_relevance_extra)
+    editorial_taxonomy_extra = copy.deepcopy(editorial)
+    editorial_taxonomy_extra["taxonomy"]["retired"] = True
+    editorial_corpus.append(editorial_taxonomy_extra)
 
     conn = connect_postgres_test(read_only=False)
     try:
@@ -74,14 +91,14 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
                     "valid"
                 ]
             )
-            assert db_accepts is _python_accepts(TriageVerdict, payload)
+            assert db_accepts is _python_persisted_form_accepts(TriageVerdict, payload)
         for payload in editorial_corpus:
             db_accepts = bool(
                 conn.execute("SELECT news_current_model_editorial_valid(%s) AS valid", (Jsonb(payload),)).fetchone()[
                     "valid"
                 ]
             )
-            assert db_accepts is _python_accepts(EditorialEnvelope, payload)
+            assert db_accepts is _python_persisted_form_accepts(EditorialEnvelope, payload)
     finally:
         conn.close()
 

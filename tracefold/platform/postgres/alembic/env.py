@@ -7,6 +7,7 @@ from sqlalchemy import engine_from_config, pool
 
 from tracefold.platform.config.loader import load_settings
 from tracefold.platform.postgres.client import local_docker_host_dsn, with_password_from_file
+from tracefold.platform.postgres.maintenance_gate import MAINTENANCE_GATE_LOCK_KEYS
 
 config = context.config
 
@@ -73,9 +74,25 @@ def run_migrations_online() -> None:
         if owner_role_exists:
             connection.exec_driver_sql("SET ROLE tracefold_owner")
         connection.commit()
-        context.configure(connection=connection, target_metadata=target_metadata)
-        with context.begin_transaction():
-            context.run_migrations()
+        acquired = bool(
+            connection.exec_driver_sql(
+                "SELECT pg_try_advisory_lock(%s, %s)",
+                MAINTENANCE_GATE_LOCK_KEYS,
+            ).scalar()
+        )
+        if not acquired:
+            raise RuntimeError("steady_workers_runtime_active")
+        connection.commit()
+        try:
+            context.configure(connection=connection, target_metadata=target_metadata)
+            with context.begin_transaction():
+                context.run_migrations()
+        finally:
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_unlock(%s, %s)",
+                MAINTENANCE_GATE_LOCK_KEYS,
+            )
+            connection.commit()
 
 
 if context.is_offline_mode():

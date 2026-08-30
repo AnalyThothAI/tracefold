@@ -11,7 +11,6 @@ from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 
-MAX_READ_RETURN_AMPLIFICATION = 20.0
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
 
 AmplificationBasis = Literal["returned_rows", "aggregate_input"]
@@ -25,12 +24,15 @@ class ReadQuerySpec:
     sql: str
     params: Any = ()
     amplification_basis: AmplificationBasis = "returned_rows"
+    max_read_return_amplification: float = 20.0
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("query audit name must not be empty")
         if not self.sql.strip():
             raise ValueError(f"query audit SQL must not be empty: {self.name}")
+        if self.max_read_return_amplification <= 0:
+            raise ValueError(f"query audit amplification budget must be positive: {self.name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +192,8 @@ class PostgresOperationalAudit:
         extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
         return {
             "server_version_num": int(settings["server_version_num"]),
-            "image_identity": os.environ.get("TRACEFOLD_POSTGRES_IMAGE", "unreported"),
+            "declared_image_identity": os.environ.get("TRACEFOLD_POSTGRES_IMAGE", "unreported"),
+            "image_identity_source": "TRACEFOLD_POSTGRES_IMAGE",
             "extensions": {str(row["extname"]): str(row["extversion"]) for row in extensions},
             "settings": {
                 key: str(settings[key])
@@ -285,7 +288,6 @@ class PostgresQueryAudit:
             "analyze": bool(analyze),
             "thresholds": {
                 "large_seq_scan_plan_rows": LARGE_SEQ_SCAN_PLAN_ROWS,
-                "max_read_return_amplification": MAX_READ_RETURN_AMPLIFICATION,
                 "temp_blocks": 0,
             },
             "route_coverage": {
@@ -310,12 +312,22 @@ class PostgresQueryAudit:
                 if analyze
                 else None
             )
-            violations = _plan_violations(metrics) if metrics is not None else []
+            violations = (
+                _plan_violations(
+                    metrics,
+                    max_read_return_amplification=query.max_read_return_amplification,
+                )
+                if metrics is not None
+                else []
+            )
             return {
                 "ok": not violations,
                 "name": query.name,
                 "plan": plan,
                 "metrics": metrics,
+                "budget": {
+                    "max_read_return_amplification": query.max_read_return_amplification,
+                },
                 "violations": violations,
             }
         except Exception as exc:
@@ -469,7 +481,11 @@ def _amplification_basis_rows(
     return aggregate_input_rows or returned_rows
 
 
-def _plan_violations(metrics: dict[str, Any]) -> list[str]:
+def _plan_violations(
+    metrics: dict[str, Any],
+    *,
+    max_read_return_amplification: float,
+) -> list[str]:
     violations: list[str] = []
     if not bool(metrics["plan_json_valid"]):
         violations.append("plan_json_missing")
@@ -477,7 +493,7 @@ def _plan_violations(metrics: dict[str, Any]) -> list[str]:
         violations.append("unexpected_large_table_seq_scan")
     if int(metrics["temp_read_blocks"]) or int(metrics["temp_written_blocks"]):
         violations.append("temp_spill")
-    if float(metrics["read_return_amplification"]) > MAX_READ_RETURN_AMPLIFICATION:
+    if float(metrics["read_return_amplification"]) > max_read_return_amplification:
         violations.append("read_return_amplification_exceeded")
     return violations
 

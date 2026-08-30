@@ -15,42 +15,46 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
 
 from tracefold.app.repository_session import RepositorySession
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.news.bus import DeferError, TransientError
+from tracefold.news.market_review.loops import PriceRepositories
+from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.pipeline.runtime import NewsRepositories
+from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.resource import ResourceAdmissionTimeout, ResourceOperationOverrun
+from tracefold.trading.storage.root import TradingRepositories, TradingRepository
 
 _NEWS_DEFAULT_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass(frozen=True, slots=True)
 class _NewsCallbackRepositories:
-    news: Any
-    instruments: Any
-    price: Any
+    news: NewsRepository
+    instruments: InstrumentsRepository
+    price: PriceRepository
 
 
 @dataclass(frozen=True, slots=True)
 class _PriceCallbackRepositories:
-    price: Any
+    price: PriceRepository
 
 
 @dataclass(frozen=True, slots=True)
 class _TradingCallbackRepositories:
-    trading: Any
+    trading: TradingRepository
 
 
-def _news_repositories(repos: RepositorySession) -> _NewsCallbackRepositories:
+def _news_repositories(repos: RepositorySession) -> NewsRepositories:
     return _NewsCallbackRepositories(news=repos.news, instruments=repos.instruments, price=repos.price)
 
 
-def _price_repositories(repos: RepositorySession) -> _PriceCallbackRepositories:
+def _price_repositories(repos: RepositorySession) -> PriceRepositories:
     return _PriceCallbackRepositories(price=repos.price)
 
 
-def _trading_repositories(repos: RepositorySession) -> _TradingCallbackRepositories:
+def _trading_repositories(repos: RepositorySession) -> TradingRepositories:
     return _TradingCallbackRepositories(trading=repos.trading)
 
 
@@ -80,7 +84,7 @@ class WorkerNewsDatabase:
         self._database = database
 
     async def read[T](
-        self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
     ) -> T:
         return await self._run(
             name,
@@ -89,7 +93,7 @@ class WorkerNewsDatabase:
         )
 
     async def tx[T](
-        self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
     ) -> T:
         return await self._run(
             name,
@@ -119,7 +123,7 @@ class WorkerNewsColdDatabase:
         self._lane = database.heavy_business()
 
     async def read[T](
-        self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
     ) -> T:
         return await self._run(
             name,
@@ -128,7 +132,7 @@ class WorkerNewsColdDatabase:
         )
 
     async def tx[T](
-        self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
+        self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = _NEWS_DEFAULT_TIMEOUT_SECONDS
     ) -> T:
         return await self._run(
             name,
@@ -151,14 +155,14 @@ class WorkerQuoteDatabase:
     def __init__(self, database: WorkerDatabase) -> None:
         self._database = database
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def read[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
         return await self._run(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
             timeout_seconds,
         )
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def tx[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
         return await self._run(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
@@ -185,14 +189,14 @@ class WorkerReactionDatabase:
         self._database = database
         self._lane = database.heavy_business()
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def read[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
         return await self._run(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
             timeout_seconds,
         )
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def tx[T](self, name: str, fn: Callable[[PriceRepositories], T], *, timeout_seconds: float) -> T:
         return await self._run(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _price_repositories),
@@ -220,14 +224,14 @@ class WorkerTradingDatabase:
         self._database = database
         self._lane = database.heavy_business()
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def read[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T:
         return await self._lane.run_business(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _trading_repositories),
             operation_timeout_seconds=timeout_seconds,
         )
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T:
+    async def tx[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T:
         return await self._lane.run_business(
             name,
             _in_session(self._database, name, fn, timeout_seconds, _trading_repositories),

@@ -157,7 +157,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
+        # The database composition adapter constructs narrow callback views from the concrete
+        # repositories; no business package imports the App adapter in return.
+        "tracefold.news.market_review.storage",
         "tracefold.news.program.contracts",
+        "tracefold.news.storage.root",
         # The News-owned row contract for the Trading handoff. Only the composition root's mapper reads
         # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
         "tracefold.news.storage.trade_projection",
@@ -166,6 +170,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.capital_lane",
         "tracefold.trading.catalog",
         "tracefold.trading.contracts",
+        "tracefold.trading.storage.root",
     ),
     "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),
@@ -223,18 +228,6 @@ SQL_LOCATION_EXCEPTIONS = frozenset(
         "tracefold/news/review/desk.py",
     }
 )
-PUBLIC_PROJECTION_PATHS = frozenset(
-    {
-        "tracefold/news/storage/events.py",
-        "tracefold/news/storage/feed.py",
-        "tracefold/news/storage/feed_sql.py",
-        "tracefold/news/storage/query_specs.py",
-        "tracefold/trading/storage/queries.py",
-        "tracefold/trading/storage/query_sql.py",
-    }
-)
-
-
 def _python_files(root: Path) -> list[Path]:
     return sorted(
         path
@@ -482,16 +475,6 @@ def test_production_sql_lives_in_owned_storage_or_an_explicit_adapter() -> None:
     assert sql_paths, "production SQL location scan must fail closed"
 
     violations = sorted(path for path in sql_paths if not _sql_location_allowed(path))
-    assert violations == []
-
-
-def test_public_and_cross_context_projections_name_their_columns() -> None:
-    select_star = re.compile(r"\bSELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?\*", re.IGNORECASE)
-    violations = []
-    for relative in sorted(PUBLIC_PROJECTION_PATHS):
-        matches = select_star.findall((ROOT / relative).read_text(encoding="utf-8"))
-        if matches:
-            violations.append(f"{relative}: {len(matches)} SELECT-star projection(s)")
     assert violations == []
 
 

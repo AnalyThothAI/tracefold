@@ -176,7 +176,7 @@ test-scheduled: ## production-duration diagnostics; explicitly outside merge evi
 	@uv run python -m pytest -m scheduled --durations=20
 
 postgres-restore-drill: ## isolated production-image dump/restore/migrate/audit/smoke evidence
-	@uv run python -m tracefold.platform.postgres.restore_drill
+	@uv run python -m tracefold.app.restore_storage
 
 test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
@@ -388,7 +388,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
 			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
-			20260830_0335\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0335." ;; \
+			20260830_0335\|t\|t) echo "Trading evidence clock and the explicit News current-view projection are present at database head 20260830_0335." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac

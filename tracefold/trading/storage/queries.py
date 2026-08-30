@@ -26,8 +26,8 @@ from typing import Any, Final
 from ..intent import ACTIVE_INTENT_STATES
 from .query_sql import (
     AUTHORITY_PROJECTION_SQL,
-    DEFAULT_CONSOLE_INTENT_RECENCY_SQL,
     console_capital_evidence_sql,
+    console_cases_sql,
     console_intents_sql,
 )
 
@@ -48,24 +48,6 @@ _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("entry_fenced_to_position_opened", "i.opened_at_ms - i.entry_fenced_at_ms"),
     ("position_opened_to_closed_flat", "i.flat_verified_at_ms - i.opened_at_ms"),
 )
-
-_CASE_COLUMNS: Final = """
-    c.case_id, c.underlying_key, c.primary_source_key,
-    c.trigger_kind, c.strategy_id, c.strategy_version, c.strategy_config_digest,
-    c.state, c.policy_decision, c.policy_reason, c.policy_checks,
-    c.capital_disposition, c.capital_reason,
-    c.manifest -> 'policy_config' AS policy_config,
-    (c.manifest -> 'contexts' -> 'market' ->> 'pre_move_bps')::bigint AS pre_move_bps,
-    (c.manifest -> 'contexts' -> 'market' ->> 'mark_price') AS mark_price,
-    (c.manifest -> 'contexts' -> 'oi' ->> 'oi_change_bps')::bigint AS oi_change_bps,
-    (c.manifest -> 'contexts' -> 'oi' ->> 'oi_value_usd')::bigint AS oi_value_usd,
-    (c.manifest -> 'contexts' -> 'oi' ->> 'whale_oi_ratio_bps')::bigint AS whale_oi_ratio_bps,
-    (c.manifest -> 'contexts' -> 'oi' ->> 'whale_long_profit_bps')::bigint AS whale_long_profit_bps,
-    (c.manifest -> 'instrument' ->> 'provider_symbol') AS provider_symbol,
-    (c.manifest ->> 'manifest_version') AS manifest_version,
-    c.observed_at_ms, c.created_at_ms AS case_created_at_ms, c.decided_at_ms
-"""
-
 
 class QueryStorage:
     conn: Any
@@ -187,27 +169,20 @@ class QueryStorage:
         two different vocabularies.
         """
 
-        where = ["c.created_at_ms >= %s"]
         params: list[Any] = [int(since_ms)]
         if underlying_key:
-            where.append("c.underlying_key = %s")
             params.append(underlying_key)
         if states:
-            where.append("c.state = ANY(%s)")
             params.append(list(states))
         if before is not None:
-            where.append("(c.created_at_ms, c.case_id) < (%s, %s)")
             params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
-            f"""
-            SELECT {_CASE_COLUMNS}, i.intent_id
-              FROM trading_cases c
-              LEFT JOIN trading_intents i ON i.case_id = c.case_id
-             WHERE {" AND ".join(where)}
-             ORDER BY c.created_at_ms DESC, c.case_id DESC
-             LIMIT %s
-            """,  # noqa: S608
+            console_cases_sql(
+                underlying=underlying_key is not None,
+                states=bool(states),
+                before=before is not None,
+            ),
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -247,27 +222,23 @@ class QueryStorage:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         if closed_from_ms is not None and closed_until_ms is not None:
-            recency = (
-                "(i.execution_state = ANY(%s) OR "
-                "(i.execution_state = 'TERMINAL' AND i.closed_at_ms >= %s AND i.closed_at_ms < %s))"
-            )
             params: list[Any] = [list(ACTIVE_INTENT_STATES), int(closed_from_ms), int(closed_until_ms)]
         else:
-            recency = DEFAULT_CONSOLE_INTENT_RECENCY_SQL
             params = [list(ACTIVE_INTENT_STATES), int(since_ms)]
-        where = [recency]
         if underlying_key:
-            where.append("c.underlying_key = %s")
             params.append(underlying_key)
         if states:
-            where.append("i.execution_state = ANY(%s)")
             params.append(list(states))
         if before is not None:
-            where.append("(i.created_at_ms, i.intent_id) < (%s, %s)")
             params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
-            console_intents_sql(" AND ".join(where)),
+            console_intents_sql(
+                closed_window=closed_from_ms is not None and closed_until_ms is not None,
+                underlying=underlying_key is not None,
+                states=bool(states),
+                before=before is not None,
+            ),
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -289,20 +260,20 @@ class QueryStorage:
     ) -> list[dict[str, Any]]:
         """Bounded reservation/authorization/outcome proof, newest state update first."""
 
-        where: list[str] = []
         params: list[Any] = []
         if binding:
-            where.append("reservation.binding = %s")
             params.append(binding)
         if statuses:
-            where.append("state.status = ANY(%s)")
             params.append(list(statuses))
         if before is not None:
-            where.append("(state.updated_at_ms, reservation.reservation_sha256) < (%s, %s)")
             params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
-            console_capital_evidence_sql(" AND ".join(where)),
+            console_capital_evidence_sql(
+                binding=binding is not None,
+                statuses=bool(statuses),
+                before=before is not None,
+            ),
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]

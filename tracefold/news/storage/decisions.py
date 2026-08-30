@@ -295,7 +295,7 @@ class DecisionStorage:
         measurement_window_ms: int | None = None,
         source_item_id: str,
         source_venue: str | None,
-    ) -> None:
+    ) -> int:
         """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict.
 
         The three source-contract columns travel together or not at all (#265): a window with no
@@ -308,7 +308,7 @@ class DecisionStorage:
         proven = (
             source_strategy_id is not None and source_contract_version is not None and measurement_window_ms is not None
         )
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
@@ -327,6 +327,7 @@ class DecisionStorage:
                 ORDER BY epoch.starts_at_ms DESC LIMIT 1), 'unproven')
             )
             ON CONFLICT (event_id, metric_version) DO NOTHING
+            RETURNING rank_in_window
             """,
             (
                 event_id,
@@ -348,6 +349,16 @@ class DecisionStorage:
                 int(now_ms),
             ),
         )
+        row = cursor.fetchone()
+        if row is not None:
+            return int(row["rank_in_window"])
+        existing = self.conn.execute(
+            "SELECT rank_in_window FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
+            (event_id, metric_version),
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("news_oi_signal_insert_failed")
+        return int(existing["rank_in_window"])
 
     def insert_market_liquidation(
         self,
@@ -455,7 +466,9 @@ class DecisionStorage:
         override_rule: str | None,
         throttled_by: str | None,
         verdict: Mapping[str, Any],
+        verdict_json: str | None = None,
         model_editorial: Mapping[str, Any] | None,
+        model_editorial_json: str | None = None,
         judgment_sha256: str,
         runtime_manifest_sha: str,
         model: str | None,
@@ -464,6 +477,7 @@ class DecisionStorage:
         degraded: bool,
         error_code: str | None,
         trace: Mapping[str, Any],
+        trace_json: str | None = None,
         evidence_version: int,
         evidence_sha256: str,
         focus_fact_id: str,
@@ -491,8 +505,12 @@ class DecisionStorage:
                 final_decision,
                 override_rule,
                 throttled_by,
-                _dumps(dict(verdict)),
-                _dumps(dict(model_editorial)) if model_editorial is not None else None,
+                verdict_json if verdict_json is not None else _dumps(dict(verdict)),
+                (
+                    model_editorial_json
+                    if model_editorial_json is not None
+                    else (_dumps(dict(model_editorial)) if model_editorial is not None else None)
+                ),
                 judgment_sha256,
                 runtime_manifest_sha,
                 model,
@@ -500,7 +518,7 @@ class DecisionStorage:
                 program_sha256,
                 bool(degraded),
                 error_code,
-                _dumps(dict(trace)),
+                trace_json if trace_json is not None else _dumps(dict(trace)),
                 int(now_ms),
                 int(evidence_version),
                 evidence_sha256,

@@ -13,11 +13,14 @@ from tracefold.trading.storage.query_sql import (
     AUTHORITY_PROJECTION_SQL,
     BINDING_RUNTIME_ROWS_SQL,
     CAPITAL_AUTHORITY_SNAPSHOT_SQL,
-    DEFAULT_CONSOLE_INTENT_RECENCY_SQL,
     DEFAULT_CONSOLE_INTENT_STATES,
     EXECUTION_CAPABILITY_SNAPSHOT_SQL,
+    GATE_DECISION_FOR_SOURCE_KEY_SQL,
+    TRADING_STATUS_COUNTS_SQL,
     console_capital_evidence_sql,
+    console_cases_sql,
     console_intents_sql,
+    gate_decisions_since_sql,
 )
 
 from .workers.runtime import workers_runtime_read_query
@@ -154,26 +157,17 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     return (
         ReadQuerySpec(
             name="trading_status_counts",
-            sql=(
-                "SELECT execution_state, count(*) AS n FROM trading_intents "
-                "WHERE created_at_ms >= %s GROUP BY execution_state"
-            ),
+            sql=TRADING_STATUS_COUNTS_SQL,
             params=(since_ms,),
         ),
         ReadQuerySpec(
             name="trading_console_intents",
-            sql=console_intents_sql(DEFAULT_CONSOLE_INTENT_RECENCY_SQL),
+            sql=console_intents_sql(),
             params=(list(DEFAULT_CONSOLE_INTENT_STATES), since_ms, 101),
         ),
         ReadQuerySpec(
             name="trading_gate_decision_for_source_key",
-            sql="""
-                SELECT source_key, status, stage, reason, case_id
-                  FROM trading_candidate_gate_decisions
-                 WHERE source_key = %s
-                 ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
-                 LIMIT 1
-            """,
+            sql=GATE_DECISION_FOR_SOURCE_KEY_SQL,
             params=("oi:not-a-real-event:oi_signal_v1",),
         ),
         ReadQuerySpec(
@@ -187,33 +181,16 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # the whole 24 h dedup set and re-sorts it. Flattening that into one `DISTINCT ON` with the
             # limit inside would certify a plan that can stop early — a plan the route never runs.
             name="trading_gate_decisions_since",
-            sql="""
-                SELECT source_key, status, stage, reason, source_observed_at_ms
-                  FROM (
-                    SELECT DISTINCT ON (source_key) *
-                      FROM trading_candidate_gate_decisions
-                     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-                     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
-                  ) latest
-                 ORDER BY source_observed_at_ms DESC, source_key
-                 LIMIT 401
-            """,
-            params=("oi", since_ms),
+            sql=gate_decisions_since_sql(),
+            params=("oi", since_ms, 401),
         ),
         ReadQuerySpec(
             # The Case aggregate on its own axis. The Intent link is one nullable id, never a joined
             # lifecycle: `NOT EXISTS (... trading_intents ...)` used to make "no Intent" a property of
             # the Case read, which is how one contract came to answer two different questions.
             name="trading_console_cases",
-            sql="""
-                SELECT c.case_id, c.state, c.policy_reason, c.policy_checks, i.intent_id
-                  FROM trading_cases c
-                  LEFT JOIN trading_intents i ON i.case_id = c.case_id
-                 WHERE c.created_at_ms >= %s
-                 ORDER BY c.created_at_ms DESC, c.case_id
-                 LIMIT 101
-            """,
-            params=(since_ms,),
+            sql=console_cases_sql(),
+            params=(since_ms, 101),
         ),
         ReadQuerySpec(
             name="trading_capability_bindings",
