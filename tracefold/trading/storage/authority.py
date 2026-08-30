@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any, cast
 
+from psycopg import sql
+
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
@@ -666,7 +668,13 @@ class AuthorityStorage:
             "trading_operator_arm_receipts",
         } or key_name not in {"risk_policy_sha256", "grant_sha256", "arm_receipt_sha256"}:
             raise RuntimeError("capital_authority_identity_query_invalid")
-        row = self.conn.execute(f"SELECT payload FROM {table} WHERE {key_name} = %s", (key,)).fetchone()
+        row = self.conn.execute(
+            sql.SQL("SELECT payload FROM {} WHERE {} = %s").format(
+                sql.Identifier(table),
+                sql.Identifier(key_name),
+            ),
+            (key,),
+        ).fetchone()
         if row is None or row["payload"] != payload:
             raise RuntimeError("capital_authority_identity_conflict")
 

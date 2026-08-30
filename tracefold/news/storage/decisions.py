@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+# S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
 from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
@@ -19,6 +20,24 @@ from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
 _HANDOFF_STATE_LIMIT = 1_000
+UNPUBLISHED_VERDICT_CANDIDATES_SQL = """
+    SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
+      FROM news_verdicts v
+      JOIN news_current_events_v1 e ON e.event_id = v.event_id
+      JOIN news_event_evidence_snapshots evidence
+        ON evidence.event_id = v.event_id
+       AND evidence.evidence_version = v.evidence_version
+       AND evidence.evidence_sha256 = v.evidence_sha256
+       AND evidence.provenance = 'observed'
+       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+     WHERE v.stage = 'triage'
+       AND v.judgment_contract_version = 'news_judgment_v2'
+       AND v.final_decision IN ('push', 'escalate')
+       AND v.published_at_ms IS NULL
+       AND e.event_kind <> 'unsupported_market'
+       AND v.created_at_ms <= %s AND v.created_at_ms >= %s
+     ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
+"""
 _VERDICT_HANDOFF_STATE_SQL = """
     WITH pending AS MATERIALIZED (
       SELECT v.created_at_ms
@@ -124,7 +143,7 @@ class DecisionStorage:
             return assemble_reader_history(recent_rows=recent, now_ms=now_ms)
 
         exact = self.conn.execute(
-            "WITH current_event AS ("
+            "WITH current_event AS ("  # noqa: S608
             " SELECT dedupe_family, comparison_fingerprint FROM news_current_events_v1 WHERE event_id = %s"
             ") "
             + _READER_HISTORY_PROJECTION
@@ -159,7 +178,7 @@ class DecisionStorage:
               UNION
               SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
             )
-            """
+            """  # noqa: S608
             + _READER_HISTORY_PROJECTION
             + """
              CROSS JOIN current_event current
@@ -506,24 +525,7 @@ class DecisionStorage:
         """Push Verdicts whose confirmed Delivery handoff marker is still absent."""
 
         rows = self.conn.execute(
-            """
-            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
-              FROM news_verdicts v
-              JOIN news_current_events_v1 e ON e.event_id = v.event_id
-              JOIN news_event_evidence_snapshots evidence
-                ON evidence.event_id = v.event_id
-               AND evidence.evidence_version = v.evidence_version
-               AND evidence.evidence_sha256 = v.evidence_sha256
-               AND evidence.provenance = 'observed'
-               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             WHERE v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
-               AND v.final_decision IN ('push', 'escalate')
-               AND v.published_at_ms IS NULL
-               AND e.event_kind <> 'unsupported_market'
-               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
-             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
-            """,
+            UNPUBLISHED_VERDICT_CANDIDATES_SQL,
             (int(older_than_ms), int(newer_than_ms), int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]

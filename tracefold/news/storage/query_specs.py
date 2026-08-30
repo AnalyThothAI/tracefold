@@ -6,14 +6,31 @@ from tracefold.platform.postgres.audit import ReadQuerySpec
 
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
-from .feed_sql import ASSET_SEARCH_PREDICATE, TEXT_SEARCH_PREDICATE, feed_counts_sql, feed_page_sql
-from .operations import RECOVERY_BACKLOG_LIMIT, pending_recovery_incidents_statement
+from .decisions import UNPUBLISHED_VERDICT_CANDIDATES_SQL
+from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
+from .feed_sql import (
+    ASSET_SEARCH_PREDICATE,
+    CURRENT_EVENT_CARD_SQL,
+    EVENT_VERDICTS_SQL,
+    STATUS_INGEST_SQL,
+    STATUS_LEARNING_RETENTION_SQL,
+    TEXT_SEARCH_PREDICATE,
+    feed_counts_sql,
+    feed_page_sql,
+)
+from .operations import (
+    RAW_RETENTION_CANDIDATE_SQL,
+    RECOVERY_BACKLOG_LIMIT,
+    pending_recovery_incidents_statement,
+)
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
     hour_ago = int(now_ms) - 3600_000
     week_ago = int(now_ms) - 168 * 3600_000
+    raw_cutoff = int(now_ms) - 30 * 24 * 3600_000
+    judged_cutoff = int(now_ms) - 365 * 24 * 3600_000
     search_base = "e.ingest_mode IN ('live', 'recovery') AND e.opened_at_ms >= %s"
     search_cursor = "(e.opened_at_ms, e.event_id) < (%s, %s)"
     recovery_backlog_sql, recovery_backlog_params = pending_recovery_incidents_statement(limit=RECOVERY_BACKLOG_LIMIT)
@@ -34,6 +51,21 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  ORDER BY e.opened_at_ms DESC, e.event_id DESC
                  LIMIT 51
             """,
+        ),
+        ReadQuerySpec(
+            name="news_event_handoff_candidates",
+            sql=UNPUBLISHED_EVENT_CANDIDATES_SQL,
+            params=(int(now_ms) - 15_000, day_ago, 50),
+        ),
+        ReadQuerySpec(
+            name="news_verdict_handoff_candidates",
+            sql=UNPUBLISHED_VERDICT_CANDIDATES_SQL,
+            params=(int(now_ms) - 15_000, day_ago, 50),
+        ),
+        ReadQuerySpec(
+            name="news_raw_retention_candidates",
+            sql=RAW_RETENTION_CANDIDATE_SQL,
+            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
         ),
         ReadQuerySpec(
             name="news_search_identity",
@@ -96,10 +128,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_detail",
-            sql=(
-                "SELECT e.*, i.description FROM news_current_events_v1 e"
-                " JOIN news_items i ON i.item_id = e.leader_item_id WHERE e.event_id = %s"
-            ),
+            sql=CURRENT_EVENT_CARD_SQL,
             params=("event",),
         ),
         ReadQuerySpec(
@@ -122,8 +151,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_event_verdicts",
-            sql="SELECT * FROM news_verdicts WHERE event_id = %s "
-            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms",
+            sql=EVENT_VERDICTS_SQL,
             params=("event",),
         ),
         ReadQuerySpec(
@@ -149,7 +177,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_status_ingest",
-            sql="SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'",
+            sql=STATUS_INGEST_SQL,
         ),
         ReadQuerySpec(
             name="news_status_incidents_open",
@@ -178,7 +206,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_status_learning_retention",
-            sql="SELECT * FROM news_learning_retention_state WHERE singleton",
+            sql=STATUS_LEARNING_RETENTION_SQL,
         ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.

@@ -13,6 +13,7 @@ the deterministic order.
 
 from __future__ import annotations
 
+# S608 exemption below interpolates only the code-owned projection row cap; all query values stay bound.
 from collections.abc import Sequence
 from typing import Any, TypedDict
 
@@ -221,7 +222,7 @@ class TradeProjectionStorage:
                AND v.created_at_ms <= %s
              ORDER BY v.created_at_ms DESC, v.event_id DESC
              LIMIT %s
-            """,
+            """,  # noqa: S608
             (
                 metric_version,
                 int(after_created_at_ms),

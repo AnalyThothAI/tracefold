@@ -69,7 +69,7 @@ def _pool() -> Any:
         application_name="tracefold_trading_transaction_cpu_boundary_test",
         statement_timeout_seconds=3.0,
         lock_timeout_seconds=0.25,
-        idle_in_transaction_session_timeout_seconds=5.0,
+        idle_in_transaction_session_timeout_seconds=0.1,
     )
     pool.wait(timeout=5.0)
     return pool
@@ -143,7 +143,6 @@ class _TightAuthorityIdleTimeout:
             return await self._delegate.read(name, fn, timeout_seconds=timeout_seconds)
 
         def with_tight_idle_timeout(repos: Any) -> Any:
-            repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
             original_conn = repos.trading.conn
             repos.trading.conn = _CountingConnection(original_conn, self._count_authority_statement)
             self.inside_authority_callback = True
@@ -179,11 +178,7 @@ class _TightWriteIdleTimeout:
         *,
         timeout_seconds: float,
     ) -> Any:
-        def with_tight_idle_timeout(repos: Any) -> Any:
-            repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
-            return fn(repos)
-
-        return await self._delegate.tx(name, with_tight_idle_timeout, timeout_seconds=timeout_seconds)
+        return await self._delegate.tx(name, fn, timeout_seconds=timeout_seconds)
 
 
 def _delay_catalog_validation(
@@ -230,11 +225,14 @@ def test_capital_authority_materialization_runs_after_the_read_transaction(
     async def no_bars(*_args: Any, **_kwargs: Any) -> Sequence[Any]:
         raise AssertionError("an empty source projection must not call the provider")
 
+    async def no_sources(_metric: str, _after: int, _until: int) -> Sequence[Any]:
+        return ()
+
     lane = CapitalLane(
         db=boundary,  # type: ignore[arg-type]
         config=CapitalLaneConfig(),
         bars=no_bars,
-        oi_projection=lambda *_args: (),
+        oi_projection=no_sources,
         news_generation="test-generation",
         release_revision="test-revision",
         clock=lambda: NOW,

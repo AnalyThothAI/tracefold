@@ -37,6 +37,7 @@ from ..contracts import CURRENT_TERMINAL_STATES, CaseState, TradingCaseManifest,
 from ..execution_policy import EXECUTION_POLICY_SHA256, PROTECTION_CONTRACT_SHA256, STOP_LOSS_BPS
 from ..intent import ACTIVE_INTENT_STATES, TradeIntent, economic_lifecycle_id
 from ..quote_authority import QUOTE_CONTRACT_SHA256
+from .query_sql import CAPITAL_AUTHORITY_SNAPSHOT_SQL
 from .sql_values import _dumps
 
 
@@ -154,67 +155,7 @@ class LaneStorage:
         """
 
         row = self.conn.execute(
-            """
-            WITH capital_runtime AS (
-                SELECT control FROM trading_runtime_state WHERE id = 1
-            )
-            SELECT capital_runtime.control AS capital_control,
-                   ARRAY(
-                       SELECT DISTINCT COALESCE(intent.underlying_key, trading_case.underlying_key)
-                         FROM trading_intents intent
-                         JOIN trading_cases trading_case ON trading_case.case_id = intent.case_id
-                        WHERE intent.execution_state = ANY(%(active_states)s)
-                        ORDER BY 1
-                   ) AS active_underlyings,
-                   ARRAY(
-                       SELECT DISTINCT underlying_key
-                         FROM trading_cases
-                        WHERE state IN ('PENDING', 'RUNNING')
-                        ORDER BY 1
-                   ) AS underlyings_in_flight,
-                   ARRAY(
-                       SELECT DISTINCT primary_source_key
-                         FROM trading_cases
-                        WHERE observed_at_ms >= %(since_ms)s
-                        ORDER BY 1
-                   ) AS cased_source_keys,
-                   COALESCE((
-                       SELECT jsonb_agg(
-                           jsonb_build_object(
-                               'base_symbol', base_symbol,
-                               'reason', reason,
-                               'created_at_ms', created_at_ms,
-                               'expires_at_ms', expires_at_ms
-                           ) ORDER BY base_symbol
-                       )
-                         FROM trading_symbol_blacklist
-                   ), '[]'::jsonb)::text AS blacklist_rows_json,
-                   COALESCE((
-                       SELECT jsonb_object_agg(
-                           binding_runtime.binding,
-                           jsonb_build_object(
-                               'credential_state', binding_runtime.credential_state,
-                               'runtime_state', binding_runtime.runtime_state,
-                               'account_state', binding_runtime.account_state,
-                               'catalog_state', CASE
-                                   WHEN binding_runtime.catalog_state = 'ready'
-                                    AND catalog.stale_after_ms IS NOT NULL
-                                    AND binding_runtime.catalog_captured_at_ms + catalog.stale_after_ms <= %(now_ms)s
-                                   THEN 'stale'
-                                   ELSE binding_runtime.catalog_state
-                               END,
-                               'catalog_snapshot_sha256', binding_runtime.catalog_snapshot_sha256,
-                               'catalog_payload', catalog.payload,
-                               'reason', binding_runtime.reason
-                           )
-                       )
-                         FROM trading_binding_runtime binding_runtime
-                         LEFT JOIN trading_venue_catalog_snapshots catalog
-                           ON catalog.snapshot_sha256 = binding_runtime.catalog_snapshot_sha256
-                        WHERE binding_runtime.binding = ANY(%(bindings)s)
-                   ), '{}'::jsonb)::text AS binding_rows_json
-              FROM capital_runtime
-            """,
+            CAPITAL_AUTHORITY_SNAPSHOT_SQL,
             {
                 "active_states": list(ACTIVE_INTENT_STATES),
                 "bindings": list(_CLOSED_BINDINGS),

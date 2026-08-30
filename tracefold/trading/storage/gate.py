@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+# S608 exemptions below reuse closed ledger/select fragments defined in this module; all values stay bound.
 from .sql_values import _dumps
 
 # One turn's worth of retention work. The lane persists about 90 OI facts a day, so this drains a
@@ -223,7 +224,7 @@ class CandidateGateStorage:
               FROM ({_LATEST_PER_SOURCE}) latest
              ORDER BY source_observed_at_ms DESC, source_key
              LIMIT %s
-            """,
+            """,  # noqa: S608
             (trigger_kind, int(since_ms), int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -241,11 +242,11 @@ class CandidateGateStorage:
         """
 
         status_rows = self.conn.execute(
-            f"SELECT status, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY status",
+            f"SELECT status, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY status",  # noqa: S608
             (trigger_kind, int(since_ms)),
         ).fetchall()
         reason_rows = self.conn.execute(
-            f"SELECT stage, reason, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY stage, reason",
+            f"SELECT stage, reason, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY stage, reason",  # noqa: S608
             (trigger_kind, int(since_ms)),
         ).fetchall()
         return {
@@ -267,7 +268,7 @@ class CandidateGateStorage:
                    max(source_observed_at_ms) FILTER (WHERE status = 'CASE_CREATED')
                      AS latest_gate_eligible_at_ms
               FROM ({_LATEST_PER_SOURCE}) latest
-            """,
+            """,  # noqa: S608
             (trigger_kind, 0),
         ).fetchone()
         if row is None:

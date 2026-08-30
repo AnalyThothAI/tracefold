@@ -465,6 +465,10 @@ input rows, translated field by field in `news_to_trading.py`, so a rename on
 either side fails at the seam rather than inside a runner. Version 10 publishes
 only the deterministic OI judgment and instrument catalogue used by Trading;
 editorial News and liquidation have no capital-lane projection.
+The live OI handoff reads that projection through the News cold adapter, closes
+the News transaction, and then lets the Trading adapter open its own bounded
+transactions. No callback receives both repositories and there is no
+cross-context transaction.
 
 `tracefold.app` decides how capabilities are assembled and run, never what a
 business fact means. It reads business projections; it does not write business
@@ -497,13 +501,24 @@ SQL ownership follows the same boundary: News owns `news_*`; Trading owns
 read-only seam (`macro_module_current` as Analyst evidence) went with the
 Analyst lane in #57, and the Macro tables themselves went in #68. The
 architecture gate checks SQL table references against the generated current
-schema.
+schema and fails if its production SQL scan is empty. Production statements
+live in the owning storage/PostgreSQL boundary or the small named App adapter
+allowlist. Public and cross-context projections list columns explicitly.
+High-risk runtime and query-audit paths import the same canonical statement
+builder; the audit does not maintain a representative copy.
 
 ## Transaction ownership
 
 Application services and workers own transaction scope. Repository writes use
 the supplied connection and never expose commit switches or open hidden
 transactions.
+
+A Worker callback receives only the repository capabilities required by its
+bounded context, never the raw connection or the cross-capability repository
+session. The Worker database adapter owns the true outer transaction: setup,
+callback SQL, commit or rollback, and its one telemetry observation. A nested
+repository transaction cannot shorten that scope or manufacture a second
+transaction count.
 
 Important atomic units are:
 
@@ -514,7 +529,11 @@ Important atomic units are:
   transition.
 
 Provider, model, filesystem, and network I/O occurs outside database
-transactions.
+transactions. The same rule excludes Pydantic materialization, canonical JSON,
+hashing, compression, large sorts/deep comparisons, and sleep/backoff. A
+callback may execute SQL/transaction-scoped locks, map rows to primitives, and
+immediately check rowcount/`RETURNING`/CAS. Payloads are prepared before the
+callback and rich objects are materialized after it.
 
 Each Worker database session owns exactly one bounded PostgreSQL transaction.
 It installs its statement and transaction limits as transaction-local settings
@@ -1839,6 +1858,9 @@ retaining only terminal V1/V2 rows as archive facts.
 the arm epoch after a paused cutover.
 `20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
 handoff repair/status scan.
+`20260830_0334` replaces the current Event security-barrier view's published
+wildcard with the same explicit column sequence, so future base-table columns
+cannot silently widen Serve, Review, learning, or Trading handoff contracts.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

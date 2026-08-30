@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -27,20 +26,9 @@ class RepositorySession:
     instruments: InstrumentsRepository
     price: PriceRepository
     trading: TradingRepository
-    transaction_observer: Callable[[float], None] | None = None
 
     def transaction(self) -> AbstractContextManager[None]:
-        return self._observed_transaction()
-
-    @contextmanager
-    def _observed_transaction(self) -> Iterator[None]:
-        started = time.perf_counter()
-        try:
-            with transaction(self.conn):
-                yield
-        finally:
-            if self.transaction_observer is not None:
-                self.transaction_observer(max(0.0, time.perf_counter() - started))
+        return transaction(self.conn)
 
     def require_transaction(self, *, operation: str) -> None:
         require_transaction(self.conn, operation=operation)
@@ -51,18 +39,13 @@ class RepositorySession:
         return compile_news_search(q=q, symbol=symbol, instruments=self.instruments)
 
 
-def repositories_for_connection(
-    conn: Any,
-    *,
-    transaction_observer: Callable[[float], None] | None = None,
-) -> RepositorySession:
+def repositories_for_connection(conn: Any) -> RepositorySession:
     return RepositorySession(
         conn=conn,
         news=NewsRepository(conn),
         instruments=InstrumentsRepository(conn),
         price=PriceRepository(conn),
         trading=TradingRepository(conn),
-        transaction_observer=transaction_observer,
     )
 
 

@@ -89,7 +89,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres: &postgres_service
-        image: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        image: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
         env: {POSTGRES_DB: tracefold_test, POSTGRES_PASSWORD: postgres, POSTGRES_USER: postgres}
         ports: ["55432:5432"]
         options: >-
@@ -115,6 +115,7 @@ jobs:
       - name: Run PostgreSQL and broker behavior tests
         env: &resource_env
           TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+          TRACEFOLD_POSTGRES_IMAGE: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
           TRACEFOLD_TEST_AMQP_URL: amqp://tracefold:tracefold@127.0.0.1:5672/
           TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL: http://127.0.0.1:15672
         run: make ci-postgres-behavior
@@ -151,6 +152,7 @@ jobs:
       - name: Run every historical migration test
         env:
           TRACEFOLD_TEST_POSTGRES_DSN: postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test
+          TRACEFOLD_POSTGRES_IMAGE: postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
         run: make ci-migration
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

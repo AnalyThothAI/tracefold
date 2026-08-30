@@ -102,7 +102,7 @@ positional arguments:
   {migrate,health,audit,query-audit}
     migrate             apply PostgreSQL migrations
     health              check PostgreSQL liveness and migration version
-    audit               run PostgreSQL count, FK, and projection schema audit
+    audit               run the fast PostgreSQL schema/role/catalog audit
     query-audit         explain PostgreSQL hot read paths
 
 options:
@@ -133,10 +133,11 @@ options:
 ## `db audit`
 
 ```
-usage: tracefold db audit [-h]
+usage: tracefold db audit [-h] [--deep]
 
 options:
   -h, --help  show this help message and exit
+  --deep      also run offline exact counts over every table
 
 ```
 

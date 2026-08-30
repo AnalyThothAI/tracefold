@@ -214,7 +214,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0333|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0334|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -665,7 +665,7 @@ def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_additive_news_head(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Trading capital-authority hard cut is already present at database head 20260830_0333" in result.stdout
+    assert "Trading capital-authority hard cut is already present at database head 20260830_0334" in result.stdout
     assert "Trading hard-cut preflight passed" not in result.stdout
 
 

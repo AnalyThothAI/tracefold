@@ -136,10 +136,9 @@ class TradingDatabasePort(Protocol):
 
 
 BarFetcher = Callable[[InstrumentRef, int, int], Awaitable[Sequence[Bar]]]
-# `(repos, metric_version, after_ms, until_ms) -> the OI source rows`. The repository session stays
-# opaque: this context never learns which repositories it carries, and no Trading threshold crosses
-# the seam — the projection answers "which facts exist", admission answers "which of them may trigger".
-OiProjectionReader = Callable[[Any, str, int, int], Sequence[OiCandidateRow]]
+# `(metric_version, after_ms, until_ms) -> the OI source rows`. App owns the News read behind this
+# asynchronous seam, so a Trading transaction callback never receives a News repository.
+OiProjectionReader = Callable[[str, int, int], Awaitable[Sequence[OiCandidateRow]]]
 
 LaneOutcome = Literal["ADVANCED", "HALTED"]
 
@@ -291,17 +290,12 @@ class CapitalLane:
             # No runtime authority row: no scan, no Case, no provider call, no Intent. This is
             # infrastructure state, not a business decision, and nothing durable records a refusal.
             raise RuntimeError("trading_runtime_state_missing")
-        rows = await self._db.read(
-            "trading_oi_projection",
-            lambda repos: list(
-                self._oi_projection(
-                    repos,
-                    self._config.oi_metric_version,
-                    now - self._config.scan_horizon_ms,
-                    now,
-                )
-            ),
-            timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
+        rows = list(
+            await self._oi_projection(
+                self._config.oi_metric_version,
+                now - self._config.scan_horizon_ms,
+                now,
+            )
         )
 
         results: dict[str, AdmissionResult] = {}

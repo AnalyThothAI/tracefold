@@ -89,6 +89,7 @@ class RecordingHandoffTelemetry:
         self.states: list[tuple[str, int, float, int]] = []
         self.repairs: list[tuple[str, str]] = []
         self.incidents: list[tuple[str, str, int, float]] = []
+        self.raw_retention: list[dict[str, int | float]] = []
 
     def set_news_handoff_state(self, stage: str, *, pending: int, oldest_age_seconds: float, expired: int) -> None:
         self.states.append((stage, pending, oldest_age_seconds, expired))
@@ -98,6 +99,27 @@ class RecordingHandoffTelemetry:
 
     def set_news_opennews_incident(self, *, provider: str, cause: str, count: int, oldest_age_seconds: float) -> None:
         self.incidents.append((provider, cause, count, oldest_age_seconds))
+
+    def record_news_raw_retention(
+        self,
+        *,
+        deleted_rows: int,
+        batches: int,
+        wall_seconds: float,
+        backlog_rows: int,
+        backlog_capped: bool,
+        oldest_age_seconds: float,
+    ) -> None:
+        self.raw_retention.append(
+            {
+                "deleted_rows": deleted_rows,
+                "batches": batches,
+                "wall_seconds": wall_seconds,
+                "backlog_rows": backlog_rows,
+                "backlog_capped": int(backlog_capped),
+                "oldest_age_seconds": oldest_age_seconds,
+            }
+        )
 
 
 class WaitingBus(FakeBus):
@@ -3166,34 +3188,65 @@ def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pyte
         asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, telemetry=telemetry).turn())
 
 
-def test_janitor_runs_learning_retention_on_the_one_slot_cold_lane() -> None:
+def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transactions() -> None:
+    raw_batches = iter(
+        (
+            {
+                "deleted_items": 500,
+                "backlog_items": 1,
+                "backlog_capped": False,
+                "oldest_observed_at_ms": NOW_MS - 40 * 86_400_000,
+            },
+            {
+                "deleted_items": 1,
+                "backlog_items": 0,
+                "backlog_capped": False,
+                "oldest_observed_at_ms": None,
+            },
+        )
+    )
     news = RecordingNews(
+        purge_before=lambda **_kwargs: next(raw_batches),
         purge_learning_retention={
             "deleted_recordings": 2,
             "deleted_cases": 1,
             "deleted_artifacts": 0,
-        }
+        },
     )
     db = FakeWorkerDatabase(news)
+    telemetry = RecordingHandoffTelemetry()
 
-    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, telemetry=telemetry).turn())
 
-    assert db.heavy_operations == ["news_janitor"]
-    assert db.operations == []
+    assert db.heavy_operations == [
+        "news_expire_bands",
+        "news_raw_retention",
+        "news_raw_retention",
+        "news_learning_retention",
+    ]
+    assert db.operations == ["news_opennews_incident_summary"]
     assert news.kwargs_of("purge_learning_retention") == {"batch_size": 500}
-    assert "expire_bands" in news.names() and "purge_before" in news.names()
+    assert [name for name in news.names() if name == "purge_before"] == ["purge_before", "purge_before"]
+    assert telemetry.raw_retention[0]["deleted_rows"] == 501
+    assert telemetry.raw_retention[0]["batches"] == 2
+    assert telemetry.raw_retention[0]["backlog_rows"] == 0
 
 
 def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     def _fail(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("broken retention function")
 
-    news = RecordingNews(purge_learning_retention=_fail)
+    news = RecordingNews(purge_before={}, purge_learning_retention=_fail)
     db = FakeWorkerDatabase(news)
 
     asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
 
-    assert db.heavy_operations == ["news_janitor", "news_learning_retention_error"]
+    assert db.heavy_operations == [
+        "news_expire_bands",
+        "news_raw_retention",
+        "news_learning_retention",
+        "news_learning_retention_error",
+    ]
     error = news.kwargs_of("record_learning_retention_error")
     assert error["error_code"] == "learning_retention_failed:RuntimeError"
 

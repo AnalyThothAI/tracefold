@@ -6,12 +6,28 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
+# S608 exemptions below interpolate only code-owned limits/admission literals; provider values stay bound.
 from ..models import ADMITTED_ADMISSIONS
 from ..opennews import source_artifact_identity
 from ..source_contracts import EventKind, SourceContractReason
+from .feed_sql import CURRENT_EVENT_CARD_SQL
 from .sql_values import _ADMITTED_SQL, _dumps
 
 _HANDOFF_STATE_LIMIT = 1_000
+UNPUBLISHED_EVENT_CANDIDATES_SQL = f"""
+    SELECT e.event_id, e.dedupe_family, e.queue_priority, e.trace_id, e.opened_at_ms
+      FROM news_current_events_v1 e
+     WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
+       AND e.opened_at_ms <= %s AND e.opened_at_ms >= %s
+       AND (
+         SELECT s.provenance = 'observed'
+            AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+           FROM news_event_evidence_snapshots s
+          WHERE s.event_id = e.event_id
+          ORDER BY s.evidence_version DESC LIMIT 1
+       )
+     ORDER BY e.opened_at_ms LIMIT %s
+"""  # noqa: S608
 _EVENT_HANDOFF_STATE_SQL = f"""
     WITH pending AS MATERIALIZED (
       SELECT e.opened_at_ms
@@ -45,7 +61,7 @@ _EVENT_HANDOFF_STATE_SQL = f"""
     SELECT (SELECT count(*) FROM pending) AS pending,
            (SELECT min(opened_at_ms) FROM pending) AS oldest_pending_at_ms,
            (SELECT count(*) FROM expired) AS expired
-"""
+"""  # noqa: S608
 
 
 class EventStorage:
@@ -480,20 +496,7 @@ class EventStorage:
         """
 
         rows = self.conn.execute(
-            f"""
-            SELECT e.event_id, e.dedupe_family, e.queue_priority, e.trace_id, e.opened_at_ms
-              FROM news_current_events_v1 e
-             WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
-               AND e.opened_at_ms <= %s AND e.opened_at_ms >= %s
-               AND (
-                 SELECT s.provenance = 'observed'
-                    AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                   FROM news_event_evidence_snapshots s
-                  WHERE s.event_id = e.event_id
-                  ORDER BY s.evidence_version DESC LIMIT 1
-               )
-             ORDER BY e.opened_at_ms LIMIT %s
-            """,
+            UNPUBLISHED_EVENT_CANDIDATES_SQL,
             (int(older_than_ms), int(newer_than_ms), int(limit)),
         ).fetchall()
         return [dict(r) for r in rows]
@@ -585,16 +588,7 @@ class EventStorage:
         )
 
     def _current_event_card(self, event_id: str) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            """
-            SELECT e.*, i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
-                   i.provider_metadata, i.provenance, i.published_at_ms AS leader_published_at_ms,
-                   i.raw_first_line
-              FROM news_current_events_v1 e JOIN news_items i ON i.item_id = e.leader_item_id
-             WHERE e.event_id = %s
-            """,
-            (event_id,),
-        ).fetchone()
+        row = self.conn.execute(CURRENT_EVENT_CARD_SQL, (event_id,)).fetchone()
         return dict(row) if row else None
 
     def append_evidence_snapshot(

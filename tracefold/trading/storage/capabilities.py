@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+# S608 exemption below chooses only the fixed optional FOR UPDATE clause; binding remains a parameter.
 from ..blacklist import Blacklist, BlacklistSnapshotV1
 from ..capabilities import ExecutionCapabilitySnapshotV2
 from ..contracts import VenueBinding
+from .query_sql import EXECUTION_CAPABILITY_SNAPSHOT_SQL
 from .sql_values import _dumps
 
 
@@ -15,8 +17,7 @@ class CapabilityStorage:
 
     def execution_capability_snapshot(self, snapshot_sha256: str) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT payload FROM trading_execution_capability_snapshots "
-            "WHERE snapshot_sha256 = %s AND payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'",
+            EXECUTION_CAPABILITY_SNAPSHOT_SQL,
             (snapshot_sha256,),
         ).fetchone()
         return None if row is None else ExecutionCapabilitySnapshotV2.model_validate(row["payload"])
@@ -28,7 +29,7 @@ class CapabilityStorage:
         for_update: bool = False,
     ) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT capability_snapshot_sha256 FROM trading_binding_runtime WHERE binding = %s"
+            "SELECT capability_snapshot_sha256 FROM trading_binding_runtime WHERE binding = %s"  # noqa: S608
             + (" FOR UPDATE" if for_update else ""),
             (binding,),
         ).fetchone()

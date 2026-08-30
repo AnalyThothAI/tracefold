@@ -120,9 +120,6 @@ select = ["E", "F", "I", "UP", "B", "SIM", "S", "ASYNC", "RUF", "PERF", "PL"]
 # - PLR0913: too many args is sometimes correct for adapters/factories
 # - PLR2004: magic numbers in tests are normal (also blocked by per-file-ignores)
 # - PLR0911/PLR0912/PLR0915: cyclomatic complexity caps too low for a few orchestration funcs
-# - S608: 43 hits across repos — all use controlled clause building (not user input);
-#         the pattern `f"WHERE {' AND '.join(clauses)}"` where clauses is filled with
-#         hardcoded strings + %s placeholders is a safe dynamic-filter pattern for psycopg.
 # - S105/S106: "possible password" fires on version strings, filename defaults, redaction
 #         strings ("password_file", "token_resolution_status");
 #         no actual credentials are hardcoded in the src/ tree.
@@ -137,7 +134,6 @@ ignore = [
   "PLR0911",
   "PLR0912",
   "PLR0915",
-  "S608",
   "S105",
   "S106",
   "RUF001",
@@ -153,11 +149,27 @@ ignore = [
   "PLC0415",  # deferred imports in test helpers/parametrized fixtures are intentional
   "S603",   # subprocess in integration tests always calls well-known CLI tools
   "S607",   # subprocess calls in integration tests use well-known CLI tools (make, git, uv)
+  "S608",   # test-only fixed DDL/fixture fragments; production SQL remains checked
 ]
 "scripts/**" = [
   "S603",   # subprocess inputs are local CLI args
   "S607",
 ]
+# Published revisions are immutable. These exact files interpolate only revision-owned constants;
+# future migrations do not inherit the exemption and must use bound values or psycopg composition.
+"tracefold/platform/postgres/alembic/versions/20260822_0293_program_v2_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260822_0294_program_v3_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260822_0295_program_v4_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260822_0298_program_v5_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260823_0301_trade_relevance_program_v6.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260824_0303_program_v7_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260825_0308_trading_execution_snapshot.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260827_0313_oi_source_contract.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260827_0314_deterministic_event_assets.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260827_0315_news_event_kind.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260828_0318_program_v8_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260828_0319_program_v9_epoch.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260828_0324_delivery_lifecycle_constraints.py" = ["S608"]
 
 [tool.ruff.format]
 # Default settings; line-length inherited from [tool.ruff] = 120

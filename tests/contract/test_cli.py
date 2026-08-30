@@ -97,6 +97,7 @@ class CliTests(unittest.TestCase):
             ["db", "audit"],
             ["db", "query-audit"],
             ["db", "query-audit", "--analyze"],
+            ["db", "audit", "--deep"],
             ["ops", "validate-projections", "--sample", "5"],
             ["news", "review", "queue", "--event", "ev-1", "--limit", "5"],
             ["news", "dlq", "inspect", "--limit", "5"],
@@ -109,13 +110,14 @@ class CliTests(unittest.TestCase):
         self.assertEqual(parsed[1].db_command, "query-audit")
         self.assertFalse(parsed[1].analyze)
         self.assertTrue(parsed[2].analyze)
-        self.assertEqual(parsed[3].ops_command, "validate-projections")
-        self.assertEqual(parsed[3].sample, 5)
-        self.assertEqual((parsed[4].news_command, parsed[4].review_command), ("review", "queue"))
-        self.assertEqual((parsed[4].event, parsed[4].limit), ("ev-1", 5))
-        self.assertEqual((parsed[5].news_command, parsed[5].dlq_action, parsed[5].limit), ("dlq", "inspect", 5))
-        self.assertEqual((parsed[6].news_command, parsed[6].review_command), ("review", "evidence"))
-        self.assertEqual((parsed[6].task, parsed[6].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
+        self.assertTrue(parsed[3].deep)
+        self.assertEqual(parsed[4].ops_command, "validate-projections")
+        self.assertEqual(parsed[4].sample, 5)
+        self.assertEqual((parsed[5].news_command, parsed[5].review_command), ("review", "queue"))
+        self.assertEqual((parsed[5].event, parsed[5].limit), ("ev-1", 5))
+        self.assertEqual((parsed[6].news_command, parsed[6].dlq_action, parsed[6].limit), ("dlq", "inspect", 5))
+        self.assertEqual((parsed[7].news_command, parsed[7].review_command), ("review", "evidence"))
+        self.assertEqual((parsed[7].task, parsed[7].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
 
     def test_trading_authority_requires_explicit_artifacts_and_arm_set(self):
         parser = build_parser()

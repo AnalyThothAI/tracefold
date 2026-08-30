@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, cast
 
+# S608 exemptions below interpolate only the immutable/outcome column constants; all business values stay bound.
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
@@ -227,14 +228,14 @@ class IntentStorage:
             )
             ON CONFLICT (intent_id) DO NOTHING
             RETURNING intent_id
-            """,
+            """,  # noqa: S608
             values,
         ).fetchone()
         return row is not None
 
     def intent(self, intent_id: str) -> TradeIntent | None:
         row = self.conn.execute(
-            f"SELECT {_IMMUTABLE_COLUMNS} FROM trading_intents "
+            f"SELECT {_IMMUTABLE_COLUMNS} FROM trading_intents "  # noqa: S608
             "WHERE intent_id = %s AND intent_version = 'trade_intent_v3'",
             (intent_id,),
         ).fetchone()
@@ -242,14 +243,14 @@ class IntentStorage:
 
     def intent_outcome(self, intent_id: str) -> IntentOutcome | None:
         row = self.conn.execute(
-            f"SELECT {_OUTCOME_COLUMNS} FROM trading_intents WHERE intent_id = %s",
+            f"SELECT {_OUTCOME_COLUMNS} FROM trading_intents WHERE intent_id = %s",  # noqa: S608
             (intent_id,),
         ).fetchone()
         return None if row is None else IntentOutcome.model_validate(dict(row))
 
     def intent_for_case(self, *, case_id: str) -> tuple[TradeIntent, IntentOutcome] | None:
         row = self.conn.execute(
-            f"SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS} FROM trading_intents "
+            f"SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS} FROM trading_intents "  # noqa: S608
             "WHERE case_id = %s AND intent_version = 'trade_intent_v3'",
             (case_id,),
         ).fetchone()
@@ -272,7 +273,7 @@ class IntentStorage:
              ORDER BY created_at_ms, intent_id
              LIMIT 1
                FOR UPDATE SKIP LOCKED
-            """,
+            """,  # noqa: S608
             (list(ACTIVE_INTENT_STATES),),
         ).fetchone()
         if row is None:
@@ -292,7 +293,7 @@ class IntentStorage:
                AND execution_state = 'PENDING'
                AND entry_fenced_at_ms IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {"intent_id": intent_id, "now": int(now_ms)},
         )
         return outcome
@@ -572,7 +573,7 @@ class IntentStorage:
                    AND execution_state = 'PENDING'
                    AND entry_fenced_at_ms IS NULL
              RETURNING {_OUTCOME_COLUMNS}
-                """,
+                """,  # noqa: S608
                 {
                     "intent_id": intent_id,
                     "reason": reason,
@@ -635,7 +636,7 @@ class IntentStorage:
                         AND (denied.expires_at_ms IS NULL OR denied.expires_at_ms > %(now)s)
                    )
          RETURNING {_INTENT_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "engine": engine_identity,
@@ -708,7 +709,7 @@ class IntentStorage:
                AND execution_state = 'PENDING'
                AND entry_fenced_at_ms IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "reason": reason_code,
@@ -752,7 +753,7 @@ class IntentStorage:
                AND entry_quote_q2 IS NULL
                AND entry_submitted_at_ms IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "client_id": entry_client_order_id,
@@ -801,7 +802,7 @@ class IntentStorage:
                AND entry_submitted_at_ms IS NULL
                AND actual_quantity IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "client_id": entry_client_order_id,
@@ -832,7 +833,7 @@ class IntentStorage:
                AND entry_client_order_id = %(client_id)s
                AND entry_quote_q2 ->> 'reason' = 'accepted'
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {"intent_id": intent_id, "client_id": entry_client_order_id, "now": int(submitted_at_ms)},
         )
 
@@ -854,7 +855,7 @@ class IntentStorage:
                AND entry_client_order_id = %(client_id)s
                AND entry_submitted_at_ms IS NOT NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {"intent_id": intent_id, "client_id": entry_client_order_id, "now": int(accepted_at_ms)},
         )
 
@@ -872,7 +873,7 @@ class IntentStorage:
                AND entry_fenced_at_ms IS NULL
                AND valid_until_ms <= %(now)s
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {"intent_id": intent_id, "now": int(now_ms)},
         )
         if outcome is not None:
@@ -914,7 +915,7 @@ class IntentStorage:
                    AND entry_client_order_id = %(entry_client_order_id)s)
                )
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "reason": reason_code,
@@ -945,7 +946,7 @@ class IntentStorage:
                AND execution_state IN ('IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
                AND entry_fenced_at_ms IS NOT NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {"intent_id": intent_id, "reason": reason_code, "now": int(now_ms)},
         )
         if outcome is not None:
@@ -979,7 +980,7 @@ class IntentStorage:
                AND entry_fenced_at_ms IS NOT NULL
                AND actual_quantity IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "quantity": actual_quantity,
@@ -1020,7 +1021,7 @@ class IntentStorage:
                AND actual_quantity = %(quantity)s
                AND stop_submitted_at_ms IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "client_id": client_order_id,
@@ -1061,7 +1062,7 @@ class IntentStorage:
                AND actual_quantity = %(quantity)s
                AND stop_client_order_id = %(client_id)s
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "client_id": accepted_client_order_id,
@@ -1100,7 +1101,7 @@ class IntentStorage:
                )
                AND %(quantity)s > 0
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "position_id": position_id,
@@ -1147,7 +1148,7 @@ class IntentStorage:
                AND actual_quantity = %(quantity)s
                AND actual_quantity IS DISTINCT FROM protected_quantity
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "canceled_client_id": canceled_client_order_id,
@@ -1189,7 +1190,7 @@ class IntentStorage:
                AND actual_quantity > 0
                AND close_submitted_at_ms IS NULL
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "client_id": client_order_id,
@@ -1248,7 +1249,7 @@ class IntentStorage:
                AND realized_pnl_currency IS NOT DISTINCT FROM %(currency)s
                AND %(authoritative_quantity)s = 0
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "position_id": position_id,
@@ -1281,7 +1282,7 @@ class IntentStorage:
                      WHERE intent_id = %(intent_id)s
                        AND execution_state = 'TERMINAL' AND terminal_outcome = 'CLOSED_FLAT'
                  RETURNING {_OUTCOME_COLUMNS}
-                    """,
+                    """,  # noqa: S608
                     {"intent_id": intent_id, "now": int(now_ms)},
                 )
         return outcome
@@ -1340,7 +1341,7 @@ class IntentStorage:
                )
                AND (closed_at_ms IS NULL OR closed_at_ms = %(closed)s)
          RETURNING {_OUTCOME_COLUMNS}
-            """,
+            """,  # noqa: S608
             {
                 "intent_id": intent_id,
                 "instrument_id": instrument_id,

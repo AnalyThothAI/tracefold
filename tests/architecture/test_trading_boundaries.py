@@ -62,6 +62,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/storage/gate.py",
     "trading/storage/intents.py",
     "trading/storage/queries.py",
+    "trading/storage/query_sql.py",
     "trading/storage/sql_values.py",
     # The execution authority. It is not in `tracefold.trading`, and pretending otherwise is what let
     # the old test pass over an empty directory.

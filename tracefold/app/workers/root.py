@@ -636,7 +636,7 @@ def _runtime_begin(
     runtime_version: str,
     started_at_ms: int,
 ) -> bool:
-    with db.worker_session("workers_runtime_begin", 1.0) as repos, repos.transaction():
+    with db.worker_session("workers_runtime_begin", 1.0) as repos:
         return WorkersRuntimeRepository(repos.conn).begin(
             runtime_id=runtime_id,
             runtime_version=runtime_version,
@@ -651,7 +651,7 @@ def _runtime_transition(
     lifecycle_state: Any,
     fatal_code: Any,
 ) -> None:
-    with db.worker_session("workers_runtime_transition", 1.0) as repos, repos.transaction():
+    with db.worker_session("workers_runtime_transition", 1.0) as repos:
         WorkersRuntimeRepository(repos.conn).transition(
             runtime_id=runtime_id,
             lifecycle_state=lifecycle_state,
@@ -661,7 +661,7 @@ def _runtime_transition(
 
 
 def _runtime_heartbeat(db: WorkerDatabase, runtime_id: str, heartbeat_at_ms: int) -> None:
-    with db.worker_session("workers_runtime_heartbeat", 1.0) as repos, repos.transaction():
+    with db.worker_session("workers_runtime_heartbeat", 1.0) as repos:
         WorkersRuntimeRepository(repos.conn).heartbeat(
             runtime_id=runtime_id,
             now_ms=heartbeat_at_ms,

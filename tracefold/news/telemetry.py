@@ -89,6 +89,17 @@ class NewsDurableEventTelemetryPort(Protocol):
         outcome: NewsHandoffRepairOutcome,
     ) -> None: ...
 
+    def record_news_raw_retention(
+        self,
+        *,
+        deleted_rows: int,
+        batches: int,
+        wall_seconds: float,
+        backlog_rows: int,
+        backlog_capped: bool,
+        oldest_age_seconds: float,
+    ) -> None: ...
+
     def record_news_rabbitmq_consumer_fatal(
         self,
         queue: str,

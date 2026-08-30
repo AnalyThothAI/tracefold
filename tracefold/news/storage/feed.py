@@ -7,6 +7,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+# S608 exemptions below interpolate the closed admission enum literal set; all request values stay bound.
 from ..models import ReaderReceipt
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -32,7 +33,10 @@ from ..timeline import event_timeline
 from .feed_sql import (
     ADMITTED_SQL,
     ASSET_SEARCH_PREDICATE,
+    EVENT_VERDICTS_SQL,
     OUTCOME_GROUP_SQL,
+    STATUS_INGEST_SQL,
+    STATUS_LEARNING_RETENTION_SQL,
     TEXT_SEARCH_PREDICATE,
     feed_counts_sql,
     feed_page_sql,
@@ -245,16 +249,17 @@ class FeedStorage:
             """,
             (event_id,),
         ).fetchall()
-        verdicts = self.conn.execute(
+        verdicts = self.conn.execute(EVENT_VERDICTS_SQL, (event_id,)).fetchall()
+        deliveries = self.conn.execute(
             """
-            SELECT * FROM news_verdicts
-             WHERE event_id = %s AND judgment_contract_version = 'news_judgment_v2'
+            SELECT kind, state, card, receipt, error_code, attempted_at_ms, settled_at_ms,
+                   created_at_ms, edit_state, pending_card, edit_error_code,
+                   edit_attempted_at_ms, edit_settled_at_ms
+              FROM news_deliveries
+             WHERE event_id = %s
              ORDER BY created_at_ms
             """,
             (event_id,),
-        ).fetchall()
-        deliveries = self.conn.execute(
-            "SELECT * FROM news_deliveries WHERE event_id = %s ORDER BY created_at_ms", (event_id,)
         ).fetchall()
         event = _event_public(card)
         member_rows = [
@@ -336,7 +341,9 @@ class FeedStorage:
                 }
                 for row in self.conn.execute(
                     """
-                    SELECT * FROM news_event_evidence_snapshots
+                    SELECT event_id, evidence_version, focus_fact_id, evidence_sha256,
+                           provenance, release_eligible, created_at_ms
+                      FROM news_event_evidence_snapshots
                      WHERE event_id = %s AND provenance = 'observed'
                        AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'
                      ORDER BY evidence_version
@@ -352,14 +359,22 @@ class FeedStorage:
     def _review_summary(self, event_id: str) -> dict[str, Any]:
         row = self.conn.execute(
             """
-            SELECT j.*, counts.judgment_n
+            SELECT j.review_id, j.subject_kind, j.event_id, j.external_snapshot_id,
+                   j.should_push, j.first_bad_owner, j.evidence_refs, j.expected_correction,
+                   j.note, j.reviewer, j.created_at_ms, j.rubric_version,
+                   j.reader_contract_version, j.pairwise_case_id, counts.judgment_n
               FROM (
                 SELECT count(*) AS judgment_n FROM news_review_records_v1
                  WHERE event_id = %s AND review_kind = 'judgment'
                    AND subject_kind = 'event'
               ) counts
               LEFT JOIN LATERAL (
-                SELECT judgment.*
+                SELECT judgment.review_id, judgment.subject_kind, judgment.event_id,
+                       judgment.external_snapshot_id, judgment.should_push,
+                       judgment.first_bad_owner, judgment.evidence_refs,
+                       judgment.expected_correction, judgment.note, judgment.reviewer,
+                       judgment.created_at_ms, judgment.rubric_version,
+                       judgment.reader_contract_version, judgment.pairwise_case_id
                   FROM news_review_records_v1 acceptance
                   JOIN news_review_records_v1 judgment ON judgment.review_id = acceptance.accepts_review_id
                  WHERE acceptance.review_kind = 'acceptance' AND judgment.event_id = %s
@@ -592,7 +607,7 @@ class FeedStorage:
         return [{"symbol": str(row["symbol"]), "used": int(row["used"])} for row in rows]
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
-        ingest = self.conn.execute("SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'").fetchone()
+        ingest = self.conn.execute(STATUS_INGEST_SQL).fetchone()
         incidents = self.open_incidents()  # type: ignore[attr-defined]
         recovery = self.recovery_backlog()  # type: ignore[attr-defined]
         day_ago = int(now_ms) - 24 * 3600_000
@@ -644,7 +659,13 @@ class FeedStorage:
                WHERE stage = 'triage' AND created_at_ms >= %s
                  AND judgment_contract_version = 'news_judgment_v2'
             )
-            SELECT * FROM event_counts CROSS JOIN verdict_counts
+            SELECT event_counts.events_1h, event_counts.events_24h, event_counts.candidates_24h,
+                   verdict_counts.triage_24h, verdict_counts.model_triage_24h,
+                   verdict_counts.triage_degraded_24h, verdict_counts.decided_push_24h,
+                   verdict_counts.throttled_24h, verdict_counts.triage_p50_ms,
+                   verdict_counts.triage_p95_ms, verdict_counts.queue_lag_p95_ms,
+                   verdict_counts.reasked_24h
+              FROM event_counts CROSS JOIN verdict_counts
             """,
             (hour_ago, day_ago, day_ago),
         ).fetchone()
@@ -678,7 +699,7 @@ class FeedStorage:
             (day_ago, hour_ago, day_ago, day_ago, day_ago),
         ).fetchone()
         funnel = self._funnel_24h(day_ago=day_ago)
-        retention = self.conn.execute("SELECT * FROM news_learning_retention_state WHERE singleton").fetchone()
+        retention = self.conn.execute(STATUS_LEARNING_RETENTION_SQL).fetchone()
         return {
             "ingest": {
                 "connected": bool(ingest["connected"]) if ingest else False,
@@ -797,7 +818,7 @@ class FeedStorage:
                     AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
                )
              GROUP BY admission ORDER BY n DESC
-            """,
+            """,  # noqa: S608
             (day_ago,),
         ).fetchall()
         # One pass over the last 24 h of Triage verdicts; the four named maps are folded from it in Python.
@@ -898,7 +919,7 @@ class FeedStorage:
                     AND evidence.provenance = 'observed'
                     AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
                )
-            """,
+            """,  # noqa: S608
             (day_ago,),
         ).fetchone()
         events = int(totals["events"] or 0) if totals else 0

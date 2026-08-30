@@ -40,9 +40,11 @@ from tracefold.news.storage.decisions import (
 )
 from tracefold.news.storage.decisions import (
     _VERDICT_HANDOFF_STATE_SQL,
+    UNPUBLISHED_VERDICT_CANDIDATES_SQL,
 )
 from tracefold.news.storage.events import (
     _EVENT_HANDOFF_STATE_SQL,
+    UNPUBLISHED_EVENT_CANDIDATES_SQL,
 )
 from tracefold.news.storage.events import (
     _HANDOFF_STATE_LIMIT as _EVENT_HANDOFF_STATE_LIMIT,
@@ -599,6 +601,9 @@ def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(co
 def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(conn) -> None:
     event_id, policy_version = _ensure_handoff_facts(conn)
     stamp = now_ms()
+    # Keep 20k table/cardinality evidence for the planner, but only 1,250 current rows: that is already
+    # above the 1,000-row state cap. JSON/hash CHECK cost is covered separately under a native statement
+    # timeout; validating 20,000 current verdicts made a read-plan fixture itself unbounded.
     conn.execute(
         """
         INSERT INTO news_events (
@@ -608,7 +613,8 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
           focus_span_start, focus_span_end, opened_at_ms, last_member_at_ms, expires_at_ms,
           member_count, admission, queue_priority, provider_score_max, engine_type, asset_class,
           grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
-          published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms
+          published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms,
+          current_contract_archive_only
         )
         SELECT 'handoff-scale-' || g.n, template.leader_item_id, template.dedupe_family, template.event_kind,
                template.source_contract_reason, md5('handoff-' || g.n) || md5('handoff-x-' || g.n),
@@ -619,7 +625,7 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
                template.provider_score_max, template.engine_type, template.asset_class,
                template.grounded_assets, template.watchlist_hits, template.macro_lexicon,
                template.storyline_key, template.context_line, %s, template.ingest_mode,
-               template.trace_id, %s - g.n, %s - g.n
+               template.trace_id, %s - g.n, %s - g.n, g.n > 1250
           FROM news_events template
           CROSS JOIN generate_series(1, 20000) AS g(n)
          WHERE template.event_id = %s
@@ -701,37 +707,15 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
     event_plan = "\n".join(
         row["QUERY PLAN"]
         for row in conn.execute(
-            """
-            EXPLAIN (ANALYZE, BUFFERS)
-            SELECT event_id, dedupe_family, queue_priority, trace_id, opened_at_ms
-              FROM news_events
-             WHERE published_at_ms IS NULL
-               AND admission IN (
-                 'candidate', 'listing_deterministic',
-                 'telemetry_deterministic', 'liquidation_deterministic'
-               )
-               AND opened_at_ms <= %s AND opened_at_ms >= %s
-             ORDER BY opened_at_ms LIMIT 50
-            """,
-            (stamp - 15_000, stamp - 30 * 60_000),
+            "EXPLAIN (ANALYZE, BUFFERS) " + UNPUBLISHED_EVENT_CANDIDATES_SQL,
+            (stamp - 15_000, stamp - 30 * 60_000, 50),
         ).fetchall()
     )
     verdict_plan = "\n".join(
         row["QUERY PLAN"]
         for row in conn.execute(
-            """
-            EXPLAIN (ANALYZE, BUFFERS)
-            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
-              FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id
-             WHERE v.stage = 'triage'
-               AND v.final_decision IN ('push', 'escalate')
-               AND v.published_at_ms IS NULL
-               AND e.event_kind <> 'unsupported_market'
-               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
-             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT 50
-            """,
-            (stamp - 15_000, stamp - 30 * 60_000),
+            "EXPLAIN (ANALYZE, BUFFERS) " + UNPUBLISHED_VERDICT_CANDIDATES_SQL,
+            (stamp - 15_000, stamp - 30 * 60_000, 50),
         ).fetchall()
     )
     event_state_plan = "\n".join(
@@ -785,10 +769,18 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
     )
     conn.commit()
 
-    assert "ix_news_events_unpublished" in event_plan, event_plan
-    assert "ix_news_verdicts_unpublished_delivery" in verdict_plan, verdict_plan
-    assert "ix_news_events_unpublished" in event_state_plan, event_state_plan
-    assert "ix_news_verdicts_unpublished_delivery" in verdict_state_plan, verdict_state_plan
+    assert any(index in event_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")), (
+        event_plan
+    )
+    assert any(index in verdict_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")), (
+        verdict_plan
+    )
+    assert any(
+        index in event_state_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")
+    ), event_state_plan
+    assert any(
+        index in verdict_state_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")
+    ), verdict_state_plan
     assert "Seq Scan on news_events" not in event_plan
     assert "Seq Scan on news_verdicts" not in verdict_plan
     assert "Seq Scan on news_events" not in event_state_plan

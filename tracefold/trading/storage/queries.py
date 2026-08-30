@@ -16,12 +16,20 @@ one entry per *re-read* of the same frame, so its magnitudes were a function of 
 its document reset at UTC midnight — which left a question about yesterday with no evidence at all.
 """
 
+# S608 exemptions below compose fixed SELECT/filter fragments selected by typed options; all values stay bound.
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any, Final
 
 from ..intent import ACTIVE_INTENT_STATES
+from .query_sql import (
+    AUTHORITY_PROJECTION_SQL,
+    DEFAULT_CONSOLE_INTENT_RECENCY_SQL,
+    console_capital_evidence_sql,
+    console_intents_sql,
+)
 
 _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("source_observed_to_verdict_persisted", "c.trigger_persisted_at_ms - c.source_observed_at_ms"),
@@ -122,7 +130,7 @@ class QueryStorage:
               FROM trading_cases c
               LEFT JOIN trading_intents i ON i.case_id = c.case_id
              WHERE c.created_at_ms >= %s
-            """,
+            """,  # noqa: S608
             (int(since_ms),),
         ).fetchone()
         if row is None:  # pragma: no cover - aggregate queries always return one row
@@ -199,7 +207,7 @@ class QueryStorage:
              WHERE {" AND ".join(where)}
              ORDER BY c.created_at_ms DESC, c.case_id DESC
              LIMIT %s
-            """,
+            """,  # noqa: S608
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -245,10 +253,7 @@ class QueryStorage:
             )
             params: list[Any] = [list(ACTIVE_INTENT_STATES), int(closed_from_ms), int(closed_until_ms)]
         else:
-            recency = (
-                "(i.execution_state = ANY(%s) OR "
-                "coalesce(i.closed_at_ms, i.flat_verified_at_ms, i.updated_at_ms, i.created_at_ms) >= %s)"
-            )
+            recency = DEFAULT_CONSOLE_INTENT_RECENCY_SQL
             params = [list(ACTIVE_INTENT_STATES), int(since_ms)]
         where = [recency]
         if underlying_key:
@@ -262,14 +267,7 @@ class QueryStorage:
             params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
-            f"""
-            SELECT i.*, c.underlying_key, c.primary_source_key, c.strategy_id, c.strategy_version
-              FROM trading_intents i
-              JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE {" AND ".join(where)}
-             ORDER BY i.created_at_ms DESC, i.intent_id DESC
-             LIMIT %s
-            """,
+            console_intents_sql(" AND ".join(where)),
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -278,25 +276,7 @@ class QueryStorage:
     def authority_projection(self) -> list[dict[str, Any]]:
         """Current redacted authority chain per closed binding; payloads contain no credentials."""
 
-        rows = self.conn.execute(
-            """
-            SELECT runtime.binding, runtime.active_arm_receipt_sha256,
-                   arm.payload AS arm_payload,
-                   promotion.payload AS grant_payload,
-                   policy.payload AS policy_payload,
-                   revocation.payload AS revocation_payload
-              FROM trading_binding_runtime runtime
-              LEFT JOIN trading_operator_arm_receipts arm
-                ON arm.arm_receipt_sha256 = runtime.active_arm_receipt_sha256
-              LEFT JOIN trading_production_promotion_grants promotion
-                ON promotion.grant_sha256 = arm.grant_sha256
-              LEFT JOIN trading_daily_risk_policies policy
-                ON policy.risk_policy_sha256 = arm.risk_policy_sha256
-              LEFT JOIN trading_promotion_grant_revocations revocation
-                ON revocation.grant_sha256 = promotion.grant_sha256
-             ORDER BY runtime.binding
-            """
-        ).fetchall()
+        rows = self.conn.execute(AUTHORITY_PROJECTION_SQL).fetchall()
         return [dict(row) for row in rows]
 
     def console_capital_evidence(
@@ -322,29 +302,7 @@ class QueryStorage:
             params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
-            f"""
-            SELECT reservation.reservation_sha256, reservation.case_id,
-                   reservation.economic_lifecycle_id, reservation.binding,
-                   reservation.settlement_asset, reservation.risk_policy_sha256,
-                   reservation.grant_sha256, reservation.arm_receipt_sha256,
-                   reservation.risk_day_start_ms, reservation.risk_day_end_ms,
-                   reservation.target_notional, reservation.planned_risk_amount,
-                   receipt.authorization_receipt_sha256,
-                   state.intent_id, state.status, state.current_planned_risk_amount,
-                   state.attempt_consumed, state.attempt_day_start_ms, state.attempt_day_end_ms,
-                   state.settlement_known, state.updated_at_ms,
-                   intent.execution_state, intent.execution_phase, intent.terminal_outcome,
-                   intent.reason_code, intent.flat_verified_at_ms
-              FROM trading_capital_risk_reservations reservation
-              JOIN trading_capital_authorization_receipts receipt
-                ON receipt.reservation_sha256 = reservation.reservation_sha256
-              JOIN trading_capital_risk_reservation_state state
-                ON state.reservation_sha256 = reservation.reservation_sha256
-              JOIN trading_intents intent ON intent.intent_id = state.intent_id
-             {"WHERE " + " AND ".join(where) if where else ""}
-             ORDER BY state.updated_at_ms DESC, reservation.reservation_sha256 DESC
-             LIMIT %s
-            """,
+            console_capital_evidence_sql(" AND ".join(where)),
             tuple(params),
         ).fetchall()
         return [dict(row) for row in rows]

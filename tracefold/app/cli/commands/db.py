@@ -34,7 +34,7 @@ def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
 
     if args.db_command == "audit":
         with postgres_connection(settings, role="workers") as conn:
-            audit = PostgresOperationalAudit(conn).run()
+            audit = PostgresOperationalAudit(conn).run(deep=bool(args.deep))
         return (0 if audit.get("ok") else 1), {"ok": bool(audit.get("ok")), "data": audit}
 
     if args.db_command == "query-audit":

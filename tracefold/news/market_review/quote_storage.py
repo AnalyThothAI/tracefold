@@ -7,6 +7,7 @@ import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
+# S608 exemptions below interpolate only the module-owned venue-priority expression; all values stay bound.
 from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from .instruments import REFERENCE_VENUES, normalize_symbol
 from .pricing import (
@@ -75,7 +76,7 @@ class QuoteStorage:
                AND NOT (i.venue = ANY(%s))
                AND i.base_symbol = ANY(%s)
              ORDER BY i.base_symbol, {source_rank_sql()}, {quote_asset_rank_sql()}, i.venue, i.venue_symbol
-            """,
+            """,  # noqa: S608
             (sorted(REFERENCE_VENUES), bases),
         ).fetchall()
         grouped: dict[str, list[PriceInstrument]] = {}

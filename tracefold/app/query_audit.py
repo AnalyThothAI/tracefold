@@ -9,6 +9,16 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.trading.storage.query_sql import (
+    AUTHORITY_PROJECTION_SQL,
+    BINDING_RUNTIME_ROWS_SQL,
+    CAPITAL_AUTHORITY_SNAPSHOT_SQL,
+    DEFAULT_CONSOLE_INTENT_RECENCY_SQL,
+    DEFAULT_CONSOLE_INTENT_STATES,
+    EXECUTION_CAPABILITY_SNAPSHOT_SQL,
+    console_capital_evidence_sql,
+    console_intents_sql,
+)
 
 from .workers.runtime import workers_runtime_read_query
 
@@ -152,15 +162,8 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="trading_console_intents",
-            sql="""
-                SELECT i.intent_id, i.execution_state, c.underlying_key, c.strategy_id
-                  FROM trading_intents i
-                  JOIN trading_cases c ON c.case_id = i.case_id
-                 WHERE i.created_at_ms >= %s
-                 ORDER BY i.created_at_ms DESC
-                 LIMIT 100
-            """,
-            params=(since_ms,),
+            sql=console_intents_sql(DEFAULT_CONSOLE_INTENT_RECENCY_SQL),
+            params=(list(DEFAULT_CONSOLE_INTENT_STATES), since_ms, 101),
         ),
         ReadQuerySpec(
             name="trading_gate_decision_for_source_key",
@@ -214,54 +217,32 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="trading_capability_bindings",
-            sql="""
-                SELECT runtime.binding, runtime.capability_snapshot_sha256
-                  FROM trading_binding_runtime runtime
-                  LEFT JOIN trading_venue_catalog_snapshots snapshot
-                    ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
-                 ORDER BY runtime.binding
-            """,
+            sql=BINDING_RUNTIME_ROWS_SQL,
+            params={"now": int(now_ms)},
         ),
         ReadQuerySpec(
             name="trading_capability_snapshot",
-            sql="""
-                SELECT payload
-                  FROM trading_execution_capability_snapshots
-                 WHERE snapshot_sha256 = %s
-                   AND payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'
-            """,
+            sql=EXECUTION_CAPABILITY_SNAPSHOT_SQL,
             params=("0" * 64,),
         ),
         ReadQuerySpec(
             name="trading_authority_projection",
-            sql="""
-                SELECT runtime.binding, arm.payload, promotion.payload, policy.payload, revocation.payload
-                  FROM trading_binding_runtime runtime
-                  LEFT JOIN trading_operator_arm_receipts arm
-                    ON arm.arm_receipt_sha256 = runtime.active_arm_receipt_sha256
-                  LEFT JOIN trading_production_promotion_grants promotion
-                    ON promotion.grant_sha256 = arm.grant_sha256
-                  LEFT JOIN trading_daily_risk_policies policy
-                    ON policy.risk_policy_sha256 = arm.risk_policy_sha256
-                  LEFT JOIN trading_promotion_grant_revocations revocation
-                    ON revocation.grant_sha256 = promotion.grant_sha256
-                 ORDER BY runtime.binding
-            """,
+            sql=AUTHORITY_PROJECTION_SQL,
         ),
         ReadQuerySpec(
             name="trading_console_capital_evidence",
-            sql="""
-                SELECT reservation.reservation_sha256, state.status, state.updated_at_ms,
-                       receipt.authorization_receipt_sha256, intent.execution_state
-                  FROM trading_capital_risk_reservations reservation
-                  JOIN trading_capital_authorization_receipts receipt
-                    ON receipt.reservation_sha256 = reservation.reservation_sha256
-                  JOIN trading_capital_risk_reservation_state state
-                    ON state.reservation_sha256 = reservation.reservation_sha256
-                  JOIN trading_intents intent ON intent.intent_id = state.intent_id
-                 ORDER BY state.updated_at_ms DESC, reservation.reservation_sha256 DESC
-                 LIMIT 101
-            """,
+            sql=console_capital_evidence_sql(),
+            params=(101,),
+        ),
+        ReadQuerySpec(
+            name="trading_capital_authority_snapshot",
+            sql=CAPITAL_AUTHORITY_SNAPSHOT_SQL,
+            params={
+                "active_states": list(DEFAULT_CONSOLE_INTENT_STATES),
+                "bindings": ["BINANCE_USDM", "HYPERLIQUID_PERP"],
+                "since_ms": since_ms,
+                "now_ms": int(now_ms),
+            },
         ),
     )
 

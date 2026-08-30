@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+# S608 exemption below composes only fixed catalog capability predicates; all binding values stay bound.
 from ..catalog import PreparedVenueCatalogSnapshot
 from ..contracts import DecisionRuntimeV1, VenueBinding, VenueBindingRuntimeV1
+from .query_sql import BINDING_RUNTIME_ROWS_SQL
 
 
 class CatalogStorage:
@@ -48,26 +50,7 @@ class CatalogStorage:
     # ---------------------------------------------------------------- bindings
     def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntimeV1]:
         rows = self.conn.execute(
-            """
-            SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
-                   runtime.runtime_state, runtime.account_state, runtime.account_generation,
-                   CASE
-                     WHEN runtime.catalog_state = 'ready'
-                      AND snapshot.stale_after_ms IS NOT NULL
-                      AND runtime.catalog_captured_at_ms + snapshot.stale_after_ms <= %(now)s
-                     THEN 'stale'
-                     ELSE runtime.catalog_state
-                   END AS catalog_state,
-                   runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
-                   runtime.capability_state, runtime.capability_snapshot_sha256,
-                   runtime.capability_compiled_at_ms, runtime.capability_compile_error,
-                   runtime.execution_binding_sha256, runtime.active_arm_receipt_sha256,
-                   runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
-              FROM trading_binding_runtime runtime
-              LEFT JOIN trading_venue_catalog_snapshots snapshot
-                ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
-             ORDER BY runtime.binding
-            """,
+            BINDING_RUNTIME_ROWS_SQL,
             {"now": int(now_ms)},
         ).fetchall()
         return [VenueBindingRuntimeV1(**dict(row)) for row in rows]
@@ -189,7 +172,7 @@ class CatalogStorage:
               FROM trading_runtime_state capital
               JOIN trading_binding_runtime runtime ON runtime.binding = %s
              WHERE capital.id = 1
-            """
+            """  # noqa: S608
             + (" FOR UPDATE OF capital, runtime" if for_update else ""),
             (binding,),
         ).fetchone()

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
+
+from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.runtime_roles import runtime_role_contract
@@ -126,8 +129,9 @@ class PostgresOperationalAudit:
         self.conn = conn
         self.expected_migration_version = expected_migration_version or latest_migration_version()
 
-    def run(self) -> dict[str, Any]:
-        counts = self._counts(NEWS_TABLES + TRADING_TABLES)
+    def run(self, *, deep: bool = False) -> dict[str, Any]:
+        table_names = NEWS_TABLES + TRADING_TABLES
+        row_estimates = self._row_estimates(table_names)
         actual_news_tables = self._tables_with_prefix("news_")
         news_schema = {
             "expected_tables": list(NEWS_TABLES),
@@ -143,23 +147,70 @@ class PostgresOperationalAudit:
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
         runtime_roles = runtime_role_contract(self.conn)
-        return {
+        result = {
             "ok": (
                 migration_ready
-                and all(count >= 0 for count in counts.values())
+                and all(count >= 0 for count in row_estimates.values())
                 and bool(news_schema["exact"])
                 and bool(trading_schema["exact"])
                 and bool(runtime_roles["ok"])
             ),
             "engine": "postgresql",
+            "mode": "deep" if deep else "fast",
+            "database_identity": self._database_identity(),
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
-            "counts": counts,
+            "row_estimates": row_estimates,
             "news_schema": news_schema,
             "trading_schema": trading_schema,
             "runtime_roles": runtime_roles,
         }
+        if deep:
+            counts = self._counts(table_names)
+            result["counts"] = counts
+            result["ok"] = bool(result["ok"]) and all(count >= 0 for count in counts.values())
+        return result
+
+    def _database_identity(self) -> dict[str, Any]:
+        settings = self.conn.execute(
+            """
+            SELECT current_setting('server_version_num') AS server_version_num,
+                   current_setting('transaction_isolation') AS transaction_isolation,
+                   current_setting('statement_timeout') AS statement_timeout,
+                   current_setting('lock_timeout') AS lock_timeout,
+                   current_setting('idle_in_transaction_session_timeout') AS idle_in_transaction_session_timeout,
+                   current_setting('jit') AS jit
+            """
+        ).fetchone()
+        extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
+        return {
+            "server_version_num": int(settings["server_version_num"]),
+            "image_identity": os.environ.get("TRACEFOLD_POSTGRES_IMAGE", "unreported"),
+            "extensions": {str(row["extname"]): str(row["extversion"]) for row in extensions},
+            "settings": {
+                key: str(settings[key])
+                for key in (
+                    "transaction_isolation",
+                    "statement_timeout",
+                    "lock_timeout",
+                    "idle_in_transaction_session_timeout",
+                    "jit",
+                )
+            },
+        }
+
+    def _row_estimates(self, table_names: tuple[str, ...]) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT relname, greatest(n_live_tup, 0)::bigint AS row_estimate
+              FROM pg_stat_user_tables
+             WHERE schemaname = 'public' AND relname = ANY(%s)
+            """,
+            (list(table_names),),
+        ).fetchall()
+        estimates = {str(row["relname"]): int(row["row_estimate"]) for row in rows}
+        return {table_name: estimates.get(table_name, -1) for table_name in table_names}
 
     def _counts(self, table_names: tuple[str, ...]) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -167,7 +218,9 @@ class PostgresOperationalAudit:
             if not self._table_exists(table_name):
                 counts[table_name] = -1
                 continue
-            row = self.conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+            row = self.conn.execute(
+                sql.SQL("SELECT COUNT(*) AS count FROM {}").format(sql.Identifier(table_name))
+            ).fetchone()
             counts[table_name] = int(row["count"] if row else 0)
         return counts
 

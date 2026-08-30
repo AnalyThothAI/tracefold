@@ -29,6 +29,9 @@ log = logging.getLogger("tracefold.news")
 _OUTBOX_MIN_AGE_MS = 15_000
 _JANITOR_PERIOD_SECONDS = 60.0
 _DAY_MS = 24 * 3600_000
+_RAW_RETENTION_BATCH_SIZE = 500
+_RAW_RETENTION_MAX_BATCHES = 4
+_RAW_RETENTION_MAX_WALL_SECONDS = 3.0
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
 _INSTRUMENT_RETRY_SECONDS = 15 * 60.0
 _OPENNEWS_INCIDENT_CAUSES: tuple[NewsOpenNewsIncidentCause, ...] = (
@@ -229,16 +232,22 @@ class JanitorLoop:
                 await self._refresh_incident_telemetry(stamp)
             except (TransientError, DeferError) as exc:
                 log.warning("news OpenNews incident telemetry deferred error=%s", type(exc).__name__)
+        with contextlib.suppress(Exception):
+            await self.cold_db.tx(
+                "news_expire_bands",
+                lambda repos: repos.news.expire_bands(now_ms=stamp, batch_size=_RAW_RETENTION_BATCH_SIZE),
+                timeout_seconds=3.0,
+            )
         try:
-
-            def _janitor(repos: Any, s: int = stamp) -> dict[str, Any]:
-                repos.news.expire_bands(now_ms=s)
-                repos.news.purge_before(
-                    cutoff_ms=s - self.retention_raw_ms, judged_cutoff_ms=s - self.retention_judged_ms
-                )
-                return dict(repos.news.purge_learning_retention(batch_size=500))
-
-            retention = await self.cold_db.tx("news_janitor", _janitor, timeout_seconds=10.0)
+            await self._purge_raw_retention(stamp)
+        except Exception as exc:
+            log.warning("news raw retention failed code=raw_retention_failed:%s", type(exc).__name__)
+        try:
+            retention = await self.cold_db.tx(
+                "news_learning_retention",
+                lambda repos: dict(repos.news.purge_learning_retention(batch_size=500)),
+                timeout_seconds=10.0,
+            )
             deleted = sum(
                 int(retention.get(field) or 0) for field in ("deleted_recordings", "deleted_cases", "deleted_artifacts")
             )
@@ -270,6 +279,60 @@ class JanitorLoop:
                     repos.news.update_broker_snapshot(snapshot=snap, now_ms=s)
 
                 await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)
+
+    async def _purge_raw_retention(self, stamp: int) -> None:
+        started = time.perf_counter()
+        deleted_rows = 0
+        batches = 0
+        backlog_rows = 0
+        backlog_capped = False
+        oldest_observed_at_ms: int | None = None
+        for _ in range(_RAW_RETENTION_MAX_BATCHES):
+            if time.perf_counter() - started >= _RAW_RETENTION_MAX_WALL_SECONDS:
+                break
+            result = await self.cold_db.tx(
+                "news_raw_retention",
+                lambda repos: dict(
+                    repos.news.purge_before(
+                        cutoff_ms=stamp - self.retention_raw_ms,
+                        judged_cutoff_ms=stamp - self.retention_judged_ms,
+                        batch_size=_RAW_RETENTION_BATCH_SIZE,
+                    )
+                ),
+                timeout_seconds=5.0,
+            )
+            batches += 1
+            deleted_rows += int(result.get("deleted_items") or 0)
+            backlog_rows = int(result.get("backlog_items") or 0)
+            backlog_capped = bool(result.get("backlog_capped"))
+            oldest = result.get("oldest_observed_at_ms")
+            oldest_observed_at_ms = None if oldest is None else int(oldest)
+            if backlog_rows == 0:
+                break
+        wall_seconds = max(0.0, time.perf_counter() - started)
+        oldest_age_seconds = (
+            0.0 if oldest_observed_at_ms is None else max(0.0, (stamp - oldest_observed_at_ms) / 1000.0)
+        )
+        if self.telemetry is not None:
+            self.telemetry.record_news_raw_retention(
+                deleted_rows=deleted_rows,
+                batches=batches,
+                wall_seconds=wall_seconds,
+                backlog_rows=backlog_rows,
+                backlog_capped=backlog_capped,
+                oldest_age_seconds=oldest_age_seconds,
+            )
+        if deleted_rows or backlog_rows:
+            log.info(
+                "news raw retention deleted=%d batches=%d backlog=%d capped=%s "
+                "oldest_age_seconds=%.3f wall_seconds=%.3f",
+                deleted_rows,
+                batches,
+                backlog_rows,
+                backlog_capped,
+                oldest_age_seconds,
+                wall_seconds,
+            )
 
     def _record_handoff_state(self, stage: NewsHandoffStage, state: dict[str, int | None], stamp: int) -> None:
         if self.telemetry is None:

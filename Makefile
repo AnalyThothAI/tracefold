@@ -39,7 +39,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -174,6 +174,9 @@ test-slow: ## real-process Workers runtime tests bounded by wall-clock deadlines
 
 test-scheduled: ## production-duration diagnostics; explicitly outside merge evidence
 	@uv run python -m pytest -m scheduled --durations=20
+
+postgres-restore-drill: ## isolated production-image dump/restore/migrate/audit/smoke evidence
+	@uv run python -m tracefold.platform.postgres.restore_drill
 
 test-frontend: ## frontend type, architecture, unit/component tests, format, and production build
 	@cd web && npm run typecheck && npm run lint && npm run test:unit && npm run format:check && npm run build
@@ -384,6 +387,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0331\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
+			20260830_0334\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0334." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -12,7 +13,7 @@ from typing import Any
 
 import pytest
 from psycopg import OperationalError
-from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
+from psycopg.errors import CheckViolation, ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.trading_v3_fixtures import (
@@ -450,11 +451,14 @@ def _capital_lane(connection: Any, *, fail_capital_settle: bool = False) -> Capi
     async def _bars(_symbol: str, _start: int, _end: int) -> tuple[()]:
         return ()
 
+    async def _oi_projection(_metric: str, _after: int, _until: int) -> tuple[()]:
+        return ()
+
     return CapitalLane(
         db=_RunnerDb(connection, fail_capital_settle=fail_capital_settle),
         config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
         bars=_bars,
-        oi_projection=lambda *_args: (),
+        oi_projection=_oi_projection,
         # The News generation this lane may advance a Case under (#314 review). It matches the epoch the
         # fixture manifests are frozen with; the superseded-generation test is where they disagree.
         news_generation=NEWS_GENERATION,
@@ -532,6 +536,35 @@ def _observe_close(
     assert observed.commissions_by_currency == commissions_by_currency
     assert observed.funding_by_currency == funding_by_currency
     return observed
+
+
+def test_funding_json_python_and_database_contracts_share_a_native_write_budget(conn: Any) -> None:
+    case_id = "case-funding-contract"
+    _case(conn, case_id=case_id)
+    intent = _intent(case_id=case_id)
+    repos = repositories_for_connection(conn)
+    assert _insert_test_intent(repos, intent)
+    conn.commit()
+
+    production_limit_payload = {f"CUR{index:02d}": "9" * 64 for index in range(16)}
+    assert IntentOutcome.validate_currency_amounts(production_limit_payload) == production_limit_payload
+    conn.execute("SET LOCAL statement_timeout = '250ms'")
+    conn.execute(
+        "UPDATE trading_intents SET funding_by_currency = %s::jsonb WHERE intent_id = %s",
+        (json.dumps(production_limit_payload), intent.intent_id),
+    )
+    conn.commit()
+
+    for invalid in ({"bad-key": "1"}, {"USDT": "1e3"}):
+        with pytest.raises(ValueError):
+            IntentOutcome.validate_currency_amounts(invalid)
+        with pytest.raises(CheckViolation) as rejected:
+            conn.execute(
+                "UPDATE trading_intents SET funding_by_currency = %s::jsonb WHERE intent_id = %s",
+                (json.dumps(invalid), intent.intent_id),
+            )
+        assert rejected.value.diag.constraint_name == "trading_intents_funding_check"
+        conn.rollback()
 
 
 def test_the_lane_refuses_a_case_frozen_under_a_superseded_news_generation(conn: Any) -> None:

@@ -396,6 +396,7 @@ class WorkerDatabase:
         started = time.perf_counter()
         conn = self.worker_pool.getconn(timeout=_WORKER_CHECKOUT_TIMEOUT_SECONDS)
         self._record_pool_wait("worker", (time.perf_counter() - started) * 1000)
+        transaction_started = time.perf_counter()
         try:
             with conn.transaction():
                 _set_worker_operation_config(
@@ -404,17 +405,7 @@ class WorkerDatabase:
                     statement_timeout_seconds=statement_timeout_seconds,
                     transaction_timeout_seconds=transaction_timeout_seconds,
                 )
-                yield repositories_for_connection(
-                    conn,
-                    transaction_observer=(
-                        None
-                        if telemetry is None
-                        else lambda seconds: telemetry.record_transaction_seconds(
-                            name,
-                            seconds,
-                        )
-                    ),
-                )
+                yield repositories_for_connection(conn)
         except BaseException:
             if bool(getattr(conn, "closed", False)):
                 _discard_connection(self.worker_pool, conn)
@@ -423,6 +414,12 @@ class WorkerDatabase:
             raise
         else:
             self.worker_pool.putconn(conn)
+        finally:
+            if telemetry is not None:
+                telemetry.record_transaction_seconds(
+                    name,
+                    max(0.0, time.perf_counter() - transaction_started),
+                )
 
     async def aclose(self) -> None:
         await _close_pool(self.worker_pool)

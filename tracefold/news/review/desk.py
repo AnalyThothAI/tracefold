@@ -12,6 +12,8 @@ import base64
 import hashlib
 import json
 import math
+
+# S608 exemptions below compose fixed ReviewDesk CTE/filter fragments; every request value remains a parameter.
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -515,7 +517,7 @@ def _event_queue_statement(
              WHERE {" AND ".join(filters)}
              ORDER BY opened_at_ms DESC, event_id DESC
              LIMIT %s
-        """,
+        """,  # noqa: S608
         params=tuple(params),
     )
 
@@ -577,7 +579,7 @@ def _coverage_statement(*, lower_ms: int, upper_ms: int) -> ReviewReadStatement:
                AND source.opened_at_ms < %s
                AND source.ingest_mode = 'live'
                AND COALESCE(source.trace #>> '{{agent_assignment,bundle_sha}}', '') = active_agent.stable_sha
-        """,
+        """,  # noqa: S608
         params=(int(lower_ms), int(upper_ms)),
     )
 
@@ -638,7 +640,7 @@ def _pairwise_queue_statement(
              ORDER BY CASE WHEN c.dataset_role = 'validation' THEN 0 ELSE 1 END,
                       c.created_at_ms, c.case_id
              LIMIT %s
-        """,
+        """,  # noqa: S608
         params=tuple(params),
     )
 
@@ -1240,7 +1242,7 @@ class ReviewDesk:
                 ON source.occurred_at_ms >= window_lower.lower_ms
                AND source.occurred_at_ms < %s
              GROUP BY window_lower.lower_ms
-            """,
+            """,  # noqa: S608
             (lower, self._now_ms),
         ).fetchone()
         if external is None:
@@ -1807,7 +1809,7 @@ class ReviewDesk:
                AND a.created_at_ms >= current_epoch.starts_at_ms
                AND j.created_at_ms >= current_epoch.starts_at_ms
              ORDER BY j.task_id, j.task_version, a.created_at_ms DESC, a.review_id DESC
-            """,
+            """,  # noqa: S608
             (list(event_ids), READER_CONTRACT_VERSION),
         ).fetchall()
         return {(str(row["task_id"]), str(row["task_version"])): _review_public(row) for row in rows}
@@ -1819,7 +1821,7 @@ class ReviewDesk:
             SELECT current_epoch.starts_at_ms, active_agent.stable_sha
               FROM current_epoch
               JOIN active_agent ON true
-            """
+            """  # noqa: S608
         ).fetchone()
         if row is None:
             return False
@@ -1832,7 +1834,7 @@ class ReviewDesk:
     def _current_epoch_starts_at_ms(self) -> int | None:
         """When the running bundle's epoch opened, or None while no deployment has opened one."""
 
-        row = self._conn.execute(f"WITH {_CURRENT_EPOCH_CTE} SELECT starts_at_ms FROM current_epoch").fetchone()
+        row = self._conn.execute(f"WITH {_CURRENT_EPOCH_CTE} SELECT starts_at_ms FROM current_epoch").fetchone()  # noqa: S608
         return None if row is None else int(row["starts_at_ms"])
 
     def _timestamp_matches_current_epoch(self, at_ms: int) -> bool:
