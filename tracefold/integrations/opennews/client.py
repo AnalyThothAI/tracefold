@@ -17,7 +17,7 @@ from websockets.exceptions import (
 )
 
 from tracefold.news import OpenNewsExpectedError
-from tracefold.news.opennews import OpenNewsHistoryError
+from tracefold.news.opennews import OpenNewsHistoryError, OpenNewsHistoryPayloadReason
 
 OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
 OPENNEWS_HTTP_BASE_URL = "https://ai.6551.io/open"
@@ -176,9 +176,9 @@ class OpenNewsStrategyHistoryClient:
         try:
             payload = json.loads(body)
         except (RecursionError, ValueError):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid") from None
+            raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.JSON_INVALID) from None
         if not isinstance(payload, Mapping):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.ROOT_NOT_OBJECT)
         return payload
 
 

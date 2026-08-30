@@ -5,8 +5,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from math import isfinite
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Self
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .events.javascript_text import (
@@ -57,12 +58,36 @@ class OpenNewsExpectedError(RuntimeError):
         self.status_code = status_code
 
 
+class OpenNewsHistoryPayloadReason(StrEnum):
+    JSON_INVALID = "json_invalid"
+    ROOT_NOT_OBJECT = "root_not_object"
+    SUCCESS_INVALID = "success_invalid"
+    DATA_NOT_LIST = "data_not_list"
+    PAGE_INVALID = "page_invalid"
+    TOTAL_INVALID = "total_invalid"
+    LIMIT_INVALID = "limit_invalid"
+    PAGE_MISMATCH = "page_mismatch"
+    PAGE_OVERFLOW = "page_overflow"
+    HIT_NOT_OBJECT = "hit_not_object"
+    HIT_CONTRACT_INVALID = "hit_contract_invalid"
+
+
 class OpenNewsHistoryError(RuntimeError):
     """A bounded, sanitized Strategy-history outcome."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        payload_reason: OpenNewsHistoryPayloadReason | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
+        self.payload_reason = payload_reason
+
+    @classmethod
+    def invalid_payload(cls, reason: OpenNewsHistoryPayloadReason) -> Self:
+        return cls(f"opennews_history_payload_{reason.value}", payload_reason=reason)
 
 
 class OpenNewsStrategyHistory(Protocol):
@@ -115,7 +140,7 @@ def parse_opennews_strategy_list(payload: object) -> tuple[dict[str, Any], ...]:
     for value in data:
         if not isinstance(value, Mapping):
             continue
-        strategy_id = _wire_strategy_id(value.get("id"))
+        strategy_id = normalize_opennews_wire_id(value.get("id"))
         enabled = value.get("enabled")
         if not strategy_id or not isinstance(enabled, bool):
             continue
@@ -139,23 +164,49 @@ def enabled_strategy_ids(payload: object) -> tuple[str, ...]:
     return tuple(row["id"] for row in parse_opennews_strategy_list(payload) if row["enabled"])
 
 
-def parse_opennews_strategy_hits(payload: object) -> OpenNewsStrategyHitPage:
+def parse_opennews_strategy_hits(
+    payload: object,
+    *,
+    expected_page: int | None = None,
+) -> OpenNewsStrategyHitPage:
     if not isinstance(payload, Mapping):
-        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.ROOT_NOT_OBJECT)
     data = _history_data(payload)
-    page = _history_nonnegative_int(payload.get("page"), minimum=1)
-    total = _history_nonnegative_int(payload.get("total"), minimum=0)
-    limit = _history_nonnegative_int(payload.get("limit"), minimum=1)
-    remaining = max(0, total - ((page - 1) * limit))
-    if limit > OPENNEWS_HISTORY_PAGE_SIZE or len(data) > min(limit, remaining):
-        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    page = _history_nonnegative_int(
+        payload.get("page"),
+        minimum=1,
+        reason=OpenNewsHistoryPayloadReason.PAGE_INVALID,
+    )
+    if expected_page is not None and page != expected_page:
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.PAGE_MISMATCH)
+    if "total" not in payload and page == 1 and not data:
+        total = 0
+    else:
+        total = _history_nonnegative_int(
+            payload.get("total"),
+            minimum=0,
+            reason=OpenNewsHistoryPayloadReason.TOTAL_INVALID,
+        )
+    limit = _history_nonnegative_int(
+        payload.get("limit"),
+        minimum=1,
+        reason=OpenNewsHistoryPayloadReason.LIMIT_INVALID,
+    )
+    offset = (page - 1) * limit
+    remaining = max(0, total - offset)
+    if limit > OPENNEWS_HISTORY_PAGE_SIZE or (page > 1 and offset >= total) or len(data) != min(limit, remaining):
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.PAGE_OVERFLOW)
     events: list[OpenNewsEvent] = []
+    provider_record_ids: set[str] = set()
     for value in data:
         if not isinstance(value, Mapping):
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.HIT_NOT_OBJECT)
         event = parse_opennews_message({"method": "strategy.triggered", "params": value})
-        if event is None:
-            raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        if event is None or event.entry.published_at_ms is None:
+            raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.HIT_CONTRACT_INVALID)
+        if event.provider_record_id in provider_record_ids:
+            continue
+        provider_record_ids.add(event.provider_record_id)
         events.append(event)
     return OpenNewsStrategyHitPage(
         events=tuple(events),
@@ -166,17 +217,26 @@ def parse_opennews_strategy_hits(payload: object) -> OpenNewsStrategyHitPage:
 
 
 def _history_data(payload: object) -> list[Any]:
-    if not isinstance(payload, Mapping) or payload.get("success") is not True:
-        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    if not isinstance(payload, Mapping):
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.ROOT_NOT_OBJECT)
+    if payload.get("success") is not True:
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.SUCCESS_INVALID)
     data = payload.get("data")
-    if not isinstance(data, list) or len(data) > OPENNEWS_HISTORY_PAGE_SIZE:
-        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+    if not isinstance(data, list):
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.DATA_NOT_LIST)
+    if len(data) > OPENNEWS_HISTORY_PAGE_SIZE:
+        raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.PAGE_OVERFLOW)
     return data
 
 
-def _history_nonnegative_int(value: object, *, minimum: int) -> int:
+def _history_nonnegative_int(
+    value: object,
+    *,
+    minimum: int,
+    reason: OpenNewsHistoryPayloadReason,
+) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise OpenNewsHistoryError("opennews_history_payload_invalid")
+        raise OpenNewsHistoryError.invalid_payload(reason)
     return int(value)
 
 
@@ -191,10 +251,10 @@ def parse_opennews_message(message: object) -> OpenNewsEvent | None:
     strategy = params.get("strategy")
     if not isinstance(strategy, Mapping):
         return None
-    strategy_id = _wire_strategy_id(strategy.get("id"))
+    strategy_id = normalize_opennews_wire_id(strategy.get("id"))
     if not strategy_id:
         return None
-    provider_record_id = _wire_strategy_id(params.get("id"))
+    provider_record_id = normalize_opennews_wire_id(params.get("id"))
     if not provider_record_id:
         return None
     canonical_url = _article_url(_text(params.get("link")))
@@ -400,7 +460,7 @@ def _provider_metadata(
     return result
 
 
-def _wire_strategy_id(value: object) -> str:
+def normalize_opennews_wire_id(value: object) -> str:
     if isinstance(value, bool) or value is None or not isinstance(value, str | int):
         return ""
     normalized = javascript_trim(str(value))
@@ -453,9 +513,11 @@ __all__ = [
     "OpenNewsEvent",
     "OpenNewsExpectedError",
     "OpenNewsHistoryError",
+    "OpenNewsHistoryPayloadReason",
     "OpenNewsStrategyHistory",
     "OpenNewsStrategyHitPage",
     "enabled_strategy_ids",
+    "normalize_opennews_wire_id",
     "parse_opennews_message",
     "parse_opennews_strategy_hits",
     "parse_opennews_strategy_list",

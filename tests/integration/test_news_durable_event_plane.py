@@ -43,12 +43,14 @@ from tracefold.news.bus import (
     Q_RAW,
     Q_TRIAGE,
     RK_RAW_LIVE,
+    RK_RAW_RECOVERY,
     BusMessage,
     new_trace_id,
     now_ms,
 )
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
+from tracefold.news.pipeline.recovery import RecoveryRunner
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("rabbitmq_url")]
 
@@ -168,6 +170,51 @@ def _open_incidents(connection: Any) -> list[dict[str, Any]]:
             "SELECT * FROM news_opennews_incidents WHERE closed_at_ms IS NULL ORDER BY incident_id"
         ).fetchall()
     ]
+
+
+def test_official_recovery_reaches_admission_through_the_real_broker(conn: Any) -> None:
+    hit = {**_one_hit(), "id": " 42 ", "ts": now_ms() - 500}
+    strategy_id = str((hit.get("strategy") or {}).get("id") or "")
+    older = {**hit, "id": "older", "ts": now_ms() - 600_000}
+    database = _Database(conn)
+
+    class History:
+        async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+            return {"success": True, "data": [{"id": strategy_id, "enabled": True}]}
+
+        async def get_strategy_hits(self, *, page: int, **_kwargs: Any) -> dict[str, Any]:
+            return {"success": True, "data": [hit, older], "page": page, "limit": 100, "total": 2}
+
+    repos = repositories_for_connection(conn)
+    stamp = now_ms()
+    with repos.transaction():
+        incident_id = repos.news.open_incident(cause_class="broker_unavailable", now_ms=stamp - 1_000)
+        assert repos.news.close_open_incidents(cause_classes=["broker_unavailable"], now_ms=stamp) == 1
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            recovery = RecoveryRunner(bus=bus, db=database, history_client=History())
+            assert await recovery._recover_pending() == "success"
+
+            stop = asyncio.Event()
+            deduper = DeduperConsumer(bus=bus, db=database, watchlist_symbols=WATCHLIST)
+
+            async def admit(message: BusMessage) -> None:
+                assert message.routing_key == RK_RAW_RECOVERY.format(strategy_id=strategy_id)
+                await deduper.handle(message)
+                stop.set()
+
+            await asyncio.wait_for(bus.consume(Q_RAW, admit, prefetch=1, stop_event=stop), timeout=30)
+            assert (await bus.queue_depths())[bus.queue_name(Q_TRIAGE)]["messages"] == 0
+
+    asyncio.run(scenario())
+
+    incident = conn.execute(
+        "SELECT recovery_status, recovered_count FROM news_opennews_incidents WHERE incident_id = %s",
+        (incident_id,),
+    ).fetchone()
+    assert incident is not None and (incident["recovery_status"], incident["recovered_count"]) == ("recovered", 1)
+    assert [(event["ingest_mode"], event["admission"]) for event in _events(conn)] == [("recovery", "recovery")]
 
 
 def test_a_committed_event_whose_channel_dies_before_the_ack_converges_to_one_event(conn: Any) -> None:

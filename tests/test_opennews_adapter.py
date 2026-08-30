@@ -13,6 +13,7 @@ from tracefold.news.opennews import (
     OPENNEWS_SOURCE_ID,
     OpenNewsExpectedError,
     OpenNewsHistoryError,
+    OpenNewsHistoryPayloadReason,
     enabled_strategy_ids,
     parse_opennews_message,
     parse_opennews_strategy_hits,
@@ -217,6 +218,7 @@ def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() 
     )
     parsed_hits = parse_opennews_strategy_hits(
         strategy_hits,
+        expected_page=2,
     )
     assert [event.provider_record_id for event in parsed_hits.events] == ["3568500"]
     # The official history shape in this fixture omits Strategy.sourceType.
@@ -305,8 +307,25 @@ def test_official_strategy_history_adapter_classifies_json_recursion_as_invalid(
             transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"{}")),
         )
         try:
-            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_json_invalid$"):
                 await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_adapter_rejects_non_object_root() -> None:
+    async def scenario() -> None:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"[]")),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError) as caught:
+                await client.get_strategy_list(limit=100, page=1)
+            assert caught.value.payload_reason is OpenNewsHistoryPayloadReason.ROOT_NOT_OBJECT
+            assert str(caught.value) == "opennews_history_payload_root_not_object"
         finally:
             await client.close()
 
@@ -316,10 +335,127 @@ def test_official_strategy_history_adapter_classifies_json_recursion_as_invalid(
 def test_official_strategy_history_rejects_more_than_one_hundred_rows() -> None:
     overfull = {"success": True, "data": [{}] * 101, "page": 1, "limit": 100, "total": 101}
 
-    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_page_overflow$"):
         parse_opennews_strategy_list(overfull)
-    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_page_overflow$"):
         parse_opennews_strategy_hits(overfull)
+
+
+def test_official_strategy_history_accepts_empty_page_without_total() -> None:
+    """The official endpoint omits ``total`` when a Strategy has no hits."""
+
+    page = parse_opennews_strategy_hits(
+        {
+            "success": True,
+            "data": [],
+            "page": 1,
+            "limit": 100,
+            "usage": {},
+        }
+    )
+
+    assert page.events == ()
+    assert page.page == 1
+    assert page.total == 0
+    assert page.has_more is False
+
+
+def test_official_strategy_history_rejects_hit_without_published_timestamp() -> None:
+    payload = {
+        "success": True,
+        "data": [{"id": 42, "text": "bounded", "strategy": {"id": 1018}}],
+        "page": 1,
+        "limit": 100,
+        "total": 1,
+    }
+
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_hit_contract_invalid$"):
+        parse_opennews_strategy_hits(payload)
+
+
+def test_official_strategy_history_coalesces_normalized_provider_id_collision() -> None:
+    hit = {"text": "bounded", "ts": 1_500_000_000_000, "strategy": {"id": 1018}}
+    payload = {
+        "success": True,
+        "data": [{**hit, "id": "42"}, {**hit, "id": " 42 ", "aiRating": {"score": 90}}],
+        "page": 1,
+        "limit": 100,
+        "total": 2,
+    }
+
+    page = parse_opennews_strategy_hits(payload)
+
+    assert [event.provider_record_id for event in page.events] == ["42"]
+
+
+def test_official_strategy_history_rejects_impossible_empty_later_page() -> None:
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_page_overflow$"):
+        parse_opennews_strategy_hits(
+            {"success": True, "data": [], "page": 2, "limit": 100, "total": 0},
+            expected_page=2,
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_page", "reason"),
+    [
+        ([], None, OpenNewsHistoryPayloadReason.ROOT_NOT_OBJECT),
+        ({"success": False, "data": []}, None, OpenNewsHistoryPayloadReason.SUCCESS_INVALID),
+        ({"success": True, "data": {}}, None, OpenNewsHistoryPayloadReason.DATA_NOT_LIST),
+        (
+            {"success": True, "data": [], "page": "1", "total": 0, "limit": 100},
+            None,
+            OpenNewsHistoryPayloadReason.PAGE_INVALID,
+        ),
+        (
+            {"success": True, "data": [], "page": 1, "total": "0", "limit": 100},
+            None,
+            OpenNewsHistoryPayloadReason.TOTAL_INVALID,
+        ),
+        (
+            {"success": True, "data": [], "page": 1, "total": 0, "limit": "100"},
+            None,
+            OpenNewsHistoryPayloadReason.LIMIT_INVALID,
+        ),
+        (
+            {"success": True, "data": [], "page": 1, "total": 0, "limit": 100},
+            2,
+            OpenNewsHistoryPayloadReason.PAGE_MISMATCH,
+        ),
+        (
+            {"success": True, "data": [{}] * 101, "page": 1, "total": 101, "limit": 100},
+            None,
+            OpenNewsHistoryPayloadReason.PAGE_OVERFLOW,
+        ),
+        (
+            {"success": True, "data": ["provider-secret"], "page": 1, "total": 1, "limit": 100},
+            None,
+            OpenNewsHistoryPayloadReason.HIT_NOT_OBJECT,
+        ),
+        (
+            {
+                "success": True,
+                "data": [{"id": "provider-secret"}],
+                "page": 1,
+                "total": 1,
+                "limit": 100,
+            },
+            None,
+            OpenNewsHistoryPayloadReason.HIT_CONTRACT_INVALID,
+        ),
+    ],
+)
+def test_official_strategy_history_reports_bounded_payload_reason(
+    payload: object,
+    expected_page: int | None,
+    reason: OpenNewsHistoryPayloadReason,
+) -> None:
+    with pytest.raises(OpenNewsHistoryError) as caught:
+        parse_opennews_strategy_hits(payload, expected_page=expected_page)
+
+    assert caught.value.payload_reason is reason
+    assert caught.value.code == f"opennews_history_payload_{reason.value}"
+    assert str(caught.value) == caught.value.code
 
 
 @pytest.mark.parametrize(

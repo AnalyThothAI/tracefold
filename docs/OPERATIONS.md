@@ -815,7 +815,14 @@ unbound scoreless market/wallet frame is `unsupported_market_contract`. Both
 persist in nullable `news_events.source_contract_reason` and intentionally
 produce no Triage message, model call or delivery. Recovery applies the same
 classifier and, for a complete history tuple, the same strict parser without
-writing the live OI rank fact; it never delivers. A history hit missing
+writing the live OI rank fact; it never delivers. The official hits contract
+omits `total` on an empty first page; the adapter normalizes only that exact
+shape to zero. Other envelope, pagination, and hit failures remain closed and
+persist as `opennews_history_payload_<reason>` rather than one broad payload
+error. An accepted history hit must carry a normalized provider record ID and
+published timestamp; Recovery indexes the raw row with the same ID normalizer
+used by the canonical parser. Repeated rows for the same normalized provider
+record ID coalesce to the first row in provider order. A history hit missing
 `source_type` or another tuple field is named drift and must not be repaired by
 guessing from Strategy id. Ordinary and deterministic recovery remains
 `admission=recovery`, while a newly observed unsupported contract retains its
