@@ -452,6 +452,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evidence_register.add_argument("--file", required=True)
     evidence_register.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_release_register = evidence_subcommands.add_parser(
+        "release-register",
+        help="bind an approved exact release and fixed window to the current Workers/Serve generations",
+    )
+    evidence_release_register.add_argument("--file", required=True, help="approved release candidate YAML/JSON")
     evidence_unblind = evidence_subcommands.add_parser(
         "future-unblind", help="evaluate one protocol-locked future partition after its fixed drain cutoff"
     )

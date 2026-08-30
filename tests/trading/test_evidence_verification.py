@@ -137,6 +137,7 @@ def test_case_verifier_rejects_an_allowed_case_without_its_one_intent() -> None:
 
 def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
     counts = {
+        "wrong_gate_contract_count": 0,
         "wrong_release_source_count": 0,
         "intent_release_mismatch_count": 0,
         "source_count": 4,
@@ -162,11 +163,31 @@ def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
     snapshot = {
         "counts": counts,
         "workers_runtime": {
+            "runtime_id": "00000000-0000-0000-0000-000000000010",
             "runtime_revision": "0" * 40,
             "image_digest": _window().oci_image_digest,
             "lifecycle_state": "running",
-            "started_at_ms": START,
+            "started_at_ms": START - 100,
             "heartbeat_at_ms": END,
+        },
+        "serve_runtime": {
+            "runtime_id": "00000000-0000-0000-0000-000000000011",
+            "runtime_revision": "1" * 40,
+            "image_digest": _window().oci_image_digest,
+            "started_at_ms": START - 100,
+            "measured_at_ms": END,
+        },
+        "release_registration": {
+            "release_sha256": "f" * 64,
+            "window_sha256": _window().window_sha256,
+            "release_tag": _window().release_tag,
+            "git_commit_sha": _window().git_commit_sha,
+            "oci_image_digest": _window().oci_image_digest,
+            "registered_at_ms": START - 1,
+            "workers_runtime_id": "00000000-0000-0000-0000-000000000010",
+            "workers_started_at_ms": START - 100,
+            "serve_runtime_id": "00000000-0000-0000-0000-000000000011",
+            "serve_started_at_ms": START - 100,
         },
     }
 

@@ -695,6 +695,7 @@
 | `corpus_sha256` | `TEXT` | False | `None` |
 | `protocol_sha256` | `TEXT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `recorded_at_ms` | `BIGINT` | False | `trading_evidence_now_ms()` |
 | `payload` | `JSONB` | False | `None` |
 
 ## `trading_evidence_future_capture_batches`
@@ -705,6 +706,7 @@
 | `batch_start_ms` | `BIGINT` | False | `None` |
 | `batch_end_ms` | `BIGINT` | False | `None` |
 | `captured_at_ms` | `BIGINT` | False | `None` |
+| `recorded_at_ms` | `BIGINT` | False | `trading_evidence_now_ms()` |
 | `capture_lag_ms` | `BIGINT` | False | `None` |
 | `batch_sha256` | `TEXT` | False | `None` |
 | `candidate_receipt_sha256` | `TEXT` | False | `None` |
@@ -712,6 +714,13 @@
 | `source_count` | `INTEGER` | False | `None` |
 | `late_source_count` | `INTEGER` | False | `None` |
 | `catalog_missing_count` | `INTEGER` | False | `None` |
+| `collector_connected` | `BOOLEAN` | False | `None` |
+| `missing_source_bps` | `INTEGER` | False | `None` |
+| `late_source_bps` | `INTEGER` | False | `None` |
+| `catalog_missing_bps` | `INTEGER` | False | `None` |
+| `bar_continuity_bps` | `INTEGER` | False | `None` |
+| `funding_continuity_bps` | `INTEGER` | False | `None` |
+| `artifact_integrity_sha256` | `TEXT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
 
 ## `trading_execution_bindings`
@@ -921,6 +930,29 @@
 | `payload` | `JSONB` | False | `None` |
 | `sealed_corpus_sha256` | `TEXT` | False | `None` |
 | `locked_future_report_sha256` | `TEXT` | False | `None` |
+
+## `trading_production_release_registrations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `release_sha256` | `TEXT` | False | `None` |
+| `window_sha256` | `TEXT` | False | `None` |
+| `release_tag` | `TEXT` | False | `None` |
+| `git_commit_sha` | `TEXT` | False | `None` |
+| `oci_image_digest` | `TEXT` | False | `None` |
+| `window_start_ms` | `BIGINT` | False | `None` |
+| `window_end_ms` | `BIGINT` | False | `None` |
+| `workers_runtime_id` | `UUID` | False | `None` |
+| `workers_runtime_revision` | `TEXT` | False | `None` |
+| `workers_image_digest` | `TEXT` | False | `None` |
+| `workers_started_at_ms` | `BIGINT` | False | `None` |
+| `serve_runtime_id` | `UUID` | False | `None` |
+| `serve_runtime_revision` | `TEXT` | False | `None` |
+| `serve_image_digest` | `TEXT` | False | `None` |
+| `serve_started_at_ms` | `BIGINT` | False | `None` |
+| `serve_measured_at_ms` | `BIGINT` | False | `None` |
+| `registered_at_ms` | `BIGINT` | False | `trading_evidence_now_ms()` |
+| `payload` | `JSONB` | False | `None` |
 
 ## `trading_promotion_grant_revocations`
 

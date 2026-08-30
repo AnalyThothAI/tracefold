@@ -15,6 +15,12 @@ export function appStatusFixture(overrides: Partial<OpenApiStatusData> = {}): Op
         expected_revision: "20260812_0255",
         error_code: null,
       },
+      serve_runtime: {
+        runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e11",
+        runtime_revision: "a521557",
+        image_digest: "tracefold@sha256:" + "1".repeat(64),
+        started_at_ms: NOW,
+      },
       workers_runtime: {
         runtime_id: "1d36ca48-c41d-4d7b-a26d-86c2429a3e10",
         runtime_version: "a521557",

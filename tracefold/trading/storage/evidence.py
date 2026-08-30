@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..contracts import canonical_sha256
@@ -15,13 +16,74 @@ from ..evidence_clock import (
     FutureDrainReceiptV1,
     FutureHoldoutResultReceiptV1,
     FutureHoldoutResultV1,
+    PreparedFutureCaptureBatch,
 )
-from ..evidence_verification import NautilusRuntimeStartV1
+from ..evidence_verification import NautilusRuntimeStartV1, PreparedProductionReleaseRegistration
 from .sql_values import _dumps
 
 
 class EvidenceStorage:
     conn: Any
+
+    def register_production_release(self, prepared: PreparedProductionReleaseRegistration) -> dict[str, Any]:
+        """Bind a future window to the current Workers and observed Serve process before it starts."""
+
+        inserted = self.conn.execute(
+            """
+            INSERT INTO trading_production_release_registrations (
+              release_sha256, window_sha256, release_tag, git_commit_sha, oci_image_digest,
+              window_start_ms, window_end_ms,
+              workers_runtime_id, workers_runtime_revision, workers_image_digest, workers_started_at_ms,
+              serve_runtime_id, serve_runtime_revision, serve_image_digest,
+              serve_started_at_ms, serve_measured_at_ms, payload
+            )
+            SELECT
+              %(release_sha)s, %(window_sha)s, %(release_tag)s, %(git_commit)s, %(image)s,
+              %(window_start)s, %(window_end)s,
+              runtime_id, runtime_revision, image_digest, started_at_ms,
+              %(serve_id)s, %(serve_revision)s, %(serve_image)s,
+              %(serve_started)s, %(serve_measured)s, %(payload)s::text::jsonb
+              FROM workers_runtime
+             WHERE singleton_key
+               AND lifecycle_state = 'running'
+               AND runtime_revision = %(git_commit)s
+               AND image_digest = %(image)s
+               AND heartbeat_at_ms >= trading_evidence_now_ms() - 15000
+               AND trading_evidence_now_ms() < %(window_start)s
+            ON CONFLICT (release_sha256) DO NOTHING
+            RETURNING release_sha256
+            """,
+            {
+                "release_sha": prepared.release_sha256,
+                "window_sha": prepared.window_sha256,
+                "release_tag": prepared.release_tag,
+                "git_commit": prepared.git_commit_sha,
+                "image": prepared.oci_image_digest,
+                "window_start": prepared.window_start_ms,
+                "window_end": prepared.window_end_ms,
+                "serve_id": prepared.serve_runtime_id,
+                "serve_revision": prepared.serve_runtime_revision,
+                "serve_image": prepared.serve_image_digest,
+                "serve_started": prepared.serve_started_at_ms,
+                "serve_measured": prepared.serve_measured_at_ms,
+                "payload": prepared.payload_json,
+            },
+        ).fetchone()
+        persisted = self.production_release_registration(prepared.release_sha256)
+        if persisted is None:
+            raise RuntimeError("evidence_release_registration_runtime_mismatch")
+        if str(persisted["window_sha256"]) != prepared.window_sha256 or persisted["payload"] != json.loads(
+            prepared.payload_json
+        ):
+            raise RuntimeError("evidence_release_registration_identity_conflict")
+        return {**persisted, "inserted": inserted is not None}
+
+    def production_release_registration(self, release_sha256: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM trading_production_release_registrations WHERE release_sha256 = %s",
+            (release_sha256,),
+        ).fetchone()
+        return None if row is None else dict(row)
 
     def append_nautilus_runtime_start(self, value: NautilusRuntimeStartV1) -> bool:
         payload = value.model_dump(mode="json")
@@ -55,41 +117,64 @@ class EvidenceStorage:
             raise RuntimeError("nautilus_runtime_start_identity_conflict")
         return inserted is not None
 
-    def append_future_capture_batch(self, value: FutureCaptureBatchV1) -> bool:
-        payload = value.model_dump(mode="json")
-        inserted = self.conn.execute(
+    def append_future_capture_batch(self, prepared: PreparedFutureCaptureBatch) -> bool:
+        row = self.conn.execute(
             """
-            INSERT INTO trading_evidence_future_capture_batches (
-              protocol_sha256, batch_start_ms, batch_end_ms, captured_at_ms,
-              capture_lag_ms, batch_sha256, candidate_receipt_sha256, binding,
-              source_count, late_source_count, catalog_missing_count, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
-            ON CONFLICT (protocol_sha256, batch_start_ms) DO NOTHING
-            RETURNING batch_sha256
+            WITH inserted AS (
+              INSERT INTO trading_evidence_future_capture_batches (
+                protocol_sha256, batch_start_ms, batch_end_ms, captured_at_ms,
+                capture_lag_ms, batch_sha256, candidate_receipt_sha256, binding,
+                source_count, late_source_count, catalog_missing_count,
+                collector_connected, missing_source_bps, late_source_bps,
+                catalog_missing_bps, bar_continuity_bps, funding_continuity_bps,
+                artifact_integrity_sha256, payload
+              ) VALUES (
+                %(protocol)s, %(start)s, %(end)s, %(captured)s, %(lag)s, %(batch)s,
+                %(candidate)s, %(binding)s, %(sources)s, %(late)s, %(catalog_missing)s,
+                %(collector_connected)s, %(missing_bps)s, %(late_bps)s,
+                %(catalog_missing_bps)s, %(bar_bps)s, %(funding_bps)s, %(integrity_sha)s,
+                %(payload)s::text::jsonb
+              )
+              ON CONFLICT (protocol_sha256, batch_start_ms) DO NOTHING
+              RETURNING batch_sha256
+            ), verified AS (
+              SELECT batch_sha256, true AS inserted FROM inserted
+              UNION ALL
+              SELECT existing.batch_sha256, false AS inserted
+                FROM trading_evidence_future_capture_batches existing
+               WHERE existing.protocol_sha256 = %(protocol)s
+                 AND existing.batch_start_ms = %(start)s
+                 AND existing.batch_sha256 = %(batch)s
+                 AND existing.payload = %(payload)s::text::jsonb
+                 AND NOT EXISTS (SELECT 1 FROM inserted)
+            )
+            SELECT batch_sha256, inserted FROM verified
             """,
-            (
-                value.protocol_sha256,
-                value.batch_start_ms,
-                value.batch_end_ms,
-                value.captured_at_ms,
-                value.capture_lag_ms,
-                value.batch_sha256,
-                value.candidate_receipt_sha256,
-                value.binding,
-                value.source_count,
-                value.late_source_count,
-                value.catalog_missing_count,
-                _dumps(payload),
-            ),
+            {
+                "protocol": prepared.protocol_sha256,
+                "start": prepared.batch_start_ms,
+                "end": prepared.batch_end_ms,
+                "captured": prepared.captured_at_ms,
+                "lag": prepared.capture_lag_ms,
+                "batch": prepared.batch_sha256,
+                "candidate": prepared.candidate_receipt_sha256,
+                "binding": prepared.binding,
+                "sources": prepared.source_count,
+                "late": prepared.late_source_count,
+                "catalog_missing": prepared.catalog_missing_count,
+                "collector_connected": prepared.collector_connected,
+                "missing_bps": prepared.missing_source_bps,
+                "late_bps": prepared.late_source_bps,
+                "catalog_missing_bps": prepared.catalog_missing_bps,
+                "bar_bps": prepared.bar_continuity_bps,
+                "funding_bps": prepared.funding_continuity_bps,
+                "integrity_sha": prepared.artifact_integrity_sha256,
+                "payload": prepared.payload_json,
+            },
         ).fetchone()
-        persisted = self.conn.execute(
-            "SELECT payload FROM trading_evidence_future_capture_batches "
-            "WHERE protocol_sha256 = %s AND batch_start_ms = %s",
-            (value.protocol_sha256, value.batch_start_ms),
-        ).fetchone()
-        if persisted is None or persisted["payload"] != payload:
+        if row is None:
             raise RuntimeError("evidence_future_capture_batch_identity_conflict")
-        return inserted is not None
+        return bool(row["inserted"])
 
     def future_capture_batches(self, protocol_sha256: str) -> tuple[FutureCaptureBatchV1, ...]:
         rows = self.conn.execute(

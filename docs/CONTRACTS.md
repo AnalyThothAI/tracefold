@@ -961,10 +961,10 @@ reader/writer.
   appends a content-addressed snapshot and atomically moves only that binding's
   pointer. Before the transaction opens, the prepared storage value revalidates
   the complete catalog model, canonical JSON, metadata tuple, and SHA-256. The
-  repository serializes concurrent writers for that digest with a
-  transaction-scoped advisory lock, then one data-modifying CTE either appends
-  the exact bytes or proves an identical prior row before activating the
-  pointer; a same-digest mismatch fails closed. Provider error marks that
+  repository makes one client SQL call to a PostgreSQL function. That function
+  takes the digest-scoped transaction advisory lock, either appends the exact
+  bytes or proves an identical prior row, and activates the binding pointer in
+  the same transaction; a same-digest mismatch fails closed. Provider error marks that
   binding `error` when no snapshot exists or `stale` while retaining
   last-known-good; it never empties the catalog or changes the other binding.
   There is no operator refresh command and no execution authorization in this
@@ -993,7 +993,8 @@ reader/writer.
   identities and terminal; a supplied file cannot invent a candidate. All public
   transition timestamps come from PostgreSQL. Future `capture` is a sequence of
   contiguous append-only batches at the locked interval. Each batch persists its
-  exact sources plus capture lag, late-source count, and catalog-missing count;
+  exact sources plus collector/Workers health, expected/missing/late/catalog
+  source mass, bar/funding continuity, and artifact integrity;
   PostgreSQL rejects gaps, overlaps, wrong binding/protocol, and calls beyond the
   maximum lag. Only the complete chain freezes the fixed-cutoff population as the
   protocol's one `FUTURE_CAPTURE_SEALED`. A future `drain` refuses provider I/O before the fixed
@@ -1006,6 +1007,11 @@ reader/writer.
   first-closed-five-minute entry, extra stress and zero-return benchmark contract.
   A `PROMOTE` receipt is research evidence only: it cannot
   create a grant, arm, Intent, provider write, or `RUNNING` control.
+- `trading evidence release-register --file RELEASE` must run before the fixed
+  window starts. It observes the authenticated local Serve status, reads the
+  durable current Workers generation, and lets PostgreSQL bind both exact
+  runtime ids/start times/revisions/images to the approved release and window.
+  A later process replacement cannot inherit that registration.
 - `trading evidence verify` is the one credential-free, provider-write-free
   verifier. Exactly one of `--receipt`, `--case-id`, `--window FILE`,
   `--release FILE`, or `--rollback FILE` selects its subject. Receipt mode
@@ -1020,7 +1026,9 @@ reader/writer.
   the exact commit/tree. It then compares image/migration/OpenAPI/web/Nautilus,
   contract, binding/account, corpus/result/grant/risk identities, the exact
   canary Intent set, and every canary's grant/future/risk/`CLOSED_FLAT` chain.
-  Nautilus appends one immutable start fact per process generation, so the
+  Release and window verification require the preregistration and the same
+  Workers and Serve generations to span the complete window. Nautilus appends
+  one immutable start fact per process generation, so the
   declared restart drill must show two exact release generations ordered after
   native protection and before authoritative flat. Release verification then
   runs the same window accounting. The window also requires one exact Workers
@@ -1029,7 +1037,9 @@ reader/writer.
   release artifact and requires matching release binding/grant scope and
   post-window ordering, Capital `PAUSED`, zero active
   Intent/risk, every named binding authoritatively flat with no active arm, and
-  every named grant revoked or expired. Any unknown or missing link is a stable
+  every named grant revoked or expired. It also proves that Decision and the
+  observer continued after rollback, zero refill/provider submission occurred,
+  and no terminal Intent was revived. Any unknown or missing link is a stable
   failed check and a nonzero exit; zero activity never verifies a release.
 **One HTTP owner per durable aggregate (#331, #350).** Nothing crosses: a Case
 carries frozen evidence plus independent Policy and Capital attribution; an
@@ -1601,8 +1611,9 @@ publishes one content-addressed artifact, materializes timed blacklist expiry
 through a short Workers transaction, and inserts one immutable replay receipt;
 it has no execution credentials and performs no provider order write.
 
-Trading consumes `news_trade_projection_v10`: exact current
-`news_judgment_v2` OI rows plus the public instrument catalogue. Editorial News
+Trading consumes `news_trade_projection_v11`: exact current
+`news_judgment_v2` OI rows, their immutable source Item identity and availability
+clock, plus the public instrument catalogue. Editorial News
 and liquidation do not cross this capital seam. OI rows freeze `ingest_mode`,
 so Item retention cannot erase live/recovery provenance; recovery rows are not
 eligible triggers.

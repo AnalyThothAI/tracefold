@@ -430,17 +430,20 @@ from the HTTP e2e fixture.
 
 The #377 Trading evidence clock is verified at three distinct seams. Pure tests
 prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
-scope/sign, database-owned preregistration clocks, finite candidate selection,
+scope/sign, actual database-stamped receipt clocks, finite candidate selection,
 append-only blind-batch continuity/health, deterministic block bootstrap and declared
 power. PostgreSQL tests prove the irreversible `0334` cutover, the append-only
 corpus -> candidate -> future capture -> future drain -> result parent chain,
 one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
 link, gap-free bar/funding boundaries, Case/Intent conservation, exact-release
-fixed-window accounting, append-only Nautilus process generations,
+fixed-window accounting, pre-window release registration against exact
+Workers/Serve generations, append-only Nautilus process generations,
 signed-tag/restart/canary release binding, and release-bound rollback snapshots.
-Pure verifier tests own interpretation of the bounded DB/runtime/Git facts; App
-tests prove the public handler supplies those facts and cannot replace a failed
-check. CLI contract tests keep one `trading evidence verify` entry with
+Pure verifier tests own interpretation of receipt artifacts and the bounded
+DB/runtime/Git facts; App integration tests use real PostgreSQL, raw artifact bytes,
+and real Git identities to prove the public handler supplies those facts and cannot
+replace a failed check. CLI contract tests keep one `release-register` transition and
+one `trading evidence verify` entry with
 receipt, lifecycle, seven-day window, release, and rollback subjects. No pure
 test, fixture, local artifact, mock, or green CI job may stand in for future
 calendar data, a human grant/arm, a venue-native write/flat receipt, or the

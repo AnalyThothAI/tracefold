@@ -8,7 +8,9 @@ the result has been appended to the evidence ledger.
 
 from __future__ import annotations
 
+import json
 from collections import Counter
+from dataclasses import dataclass
 from decimal import Decimal
 from itertools import pairwise
 from typing import Annotated, Any, Final, Literal, Self
@@ -123,6 +125,7 @@ class PointInTimeCatalogV1(_Frozen):
 class CapturedSourceV1(_Frozen):
     capture_row_version: Literal["captured_oi_source_v1"] = "captured_oi_source_v1"
     source_identity: str = Field(min_length=1, max_length=256)
+    source_item_id: str = Field(min_length=1, max_length=256)
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     raw_source: dict[str, Any]
     venue: str = Field(max_length=128)
@@ -146,6 +149,8 @@ class CapturedSourceV1(_Frozen):
         expected_identity = oi_source_key(self.raw_source.get("event_id"), self.raw_source.get("metric_version"))
         if self.source_identity != expected_identity:
             raise ValueError("evidence_source_key_mismatch")
+        if self.raw_source.get("source_item_id") != self.source_item_id:
+            raise ValueError("evidence_source_item_mismatch")
         if binding_for_source_venue(self.raw_source.get("venue")) != self.binding:
             raise ValueError("evidence_source_wrong_venue")
         raw_observed_at = self.raw_source.get("observed_at_ms")
@@ -232,6 +237,64 @@ class EvidenceCaptureArtifactV1(_Frozen):
         return canonical_sha256(self.model_dump(mode="json"))
 
 
+class FutureCaptureCollectionHealthV1(_Frozen):
+    """Blind-safe collection health; it contains no prices, returns, or profitability cohorts."""
+
+    health_version: Literal["future_capture_collection_health_v1"] = "future_capture_collection_health_v1"
+    collector_connected: bool
+    collector_last_frame_at_ms: int | None = Field(default=None, ge=0)
+    collector_error_code: str | None = Field(default=None, min_length=1, max_length=128)
+    workers_state: str = Field(min_length=1, max_length=32)
+    workers_heartbeat_at_ms: int | None = Field(default=None, ge=0)
+    source_count: int = Field(ge=0)
+    expected_source_count: int = Field(ge=0)
+    missing_source_count: int = Field(ge=0)
+    late_source_count: int = Field(ge=0)
+    catalog_missing_count: int = Field(ge=0)
+    missing_source_bps: int = Field(ge=0, le=10_000)
+    late_source_bps: int = Field(ge=0, le=10_000)
+    catalog_missing_bps: int = Field(ge=0, le=10_000)
+    market_instrument_count: int = Field(ge=0)
+    bar_continuous_count: int = Field(ge=0)
+    funding_probe_ok_count: int = Field(ge=0)
+    bar_continuity_bps: int = Field(ge=0, le=10_000)
+    funding_continuity_bps: int = Field(ge=0, le=10_000)
+    artifact_integrity_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_health(self) -> Self:
+        if self.expected_source_count < self.source_count:
+            raise ValueError("evidence_future_health_source_denominator_invalid")
+        if self.missing_source_count != self.expected_source_count - self.source_count:
+            raise ValueError("evidence_future_health_missing_count_invalid")
+        if self.late_source_count > self.source_count or self.catalog_missing_count > self.source_count:
+            raise ValueError("evidence_future_health_source_count_invalid")
+        if self.bar_continuous_count > self.market_instrument_count:
+            raise ValueError("evidence_future_health_bar_count_invalid")
+        if self.funding_probe_ok_count > self.market_instrument_count:
+            raise ValueError("evidence_future_health_funding_count_invalid")
+        expected_rates = (
+            _health_bps(self.missing_source_count, self.expected_source_count),
+            _health_bps(self.late_source_count, self.source_count),
+            _health_bps(self.catalog_missing_count, self.source_count),
+            _health_bps(self.bar_continuous_count, self.market_instrument_count),
+            _health_bps(self.funding_probe_ok_count, self.market_instrument_count),
+        )
+        if expected_rates != (
+            self.missing_source_bps,
+            self.late_source_bps,
+            self.catalog_missing_bps,
+            self.bar_continuity_bps,
+            self.funding_continuity_bps,
+        ):
+            raise ValueError("evidence_future_health_rate_invalid")
+        return self
+
+
+def _health_bps(numerator: int, denominator: int) -> int:
+    return 0 if denominator == 0 else numerator * 10_000 // denominator
+
+
 class FutureCaptureBatchV1(_Frozen):
     """One contiguous, append-only blind-period source batch."""
 
@@ -247,6 +310,7 @@ class FutureCaptureBatchV1(_Frozen):
     source_count: int = Field(ge=0)
     late_source_count: int = Field(ge=0)
     catalog_missing_count: int = Field(ge=0)
+    health: FutureCaptureCollectionHealthV1
 
     @model_validator(mode="after")
     def validate_batch(self) -> Self:
@@ -262,6 +326,14 @@ class FutureCaptureBatchV1(_Frozen):
         )
         if self.late_source_count != expected_late or self.catalog_missing_count != expected_catalog_missing:
             raise ValueError("evidence_future_batch_health_invalid")
+        if (
+            self.health.source_count != self.source_count
+            or self.health.late_source_count != self.late_source_count
+            or self.health.catalog_missing_count != self.catalog_missing_count
+            or self.health.artifact_integrity_sha256
+            != canonical_sha256(tuple(row.model_dump(mode="json") for row in self.sources))
+        ):
+            raise ValueError("evidence_future_batch_health_identity_invalid")
         if self.sources != tuple(sorted(self.sources, key=lambda row: (row.observed_at_ms, row.source_identity))):
             raise ValueError("evidence_future_batch_not_canonical")
         if len({row.source_identity for row in self.sources}) != len(self.sources):
@@ -278,6 +350,117 @@ class FutureCaptureBatchV1(_Frozen):
     @property
     def batch_sha256(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedFutureCaptureBatch:
+    """Validated batch bytes prepared before the short append transaction."""
+
+    protocol_sha256: str
+    batch_start_ms: int
+    batch_end_ms: int
+    captured_at_ms: int
+    capture_lag_ms: int
+    batch_sha256: str
+    candidate_receipt_sha256: str
+    binding: EvidenceBinding
+    source_count: int
+    late_source_count: int
+    catalog_missing_count: int
+    collector_connected: bool
+    missing_source_bps: int
+    late_source_bps: int
+    catalog_missing_bps: int
+    bar_continuity_bps: int
+    funding_continuity_bps: int
+    artifact_integrity_sha256: str
+    payload_json: str
+
+    def __post_init__(self) -> None:
+        try:
+            batch = FutureCaptureBatchV1.model_validate_json(self.payload_json)
+        except ValueError as exc:
+            raise ValueError("evidence_future_batch_prepared_identity_invalid") from exc
+        canonical_payload = json.dumps(
+            batch.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        if (
+            batch.protocol_sha256,
+            batch.batch_start_ms,
+            batch.batch_end_ms,
+            batch.captured_at_ms,
+            batch.capture_lag_ms,
+            batch.batch_sha256,
+            batch.candidate_receipt_sha256,
+            batch.binding,
+            batch.source_count,
+            batch.late_source_count,
+            batch.catalog_missing_count,
+            batch.health.collector_connected,
+            batch.health.missing_source_bps,
+            batch.health.late_source_bps,
+            batch.health.catalog_missing_bps,
+            batch.health.bar_continuity_bps,
+            batch.health.funding_continuity_bps,
+            batch.health.artifact_integrity_sha256,
+            canonical_payload,
+        ) != (
+            self.protocol_sha256,
+            self.batch_start_ms,
+            self.batch_end_ms,
+            self.captured_at_ms,
+            self.capture_lag_ms,
+            self.batch_sha256,
+            self.candidate_receipt_sha256,
+            self.binding,
+            self.source_count,
+            self.late_source_count,
+            self.catalog_missing_count,
+            self.collector_connected,
+            self.missing_source_bps,
+            self.late_source_bps,
+            self.catalog_missing_bps,
+            self.bar_continuity_bps,
+            self.funding_continuity_bps,
+            self.artifact_integrity_sha256,
+            self.payload_json,
+        ):
+            raise ValueError("evidence_future_batch_prepared_identity_invalid")
+
+
+def prepare_future_capture_batch(batch: FutureCaptureBatchV1) -> PreparedFutureCaptureBatch:
+    payload_json = json.dumps(
+        batch.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return PreparedFutureCaptureBatch(
+        protocol_sha256=batch.protocol_sha256,
+        batch_start_ms=batch.batch_start_ms,
+        batch_end_ms=batch.batch_end_ms,
+        captured_at_ms=batch.captured_at_ms,
+        capture_lag_ms=batch.capture_lag_ms,
+        batch_sha256=batch.batch_sha256,
+        candidate_receipt_sha256=batch.candidate_receipt_sha256,
+        binding=batch.binding,
+        source_count=batch.source_count,
+        late_source_count=batch.late_source_count,
+        catalog_missing_count=batch.catalog_missing_count,
+        collector_connected=batch.health.collector_connected,
+        missing_source_bps=batch.health.missing_source_bps,
+        late_source_bps=batch.health.late_source_bps,
+        catalog_missing_bps=batch.health.catalog_missing_bps,
+        bar_continuity_bps=batch.health.bar_continuity_bps,
+        funding_continuity_bps=batch.health.funding_continuity_bps,
+        artifact_integrity_sha256=batch.health.artifact_integrity_sha256,
+        payload_json=payload_json,
+    )
 
 
 class MarketDrainRowV1(_Frozen):
@@ -834,17 +1017,52 @@ class FutureCaptureReceiptV1(_Frozen):
     capture_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     artifact_path: str = Field(min_length=1, max_length=1024)
+    batch_count: int = Field(ge=1)
+    batch_health_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    collection_incidents: tuple[EvidenceIncident, ...] = ()
     created_at_ms: int = Field(gt=0)
 
     @model_validator(mode="after")
     def validate_artifact_identity(self) -> Self:
         if self.artifact_sha256 != self.capture_sha256:
             raise ValueError("evidence_future_capture_receipt_artifact_identity_invalid")
+        if self.collection_incidents != tuple(sorted(set(self.collection_incidents))):
+            raise ValueError("evidence_future_capture_health_incidents_not_canonical")
         return self
 
     @property
     def receipt_sha256(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
+
+
+def future_capture_health_summary(
+    batches: tuple[FutureCaptureBatchV1, ...],
+    *,
+    maximum_missingness_bps: int,
+) -> tuple[str, tuple[EvidenceIncident, ...]]:
+    """Bind every blind-safe batch health row and reduce failures to preregistered incidents."""
+
+    if not batches:
+        raise ValueError("evidence_future_capture_batch_missing")
+    incidents: set[EvidenceIncident] = set()
+    for batch in batches:
+        health = batch.health
+        if (
+            not health.collector_connected
+            or health.workers_state != "running"
+            or health.workers_heartbeat_at_ms is None
+            or health.workers_heartbeat_at_ms < batch.batch_end_ms
+            or health.missing_source_bps > maximum_missingness_bps
+            or health.late_source_bps > maximum_missingness_bps
+            or health.catalog_missing_bps > maximum_missingness_bps
+        ):
+            incidents.add("source_mass_missingness")
+        if health.market_instrument_count > 0 and (
+            health.bar_continuity_bps < 10_000 or health.funding_continuity_bps < 10_000
+        ):
+            incidents.add("bar_or_funding_missing")
+    digest = canonical_sha256(tuple(batch.health.model_dump(mode="json") for batch in batches))
+    return digest, tuple(sorted(incidents))
 
 
 class FutureDrainReceiptV1(_Frozen):
@@ -1092,6 +1310,7 @@ __all__ = [
     "EvidenceInputV1",
     "FundingRateV1",
     "FutureCaptureBatchV1",
+    "FutureCaptureCollectionHealthV1",
     "FutureCaptureReceiptV1",
     "FutureDrainReceiptV1",
     "FutureHoldoutMetricsV1",
@@ -1107,6 +1326,8 @@ __all__ = [
     "candidate_selection_program_sha256",
     "eligible_universe_sha256",
     "feature_contract_sha256",
+    "future_capture_health_summary",
     "point_in_time_catalog_sha256",
+    "prepare_future_capture_batch",
     "source_contract_sha256",
 ]

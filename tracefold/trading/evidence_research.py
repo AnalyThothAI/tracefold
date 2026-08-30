@@ -42,6 +42,7 @@ from .evidence_clock import (
     EvidenceIncident,
     EvidenceInputV1,
     FundingRateV1,
+    FutureCaptureCollectionHealthV1,
     FutureHoldoutMetricsV1,
     FutureHoldoutResultV1,
     MarketDrainRowV1,
@@ -90,11 +91,80 @@ class _EvaluatedPopulation:
     evaluator_program_sha256: str
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class EvidenceCatalogRequest:
+    """One News-owned point-in-time catalogue read needed by a capture."""
+
+    canonical_asset: str
+    venue: str
+    observed_at_ms: int
+
+
 def _required_int(value: object, error: str) -> int:
     try:
         return int(cast(Any, value))
     except (TypeError, ValueError) as exc:
         raise ValueError(error) from exc
+
+
+def evidence_catalog_request(row: OiCandidateRow) -> EvidenceCatalogRequest | None:
+    """Derive a catalogue query without constructing or hashing an evidence artifact."""
+
+    source = dict(row)
+    observed_at_ms = _required_int(source.get("observed_at_ms"), "evidence_capture_source_clock_missing")
+    venue_value = str(source.get("venue") or "").strip().lower()
+    binding = binding_for_source_venue(venue_value)
+    canonical_asset = canonical_base_symbol(source.get("symbol"))
+    if binding is None or not canonical_asset:
+        return None
+    return EvidenceCatalogRequest(
+        canonical_asset=canonical_asset,
+        venue=_SOURCE_VENUE_BY_BINDING[binding],
+        observed_at_ms=observed_at_ms,
+    )
+
+
+def build_future_capture_collection_health(
+    sources: tuple[CapturedSourceV1, ...],
+    *,
+    expected_source_count: int,
+    collector: dict[str, Any],
+    workers: dict[str, Any] | None,
+    market_instrument_count: int,
+    bar_continuous_count: int,
+    funding_probe_ok_count: int,
+) -> FutureCaptureCollectionHealthV1:
+    """Reduce raw collection facts to the only blind-safe health projection."""
+
+    source_count = len(sources)
+    late_count = sum(row.available_at_ms > int(collector["batch_end_ms"]) for row in sources)
+    catalog_missing = sum(row.provider_instrument_id is None or not row.catalog.rows for row in sources)
+    missing_count = max(0, int(expected_source_count) - source_count)
+    return FutureCaptureCollectionHealthV1(
+        collector_connected=bool(collector.get("connected")),
+        collector_last_frame_at_ms=collector.get("last_frame_at_ms"),
+        collector_error_code=collector.get("last_error_code"),
+        workers_state="missing" if workers is None else str(workers.get("lifecycle_state") or "missing"),
+        workers_heartbeat_at_ms=None if workers is None else workers.get("heartbeat_at_ms"),
+        source_count=source_count,
+        expected_source_count=int(expected_source_count),
+        missing_source_count=missing_count,
+        late_source_count=late_count,
+        catalog_missing_count=catalog_missing,
+        missing_source_bps=_rate_bps(missing_count, int(expected_source_count)),
+        late_source_bps=_rate_bps(late_count, source_count),
+        catalog_missing_bps=_rate_bps(catalog_missing, source_count),
+        market_instrument_count=market_instrument_count,
+        bar_continuous_count=bar_continuous_count,
+        funding_probe_ok_count=funding_probe_ok_count,
+        bar_continuity_bps=_rate_bps(bar_continuous_count, market_instrument_count),
+        funding_continuity_bps=_rate_bps(funding_probe_ok_count, market_instrument_count),
+        artifact_integrity_sha256=canonical_sha256(tuple(row.model_dump(mode="json") for row in sources)),
+    )
+
+
+def _rate_bps(numerator: int, denominator: int) -> int:
+    return 0 if denominator == 0 else numerator * 10_000 // denominator
 
 
 def build_evidence_capture(
@@ -110,6 +180,13 @@ def build_evidence_capture(
         source = dict(raw)
         observed_at_ms = _required_int(source.get("observed_at_ms"), "evidence_capture_source_clock_missing")
         known_at_ms = _required_int(source.get("verdict_created_at_ms"), "evidence_capture_source_clock_missing")
+        source_item_id = str(source.get("source_item_id") or "").strip()
+        if not source_item_id:
+            raise ValueError("evidence_capture_source_item_missing")
+        available_at_ms = _required_int(
+            source.get("source_available_at_ms"),
+            "evidence_capture_source_availability_missing",
+        )
         venue_value = str(source.get("venue") or "").strip().lower()
         binding = binding_for_source_venue(venue_value)
         venue = venue_value if binding is None else _SOURCE_VENUE_BY_BINDING[binding]
@@ -141,6 +218,7 @@ def build_evidence_capture(
         captured.append(
             CapturedSourceV1(
                 source_identity=oi_source_key(source.get("event_id"), source.get("metric_version")),
+                source_item_id=source_item_id,
                 source_sha256=canonical_sha256(source),
                 raw_source=source,
                 venue=venue,
@@ -149,7 +227,7 @@ def build_evidence_capture(
                 provider_instrument_id=provider_instrument_id,
                 observed_at_ms=observed_at_ms,
                 known_at_ms=known_at_ms,
-                available_at_ms=int(cast(Any, source.get("source_available_at_ms") or source["verdict_created_at_ms"])),
+                available_at_ms=available_at_ms,
                 catalog=PointInTimeCatalogV1(
                     source_observed_at_ms=observed_at_ms,
                     rows=tuple(catalog_rows),
@@ -966,6 +1044,8 @@ __all__ = [
     "EVIDENCE_EVALUATOR_VERSION",
     "build_evidence_capture",
     "build_evidence_drain",
+    "build_future_capture_collection_health",
+    "evidence_catalog_request",
     "seal_discovery_corpus",
     "unblind_future_holdout",
 ]

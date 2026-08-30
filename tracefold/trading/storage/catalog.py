@@ -277,64 +277,18 @@ class CatalogStorage:
     ) -> None:
         """Atomically persist and activate one already-materialized immutable snapshot."""
 
-        # Serialize writers for one content address before the persistence statement takes its
-        # READ COMMITTED snapshot. Without this transaction-scoped lock, a retry can lose an
-        # `ON CONFLICT DO NOTHING` race yet remain unable to see the winner in that same statement.
-        self.conn.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
-            (prepared.snapshot_sha256,),
-        )
         row = self.conn.execute(
             """
-            WITH inserted AS (
-                INSERT INTO trading_venue_catalog_snapshots (
-                  snapshot_sha256, binding, captured_at_ms, stale_after_ms,
-                  provider_instrument_count, payload, created_at_ms
-                )
-                SELECT %(digest)s, %(binding)s, %(captured)s, %(stale_after)s,
-                       %(instrument_count)s, %(payload)s::text::jsonb, %(now)s
-                ON CONFLICT (snapshot_sha256) DO NOTHING
-                RETURNING 1 AS valid
-            ), verified AS (
-                SELECT valid FROM inserted
-                UNION ALL
-                SELECT 1 AS valid
-                  FROM trading_venue_catalog_snapshots existing
-                 WHERE existing.snapshot_sha256 = %(digest)s
-                   AND existing.binding = %(binding)s
-                   AND existing.captured_at_ms = %(captured)s
-                   AND existing.stale_after_ms = %(stale_after)s
-                   AND existing.provider_instrument_count = %(instrument_count)s
-                   AND existing.payload = %(payload)s::text::jsonb
-                   AND NOT EXISTS (SELECT 1 FROM inserted)
-            ), activated AS (
-                UPDATE trading_binding_runtime AS runtime
-                   SET catalog_state = 'ready',
-                       catalog_snapshot_sha256 = %(digest)s,
-                       catalog_captured_at_ms = %(captured)s,
-                       capability_state = CASE
-                         WHEN runtime.capability_snapshot_sha256 IS NULL THEN 'missing'
-                         WHEN EXISTS (
-                           SELECT 1 FROM trading_execution_capability_snapshots capability
-                            WHERE capability.snapshot_sha256 = runtime.capability_snapshot_sha256
-                              AND capability.catalog_snapshot_sha256 = %(digest)s
-                         ) THEN runtime.capability_state
-                         ELSE 'stale'
-                       END,
-                       reason = CASE
-                         WHEN credential_state = 'unconfigured' THEN 'credentials_unconfigured'
-                         WHEN credential_state = 'invalid' THEN 'credentials_invalid'
-                         WHEN runtime_state = 'stopped' THEN 'binding_adapter_unavailable'
-                         WHEN runtime_state != 'ready' THEN 'binding_unready'
-                         ELSE NULL
-                       END,
-                       updated_at_ms = %(now)s
-                 WHERE runtime.binding = %(binding)s
-                   AND EXISTS (SELECT 1 FROM verified)
-             RETURNING runtime.binding
-            )
-            SELECT EXISTS (SELECT 1 FROM verified) AS identity_valid,
-                   (SELECT binding FROM activated) AS activated_binding
+            SELECT identity_valid, activated_binding
+              FROM store_trading_venue_catalog_snapshot(
+                %(digest)s,
+                %(binding)s,
+                %(captured)s,
+                %(stale_after)s,
+                %(instrument_count)s,
+                %(payload)s::text::jsonb,
+                %(now)s
+              )
             """,
             {
                 "binding": prepared.binding,

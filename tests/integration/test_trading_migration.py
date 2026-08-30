@@ -1067,13 +1067,27 @@ def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
             "has_table_privilege('tracefold_nautilus', 'trading_nautilus_runtime_starts', 'INSERT') "
             "AS nautilus_start_insert, "
             "has_table_privilege('tracefold_workers', 'trading_nautilus_runtime_starts', 'INSERT') "
-            "AS worker_start_insert"
+            "AS worker_start_insert, "
+            "has_function_privilege('tracefold_workers', "
+            "'store_trading_venue_catalog_snapshot(text,text,bigint,bigint,integer,jsonb,bigint)', "
+            "'EXECUTE') AS worker_catalog_function, "
+            "has_function_privilege('tracefold_serve', "
+            "'store_trading_venue_catalog_snapshot(text,text,bigint,bigint,integer,jsonb,bigint)', "
+            "'EXECUTE') AS serve_catalog_function, "
+            "has_function_privilege('tracefold_workers', 'trading_evidence_now_ms()', 'EXECUTE') "
+            "AS worker_evidence_clock, "
+            "has_function_privilege('tracefold_serve', 'trading_evidence_now_ms()', 'EXECUTE') "
+            "AS serve_evidence_clock"
         ).fetchone()
         assert dict(privileges) == {
             "worker_insert": True,
             "serve_insert": False,
             "nautilus_start_insert": True,
             "worker_start_insert": False,
+            "worker_catalog_function": True,
+            "serve_catalog_function": False,
+            "worker_evidence_clock": True,
+            "serve_evidence_clock": False,
         }
 
         repos = TradingRepository(conn)
@@ -1109,6 +1123,9 @@ def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
                     capture_sha256="8" * 64,
                     artifact_sha256="8" * 64,
                     artifact_path="test-evidence/second-future-capture.json",
+                    batch_count=int(capture_receipt["payload"]["receipt"]["batch_count"]),
+                    batch_health_sha256=str(capture_receipt["payload"]["receipt"]["batch_health_sha256"]),
+                    collection_incidents=tuple(capture_receipt["payload"]["receipt"]["collection_incidents"]),
                     created_at_ms=300_004,
                 )
             )

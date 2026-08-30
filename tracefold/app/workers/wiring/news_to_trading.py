@@ -47,6 +47,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
 
     return OiCandidateRow(
         event_id=row["event_id"],
+        source_item_id=row["source_item_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
         source_rule=row["source_rule"],

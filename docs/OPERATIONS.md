@@ -80,8 +80,9 @@ trading evidence future-unblind --capture ... --drain ... --candidate ... --cand
 Capture and drain are not one command: the first cannot see outcome bars or
 funding. Future capture is periodic, not one post-window query. Run it at every
 candidate-locked `capture_interval_ms`. Each call appends only the next contiguous
-batch and reports `capture_lag_ms`, `late_source_count`, and
-`catalog_missing_count`; PostgreSQL rejects a gap, overlap, wrong binding, late call
+batch and reports blind collection health: collector/Workers generation, expected and
+missing source mass, `capture_lag_ms`, late/catalog counts, bar/funding continuity, and
+artifact integrity. PostgreSQL rejects a gap, overlap, wrong binding, late call
 beyond `maximum_capture_lag_ms`, or changed candidate. The last batch seals the one
 `FUTURE_CAPTURE_SEALED`; later source-population variants cannot replace it. A missed
 deadline fails closed and requires a new preregistered future protocol, not a backfill.
@@ -119,20 +120,26 @@ Freeze the release candidate before final observation. Its artifact names the
 exact tag/commit/tree, OCI image, migration head, committed OpenAPI, built web
 tree, Workers/Serve revisions, Nautilus wheel/source, execution contracts,
 per-binding catalog/capability/account identities, evidence/grant/risk
-receipts, and one exact seven-day window with nonzero minimum activity. Run
+receipts, and one exact seven-day window with nonzero minimum activity. With the exact
+approved Workers and Serve processes already running, execute
+`trading evidence release-register --file FILE` before the window starts. The database
+records its own registration time and binds both current runtime ids, start times,
+revisions, and image digests; restarting either process invalidates the window. Run
 `trading evidence verify --release FILE` only after its drain cutoff. The tag
 must be an annotated signature-verifiable Git tag resolving to the declared
 commit and tree; the release file must enumerate the exact canary Intent set
 and one protected-to-recovered Nautilus restart receipt. A green
 CI run or a mathematically conserved empty window is not acceptance. At window
-start, Workers must already report the declared commit and image; its durable
-heartbeat must cover the end, and every Admission plus Intent authority chain in
+start, the preregistered Workers and Serve generations must already report the
+declared commit and image; the Workers durable heartbeat and a final authenticated
+Serve observation must cover the end, and every Admission plus Intent authority chain in
 the window must name that same release. Deploying another release invalidates
 the window. At
 rollback, pause Capital, revoke/expire every grant, reconcile every enabled
 venue flat, drain active risk/Intent obligations, then run
 `trading evidence verify --rollback FILE`. Keep the observer/Decision path
-running; do not revive a terminal Intent or infer a flat account from local
+running past the rollback receipt; do not revive a terminal Intent, submit a
+replacement entry, or infer a flat account from local
 state. The rollback receipt names and re-hashes the exact release-candidate
 artifact, covers its exact binding/grant scope, and cannot predate that release
 window's drain cutoff.

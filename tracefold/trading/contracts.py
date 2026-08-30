@@ -126,6 +126,7 @@ class OiCandidateRow(TypedDict):
     """One parsed deterministic OI telemetry fact offered to the capital lane."""
 
     event_id: str
+    source_item_id: str
     verdict_created_at_ms: int
     # The reader's own judgment of this frame, and the named rule behind it. Audit, not admission: since
     # #264 the Gate decides whether the fact may trigger, and a reader policy change must not silently

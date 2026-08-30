@@ -863,10 +863,10 @@ options:
 
 ```
 usage: tracefold trading evidence [-h]
-                                  {capture,drain,corpus-seal,candidate-register,future-unblind,verify} ...
+                                  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify} ...
 
 positional arguments:
-  {capture,drain,corpus-seal,candidate-register,future-unblind,verify}
+  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify}
     capture             freeze a point-in-time discovery or protocol-locked
                         future source partition
     drain               freeze bars and funding only after the capture horizon
@@ -875,6 +875,8 @@ positional arguments:
                         zero provider I/O
     candidate-register  durably register one candidate or NO_CANDIDATE before
                         a future window
+    release-register    bind an approved exact release and fixed window to the
+                        current Workers/Serve generations
     future-unblind      evaluate one protocol-locked future partition after
                         its fixed drain cutoff
     verify              credential-free verification of one evidence chain,
@@ -951,6 +953,17 @@ options:
   -h, --help   show this help message and exit
   --file FILE
   --out OUT    content-addressed evidence artifact root
+
+```
+
+## `trading evidence release-register`
+
+```
+usage: tracefold trading evidence release-register [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE  approved release candidate YAML/JSON
 
 ```
 

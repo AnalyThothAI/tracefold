@@ -7,12 +7,28 @@ named terminal, not a warning that a caller may reinterpret as success.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass
 from typing import Any, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import VenueBinding, canonical_sha256
+from .evidence_clock import (
+    CANDIDATE_DECISION_ADAPTER,
+    CandidateDecisionReceiptV1,
+    CandidateLockedV1,
+    DiscoveryCorpusArtifactV1,
+    DiscoveryCorpusReceiptV1,
+    EvidenceCaptureArtifactV1,
+    EvidenceDrainArtifactV1,
+    FutureCaptureReceiptV1,
+    FutureDrainReceiptV1,
+    FutureHoldoutResultReceiptV1,
+    FutureHoldoutResultV1,
+)
 
 SEVEN_DAYS_MS = 7 * 86_400_000
 
@@ -185,6 +201,115 @@ class ProductionReleaseCandidateV1(_Frozen):
         return canonical_sha256(self.model_dump(mode="json"))
 
 
+class ServeRuntimeObservationV1(_Frozen):
+    """Authenticated read-only observation of the actual Serve process under acceptance."""
+
+    runtime_id: UUID
+    runtime_revision: str = Field(min_length=1, max_length=256)
+    image_digest: str = Field(min_length=1, max_length=256)
+    started_at_ms: int = Field(gt=0)
+    measured_at_ms: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_clock(self) -> Self:
+        if self.measured_at_ms < self.started_at_ms:
+            raise ValueError("evidence_serve_runtime_clock_invalid")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedProductionReleaseRegistration:
+    """Canonical release/window registration bytes prepared outside the write transaction."""
+
+    release_sha256: str
+    window_sha256: str
+    release_tag: str
+    git_commit_sha: str
+    oci_image_digest: str
+    window_start_ms: int
+    window_end_ms: int
+    serve_runtime_id: UUID
+    serve_runtime_revision: str
+    serve_image_digest: str
+    serve_started_at_ms: int
+    serve_measured_at_ms: int
+    payload_json: str
+
+    def __post_init__(self) -> None:
+        try:
+            payload = json.loads(self.payload_json)
+            release = ProductionReleaseCandidateV1.model_validate(payload["release"])
+            serve = ServeRuntimeObservationV1.model_validate(payload["serve_runtime"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("evidence_release_registration_prepared_identity_invalid") from exc
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        if (
+            payload.get("registration_version"),
+            payload.get("release_sha256"),
+            payload.get("window_sha256"),
+            release.release_sha256,
+            release.acceptance_window.window_sha256,
+            release.release_tag,
+            release.git_commit_sha,
+            release.oci_image_digest,
+            release.acceptance_window.start_ms,
+            release.acceptance_window.end_ms,
+            serve.runtime_id,
+            serve.runtime_revision,
+            serve.image_digest,
+            serve.started_at_ms,
+            serve.measured_at_ms,
+            canonical,
+        ) != (
+            "production_release_registration_v1",
+            self.release_sha256,
+            self.window_sha256,
+            self.release_sha256,
+            self.window_sha256,
+            self.release_tag,
+            self.git_commit_sha,
+            self.oci_image_digest,
+            self.window_start_ms,
+            self.window_end_ms,
+            self.serve_runtime_id,
+            self.serve_runtime_revision,
+            self.serve_image_digest,
+            self.serve_started_at_ms,
+            self.serve_measured_at_ms,
+            self.payload_json,
+        ):
+            raise ValueError("evidence_release_registration_prepared_identity_invalid")
+
+
+def prepare_production_release_registration(
+    release: ProductionReleaseCandidateV1,
+    serve: ServeRuntimeObservationV1,
+) -> PreparedProductionReleaseRegistration:
+    payload = {
+        "registration_version": "production_release_registration_v1",
+        "release_sha256": release.release_sha256,
+        "window_sha256": release.acceptance_window.window_sha256,
+        "release": release.model_dump(mode="json"),
+        "serve_runtime": serve.model_dump(mode="json"),
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return PreparedProductionReleaseRegistration(
+        release_sha256=release.release_sha256,
+        window_sha256=release.acceptance_window.window_sha256,
+        release_tag=release.release_tag,
+        git_commit_sha=release.git_commit_sha,
+        oci_image_digest=release.oci_image_digest,
+        window_start_ms=release.acceptance_window.start_ms,
+        window_end_ms=release.acceptance_window.end_ms,
+        serve_runtime_id=serve.runtime_id,
+        serve_runtime_revision=serve.runtime_revision,
+        serve_image_digest=serve.image_digest,
+        serve_started_at_ms=serve.started_at_ms,
+        serve_measured_at_ms=serve.measured_at_ms,
+        payload_json=payload_json,
+    )
+
+
 class ProductionRollbackReceiptV1(_Frozen):
     rollback_version: Literal["production_v3_rollback_receipt_v1"] = "production_v3_rollback_receipt_v1"
     release_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -212,6 +337,183 @@ class EvidenceVerificationCheckV1(_Frozen):
     code: str = Field(pattern=r"^[a-z0-9_]{3,128}$")
     passed: bool
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class ReceiptArtifactRequestV1:
+    """One raw file read requested by Trading and performed mechanically by App."""
+
+    receipt_sha256: str
+    artifact_path: str
+
+
+_RECEIPT_CHAIN_BY_KIND: dict[str, tuple[str, ...]] = {
+    "DISCOVERY_CORPUS": ("DISCOVERY_CORPUS",),
+    "CANDIDATE_DECISION": ("CANDIDATE_DECISION", "DISCOVERY_CORPUS"),
+    "FUTURE_CAPTURE": ("FUTURE_CAPTURE", "CANDIDATE_DECISION", "DISCOVERY_CORPUS"),
+    "FUTURE_DRAIN": ("FUTURE_DRAIN", "FUTURE_CAPTURE", "CANDIDATE_DECISION", "DISCOVERY_CORPUS"),
+    "FUTURE_RESULT": (
+        "FUTURE_RESULT",
+        "FUTURE_DRAIN",
+        "FUTURE_CAPTURE",
+        "CANDIDATE_DECISION",
+        "DISCOVERY_CORPUS",
+    ),
+}
+
+
+def receipt_artifact_requests(rows: list[dict[str, Any]]) -> tuple[ReceiptArtifactRequestV1, ...]:
+    requests: list[ReceiptArtifactRequestV1] = []
+    for row in rows:
+        try:
+            receipt, _artifact_type = _receipt_contract(row)
+            requests.append(
+                ReceiptArtifactRequestV1(
+                    receipt_sha256=str(row["receipt_sha256"]),
+                    artifact_path=str(receipt.artifact_path),
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
+    return tuple(sorted(requests))
+
+
+def receipt_chain_verification_checks(
+    receipt_sha256: str,
+    rows: list[dict[str, Any]],
+    artifact_bytes: dict[str, bytes | None],
+) -> list[EvidenceVerificationCheckV1]:
+    """Own all receipt-kind, parent, model, artifact and canonical-identity interpretation."""
+
+    by_sha = {str(row["receipt_sha256"]): row for row in rows}
+    root = by_sha.get(receipt_sha256)
+    if root is None:
+        return [verification_check("receipt_root_exists", False)]
+    expected_kinds = _RECEIPT_CHAIN_BY_KIND.get(str(root.get("receipt_kind")))
+    if expected_kinds is None:
+        return [verification_check("receipt_root_kind_known", False)]
+    checks: list[EvidenceVerificationCheckV1] = []
+    current: str | None = receipt_sha256
+    seen: set[str] = set()
+    for index, expected_kind in enumerate(expected_kinds):
+        row = None if current is None or current in seen else by_sha.get(current)
+        checks.append(
+            verification_check(
+                f"receipt_{index}_kind",
+                row is not None and row.get("receipt_kind") == expected_kind,
+                expected_kind=expected_kind,
+            )
+        )
+        if row is None:
+            current = None
+            continue
+        seen.add(str(row["receipt_sha256"]))
+        checks.append(
+            verification_check(
+                f"receipt_{index}_row_identity",
+                _receipt_row_identity_valid(row),
+                kind=expected_kind,
+            )
+        )
+        checks.append(
+            verification_check(
+                f"receipt_{index}_artifact_identity",
+                _receipt_artifact_identity_valid(row, artifact_bytes.get(str(row["receipt_sha256"]))),
+                kind=expected_kind,
+            )
+        )
+        parent = row.get("parent_receipt_sha256")
+        expected_parent = None if index + 1 == len(expected_kinds) else parent
+        checks.append(
+            verification_check(
+                f"receipt_{index}_parent_link",
+                (parent is None and expected_parent is None)
+                if index + 1 == len(expected_kinds)
+                else parent is not None and str(parent) in by_sha,
+                kind=expected_kind,
+            )
+        )
+        current = None if parent is None else str(parent)
+    checks.append(verification_check("receipt_chain_complete", current is None))
+    return checks
+
+
+def receipt_chains_valid(
+    receipt_sha256s: tuple[str, ...],
+    rows: list[dict[str, Any]],
+    artifact_bytes: dict[str, bytes | None],
+) -> bool:
+    return all(
+        all(check.passed for check in receipt_chain_verification_checks(digest, rows, artifact_bytes))
+        for digest in receipt_sha256s
+    )
+
+
+def _receipt_contract(row: dict[str, Any]) -> tuple[Any, Any]:
+    payload = dict(row["payload"])
+    receipt_payload = dict(payload["receipt"])
+    kind = str(row["receipt_kind"])
+    if kind == "DISCOVERY_CORPUS":
+        return DiscoveryCorpusReceiptV1.model_validate(receipt_payload), DiscoveryCorpusArtifactV1
+    if kind == "CANDIDATE_DECISION":
+        artifact_type = CandidateLockedV1 if row["terminal"] == "CANDIDATE_LOCKED" else CANDIDATE_DECISION_ADAPTER
+        return CandidateDecisionReceiptV1.model_validate(receipt_payload), artifact_type
+    if kind == "FUTURE_CAPTURE":
+        return FutureCaptureReceiptV1.model_validate(receipt_payload), EvidenceCaptureArtifactV1
+    if kind == "FUTURE_DRAIN":
+        return FutureDrainReceiptV1.model_validate(receipt_payload), EvidenceDrainArtifactV1
+    if kind == "FUTURE_RESULT":
+        return FutureHoldoutResultReceiptV1.model_validate(receipt_payload), FutureHoldoutResultV1
+    raise ValueError("evidence_receipt_kind_unknown")
+
+
+def _receipt_row_identity_valid(row: dict[str, Any]) -> bool:
+    try:
+        payload = dict(row["payload"])
+        receipt, artifact_type = _receipt_contract(row)
+        if artifact_type is CANDIDATE_DECISION_ADAPTER:
+            decision = CANDIDATE_DECISION_ADAPTER.validate_python(payload["evidence"])
+            if canonical_sha256(decision.model_dump(mode="json")) != row["artifact_sha256"]:
+                return False
+        if row["receipt_kind"] == "FUTURE_RESULT":
+            result = FutureHoldoutResultV1.model_validate(payload["evidence"])
+            if result.report_sha256 != row["artifact_sha256"]:
+                return False
+        return bool(
+            receipt.receipt_sha256 == row["receipt_sha256"]
+            and receipt.created_at_ms == row["created_at_ms"]
+            and int(row["recorded_at_ms"]) >= receipt.created_at_ms
+            and payload.get("receipt_sha256") == row["receipt_sha256"]
+            and payload.get("receipt_kind") == row["receipt_kind"]
+            and payload.get("terminal") == row["terminal"]
+            and payload.get("binding") == row["binding"]
+            and payload.get("parent_receipt_sha256") == row["parent_receipt_sha256"]
+            and payload.get("artifact_sha256") == row["artifact_sha256"]
+            and payload.get("corpus_sha256") == row["corpus_sha256"]
+            and payload.get("protocol_sha256") == row["protocol_sha256"]
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _receipt_artifact_identity_valid(row: dict[str, Any], raw: bytes | None) -> bool:
+    if raw is None or hashlib.sha256(raw).hexdigest() != row.get("artifact_sha256"):
+        return False
+    try:
+        _receipt, artifact_type = _receipt_contract(row)
+        if artifact_type is CANDIDATE_DECISION_ADAPTER:
+            artifact = CANDIDATE_DECISION_ADAPTER.validate_json(raw)
+        else:
+            artifact = artifact_type.model_validate_json(raw)
+        canonical = json.dumps(
+            artifact.model_dump(mode="json"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        return bool(canonical == raw and canonical_sha256(artifact.model_dump(mode="json")) == row["artifact_sha256"])
+    except (TypeError, ValueError):
+        return False
 
 
 class EvidenceVerificationReportV1(_Frozen):
@@ -336,18 +638,42 @@ def fixed_window_verification_checks(
 
     counts = snapshot["counts"]
     workers_runtime = snapshot.get("workers_runtime")
+    serve_runtime = snapshot.get("serve_runtime")
+    registration = snapshot.get("release_registration")
     return [
         verification_check("window_drain_cutoff_reached", now_ms >= spec.drain_cutoff_ms),
         verification_check(
+            "window_preregistered_before_start",
+            registration is not None
+            and registration["window_sha256"] == spec.window_sha256
+            and registration["release_tag"] == spec.release_tag
+            and registration["git_commit_sha"] == spec.git_commit_sha
+            and registration["oci_image_digest"] == spec.oci_image_digest
+            and registration["registered_at_ms"] < spec.start_ms,
+        ),
+        verification_check(
             "window_exact_workers_release",
-            workers_runtime is not None
+            registration is not None
+            and workers_runtime is not None
+            and workers_runtime["runtime_id"] == str(registration["workers_runtime_id"])
             and workers_runtime["runtime_revision"] == spec.git_commit_sha
             and workers_runtime["image_digest"] == spec.oci_image_digest
             and workers_runtime["lifecycle_state"] == "running"
-            and workers_runtime["started_at_ms"] <= spec.start_ms
+            and workers_runtime["started_at_ms"] == registration["workers_started_at_ms"]
             and workers_runtime["heartbeat_at_ms"] >= spec.end_ms,
         ),
+        verification_check(
+            "window_exact_serve_release",
+            registration is not None
+            and serve_runtime is not None
+            and serve_runtime["runtime_id"] == str(registration["serve_runtime_id"])
+            and serve_runtime["runtime_revision"] == spec.git_commit_sha
+            and serve_runtime["image_digest"] == spec.oci_image_digest
+            and serve_runtime["started_at_ms"] == registration["serve_started_at_ms"]
+            and serve_runtime["measured_at_ms"] >= spec.end_ms,
+        ),
         verification_check("window_source_release_identity", counts["wrong_release_source_count"] == 0),
+        verification_check("window_gate_contract_identity", counts["wrong_gate_contract_count"] == 0),
         verification_check("window_intent_release_identity", counts["intent_release_mismatch_count"] == 0),
         verification_check(
             "window_minimum_sources",
@@ -427,6 +753,8 @@ def rollback_verification_checks(
 
     bindings = {str(row["binding"]): row for row in snapshot["bindings"]}
     grants = {str(row["grant_sha256"]): row for row in snapshot["grants"]}
+    decision_runtime = snapshot.get("decision_runtime")
+    workers_runtime = snapshot.get("workers_runtime")
     return [
         verification_check(
             "rollback_release_candidate_identity", release.release_sha256 == receipt.release_candidate_sha256
@@ -441,14 +769,30 @@ def rollback_verification_checks(
         ),
         verification_check("rollback_not_before_receipt", now_ms >= receipt.rolled_back_at_ms),
         verification_check("rollback_capital_paused", snapshot["control"] == "PAUSED"),
+        verification_check(
+            "rollback_decision_continues",
+            decision_runtime is not None
+            and decision_runtime["state"] == "RUNNING"
+            and decision_runtime["heartbeat_at_ms"] >= receipt.rolled_back_at_ms,
+        ),
+        verification_check(
+            "rollback_observer_continues",
+            workers_runtime is not None
+            and workers_runtime["lifecycle_state"] == "running"
+            and workers_runtime["heartbeat_at_ms"] >= receipt.rolled_back_at_ms,
+        ),
         verification_check("rollback_zero_active_intents", snapshot["active_intent_count"] == 0),
         verification_check("rollback_zero_active_risk", snapshot["active_risk_count"] == 0),
+        verification_check("rollback_restart_zero_refill", snapshot["post_rollback_intent_count"] == 0),
+        verification_check("rollback_zero_provider_write", snapshot["post_rollback_submission_count"] == 0),
         verification_check(
             "rollback_bindings_authoritatively_flat",
             all(
                 binding in bindings
                 and bindings[binding]["account_state"] == "reconciled_flat"
                 and bindings[binding]["active_arm_receipt_sha256"] is None
+                and bindings[binding]["catalog_state"] in {"ready", "stale", "error", "missing"}
+                and bindings[binding]["capability_state"] in {"ready", "stale", "error", "missing"}
                 for binding in receipt.bindings
             ),
         ),
@@ -536,6 +880,11 @@ def release_verification_checks(
         ),
         verification_check(
             "release_policy_config_identity", observations["policy_config_sha256"] == release.policy_config_sha256
+        ),
+        verification_check(
+            "release_registration_identity",
+            window_snapshot.get("release_registration") is not None
+            and window_snapshot["release_registration"]["release_sha256"] == release.release_sha256,
         ),
         verification_check("release_evidence_receipt_chains_valid", observations["receipt_chains_valid"]),
         verification_check(
@@ -665,13 +1014,16 @@ __all__ = [
     "EvidenceVerificationReportV1",
     "FixedWindowAcceptanceV1",
     "NautilusRuntimeStartV1",
+    "PreparedProductionReleaseRegistration",
     "ProductionReleaseCandidateV1",
     "ProductionRollbackReceiptV1",
     "ReleaseBindingIdentityV1",
+    "ServeRuntimeObservationV1",
     "canary_closed_flat",
     "case_verification_checks",
     "fixed_window_verification_checks",
     "intent_verification_checks",
+    "prepare_production_release_registration",
     "release_verification_checks",
     "rollback_verification_checks",
     "verification_check",

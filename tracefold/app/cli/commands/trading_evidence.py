@@ -7,8 +7,10 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Sequence
+from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
+from urllib.request import ProxyHandler, Request, build_opener
 
 import yaml
 from psycopg import Error as PostgresError
@@ -16,10 +18,10 @@ from psycopg import Error as PostgresError
 from tracefold.app.cli.evidence_artifacts import (
     load_evidence_artifact,
     publish_evidence_artifact,
-    verify_evidence_artifact,
 )
 from tracefold.app.repository_session import repositories
 from tracefold.app.trading_config import capital_lane_config
+from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.app.workers.wiring.news_to_trading import (
     MAPPED_NEWS_PROJECTION_VERSION,
     news_trade_instruments,
@@ -58,33 +60,37 @@ from tracefold.trading.evidence_clock import (
     FutureCaptureReceiptV1,
     FutureDrainReceiptV1,
     FutureHoldoutResultReceiptV1,
-    FutureHoldoutResultV1,
     NoCandidateV1,
     candidate_selection_evidence_sha256,
     candidate_selection_program_sha256,
     eligible_universe_sha256,
     feature_contract_sha256,
+    future_capture_health_summary,
     point_in_time_catalog_sha256,
+    prepare_future_capture_batch,
 )
 from tracefold.trading.evidence_research import (
     build_evidence_capture,
     build_evidence_drain,
+    build_future_capture_collection_health,
+    evidence_catalog_request,
     seal_discovery_corpus,
     unblind_future_holdout,
 )
 from tracefold.trading.evidence_verification import (
-    EvidenceVerificationCheckV1,
     FixedWindowAcceptanceV1,
     ProductionReleaseCandidateV1,
     ProductionRollbackReceiptV1,
+    ServeRuntimeObservationV1,
     case_verification_checks,
     fixed_window_verification_checks,
+    prepare_production_release_registration,
+    receipt_artifact_requests,
+    receipt_chain_verification_checks,
+    receipt_chains_valid,
     release_verification_checks,
     rollback_verification_checks,
     verification_report,
-)
-from tracefold.trading.evidence_verification import (
-    verification_check as _check,
 )
 from tracefold.trading.replay import DirectionalReplayPlan, ReplayBarV1, ReplayMarketSlice, parse_replay_sources
 from tracefold.trading.routing import resolve_instrument, signal_exchange_id
@@ -105,6 +111,8 @@ def handle_trading_evidence(settings: Any, args: Any, *, now_ms: int) -> tuple[i
             return _seal_corpus(settings, args, now_ms=now_ms)
         if action == "candidate-register":
             return _register_candidate(settings, args, now_ms=now_ms)
+        if action == "release-register":
+            return _register_release(settings, args)
         if action == "future-unblind":
             return _unblind(settings, args, now_ms=now_ms)
         if action == "verify":
@@ -121,6 +129,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     start_ms, end_ms = int(args.start_ms), int(args.end_ms)
     candidate: CandidateLockedV1 | None = None
     candidate_receipt: CandidateDecisionReceiptV1 | None = None
+    candidate_recorded_at_ms: int | None = None
     existing_batches: tuple[FutureCaptureBatchV1, ...] = ()
     if partition == "future":
         candidate, candidate_receipt = _load_candidate_pair(args)
@@ -130,7 +139,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
             or candidate_receipt.created_at_ms >= candidate.statistics.future_start_ms
         ):
             raise ValueError("evidence_future_capture_protocol_mismatch")
-        _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
+        candidate_recorded_at_ms = _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
         with repositories(settings, role="serve") as repos:
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_capture_already_sealed")
@@ -140,6 +149,8 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     target_binding = None if candidate is None else candidate.binding
     query_start_ms, query_end_ms = start_ms, end_ms
     if candidate is not None and candidate_receipt is not None:
+        if candidate_recorded_at_ms is None:
+            raise RuntimeError("evidence_future_candidate_recorded_clock_missing")
         query_start_ms = existing_batches[-1].batch_end_ms if existing_batches else start_ms
         if query_start_ms >= end_ms:
             return _seal_future_capture_batches(
@@ -147,6 +158,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
                 args,
                 candidate=candidate,
                 candidate_receipt=candidate_receipt,
+                candidate_recorded_at_ms=int(candidate_recorded_at_ms),
                 batches=existing_batches,
                 now_ms=now_ms,
             )
@@ -181,6 +193,9 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         protocol_receipt_sha256=None if candidate_receipt is None else candidate_receipt.receipt_sha256,
         protocol_locked_at_ms=None if candidate_receipt is None else candidate_receipt.created_at_ms,
     )
+    catalogs: dict[tuple[str, str, int], tuple[InstrumentCandidateRow, ...]] = {}
+    collector_health: dict[str, Any] = {}
+    workers_health: dict[str, Any] | None = None
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         rows = repos.news.trade_evidence_oi_rows(
@@ -196,13 +211,50 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         mapped = [to_oi_candidate_row(row) for row in rows]
         if target_binding is not None:
             mapped = [row for row in mapped if binding_for_source_venue(row.get("venue")) == target_binding]
+        requests = tuple(sorted({request for row in mapped if (request := evidence_catalog_request(row)) is not None}))
+        for request in requests:
+            key = (request.canonical_asset, request.venue, request.observed_at_ms)
+            catalogs[key] = tuple(
+                news_trade_instruments(
+                    repos,
+                    request.canonical_asset,
+                    (request.venue,),
+                    observed_at_ms=request.observed_at_ms,
+                )
+            )
+        if candidate is not None:
+            source_venues = (
+                ("binance", "binance.perp", "binance.usdm")
+                if candidate.binding == "BINANCE_USDM"
+                else ("hyperliquid", "hl.perp", "hyperliquid.perp")
+            )
+            news_collection_health = repos.news.trade_evidence_collection_health(
+                start_observed_at_ms=query_start_ms,
+                end_observed_at_ms=query_end_ms,
+                available_at_or_before_ms=now_ms,
+                source_venues=source_venues,
+            )
+            collector_health = {**news_collection_health, "batch_end_ms": query_end_ms}
+            workers_health = WorkersRuntimeRepository(repos.conn).read()
 
-        def instruments(base: str, venue: str, observed_at_ms: int) -> Sequence[InstrumentCandidateRow]:
-            return news_trade_instruments(repos, base, (venue,), observed_at_ms=observed_at_ms)
+    def instruments(base: str, venue: str, observed_at_ms: int) -> Sequence[InstrumentCandidateRow]:
+        return catalogs.get((base, venue, observed_at_ms), ())
 
-        artifact = build_evidence_capture(mapped, spec=spec, instruments=instruments)
+    artifact = build_evidence_capture(mapped, spec=spec, instruments=instruments)
     root = Path(args.out).resolve()
     if candidate is not None and candidate_receipt is not None:
+        market_count, bar_continuous_count, funding_probe_ok_count = asyncio.run(
+            _fetch_blind_market_health(artifact, start_ms=query_start_ms, end_ms=query_end_ms)
+        )
+        health = build_future_capture_collection_health(
+            artifact.sources,
+            expected_source_count=int(collector_health.get("expected_source_count") or 0),
+            collector=collector_health,
+            workers=workers_health,
+            market_instrument_count=market_count,
+            bar_continuous_count=bar_continuous_count,
+            funding_probe_ok_count=funding_probe_ok_count,
+        )
         batch = FutureCaptureBatchV1(
             binding=candidate.binding,
             candidate_receipt_sha256=candidate_receipt.receipt_sha256,
@@ -217,13 +269,15 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
             catalog_missing_count=sum(
                 row.provider_instrument_id is None or not row.catalog.rows for row in artifact.sources
             ),
+            health=health,
         )
+        prepared_batch = prepare_future_capture_batch(batch)
         with repositories(settings, role="workers") as repos, repos.transaction():
             advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
             repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_capture_already_sealed")
-            inserted = repos.trading.append_future_capture_batch(batch)
+            inserted = repos.trading.append_future_capture_batch(prepared_batch)
         if query_end_ms < end_ms:
             return 0, {
                 "ok": True,
@@ -236,6 +290,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
                     "capture_lag_ms": batch.capture_lag_ms,
                     "late_source_count": batch.late_source_count,
                     "catalog_missing_count": batch.catalog_missing_count,
+                    "collection_health": batch.health.model_dump(mode="json"),
                     "inserted": inserted,
                     "next_batch_start_ms": query_end_ms,
                 },
@@ -247,6 +302,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
             args,
             candidate=candidate,
             candidate_receipt=candidate_receipt,
+            candidate_recorded_at_ms=cast(int, candidate_recorded_at_ms),
             batches=batches,
             now_ms=now_ms,
         )
@@ -262,6 +318,7 @@ def _seal_future_capture_batches(
     *,
     candidate: CandidateLockedV1,
     candidate_receipt: CandidateDecisionReceiptV1,
+    candidate_recorded_at_ms: int,
     batches: tuple[FutureCaptureBatchV1, ...],
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
@@ -302,13 +359,17 @@ def _seal_future_capture_batches(
             }
         ),
         protocol_receipt_sha256=candidate_receipt.receipt_sha256,
-        protocol_locked_at_ms=candidate_receipt.created_at_ms,
+        protocol_locked_at_ms=candidate_recorded_at_ms,
     )
     artifact = EvidenceCaptureArtifactV1(spec=spec, sources=sources, source_count=len(sources))
     root = Path(args.out).resolve()
     path, digest = publish_evidence_artifact(root, kind="capture", artifact=artifact)
     if digest != artifact.capture_sha256:
         raise RuntimeError("evidence_capture_artifact_identity_invalid")
+    batch_health_sha256, collection_incidents = future_capture_health_summary(
+        batches,
+        maximum_missingness_bps=candidate.statistics.maximum_missingness_bps,
+    )
     receipt = FutureCaptureReceiptV1(
         binding=candidate.binding,
         candidate_receipt_sha256=candidate_receipt.receipt_sha256,
@@ -317,6 +378,9 @@ def _seal_future_capture_batches(
         capture_sha256=artifact.capture_sha256,
         artifact_sha256=digest,
         artifact_path=str(path),
+        batch_count=len(batches),
+        batch_health_sha256=batch_health_sha256,
+        collection_incidents=collection_incidents,
         created_at_ms=now_ms,
     )
     receipt_path, _ = publish_evidence_artifact(root, kind="capture", artifact=receipt)
@@ -504,8 +568,10 @@ def _register_candidate(settings: Any, args: Any, *, now_ms: int) -> tuple[int, 
 
 
 def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
-    capture = load_evidence_artifact(Path(args.capture), EvidenceCaptureArtifactV1)
-    drain = load_evidence_artifact(Path(args.drain), EvidenceDrainArtifactV1)
+    capture_path = Path(args.capture).resolve()
+    drain_path = Path(args.drain).resolve()
+    capture = load_evidence_artifact(capture_path, EvidenceCaptureArtifactV1)
+    drain = load_evidence_artifact(drain_path, EvidenceDrainArtifactV1)
     candidate, candidate_receipt = _load_candidate_pair(args)
     _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
     capture_receipt = _load_durable_future_capture_receipt(
@@ -513,7 +579,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         candidate,
         candidate_receipt,
         capture,
-        capture_path=Path(args.capture),
+        capture_path=capture_path,
     )
     config = capital_lane_config(settings)
     contract = build_execution_policy_contract_receipt()
@@ -523,11 +589,10 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         or candidate.execution.adapter_contract_sha256 != contract.adapter_contract_sha256[candidate.binding]
     ):
         raise ValueError("evidence_future_execution_contract_drift")
-    incidents: tuple[EvidenceIncident, ...] = (
-        ("protection_contract_invalid",)
-        if candidate.execution.protection_contract_sha256 != contract.protection_contract_sha256
-        else ()
-    )
+    incidents_set = set(capture_receipt.collection_incidents)
+    if candidate.execution.protection_contract_sha256 != contract.protection_contract_sha256:
+        incidents_set.add("protection_contract_invalid")
+    incidents: tuple[EvidenceIncident, ...] = tuple(sorted(incidents_set))
     with repositories(settings, role="serve") as repos:
         if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
             raise ValueError("evidence_future_already_unblinded")
@@ -539,7 +604,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         capture_receipt=capture_receipt,
         capture=capture,
         drain=drain,
-        drain_path=Path(args.drain),
+        drain_path=drain_path,
         now_ms=now_ms,
     )
     result = unblind_future_holdout(
@@ -575,17 +640,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
             raise ValueError("evidence_future_already_unblinded")
         locked_drain_row = repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256)
-        locked_drain_receipt = _validated_future_drain_receipt(
-            locked_drain_row,
-            candidate=candidate,
-            candidate_receipt=candidate_receipt,
-            capture_receipt=capture_receipt,
-            capture=capture,
-            drain=drain,
-            drain_path=Path(args.drain),
-            now_ms=now_ms,
-        )
-        if locked_drain_receipt.receipt_sha256 != drain_receipt.receipt_sha256:
+        if locked_drain_row is None or locked_drain_row["receipt_sha256"] != drain_receipt.receipt_sha256:
             raise ValueError("evidence_future_drain_receipt_changed")
         inserted = repos.trading.append_future_holdout_result_receipt(receipt, result)
     return 0, _receipt_answer(receipt, path, receipt_path, inserted=inserted)
@@ -608,74 +663,53 @@ def _verify(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, An
     raise ValueError("evidence_verification_subject_required")
 
 
+def _register_release(settings: Any, args: Any) -> tuple[int, dict[str, Any]]:
+    release = ProductionReleaseCandidateV1.model_validate(_mapping_file(str(args.file)))
+    serve = _observe_serve_runtime(settings)
+    prepared = prepare_production_release_registration(release, serve)
+    with repositories(settings, role="workers") as repos, repos.transaction():
+        registration = repos.trading.register_production_release(prepared)
+    return 0, {
+        "ok": True,
+        "data": {
+            "release_sha256": prepared.release_sha256,
+            "window_sha256": prepared.window_sha256,
+            "registered_at_ms": int(registration["registered_at_ms"]),
+            "workers_runtime_id": str(registration["workers_runtime_id"]),
+            "serve_runtime_id": str(registration["serve_runtime_id"]),
+            "inserted": bool(registration["inserted"]),
+        },
+    }
+
+
+def _observe_serve_runtime(settings: Any) -> ServeRuntimeObservationV1:
+    request = Request(
+        f"http://127.0.0.1:{int(settings.api.port)}/api/status",
+        headers={"Authorization": f"Bearer {settings.ws_token}"},
+    )
+    with build_opener(ProxyHandler({})).open(request, timeout=5.0) as response:
+        envelope = json.loads(response.read())
+    data = dict(envelope.get("data") or {})
+    runtime = dict(data.get("runtime") or {})
+    serve = dict(runtime.get("serve_runtime") or {})
+    return ServeRuntimeObservationV1.model_validate({**serve, "measured_at_ms": data.get("measured_at_ms")})
+
+
 def _verify_receipt_chain(settings: Any, receipt_sha256: str, *, now_ms: int) -> tuple[int, dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[str] = set()
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         current: str | None = receipt_sha256
-        while current is not None:
-            if current in seen or len(chain) >= 5:
-                raise RuntimeError("evidence_receipt_parent_cycle")
+        while current is not None and current not in seen and len(chain) < 5:
             seen.add(current)
             row = repos.trading.evidence_clock_receipt(current)
             if row is None:
-                raise RuntimeError("evidence_receipt_missing")
+                break
             chain.append(row)
             current = row["parent_receipt_sha256"]
-    checks: list[EvidenceVerificationCheckV1] = []
-    for index, row in enumerate(chain):
-        payload = dict(row["payload"])
-        receipt_payload = dict(payload["receipt"])
-        kind = str(row["receipt_kind"])
-        receipt_model: Any
-        artifact_model: Any
-        if kind == "DISCOVERY_CORPUS":
-            receipt_model = DiscoveryCorpusReceiptV1.model_validate(receipt_payload)
-            artifact_model = DiscoveryCorpusArtifactV1
-        elif kind == "CANDIDATE_DECISION":
-            receipt_model = CandidateDecisionReceiptV1.model_validate(receipt_payload)
-            artifact_model = CandidateLockedV1 if row["terminal"] == "CANDIDATE_LOCKED" else None
-        elif kind == "FUTURE_CAPTURE":
-            receipt_model = FutureCaptureReceiptV1.model_validate(receipt_payload)
-            artifact_model = EvidenceCaptureArtifactV1
-        elif kind == "FUTURE_DRAIN":
-            receipt_model = FutureDrainReceiptV1.model_validate(receipt_payload)
-            artifact_model = EvidenceDrainArtifactV1
-        elif kind == "FUTURE_RESULT":
-            receipt_model = FutureHoldoutResultReceiptV1.model_validate(receipt_payload)
-            artifact_model = FutureHoldoutResultV1
-        else:
-            raise RuntimeError("evidence_receipt_kind_unknown")
-        row_identity_valid = (
-            receipt_model.receipt_sha256 == row["receipt_sha256"]
-            and payload.get("receipt_sha256") == row["receipt_sha256"]
-            and payload.get("receipt_kind") == kind
-            and payload.get("terminal") == row["terminal"]
-            and payload.get("binding") == row["binding"]
-            and payload.get("parent_receipt_sha256") == row["parent_receipt_sha256"]
-            and payload.get("artifact_sha256") == row["artifact_sha256"]
-            and payload.get("corpus_sha256") == row["corpus_sha256"]
-            and payload.get("protocol_sha256") == row["protocol_sha256"]
-        )
-        checks.append(_check(f"receipt_{index}_row_identity", row_identity_valid, kind=kind))
-        path = Path(str(receipt_model.artifact_path))
-        if artifact_model is None:
-            raw = verify_evidence_artifact(path, expected_sha256=str(row["artifact_sha256"]))
-            decision = CANDIDATE_DECISION_ADAPTER.validate_python(json.loads(raw))
-            artifact_valid = canonical_sha256(decision.model_dump(mode="json")) == row["artifact_sha256"]
-        else:
-            artifact = load_evidence_artifact(path, artifact_model, expected_sha256=row["artifact_sha256"])
-            artifact_valid = canonical_sha256(artifact.model_dump(mode="json")) == row["artifact_sha256"]
-        checks.append(_check(f"receipt_{index}_artifact_identity", artifact_valid, kind=kind))
-        if index + 1 < len(chain):
-            checks.append(
-                _check(
-                    f"receipt_{index}_parent_link",
-                    row["parent_receipt_sha256"] == chain[index + 1]["receipt_sha256"],
-                    kind=kind,
-                )
-            )
+    artifact_bytes = _read_receipt_artifacts(chain)
+    checks = receipt_chain_verification_checks(receipt_sha256, chain, artifact_bytes)
     return _verification_answer(
         verification_report(subject=f"receipt:{receipt_sha256}", verified_at_ms=now_ms, checks=checks)
     )
@@ -695,9 +729,11 @@ def _verify_window(
     *,
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
+    serve = _observe_serve_runtime(settings)
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.fixed_window_verification_snapshot(spec)
+    snapshot["serve_runtime"] = serve.model_dump(mode="json")
     checks = fixed_window_verification_checks(spec, snapshot, now_ms=now_ms)
     return _verification_answer(
         verification_report(subject=f"fixed-window:{spec.window_sha256}", verified_at_ms=now_ms, checks=checks),
@@ -712,6 +748,7 @@ def _verify_release(
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
     evidence_receipts = tuple(sorted(release.corpus_receipt_sha256s + release.future_result_receipt_sha256s))
+    serve = _observe_serve_runtime(settings)
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.release_verification_snapshot(
@@ -725,6 +762,7 @@ def _verify_release(
             ),
         )
         window_snapshot = repos.trading.fixed_window_verification_snapshot(release.acceptance_window)
+    window_snapshot["serve_runtime"] = serve.model_dump(mode="json")
     identity = runtime_identity()
     contract = build_execution_policy_contract_receipt()
     config = capital_lane_config(settings)
@@ -733,24 +771,9 @@ def _verify_release(
     web_sha = _tree_sha256(_frontend_dist())
     wheel_identity = installed_nautilus_wheel_identity()
     wheel_sha = wheel_identity.rsplit("sha256:", 1)[-1] if "sha256:" in wheel_identity else None
-    receipt_rows = {str(row["receipt_sha256"]): row for row in snapshot["receipts"]}
-    receipt_chains_valid = all(
-        _database_receipt_chain_valid(digest, receipt_rows, expected_kinds=("DISCOVERY_CORPUS",))
-        for digest in release.corpus_receipt_sha256s
-    ) and all(
-        _database_receipt_chain_valid(
-            digest,
-            receipt_rows,
-            expected_kinds=(
-                "FUTURE_RESULT",
-                "FUTURE_DRAIN",
-                "FUTURE_CAPTURE",
-                "CANDIDATE_DECISION",
-                "DISCOVERY_CORPUS",
-            ),
-        )
-        for digest in release.future_result_receipt_sha256s
-    )
+    receipt_artifacts = _read_receipt_artifacts(snapshot["receipts"])
+    all_receipt_roots = release.corpus_receipt_sha256s + release.future_result_receipt_sha256s
+    all_receipt_chains_valid = receipt_chains_valid(all_receipt_roots, snapshot["receipts"], receipt_artifacts)
     checks = release_verification_checks(
         release,
         snapshot,
@@ -770,7 +793,8 @@ def _verify_release(
             "quote_contract_sha256": contract.quote_contract_sha256,
             "protection_contract_sha256": contract.protection_contract_sha256,
             "policy_config_sha256": config.policy.config_digest,
-            "receipt_chains_valid": receipt_chains_valid,
+            "receipt_chains_valid": all_receipt_chains_valid,
+            "serve_runtime": serve.model_dump(mode="json"),
         },
         now_ms=now_ms,
     )
@@ -801,100 +825,14 @@ def _verification_answer(report: Any, **extra: Any) -> tuple[int, dict[str, Any]
     return (0 if report.terminal == "VERIFIED" else 1), {"ok": report.terminal == "VERIFIED", "data": data}
 
 
-def _database_receipt_chain_valid(
-    receipt_sha256: str,
-    rows: dict[str, dict[str, Any]],
-    *,
-    expected_kinds: tuple[str, ...],
-) -> bool:
-    current: str | None = receipt_sha256
-    seen: set[str] = set()
-    for expected_kind in expected_kinds:
-        if current is None or current in seen:
-            return False
-        seen.add(current)
-        row = rows.get(current)
-        if (
-            row is None
-            or row["receipt_kind"] != expected_kind
-            or not _database_receipt_identity_valid(row)
-            or not _receipt_artifact_identity_valid(row)
-        ):
-            return False
-        current = row["parent_receipt_sha256"]
-    return current is None
-
-
-def _database_receipt_identity_valid(row: dict[str, Any]) -> bool:
-    try:
-        payload = dict(row["payload"])
-        kind = str(row["receipt_kind"])
-        receipt_payload = dict(payload["receipt"])
-        if kind == "DISCOVERY_CORPUS":
-            receipt: Any = DiscoveryCorpusReceiptV1.model_validate(receipt_payload)
-        elif kind == "CANDIDATE_DECISION":
-            receipt = CandidateDecisionReceiptV1.model_validate(receipt_payload)
-            decision = CANDIDATE_DECISION_ADAPTER.validate_python(payload["evidence"])
-            if canonical_sha256(decision.model_dump(mode="json")) != row["artifact_sha256"]:
-                return False
-        elif kind == "FUTURE_CAPTURE":
-            receipt = FutureCaptureReceiptV1.model_validate(receipt_payload)
-        elif kind == "FUTURE_DRAIN":
-            receipt = FutureDrainReceiptV1.model_validate(receipt_payload)
-        elif kind == "FUTURE_RESULT":
-            receipt = FutureHoldoutResultReceiptV1.model_validate(receipt_payload)
-            result = FutureHoldoutResultV1.model_validate(payload["evidence"])
-            if result.report_sha256 != row["artifact_sha256"]:
-                return False
-        else:
-            return False
-        return bool(
-            receipt.receipt_sha256 == row["receipt_sha256"]
-            and payload.get("receipt_sha256") == row["receipt_sha256"]
-            and payload.get("receipt_kind") == kind
-            and payload.get("terminal") == row["terminal"]
-            and payload.get("binding") == row["binding"]
-            and payload.get("parent_receipt_sha256") == row["parent_receipt_sha256"]
-            and payload.get("artifact_sha256") == row["artifact_sha256"]
-            and payload.get("corpus_sha256") == row["corpus_sha256"]
-            and payload.get("protocol_sha256") == row["protocol_sha256"]
-        )
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def _receipt_artifact_identity_valid(row: dict[str, Any]) -> bool:
-    try:
-        payload = dict(row["payload"])
-        receipt_payload = dict(payload["receipt"])
-        kind = str(row["receipt_kind"])
-        if kind == "DISCOVERY_CORPUS":
-            receipt: Any = DiscoveryCorpusReceiptV1.model_validate(receipt_payload)
-            artifact_model: Any = DiscoveryCorpusArtifactV1
-        elif kind == "CANDIDATE_DECISION":
-            receipt = CandidateDecisionReceiptV1.model_validate(receipt_payload)
-            raw = verify_evidence_artifact(Path(receipt.artifact_path), expected_sha256=str(row["artifact_sha256"]))
-            decision = CANDIDATE_DECISION_ADAPTER.validate_python(json.loads(raw))
-            return bool(canonical_sha256(decision.model_dump(mode="json")) == row["artifact_sha256"])
-        elif kind == "FUTURE_CAPTURE":
-            receipt = FutureCaptureReceiptV1.model_validate(receipt_payload)
-            artifact_model = EvidenceCaptureArtifactV1
-        elif kind == "FUTURE_DRAIN":
-            receipt = FutureDrainReceiptV1.model_validate(receipt_payload)
-            artifact_model = EvidenceDrainArtifactV1
-        elif kind == "FUTURE_RESULT":
-            receipt = FutureHoldoutResultReceiptV1.model_validate(receipt_payload)
-            artifact_model = FutureHoldoutResultV1
-        else:
-            return False
-        artifact = load_evidence_artifact(
-            Path(receipt.artifact_path),
-            artifact_model,
-            expected_sha256=str(row["artifact_sha256"]),
-        )
-        return bool(canonical_sha256(artifact.model_dump(mode="json")) == row["artifact_sha256"])
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return False
+def _read_receipt_artifacts(rows: list[dict[str, Any]]) -> dict[str, bytes | None]:
+    payloads: dict[str, bytes | None] = {}
+    for request in receipt_artifact_requests(rows):
+        try:
+            payloads[request.receipt_sha256] = Path(request.artifact_path).read_bytes()
+        except OSError:
+            payloads[request.receipt_sha256] = None
+    return payloads
 
 
 def _git_tag_identity(tag: str) -> tuple[bool, str | None, str | None]:
@@ -960,6 +898,74 @@ def _tree_sha256(root: Path | None) -> str | None:
     return canonical_sha256(
         tuple({"path": path.relative_to(root).as_posix(), "sha256": _file_sha256(path)} for path in files)
     )
+
+
+async def _fetch_blind_market_health(
+    capture: EvidenceCaptureArtifactV1,
+    *,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[int, int, int]:
+    """Probe only continuity counts during the blind period; never retain or return market values."""
+
+    unique = {(plan.venue, plan.instrument.provider_symbol): plan for plan in _capture_plans(capture)}
+    plans = tuple(unique[key] for key in sorted(unique))
+    semaphore = asyncio.Semaphore(8)
+    aligned_start = start_ms // EVIDENCE_BAR_INTERVAL_MS * EVIDENCE_BAR_INTERVAL_MS
+    aligned_end = (end_ms + EVIDENCE_BAR_INTERVAL_MS - 1) // EVIDENCE_BAR_INTERVAL_MS * EVIDENCE_BAR_INTERVAL_MS
+
+    async def probe(plan: DirectionalReplayPlan) -> tuple[bool, bool]:
+        bars_ok = False
+        funding_ok = False
+        try:
+            async with semaphore:
+                if plan.venue == "binance.perp":
+                    bars = await fetch_binance_bars(
+                        plan.instrument.provider_symbol,
+                        venue=plan.venue,
+                        start_ms=aligned_start,
+                        end_ms=aligned_end,
+                    )
+                else:
+                    bars = await fetch_hyperliquid_bars(
+                        plan.instrument.provider_symbol,
+                        venue=plan.venue,
+                        start_ms=aligned_start,
+                        end_ms=aligned_end,
+                    )
+            ordered = sorted(bars, key=lambda row: (row.open_at_ms, row.close_at_ms))
+            bars_ok = bool(ordered) and all(
+                row.close_at_ms - row.open_at_ms == EVIDENCE_BAR_INTERVAL_MS for row in ordered
+            )
+            bars_ok = bool(
+                bars_ok
+                and ordered[0].open_at_ms <= aligned_start
+                and ordered[-1].close_at_ms >= aligned_end
+                and all(previous.close_at_ms == current.open_at_ms for previous, current in pairwise(ordered))
+            )
+        except VenueExpectedError:
+            bars_ok = False
+        try:
+            async with semaphore:
+                if plan.venue == "binance.perp":
+                    await fetch_binance_funding_rates(
+                        plan.instrument.provider_symbol,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                    )
+                else:
+                    await fetch_hyperliquid_funding_rates(
+                        plan.instrument.provider_symbol,
+                        start_ms=start_ms,
+                        end_ms=end_ms,
+                    )
+            funding_ok = True
+        except VenueExpectedError:
+            funding_ok = False
+        return bars_ok, funding_ok
+
+    results = await asyncio.gather(*(probe(plan) for plan in plans))
+    return len(plans), sum(bars_ok for bars_ok, _ in results), sum(funding_ok for _, funding_ok in results)
 
 
 async def _fetch_market_inputs(
@@ -1131,7 +1137,7 @@ def _validate_durable_candidate_receipt(
     settings: Any,
     candidate: CandidateLockedV1,
     receipt: CandidateDecisionReceiptV1,
-) -> None:
+) -> int:
     with repositories(settings, role="serve") as repos:
         row = repos.trading.evidence_clock_receipt(receipt.receipt_sha256)
     if row is None:
@@ -1148,6 +1154,10 @@ def _validate_durable_candidate_receipt(
         or payload.get("evidence") != candidate.model_dump(mode="json")
     ):
         raise ValueError("evidence_future_candidate_receipt_not_durable")
+    recorded_at_ms = int(row.get("recorded_at_ms") or 0)
+    if not receipt.created_at_ms <= recorded_at_ms < candidate.statistics.future_start_ms:
+        raise ValueError("evidence_future_candidate_recorded_clock_invalid")
+    return recorded_at_ms
 
 
 def _load_durable_future_capture_receipt(

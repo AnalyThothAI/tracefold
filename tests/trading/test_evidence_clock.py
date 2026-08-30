@@ -32,6 +32,7 @@ from tracefold.trading.evidence_clock import (
 from tracefold.trading.evidence_research import (
     build_evidence_capture,
     build_evidence_drain,
+    build_future_capture_collection_health,
     seal_discovery_corpus,
     unblind_future_holdout,
 )
@@ -47,6 +48,7 @@ NOW = 1_900_000_000_000
 def _row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "event_id": "event-tut",
+        "source_item_id": "item-tut",
         "verdict_created_at_ms": NOW + 1,
         "final_decision": "drop",
         "source_rule": "whale_ratio_below_threshold",
@@ -74,6 +76,10 @@ def _row(**overrides: Any) -> dict[str, Any]:
         "venue": "binance",
     }
     row.update(overrides)
+    row.setdefault(
+        "source_available_at_ms",
+        max(int(row["observed_at_ms"]), int(row["verdict_created_at_ms"])),
+    )
     return row
 
 
@@ -282,6 +288,15 @@ def test_capture_and_drain_reject_clock_or_payload_identity_tampering() -> None:
 def test_future_capture_batch_records_schedule_and_collection_health() -> None:
     capture = _capture()
     source = capture.sources[0]
+    health = build_future_capture_collection_health(
+        (source,),
+        expected_source_count=1,
+        collector={"connected": True, "batch_end_ms": NOW + 2},
+        workers={"lifecycle_state": "running", "heartbeat_at_ms": NOW + 10},
+        market_instrument_count=1,
+        bar_continuous_count=1,
+        funding_probe_ok_count=1,
+    )
     batch = FutureCaptureBatchV1(
         binding="BINANCE_USDM",
         candidate_receipt_sha256="1" * 64,
@@ -294,6 +309,7 @@ def test_future_capture_batch_records_schedule_and_collection_health() -> None:
         source_count=1,
         late_source_count=0,
         catalog_missing_count=0,
+        health=health,
     )
 
     payload = batch.model_dump(mode="json")

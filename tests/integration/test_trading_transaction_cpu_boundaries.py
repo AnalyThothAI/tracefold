@@ -192,6 +192,7 @@ class _TightAuthorityIdleTimeout:
 class _TightWriteIdleTimeout:
     def __init__(self, delegate: WorkerTradingDatabase) -> None:
         self._delegate = delegate
+        self.repository_statement_counts: list[int] = []
 
     async def tx(
         self,
@@ -202,7 +203,19 @@ class _TightWriteIdleTimeout:
     ) -> Any:
         def with_tight_idle_timeout(repos: Any) -> Any:
             repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
-            return fn(repos)
+            statement_count = 0
+
+            def count_statement() -> None:
+                nonlocal statement_count
+                statement_count += 1
+
+            original_conn = repos.trading.conn
+            repos.trading.conn = _CountingConnection(original_conn, count_statement)
+            try:
+                return fn(repos)
+            finally:
+                repos.trading.conn = original_conn
+                self.repository_statement_counts.append(statement_count)
 
         return await self._delegate.tx(name, with_tight_idle_timeout, timeout_seconds=timeout_seconds)
 
@@ -310,6 +323,7 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
 
     try:
         stored = asyncio.run(publish_idempotently_and_reject_a_conflict())
+        assert tight_writes.repository_statement_counts == [1, 1, 1]
         conn = connect_postgres_test(read_only=False)
         try:
             row = conn.execute(

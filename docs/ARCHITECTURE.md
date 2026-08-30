@@ -1846,7 +1846,9 @@ the arm epoch after a paused cutover.
 `20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
 handoff repair/status scan.
 `20260830_0334` installs the Trading evidence clock, frozen News handoff clocks,
-append-only future-capture batches, and the promotion/verification hard links.
+append-only future-capture batches, database-stamped evidence receipts, exact
+release/window preregistration, and the promotion/verification hard links. It
+also rejects any attempt to revive a terminal Intent after rollback.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -2097,25 +2099,30 @@ independent strategy-selection authority.
 
 Future capture is a contiguous sequence of append-only batches. PostgreSQL locks the
 candidate receipt and enforces the next interval, maximum capture lag, binding, and
-protocol identity. Each batch records source count, capture lag, late-source count,
-catalog-missing count, and the exact source rows. Only a complete batch chain can be
+protocol identity. Each batch records the collector and Workers generation health,
+expected/missing/late/catalog source mass, bar/funding continuity, artifact integrity,
+and the exact source rows. Only a complete batch chain can be
 sealed as `FUTURE_CAPTURE`; only its later committed drain can be unblinded once. The
-database clock timestamps public evidence transitions and candidate preregistration.
+database overwrites caller timestamps with its actual clock for receipts, future
+batches, and release registration; a caller-provided clock cannot manufacture ordering.
 Filesystem/provider work is completed before a short transaction; no artifact or
 network I/O occurs while a database transaction is open.
 
 Research evidence is not capital authority. A `PROMOTE` future result is hard-linked
 through immutable risk policy, promotion grant, operator arm, reservation,
 authorization, Intent, native protection, authoritative `CLOSED_FLAT`, and settlement
-facts. The final seven-day window is bound to one signed tag, commit, OCI image, Workers
-runtime identity, release-tagged authority chain, and nonzero activity floors. Replacing
-the process or release makes the window fail rather than silently continuing it.
+facts. Before its start, the final seven-day window is registered against one signed
+tag, commit, OCI image, the exact already-running Workers and Serve generations,
+release-tagged authority chain, and nonzero activity floors. Both generations must span
+the window under the registered revision/image. Replacing either process or the release
+makes the window fail rather than silently continuing it.
 
-`tracefold.trading.evidence_verification` owns the pure meaning of Case, Intent,
-fixed-window, release, canary/restart, and rollback checks. `tracefold.app` only collects
-bounded PostgreSQL snapshots and local Git/runtime/artifact identities and passes those
-facts to the verifier. Missing, unknown, late, mismatched, nonterminal, unprotected, or
-unsettled evidence is a named failed check; no App handler may reinterpret it as success.
+`tracefold.trading.evidence_verification` owns the pure meaning of receipt chains, Case,
+Intent, fixed-window, release, canary/restart, and rollback checks. `tracefold.app` only
+collects bounded PostgreSQL rows, raw artifact bytes, local Git identities, and the
+authenticated local Serve observation before passing those facts to Trading. Missing,
+unknown, late, mismatched, nonterminal, unprotected, or unsettled evidence is a named
+failed check; no App handler may reinterpret it as success.
 
 ### Runtime and cutover
 

@@ -1,6 +1,6 @@
 """News-owned point-in-time projection read by App composition for Trading.
 
-The two row contracts below are the published shape of that projection. They are `TypedDict`s
+The row contracts below are the published shape of that projection. They are `TypedDict`s
 because the rows *are* the SELECT lists — naming the columns is the whole contract, and a runtime
 model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
 different value. Nothing outside this module may add, rename or retype a key without editing them,
@@ -80,6 +80,7 @@ class OiTradeProjectionRow(TypedDict):
     """
 
     event_id: str
+    source_item_id: str
     verdict_created_at_ms: int
     final_decision: str
     # `evaluate_oi`'s non-empty named rule from the current canonical judgment atom.
@@ -126,8 +127,53 @@ class TradeInstrumentProjectionRow(TypedDict):
     last_seen_ms: int
 
 
+class TradeEvidenceCollectionHealthRow(TypedDict):
+    """Blind-safe collector state and source denominator for one future batch."""
+
+    connected: bool
+    last_frame_at_ms: int | None
+    last_error_code: str | None
+    expected_source_count: int
+
+
 class TradeProjectionStorage:
     conn: Any
+
+    def trade_evidence_collection_health(
+        self,
+        *,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        available_at_or_before_ms: int,
+        source_venues: tuple[str, ...],
+    ) -> TradeEvidenceCollectionHealthRow:
+        """News-owned raw collector and denominator facts for blind-safe Trading health."""
+
+        row = self.conn.execute(
+            """
+            SELECT ingest.connected, ingest.last_frame_at_ms, ingest.last_error_code,
+                   (SELECT count(*)
+                      FROM news_oi_signals signal
+                     WHERE signal.observed_at_ms >= %(start)s
+                       AND signal.observed_at_ms < %(end)s
+                       AND signal.available_at_ms <= %(available)s
+                       AND signal.source_venue = ANY(%(venues)s)) AS expected_source_count
+              FROM news_ingest_state ingest
+             WHERE ingest.singleton_key = 'opennews'
+            """,
+            {
+                "start": int(start_observed_at_ms),
+                "end": int(end_observed_at_ms),
+                "available": int(available_at_or_before_ms),
+                "venues": list(source_venues),
+            },
+        ).fetchone()
+        return TradeEvidenceCollectionHealthRow(
+            connected=False if row is None else bool(row["connected"]),
+            last_frame_at_ms=None if row is None else row["last_frame_at_ms"],
+            last_error_code="collector_state_missing" if row is None else row["last_error_code"],
+            expected_source_count=0 if row is None else int(row["expected_source_count"]),
+        )
 
     def trade_candidate_oi_rows(
         self,
@@ -167,6 +213,7 @@ class TradeProjectionStorage:
         rows = self.conn.execute(
             f"""
             SELECT v.event_id,
+                   s.source_item_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
                    v.trace #>> '{{judgment,rule}}' AS source_rule,
@@ -251,6 +298,7 @@ class TradeProjectionStorage:
         rows = self.conn.execute(
             """
             SELECT v.event_id,
+                   s.source_item_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
                    v.trace #>> '{judgment,rule}' AS source_rule,
@@ -447,6 +495,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
 
     return OiTradeProjectionRow(
         event_id=row["event_id"],
+        source_item_id=row["source_item_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
         source_rule=row["source_rule"],

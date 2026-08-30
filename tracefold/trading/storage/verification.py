@@ -54,8 +54,6 @@ class VerificationStorage:
               SELECT *
                 FROM trading_candidate_gate_decisions
                WHERE trigger_kind = 'oi'
-                 AND gate_version = %(gate_version)s
-                 AND gate_config_digest = %(gate_config)s
                  AND source_observed_at_ms >= %(start)s
                  AND source_observed_at_ms < %(end)s
             ), cases AS (
@@ -88,6 +86,9 @@ class VerificationStorage:
             )
             SELECT
               (SELECT count(*) FROM gates) AS source_count,
+              (SELECT count(*) FROM gates
+                WHERE gate_version <> %(gate_version)s
+                   OR gate_config_digest <> %(gate_config)s) AS wrong_gate_contract_count,
               (SELECT count(*) FROM gates
                 WHERE release_revision <> %(git_commit)s) AS wrong_release_source_count,
               (SELECT count(DISTINCT source_key) FROM gates) AS unique_source_count,
@@ -156,13 +157,19 @@ class VerificationStorage:
             (spec.start_ms, spec.end_ms),
         ).fetchall()
         workers_runtime = self.conn.execute(
-            "SELECT runtime_revision, image_digest, lifecycle_state, started_at_ms, heartbeat_at_ms "
+            "SELECT runtime_id::text AS runtime_id, runtime_revision, image_digest, "
+            "lifecycle_state, started_at_ms, heartbeat_at_ms "
             "FROM workers_runtime WHERE singleton_key"
+        ).fetchone()
+        registration = self.conn.execute(
+            "SELECT * FROM trading_production_release_registrations WHERE window_sha256 = %s",
+            (spec.window_sha256,),
         ).fetchone()
         return {
             "counts": counts,
             "by_binding": [dict(item) for item in binding_rows],
             "workers_runtime": None if workers_runtime is None else dict(workers_runtime),
+            "release_registration": None if registration is None else dict(registration),
         }
 
     def release_verification_snapshot(
@@ -186,7 +193,8 @@ class VerificationStorage:
                 JOIN evidence_chain child ON child.parent_receipt_sha256 = parent.receipt_sha256
             )
             SELECT receipt_sha256, receipt_kind, terminal, binding, parent_receipt_sha256,
-                   artifact_sha256, corpus_sha256, protocol_sha256, created_at_ms, payload
+                   artifact_sha256, corpus_sha256, protocol_sha256,
+                   created_at_ms, recorded_at_ms, payload
               FROM evidence_chain ORDER BY receipt_sha256
             """,
             (list(evidence_receipts),),
@@ -263,6 +271,12 @@ class VerificationStorage:
 
     def rollback_verification_snapshot(self, receipt: ProductionRollbackReceiptV1) -> dict[str, Any]:
         runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
+        decision = self.conn.execute(
+            "SELECT state, heartbeat_at_ms, reason FROM trading_decision_runtime WHERE id = 1"
+        ).fetchone()
+        workers = self.conn.execute(
+            "SELECT lifecycle_state, heartbeat_at_ms FROM workers_runtime WHERE singleton_key"
+        ).fetchone()
         active = self.conn.execute(
             "SELECT count(*) AS n FROM trading_intents "
             "WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')"
@@ -272,10 +286,19 @@ class VerificationStorage:
             "WHERE status IN ('RESERVED', 'FENCED', 'OPEN', 'MANUAL_REVIEW')"
         ).fetchone()
         bindings = self.conn.execute(
-            "SELECT binding, account_state, active_arm_receipt_sha256 FROM trading_binding_runtime "
+            "SELECT binding, runtime_state, account_state, catalog_state, capability_state, "
+            "active_arm_receipt_sha256, heartbeat_at_ms, reason FROM trading_binding_runtime "
             "WHERE binding = ANY(%s) ORDER BY binding",
             (list(receipt.bindings),),
         ).fetchall()
+        post_rollback = self.conn.execute(
+            """
+            SELECT count(*) FILTER (WHERE created_at_ms > %(rollback)s) AS intent_count,
+                   count(*) FILTER (WHERE entry_submitted_at_ms > %(rollback)s) AS submission_count
+              FROM trading_intents
+            """,
+            {"rollback": receipt.rolled_back_at_ms},
+        ).fetchone()
         grants = self.conn.execute(
             """
             SELECT promotion.grant_sha256, promotion.expires_at_ms, revocation.revoked_at_ms
@@ -289,8 +312,14 @@ class VerificationStorage:
         ).fetchall()
         return {
             "control": None if runtime is None else str(runtime["control"]),
+            "decision_runtime": None if decision is None else dict(decision),
+            "workers_runtime": None if workers is None else dict(workers),
             "active_intent_count": int(active["n"] if active is not None else 0),
             "active_risk_count": int(risk["n"] if risk is not None else 0),
+            "post_rollback_intent_count": int(post_rollback["intent_count"] if post_rollback is not None else 0),
+            "post_rollback_submission_count": int(
+                post_rollback["submission_count"] if post_rollback is not None else 0
+            ),
             "bindings": [dict(item) for item in bindings],
             "grants": [dict(item) for item in grants],
         }

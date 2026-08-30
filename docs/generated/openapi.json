@@ -5058,6 +5058,35 @@
         "title": "ReadinessData",
         "type": "object"
       },
+      "ServeRuntimeData": {
+        "additionalProperties": false,
+        "properties": {
+          "image_digest": {
+            "title": "Image Digest",
+            "type": "string"
+          },
+          "runtime_id": {
+            "title": "Runtime Id",
+            "type": "string"
+          },
+          "runtime_revision": {
+            "title": "Runtime Revision",
+            "type": "string"
+          },
+          "started_at_ms": {
+            "title": "Started At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runtime_id",
+          "runtime_revision",
+          "image_digest",
+          "started_at_ms"
+        ],
+        "title": "ServeRuntimeData",
+        "type": "object"
+      },
       "StatusData": {
         "additionalProperties": false,
         "properties": {
@@ -5156,6 +5185,9 @@
             "title": "Reasons",
             "type": "array"
           },
+          "serve_runtime": {
+            "$ref": "#/components/schemas/ServeRuntimeData"
+          },
           "workers_runtime": {
             "$ref": "#/components/schemas/WorkersRuntimeData"
           }
@@ -5164,6 +5196,7 @@
           "ok",
           "reasons",
           "db",
+          "serve_runtime",
           "workers_runtime"
         ],
         "title": "StatusRuntimeData",

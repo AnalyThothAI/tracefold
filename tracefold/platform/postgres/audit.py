@@ -103,6 +103,7 @@ TRADING_TABLES = (
     "trading_evidence_clock_receipts",
     "trading_evidence_future_capture_batches",
     "trading_nautilus_runtime_starts",
+    "trading_production_release_registrations",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

@@ -32,6 +32,7 @@ from tracefold.trading.evidence_clock import (
     CandidateExecutionProtocolV1,
     CandidateLockedV1,
     DiscoveryCorpusReceiptV1,
+    FutureCaptureBatchV1,
     FutureCaptureReceiptV1,
     FutureDrainReceiptV1,
     FutureHoldoutMetricsV1,
@@ -39,6 +40,8 @@ from tracefold.trading.evidence_clock import (
     FutureHoldoutResultV1,
     FutureStatisticalProtocolV1,
     candidate_selection_program_sha256,
+    future_capture_health_summary,
+    prepare_future_capture_batch,
 )
 from tracefold.trading.evidence_clock import (
     feature_contract_sha256 as evidence_feature_contract_sha256,
@@ -46,6 +49,7 @@ from tracefold.trading.evidence_clock import (
 from tracefold.trading.evidence_clock import (
     source_contract_sha256 as evidence_source_contract_sha256,
 )
+from tracefold.trading.evidence_research import build_future_capture_collection_health
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256, PROTECTION_CONTRACT_SHA256
 from tracefold.trading.market_context import PriceWindow
 from tracefold.trading.policy import CapitalPolicy
@@ -65,6 +69,18 @@ TEST_COST_MODEL = {
     "additional_stressed_cost_bps": "2",
 }
 TEST_COST_MODEL_SHA256 = canonical_sha256(TEST_COST_MODEL)
+
+
+def set_evidence_database_clock(repos: Any, now_ms: int) -> None:
+    """Test-only PostgreSQL clock control; production roles cannot replace the owned function."""
+
+    connection = getattr(repos, "conn", None)
+    if connection is None:
+        raise RuntimeError("test_evidence_database_connection_missing")
+    connection.execute(
+        "CREATE OR REPLACE FUNCTION trading_evidence_now_ms() RETURNS BIGINT "
+        f"LANGUAGE sql VOLATILE AS 'SELECT {int(now_ms)}::BIGINT'"
+    )
 
 
 def _evidence_feature_contract_sha256() -> str:
@@ -246,8 +262,38 @@ def append_capital_evidence_fixture(
         feature_contract_sha256=feature_contract_sha256,
         policy_config_sha256=policy_config_sha256,
     )
+    set_evidence_database_clock(trading, 2)
     trading.append_discovery_corpus_receipt(corpus)
+    set_evidence_database_clock(trading, 3)
     trading.append_candidate_decision_receipt(candidate_receipt, candidate)
+    health = build_future_capture_collection_health(
+        (),
+        expected_source_count=0,
+        collector={"connected": True, "batch_end_ms": candidate.statistics.future_end_ms},
+        workers={"lifecycle_state": "running", "heartbeat_at_ms": candidate.statistics.future_end_ms},
+        market_instrument_count=0,
+        bar_continuous_count=0,
+        funding_probe_ok_count=0,
+    )
+    batch = FutureCaptureBatchV1(
+        binding=candidate.binding,
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        batch_start_ms=candidate.statistics.future_start_ms,
+        batch_end_ms=candidate.statistics.future_end_ms,
+        captured_at_ms=candidate.statistics.future_end_ms,
+        capture_lag_ms=0,
+        sources=(),
+        source_count=0,
+        late_source_count=0,
+        catalog_missing_count=0,
+        health=health,
+    )
+    set_evidence_database_clock(trading, 300_004)
+    trading.append_future_capture_batch(prepare_future_capture_batch(batch))
+    batch_health_sha256, collection_incidents = future_capture_health_summary(
+        (batch,), maximum_missingness_bps=candidate.statistics.maximum_missingness_bps
+    )
     capture_receipt = FutureCaptureReceiptV1(
         binding=candidate.binding,
         candidate_receipt_sha256=candidate_receipt.receipt_sha256,
@@ -256,9 +302,14 @@ def append_capital_evidence_fixture(
         capture_sha256=result.future_capture_sha256,
         artifact_sha256=result.future_capture_sha256,
         artifact_path="test-evidence/future-capture.json",
+        batch_count=1,
+        batch_health_sha256=batch_health_sha256,
+        collection_incidents=collection_incidents,
         created_at_ms=300_004,
     )
+    set_evidence_database_clock(trading, 300_004)
     trading.append_future_capture_receipt(capture_receipt)
+    set_evidence_database_clock(trading, 300_005)
     trading.append_future_drain_receipt(
         FutureDrainReceiptV1(
             binding=candidate.binding,
@@ -273,6 +324,7 @@ def append_capital_evidence_fixture(
             created_at_ms=300_005,
         )
     )
+    set_evidence_database_clock(trading, 300_006)
     trading.append_future_holdout_result_receipt(result_receipt, result)
     return result
 
@@ -602,5 +654,6 @@ __all__ = [
     "capital_evidence_fixture",
     "capital_grant_fixture",
     "capital_risk_policy_fixture",
+    "set_evidence_database_clock",
     "trade_intent",
 ]
