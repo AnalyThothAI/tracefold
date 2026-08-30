@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -12,7 +13,7 @@ from typing import Any
 
 import pytest
 from psycopg import OperationalError
-from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
+from psycopg.errors import CheckViolation, ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.trading_v3_fixtures import (
@@ -55,6 +56,7 @@ from tracefold.trading.quote_authority import (
     ExecutionQuoteSnapshotV1,
     QuoteStage,
 )
+from tracefold.trading.storage.intents import materialize_entry_fence
 
 pytestmark = pytest.mark.integration
 
@@ -235,14 +237,25 @@ def _fence(
     engine_identity: str,
     now_ms: int,
 ) -> Any:
-    return repos.trading.fence_entry(
+    with repos.transaction():
+        blacklist_state = repos.trading.blacklist_snapshot_rows(now_ms=now_ms, materialize_expiry=True)
+    prepared = repos.trading.prepare_entry_fence(
         intent.intent_id,
-        engine_identity=engine_identity,
         submission_quantity=Decimal("0.0001"),
         q1_evidence=_accepted_q1(intent, evaluated_at_ms=now_ms),
+        blacklist_state=blacklist_state,
         requested_at_ms=now_ms,
         now_ms=now_ms,
     )
+    with repos.transaction():
+        written = repos.trading.fence_entry(
+            prepared,
+            engine_identity=engine_identity,
+            submission_quantity=Decimal("0.0001"),
+            requested_at_ms=now_ms,
+            now_ms=now_ms,
+        )
+    return materialize_entry_fence(written)
 
 
 def _reset_authority(connection: Any) -> None:
@@ -460,11 +473,14 @@ def _capital_lane(connection: Any, *, fail_capital_settle: bool = False) -> Capi
     async def _bars(_symbol: str, _start: int, _end: int) -> tuple[()]:
         return ()
 
+    async def _oi_projection(_metric: str, _after: int, _until: int) -> tuple[()]:
+        return ()
+
     return CapitalLane(
         db=_RunnerDb(connection, fail_capital_settle=fail_capital_settle),
         config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
         bars=_bars,
-        oi_projection=lambda *_args: (),
+        oi_projection=_oi_projection,
         # The News generation this lane may advance a Case under (#314 review). It matches the epoch the
         # fixture manifests are frozen with; the superseded-generation test is where they disagree.
         news_generation=NEWS_GENERATION,
@@ -553,6 +569,35 @@ def _observe_close(
     assert observed.commissions_by_currency == commissions_by_currency
     assert observed.funding_by_currency == funding_by_currency
     return observed
+
+
+def test_funding_json_python_and_database_contracts_share_a_native_write_budget(conn: Any) -> None:
+    case_id = "case-funding-contract"
+    _case(conn, case_id=case_id)
+    intent = _intent(case_id=case_id)
+    repos = repositories_for_connection(conn)
+    assert _insert_test_intent(repos, intent)
+    conn.commit()
+
+    production_limit_payload = {f"CUR{index:02d}": "9" * 64 for index in range(16)}
+    assert IntentOutcome.validate_currency_amounts(production_limit_payload) == production_limit_payload
+    conn.execute("SET LOCAL statement_timeout = '250ms'")
+    conn.execute(
+        "UPDATE trading_intents SET funding_by_currency = %s::jsonb WHERE intent_id = %s",
+        (json.dumps(production_limit_payload), intent.intent_id),
+    )
+    conn.commit()
+
+    for invalid in ({"bad-key": "1"}, {"USDT": "1e3"}):
+        with pytest.raises(ValueError):
+            IntentOutcome.validate_currency_amounts(invalid)
+        with pytest.raises(CheckViolation) as rejected:
+            conn.execute(
+                "UPDATE trading_intents SET funding_by_currency = %s::jsonb WHERE intent_id = %s",
+                (json.dumps(invalid), intent.intent_id),
+            )
+        assert rejected.value.diag.constraint_name == "trading_intents_funding_check"
+        conn.rollback()
 
 
 def test_the_lane_refuses_a_case_frozen_under_a_superseded_news_generation(conn: Any) -> None:
@@ -1587,6 +1632,15 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
               has_function_privilege(
                 'tracefold_serve', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
               ) AS serve_expiry_execute,
+              has_function_privilege(
+                'tracefold_nautilus', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS nautilus_canonical_json_execute,
+              has_function_privilege(
+                'tracefold_workers', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS workers_canonical_json_execute,
+              has_function_privilege(
+                'tracefold_serve', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS serve_canonical_json_execute,
               has_table_privilege('tracefold_serve', 'trading_intents', 'SELECT') AS serve_select,
               has_table_privilege('tracefold_serve', 'trading_intents', 'INSERT') AS serve_insert
             """
@@ -1617,6 +1671,9 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
         "nautilus_expiry_execute": True,
         "workers_expiry_execute": True,
         "serve_expiry_execute": False,
+        "nautilus_canonical_json_execute": True,
+        "workers_canonical_json_execute": True,
+        "serve_canonical_json_execute": False,
         "serve_select": True,
         "serve_insert": False,
     }

@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
+# S608 exemptions below compose fixed cohort/CTE fragments selected by code; all runtime values stay bound.
 from ..outcome import decision_zh, direction_zh, magnitude_zh, override_rule_zh, throttled_by_zh
 from ..similarity import similarity
 from ..taxonomy import event_family_zh
@@ -242,7 +243,7 @@ class ReviewStorage:
             -- resolves to the column, and `to_jsonb(direction)` silently returned the string 'bullish'.
             SELECT 'coverage' AS section, to_jsonb(c) AS payload FROM coverage c
             UNION ALL SELECT 'miss', to_jsonb(x) FROM miss x
-            """
+            """  # noqa: S608
         return sql, tuple(params), start_ms, end_ms, discovery_start_ms
 
     def _miss_rows(self, misses: list[dict[str, Any]]) -> list[dict[str, Any]]:

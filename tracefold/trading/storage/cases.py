@@ -13,6 +13,26 @@ from typing import Any
 class CaseStorage:
     conn: Any
 
+    def seed_restore_drill_case(self, *, case_id: str) -> None:
+        """Seed one terminal Case for the isolated application restore drill."""
+
+        self.conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, primary_source_key,
+              supplemental_source_keys, manifest, manifest_sha256, state,
+              policy_decision, policy_reason, observed_at_ms, created_at_ms, updated_at_ms,
+              strategy_id, strategy_version, strategy_config_digest,
+              capital_disposition, capital_reason
+            ) VALUES (
+              %s, 'restore:RESTORE', 'news', 'restore-source', '[]'::jsonb,
+              '{"restore":"case"}'::jsonb, %s, 'NO_TRADE', 'no_trade', 'restore_drill',
+              10, 10, 10, 'restore_strategy', 'restore_v1', %s, 'not_applicable', NULL
+            )
+            """,
+            (case_id, "a" * 64, "b" * 64),
+        )
+
     def claim_case(self, *, run_id: str, lease_ms: int, now_ms: int) -> dict[str, Any] | None:
         """Take the oldest claimable Case under a short lease.
 

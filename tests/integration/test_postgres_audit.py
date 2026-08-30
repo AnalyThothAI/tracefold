@@ -21,7 +21,10 @@ def _composed_catalog(*, now_ms: int = 0) -> QueryAuditCatalog:
     return query_audit_catalog(now_ms=now_ms)
 
 
-def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path, postgres_clone_dsn: str):
+def test_operational_audit_fast_path_uses_catalog_estimates_and_exact_schema(
+    tmp_path, postgres_clone_dsn: str, monkeypatch
+):
+    monkeypatch.setenv("TRACEFOLD_POSTGRES_IMAGE", "postgres:18-bookworm@sha256:test")
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         payload = PostgresOperationalAudit(conn).run()
@@ -32,14 +35,24 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path, p
     assert payload["engine"] == "postgresql"
     assert payload["migration_version"] == latest_migration_version()
     assert payload["migration_status"] == "ready"
-    # #104: the audit counts both capabilities. Their registries stay separate so "exactly these
-    # tables" remains a per-capability claim.
-    assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
+    assert payload["mode"] == "fast"
+    assert payload["database_identity"]["ok"] is True
+    assert all(payload["database_identity"]["checks"].values())
+    assert payload["database_identity"]["server_version_num"] >= 180_000
+    assert payload["database_identity"]["declared_image_identity"] == "postgres:18-bookworm@sha256:test"
+    assert payload["database_identity"]["image_identity_source"] == "TRACEFOLD_POSTGRES_IMAGE"
+    assert "plpgsql" in payload["database_identity"]["extensions"]
+    assert set(payload["database_identity"]["settings"]) == {
+        "transaction_isolation",
+        "statement_timeout",
+        "lock_timeout",
+        "idle_in_transaction_session_timeout",
+        "jit",
+    }
+    assert "counts" not in payload
+    assert set(payload["row_estimates"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
     assert payload["trading_schema"]["exact"] is True
-    assert all(count >= 0 for count in payload["counts"].values())
-    # #398 starts a new evidence plane. The runtime opens the first post-genesis
-    # bundle epoch; no historical Program epoch survives the migration.
-    assert payload["counts"]["news_learning_epochs"] == 0
+    assert all(count >= 0 for count in payload["row_estimates"].values())
     assert payload["news_schema"] == {
         "expected_tables": list(NEWS_TABLES),
         "actual_tables": sorted(NEWS_TABLES),
@@ -48,6 +61,20 @@ def test_operational_audit_reports_news_counts_and_exact_news_schema(tmp_path, p
     assert payload["runtime_roles"]["ok"] is True
     assert "projection_schema" not in payload
     assert "foreign_key_checks" not in payload
+
+
+def test_operational_audit_deep_mode_runs_explicit_exact_counts(tmp_path, postgres_clone_dsn: str):
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        payload = PostgresOperationalAudit(conn).run(deep=True)
+    finally:
+        conn.close()
+
+    assert payload["ok"] is True
+    assert payload["mode"] == "deep"
+    assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
+    assert all(count >= 0 for count in payload["counts"].values())
+    assert payload["counts"]["news_learning_epochs"] == 0
 
 
 def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path, postgres_clone_dsn: str):

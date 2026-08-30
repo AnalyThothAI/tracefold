@@ -9,12 +9,14 @@ from __future__ import annotations
 import hashlib
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.trading import VenueBinding
+from tracefold.trading.storage.root import TradingRepositories
 
 _ETH_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 _ETH_PRIVATE_KEY = re.compile(r"^(?:0x)?[0-9a-fA-F]{64}$")
@@ -29,7 +31,7 @@ class BindingCredentialFact:
 
 
 class BindingDatabasePort(Protocol):
-    async def tx[T](self, name: str, fn: Any, *, timeout_seconds: float) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 def inspect_binding_credentials(settings: Settings) -> tuple[BindingCredentialFact, BindingCredentialFact]:
@@ -39,7 +41,7 @@ def inspect_binding_credentials(settings: Settings) -> tuple[BindingCredentialFa
 async def project_binding_credentials(settings: Settings, db: BindingDatabasePort) -> None:
     facts = inspect_binding_credentials(settings)
 
-    def _write(repos: Any) -> None:
+    def _write(repos: TradingRepositories) -> None:
         now_ms = int(time.time() * 1_000)
         for fact in facts:
             updated = repos.trading.set_binding_runtime(

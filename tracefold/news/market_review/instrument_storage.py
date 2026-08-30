@@ -12,6 +12,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+# S608 exemptions below interpolate only module-owned ranking/optional-clause fragments; all values stay bound.
 from .instruments import (
     ALIAS_SEEDS,
     REFERENCE_VENUES,
@@ -197,7 +198,7 @@ class InstrumentsRepository:
              WHERE base_symbol = %s AND status = 'trading'
              ORDER BY {source_rank_sql()}, i.venue, i.venue_symbol
              LIMIT %s
-            """,
+            """,  # noqa: S608
             (str(base_symbol).upper(), int(limit)),
         ).fetchall()
         return [
@@ -256,7 +257,7 @@ class InstrumentsRepository:
                  ORDER BY {source_rank_sql()}, i.venue
                  LIMIT 1
               ) m ON true
-            """,
+            """,  # noqa: S608
             (wanted, sorted(REFERENCE_VENUES)),
         ).fetchall()
         resolved = {
@@ -290,7 +291,7 @@ class InstrumentsRepository:
         clause = "" if sources is None else " AND source = ANY(%s)"
         params: tuple[Any, ...] = (wanted,) if sources is None else (wanted, list(sources))
         rows = self.conn.execute(
-            f"SELECT alias, base_symbol, source FROM news_symbol_aliases WHERE base_symbol = ANY(%s){clause}"
+            f"SELECT alias, base_symbol, source FROM news_symbol_aliases WHERE base_symbol = ANY(%s){clause}"  # noqa: S608
             " ORDER BY base_symbol, alias",
             params,
         ).fetchall()

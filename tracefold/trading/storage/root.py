@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from .authority import AuthorityStorage
 from .bindings import BindingStorage
@@ -40,4 +40,11 @@ class TradingRepository(
         self.conn = conn
 
 
-__all__ = ["TradingRepository"]
+class TradingRepositories(Protocol):
+    """The Trading callback capability; deliberately no raw connection or News repository."""
+
+    @property
+    def trading(self) -> TradingRepository: ...
+
+
+__all__ = ["TradingRepositories", "TradingRepository"]

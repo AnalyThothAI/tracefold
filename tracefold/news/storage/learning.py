@@ -7,6 +7,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+# S608 exemption below selects one of two fixed lifecycle columns after validating the target state.
 from ..artifact_identity import canonical_sha
 from ..learning.contracts import epoch_id_for_bundle
 from .sql_values import _dumps
@@ -175,7 +176,7 @@ class LearningStorage:
             UPDATE news_canary_activations
                SET state = %s, revision = revision + 1, {reason_column} = %s, {stamp_column} = %s
              WHERE activation_id = %s AND revision = %s AND state = %s
-            """,
+            """,  # noqa: S608
             (
                 target_state,
                 reason[:200],

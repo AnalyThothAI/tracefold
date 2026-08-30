@@ -12,7 +12,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, ClassVar, Final, Literal, Protocol, Self
+from typing import ClassVar, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -216,11 +216,22 @@ def prepare_venue_catalog_snapshot(snapshot: VenueInstrumentCatalogSnapshotV1) -
     )
 
 
-class CatalogDatabasePort(Protocol):
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float) -> T: ...
+class CatalogRepository(Protocol):
+    def store_venue_catalog_snapshot(self, *, prepared: PreparedVenueCatalogSnapshot, now_ms: int) -> bool: ...
+
+    def mark_venue_catalog_unavailable(self, *, binding: VenueBinding, reason: str, now_ms: int) -> None: ...
 
 
-class VenueCatalog:
+class CatalogRepositories(Protocol):
+    @property
+    def trading(self) -> CatalogRepository: ...
+
+
+class CatalogDatabasePort[RepositoriesT: CatalogRepositories](Protocol):
+    async def tx[T](self, name: str, fn: Callable[[RepositoriesT], T], *, timeout_seconds: float) -> T: ...
+
+
+class VenueCatalog[RepositoriesT: CatalogRepositories]:
     """The catalogue's whole write interface: publish public truth or retain last-good as stale."""
 
     work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("latest_state",)
@@ -228,7 +239,7 @@ class VenueCatalog:
     def __init__(
         self,
         *,
-        db: CatalogDatabasePort,
+        db: CatalogDatabasePort[RepositoriesT],
         clock: Callable[[], int],
         stale_after_ms: int,
         telemetry: TradingExternalDataTelemetryPort | None = None,

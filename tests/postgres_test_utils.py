@@ -119,7 +119,7 @@ def postgres_settings_storage() -> dict[str, Any]:
     }
 
 
-def seed_current_news_evidence(conn: Any) -> None:
+def seed_current_news_evidence(conn: Any, *, limit: int | None = None) -> None:
     """Bulk-create exact v3 evidence for current Event fixtures that do not exercise admission."""
 
     conn.execute(
@@ -164,6 +164,8 @@ def seed_current_news_evidence(conn: Any) -> None:
              SELECT 1 FROM news_event_evidence_snapshots evidence
               WHERE evidence.event_id = event.event_id
            )
+           ORDER BY event.created_at_ms DESC, event.event_id
+           LIMIT %s
         ), addressed AS (
           SELECT *, encode(sha256(
                    convert_to(news_canonical_jsonb(snapshot), 'UTF8')
@@ -177,7 +179,8 @@ def seed_current_news_evidence(conn: Any) -> None:
         SELECT event_id, 1, focus_fact_id, evidence_sha256,
                'observed', true, snapshot, created_at_ms
           FROM addressed
-        """
+        """,
+        (limit,),
     )
 
 

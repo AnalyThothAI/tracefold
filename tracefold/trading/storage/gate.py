@@ -12,11 +12,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+# S608 exemptions below reuse closed ledger/select fragments defined in this module; all values stay bound.
+from .query_sql import GATE_DECISION_FOR_SOURCE_KEY_SQL, LATEST_GATE_DECISION_PER_SOURCE_SQL, gate_decisions_since_sql
 from .sql_values import _dumps
 
 # One turn's worth of retention work. The lane persists about 90 OI facts a day, so this drains a
 # 90-day backlog in a handful of turns and is a no-op on every turn after that.
 _PURGE_BATCH = 500
+
 
 # One row per source, whatever configurations have looked at it.
 #
@@ -30,14 +33,6 @@ _PURGE_BATCH = 500
 # case under one configuration is re-read under the next one and refused as `already_consumed`, which
 # is correct as an admission answer and wrong as *the* answer about the frame: it did become a case,
 # and a report that showed the newer row would forget it.
-_LATEST_PER_SOURCE = """
-    SELECT DISTINCT ON (source_key) *
-      FROM trading_candidate_gate_decisions
-     WHERE trigger_kind = %s AND source_observed_at_ms >= %s
-     ORDER BY source_key, (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC
-"""
-
-
 class CandidateGateStorage:
     conn: Any
 
@@ -186,18 +181,7 @@ class CandidateGateStorage:
         most recent decision wins.
         """
 
-        row = self.conn.execute(
-            """
-            SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
-                   source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
-                   first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
-              FROM trading_candidate_gate_decisions
-             WHERE source_key = %s
-             ORDER BY (status = 'CASE_CREATED') DESC, last_evaluated_at_ms DESC, gate_config_digest
-             LIMIT 1
-            """,
-            (source_key,),
-        ).fetchone()
+        row = self.conn.execute(GATE_DECISION_FOR_SOURCE_KEY_SQL, (source_key,)).fetchone()
         return dict(row) if row is not None else None
 
     def gate_decisions_since(self, *, since_ms: int, trigger_kind: str = "oi", limit: int) -> list[dict[str, Any]]:
@@ -221,14 +205,7 @@ class CandidateGateStorage:
         """
 
         rows = self.conn.execute(
-            f"""
-            SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
-                   source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
-                   first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
-              FROM ({_LATEST_PER_SOURCE}) latest
-             ORDER BY source_observed_at_ms DESC, source_key
-             LIMIT %s
-            """,
+            gate_decisions_since_sql(),
             (trigger_kind, int(since_ms), int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]
@@ -240,17 +217,18 @@ class CandidateGateStorage:
         restarts and re-reads a backlog cannot move yesterday's facts into today's counts — the exact
         failure mode that made `funnel_today` unable to explain a cross-midnight question.
 
-        One row per *source*, not per stored row: see `_LATEST_PER_SOURCE`. Grouping the raw table
+        One row per *source*, not per stored row. Grouping the raw table
         counted a frame once per configuration that had ever looked at it, so a single threshold edit
         turned the "upstream frames" total into something that was not a frame count.
         """
 
         status_rows = self.conn.execute(
-            f"SELECT status, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY status",
+            f"SELECT status, count(*) AS n FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest GROUP BY status",  # noqa: S608
             (trigger_kind, int(since_ms)),
         ).fetchall()
         reason_rows = self.conn.execute(
-            f"SELECT stage, reason, count(*) AS n FROM ({_LATEST_PER_SOURCE}) latest GROUP BY stage, reason",
+            f"SELECT stage, reason, count(*) AS n "  # noqa: S608
+            f"FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest GROUP BY stage, reason",
             (trigger_kind, int(since_ms)),
         ).fetchall()
         return {
@@ -271,8 +249,8 @@ class CandidateGateStorage:
             SELECT max(source_observed_at_ms) AS latest_source_at_ms,
                    max(source_observed_at_ms) FILTER (WHERE status = 'CASE_CREATED')
                      AS latest_gate_eligible_at_ms
-              FROM ({_LATEST_PER_SOURCE}) latest
-            """,
+              FROM ({LATEST_GATE_DECISION_PER_SOURCE_SQL}) latest
+            """,  # noqa: S608
             (trigger_kind, 0),
         ).fetchone()
         if row is None:

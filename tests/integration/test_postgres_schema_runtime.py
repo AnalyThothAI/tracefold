@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+)
+from tests.postgres_test_utils import (
+    reset_postgres_schema as migrate,
+)
+from tests.postgres_test_utils import (
+    test_postgres_dsn as _test_postgres_dsn,
+)
 from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
+from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.postgres.migrations import (
     latest_migration_version,
     upgrade_head,
@@ -178,7 +185,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260830_0336"
+    assert version == latest_migration_version() == "20260830_0337"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -203,4 +210,16 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260830_0336"
+    assert version == latest_migration_version() == "20260830_0337"
+
+
+def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        acquire_steady_gate(conn)
+        with pytest.raises(RuntimeError, match="steady_workers_runtime_active"):
+            upgrade_head(_test_postgres_dsn())
+    finally:
+        release_steady_gate(conn)
+        conn.close()

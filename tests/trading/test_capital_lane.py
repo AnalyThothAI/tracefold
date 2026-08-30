@@ -357,6 +357,9 @@ def _lane(
             provider_calls.append((instrument.provider_symbol, start_ms, end_ms))
         return _bars() if bars is None else bars
 
+    async def oi_projection(_metric: str, _after: int, _until: int) -> Sequence[OiCandidateRow]:
+        return trading.rows
+
     lane = CapitalLane(
         db=db,  # type: ignore[arg-type]
         config=CapitalLaneConfig(
@@ -365,7 +368,7 @@ def _lane(
             target_notional_usd=Decimal("10"),
         ),
         bars=fetch,
-        oi_projection=lambda repos, metric, after, until: repos.trading.rows,
+        oi_projection=oi_projection,
         news_generation=EPOCH,
         release_revision="test-release",
         clock=lambda: NOW,

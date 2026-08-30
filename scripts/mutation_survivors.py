@@ -148,7 +148,7 @@ def _by_outcome(session: Path) -> dict[str, list[Mutant]]:
 
     with sqlite3.connect(f"file:{session}?mode=ro", uri=True) as connection:
         rows = connection.execute(
-            f"SELECT coalesce(r.test_outcome, r.worker_outcome), {_SPEC_COLUMNS} "
+            f"SELECT coalesce(r.test_outcome, r.worker_outcome), {_SPEC_COLUMNS} "  # noqa: S608
             "FROM mutation_specs s JOIN work_results r ON r.job_id = s.job_id"
         ).fetchall()
     grouped: dict[str, list[Mutant]] = {}
@@ -159,7 +159,9 @@ def _by_outcome(session: Path) -> dict[str, list[Mutant]]:
 
 def _population(session: Path) -> set[Mutant]:
     with sqlite3.connect(f"file:{session}?mode=ro", uri=True) as connection:
-        rows = connection.execute(f"SELECT {_SPEC_COLUMNS.replace('s.', '')} FROM mutation_specs").fetchall()
+        rows = connection.execute(
+            f"SELECT {_SPEC_COLUMNS.replace('s.', '')} FROM mutation_specs"  # noqa: S608
+        ).fetchall()
     return set(_as_mutants(rows))
 
 

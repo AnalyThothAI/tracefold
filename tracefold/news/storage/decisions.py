@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
+# S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
 from ..models import TelegramDeliveryReceipt
 from ..reader_history import (
     RECENT_HISTORY_MAX,
@@ -19,6 +21,24 @@ from .sql_values import _dumps
 
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
 _HANDOFF_STATE_LIMIT = 1_000
+UNPUBLISHED_VERDICT_CANDIDATES_SQL = """
+    SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
+      FROM news_verdicts v
+      JOIN news_events e ON e.event_id = v.event_id
+      JOIN news_event_evidence_snapshots evidence
+        ON evidence.event_id = v.event_id
+       AND evidence.evidence_version = v.evidence_version
+       AND evidence.evidence_sha256 = v.evidence_sha256
+       AND evidence.provenance = 'observed'
+       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+     WHERE v.stage = 'triage'
+       AND v.judgment_contract_version = 'news_judgment_v2'
+       AND v.final_decision IN ('push', 'escalate')
+       AND v.published_at_ms IS NULL
+       AND e.event_kind <> 'unsupported_market'
+       AND v.created_at_ms <= %s AND v.created_at_ms >= %s
+     ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
+"""
 _VERDICT_HANDOFF_STATE_SQL = """
     WITH pending AS MATERIALIZED (
       SELECT v.created_at_ms
@@ -108,9 +128,29 @@ _READER_HISTORY_PROJECTION = """
 class DecisionStorage:
     conn: Any
 
+    def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
+        """Return a primitive CAS token for the delivered-card ledger used by Triage."""
+
+        row = self.conn.execute(
+            """
+            SELECT count(*) AS row_count,
+                   COALESCE(max(settled_at_ms), 0) AS newest_at_ms,
+                   COALESCE(max(event_id), '') AS greatest_event_id
+              FROM news_deliveries
+             WHERE kind = 'first' AND state = 'sent'
+               AND delete_state IS DISTINCT FROM 'deleted'
+               AND settled_at_ms >= %s
+            """,
+            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS,),
+        ).fetchone()
+        if row is None:  # pragma: no cover - aggregate queries always return one row
+            return (0, 0, "")
+        return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
+
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
         """Reader receipt truth split into the 4 h policy ledger and bounded 48 h semantic candidates."""
 
+        revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
@@ -121,10 +161,10 @@ class DecisionStorage:
             (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
         ).fetchall()
         if not include_targeted:
-            return assemble_reader_history(recent_rows=recent, now_ms=now_ms)
+            return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
 
         exact = self.conn.execute(
-            "WITH current_event AS ("
+            "WITH current_event AS ("  # noqa: S608
             " SELECT dedupe_family, comparison_fingerprint FROM news_events WHERE event_id = %s"
             ") "
             + _READER_HISTORY_PROJECTION
@@ -159,7 +199,7 @@ class DecisionStorage:
               UNION
               SELECT a.alias FROM news_symbol_aliases a JOIN current_bases b ON b.base = a.base_symbol
             )
-            """
+            """  # noqa: S608
             + _READER_HISTORY_PROJECTION
             + """
              CROSS JOIN current_event current
@@ -193,7 +233,10 @@ class DecisionStorage:
                 TARGETED_ASSET_MAX,
             ),
         ).fetchall()
-        return assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms)
+        return replace(
+            assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms),
+            ledger_revision=revision,
+        )
 
     def lock_storyline(self, storyline_key: str) -> None:
         """Transaction-scoped advisory lock on one storyline key so "read reader evidence -> decide -> insert verdict"
@@ -276,7 +319,7 @@ class DecisionStorage:
         measurement_window_ms: int | None = None,
         source_item_id: str,
         source_venue: str | None,
-    ) -> None:
+    ) -> int:
         """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict.
 
         The three source-contract columns travel together or not at all (#265): a window with no
@@ -289,7 +332,7 @@ class DecisionStorage:
         proven = (
             source_strategy_id is not None and source_contract_version is not None and measurement_window_ms is not None
         )
-        self.conn.execute(
+        cursor = self.conn.execute(
             """
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
@@ -308,6 +351,7 @@ class DecisionStorage:
                 ORDER BY epoch.starts_at_ms DESC LIMIT 1), 'unproven')
             )
             ON CONFLICT (event_id, metric_version) DO NOTHING
+            RETURNING rank_in_window
             """,
             (
                 event_id,
@@ -329,6 +373,16 @@ class DecisionStorage:
                 int(now_ms),
             ),
         )
+        row = cursor.fetchone()
+        if row is not None:
+            return int(row["rank_in_window"])
+        existing = self.conn.execute(
+            "SELECT rank_in_window FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
+            (event_id, metric_version),
+        ).fetchone()
+        if existing is None:
+            raise RuntimeError("news_oi_signal_insert_failed")
+        return int(existing["rank_in_window"])
 
     def insert_market_liquidation(
         self,
@@ -436,7 +490,9 @@ class DecisionStorage:
         override_rule: str | None,
         throttled_by: str | None,
         verdict: Mapping[str, Any],
+        verdict_json: str | None = None,
         model_editorial: Mapping[str, Any] | None,
+        model_editorial_json: str | None = None,
         judgment_sha256: str,
         runtime_manifest_sha: str,
         model: str | None,
@@ -445,6 +501,7 @@ class DecisionStorage:
         degraded: bool,
         error_code: str | None,
         trace: Mapping[str, Any],
+        trace_json: str | None = None,
         evidence_version: int,
         evidence_sha256: str,
         focus_fact_id: str,
@@ -472,8 +529,12 @@ class DecisionStorage:
                 final_decision,
                 override_rule,
                 throttled_by,
-                _dumps(dict(verdict)),
-                _dumps(dict(model_editorial)) if model_editorial is not None else None,
+                verdict_json if verdict_json is not None else _dumps(dict(verdict)),
+                (
+                    model_editorial_json
+                    if model_editorial_json is not None
+                    else (_dumps(dict(model_editorial)) if model_editorial is not None else None)
+                ),
                 judgment_sha256,
                 runtime_manifest_sha,
                 model,
@@ -481,7 +542,7 @@ class DecisionStorage:
                 program_sha256,
                 bool(degraded),
                 error_code,
-                _dumps(dict(trace)),
+                trace_json if trace_json is not None else _dumps(dict(trace)),
                 int(now_ms),
                 int(evidence_version),
                 evidence_sha256,
@@ -523,24 +584,7 @@ class DecisionStorage:
         """Push Verdicts whose confirmed Delivery handoff marker is still absent."""
 
         rows = self.conn.execute(
-            """
-            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
-              FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id
-              JOIN news_event_evidence_snapshots evidence
-                ON evidence.event_id = v.event_id
-               AND evidence.evidence_version = v.evidence_version
-               AND evidence.evidence_sha256 = v.evidence_sha256
-               AND evidence.provenance = 'observed'
-               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-             WHERE v.stage = 'triage'
-               AND v.judgment_contract_version = 'news_judgment_v2'
-               AND v.final_decision IN ('push', 'escalate')
-               AND v.published_at_ms IS NULL
-               AND e.event_kind <> 'unsupported_market'
-               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
-             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT %s
-            """,
+            UNPUBLISHED_VERDICT_CANDIDATES_SQL,
             (int(older_than_ms), int(newer_than_ms), int(limit)),
         ).fetchall()
         return [dict(row) for row in rows]

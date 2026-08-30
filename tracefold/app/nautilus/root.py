@@ -104,7 +104,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             runtime = repos.trading.nautilus_runtime_state()
             if runtime is None or runtime.get("control") != "PAUSED":
                 raise RuntimeError("nautilus_bootstrap_requires_paused")
-            if repos.trading.active_intent() is not None:
+            if repos.trading.active_intent_values() is not None:
                 raise RuntimeError("nautilus_bootstrap_requires_no_active_intent")
     pending_execution_bindings = {
         binding: value

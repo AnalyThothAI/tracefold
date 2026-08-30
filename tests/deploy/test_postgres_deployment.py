@@ -12,6 +12,21 @@ pytestmark = pytest.mark.deploy
 POSTGRES_IMAGE = "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
 
 
+def test_required_and_scheduled_postgres_evidence_uses_the_production_image() -> None:
+    ci = yaml.safe_load(Path(".github/workflows/ci.yml").read_text())
+    scheduled = yaml.safe_load(Path(".github/workflows/scheduled-diagnostics.yml").read_text())
+
+    assert ci["jobs"]["postgres-behavior"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    assert ci["jobs"]["migration"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    assert ci["jobs"]["runtime-process"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    scheduled_job = scheduled["jobs"]["production-duration"]
+    assert scheduled_job["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    run_step = next(
+        step for step in scheduled_job["steps"] if step.get("name") == "Run production-duration diagnostics"
+    )
+    assert run_step["env"]["TRACEFOLD_POSTGRES_IMAGE"] == POSTGRES_IMAGE
+
+
 def test_compose_separates_migration_serve_and_workers() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
     services = compose["services"]

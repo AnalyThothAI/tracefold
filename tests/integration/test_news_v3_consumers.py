@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ from tracefold.news.bus import (
     new_trace_id,
     now_ms,
 )
-from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
+from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
@@ -40,9 +41,11 @@ from tracefold.news.storage.decisions import (
 )
 from tracefold.news.storage.decisions import (
     _VERDICT_HANDOFF_STATE_SQL,
+    UNPUBLISHED_VERDICT_CANDIDATES_SQL,
 )
 from tracefold.news.storage.events import (
     _EVENT_HANDOFF_STATE_SQL,
+    UNPUBLISHED_EVENT_CANDIDATES_SQL,
 )
 from tracefold.news.storage.events import (
     _HANDOFF_STATE_LIMIT as _EVENT_HANDOFF_STATE_LIMIT,
@@ -119,6 +122,25 @@ class FailOnceWorkerDatabase(FakeWorkerDatabase):
             self.fail_once.remove(name)
             raise TransientError(f"injected:{name}")
         return await super().tx(name, fn, timeout_seconds=timeout_seconds)
+
+
+class TightCallbackWorkerDatabase(FakeWorkerDatabase):
+    """Run every callback in a real 100 ms idle-timeout transaction and expose its dynamic extent."""
+
+    def __init__(self, conn: Any) -> None:
+        super().__init__(conn)
+        self.inside_callback = False
+
+    @contextmanager
+    def worker_session(self, name: str, *_args: Any, **_kwargs: Any):
+        del name
+        with self.conn.transaction():
+            self.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
+            self.inside_callback = True
+            try:
+                yield repositories_for_connection(self.conn)
+            finally:
+                self.inside_callback = False
 
 
 class InlineFiniteOperations:
@@ -344,6 +366,56 @@ def test_recovery_raw_is_persisted_but_never_published_to_triage_or_delivery(con
     ).fetchone()
     assert downstream == {"verdicts": 0, "deliveries": 0}
     assert bus.published == []
+
+
+def test_admission_minhash_and_evidence_hash_run_outside_real_transactions(
+    conn: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.news.pipeline import admission as admission_module
+
+    original = _raw_messages()[0]
+    params = {**dict(original.payload["params"]), "id": 9_187_002}
+    message = BusMessage(
+        kind="raw",
+        message_id="raw:9187002",
+        routing_key=original.routing_key,
+        payload={**dict(original.payload), "params": params},
+        trace_id="admission-transaction-boundary",
+        occurred_at_ms=now_ms(),
+    )
+    boundary = TightCallbackWorkerDatabase(conn)
+    bus = FakeBus()
+    observed_inside_callback: list[bool] = []
+    original_extract = admission_module.extract_fact_units
+    original_minhash = admission_module.minhash_signature
+    original_prepare_evidence = admission_module.prepare_evidence_snapshot
+
+    def delayed_extract(*args: Any, **kwargs: Any) -> Any:
+        observed_inside_callback.append(boundary.inside_callback)
+        time.sleep(0.15)
+        return original_extract(*args, **kwargs)
+
+    def delayed_minhash(*args: Any, **kwargs: Any) -> Any:
+        observed_inside_callback.append(boundary.inside_callback)
+        time.sleep(0.15)
+        return original_minhash(*args, **kwargs)
+
+    def delayed_prepare_evidence(*args: Any, **kwargs: Any) -> Any:
+        observed_inside_callback.append(boundary.inside_callback)
+        time.sleep(0.15)
+        return original_prepare_evidence(*args, **kwargs)
+
+    monkeypatch.setattr(admission_module, "extract_fact_units", delayed_extract)
+    monkeypatch.setattr(admission_module, "minhash_signature", delayed_minhash)
+    monkeypatch.setattr(admission_module, "prepare_evidence_snapshot", delayed_prepare_evidence)
+    deduper = DeduperConsumer(bus=bus, db=boundary, watchlist_symbols=WATCHLIST)
+
+    asyncio.run(deduper.handle(message))
+    conn.commit()
+
+    assert observed_inside_callback and not any(observed_inside_callback)
+    assert conn.execute("SELECT 1 FROM news_items WHERE source_item_key = '9187002'").fetchone()
 
 
 def test_deduper_admits_an_unknown_strategy_and_rejects_missing_params(conn) -> None:
@@ -599,6 +671,9 @@ def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(co
 def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(conn) -> None:
     event_id, policy_version = _ensure_handoff_facts(conn)
     stamp = now_ms()
+    # Keep 20k table/cardinality evidence for the planner, but materialize evidence and verdicts for only
+    # 1,250 candidates above the 1,000-row state cap. JSON/hash CHECK cost is covered separately under a
+    # native statement timeout; validating 20,000 verdicts made a read-plan fixture itself unbounded.
     conn.execute(
         """
         INSERT INTO news_events (
@@ -634,7 +709,7 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
             event_id,
         ),
     )
-    seed_current_news_evidence(conn)
+    seed_current_news_evidence(conn, limit=1251)
     conn.execute(
         """
         INSERT INTO news_verdicts (
@@ -701,37 +776,15 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
     event_plan = "\n".join(
         row["QUERY PLAN"]
         for row in conn.execute(
-            """
-            EXPLAIN (ANALYZE, BUFFERS)
-            SELECT event_id, dedupe_family, queue_priority, trace_id, opened_at_ms
-              FROM news_events
-             WHERE published_at_ms IS NULL
-               AND admission IN (
-                 'candidate', 'listing_deterministic',
-                 'telemetry_deterministic', 'liquidation_deterministic'
-               )
-               AND opened_at_ms <= %s AND opened_at_ms >= %s
-             ORDER BY opened_at_ms LIMIT 50
-            """,
-            (stamp - 15_000, stamp - 30 * 60_000),
+            "EXPLAIN (ANALYZE, BUFFERS) " + UNPUBLISHED_EVENT_CANDIDATES_SQL,
+            (stamp - 15_000, stamp - 30 * 60_000, 50),
         ).fetchall()
     )
     verdict_plan = "\n".join(
         row["QUERY PLAN"]
         for row in conn.execute(
-            """
-            EXPLAIN (ANALYZE, BUFFERS)
-            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
-              FROM news_verdicts v
-              JOIN news_events e ON e.event_id = v.event_id
-             WHERE v.stage = 'triage'
-               AND v.final_decision IN ('push', 'escalate')
-               AND v.published_at_ms IS NULL
-               AND e.event_kind <> 'unsupported_market'
-               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
-             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT 50
-            """,
-            (stamp - 15_000, stamp - 30 * 60_000),
+            "EXPLAIN (ANALYZE, BUFFERS) " + UNPUBLISHED_VERDICT_CANDIDATES_SQL,
+            (stamp - 15_000, stamp - 30 * 60_000, 50),
         ).fetchall()
     )
     event_state_plan = "\n".join(
@@ -785,10 +838,18 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
     )
     conn.commit()
 
-    assert "ix_news_events_unpublished" in event_plan, event_plan
-    assert "ix_news_verdicts_unpublished_delivery" in verdict_plan, verdict_plan
-    assert "ix_news_events_unpublished" in event_state_plan, event_state_plan
-    assert "ix_news_verdicts_unpublished_delivery" in verdict_state_plan, verdict_state_plan
+    assert any(index in event_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")), (
+        event_plan
+    )
+    assert any(index in verdict_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")), (
+        verdict_plan
+    )
+    assert any(
+        index in event_state_plan for index in ("ix_news_events_unpublished", "ix_news_events_current_opened")
+    ), event_state_plan
+    assert any(
+        index in verdict_state_plan for index in ("ix_news_verdicts_unpublished_delivery", "news_verdicts_pkey")
+    ), verdict_state_plan
     assert "Seq Scan on news_events" not in event_plan
     assert "Seq Scan on news_verdicts" not in verdict_plan
     assert "Seq Scan on news_events" not in event_state_plan
@@ -953,6 +1014,78 @@ def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(
     assert pipeline["telemetry_received_24h"] >= 1
     assert pipeline["telemetry_parse_failed_24h"] >= 1
     assert pipeline["dropped_by_rule"]["oi_parse_failed"] >= 1
+
+
+def test_triage_materialization_and_canonical_json_run_outside_real_transactions(
+    conn: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.news.pipeline import triage as triage_module
+
+    stamp = now_ms()
+    bus = FakeBus()
+    raw = BusMessage(
+        kind="raw",
+        message_id="raw:179-transaction-boundary",
+        routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
+        payload={
+            "params": {
+                "id": 179_999_002,
+                "engineType": "market",
+                "text": "ETH OI provider format changed",
+                "source": "binance",
+                "ts": stamp,
+                "strategy": {"id": 1019, "name": "OI Event Monitor", "sourceType": "market"},
+            },
+            "strategy_id": "1019",
+            "ingest_mode": "live",
+            "observed_at_ms": stamp,
+        },
+        trace_id=new_trace_id(),
+        occurred_at_ms=stamp,
+    )
+    asyncio.run(_deduper(conn, bus).handle(raw))
+    conn.commit()
+    event_message = bus.published[-1]
+    boundary = TightCallbackWorkerDatabase(conn)
+    observed_inside_callback: list[bool] = []
+    original_model_dump = TriageVerdict.model_dump
+    original_canonical_json = triage_module.canonical_json
+
+    def delayed_model_dump(self: TriageVerdict, *args: Any, **kwargs: Any) -> Any:
+        observed_inside_callback.append(boundary.inside_callback)
+        time.sleep(0.15)
+        return original_model_dump(self, *args, **kwargs)
+
+    def delayed_canonical_json(value: Any) -> str:
+        observed_inside_callback.append(boundary.inside_callback)
+        time.sleep(0.15)
+        return original_canonical_json(value)
+
+    monkeypatch.setattr(TriageVerdict, "model_dump", delayed_model_dump)
+    monkeypatch.setattr(triage_module, "canonical_json", delayed_canonical_json)
+    triage = TriageConsumer(
+        bus=bus,
+        db=boundary,
+        judge=ExplodingJudge(),
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        runtime_manifest={"manifest_sha": "e" * 64},
+    )
+
+    asyncio.run(triage.handle(event_message))
+    conn.commit()
+
+    assert observed_inside_callback and not any(observed_inside_callback)
+    assert conn.execute(
+        "SELECT 1 FROM news_verdicts WHERE event_id = %s",
+        (str(event_message.payload["event_id"]),),
+    ).fetchone()
 
 
 def test_deliverer_without_sender_settles_terminal_delivery_unavailable(conn) -> None:

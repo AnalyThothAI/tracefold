@@ -14,6 +14,13 @@ from tracefold.app import serve_database as serve_database_module
 from tracefold.app import worker_database as worker_database_module
 from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
 from tracefold.app.worker_database import WorkerDatabase
+from tracefold.app.workers.wiring.database import (
+    WorkerNewsColdDatabase,
+    WorkerNewsDatabase,
+    WorkerQuoteDatabase,
+    WorkerReactionDatabase,
+    WorkerTradingDatabase,
+)
 from tracefold.platform.resource import ResourceAdmissionTimeout
 
 
@@ -70,6 +77,46 @@ def test_worker_session_enforces_transaction_local_timeout() -> None:
     assert _combined_config(conn.executed[0])["transaction_timeout"] == "500ms"
     assert len(conn.executed) == 1
     assert "true" in conn.executed[0][0]
+
+
+def test_worker_session_observes_its_outer_transaction_once() -> None:
+    conn = _FakeConnection()
+    telemetry = _RecordingTelemetry()
+    bundle = WorkerDatabase(worker_pool=_FakePool(conn), telemetry=telemetry)  # type: ignore[arg-type]
+
+    with bundle.worker_session("news_janitor"):
+        pass
+
+    assert conn.transaction_count == 1
+    assert [name for name, _seconds in telemetry.transactions] == ["news_janitor"]
+
+
+def test_business_database_callbacks_receive_only_their_repository_capabilities() -> None:
+    async def scenario() -> None:
+        database = _InlineWorkerDatabase()
+        news = await WorkerNewsDatabase(database).read("news_view", lambda repos: repos)  # type: ignore[arg-type]
+        cold = await WorkerNewsColdDatabase(database).read("cold_view", lambda repos: repos)  # type: ignore[arg-type]
+        quote = await WorkerQuoteDatabase(database).read(  # type: ignore[arg-type]
+            "quote_view", lambda repos: repos, timeout_seconds=1.0
+        )
+        reaction = await WorkerReactionDatabase(database).read(  # type: ignore[arg-type]
+            "reaction_view", lambda repos: repos, timeout_seconds=1.0
+        )
+        trading = await WorkerTradingDatabase(database).read(  # type: ignore[arg-type]
+            "trading_view", lambda repos: repos, timeout_seconds=1.0
+        )
+
+        assert (hasattr(news, "news"), hasattr(news, "instruments"), hasattr(news, "price")) == (True, True, True)
+        assert (hasattr(cold, "news"), hasattr(cold, "instruments"), hasattr(cold, "price")) == (True, True, True)
+        assert hasattr(quote, "price") and hasattr(reaction, "price")
+        assert hasattr(trading, "trading")
+        for view in (news, cold, quote, reaction, trading):
+            assert not hasattr(view, "conn")
+        assert not hasattr(news, "trading")
+        assert not hasattr(quote, "news")
+        assert not hasattr(trading, "news")
+
+    asyncio.run(scenario())
 
 
 def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None:
@@ -332,12 +379,14 @@ def test_serve_pool_checkout_timeout_is_typed_busy() -> None:
 class _FakeConnection:
     def __init__(self) -> None:
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
+        self.transaction_count = 0
 
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> None:
         self.executed.append((sql, params))
 
     @contextmanager
     def transaction(self):
+        self.transaction_count += 1
         yield
 
     def close(self) -> None:
@@ -360,6 +409,47 @@ class _FakePool:
 
     def putconn(self, conn: _FakeConnection) -> None:
         assert conn is self.conn
+
+
+class _RecordingTelemetry:
+    def __init__(self) -> None:
+        self.transactions: list[tuple[str, float]] = []
+
+    def record_pool_wait(self, _pool: str, _wait_ms: float) -> None:
+        return None
+
+    def record_transaction_seconds(self, name: str, seconds: float) -> None:
+        self.transactions.append((name, seconds))
+
+
+class _InlineWorkerDatabase:
+    def __init__(self) -> None:
+        self.session = type(
+            "RepositoryBundle",
+            (),
+            {
+                "conn": object(),
+                "news": object(),
+                "instruments": object(),
+                "price": object(),
+                "trading": object(),
+            },
+        )()
+
+    @contextmanager
+    def worker_session(self, *_args: Any, **_kwargs: Any):
+        yield self.session
+
+    async def run_news(self, _name: str, fn: Any, *, operation_timeout_seconds: float) -> Any:
+        del operation_timeout_seconds
+        return fn()
+
+    async def run_business(self, _name: str, fn: Any, *, operation_timeout_seconds: float) -> Any:
+        del operation_timeout_seconds
+        return fn()
+
+    def heavy_business(self) -> _InlineWorkerDatabase:
+        return self
 
 
 class _FakeApiPool:

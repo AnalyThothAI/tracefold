@@ -45,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="compute the News genesis target runtime manifest from this image and config",
     )
     db_subcommands.add_parser("health", help="check PostgreSQL liveness and migration version")
-    db_subcommands.add_parser("audit", help="run PostgreSQL count, FK, and projection schema audit")
+    db_audit = db_subcommands.add_parser("audit", help="run the fast PostgreSQL schema/role/catalog audit")
+    db_audit.add_argument("--deep", action="store_true", help="also run offline exact counts over every table")
     query_audit = db_subcommands.add_parser("query-audit", help="explain PostgreSQL hot read paths")
     query_audit.add_argument("--analyze", action="store_true", help="run EXPLAIN ANALYZE with buffers")
 

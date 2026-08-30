@@ -195,7 +195,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0336`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0337`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -677,6 +677,13 @@ keeps the fatal policy. The default transaction deadline is the statement
 deadline plus five seconds so a native statement cancellation has the same
 bounded cleanup allowance as the Worker future; explicit per-operation
 transaction deadlines remain authoritative.
+
+The measured transaction is the true outer scope: setup, the capability-limited
+callback, and commit or rollback produce one duration/outcome observation.
+Callbacks receive only their News/Price/Instrument/Trading repositories. They
+do not receive a raw connection and do not run provider I/O, Pydantic, hashing,
+canonicalization, compression, large Python work, or backoff while PostgreSQL
+is idle in transaction.
 
 News consumers use a dedicated four-slot News DB lane
 (`WorkerDatabase.run_news`: its own executor and gate, separate from the two
@@ -1284,7 +1291,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through the current `20260830_0336` head. The #112 chain
+the linear revisions through the current `20260830_0337` head. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -1293,6 +1300,10 @@ a downgrade is a backup restore. Stop Serve and Workers before applying a
 chained revision
 (each takes the maintenance gate advisory lock and refuses to run while
 Workers hold the steady lock).
+
+The normative authoring checklist, required evidence, and 0330–0332 object
+authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
+revision files are immutable; a correction is a forward revision.
 
 ### News current-contract genesis (`0336`, one time)
 
@@ -1387,7 +1398,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After commit, require Alembic head `20260830_0336`; zero rows in every cleared
+After deployment, require Alembic head `20260830_0337`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;
@@ -1408,7 +1419,9 @@ green, the first new Event to
 complete the current evidence/verdict/delivery path, and a restart to preserve
 that result without recovering any pre-genesis identifier. Open a new review,
 dataset, candidate and canary epoch only from post-genesis evidence; the
-migration receipt is not evidence of model quality.
+migration receipt is not evidence of model quality. The subsequent `0337`
+revision only grants Nautilus execution on `trading_canonical_jsonb(JSONB)`; it
+does not alter or reintroduce any News schema object.
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
 Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve
@@ -1595,6 +1608,15 @@ change must preserve every foreign-key dependency and the ability to replay a
 sealed dataset. Narrowing the evidence window silently destroys the only
 ground truth the system has.
 
+Raw retention selects stable `(observed_at_ms, item_id)` candidates and deletes
+at most 500 rows per transaction, four transactions and three seconds per
+Janitor turn. Each batch rechecks the 30-day raw and 365-day judged predicates
+inside its `DELETE`; reaching a row/batch/time budget leaves backlog for the
+next turn. Band expiry is likewise an ordered 500-row transaction. The raw
+retention metrics report deleted rows, batches, wall time, capped backlog
+sample, whether the sample hit its cap, and oldest eligible age. Each batch,
+band expiry, and learning-retention call uses a separate cold transaction.
+
 `news_market_liquidations` is a separate immutable normalized replay ledger,
 not an Item-owned child. Item retention may remove its provider envelope but
 must leave the typed liquidation fact, source identity and frozen live/recovery
@@ -1637,12 +1659,36 @@ growth outside the 90/365-day envelope. The purge shares the one-slot heavy
 admission with Event Reaction and Trading, never ordinary Quote admission or
 the four-slot News hot lane.
 
-Restore/audit procedure:
+### Backup, recovery, and restore drill
+
+The packaged deployment tier is a single-host, operator-managed Compose
+database: it provides no automatic failover, replica, backup scheduler, WAL
+archive, or PITR service. The deployment owner must provide encrypted daily
+backups and an additional verified backup immediately before every destructive
+migration. The operating targets are RPO at most 24 hours and RTO at most four
+hours; the pre-migration snapshot makes the migration cutover RPO the snapshot
+time. These are targets only when the external backup owner monitors freshness
+and restoreability. If a deployment requires a tighter RPO, its platform owner
+must archive WAL and operate PITR outside Tracefold; the application neither
+ships nor retains WAL.
+
+The weekly scheduled diagnostics run an isolated production-image restore
+test. Run the same entry manually with
+`TRACEFOLD_TEST_POSTGRES_DSN=<dedicated-admin-dsn> make postgres-restore-drill`.
+It creates uniquely named disposable source/target databases, seeds
+representative News current/archive and Trading facts, uses the exact
+PostgreSQL 18 Bookworm client image for custom-format dump/restore, migrates to
+head, performs deep schema/role/identity audit and bounded smoke, records head,
+duration and identity counts, then drops both databases. It never reads or
+writes the database named by the supplied DSN. This proves the mechanism, not
+the freshness of a live operator backup.
+
+Live restore/audit procedure:
 
 1. Restore the PostgreSQL backup into an isolated database and migrate only to
    the image's recorded schema head; never set
    `tracefold.learning_retention_purge` or issue manual DELETEs.
-2. Run `uv run tracefold db audit`; confirm migration head, exact News table
+2. Run `uv run tracefold db audit --deep`; confirm migration head, exact News table
    set and role grants. Read `news_learning_retention_state` and retain its
    pre-restore snapshot for comparison.
 3. Select the latest manifest for each distinct `stable_bundle_sha`; for the
@@ -1707,15 +1753,23 @@ assigned to a bounded read-query family (`/readyz`, `/api/status`,
 are declared no-SQL) and checks that every query can be planned. `uv run
 tracefold db query-audit --analyze` executes those read-only queries with JSON
 `EXPLAIN (ANALYZE, BUFFERS)` and fails on an estimated large-table sequential
-scan, any temporary read/write blocks, or read/return amplification above
-20:1. An empty development database proves only SQL and route coverage;
+scan, any temporary read/write blocks, or read/return amplification above the
+budget declared by that production query. An empty development database proves only SQL and route coverage;
 production-scale plans need a production-sized database. Each runtime owner
 supplies the same bound statement builder used by its serving read; the App
 layer only composes those specs with route coverage, so an audit-only SQL
 approximation is not accepted.
 
-Read/return amplification uses the root result-row count for hot page queries. The two bounded News search
-count specs use aggregate-input amplification because their production contract deliberately returns one
+`uv run tracefold db audit` is the online fast path. It uses catalog/statistics
+row estimates plus O(1) migration, schema, role/grant, PostgreSQL-major,
+extension, and key-session-setting checks. It reports the externally declared
+container image identity without pretending PostgreSQL can attest that digest;
+it does not issue exact `COUNT(*)`
+against every business table. `uv run tracefold db audit --deep` adds those
+exact counts and is reserved for offline migration/restore evidence.
+
+Read/return amplification uses the root result-row count for hot page queries, and each query spec owns its
+budget. The two bounded News search count specs use aggregate-input amplification because their production contract deliberately returns one
 aggregate row after scanning the same 168-hour AssetSearch or TextSearch predicate as the first page; the
 catalog rejects that basis for every other query.
 

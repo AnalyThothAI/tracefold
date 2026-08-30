@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+# S608 exemption below chooses only the fixed optional FOR UPDATE clause; binding remains a parameter.
 from ..blacklist import Blacklist, BlacklistSnapshotV1
 from ..capabilities import ExecutionCapabilitySnapshotV2
 from ..contracts import VenueBinding
+from .query_sql import EXECUTION_CAPABILITY_SNAPSHOT_SQL
 from .sql_values import _dumps
 
 
@@ -15,8 +17,7 @@ class CapabilityStorage:
 
     def execution_capability_snapshot(self, snapshot_sha256: str) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT payload FROM trading_execution_capability_snapshots "
-            "WHERE snapshot_sha256 = %s AND payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'",
+            EXECUTION_CAPABILITY_SNAPSHOT_SQL,
             (snapshot_sha256,),
         ).fetchone()
         return None if row is None else ExecutionCapabilitySnapshotV2.model_validate(row["payload"])
@@ -28,7 +29,7 @@ class CapabilityStorage:
         for_update: bool = False,
     ) -> ExecutionCapabilitySnapshotV2 | None:
         row = self.conn.execute(
-            "SELECT capability_snapshot_sha256 FROM trading_binding_runtime WHERE binding = %s"
+            "SELECT capability_snapshot_sha256 FROM trading_binding_runtime WHERE binding = %s"  # noqa: S608
             + (" FOR UPDATE" if for_update else ""),
             (binding,),
         ).fetchone()
@@ -181,6 +182,17 @@ class CapabilityStorage:
         )
 
     def blacklist_snapshot(self, *, now_ms: int, materialize_expiry: bool) -> BlacklistSnapshotV1:
+        revision, rows = self.blacklist_snapshot_rows(now_ms=now_ms, materialize_expiry=materialize_expiry)
+        return Blacklist.from_rows(rows).snapshot(revision=revision, now_ms=now_ms)
+
+    def blacklist_snapshot_rows(
+        self,
+        *,
+        now_ms: int,
+        materialize_expiry: bool,
+    ) -> tuple[int, tuple[dict[str, Any], ...]]:
+        """Take the locked SQL snapshot without materializing its Pydantic value."""
+
         runtime = self.conn.execute(
             "SELECT blacklist_revision FROM trading_runtime_state WHERE id = 1 FOR UPDATE"
         ).fetchone()
@@ -214,7 +226,7 @@ class CapabilityStorage:
              ORDER BY base_symbol
             """
         ).fetchall()
-        return Blacklist.from_rows(rows).snapshot(revision=revision, now_ms=now_ms)
+        return revision, tuple(dict(row) for row in rows)
 
 
 __all__ = ["CapabilityStorage"]

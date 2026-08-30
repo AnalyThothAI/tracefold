@@ -12,6 +12,7 @@ import pytest
 from psycopg import OperationalError
 
 from tests.trading_v3_fixtures import trade_intent
+from tracefold.app.nautilus import database as nautilus_database
 from tracefold.app.nautilus.database import NautilusDatabaseBridge as _NautilusDatabaseBridge
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
@@ -35,7 +36,7 @@ from tracefold.integrations.nautilus.messages import (
 )
 from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 from tracefold.trading.quote_authority import ExecutionQuoteRejectionV1, ExecutionQuoteSnapshotV1
-from tracefold.trading.storage.intents import EntryFence
+from tracefold.trading.storage.intents import EntryFenceWrite
 
 NOW_MS = 1_900_000_000_000
 
@@ -120,7 +121,22 @@ class _Repositories:
             "control": "PAUSED",
             "capability_snapshot_sha256": None,
         }
-        self.trading.active_intent.return_value = None
+        self.trading.active_intent_values.return_value = None
+        self.trading.intent_outcome_values.return_value = None
+        self.trading.prepare_quote_audit_json.return_value = "{}"
+        self.trading.prepare_currency_amounts_json.return_value = None
+        for name in (
+            "authorize_entry_submission_values",
+            "record_fenced_quote_no_submit_values",
+            "record_stop_submitted_values",
+            "record_protected_values",
+            "record_position_changed_values",
+            "record_close_submitted_values",
+            "record_position_closed_observed_values",
+            "record_closed_flat_values",
+            "mark_manual_review_values",
+        ):
+            getattr(self.trading, name).return_value = None
 
     @contextmanager
     def transaction(self):
@@ -194,12 +210,12 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.active_intent.return_value = (intent, outcome)
+    repos.trading.active_intent_values.return_value = (intent.model_dump(), outcome.model_dump())
     repos.trading.binding_execution_runtime.return_value = {
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.mark_intent_adopted.return_value = outcome
+    repos.trading.mark_intent_adopted_values.return_value = outcome.model_dump()
 
     bridge._cycle(repos)
     assert queues.commands.empty()
@@ -232,7 +248,7 @@ def test_capability_pointer_change_stops_the_old_engine_before_dispatch() -> Non
         bridge._cycle(repos)
 
     repos.trading.binding_execution_runtime.assert_called_once_with(binding="BINANCE_USDM", for_update=True)
-    repos.trading.active_intent.assert_not_called()
+    repos.trading.active_intent_values.assert_not_called()
     repos.trading.set_binding_execution_runtime.assert_not_called()
 
 
@@ -254,9 +270,13 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         entry_quote_q1=_accepted_quote(intent),
     )
 
-    def fence(*_args: object, **_kwargs: object) -> EntryFence:
+    def fence(*_args: object, **_kwargs: object) -> EntryFenceWrite:
         repos.order.append("fence")
-        return EntryFence(disposition="GRANTED", reason="entry_fence_granted", outcome=fenced)
+        return EntryFenceWrite(
+            disposition="GRANTED",
+            reason="entry_fence_granted",
+            outcome_values=fenced.model_dump(),
+        )
 
     repos.trading.fence_entry.side_effect = fence
     repos.trading.intent.return_value = intent
@@ -266,7 +286,7 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         _fence_request(intent, quantity),
     )
 
-    assert repos.order == ["begin", "fence", "commit"]
+    assert repos.order == ["begin", "commit", "begin", "fence", "commit"]
     assert queues.commands.get_nowait() == EntryFenceGranted(outcome=fenced)
     repos.trading.intent.assert_not_called()
 
@@ -274,13 +294,13 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
 @pytest.mark.parametrize(
     "fence",
     (
-        EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_expired"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_expired"),
     ),
 )
-def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence: EntryFence) -> None:
+def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence: EntryFenceWrite) -> None:
     """#331: nothing was written, nothing may be sent, and the reason is no longer a bare `None`."""
 
     intent = _intent()
@@ -309,10 +329,10 @@ def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_reje
         terminal_outcome="REJECTED",
         reason_code="capability_mismatch",
     )
-    repos.trading.fence_entry.return_value = EntryFence(
+    repos.trading.fence_entry.return_value = EntryFenceWrite(
         disposition="REFUSED",
         reason="capability_mismatch",
-        outcome=rejected,
+        outcome_values=rejected.model_dump(),
     )
 
     bridge._handle_event(
@@ -323,7 +343,7 @@ def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_reje
     assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
 
 
-def test_q2_evidence_commits_before_the_strategy_receives_submission_authority() -> None:
+def test_q2_evidence_commits_before_the_strategy_receives_submission_authority(monkeypatch: Any) -> None:
     intent = _intent()
     client_order_id = deterministic_client_order_id(intent.intent_id, "entry")
     q2 = _accepted_quote(intent, stage="Q2")
@@ -341,7 +361,14 @@ def test_q2_evidence_commits_before_the_strategy_receives_submission_authority()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.authorize_entry_submission.return_value = authorized
+    repos.trading.authorize_entry_submission_values.return_value = authorized.model_dump()
+
+    def materialize(values: dict[str, Any]) -> IntentOutcome:
+        assert values == authorized.model_dump()
+        repos.order.append("materialize")
+        return authorized
+
+    monkeypatch.setattr(nautilus_database, "materialize_intent_outcome", materialize)
 
     assert bridge._handle_event(
         repos,
@@ -352,7 +379,7 @@ def test_q2_evidence_commits_before_the_strategy_receives_submission_authority()
         ),
     )
 
-    assert repos.order == ["begin", "commit"]
+    assert repos.order == ["begin", "commit", "materialize"]
     assert queues.commands.get_nowait() == EntrySubmissionGranted(outcome=authorized)
 
 
@@ -382,7 +409,7 @@ def test_q2_no_submit_terminal_commits_before_the_strategy_releases_the_intent()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.record_fenced_quote_no_submit.return_value = rejected
+    repos.trading.record_fenced_quote_no_submit_values.return_value = rejected.model_dump()
 
     assert bridge._handle_event(
         repos,
@@ -405,8 +432,8 @@ def test_q2_projection_failure_never_grants_submission_authority() -> None:
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.authorize_entry_submission.return_value = None
-    repos.trading.intent_outcome.return_value = None
+    repos.trading.authorize_entry_submission_values.return_value = None
+    repos.trading.intent_outcome_values.return_value = None
 
     with pytest.raises(RuntimeError, match="entry_submission_authority_projection_failed"):
         bridge._handle_event(
@@ -440,11 +467,10 @@ def test_execution_events_write_only_authoritative_identifiers_and_quantities() 
             submitted_at_ms=NOW_MS + 10,
         ),
     )
-    repos.trading.record_stop_submitted.assert_called_once_with(
+    repos.trading.record_stop_submitted_values.assert_called_once_with(
         intent.intent_id,
         client_order_id=stop_id,
         generation=0,
-        previous_client_order_id=None,
         quantity=Decimal("0.001"),
         now_ms=NOW_MS + 10,
     )
@@ -460,7 +486,7 @@ def test_execution_events_write_only_authoritative_identifiers_and_quantities() 
             accepted_at_ms=NOW_MS + 20,
         ),
     )
-    repos.trading.record_protected.assert_called_once_with(
+    repos.trading.record_protected_values.assert_called_once_with(
         intent.intent_id,
         accepted_client_order_id=stop_id,
         protection_order_id="venue-stop-1",
@@ -480,7 +506,7 @@ def test_execution_events_write_only_authoritative_identifiers_and_quantities() 
             changed_at_ms=NOW_MS + 25,
         ),
     )
-    repos.trading.record_position_changed.assert_called_once_with(
+    repos.trading.record_position_changed_values.assert_called_once_with(
         intent.intent_id,
         position_id="position-1",
         actual_quantity=Decimal("0.002"),
@@ -498,7 +524,7 @@ def test_execution_events_write_only_authoritative_identifiers_and_quantities() 
             submitted_at_ms=NOW_MS + 30,
         ),
     )
-    repos.trading.record_close_submitted.assert_called_once_with(
+    repos.trading.record_close_submitted_values.assert_called_once_with(
         intent.intent_id,
         client_order_id=close_id,
         position_id="position-1",
@@ -522,7 +548,7 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
             observed_at_ms=NOW_MS + 40,
         ),
     )
-    repos.trading.mark_manual_review.assert_called_once_with(
+    repos.trading.mark_manual_review_values.assert_called_once_with(
         intent.intent_id,
         reason_code="close_outcome_unknown",
         now_ms=NOW_MS + 40,
@@ -544,10 +570,9 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
             closed_at_ms=NOW_MS + 50,
         ),
     )
-    repos.trading.record_position_closed_observed.assert_called_once_with(
+    repos.trading.record_position_closed_observed_values.assert_called_once_with(
         intent.intent_id,
         instrument_id="SOLUSDT-PERP.BINANCE",
-        account_id="BINANCE-001",
         position_id="position-1",
         closing_client_order_id=deterministic_client_order_id(intent.intent_id, "close"),
         local_quantity=Decimal("0"),
@@ -555,11 +580,11 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
         closed_at_ms=NOW_MS + 50,
         realized_pnl_amount=None,
         realized_pnl_currency=None,
-        commissions_by_currency={"USDT": "0.12"},
+        commissions_json=None,
         now_ms=NOW_MS + 50,
-        funding_by_currency=None,
+        funding_json=None,
     )
-    repos.trading.record_closed_flat.assert_not_called()
+    repos.trading.record_closed_flat_values.assert_not_called()
 
     bridge._handle_event(
         repos,
@@ -575,7 +600,7 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
             flat_verified_at_ms=NOW_MS + 500,
         ),
     )
-    repos.trading.record_closed_flat.assert_called_once_with(
+    repos.trading.record_closed_flat_values.assert_called_once_with(
         intent.intent_id,
         position_id="position-1",
         authoritative_quantity=Decimal("0"),
@@ -584,9 +609,9 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
         flat_verified_at_ms=NOW_MS + 500,
         realized_pnl_amount=None,
         realized_pnl_currency=None,
-        commissions_by_currency={"USDT": "0.12"},
+        commissions_json=None,
         now_ms=NOW_MS + 500,
-        funding_by_currency=None,
+        funding_json=None,
     )
 
 
@@ -619,7 +644,7 @@ def test_projection_event_is_retried_after_a_transient_database_disconnect() -> 
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.active_intent.return_value = None
+    repos.trading.active_intent_values.return_value = None
     stop_id = deterministic_client_order_id(intent.intent_id, "stop")
     submitted = StopSubmitted(
         intent_id=intent.intent_id,
@@ -641,14 +666,17 @@ def test_projection_event_is_retried_after_a_transient_database_disconnect() -> 
         stop_submitted_at_ms=NOW_MS,
         actual_quantity=Decimal("0.001"),
     )
-    repos.trading.record_stop_submitted.side_effect = [OperationalError("disconnect"), projected]
+    repos.trading.record_stop_submitted_values.side_effect = [
+        OperationalError("disconnect"),
+        projected.model_dump(),
+    ]
 
     with pytest.raises(OperationalError):
         bridge._cycle(repos)
     assert queues.events.empty()
 
     bridge._cycle(repos)
-    assert repos.trading.record_stop_submitted.call_count == 2
+    assert repos.trading.record_stop_submitted_values.call_count == 2
     assert bridge._pending_event is None
 
 
@@ -661,14 +689,14 @@ def test_expiry_projection_failure_blocks_admission_until_the_same_row_updates()
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.active_intent.return_value = (intent, _outcome(intent))
+    repos.trading.active_intent_values.return_value = (intent.model_dump(), _outcome(intent).model_dump())
     expired = _outcome(
         intent,
         execution_state="TERMINAL",
         terminal_outcome="EXPIRED",
         reason_code="intent_expired",
     )
-    repos.trading.expire_unfenced_intent.side_effect = [None, expired]
+    repos.trading.expire_unfenced_intent_values.side_effect = [None, expired.model_dump()]
     bridge._set_db_connected(True)
     _ready(bridge, repos)
 
@@ -676,7 +704,7 @@ def test_expiry_projection_failure_blocks_admission_until_the_same_row_updates()
     assert bridge.readiness()["reason"] == "execution_projection_rejected"
 
     bridge._cycle(repos)
-    assert repos.trading.expire_unfenced_intent.call_count == 2
+    assert repos.trading.expire_unfenced_intent_values.call_count == 2
     assert queues.commands.get_nowait() == IntentReleased(intent_id=intent.intent_id)
     assert bridge.readiness()["ok"] is True
 
@@ -690,15 +718,15 @@ def test_successful_expiry_cannot_clear_a_blocked_execution_projection() -> None
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.active_intent.return_value = (intent, _outcome(intent))
-    repos.trading.expire_unfenced_intent.return_value = _outcome(
+    repos.trading.active_intent_values.return_value = (intent.model_dump(), _outcome(intent).model_dump())
+    repos.trading.expire_unfenced_intent_values.return_value = _outcome(
         intent,
         execution_state="TERMINAL",
         terminal_outcome="EXPIRED",
         reason_code="intent_expired",
-    )
-    repos.trading.record_stop_submitted.return_value = None
-    repos.trading.intent_outcome.return_value = _outcome(intent)
+    ).model_dump()
+    repos.trading.record_stop_submitted_values.return_value = None
+    repos.trading.intent_outcome_values.return_value = _outcome(intent).model_dump()
     submitted = StopSubmitted(
         intent_id=intent.intent_id,
         client_order_id=deterministic_client_order_id(intent.intent_id, "stop"),
@@ -731,16 +759,16 @@ def test_logically_rejected_projection_blocks_admission_and_retries_in_place() -
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.active_intent.return_value = None
-    repos.trading.record_stop_submitted.return_value = None
-    repos.trading.intent_outcome.return_value = _outcome(
+    repos.trading.active_intent_values.return_value = None
+    repos.trading.record_stop_submitted_values.return_value = None
+    repos.trading.intent_outcome_values.return_value = _outcome(
         intent,
         execution_state="IN_FLIGHT",
         execution_phase="PROTECTION",
         entry_client_order_id=deterministic_client_order_id(intent.intent_id, "entry"),
         entry_fenced_at_ms=NOW_MS - 10,
         actual_quantity=Decimal("0.001"),
-    )
+    ).model_dump()
     submitted = StopSubmitted(
         intent_id=intent.intent_id,
         client_order_id=deterministic_client_order_id(intent.intent_id, "stop"),
@@ -756,7 +784,7 @@ def test_logically_rejected_projection_blocks_admission_and_retries_in_place() -
     bridge._cycle(repos)
     bridge._cycle(repos)
 
-    assert repos.trading.record_stop_submitted.call_count == 2
+    assert repos.trading.record_stop_submitted_values.call_count == 2
     assert bridge.readiness()["ok"] is False
     assert bridge.readiness()["reason"] == "execution_projection_rejected"
     assert bridge._pending_event == submitted
@@ -772,10 +800,10 @@ def test_ambiguous_commit_is_accepted_when_the_same_projection_is_already_durabl
         "control": "RUNNING",
         "capability_snapshot_sha256": None,
     }
-    repos.trading.active_intent.return_value = None
+    repos.trading.active_intent_values.return_value = None
     stop_id = deterministic_client_order_id(intent.intent_id, "stop")
-    repos.trading.record_stop_submitted.return_value = None
-    repos.trading.intent_outcome.return_value = _outcome(
+    repos.trading.record_stop_submitted_values.return_value = None
+    repos.trading.intent_outcome_values.return_value = _outcome(
         intent,
         execution_state="IN_FLIGHT",
         execution_phase="PROTECTION",
@@ -785,7 +813,7 @@ def test_ambiguous_commit_is_accepted_when_the_same_projection_is_already_durabl
         stop_generation=0,
         stop_submitted_at_ms=NOW_MS,
         actual_quantity=Decimal("0.001"),
-    )
+    ).model_dump()
     queues.events.put_nowait(
         StopSubmitted(
             intent_id=intent.intent_id,
@@ -855,8 +883,8 @@ def test_unknown_fee_readback_accepts_a_stronger_durable_snapshot() -> None:
         commissions_by_currency=None,
         closed_at_ms=NOW_MS,
     )
-    repos.trading.record_position_closed_observed.return_value = None
-    repos.trading.intent_outcome.return_value = _outcome(
+    repos.trading.record_position_closed_observed_values.return_value = None
+    repos.trading.intent_outcome_values.return_value = _outcome(
         intent,
         execution_state="IN_FLIGHT",
         execution_phase="EXIT",
@@ -871,6 +899,6 @@ def test_unknown_fee_readback_accepts_a_stronger_durable_snapshot() -> None:
         realized_pnl_amount=Decimal("0.05"),
         realized_pnl_currency="USDT",
         commissions_by_currency={"USDT": "0.01"},
-    )
+    ).model_dump()
 
     assert bridge._handle_event(repos, event) is True

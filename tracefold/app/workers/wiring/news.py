@@ -414,7 +414,7 @@ def _trip_unavailable_active_canary(
 ) -> bool:
     """Fail closed a nonterminal candidate that this image cannot execute."""
 
-    with db.worker_session("news_canary_startup_validation", 3.0) as repos, repos.transaction():
+    with db.worker_session("news_canary_startup_validation", 3.0) as repos:
         from tracefold.news.release.canary import (
             CANARY_ELIGIBILITY_PROFILE_SHA,
             CANARY_ROLLING_PROFILE_SHA,

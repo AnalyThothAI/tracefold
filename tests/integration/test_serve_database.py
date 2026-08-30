@@ -18,11 +18,7 @@ def test_serve_session_policy_is_applied_at_connect_time() -> None:
     )
     try:
         with database.api_session() as repos:
-            row = repos.conn.execute(
-                "SELECT current_setting('jit') AS jit, "
-                "current_setting('max_parallel_workers_per_gather') AS max_parallel_workers_per_gather, "
-                "current_setting('work_mem') AS work_mem"
-            ).fetchone()
+            row = repos.session_policy()
         assert row == {
             "jit": "off",
             "max_parallel_workers_per_gather": "0",

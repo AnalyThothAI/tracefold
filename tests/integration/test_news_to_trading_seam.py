@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -43,7 +44,7 @@ from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
 from tracefold.trading.capital_lane import BAR_INTERVAL_MS, CapitalLane, CapitalLaneConfig
-from tracefold.trading.contracts import Bar, CaseState
+from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
 
 pytestmark = pytest.mark.integration
 
@@ -96,6 +97,28 @@ class NewsDatabase:
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
         del operation_timeout_seconds, name
         return fn(*args, **kwargs)
+
+
+def _news_oi_projection(
+    database: NewsDatabase,
+) -> Callable[[str, int, int], Awaitable[Sequence[OiCandidateRow]]]:
+    async def read(
+        metric_version: str,
+        after_created_at_ms: int,
+        until_created_at_ms: int,
+    ) -> Sequence[OiCandidateRow]:
+        return await database.read(
+            "trading_oi_projection",
+            lambda repos: news_oi_sources(
+                repos,
+                metric_version,
+                after_created_at_ms,
+                until_created_at_ms,
+            ),
+            timeout_seconds=10.0,
+        )
+
+    return read
 
 
 class TradingDatabase:
@@ -325,7 +348,7 @@ def test_a_news_oi_frame_becomes_one_blocked_case_with_a_policy_long_and_no_inte
         db=TradingDatabase(conn),
         config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
         bars=_bars,
-        oi_projection=news_oi_sources,
+        oi_projection=_news_oi_projection(NewsDatabase(conn)),
         news_generation=_running_generation(conn),
         release_revision="test-release",
         clock=now_ms,

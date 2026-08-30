@@ -94,12 +94,14 @@ class OpenNewsReceiver:
             await self.bus.publish(msg)
         except (BrokerBackpressure, BrokerUnavailable) as exc:
             cause = "broker_backpressure" if isinstance(exc, BrokerBackpressure) else "broker_unavailable"
+
+            def _record_backpressure(repos: Any) -> None:
+                repos.news.open_incident(cause_class=cause, now_ms=stamp)
+                repos.news.update_ingest_state(now_ms=stamp, last_frame_at_ms=stamp, last_error_code=cause)
+
             await self.db.tx(
                 "news_ingest_backpressure",
-                lambda repos: (
-                    repos.news.open_incident(cause_class=cause, now_ms=stamp),
-                    repos.news.update_ingest_state(now_ms=stamp, last_frame_at_ms=stamp, last_error_code=cause),
-                ),
+                _record_backpressure,
             )
             return
 

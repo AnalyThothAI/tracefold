@@ -781,28 +781,32 @@ def test_0329_to_0330_installs_current_contract_constraints_for_new_writes() -> 
         current_told_trace = old_key_trace | {
             "told": [
                 {
-                    "i": 0,
-                    "event_id": "told-event",
-                    "at_ms": 1,
-                    "ago_min": 0,
-                    "storyline_key": "storyline:told",
-                    "comparison_title": "已读事件",
+                    "i": index,
+                    "event_id": f"told-event-{index}",
+                    "at_ms": index + 1,
+                    "ago_min": index,
+                    "storyline_key": f"storyline:told:{index}",
+                    "comparison_title": "题" * 600,
                     "comparison_fingerprint": "d" * 64,
-                    "symbols": ["BTC"],
+                    "symbols": ["BTC", "ETH", "SOL", "DOGE", "XRP", "ADA"],
                     "magnitude": 1,
                     "direction": "neutral",
-                    "headline_zh": "已读事件",
-                    "why_zh": "用于验证非空 current told ledger。",
+                    "headline_zh": "头" * 60,
+                    "why_zh": "因" * 140,
                     "tier": "recency",
                     "similarity": 0.0,
                     "history_scope": "recent",
                     "retrieval_reason": "recent",
                 }
+                for index in range(16)
             ],
-            "told_count": 1,
+            "told_count": 16,
         }
         del current_told_trace["reader_history"]
         current_told_trace["adapter_protocol"] = {"response_format": {"type": "json_object"}}
+        # The real current-table CHECK evaluates a production-limit 16-row told payload under a
+        # PostgreSQL-native write budget. Runner wall time is deliberately not an assertion.
+        conn.execute("SET LOCAL statement_timeout = '250ms'")
         insert_current_degraded(current_told_trace)
         conn.commit()
 
