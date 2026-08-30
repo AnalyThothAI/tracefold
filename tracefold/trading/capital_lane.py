@@ -221,8 +221,8 @@ class CapitalLane:
                 "version": "trading_oi_source_contract_v1",
                 "metric_version": config.oi_metric_version,
                 "news_generation": news_generation,
-                "upstream_measurement_schema": "news_oi_signal_v1",
-                "upstream_selection_schema": "news_triage_policy_v10",
+                "upstream_measurement_schema": "news_oi_signal_v2",
+                "upstream_selection_schema": "news_triage_policy_v11",
                 "manifest_version": TRADING_MANIFEST_VERSION,
                 "source_native": True,
             }
