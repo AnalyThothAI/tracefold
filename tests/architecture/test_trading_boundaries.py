@@ -51,6 +51,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/execution_policy.py",
     "trading/quote_authority.py",
     "trading/telemetry.py",
+    "trading/evidence_clock.py",
     "trading/storage/root.py",
     "trading/storage/authority.py",
     "trading/storage/bindings.py",
@@ -61,6 +62,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/storage/catalog.py",
     "trading/storage/gate.py",
     "trading/storage/intents.py",
+    "trading/storage/evidence.py",
     "trading/storage/queries.py",
     "trading/storage/sql_values.py",
     # The execution authority. It is not in `tracefold.trading`, and pretending otherwise is what let
@@ -194,7 +196,14 @@ def test_the_capital_path_manifest_is_complete() -> None:
     assert missing == []
     # Every `tracefold.trading` module is either on the capital path or a research module. Nothing may
     # be neither, because "neither" is how a file leaves the scan set without anyone noticing.
-    research = {"trading/replay.py", "trading/research/oi_replay.py", "trading/storage/replay.py"}
+    research = {
+        "trading/evidence_research.py",
+        "trading/evidence_verification.py",
+        "trading/replay.py",
+        "trading/research/oi_replay.py",
+        "trading/storage/replay.py",
+        "trading/storage/verification.py",
+    }
     covered = set(CAPITAL_PATH) | research
     unclassified = [
         str(path.relative_to(SRC))
@@ -467,6 +476,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
+        "NautilusRuntimeStartV1",
         "OperatorArmReceiptV1",
         "ProductionPromotionGrantRevocationV1",
         "ProductionPromotionGrantV1",

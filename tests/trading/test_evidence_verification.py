@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import pytest
+
+from tracefold.trading.contracts import canonical_sha256
+from tracefold.trading.evidence_verification import (
+    EvidenceVerificationCheckV1,
+    FixedWindowAcceptanceV1,
+    ProductionReleaseCandidateV1,
+    verification_report,
+)
+
+START = 1_900_000_000_000
+END = START + 7 * 86_400_000
+
+
+def _window() -> FixedWindowAcceptanceV1:
+    return FixedWindowAcceptanceV1(
+        start_ms=START,
+        end_ms=END,
+        drain_cutoff_ms=END + 60_000,
+        gate_version="candidate_gate_v1",
+        gate_config_digest="a" * 64,
+        minimum_source_count=4,
+        minimum_case_count=3,
+        minimum_intent_count=2,
+        minimum_closed_flat_count=1,
+    )
+
+
+def _release_payload() -> dict[str, object]:
+    restart = {
+        "receipt_version": "canary_restart_drill_receipt_v1",
+        "intent_id": "6" * 64,
+        "binding": "BINANCE_USDM",
+        "protected_runtime_id": "00000000-0000-0000-0000-000000000001",
+        "recovered_runtime_id": "00000000-0000-0000-0000-000000000002",
+        "stopped_at_ms": START - 10,
+        "reconciled_at_ms": START - 5,
+        "operator": "operator",
+        "statement": "QUERY_FIRST_ZERO_DUPLICATE_AUTHORITATIVE_CLOSED_FLAT_AFTER_PROCESS_RESTART",
+    }
+    restart["receipt_sha256"] = canonical_sha256(restart)
+    return {
+        "release_version": "production_v3_release_candidate_v1",
+        "release_tag": "production-v3-rc1",
+        "git_commit_sha": "1" * 40,
+        "git_tree_sha": "2" * 40,
+        "oci_image_digest": "tracefold@sha256:" + "3" * 64,
+        "migration_head": "20260830_0334",
+        "openapi_sha256": "4" * 64,
+        "web_assets_sha256": "5" * 64,
+        "workers_runtime_revision": "1" * 40,
+        "serve_runtime_revision": "1" * 40,
+        "nautilus_wheel_sha256": "6" * 64,
+        "nautilus_source_git_commit": "7" * 40,
+        "execution_contract_receipt_sha256": "8" * 64,
+        "execution_policy_sha256": "9" * 64,
+        "quote_contract_sha256": "a" * 64,
+        "protection_contract_sha256": "b" * 64,
+        "policy_config_sha256": "c" * 64,
+        "bindings": [
+            {
+                "binding": "BINANCE_USDM",
+                "catalog_snapshot_sha256": "d" * 64,
+                "capability_snapshot_sha256": "e" * 64,
+                "execution_binding_sha256": "f" * 64,
+                "account_identity_sha256": "0" * 64,
+                "account_generation": 1,
+                "adapter_contract_sha256": "1" * 64,
+                "client_runtime_identity": "nautilus-trader==1.231.0",
+            }
+        ],
+        "corpus_receipt_sha256s": ["2" * 64],
+        "future_result_receipt_sha256s": ["3" * 64],
+        "promotion_grant_sha256s": ["4" * 64],
+        "risk_policy_sha256s": ["5" * 64],
+        "canary_intent_ids": ["6" * 64],
+        "restart_drill": restart,
+        "acceptance_window": _window().model_dump(mode="json"),
+        "approval_statement": "I_APPROVE_EXACT_RELEASE_CANDIDATE_FOR_FIXED_ACCEPTANCE_WINDOW",
+        "approved_by": "operator",
+        "approved_at_ms": START - 1,
+    }
+
+
+def test_fixed_window_is_exactly_seven_days_and_has_nonzero_activity_floors() -> None:
+    assert len(_window().window_sha256) == 64
+    with pytest.raises(ValueError, match="evidence_acceptance_window_not_seven_days"):
+        FixedWindowAcceptanceV1(
+            **(_window().model_dump() | {"end_ms": END + 1}),
+        )
+
+
+def test_release_approval_digest_covers_every_identity_and_window() -> None:
+    payload = _release_payload()
+    payload["approval_sha256"] = canonical_sha256(payload)
+    release = ProductionReleaseCandidateV1.model_validate(payload)
+
+    assert len(release.release_sha256) == 64
+    with pytest.raises(ValueError, match="evidence_release_approval_identity_invalid"):
+        ProductionReleaseCandidateV1.model_validate(payload | {"openapi_sha256": "0" * 64})
+
+
+def test_verification_report_is_canonical_and_any_failed_check_is_terminal() -> None:
+    report = verification_report(
+        subject="fixed-window:test",
+        verified_at_ms=START,
+        checks=[
+            EvidenceVerificationCheckV1(code="z_pass", passed=True),
+            EvidenceVerificationCheckV1(code="a_failure", passed=False),
+        ],
+    )
+
+    assert report.terminal == "FAILED"
+    assert report.failure_codes == ("a_failure",)
+    assert tuple(check.code for check in report.checks) == ("a_failure", "z_pass")

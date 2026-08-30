@@ -416,7 +416,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260830_0333` head; schema tests also run against that migrated head.
+current `20260830_0334` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -427,6 +427,20 @@ Workers root, publishes through RabbitMQ, persists the deterministic OI path in
 PostgreSQL and reads it through HTTP. ReviewDesk and CandidateEvaluator have their own integration lanes;
 production shadow/canary evidence is sealed in PostgreSQL rather than inferred
 from the HTTP e2e fixture.
+
+The #377 Trading evidence clock is verified at three distinct seams. Pure tests
+prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
+scope/sign, preregistration clocks, deterministic block bootstrap and declared
+power. PostgreSQL tests prove the irreversible `0334` cutover, the append-only
+corpus -> candidate -> future capture -> future drain -> result parent chain,
+one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
+link, gap-free bar/funding boundaries, Case/Intent conservation, fixed-window
+accounting, append-only Nautilus process generations, signed-tag/restart/canary
+release binding, and rollback snapshots. CLI contract tests keep one `trading evidence verify` entry with
+receipt, lifecycle, seven-day window, release, and rollback subjects. No pure
+test, fixture, local artifact, mock, or green CI job may stand in for future
+calendar data, a human grant/arm, a venue-native write/flat receipt, or the
+final fixed-window/rollback terminal.
 
 ### News V3 evaluation seams
 

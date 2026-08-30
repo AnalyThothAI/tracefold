@@ -252,6 +252,23 @@ def test_the_mapper_carries_every_projected_oi_field_across_the_sibling_boundary
         until_created_at_ms=now_ms() + 60_000,
     )
     assert [row["event_id"] for row in rows] == [event_id]
+    observed_at_ms = int(signal["observed_at_ms"])
+    evidence_rows = repos.news.trade_evidence_oi_rows(
+        metric_version=OI_METRIC_VERSION,
+        start_observed_at_ms=observed_at_ms,
+        end_observed_at_ms=observed_at_ms + 1,
+        known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]),
+    )
+    assert [row["event_id"] for row in evidence_rows] == [event_id]
+    assert (
+        repos.news.trade_evidence_oi_rows(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=observed_at_ms,
+            end_observed_at_ms=observed_at_ms + 1,
+            known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]) - 1,
+        )
+        == []
+    )
 
     mapped = to_oi_candidate_row(rows[0])
 

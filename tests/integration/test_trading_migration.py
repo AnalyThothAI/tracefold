@@ -15,13 +15,14 @@ from typing import Any
 
 import pytest
 from alembic import command
-from psycopg.errors import CheckViolation, RaiseException
+from psycopg.errors import CheckViolation, RaiseException, UniqueViolation
 from sqlalchemy.exc import DBAPIError
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
+from tests.trading_v3_fixtures import append_capital_evidence_fixture
 from tracefold.platform.postgres.migrations import alembic_config
 from tracefold.trading.catalog import (
     VenueInstrumentCatalogEntryV1,
@@ -29,6 +30,8 @@ from tracefold.trading.catalog import (
     build_venue_catalog_snapshot,
 )
 from tracefold.trading.contracts import DecisionRuntimeV1, canonical_sha256
+from tracefold.trading.evidence_clock import FutureCaptureReceiptV1, FutureDrainReceiptV1
+from tracefold.trading.evidence_verification import NautilusRuntimeStartV1
 from tracefold.trading.storage.root import TradingRepository
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -1021,6 +1024,171 @@ def test_0332_capital_authority_cutover_requires_paused_and_installs_attempt_day
         }
         assert {"attempt_day_start_ms", "attempt_day_end_ms", "attempt_consumed"} <= columns
         assert conn.execute("SELECT arm_epoch FROM trading_runtime_state WHERE id = 1").fetchone()["arm_epoch"] == 1
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260830_0332")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match="trading_evidence_clock_cutover_requires_paused"):
+            _upgrade("20260830_0334")
+
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+        _upgrade("20260830_0334")
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0334"
+        grant_columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'trading_production_promotion_grants'"
+            ).fetchall()
+        }
+        assert {"sealed_corpus_sha256", "locked_future_report_sha256"} <= grant_columns
+        privileges = conn.execute(
+            "SELECT has_table_privilege('tracefold_workers', 'trading_evidence_clock_receipts', 'INSERT') "
+            "AS worker_insert, "
+            "has_table_privilege('tracefold_serve', 'trading_evidence_clock_receipts', 'INSERT') "
+            "AS serve_insert, "
+            "has_table_privilege('tracefold_nautilus', 'trading_nautilus_runtime_starts', 'INSERT') "
+            "AS nautilus_start_insert, "
+            "has_table_privilege('tracefold_workers', 'trading_nautilus_runtime_starts', 'INSERT') "
+            "AS worker_start_insert"
+        ).fetchone()
+        assert dict(privileges) == {
+            "worker_insert": True,
+            "serve_insert": False,
+            "nautilus_start_insert": True,
+            "worker_start_insert": False,
+        }
+
+        repos = TradingRepository(conn)
+        runtime_start = NautilusRuntimeStartV1(
+            runtime_id="00000000-0000-0000-0000-000000000099",
+            runtime_revision="1" * 40,
+            image_digest="tracefold@sha256:" + "2" * 64,
+            nautilus_version="1.231.0",
+            nautilus_source_git_commit="3" * 40,
+            nautilus_wheel_identity="linux@sha256:" + "4" * 64,
+            started_at_ms=NOW,
+        )
+        assert repos.append_nautilus_runtime_start(runtime_start)
+        result = append_capital_evidence_fixture(repos)
+        assert repos.future_holdout_result_for_artifact(result.report_sha256) == result
+        protocol_receipt = repos.future_holdout_receipt_for_protocol(result.protocol_sha256)
+        assert protocol_receipt is not None
+        assert protocol_receipt["artifact_sha256"] == result.report_sha256
+        drain_receipt = repos.future_drain_receipt_for_protocol(result.protocol_sha256)
+        assert drain_receipt is not None
+        assert protocol_receipt["parent_receipt_sha256"] == drain_receipt["receipt_sha256"]
+        capture_receipt = repos.future_capture_receipt_for_protocol(result.protocol_sha256)
+        assert capture_receipt is not None
+        assert drain_receipt["parent_receipt_sha256"] == capture_receipt["receipt_sha256"]
+        conn.commit()
+        with pytest.raises(UniqueViolation), conn.transaction():
+            repos.append_future_capture_receipt(
+                FutureCaptureReceiptV1(
+                    binding="BINANCE_USDM",
+                    candidate_receipt_sha256=str(capture_receipt["parent_receipt_sha256"]),
+                    protocol_sha256=result.protocol_sha256,
+                    sealed_corpus_sha256=result.sealed_corpus_sha256,
+                    capture_sha256="8" * 64,
+                    artifact_sha256="8" * 64,
+                    artifact_path="test-evidence/second-future-capture.json",
+                    created_at_ms=5,
+                )
+            )
+        with pytest.raises(UniqueViolation), conn.transaction():
+            repos.append_future_drain_receipt(
+                FutureDrainReceiptV1(
+                    binding="BINANCE_USDM",
+                    candidate_receipt_sha256=str(drain_receipt["payload"]["receipt"]["candidate_receipt_sha256"]),
+                    capture_receipt_sha256=str(capture_receipt["receipt_sha256"]),
+                    protocol_sha256=result.protocol_sha256,
+                    sealed_corpus_sha256=result.sealed_corpus_sha256,
+                    capture_sha256=result.future_capture_sha256,
+                    drain_sha256="9" * 64,
+                    artifact_sha256="9" * 64,
+                    artifact_path="test-evidence/second-future-drain.json",
+                    created_at_ms=6,
+                )
+            )
+        candidate_row = conn.execute(
+            "SELECT receipt_sha256 FROM trading_evidence_clock_receipts WHERE receipt_kind = 'CANDIDATE_DECISION'"
+        ).fetchone()
+        invalid_receipt = {
+            "receipt_version": "candidate_decision_receipt_v1",
+            "terminal": "NO_CANDIDATE",
+            "binding": "HYPERLIQUID_PERP",
+            "sealed_corpus_sha256": "4" * 64,
+            "artifact_sha256": "8" * 64,
+            "artifact_path": "invalid-parent.json",
+            "protocol_sha256": None,
+            "created_at_ms": 4,
+        }
+        invalid_payload = {
+            "receipt_sha256": "9" * 64,
+            "receipt_kind": "CANDIDATE_DECISION",
+            "terminal": "NO_CANDIDATE",
+            "binding": "HYPERLIQUID_PERP",
+            "parent_receipt_sha256": candidate_row["receipt_sha256"],
+            "artifact_sha256": "8" * 64,
+            "corpus_sha256": "4" * 64,
+            "protocol_sha256": None,
+            "receipt": invalid_receipt,
+            "evidence": {"terminal": "NO_CANDIDATE"},
+        }
+        with (
+            pytest.raises(RaiseException, match="trading_evidence_candidate_parent_invalid"),
+            conn.transaction(),
+        ):
+            conn.execute(
+                """
+                INSERT INTO trading_evidence_clock_receipts (
+                  receipt_sha256, receipt_kind, terminal, binding, parent_receipt_sha256,
+                  artifact_sha256, corpus_sha256, protocol_sha256, created_at_ms, payload
+                ) VALUES (%s, 'CANDIDATE_DECISION', 'NO_CANDIDATE', 'HYPERLIQUID_PERP',
+                          %s, %s, %s, NULL, 4, %s::jsonb)
+                """,
+                (
+                    "9" * 64,
+                    candidate_row["receipt_sha256"],
+                    "8" * 64,
+                    "4" * 64,
+                    json.dumps(invalid_payload),
+                ),
+            )
+        with (
+            pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"),
+            conn.transaction(),
+        ):
+            conn.execute(
+                "UPDATE trading_evidence_clock_receipts SET created_at_ms = created_at_ms + 1 "
+                "WHERE artifact_sha256 = %s",
+                (result.report_sha256,),
+            )
+        with (
+            pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"),
+            conn.transaction(),
+        ):
+            conn.execute(
+                "DELETE FROM trading_nautilus_runtime_starts WHERE start_sha256 = %s",
+                (runtime_start.start_sha256,),
+            )
     finally:
         if conn is not None:
             conn.close()

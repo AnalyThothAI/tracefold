@@ -60,6 +60,69 @@ composition is invalid, Workers must fail startup/readiness or record Decision
 `FAULTED`. Do not classify an arbitrary exception as legal no-key observer
 mode.
 
+#### Production V3 evidence clock (#377)
+
+Keep Capital `PAUSED` while building discovery and future-holdout evidence.
+Use one content-addressed artifact root and record every returned full digest
+and receipt; never edit an artifact in place or reuse a future window after a
+protocol change. The operator sequence is:
+
+```text
+trading evidence capture --partition discovery ...
+trading evidence drain --capture ... --max-horizon-ms ... --finalization-lag-ms ... --cost-model ...
+trading evidence corpus-seal --capture ... --drain ...
+trading evidence candidate-register --file ...
+trading evidence capture --partition future ... --candidate ... --candidate-receipt ...
+trading evidence drain --capture ... --candidate ... --candidate-receipt ...
+trading evidence future-unblind --capture ... --drain ... --candidate ... --candidate-receipt ...
+```
+
+Capture and drain are not one command: the first cannot see outcome bars or
+funding. The first complete future capture transaction appends
+`FUTURE_CAPTURE_SEALED`; later source-population variants cannot replace it. The
+second refuses all future provider I/O before the locked drain cutoff or under a
+different candidate receipt/cost/horizon. The first successful future drain
+transaction appends `FUTURE_DRAIN_SEALED`; a second drain cannot replace it, and
+unblind accepts only its exact capture and drain artifacts. During the blind period inspect collection
+health only. Do not calculate candidate PnL, cohort profitability, hurdle
+distance, or extend/stop the window based on results. Provider outage,
+source-wide missingness, catalog reset/delist, correction, missing bars or
+funding, protection drift, and clock violations use the locked incident map;
+they are never adjudicated after unblind.
+
+Before any human grant review, run `trading evidence verify --receipt SHA` on
+the exact `PROMOTE` result. Promotion then follows #376's separate immutable
+risk-policy -> grant -> arm path and still requires the explicit bounded
+canary approval. A canary passes only after the durable Intent reaches
+authoritative `CLOSED_FLAT` and risk settlement; profit is irrelevant and
+`MANUAL_REVIEW` is not a pass. Keep the exact canary Intent ids. For the
+required restart drill, stop the Nautilus generation only after the Intent is
+filled and natively protected, start the same frozen release again, let it
+query-first reconcile and close, and bind both immutable runtime ids plus the
+final `flat_verified_at_ms` in the restart receipt. A service restart without
+those two PostgreSQL start facts is not restart evidence.
+
+Freeze the release candidate before final observation. Its artifact names the
+exact tag/commit/tree, OCI image, migration head, committed OpenAPI, built web
+tree, Workers/Serve revisions, Nautilus wheel/source, execution contracts,
+per-binding catalog/capability/account identities, evidence/grant/risk
+receipts, and one exact seven-day window with nonzero minimum activity. Run
+`trading evidence verify --release FILE` only after its drain cutoff. The tag
+must be an annotated signature-verifiable Git tag resolving to the declared
+commit and tree; the release file must enumerate the exact canary Intent set
+and one protected-to-recovered Nautilus restart receipt. A green
+CI run or a mathematically conserved empty window is not acceptance. At
+rollback, pause Capital, revoke/expire every grant, reconcile every enabled
+venue flat, drain active risk/Intent obligations, then run
+`trading evidence verify --rollback FILE`. Keep the observer/Decision path
+running; do not revive a terminal Intent or infer a flat account from local
+state.
+
+These commands implement the clock and verification mechanism. Until the
+calendar window, human approval, venue receipts, fixed seven-day accounting,
+and rollback receipts actually exist, #377 remains open and no production
+terminal may be claimed.
+
 On a fresh database, `tracefold init` and `make up` create the Nautilus
 password and role with the other runtime roles. For an existing volume that
 predates `20260828_0316`, stop the entire stack and run
@@ -100,7 +163,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0333`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0334`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -117,7 +180,9 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    repeats the full venue-flat/Nautilus preflight. Upgrading `0331` to Trading
    capital authority `0332` also repeats that preflight. `0333` is the
    subsequent additive News Verdict-handoff partial index and has no capital
-   cutover predicate. Older execution-authority cutover routes retain the full
+   cutover predicate. `0334` adds the Trading evidence clock and requires Capital
+   `PAUSED` with no pre-existing unbound promotion grant, but does not require a
+   recovery-only Nautilus process. Older execution-authority cutover routes retain the full
    venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,

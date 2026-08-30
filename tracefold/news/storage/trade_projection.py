@@ -231,6 +231,90 @@ class TradeProjectionStorage:
         ).fetchall()
         return [_oi_projection_row(row) for row in rows]
 
+    def trade_evidence_oi_rows(
+        self,
+        *,
+        metric_version: str,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        known_at_or_before_ms: int,
+        limit: int = TRADE_PROJECTION_ROW_LIMIT,
+    ) -> list[OiTradeProjectionRow]:
+        """Freeze the exact half-open source-event window known at one capture cutoff (#377)."""
+
+        rows = self.conn.execute(
+            f"""
+            SELECT v.event_id,
+                   v.created_at_ms          AS verdict_created_at_ms,
+                   v.final_decision,
+                   v.trace #>> '{{judgment,rule}}' AS source_rule,
+                   epoch.epoch_id           AS learning_epoch,
+                   v.program_version,
+                   v.program_sha256,
+                   v.policy_version,
+                   v.judgment_contract_version,
+                   v.judgment_origin,
+                   v.scored_judgment_sha256 AS judgment_sha256,
+                   v.runtime_manifest_sha,
+                   s.metric_version,
+                   s.source_strategy_id,
+                   s.source_contract_version,
+                   s.measurement_window_ms,
+                   v.trace #>> '{{judgment,signal,symbol}}' AS symbol,
+                   v.trace #>> '{{judgment,signal,direction}}' AS direction,
+                   (v.trace #>> '{{judgment,signal,oi_change_bps}}')::bigint AS oi_change_bps,
+                   (v.trace #>> '{{judgment,signal,oi_value_usd}}')::bigint AS oi_value_usd,
+                   (v.trace #>> '{{judgment,signal,whale_long_profit_bps}}')::bigint AS whale_long_profit_bps,
+                   (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
+                   (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
+                   s.observed_at_ms,
+                   e.ingest_mode,
+                   i.provider_metadata ->> 'source' AS venue
+              FROM news_verdicts v
+              JOIN news_oi_signals s
+                ON s.event_id = v.event_id AND s.metric_version = %s
+               AND v.trace #> '{{judgment,signal}}' = jsonb_build_object(
+                     'symbol', s.symbol,
+                     'direction', s.direction,
+                     'oi_change_bps', s.oi_change_bps,
+                     'oi_value_usd', s.oi_value_usd,
+                     'whale_long_profit_bps', s.whale_long_profit_bps,
+                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
+                   )
+               AND (v.trace #>> '{{judgment,rank_in_window}}')::integer = s.rank_in_window
+               AND v.trace #>> '{{oi_signal,source_strategy_id}}' IS NOT DISTINCT FROM s.source_strategy_id
+               AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
+               AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
+                     IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_current_events_v1 e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
+              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+             WHERE v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_origin = 'oi'
+               AND v.program_version = 'news_oi_signal_v2'
+               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.editorial IS NULL
+               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
+               AND v.degraded = false
+               AND e.ingest_mode = 'live'
+               AND s.observed_at_ms >= %s
+               AND s.observed_at_ms < %s
+               AND v.created_at_ms <= %s
+             ORDER BY s.observed_at_ms, v.event_id
+             LIMIT %s
+            """,
+            (
+                metric_version,
+                int(start_observed_at_ms),
+                int(end_observed_at_ms),
+                int(known_at_or_before_ms),
+                int(limit),
+            ),
+        ).fetchall()
+        return [_oi_projection_row(row) for row in rows]
+
     def trade_candidate_instrument(
         self,
         *,

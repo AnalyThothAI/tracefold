@@ -100,6 +100,8 @@ TRADING_TABLES = (
     "trading_capital_authorization_receipts",
     "trading_capital_risk_reservation_state",
     "trading_capital_risk_events",
+    "trading_evidence_clock_receipts",
+    "trading_nautilus_runtime_starts",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

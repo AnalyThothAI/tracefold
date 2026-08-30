@@ -30,6 +30,7 @@ from .candles import (
 )
 from .delivery_prices import fetch_delivery_price_points
 from .errors import VenueExpectedError
+from .funding import VenueFundingRate, fetch_binance_funding_rates, fetch_hyperliquid_funding_rates
 from .hyperliquid import HYPERLIQUID_BASE_URL, fetch_hyperliquid_instruments
 from .lighter import LIGHTER_BASE_URL, fetch_lighter_instruments
 from .okx import OKX_BASE_URL, fetch_okx_instruments
@@ -63,8 +64,10 @@ __all__ = [
     "VenueBar",
     "VenueCatalogTradabilityVerifier",
     "VenueExpectedError",
+    "VenueFundingRate",
     "fetch_binance_bars",
     "fetch_binance_candles",
+    "fetch_binance_funding_rates",
     "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",
     "fetch_binance_instruments",
@@ -77,6 +80,7 @@ __all__ = [
     "fetch_delivery_price_points",
     "fetch_hyperliquid_bars",
     "fetch_hyperliquid_candles",
+    "fetch_hyperliquid_funding_rates",
     "fetch_hyperliquid_instruments",
     "fetch_hyperliquid_quotes",
     "fetch_hyperliquid_recent_trades",

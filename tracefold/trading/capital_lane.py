@@ -52,7 +52,6 @@ from typing import Any, ClassVar, Final, Literal, Protocol
 from pydantic import ValidationError
 
 from .admission import (
-    ADMISSION_VERSION,
     AdmissionConfig,
     AdmissionResult,
     AdmissionRow,
@@ -75,9 +74,9 @@ from .contracts import (
     OiMarketTrigger,
     OiTradeCandidate,
     TradingCaseManifest,
-    canonical_sha256,
     oi_source_key,
 )
+from .evidence_clock import feature_contract_sha256, source_contract_sha256
 from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import CapitalPolicy
 from .sources import SourceRejected, normalize_oi_source
@@ -216,26 +215,12 @@ class CapitalLane:
         # seam, which is the only thing that knows both capabilities; Trading never reads a News table.
         self._news_generation = news_generation
         self._release_revision = release_revision
-        self._source_contract_sha256 = canonical_sha256(
-            {
-                "version": "trading_oi_source_contract_v1",
-                "metric_version": config.oi_metric_version,
-                "news_generation": news_generation,
-                "upstream_measurement_schema": "news_oi_signal_v2",
-                "upstream_selection_schema": "news_triage_policy_v11",
-                "manifest_version": TRADING_MANIFEST_VERSION,
-                "source_native": True,
-            }
-        )
-        self._feature_contract_sha256 = canonical_sha256(
-            {
-                "version": "trading_oi_feature_contract_v1",
-                "admission_version": ADMISSION_VERSION,
-                "admission_config_sha256": config.admission.digest,
-                "price_window": config.price_window.as_dict(),
-                "policy_id": config.policy.policy_id,
-                "policy_config_sha256": config.policy.config_digest,
-            }
+        self._source_contract_sha256 = source_contract_sha256()
+        self._feature_contract_sha256 = feature_contract_sha256(
+            admission_config_sha256=config.admission.digest,
+            price_window=config.price_window.as_dict(),
+            policy_id=config.policy.policy_id,
+            policy_config_sha256=config.policy.config_digest,
         )
         self._clock = clock
         self._telemetry = telemetry

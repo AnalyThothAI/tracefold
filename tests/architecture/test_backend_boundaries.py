@@ -120,6 +120,13 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.policy",
         "tracefold.trading.replay",
         "tracefold.trading.research.oi_replay",
+        # #377's credential-free CLI is the App composition seam for the evidence clock.  These
+        # modules are pure contracts and transformations; provider and PostgreSQL I/O stay in App.
+        "tracefold.trading.contract_receipt",
+        "tracefold.trading.evidence_clock",
+        "tracefold.trading.evidence_research",
+        "tracefold.trading.evidence_verification",
+        "tracefold.trading.routing",
         # The OI lane's measurement version, so the replay reads the same rows the scanner does. A
         # literal here would silently stop matching the day `oi_signals` bumps it.
         "tracefold.news.oi_signals",

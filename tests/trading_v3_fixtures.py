@@ -24,15 +24,254 @@ from tracefold.trading import (
     build_venue_catalog_snapshot,
     canonical_sha256,
 )
+from tracefold.trading.admission import AdmissionConfig
 from tracefold.trading.capital_authority import risk_day_bounds
 from tracefold.trading.catalog import prepare_venue_catalog_snapshot
+from tracefold.trading.evidence_clock import (
+    CandidateDecisionReceiptV1,
+    CandidateExecutionProtocolV1,
+    CandidateLockedV1,
+    DiscoveryCorpusReceiptV1,
+    FutureCaptureReceiptV1,
+    FutureDrainReceiptV1,
+    FutureHoldoutMetricsV1,
+    FutureHoldoutResultReceiptV1,
+    FutureHoldoutResultV1,
+    FutureStatisticalProtocolV1,
+    candidate_selection_program_sha256,
+)
+from tracefold.trading.evidence_clock import (
+    feature_contract_sha256 as evidence_feature_contract_sha256,
+)
+from tracefold.trading.evidence_clock import (
+    source_contract_sha256 as evidence_source_contract_sha256,
+)
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256, PROTECTION_CONTRACT_SHA256
+from tracefold.trading.market_context import PriceWindow
+from tracefold.trading.policy import CapitalPolicy
 from tracefold.trading.quote_authority import QUOTE_CONTRACT_SHA256
 
 NOW = 1_900_000_000_000
 ADAPTER_SHA = "a" * 64
 TEST_RELEASE = "test-release"
-TEST_COST_MODEL_SHA256 = canonical_sha256({"version": "test_cost_model_v1"})
+TEST_COST_MODEL = {
+    "fee_model": {"version": "nautilus_bar_taker_fee_v1", "per_side_bps": "5"},
+    "funding_model": {
+        "version": "provider_history_replay_holding_v1",
+        "mark_price": "first_5m_close_at_or_after_funding_event",
+    },
+    "spread_slippage_model": {"version": "additional_stress_bps_v1"},
+    "latency_model": {"version": "first_closed_5m_bar_at_or_after_known_at_v1"},
+    "additional_stressed_cost_bps": "2",
+}
+TEST_COST_MODEL_SHA256 = canonical_sha256(TEST_COST_MODEL)
+
+
+def _evidence_feature_contract_sha256() -> str:
+    admission = AdmissionConfig()
+    policy = CapitalPolicy()
+    return evidence_feature_contract_sha256(
+        admission_config_sha256=admission.digest,
+        price_window=PriceWindow().as_dict(),
+        policy_id=policy.policy_id,
+        policy_config_sha256=policy.config_digest,
+    )
+
+
+def capital_evidence_fixture(
+    *,
+    source_contract_sha256: str = evidence_source_contract_sha256(),
+    feature_contract_sha256: str = _evidence_feature_contract_sha256(),
+    policy_config_sha256: str = CapitalPolicy().config_digest,
+) -> tuple[
+    DiscoveryCorpusReceiptV1,
+    CandidateDecisionReceiptV1,
+    CandidateLockedV1,
+    FutureHoldoutResultReceiptV1,
+    FutureHoldoutResultV1,
+]:
+    corpus = DiscoveryCorpusReceiptV1(
+        corpus_sha256="4" * 64,
+        artifact_sha256="4" * 64,
+        artifact_path="test-evidence/discovery-corpus.json",
+        capture_sha256="a" * 64,
+        drain_sha256="b" * 64,
+        execution_contract_receipt_sha256="c" * 64,
+        source_count=1,
+        created_at_ms=2,
+    )
+    execution = CandidateExecutionProtocolV1(
+        intent_ttl_ms=60_000,
+        target_notional="10",
+        max_risk_amount="0.25",
+        quote_contract_sha256=QUOTE_CONTRACT_SHA256,
+        max_quote_age_ms=2_000,
+        max_spread_bps=30,
+        max_entry_drift_bps=25,
+        stop_loss_bps=200,
+        protection_contract_sha256=PROTECTION_CONTRACT_SHA256,
+        max_holding_ms=180_000,
+        execution_policy_sha256=EXECUTION_POLICY_SHA256,
+        adapter_contract_sha256=ADAPTER_SHA,
+        capability_requirements=("execution_eligible", "protection_eligible"),
+        fee_model=TEST_COST_MODEL["fee_model"],
+        funding_model=TEST_COST_MODEL["funding_model"],
+        spread_slippage_model=TEST_COST_MODEL["spread_slippage_model"],
+        latency_model=TEST_COST_MODEL["latency_model"],
+        additional_stressed_cost_bps="2",
+        cost_model_sha256=TEST_COST_MODEL_SHA256,
+        benchmark="zero_return_bps_v1",
+        max_symbol_concentration_bps=10_000,
+        max_day_concentration_bps=10_000,
+    )
+    statistics = FutureStatisticalProtocolV1(
+        future_start_ms=4,
+        future_end_ms=5,
+        capture_cutoff_ms=5,
+        max_horizon_ms=1,
+        data_finalization_lag_ms=1,
+        drain_cutoff_ms=7,
+        secondary_diagnostics=("concentration",),
+        stressed_hurdle_bps="0",
+        confidence_level_bps=9_500,
+        bootstrap_block_days=1,
+        bootstrap_samples=100,
+        bootstrap_seed=377,
+        minimum_effective_n=1,
+        minimum_detectable_excess_bps=100,
+        assumed_standard_deviation_bps=1,
+        minimum_power_bps=9_000,
+        minimum_coverage_bps=10_000,
+        maximum_missingness_bps=0,
+        incident_handling={
+            "venue_provider_outage": "INSUFFICIENT_EVIDENCE",
+            "source_mass_missingness": "INSUFFICIENT_EVIDENCE",
+            "catalog_reset_or_delist": "INSUFFICIENT_EVIDENCE",
+            "provider_correction": "INSUFFICIENT_EVIDENCE",
+            "bar_or_funding_missing": "INSUFFICIENT_EVIDENCE",
+            "protection_contract_invalid": "INSUFFICIENT_EVIDENCE",
+            "clock_or_known_at_violation": "INSUFFICIENT_EVIDENCE",
+        },
+    )
+    candidate = CandidateLockedV1(
+        binding="BINANCE_USDM",
+        venue="binance.usdm",
+        sealed_corpus_sha256=corpus.corpus_sha256,
+        corpus_artifact_sha256=corpus.artifact_sha256,
+        discovery_start_ms=1,
+        discovery_end_ms=2,
+        source_contract_sha256=source_contract_sha256,
+        feature_contract_sha256=feature_contract_sha256,
+        point_in_time_catalog_sha256="d" * 64,
+        eligible_universe_sha256="e" * 64,
+        selection_program_sha256=candidate_selection_program_sha256(),
+        policy_id="source_native_oi_smart_money_long_v3",
+        policy_config_sha256=policy_config_sha256,
+        execution_contract_receipt_sha256="c" * 64,
+        execution=execution,
+        statistics=statistics,
+        evaluator_program_sha256="f" * 64,
+        locked_at_ms=3,
+        preregistered_by="test-suite",
+    )
+    candidate_receipt = CandidateDecisionReceiptV1(
+        terminal="CANDIDATE_LOCKED",
+        binding=candidate.binding,
+        sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+        artifact_sha256=candidate.protocol_sha256,
+        artifact_path="test-evidence/candidate.json",
+        protocol_sha256=candidate.protocol_sha256,
+        created_at_ms=3,
+    )
+    metrics = FutureHoldoutMetricsV1(
+        source_count=1,
+        effective_n=1,
+        estimated_power_bps=10_000,
+        coverage_bps=10_000,
+        missingness_bps=0,
+        mean_net_including_funding_return_bps="10",
+        benchmark_excess_bps="10",
+        primary_confidence_lower_bound_bps="1",
+        mfe_bps={"p50": "10"},
+        mae_bps={"p50": "-1"},
+        max_drawdown_bps="1",
+        tail_loss_bps="1",
+        turnover="1",
+        capacity_proxy="1",
+        concentration_bps={"symbol": 10_000, "day": 10_000},
+        missing_by_reason={},
+        sensitivity={"double_cost": "1"},
+    )
+    result = FutureHoldoutResultV1(
+        terminal="PROMOTE",
+        binding="BINANCE_USDM",
+        venue="binance.usdm",
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        sealed_corpus_sha256=corpus.corpus_sha256,
+        future_capture_sha256="6" * 64,
+        future_drain_sha256="7" * 64,
+        evaluator_program_sha256=candidate.evaluator_program_sha256,
+        evaluated_at_ms=7,
+        metrics=metrics,
+        reasons=("confidence_lower_bound_above_hurdle",),
+    )
+    result_receipt = FutureHoldoutResultReceiptV1(
+        terminal="PROMOTE",
+        binding="BINANCE_USDM",
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        sealed_corpus_sha256=corpus.corpus_sha256,
+        report_sha256=result.report_sha256,
+        artifact_sha256=result.report_sha256,
+        artifact_path="test-evidence/future-result.json",
+        created_at_ms=7,
+    )
+    return corpus, candidate_receipt, candidate, result_receipt, result
+
+
+def append_capital_evidence_fixture(
+    repos: Any,
+    *,
+    source_contract_sha256: str = evidence_source_contract_sha256(),
+    feature_contract_sha256: str = _evidence_feature_contract_sha256(),
+    policy_config_sha256: str = CapitalPolicy().config_digest,
+) -> FutureHoldoutResultV1:
+    trading = getattr(repos, "trading", repos)
+    corpus, candidate_receipt, candidate, result_receipt, result = capital_evidence_fixture(
+        source_contract_sha256=source_contract_sha256,
+        feature_contract_sha256=feature_contract_sha256,
+        policy_config_sha256=policy_config_sha256,
+    )
+    trading.append_discovery_corpus_receipt(corpus)
+    trading.append_candidate_decision_receipt(candidate_receipt, candidate)
+    capture_receipt = FutureCaptureReceiptV1(
+        binding=candidate.binding,
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+        capture_sha256=result.future_capture_sha256,
+        artifact_sha256=result.future_capture_sha256,
+        artifact_path="test-evidence/future-capture.json",
+        created_at_ms=5,
+    )
+    trading.append_future_capture_receipt(capture_receipt)
+    trading.append_future_drain_receipt(
+        FutureDrainReceiptV1(
+            binding=candidate.binding,
+            candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+            capture_receipt_sha256=capture_receipt.receipt_sha256,
+            protocol_sha256=candidate.protocol_sha256,
+            sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+            capture_sha256=result.future_capture_sha256,
+            drain_sha256=result.future_drain_sha256,
+            artifact_sha256=result.future_drain_sha256,
+            artifact_path="test-evidence/future-drain.json",
+            created_at_ms=6,
+        )
+    )
+    trading.append_future_holdout_result_receipt(result_receipt, result)
+    return result
 
 
 def capital_risk_policy_fixture() -> DailyRiskPolicyV1:
@@ -61,15 +300,18 @@ def capital_grant_fixture(
     catalog: VenueInstrumentCatalogSnapshotV1,
     capability: ExecutionCapabilitySnapshotV2,
     binding: ExecutionBindingV1,
+    allowed_capability_entry_id: str | None = None,
 ) -> ProductionPromotionGrantV1:
     policy = capital_risk_policy_fixture()
+    future_result = capital_evidence_fixture()[-1]
+    allowed_entry_id = allowed_capability_entry_id or sorted(capability.included)[0]
     return ProductionPromotionGrantV1(
         binding="BINANCE_USDM",
         venue="binance.usdm",
-        source_contract_sha256="1" * 64,
-        feature_contract_sha256="2" * 64,
+        source_contract_sha256=evidence_source_contract_sha256(),
+        feature_contract_sha256=_evidence_feature_contract_sha256(),
         policy_id="source_native_oi_smart_money_long_v3",
-        policy_config_sha256="3" * 64,
+        policy_config_sha256=CapitalPolicy().config_digest,
         cost_model_sha256=policy.cost_model_sha256,
         catalog_snapshot_sha256=catalog.snapshot_sha256,
         capability_snapshot_sha256=capability.snapshot_sha256,
@@ -79,10 +321,10 @@ def capital_grant_fixture(
         quote_contract_sha256=binding.quote_contract_sha256,
         protection_contract_sha256=binding.protection_contract_sha256,
         sealed_corpus_sha256="4" * 64,
-        locked_future_report_sha256="5" * 64,
+        locked_future_report_sha256=future_result.report_sha256,
         risk_policy_sha256=policy.risk_policy_sha256,
         approved_release=TEST_RELEASE,
-        allowed_capability_entry_ids=tuple(sorted(capability.included)),
+        allowed_capability_entry_ids=(allowed_entry_id,),
         max_target_notional=Decimal("10"),
         approver="test-suite",
         issued_at_ms=1,
@@ -96,9 +338,15 @@ def capital_arm_fixture(
     catalog: VenueInstrumentCatalogSnapshotV1,
     capability: ExecutionCapabilitySnapshotV2,
     binding: ExecutionBindingV1,
+    allowed_capability_entry_id: str | None = None,
 ) -> OperatorArmReceiptV1:
     policy = capital_risk_policy_fixture()
-    grant = capital_grant_fixture(catalog=catalog, capability=capability, binding=binding)
+    grant = capital_grant_fixture(
+        catalog=catalog,
+        capability=capability,
+        binding=binding,
+        allowed_capability_entry_id=allowed_capability_entry_id,
+    )
     return OperatorArmReceiptV1(
         arm_epoch=1,
         binding="BINANCE_USDM",
@@ -127,8 +375,18 @@ def capital_bundle_fixture(
     binding: ExecutionBindingV1,
 ) -> tuple[CapitalRiskReservationV1, CapitalAuthorizationReceiptV1]:
     policy = capital_risk_policy_fixture()
-    grant = capital_grant_fixture(catalog=catalog, capability=capability, binding=binding)
-    arm = capital_arm_fixture(catalog=catalog, capability=capability, binding=binding)
+    grant = capital_grant_fixture(
+        catalog=catalog,
+        capability=capability,
+        binding=binding,
+        allowed_capability_entry_id=intent.capability_entry_id,
+    )
+    arm = capital_arm_fixture(
+        catalog=catalog,
+        capability=capability,
+        binding=binding,
+        allowed_capability_entry_id=intent.capability_entry_id,
+    )
     day_start, day_end = risk_day_bounds(intent.created_at_ms)
     reservation = CapitalRiskReservationV1(
         case_id=intent.case_id,
@@ -332,11 +590,13 @@ def trade_intent(
 __all__ = [
     "ADAPTER_SHA",
     "NOW",
+    "append_capital_evidence_fixture",
     "binance_binding",
     "binance_capability",
     "binance_catalog",
     "capital_arm_fixture",
     "capital_bundle_fixture",
+    "capital_evidence_fixture",
     "capital_grant_fixture",
     "capital_risk_policy_fixture",
     "trade_intent",
