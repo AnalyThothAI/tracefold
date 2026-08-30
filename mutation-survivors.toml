@@ -82,7 +82,7 @@ staleness and gap-tolerance bounds reject before the arithmetic is used for anyt
 [[accepted]]
 module = "tracefold/trading/market_context.py"
 function = "pre_move_bps"
-line = 82
+line = 91
 operator = "core/ReplaceBinaryOperator_Mul_Div"
 occurrence = 2
 reason = """
@@ -289,12 +289,20 @@ line = 228
 operator = "core/NumberReplacer"
 occurrence = 24
 reason = """
-A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
-is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
-`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
-therefore cannot change an answer.
-`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
-so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+A perturbation of the `now_ns < 0` bound in the clock guard, which no input can reach.
+
+The bound only decides an answer for `now_ns` at or below zero, and the intent-window check two
+guards above returns `quote_intent_not_active` for every such clock: `created_at_ns` is
+`created_at_ms * 1_000_000`, and `TradeIntent.created_at_ms` is declared `Field(gt=0)`, so
+`created_at_ns` is at least 1_000_000 and `now_ns <= 0` is always less than it.
+
+Worth being precise about where that guarantee lives, because it is not where it looks. The seam
+this function accepts is the `EntryQuoteIntent` Protocol, whose `created_at_ms: int` carries no
+positivity constraint at all; the bound comes from `TradeIntent`, the one concrete implementation.
+An intent type that permitted `created_at_ms = 0` would make `now_ns = 0` reachable and these
+mutants killable, and nothing in `quote_authority.py` would stop it.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins the guard
+order, so a reordering fails loudly; the type constraint is the half that is only written down here.
 """
 
 # if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns < -1 or quote.ts_init_ns < quote.ts_event_ns:
@@ -305,12 +313,20 @@ line = 228
 operator = "core/NumberReplacer"
 occurrence = 25
 reason = """
-A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
-is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
-`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
-therefore cannot change an answer.
-`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
-so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+A perturbation of the `now_ns < 0` bound in the clock guard, which no input can reach.
+
+The bound only decides an answer for `now_ns` at or below zero, and the intent-window check two
+guards above returns `quote_intent_not_active` for every such clock: `created_at_ns` is
+`created_at_ms * 1_000_000`, and `TradeIntent.created_at_ms` is declared `Field(gt=0)`, so
+`created_at_ns` is at least 1_000_000 and `now_ns <= 0` is always less than it.
+
+Worth being precise about where that guarantee lives, because it is not where it looks. The seam
+this function accepts is the `EntryQuoteIntent` Protocol, whose `created_at_ms: int` carries no
+positivity constraint at all; the bound comes from `TradeIntent`, the one concrete implementation.
+An intent type that permitted `created_at_ms = 0` would make `now_ns = 0` reachable and these
+mutants killable, and nothing in `quote_authority.py` would stop it.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins the guard
+order, so a reordering fails loudly; the type constraint is the half that is only written down here.
 """
 
 # if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns == 0 or quote.ts_init_ns < quote.ts_event_ns:
@@ -321,12 +337,20 @@ line = 228
 operator = "core/ReplaceComparisonOperator_Lt_Eq"
 occurrence = 3
 reason = """
-A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
-is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
-`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
-therefore cannot change an answer.
-`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
-so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+A perturbation of the `now_ns < 0` bound in the clock guard, which no input can reach.
+
+The bound only decides an answer for `now_ns` at or below zero, and the intent-window check two
+guards above returns `quote_intent_not_active` for every such clock: `created_at_ns` is
+`created_at_ms * 1_000_000`, and `TradeIntent.created_at_ms` is declared `Field(gt=0)`, so
+`created_at_ns` is at least 1_000_000 and `now_ns <= 0` is always less than it.
+
+Worth being precise about where that guarantee lives, because it is not where it looks. The seam
+this function accepts is the `EntryQuoteIntent` Protocol, whose `created_at_ms: int` carries no
+positivity constraint at all; the bound comes from `TradeIntent`, the one concrete implementation.
+An intent type that permitted `created_at_ms = 0` would make `now_ns = 0` reachable and these
+mutants killable, and nothing in `quote_authority.py` would stop it.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins the guard
+order, so a reordering fails loudly; the type constraint is the half that is only written down here.
 """
 
 # if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns <= 0 or quote.ts_init_ns < quote.ts_event_ns:
@@ -337,12 +361,20 @@ line = 228
 operator = "core/ReplaceComparisonOperator_Lt_LtE"
 occurrence = 3
 reason = """
-A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
-is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
-`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
-therefore cannot change an answer.
-`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
-so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+A perturbation of the `now_ns < 0` bound in the clock guard, which no input can reach.
+
+The bound only decides an answer for `now_ns` at or below zero, and the intent-window check two
+guards above returns `quote_intent_not_active` for every such clock: `created_at_ns` is
+`created_at_ms * 1_000_000`, and `TradeIntent.created_at_ms` is declared `Field(gt=0)`, so
+`created_at_ns` is at least 1_000_000 and `now_ns <= 0` is always less than it.
+
+Worth being precise about where that guarantee lives, because it is not where it looks. The seam
+this function accepts is the `EntryQuoteIntent` Protocol, whose `created_at_ms: int` carries no
+positivity constraint at all; the bound comes from `TradeIntent`, the one concrete implementation.
+An intent type that permitted `created_at_ms = 0` would make `now_ns = 0` reachable and these
+mutants killable, and nothing in `quote_authority.py` would stop it.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins the guard
+order, so a reordering fails loudly; the type constraint is the half that is only written down here.
 """
 
 # if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 and now_ns < 0 or quote.ts_init_ns < quote.ts_event_ns:
@@ -402,19 +434,4 @@ The clock guard immediately above has already established `ts_init_ns >= ts_even
 `ts_event_ns` exceeds the skew bound `ts_init_ns` exceeds it too and the second clause rejects the
 quote for the same reason. The first clause is redundant given the guard order, which was confirmed
 by applying this mutation by hand and watching the suite stay green.
-"""
-
-# reference_drift_bps = abs(side_price % intent.reference_price) * _BPS / intent.reference_price
-[[accepted]]
-module = "tracefold/trading/quote_authority.py"
-function = "validate_entry_quote"
-line = 251
-operator = "core/ReplaceBinaryOperator_Sub_Mod"
-occurrence = 3
-reason = """
-`a - b` becomes `a % b`, on a pair of epoch timestamps where `b` is within a small window of `a`.
-For non-negative integers with `b > a / 2`, `a % b` is exactly `a - b`, so the two are the same
-expression over every input this line can receive. Reaching a case where they differ needs a
-subtrahend below half the minuend — a bar or quote timestamped before roughly 1985 — which the
-staleness and gap-tolerance bounds reject before the arithmetic is used for anything.
 """

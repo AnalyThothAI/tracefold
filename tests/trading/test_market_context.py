@@ -51,6 +51,18 @@ def test_move_bps_is_p1_over_p0_minus_one_in_basis_points(p0: str, p1: str, expe
     assert move_bps(Decimal(p0), Decimal(p1)) == expected
 
 
+def test_move_bps_computes_a_move_between_sub_dollar_prices() -> None:
+    """The floor on both ends is zero, not one.
+
+    Most perpetual contracts trade under a dollar, so a bound of `<= 1` would read an ordinary
+    book as missing data. This is the case that separates the guard this module wants — refuse a
+    price that could not have traded — from one that refuses a cheap instrument.
+    """
+
+    assert move_bps(Decimal("0.50"), Decimal("0.51")) == 200
+    assert move_bps(Decimal("0.00001000"), Decimal("0.00001010")) == 100
+
+
 def test_move_bps_is_not_symmetric_in_its_arguments() -> None:
     """A doubling is +10000 bps and a halving is -5000. Any swapped or reciprocal form breaks this pair."""
 
