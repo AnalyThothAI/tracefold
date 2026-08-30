@@ -373,7 +373,7 @@ def test_official_strategy_history_rejects_hit_without_published_timestamp() -> 
         parse_opennews_strategy_hits(payload)
 
 
-def test_official_strategy_history_coalesces_normalized_provider_id_collision() -> None:
+def test_official_strategy_history_rejects_normalized_provider_id_collision() -> None:
     hit = {"text": "bounded", "ts": 1_500_000_000_000, "strategy": {"id": 1018}}
     payload = {
         "success": True,
@@ -383,9 +383,8 @@ def test_official_strategy_history_coalesces_normalized_provider_id_collision() 
         "total": 2,
     }
 
-    page = parse_opennews_strategy_hits(payload)
-
-    assert [event.provider_record_id for event in page.events] == ["42"]
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_hit_contract_invalid$"):
+        parse_opennews_strategy_hits(payload)
 
 
 def test_official_strategy_history_rejects_impossible_empty_later_page() -> None:
