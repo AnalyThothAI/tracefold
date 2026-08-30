@@ -403,7 +403,7 @@ runtime.
 | Workers `/readyz` | root running, singleton session healthy, latest O(1) heartbeat persisted within 15 s, and (when News is enabled) the runtime manifest plus linked active/deployment receipt committed, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
-| `make status` | PostgreSQL, migration, Serve, Workers, requested manual executor, readiness, and console | fail-closed lifecycle check |
+| `make status` | PostgreSQL, migration, Serve, Workers, every requested trading executor, readiness, and console | fail-closed lifecycle check |
 | `tracefold ops validate-projections` | bounded News singleton and delivery-state invariants | strict Serve-role read |
 
 Source degradation does not make the HTTP process unready. `/api/status` has no
@@ -1045,10 +1045,11 @@ snapshot.
 
 The Alembic chain is the `20260818_0275` baseline (root; it executes
 `current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
-creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
-`tracefold_migrate` roles when run by the bootstrap superuser, verifies the
+creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`,
+`tracefold_nautilus`, `tracefold_onchain`, and `tracefold_migrate` roles when
+run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260823_0299_news_source_artifact_id`. The #112 chain
+the linear revisions through `20260829_0341_onchain_test_execution_guard`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;

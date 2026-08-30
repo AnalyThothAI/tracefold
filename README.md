@@ -3,7 +3,8 @@
 Tracefold is an evidence-first market research and bounded trading system with
 two sibling business capabilities. News V3 turns the operator's OpenNews Strategy pushes
 into deduplicated Events, triages them with bounded structured model calls
-under deterministic rules, and delivers reader cards through Feishu or one bound Telegram channel. One Python service
+under deterministic rules, and delivers reader cards through Feishu or configured
+Telegram private, group, and channel destinations. One Python service
 persists material facts in PostgreSQL, builds a deterministic read model, and
 serves a React operator console plus stable HTTP and CLI contracts.
 
@@ -63,7 +64,7 @@ make up
 overwriting existing choices, builds one application image containing the
 React console and Python service, bootstraps least-privilege PostgreSQL roles
 on a fresh volume, migrates to the current schema, starts Serve and Workers,
-starts the manual executor when requested by validated config, and waits for
+starts each trading executor requested by validated config, and waits for
 all required runtimes plus the HTML console. It exits non-zero and points
 to `make logs` if any required boundary is not ready.
 
@@ -164,7 +165,7 @@ do not live in the repository.
 
 ## Non-goals
 
-- no trade execution;
+- no unconfirmed, unbounded, or cross-user trade execution;
 - no compatibility aliases for retired names or paths;
 - no provider response, queue, process cache, or projection as alternate truth;
 - no hidden provider calls or mutations in read APIs;

@@ -17,8 +17,8 @@ This is the canonical startup path. It preflights Git, `uv`, Docker, Compose,
 `curl`, an authenticated GitHub CLI, and daemon access; idempotently initializes
 the operator directory; builds one application image containing the React console and Python service;
 initializes PostgreSQL and its least-privilege roles on a fresh named volume;
-migrates to the current Alembic head; starts Serve and Workers; starts the
-manual executor when requested by validated config; and waits for PostgreSQL,
+migrates to the current Alembic head; starts Serve and Workers; starts each
+trading executor requested by validated config; and waits for PostgreSQL,
 migration, required runtime boundaries, and an HTML console.
 Any failed boundary makes the command return non-zero and directs the operator
 to `make logs`.
@@ -32,7 +32,7 @@ make down              # stop containers; preserve config, passwords, and databa
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
 and Workers metrics/readiness are bound to loopback by default. A second
 `make up` rebuilds the shared application image and deliberately recreates only
-the migration, Serve, Workers, and any requested manual-executor containers so
+the migration, Serve, Workers, and any requested manual- or onchain-executor containers so
 edits to the bind-mounted operator config take effect. An already running PostgreSQL container is not
 recreated; the operator files and named-volume data remain in place.
 
@@ -639,7 +639,7 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260823_0299_news_source_artifact_id`. A new empty database applies
+linear through `20260829_0341_onchain_test_execution_guard`. A new empty database applies
 the complete chain without replaying retired runtime tables. A database
 stamped at an earlier revision migrates forward with `tracefold db migrate`;
 all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
