@@ -71,27 +71,15 @@ async def _bus(*, delay_ms: int = FAST_DELAY_MS, apply_policies: bool = True) ->
     await bus.connect()
     if apply_policies:
         await bus.apply_policies()
-        await _wait_for_effective_policy(bus)
+        # The same bounded settle Workers runs before consuming: the broker publishes the per-queue
+        # effect of the just-imported document on its statistics interval.
+        await bus.verify_policies(settle_timeout_seconds=30.0)
     try:
         yield bus
     finally:
         deleted = await bus.delete_topology()
         assert set(deleted) >= set(topology(prefix).queue_names)
         await bus.close()
-
-
-async def _wait_for_effective_policy(bus: RabbitMQBus, *, timeout: float = 30.0) -> None:
-    """`apply_policies` confirms the policy document; the broker publishes the per-queue effect later."""
-
-    deadline = asyncio.get_running_loop().time() + timeout
-    while True:
-        try:
-            await bus.verify_policies()
-            return
-        except BrokerPolicyMismatch:
-            if asyncio.get_running_loop().time() >= deadline:
-                raise
-            await asyncio.sleep(0.5)
 
 
 def _event(
@@ -268,16 +256,14 @@ def test_policies_can_be_provisioned_before_any_queue_exists() -> None:
             with pytest.raises(BrokerPolicyMismatch):
                 await bus.verify_policies()
             # Declaring the topology is what makes the policy effective, and only then does the
-            # per-queue contract a consumer depends on hold.
+            # per-queue contract a consumer depends on hold. The settle bound is the exact call Workers
+            # makes before consuming: freshly declared queues report `{}` until the management API's
+            # statistics interval publishes their effective policy, so a one-shot read here would kill
+            # the first Workers boot on every fresh broker volume.
             await bus.connect()
-            deadline = asyncio.get_running_loop().time() + 30
-            while asyncio.get_running_loop().time() < deadline:
-                try:
-                    await bus.verify_policies()
-                    break
-                except BrokerPolicyMismatch:
-                    await asyncio.sleep(0.5)
-            assert await bus.verify_policies() == {"verified": sorted(topology(prefix).queue_names)}
+            assert await bus.verify_policies(settle_timeout_seconds=30.0) == {
+                "verified": sorted(topology(prefix).queue_names)
+            }
         finally:
             await bus.connect()
             await bus.delete_topology()
@@ -303,6 +289,9 @@ def test_removed_policy_fails_closed_instead_of_falling_back_to_immediate_retry(
                     assert bus.queue_name(Q_TRIAGE) in str(exc)
                     snapshot = await bus.broker_snapshot()
                     assert snapshot[bus.queue_name(Q_TRIAGE)]["policy_ok"] is False
+                    # A settle bound defers the report; it never turns a genuine mismatch into a pass.
+                    with pytest.raises(BrokerPolicyMismatch):
+                        await bus.verify_policies(settle_timeout_seconds=1.5)
                     return
                 await asyncio.sleep(0.3)
             raise AssertionError("removing a policy did not fail verification")

@@ -432,8 +432,13 @@ attempt counter, and there is no `news.retry` queue or exchange. What the broker
 does is configured by one policy per queue, generated from
 `tracefold.news.broker_policy` into `docker/rabbitmq/definitions.json` and
 imported by the one-shot `rabbitmq-policy` Compose service (`tracefold news
-bus-policy apply`) before Workers starts. Workers verifies the effective policy
-at startup and refuses to consume on a mismatch.
+bus-policy apply`) before Workers starts. Provisioning proves the policy
+documents it just imported — a policy is a name-pattern rule that exists before
+any queue matches it, so this holds on a fresh broker volume with no topology
+at all. The per-queue effective policy is Workers' and `news bus-check`'s
+question: Workers verifies it at startup (waiting out the management statistics
+interval that publishes a freshly declared queue's effective policy) and
+refuses to consume on a mismatch.
 
 | Setting | Value | Why this value |
 |---|---|---|

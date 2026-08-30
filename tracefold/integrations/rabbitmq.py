@@ -60,9 +60,12 @@ log = logging.getLogger("tracefold.news.bus")
 # generous enough that a busy broker does not fail a deploy-time policy apply.
 _MANAGEMENT_TIMEOUT_SECONDS: Final = 20.0
 _DEFAULT_MANAGEMENT_PORT: Final = 15672
-# How long a policy import may take to show up as a queue's effective policy before the apply is called
-# a failure. The management API refreshes queue statistics on its own interval.
-_POLICY_EFFECTIVE_TIMEOUT_SECONDS: Final = 30.0
+# How long a broker write (a policy import, a topology declaration) may take to become visible to a
+# management read before verification calls it a failure. The management API publishes queue rows and
+# their effective policy on its own statistics interval: measured on 4.3.5, a freshly declared queue
+# reports `effective_policy_definition: {}` for 1.5-3.7 s before the real policy appears. Public
+# because the consumer attach in Workers bounds its pre-consume verification with the same budget.
+POLICY_EFFECTIVE_TIMEOUT_SECONDS: Final = 30.0
 _QUEUE_COLUMNS: Final = ",".join(
     (
         "name",
@@ -448,7 +451,7 @@ class RabbitMQBus:
             name_prefix=self._prefix, vhost=self._management.vhost, delay_ms=self._retry_delay_ms
         )
         await self._management.import_definitions(document)
-        deadline = asyncio.get_running_loop().time() + _POLICY_EFFECTIVE_TIMEOUT_SECONDS
+        deadline = asyncio.get_running_loop().time() + POLICY_EFFECTIVE_TIMEOUT_SECONDS
         while True:
             try:
                 await self.verify_policy_documents()
@@ -489,28 +492,40 @@ class RabbitMQBus:
         stats = await self._management.queues(topology(self._prefix).queue_names)
         return {name: dict(row.get("effective_policy_definition") or {}) for name, row in stats.items()}
 
-    async def verify_policies(self) -> dict[str, Any]:
+    async def verify_policies(self, *, settle_timeout_seconds: float | None = None) -> dict[str, Any]:
         """Fail closed when a declared queue is not running the checked-in retry contract.
 
         This is the per-queue effective policy, which is what actually governs a delivery, so it is the
         check a consumer must pass before attaching. It presumes the topology exists; provisioning uses
         `verify_policy_documents` instead, because a policy exists before any queue matches it.
 
+        ``settle_timeout_seconds`` exists for the moment right after ``declare_topology``: the management
+        API publishes a fresh queue's effective policy on its own statistics interval, so on a fresh
+        broker the first read reports ``{}`` for every queue the policy in fact already governs. The
+        consumer attach retries inside that bound instead of dying on a truthful-but-early read.
+
         Verification is not repair: a mismatch is reported and refused, never silently corrected, so a
         removed or edited policy can never degrade into immediate redelivery or at-most-once dead
-        lettering without anyone noticing.
+        lettering without anyone noticing — a settle bound only defers the report, it can never turn a
+        genuine mismatch into a pass.
         """
 
         expected = broker_policy.expected_effective_definitions(name_prefix=self._prefix, delay_ms=self._retry_delay_ms)
-        actual = await self.effective_policies()
-        mismatched = {
-            name: {"expected": want, "actual": actual.get(name)}
-            for name, want in expected.items()
-            if actual.get(name) != want
-        }
-        if mismatched:
-            raise BrokerPolicyMismatch(json.dumps({"news_broker_policy_mismatch": mismatched}, sort_keys=True))
-        return {"verified": sorted(expected)}
+        deadline = (
+            asyncio.get_running_loop().time() + settle_timeout_seconds if settle_timeout_seconds is not None else None
+        )
+        while True:
+            actual = await self.effective_policies()
+            mismatched = {
+                name: {"expected": want, "actual": actual.get(name)}
+                for name, want in expected.items()
+                if actual.get(name) != want
+            }
+            if not mismatched:
+                return {"verified": sorted(expected)}
+            if deadline is None or asyncio.get_running_loop().time() >= deadline:
+                raise BrokerPolicyMismatch(json.dumps({"news_broker_policy_mismatch": mismatched}, sort_keys=True))
+            await asyncio.sleep(0.5)
 
     async def topology_drift(self) -> dict[str, list[str]]:
         """Names under this prefix that the final topology does not contain.
@@ -796,4 +811,11 @@ async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
 
 
-__all__ = ["BrokerPolicyMismatch", "QueueSpec", "RabbitMQBus", "Topology", "topology"]
+__all__ = [
+    "POLICY_EFFECTIVE_TIMEOUT_SECONDS",
+    "BrokerPolicyMismatch",
+    "QueueSpec",
+    "RabbitMQBus",
+    "Topology",
+    "topology",
+]
