@@ -454,6 +454,87 @@ test, fixture, local artifact, mock, or green CI job may stand in for future
 calendar data, a human grant/arm, a venue-native write/flat receipt, or the
 final fixed-window/rollback terminal.
 
+### Scheduled mutation
+
+`make mutation` and `.github/workflows/mutation.yml` run a Cosmic Ray batch over
+`tracefold/trading/quote_authority.py` and `tracefold/trading/market_context.py`,
+the pure kernels that turn two prices into the basis-point move a capital
+decision is made on and that admit or reject an execution quote. `mutation.toml`
+carries the scope, the command and the reasoning behind both. The lane is a
+workflow of its own rather than a job in CI: `scripts/require_main_ci.py` admits
+a deployment only when the whole CI run for the exact main SHA concluded
+successfully, so a measurement nobody waits on stays outside that run and never
+gates a deploy.
+
+`make mutation-sentinel` runs first and separately, because a mutation score is
+only evidence once the mutants provably reach the interpreter. The sentinel
+mutates `tests/support/mutation_canary.py`, whose every mutation is pinned by
+`tests/mutation/test_mutation_canary.py`, and requires that nothing survives. A
+survivor there means the suite imported unmutated source, which is the failure
+that reports good news: it is why `mutmut` is not used here, its shadow
+`mutants/` tree being importable as a namespace package alongside the real one.
+
+Zero survivors is only half a proof, so the sentinel runs `cosmic-ray baseline`
+first. Cosmic Ray records a kill for any non-zero exit, so a command that never
+reached an assertion — a collection error, a missing binary, a failed
+resolution — also produces zero survivors. The baseline requires the same
+command to be green on unmutated source, which is what makes the zero mean
+something; the scheduled job runs it against `mutation.toml` for the same
+reason, rather than a hand-written approximation of the command it measures.
+
+Cosmic Ray mutates in place, so for the length of a run the working tree holds a
+mutant in a tracked file. `make mutation` therefore refuses to start unless the
+modules it rewrites are clean and restores them however it exits, and a
+whole-tree check run concurrently with a batch — `ruff check .`, or a `git add
+-A` — is reading mutated source and will not agree with itself. Two workers
+cannot share a checkout for the same reason. Parallelism is therefore one checkout per worker,
+which a job matrix already is: `scripts/mutation_shard.py` reserves a
+deterministic slice of the session for each runner by skipping the rest, and
+`scripts/mutation_survivors.py` unions the shard databases into one score.
+
+The slice is keyed on `(module_path, operator_name, occurrence)` rather than on
+`job_id`, and that is a correctness requirement rather than a preference: each
+matrix leg runs its own `cosmic-ray init`, which mints fresh job ids, so a
+job-id ordering gives every shard an independent random slice instead of a
+partition. For the same reason the score unions mutant identities rather than
+summing per-session counts — every shard database holds the whole population,
+with the other shards' jobs marked skipped. Where the union falls short of the
+population the run is reported as partial and only unclassified survivors are
+checked, since "listed but no longer surviving" is a claim about the tests and
+not about which slice happened to run. The
+batch is sized against the 30-minute bound from measured numbers — 628 mutants
+at about 6 s each is roughly an hour sequentially, about 11 minutes across six
+shards — and each shard is capped at 30 minutes so an over-long batch fails
+rather than drifts.
+
+The command runs under `TRACEFOLD_HYPOTHESIS_PROFILE=ci`, which is what makes
+the result reproducible. `tests/trading/test_quote_properties.py` is a Hypothesis
+suite and the default `fast` profile draws fresh examples per run, so without
+`derandomize` a mutant is killed one week and survives the next,
+`mutation-survivors.toml` goes stale on its own, and the lane fails for reasons
+unrelated to the code. Cosmic Ray runs the command through `shlex.split` with no
+shell but inherits the environment, so the setting is an `env` prefix in
+`mutation.toml` rather than a shell assignment.
+
+The command runs the tests that constrain the mutated modules, including
+`tests/test_execution_quote.py` despite its `nautilus_trader` import costing
+around 3 s per mutant. A batch that omits it is much faster and reports
+survivors in `validate_entry_quote` that describe the command rather than the
+tests, since that file is what pins each quote bound at its exact `==`, `<` or
+`>` point.
+
+Survivors are classified rather than counted. `mutation-survivors.toml` holds
+two forms and `scripts/mutation_survivors.py` fails on an unclassified survivor,
+on an entry that no longer matches one, and on a rule that matches none. A
+`[[accepted]]` entry names one site by module, function, line and operator. A
+`[[rule]]` covers a mechanical category and is honoured only where its premise
+is checked against the source: `annotation-union` accepts a mutated `|` on a
+line where every `|` sits inside an annotation, which
+`from __future__ import annotations` never evaluates. That check is per site
+rather than per operator because the distinction is real —
+`quote_authority.py`'s `ExecutionQuoteAuditV1` builds a runtime type alias whose `|` is evaluated, and
+its mutants are killed while annotation mutants survive.
+
 ### News V3 evaluation seams
 
 News V3 has three public evaluation seams: `tracefold.news.eval.replay` for
