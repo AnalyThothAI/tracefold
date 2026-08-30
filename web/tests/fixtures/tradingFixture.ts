@@ -25,7 +25,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       heartbeat_at_ms: TRADING_NOW_MS - 1_000,
       reason: null,
     },
-    capital: { control: "PAUSED", blacklist_revision: 3 },
+    capital: { control: "PAUSED", arm_epoch: 1, blacklist_revision: 3 },
     bindings: [
       {
         binding: "BINANCE_USDM",
