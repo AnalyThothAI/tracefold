@@ -55,6 +55,8 @@ export const queryKeys = {
   tradingStatus: () => ["trading-status"] as const,
   tradingIntents: (underlying: string) => ["trading-intents", underlying] as const,
   tradingCases: (underlying: string) => ["trading-cases", underlying] as const,
+  tradingCapabilities: () => ["trading-capabilities"] as const,
+  tradingEvidence: () => ["trading-evidence"] as const,
   tradingGateSource: (eventId: string) => ["trading-gate-source", eventId] as const,
   // #269: the admission ledger's own window, shared by the frame table and the leverage list.
   tradingGate: () => ["trading-gate"] as const,

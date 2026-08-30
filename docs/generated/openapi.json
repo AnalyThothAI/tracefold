@@ -323,6 +323,52 @@
         "title": "ApiEnvelope[StatusData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingCapabilitiesData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingCapabilitiesData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingCapabilitiesData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingCasesData_": {
         "additionalProperties": false,
         "properties": {
@@ -367,6 +413,52 @@
           "ok"
         ],
         "title": "ApiEnvelope[TradingCasesData]",
+        "type": "object"
+      },
+      "ApiEnvelope_TradingEvidenceData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingEvidenceData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingEvidenceData]",
         "type": "object"
       },
       "ApiEnvelope_TradingGateData_": {
@@ -5023,6 +5115,120 @@
         "title": "StatusRuntimeData",
         "type": "object"
       },
+      "TradingAuthorityEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "active_arm_receipt_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Arm Receipt Sha256"
+          },
+          "approved_release": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Release"
+          },
+          "arm_expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Arm Expires At Ms"
+          },
+          "binding": {
+            "enum": [
+              "BINANCE_USDM",
+              "HYPERLIQUID_PERP"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "grant_expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Expires At Ms"
+          },
+          "grant_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Sha256"
+          },
+          "risk_policy_expires_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Policy Expires At Ms"
+          },
+          "risk_policy_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk Policy Sha256"
+          },
+          "settlement_limits": {
+            "items": {
+              "$ref": "#/components/schemas/TradingSettlementRiskLimitData"
+            },
+            "title": "Settlement Limits",
+            "type": "array"
+          },
+          "status": {
+            "enum": [
+              "absent",
+              "active",
+              "expired",
+              "revoked",
+              "invalid"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding",
+          "status"
+        ],
+        "title": "TradingAuthorityEvidenceData",
+        "type": "object"
+      },
       "TradingBindingRuntimeData": {
         "additionalProperties": false,
         "properties": {
@@ -5039,6 +5245,17 @@
             ],
             "title": "Account State",
             "type": "string"
+          },
+          "active_arm_receipt_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Arm Receipt Sha256"
           },
           "binding": {
             "enum": [
@@ -5213,6 +5430,498 @@
           "target_notional_usd"
         ],
         "title": "TradingBudgetData",
+        "type": "object"
+      },
+      "TradingCapabilitiesData": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/TradingCapabilityBindingData"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/TradingCapabilityEntryData"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "complete",
+          "measured_at_ms"
+        ],
+        "title": "TradingCapabilitiesData",
+        "type": "object"
+      },
+      "TradingCapabilityBindingData": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "enum": [
+              "BINANCE_USDM",
+              "HYPERLIQUID_PERP"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "capability_state": {
+            "enum": [
+              "missing",
+              "ready",
+              "stale",
+              "error"
+            ],
+            "title": "Capability State",
+            "type": "string"
+          },
+          "catalog_instrument_count": {
+            "default": 0,
+            "title": "Catalog Instrument Count",
+            "type": "integer"
+          },
+          "catalog_snapshot_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Catalog Snapshot Sha256"
+          },
+          "compile_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compile Error"
+          },
+          "compiled_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compiled At Ms"
+          },
+          "excluded_count": {
+            "default": 0,
+            "title": "Excluded Count",
+            "type": "integer"
+          },
+          "included_count": {
+            "default": 0,
+            "title": "Included Count",
+            "type": "integer"
+          },
+          "last_known_good": {
+            "default": false,
+            "title": "Last Known Good",
+            "type": "boolean"
+          },
+          "partition_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Partition Sha256"
+          },
+          "snapshot_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Sha256"
+          }
+        },
+        "required": [
+          "binding",
+          "capability_state"
+        ],
+        "title": "TradingCapabilityBindingData",
+        "type": "object"
+      },
+      "TradingCapabilityEntryData": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "enum": [
+              "BINANCE_USDM",
+              "HYPERLIQUID_PERP"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "canonical_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Asset"
+          },
+          "canonical_namespace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Namespace"
+          },
+          "catalog_entry_id": {
+            "title": "Catalog Entry Id",
+            "type": "string"
+          },
+          "disposition": {
+            "enum": [
+              "included",
+              "excluded"
+            ],
+            "title": "Disposition",
+            "type": "string"
+          },
+          "exclusion_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exclusion Reason"
+          },
+          "instrument_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Id"
+          },
+          "min_notional": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Notional"
+          },
+          "min_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Quantity"
+          },
+          "price_increment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Increment"
+          },
+          "provider_instrument_id": {
+            "title": "Provider Instrument Id",
+            "type": "string"
+          },
+          "settlement_asset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Settlement Asset"
+          },
+          "size_increment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Increment"
+          }
+        },
+        "required": [
+          "binding",
+          "catalog_entry_id",
+          "disposition",
+          "provider_instrument_id"
+        ],
+        "title": "TradingCapabilityEntryData",
+        "type": "object"
+      },
+      "TradingCapitalLifecycleEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "arm_receipt_sha256": {
+            "title": "Arm Receipt Sha256",
+            "type": "string"
+          },
+          "attempt_consumed": {
+            "title": "Attempt Consumed",
+            "type": "boolean"
+          },
+          "attempt_day_end_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Day End Ms"
+          },
+          "attempt_day_start_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt Day Start Ms"
+          },
+          "authorization_receipt_sha256": {
+            "title": "Authorization Receipt Sha256",
+            "type": "string"
+          },
+          "binding": {
+            "enum": [
+              "BINANCE_USDM",
+              "HYPERLIQUID_PERP"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "current_planned_risk_amount": {
+            "title": "Current Planned Risk Amount",
+            "type": "string"
+          },
+          "economic_lifecycle_id": {
+            "title": "Economic Lifecycle Id",
+            "type": "string"
+          },
+          "execution_phase": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ENTRY",
+                  "PROTECTION",
+                  "EXIT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Phase"
+          },
+          "execution_state": {
+            "enum": [
+              "PENDING",
+              "IN_FLIGHT",
+              "OPEN_PROTECTED",
+              "MANUAL_REVIEW",
+              "TERMINAL"
+            ],
+            "title": "Execution State",
+            "type": "string"
+          },
+          "flat_verified_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flat Verified At Ms"
+          },
+          "grant_sha256": {
+            "title": "Grant Sha256",
+            "type": "string"
+          },
+          "initial_planned_risk_amount": {
+            "title": "Initial Planned Risk Amount",
+            "type": "string"
+          },
+          "intent_id": {
+            "title": "Intent Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "reservation_sha256": {
+            "title": "Reservation Sha256",
+            "type": "string"
+          },
+          "risk_day_end_ms": {
+            "title": "Risk Day End Ms",
+            "type": "integer"
+          },
+          "risk_day_start_ms": {
+            "title": "Risk Day Start Ms",
+            "type": "integer"
+          },
+          "risk_policy_sha256": {
+            "title": "Risk Policy Sha256",
+            "type": "string"
+          },
+          "risk_status": {
+            "enum": [
+              "RESERVED",
+              "FENCED",
+              "OPEN",
+              "MANUAL_REVIEW",
+              "RELEASED",
+              "SETTLED"
+            ],
+            "title": "Risk Status",
+            "type": "string"
+          },
+          "settlement_asset": {
+            "enum": [
+              "USDT",
+              "USDC"
+            ],
+            "title": "Settlement Asset",
+            "type": "string"
+          },
+          "settlement_known": {
+            "title": "Settlement Known",
+            "type": "boolean"
+          },
+          "target_notional": {
+            "title": "Target Notional",
+            "type": "string"
+          },
+          "terminal_outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "EXPIRED",
+                  "REJECTED",
+                  "CLOSED_FLAT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Terminal Outcome"
+          },
+          "updated_at_ms": {
+            "title": "Updated At Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reservation_sha256",
+          "authorization_receipt_sha256",
+          "case_id",
+          "intent_id",
+          "economic_lifecycle_id",
+          "binding",
+          "settlement_asset",
+          "risk_policy_sha256",
+          "grant_sha256",
+          "arm_receipt_sha256",
+          "risk_day_start_ms",
+          "risk_day_end_ms",
+          "target_notional",
+          "initial_planned_risk_amount",
+          "current_planned_risk_amount",
+          "risk_status",
+          "attempt_consumed",
+          "settlement_known",
+          "execution_state",
+          "updated_at_ms"
+        ],
+        "title": "TradingCapitalLifecycleEvidenceData",
         "type": "object"
       },
       "TradingCapitalRuntimeData": {
@@ -5507,6 +6216,17 @@
             "title": "Measured At Ms",
             "type": "integer"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "reason_counts_24h": {
             "additionalProperties": {
               "type": "integer"
@@ -5574,6 +6294,50 @@
           "state"
         ],
         "title": "TradingDecisionRuntimeData",
+        "type": "object"
+      },
+      "TradingEvidenceData": {
+        "additionalProperties": false,
+        "properties": {
+          "authorities": {
+            "items": {
+              "$ref": "#/components/schemas/TradingAuthorityEvidenceData"
+            },
+            "title": "Authorities",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "lifecycles": {
+            "items": {
+              "$ref": "#/components/schemas/TradingCapitalLifecycleEvidenceData"
+            },
+            "title": "Lifecycles",
+            "type": "array"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "complete",
+          "measured_at_ms"
+        ],
+        "title": "TradingEvidenceData",
         "type": "object"
       },
       "TradingGateConfigData": {
@@ -6374,6 +7138,20 @@
             ],
             "title": "Flat Verified At Ms"
           },
+          "funding_by_currency": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Funding By Currency"
+          },
           "instrument_id": {
             "title": "Instrument Id",
             "type": "string"
@@ -6709,6 +7487,17 @@
             "title": "Measured At Ms",
             "type": "integer"
           },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
           "outcome_counts_24h": {
             "additionalProperties": {
               "type": "integer"
@@ -6907,6 +7696,39 @@
           }
         },
         "title": "TradingRuntimeCountsData",
+        "type": "object"
+      },
+      "TradingSettlementRiskLimitData": {
+        "additionalProperties": false,
+        "properties": {
+          "fee_slippage_reserve_bps": {
+            "title": "Fee Slippage Reserve Bps",
+            "type": "integer"
+          },
+          "max_planned_risk_amount": {
+            "title": "Max Planned Risk Amount",
+            "type": "string"
+          },
+          "max_realized_loss_amount": {
+            "title": "Max Realized Loss Amount",
+            "type": "string"
+          },
+          "settlement_asset": {
+            "enum": [
+              "USDT",
+              "USDC"
+            ],
+            "title": "Settlement Asset",
+            "type": "string"
+          }
+        },
+        "required": [
+          "settlement_asset",
+          "max_planned_risk_amount",
+          "max_realized_loss_amount",
+          "fee_slippage_reserve_bps"
+        ],
+        "title": "TradingSettlementRiskLimitData",
         "type": "object"
       },
       "TradingStatusData": {
@@ -7548,6 +8370,84 @@
         ]
       }
     },
+    "/api/trading/capabilities": {
+      "get": {
+        "description": "Current durable V2 partition; never compiles capabilities or contacts a venue.",
+        "operationId": "get_trading_capabilities_api_trading_capabilities_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "binding",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Binding",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "disposition",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "maxLength": 16,
+              "title": "Disposition",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": "entries",
+              "maxLength": 16,
+              "title": "Detail",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingCapabilitiesData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trading Capabilities",
+        "tags": [
+          "api"
+        ]
+      }
+    },
     "/api/trading/cases": {
       "get": {
         "description": "Frozen Cases and the frozen evidence each was decided on.",
@@ -7572,6 +8472,17 @@
               "default": "",
               "maxLength": 16,
               "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Cursor",
               "type": "string"
             }
           }
@@ -7599,6 +8510,84 @@
           }
         },
         "summary": "Get Trading Cases",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/evidence": {
+      "get": {
+        "description": "Redacted grant/arm/risk proof and bounded capital lifecycle rows from PostgreSQL.",
+        "operationId": "get_trading_evidence_api_trading_evidence_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "binding",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Binding",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 24,
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "detail",
+            "required": false,
+            "schema": {
+              "default": "lifecycles",
+              "maxLength": 16,
+              "title": "Detail",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingEvidenceData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Trading Evidence",
         "tags": [
           "api"
         ]
@@ -7704,6 +8693,17 @@
               "default": "",
               "maxLength": 16,
               "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Cursor",
               "type": "string"
             }
           }

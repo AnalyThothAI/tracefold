@@ -88,6 +88,69 @@
     font-size: var(--font-size-mono-meta);
   }
 
+  .trading-capability-binding-row,
+  .trading-capability-entry-row,
+  .trading-authority-row,
+  .trading-lifecycle-row {
+    display: grid;
+    gap: 10px;
+    align-items: center;
+    min-height: 50px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-faint);
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-capability-binding-row {
+    grid-template-columns: 156px 90px 280px 150px minmax(260px, 1fr) minmax(220px, 1fr);
+    min-width: 1300px;
+  }
+
+  .trading-capability-entry-row {
+    grid-template-columns: 156px 90px 220px 140px minmax(320px, 1fr);
+    min-width: 1020px;
+  }
+
+  .trading-authority-row {
+    grid-template-columns: 156px 90px 160px minmax(240px, 1fr) minmax(240px, 1fr) 160px minmax(
+        320px,
+        1fr
+      );
+    min-width: 1480px;
+  }
+
+  .trading-lifecycle-row {
+    grid-template-columns: 156px 180px 118px 180px 150px 130px minmax(180px, 1fr) 150px;
+    min-width: 1380px;
+  }
+
+  .trading-capability-binding-row code,
+  .trading-capability-entry-row code,
+  .trading-authority-row code,
+  .trading-lifecycle-row code {
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
+  [data-tone="caution"] {
+    color: var(--signal-caution);
+  }
+
+  .trading-pagination-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0;
+    padding: 10px 14px;
+    border-top: 1px solid var(--border-subtle);
+    background: var(--surface-raised);
+    color: var(--signal-caution);
+    font-size: var(--font-size-meta);
+  }
+
   /* The two 24h tallies. Each is its own keyed distribution, so each gets its own caption and its own
      wrapping run of chips rather than a shared table row that implies a join. */
   .trading-tally {

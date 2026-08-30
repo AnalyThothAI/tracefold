@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.trading_v3_fixtures import trade_intent
+from tests.trading_v3_fixtures import binance_capability, binance_catalog, trade_intent
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
 from tracefold.trading.contracts import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
@@ -51,6 +51,7 @@ def _intent(**overrides: Any) -> dict[str, Any]:
         "realized_pnl_amount": None,
         "realized_pnl_currency": None,
         "commissions_by_currency": {},
+        "funding_by_currency": {},
         "updated_at_ms": NOW - 60_000,
         "strategy_id": POLICY_ID,
         "strategy_version": POLICY_ID,
@@ -223,6 +224,29 @@ class _Trading:
     def gate_decision_for_source_key(self, **kwargs: Any) -> dict[str, Any] | None:
         self.calls.append(("gate_decision_for_source_key", kwargs))
         return _gate_row(source_key=kwargs["source_key"])
+
+    def active_execution_capability_snapshot(self, *, binding: str):
+        if binding != "BINANCE_USDM":
+            return None
+        catalog = binance_catalog(captured_at_ms=NOW - 1_000)
+        return binance_capability(catalog=catalog)
+
+    def authority_projection(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "binding": binding,
+                "active_arm_receipt_sha256": None,
+                "arm_payload": None,
+                "grant_payload": None,
+                "policy_payload": None,
+                "revocation_payload": None,
+            }
+            for binding in ("BINANCE_USDM", "HYPERLIQUID_PERP")
+        ]
+
+    def console_capital_evidence(self, **kwargs: Any) -> list[dict[str, Any]]:
+        self.calls.append(("console_capital_evidence", kwargs))
+        return []
 
 
 class _Runtime:
@@ -411,7 +435,39 @@ def test_filters_are_owned_by_the_aggregate_they_filter(client) -> None:
 
 def test_surface_is_authenticated_and_read_only(client) -> None:
     api, _ = client
-    for path in ("/api/trading/intents", "/api/trading/cases", "/api/trading/gate"):
+    for path in (
+        "/api/trading/intents",
+        "/api/trading/cases",
+        "/api/trading/gate",
+        "/api/trading/capabilities",
+        "/api/trading/evidence",
+    ):
         assert api.get(path).status_code == 401
     for method in (api.post, api.put, api.patch, api.delete):
         assert method("/api/trading/cases", params={"token": TOKEN}).status_code in {404, 405}
+
+
+def test_capabilities_and_evidence_are_bounded_read_only_durable_projections(client) -> None:
+    api, trading = client
+    capabilities = api.get("/api/trading/capabilities", params={"token": TOKEN}).json()["data"]
+    assert [row["binding"] for row in capabilities["bindings"]] == [
+        "BINANCE_USDM",
+        "HYPERLIQUID_PERP",
+    ]
+    assert capabilities["bindings"][0]["last_known_good"] is True
+    assert capabilities["entries"][0]["disposition"] == "included"
+    assert capabilities["complete"] is True
+    assert capabilities["next_cursor"] is None
+
+    evidence = api.get("/api/trading/evidence", params={"token": TOKEN}).json()["data"]
+    assert [row["status"] for row in evidence["authorities"]] == ["absent", "absent"]
+    assert evidence["lifecycles"] == []
+    call = next(kwargs for name, kwargs in trading.calls if name == "console_capital_evidence")
+    assert call["limit"] == 101
+
+
+def test_invalid_server_cursors_fail_closed(client) -> None:
+    api, _ = client
+    for path in ("/api/trading/cases", "/api/trading/intents", "/api/trading/evidence"):
+        response = api.get(path, params={"token": TOKEN, "cursor": "not-a-cursor"})
+        assert response.status_code == 400

@@ -9,6 +9,8 @@ import {
 import {
   TRADING_NOW_MS,
   tradingGateFixture,
+  tradingCapabilitiesFixture,
+  tradingEvidenceFixture,
   tradingCasesForUnderlying,
   tradingIntentsForUnderlying,
   tradingStatusFixture,
@@ -52,6 +54,8 @@ export function mockAppRoutes(apiMock: ApiMock) {
     // #207 PR-W1: keyed on the path segment so a route test that visits `/news/symbols/WIF` gets WIF back.
     // #207 PR-W4: the shell reads trading status on every route for the 交易 badge.
     if (path === "/api/trading/status") return ok(tradingStatusFixture());
+    if (path === "/api/trading/capabilities") return ok(tradingCapabilitiesFixture());
+    if (path === "/api/trading/evidence") return ok(tradingEvidenceFixture());
     // #282: the endpoint filters both halves by `underlying`, and the token page depends on it — a case
     // for a different name carries an `event_id` no loaded frame matches.
     if (path.startsWith("/api/trading/intents")) {
