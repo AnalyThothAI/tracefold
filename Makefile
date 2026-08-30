@@ -17,7 +17,7 @@ export TRACEFOLD_API_HOST TRACEFOLD_API_PORT TRACEFOLD_WORKERS_HOST TRACEFOLD_WO
 
 TRACEFOLD_TEST_RESULT_DIR ?= artifacts/test-results
 QUALITY_TEST_SELECTION := tests/architecture tests/contract -m "(architecture or contract) and not external_codegen and not slow and not scheduled"
-FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
+FAST_TEST_SELECTION := tests -m "not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen and not package"
 CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not live and not slow and not scheduled and not external_codegen"
 CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 CI_POSTGRES_BEHAVIOR_SELECTION := tests/integration -m "integration and not migration and not slow and not scheduled"
@@ -25,14 +25,21 @@ CI_MIGRATION_SELECTION := tests/integration -m "migration and not slow and not s
 CI_RUNTIME_PROCESS_SELECTION := tests -m "(deploy or e2e or golden or slow) and not live and not scheduled"
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
+TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
+
+# The required lanes run under `coverage run`, so the same execution that produces the JUnit report
+# produces the coverage data — there is no second full-suite pass. `--parallel-mode` keeps one data
+# file per process so the lanes, and the child processes coverage's `patch = subprocess` starts, can
+# be combined afterwards. `make test-fast` deliberately does not go through here.
 define RUN_REQUIRED_PYTEST
 PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci \
-	TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run python -m pytest -p _hypothesis_pytestplugin \
+	TRACEFOLD_TEST_RESOURCES_REQUIRED=1 uv run python -m coverage run --parallel-mode \
+	-m pytest -p _hypothesis_pytestplugin \
 	$(1) --maxfail=0 --override-ini=xfail_strict=true \
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -58,44 +65,46 @@ test-all: test-frontend ## local convenience: every Python lane plus frontend; n
 	@uv run python -m pytest
 
 test-results-prepare:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)"/junit-*.xml \
 		"$(TRACEFOLD_TEST_RESULT_DIR)"/vitest-*.json \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
+	@rm -rf "$(TRACEFOLD_COVERAGE_DIR)"/.coverage* "$(TRACEFOLD_COVERAGE_DIR)"/html \
+		"$(TRACEFOLD_COVERAGE_DIR)"/coverage.json "$(TRACEFOLD_COVERAGE_DIR)"/coverage.xml
 
 ci-quality-static:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
 	@$(MAKE) --no-print-directory check-static
 	@$(call RUN_REQUIRED_PYTEST,$(CI_QUALITY_SELECTION),junit-quality-static.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-quality-static.xml"
 
 ci-python-hermetic:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_PYTHON_HERMETIC_SELECTION),junit-python-hermetic.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-python-hermetic.xml"
 
 ci-postgres-behavior:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_POSTGRES_BEHAVIOR_SELECTION),junit-postgres-behavior.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-postgres-behavior.xml"
 
 ci-migration:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_MIGRATION_SELECTION),junit-migration.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 
 ci-runtime-process:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
 	@$(call RUN_REQUIRED_PYTEST,$(CI_RUNTIME_PROCESS_SELECTION),junit-runtime-process.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
 
 ci-frontend:
-	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)"
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
 	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-frontend-python.xml" \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json" \
 		"$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json" \
@@ -111,7 +120,8 @@ ci-frontend:
 		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-architecture.json"
 	@npm --prefix web run test:unit -- \
 		--allowOnly=false --reporter=json \
-		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
+		--outputFile="$(CURDIR)/$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json" \
+		--coverage --coverage.reportsDirectory="$(CURDIR)/$(TRACEFOLD_COVERAGE_DIR)/frontend"
 	@uv run python scripts/require_test_reports.py \
 		--vitest-json "$(TRACEFOLD_TEST_RESULT_DIR)/vitest-unit.json"
 	@npm --prefix web run format:check
@@ -129,6 +139,32 @@ test-ci: ## complete local verification; merge/release authority is exact-SHA ma
 	@$(MAKE) --no-print-directory ci-migration
 	@$(MAKE) --no-print-directory ci-runtime-process
 	@$(MAKE) --no-print-directory ci-frontend
+	@$(MAKE) --no-print-directory ci-test-effectiveness
+
+# Report-only (#373 PR 2). Standard coverage.py combine and reports over the data the required
+# lanes already produced; it re-runs nothing, reads no JUnit/Vitest/Playwright report, and
+# adjudicates no pass/fail. Thresholds arrive in PR 3, from measured exact-main baselines.
+#
+# One shell, so the early return really returns: a lane that failed before reaching pytest
+# uploaded no data, `coverage combine` exits non-zero on an empty directory, and a report that
+# went red because there was nothing to report would be the one failure that is not about
+# coverage at all.
+ci-test-effectiveness:
+	@set -eu; \
+		mkdir -p "$(TRACEFOLD_COVERAGE_DIR)"; \
+		if ! ls "$(TRACEFOLD_COVERAGE_DIR)"/.coverage* >/dev/null 2>&1; then \
+			echo "no coverage data was produced; nothing to report"; \
+			exit 0; \
+		fi; \
+		uv run python -m coverage combine; \
+		uv run python -m coverage report; \
+		echo "--- tracefold/news ---"; \
+		uv run python -m coverage report --include='tracefold/news/*'; \
+		echo "--- tracefold/trading ---"; \
+		uv run python -m coverage report --include='tracefold/trading/*'; \
+		uv run python -m coverage json -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.json"; \
+		uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"; \
+		uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property

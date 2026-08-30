@@ -25,6 +25,10 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    # Exactly pinned (#373): coverage's measured numbers are only comparable across exact-main runs
+    # if the measuring tool cannot move underneath them. 7.16 is also the floor for the official
+    # `[run] patch = ["subprocess"]` support the child-process lanes depend on.
+    "coverage[toml]==7.16.0",
     "defusedxml>=0.7.1",
     "hypothesis==6.165.10",
     "pytest>=8.3.0",
@@ -75,7 +79,35 @@ markers = [
   "scheduled: opt-in production-duration diagnostics excluded from merge evidence",
   "slow: deterministic process/meta tests using shortened injected deadlines (excluded from make test)",
   "property: bounded Hypothesis properties over pure state and typed boundaries",
+  "package: builds and installs the real distribution; needs uv and its dependency cache",
 ]
+
+# Coverage is a gap signal, not a quality target (#373). It is produced by the same single execution
+# of the fixed required tests — `coverage run --parallel-mode -m pytest` — so no suite runs twice and
+# the numbers describe exactly the run that produced the JUnit report beside them. Nothing here
+# adjudicates pass/fail; the test frameworks and job exit codes remain the only execution truth.
+[tool.coverage.run]
+branch = true
+parallel = true
+relative_files = true
+source = ["tracefold"]
+# coverage.py's own subprocess support, not a project import hook: `patch` exports the config to
+# children, and coverage's wheel installs the `.pth` that starts them measuring. This is what puts
+# the Workers root, the uvicorn process and the CLI children of the process lanes in the data.
+patch = ["subprocess"]
+data_file = "artifacts/coverage/.coverage"
+
+# Nothing is excluded. The allowance was for generated artifacts and Alembic revision boilerplate:
+# there is no generated Python under `tracefold/`, and the revision tree lives under
+# `tracefold/platform/`, outside both domains whose numbers are read. Excluding News or Trading
+# orchestration, error branches, storage or adapters would defeat the signal, so none of it is.
+[tool.coverage.report]
+precision = 1
+show_missing = false
+skip_covered = false
+
+[tool.coverage.paths]
+source = ["tracefold", "*/tracefold"]
 
 [tool.ruff]
 line-length = 120

@@ -156,7 +156,8 @@ their corrections remain in #319.
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
-implementation detail. There is no coverage-percentage gate.
+implementation detail. Coverage is measured and reported; no percentage gates a
+merge today.
 
 Select commands by risk:
 
@@ -243,6 +244,25 @@ time from an empty database and compares the reachable revision graph against
 the revision files on disk, so a migration tree that stops resolving from the
 package is a failure rather than a shorter chain. Neither adds a package runner,
 a manifest, or a second release record.
+
+`postgres-behavior` carries the business failure windows (#373).
+`test_news_crash_replay.py` runs the production consumers over real PostgreSQL
+with the broker and the push sender as fault injectors, covering the Receiver
+outage that becomes a durable incident and is recovered officially, the publish
+that succeeds while its mark fails, the evidence that changes while the model is
+thinking, and the begin-send-settle windows where a known-unsent card may retry
+and an unknown remote outcome may not. `test_news_to_trading_seam.py` runs one OI
+frame through News, the App mapper and the capital lane.
+`test_trading_capital_lane.py` drives the Case lifecycle as a Hypothesis
+`RuleBasedStateMachine` against real SQL and walks the whole authority product.
+Assertions there are durable rows, queue outcomes and HTTP projections; a private
+call count is not a contract.
+
+The same run also produces coverage. `test-effectiveness` is report-only: it
+combines what the fixed jobs measured and prints standard coverage.py reports,
+depends on no job result, and `ci-gate` does not depend on it. Percentages are a
+gap signal; the acceptance for a critical state or exception path remains its F2P
+and its state model.
 
 Required pytest runs disable plugin autoload, load only the named plugins they
 need, use the deterministic Hypothesis `ci` profile, and emit JUnit XML under
