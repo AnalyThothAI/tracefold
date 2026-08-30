@@ -451,13 +451,37 @@ class RabbitMQBus:
         deadline = asyncio.get_running_loop().time() + _POLICY_EFFECTIVE_TIMEOUT_SECONDS
         while True:
             try:
-                await self.verify_policies()
+                await self.verify_policy_documents()
                 break
             except BrokerPolicyMismatch:
                 if asyncio.get_running_loop().time() >= deadline:
                     raise
                 await asyncio.sleep(0.5)
         return {"vhost": self._management.vhost, "policies": [entry["name"] for entry in document["policies"]]}
+
+    async def verify_policy_documents(self) -> dict[str, Any]:
+        """The four policies exist on the broker with exactly the checked-in definitions.
+
+        This is what `apply_policies` reads back, and it is deliberately not the per-queue check. A
+        RabbitMQ policy is a name-pattern rule that exists whether or not anything matches it yet, so
+        asking about queues here would make provisioning depend on the topology — which is backwards on
+        a fresh broker (no queues until a consumer declares them) and impossible during the #400 cutover
+        (the old queues have to go before the new ones can be declared).
+        """
+
+        expected = {
+            policy.name: dict(policy.definition)
+            for policy in broker_policy.policies(name_prefix=self._prefix, delay_ms=self._retry_delay_ms)
+        }
+        actual = await self._management.policies()
+        mismatched = {
+            name: {"expected": want, "actual": actual.get(name)}
+            for name, want in expected.items()
+            if actual.get(name) != want
+        }
+        if mismatched:
+            raise BrokerPolicyMismatch(json.dumps({"news_broker_policy_document_mismatch": mismatched}, sort_keys=True))
+        return {"verified": sorted(expected)}
 
     async def effective_policies(self) -> dict[str, dict[str, Any]]:
         """What RabbitMQ actually applies to each News queue right now."""
@@ -466,7 +490,11 @@ class RabbitMQBus:
         return {name: dict(row.get("effective_policy_definition") or {}) for name, row in stats.items()}
 
     async def verify_policies(self) -> dict[str, Any]:
-        """Fail closed when the broker is not running the checked-in retry contract.
+        """Fail closed when a declared queue is not running the checked-in retry contract.
+
+        This is the per-queue effective policy, which is what actually governs a delivery, so it is the
+        check a consumer must pass before attaching. It presumes the topology exists; provisioning uses
+        `verify_policy_documents` instead, because a policy exists before any queue matches it.
 
         Verification is not repair: a mismatch is reported and refused, never silently corrected, so a
         removed or edited policy can never degrade into immediate redelivery or at-most-once dead
@@ -724,6 +752,14 @@ class _Management:
 
     async def import_definitions(self, document: Mapping[str, Any]) -> None:
         await self._request("POST", "/api/definitions", dict(document))
+
+    async def policies(self) -> dict[str, dict[str, Any]]:
+        rows = await self._request("GET", f"/api/policies/{quote(self.vhost, safe='')}")
+        return {
+            str(row["name"]): dict(row.get("definition") or {})
+            for row in rows or []
+            if isinstance(row, dict) and row.get("name")
+        }
 
     async def queue_names(self) -> tuple[str, ...]:
         rows = await self._request("GET", f"/api/queues/{quote(self.vhost, safe='')}")

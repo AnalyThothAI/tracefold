@@ -5,6 +5,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -140,6 +141,14 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq
                 applied = io.StringIO()
                 assert main(["news", "bus-policy", "apply"], stdout=applied) == 0
                 assert json.loads(applied.getvalue())["ok"] is True
+
+                # bus-check reads the effective per-queue policy, which the broker publishes on its own
+                # statistics interval after the document is in place.
+                for _ in range(60):
+                    probe = io.StringIO()
+                    if main(["news", "bus-check"], stdout=probe) == 0:
+                        break
+                    time.sleep(1)
 
                 stdout = io.StringIO()
                 exit_code = main(["news", "bus-check"], stdout=stdout)
