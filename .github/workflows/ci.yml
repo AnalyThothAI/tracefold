@@ -104,7 +104,7 @@ jobs:
         # The probe runs as `rabbitmq`: a root-run CLI that reaches /var/lib/rabbitmq before the node has
         # written .erlang.cookie creates it root-owned and 0400, and 4.3.5 then refuses to boot.
         options: >-
-          --health-cmd "su -s /bin/sh rabbitmq -c 'rabbitmq-diagnostics -q ping'"
+          --health-cmd "su -s /bin/sh rabbitmq -c 'PATH=/opt/rabbitmq/sbin:/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin rabbitmq-diagnostics -q ping'"
           --health-interval 5s --health-timeout 10s --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

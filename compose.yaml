@@ -90,7 +90,18 @@ services:
       # root with mode 0400 — after which the server cannot read its own cookie and 4.3.5 refuses to
       # boot. Reproduced on 4.3.5 with a fresh volume; it only stays hidden on a volume that already
       # carries a correctly owned cookie.
-      test: ["CMD", "su", "-s", "/bin/sh", "rabbitmq", "-c", "rabbitmq-diagnostics -q check_port_connectivity"]
+      # PATH is spelled out because `su` resets it on the Debian image (but not on the Alpine one CI
+      # uses), which would leave the probe unable to find the CLI it just dropped privileges to run.
+      test:
+        [
+          "CMD",
+          "su",
+          "-s",
+          "/bin/sh",
+          "rabbitmq",
+          "-c",
+          "PATH=/opt/rabbitmq/sbin:/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin rabbitmq-diagnostics -q check_port_connectivity",
+        ]
       interval: 10s
       timeout: 10s
       retries: 6
