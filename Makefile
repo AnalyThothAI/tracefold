@@ -247,7 +247,13 @@ init: ## create ~/.tracefold/config.yaml + PostgreSQL role password files
 config: ## print effective runtime config
 	@$(TRACEFOLD) config
 
-db-migrate: preflight ## apply PostgreSQL migrations
+db-migrate: preflight github-preflight ## apply PostgreSQL migrations
+	@# The exact-main gate belongs here for the same reason it belongs on `up` (#373): this applies
+	@# Alembic revisions to the operator's production database from whatever tree it is invoked in.
+	@# Until now its only prerequisite was that git, uv and docker existed, so a task worktree with an
+	@# uncommitted revision could change the production schema. It runs before the cutover preflight
+	@# because a source that may not deploy should not be proving anything about the database either.
+	@uv run python scripts/require_main_ci.py
 	@make --no-print-directory _trading-hard-cut-preflight-if-needed
 	@$(TRACEFOLD) db migrate
 

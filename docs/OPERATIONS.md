@@ -256,7 +256,18 @@ Both `make up` and `make deploy-image` acquire the repository deployment lock,
 then run `verify-main-ci` while that lock is held and before any deployment
 mutation. The private implementation targets verify the inherited lock file
 descriptor, so setting an environment flag or invoking them directly cannot
-bypass either control. The gate requires the primary checkout on `main`, a
+bypass either control. `make db-migrate` runs the same verifier before its
+cutover preflight (#373). It applies Alembic revisions to the production
+database from whatever tree invoked it, so it is a deployment of application
+source even though it starts no container; until #373 its only prerequisite was
+that git, uv and docker existed. Which entries are covered is no longer a list
+someone maintains: `tests/deploy/test_main_ci_gate.py` derives the set from the
+Makefile by what each recipe does, so a new entry that starts the image or
+migrates the database cannot be added without the gate. `db-provision-nautilus-role`
+is deliberately outside it — it runs a script baked into the postgres image
+against an offline volume and ships no application code, and requiring a green
+`main` would make a recovery harder without making a deployment safer.
+The gate requires the primary checkout on `main`, a
 clean source tree, `HEAD` equal to both the local and live remote `origin/main`,
 and that exact SHA's latest `ci-gate` check to be completed and successful
 under GitHub Actions integration id `15368`. It also refuses inherited Compose

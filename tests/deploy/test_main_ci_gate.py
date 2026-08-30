@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,36 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.deploy
+
+# What "deploys application source" means, mechanically: something that puts *this repository's*
+# code — the image built from it, or its Alembic revisions — in front of production.
+_DEPLOYS_APPLICATION_SOURCE = (
+    re.compile(r"docker compose[^\n]*\bup\b"),
+    re.compile(r"docker compose[^\n]*\bbuild\b"),
+    re.compile(r"\btracefold db migrate\b"),
+    re.compile(r"docker run[^\n]*tracefold"),
+)
+# The one production-touching recipe that ships no application code: a script baked into the
+# postgres image, run against an offline volume to create a database role. Requiring a green main
+# for it would make a recovery harder without making a deployment safer.
+_RUNS_AN_IMAGE_OWNED_SCRIPT = re.compile(r"--entrypoint /usr/local/bin/tracefold-provision-")
+_PRIVATE_TARGET = re.compile(r"make --no-print-directory (_[a-z-]+)")
+
+
+def _make_targets() -> tuple[str, ...]:
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    return tuple(sorted(set(re.findall(r"^([a-zA-Z0-9_][a-zA-Z0-9_.-]*):", makefile, flags=re.MULTILINE))))
+
+
+def _dry_run(target: str) -> str:
+    return subprocess.run(
+        ["make", "--dry-run", target],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+        timeout=60,
+    ).stdout
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -337,7 +368,7 @@ def test_boolean_environment_flag_cannot_invoke_the_private_deployment_target() 
 
 
 @pytest.mark.parametrize(("target", "private_target"), [("up", "_up-locked"), ("deploy-image", "_deploy-image-locked")])
-def test_every_deployment_entry_requires_the_main_ci_gate(target: str, private_target: str) -> None:
+def test_the_locked_deployment_entries_hold_the_lock_and_the_gate(target: str, private_target: str) -> None:
     public = subprocess.run(
         ["make", "--dry-run", target],
         cwd=ROOT,
@@ -356,3 +387,34 @@ def test_every_deployment_entry_requires_the_main_ci_gate(target: str, private_t
     assert "scripts/with_deployment_lock.py" in public.stdout
     assert "with_deployment_lock.py --assert-held" in locked.stdout
     assert "scripts/require_main_ci.py" in locked.stdout
+
+
+def test_every_entry_that_deploys_application_source_requires_the_exact_main_gate() -> None:
+    """Derived from the Makefile, because a list of names cannot notice an entry nobody added to it.
+
+    The previous version of this contract named `up` and `deploy-image`. That is exactly why
+    `make db-migrate` went ungated for as long as it did: `OPERATIONS.md` names it beside `make up`
+    as an operator migration entry, it applies Alembic revisions to the production database from
+    whatever tree invoked it, and its only prerequisite was that git, uv and docker existed — but it
+    was not in the list, so nothing looked. Classifying by what a recipe *does* removes the list.
+
+    Three things are deliberately not in scope, and saying so here is cheaper than rediscovering it:
+    `db-provision-nautilus-role` runs a script baked into the *postgres* image against an offline
+    volume and ships no application code; the `*-preflight` targets are read-only proofs; and
+    `down`, `status`, `logs` and the `*-shell` targets observe or stop what is already running.
+    """
+
+    ungated: list[str] = []
+    for target in _make_targets():
+        recipe = _dry_run(target)
+        if _RUNS_AN_IMAGE_OWNED_SCRIPT.search(recipe):
+            continue
+        if not any(pattern.search(recipe) for pattern in _DEPLOYS_APPLICATION_SOURCE):
+            continue
+        # A public entry may reach the verifier through the private target it takes the lock for,
+        # which `make --dry-run` does not expand for it.
+        reachable = recipe + "".join(_dry_run(private) for private in _PRIVATE_TARGET.findall(recipe))
+        if "scripts/require_main_ci.py" not in reachable:
+            ungated.append(target)
+
+    assert ungated == []
