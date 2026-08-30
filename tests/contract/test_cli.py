@@ -1,3 +1,4 @@
+import argparse
 import io
 import json
 import tempfile
@@ -9,6 +10,11 @@ import yaml
 from pydantic import ValidationError
 
 from tracefold.app.cli.parser import build_parser
+from tracefold.app.cli.parsers.database import add_database_commands
+from tracefold.app.cli.parsers.news import add_news_commands
+from tracefold.app.cli.parsers.ops import add_ops_commands
+from tracefold.app.cli.parsers.runtime import add_runtime_commands
+from tracefold.app.cli.parsers.trading import add_trading_commands
 from tracefold.cli import main
 from tracefold.platform.config.loader import default_config_yaml
 from tracefold.platform.config.models import Settings
@@ -89,6 +95,93 @@ class CliTests(unittest.TestCase):
         assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
         bootstrap = parser.parse_args(["nautilus", "run", "--bootstrap-zero-claims"])
         assert bootstrap.bootstrap_zero_claims is True
+
+    def test_representative_command_namespaces_are_stable(self):
+        parser = build_parser()
+        cases = (
+            (
+                ["nautilus", "run", "--bootstrap-zero-claims"],
+                {"command": "nautilus", "nautilus_command": "run", "bootstrap_zero_claims": True},
+            ),
+            (["db", "audit", "--deep"], {"command": "db", "db_command": "audit", "deep": True}),
+            (
+                ["news", "instruments", "unmatched", "--symbol", "BTC", "--days", "3", "--limit", "7"],
+                {
+                    "command": "news",
+                    "news_command": "instruments",
+                    "action": "unmatched",
+                    "symbol": "BTC",
+                    "days": 3,
+                    "limit": 7,
+                },
+            ),
+            (
+                [
+                    "trading",
+                    "evidence",
+                    "capture",
+                    "--partition",
+                    "future",
+                    "--start-ms",
+                    "10",
+                    "--end-ms",
+                    "20",
+                    "--candidate",
+                    "candidate.json",
+                    "--candidate-receipt",
+                    "receipt.json",
+                    "--out",
+                    "artifacts/evidence",
+                ],
+                {
+                    "command": "trading",
+                    "trading_command": "evidence",
+                    "evidence_command": "capture",
+                    "partition": "future",
+                    "start_ms": 10,
+                    "end_ms": 20,
+                    "candidate": "candidate.json",
+                    "candidate_receipt": "receipt.json",
+                    "out": "artifacts/evidence",
+                },
+            ),
+            (
+                ["ops", "validate-projections", "--sample", "5"],
+                {"command": "ops", "ops_command": "validate-projections", "sample": 5},
+            ),
+        )
+
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.assertEqual(vars(parser.parse_args(command)), expected)
+
+    def test_top_level_registrars_construct_independently(self):
+        cases = (
+            (add_runtime_commands, ["serve"], {"command": "serve"}),
+            (add_database_commands, ["db", "health"], {"command": "db", "db_command": "health"}),
+            (
+                add_news_commands,
+                ["news", "bus-policy", "verify"],
+                {"command": "news", "news_command": "bus-policy", "policy_action": "verify"},
+            ),
+            (
+                add_trading_commands,
+                ["trading", "cases"],
+                {"command": "trading", "trading_command": "cases", "state": None, "limit": 20},
+            ),
+            (
+                add_ops_commands,
+                ["ops", "validate-projections"],
+                {"command": "ops", "ops_command": "validate-projections", "sample": 100},
+            ),
+        )
+
+        for registrar, command, expected in cases:
+            with self.subTest(registrar=registrar.__module__):
+                parser = argparse.ArgumentParser(prog="tracefold")
+                subcommands = parser.add_subparsers(dest="command")
+                registrar(subcommands)
+                self.assertEqual(vars(parser.parse_args(command)), expected)
 
     def test_audit_and_current_operations_commands_are_registered(self):
         parser = build_parser()
