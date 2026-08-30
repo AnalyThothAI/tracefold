@@ -93,7 +93,7 @@ def feed_counts_sql(where_sql: str) -> str:
             ON current_evidence.provenance = 'observed'
            AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
           LEFT JOIN LATERAL (
-            SELECT v.final_decision, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
+            SELECT v.final_decision, v.editorial, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
