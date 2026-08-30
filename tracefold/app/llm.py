@@ -98,12 +98,19 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
             "top_p": 0.95,
             "extra_body": {"thinking": {"type": "disabled"}},
         }
+    if leaf.startswith("minimax-m2.7") and not thinking:
+        # MiniMax M2.7 returns reasoning inside ``content`` unless the OpenAI-compatible
+        # reasoning split is requested. Keep that stream out of strict Program JSON.
+        return {
+            "top_p": 0.95,
+            "extra_body": {"reasoning_split": True},
+        }
     return {}
 
 
 def _provider_request_defaults(model_name: str) -> tuple[float | None, StructuredOutputMode]:
     leaf = str(model_name or "").rsplit("/", maxsplit=1)[-1].lower()
-    if leaf == "minimax-m3":
+    if leaf == "minimax-m3" or leaf.startswith("minimax-m2.7"):
         # MiniMax-M3 rejects temperature=0 and does not advertise response_format support. Keep the exact JSON
         # schema in the system message, then validate the bare JSON reply locally like every other route.
         return 1.0, "prompt_json"

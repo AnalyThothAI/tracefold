@@ -32,31 +32,38 @@ from tracefold.platform.config.models import news_model_availability
 
 
 @dataclass(frozen=True, slots=True)
+class ConfiguredProgramFallbackRoute:
+    """The two endpoints and explicit alias state for one ordered fallback route."""
+
+    event_semantics: ConfiguredLMEndpoint
+    reader_card: ConfiguredLMEndpoint
+    reader_card_alias: bool
+
+
+@dataclass(frozen=True, slots=True)
 class NewsProgramRuntimeComposition:
     """The application seam that owns every runtime slot, identity and Judge binding."""
 
     program_configured: bool
     event_semantics_primary: ConfiguredLMEndpoint
     reader_card_primary: ConfiguredLMEndpoint
-    event_semantics_fallback: ConfiguredLMEndpoint | None
-    reader_card_fallback: ConfiguredLMEndpoint | None
+    fallbacks: tuple[ConfiguredProgramFallbackRoute, ...]
     reader_card_primary_alias: bool
-    reader_card_fallback_alias: bool
 
     def secret_free_slot_identities(self) -> dict[str, dict[str, str] | None]:
-        if not self.program_configured:
-            return {
-                "event_semantics.primary": None,
-                "reader_card.primary": None,
-                "event_semantics.fallback": None,
-                "reader_card.fallback": None,
-            }
-        return {
-            "event_semantics.primary": _optional_endpoint_identity(self.event_semantics_primary),
-            "reader_card.primary": _optional_endpoint_identity(self.reader_card_primary),
-            "event_semantics.fallback": _optional_endpoint_identity(self.event_semantics_fallback),
-            "reader_card.fallback": _optional_endpoint_identity(self.reader_card_fallback),
+        slots: dict[str, dict[str, str] | None] = {
+            "event_semantics.primary": (
+                _optional_endpoint_identity(self.event_semantics_primary) if self.program_configured else None
+            ),
+            "reader_card.primary": (
+                _optional_endpoint_identity(self.reader_card_primary) if self.program_configured else None
+            ),
         }
+        if self.program_configured:
+            for index, fallback in enumerate(self.fallbacks, start=1):
+                slots[f"event_semantics.fallback_{index}"] = _optional_endpoint_identity(fallback.event_semantics)
+                slots[f"reader_card.fallback_{index}"] = _optional_endpoint_identity(fallback.reader_card)
+        return slots
 
     def slot_aliases(self) -> dict[str, str]:
         """Name every deliberate endpoint alias instead of inferring it from equal hashes."""
@@ -66,15 +73,16 @@ class NewsProgramRuntimeComposition:
         aliases: dict[str, str] = {}
         if self.reader_card_primary_alias:
             aliases["reader_card.primary"] = "event_semantics.primary"
-        if self.reader_card_fallback_alias:
-            aliases["reader_card.fallback"] = "event_semantics.fallback"
+        for index, fallback in enumerate(self.fallbacks, start=1):
+            if fallback.reader_card_alias:
+                aliases[f"reader_card.fallback_{index}"] = f"event_semantics.fallback_{index}"
         return aliases
 
     @property
     def runtime_model_bindings_sha256(self) -> str:
         return canonical_sha(
             {
-                "identity_schema": "configured_runtime_binding_v2",
+                "identity_schema": "configured_runtime_binding_v3",
                 "slots": self.secret_free_slot_identities(),
                 "aliases": self.slot_aliases(),
             }
@@ -112,11 +120,10 @@ class NewsProgramRuntimeComposition:
                 lm_type=lm_type,
             ),
         )
-        fallback = None
-        if self.event_semantics_fallback is not None and self.reader_card_fallback is not None:
-            fallback = RouteLMs(
+        fallbacks = tuple(
+            RouteLMs(
                 event_semantics=_configured_program_lm(
-                    self.event_semantics_fallback,
+                    fallback.event_semantics,
                     max_tokens=artifact.event_semantics.max_tokens,
                     timeout=timeout,
                     predictor="event_semantics",
@@ -125,7 +132,7 @@ class NewsProgramRuntimeComposition:
                     lm_type=lm_type,
                 ),
                 reader_card=_configured_program_lm(
-                    self.reader_card_fallback,
+                    fallback.reader_card,
                     max_tokens=artifact.reader_card.max_tokens,
                     timeout=timeout,
                     predictor="reader_card",
@@ -134,10 +141,12 @@ class NewsProgramRuntimeComposition:
                     lm_type=lm_type,
                 ),
             )
+            for fallback in self.fallbacks
+        )
         return RoutedSemanticJudge(
             NativeNewsProgram(artifact),
             primary=primary,
-            fallback=fallback,
+            fallbacks=fallbacks,
         )
 
     def compile_semantic_judge(
@@ -226,39 +235,60 @@ def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition
         reader_model = availability.reader_card_model or "unconfigured"
         reader_primary = configured_lm_endpoint(settings, model_name=reader_model)
 
-    event_fallback: ConfiguredLMEndpoint | None = None
-    reader_fallback: ConfiguredLMEndpoint | None = None
-    if availability.triage_fallback_model:
-        fallback_settings = settings.llm.news_triage_fallback
+    fallback_routes: list[ConfiguredProgramFallbackRoute] = []
+    valid_fallback_settings = tuple(
+        fallback
+        for fallback in settings.llm.news_fallbacks
+        if (
+            fallback.configured
+            and _is_http_endpoint(fallback.base_url)
+            and (not fallback.reader_card.configured or _is_http_endpoint(fallback.reader_card.base_url))
+        )
+    )
+    for fallback_settings, event_model, reader_model, reader_dedicated in zip(
+        valid_fallback_settings,
+        availability.triage_fallback_models,
+        availability.reader_card_fallback_models,
+        availability.reader_card_fallback_dedicated,
+        strict=True,
+    ):
         event_fallback = configured_lm_endpoint(
             settings,
-            model_name=availability.triage_fallback_model,
+            model_name=event_model,
             api_key=fallback_settings.api_key,
             base_url=fallback_settings.base_url,
             request_config=fallback_settings.request,
         )
-        reader_fallback_settings = settings.llm.news_reader_card_fallback
-        if availability.reader_card_fallback_dedicated and availability.reader_card_fallback_model:
+        reader_fallback_settings = fallback_settings.reader_card
+        if reader_dedicated:
             reader_fallback = configured_lm_endpoint(
                 settings,
-                model_name=availability.reader_card_fallback_model,
+                model_name=reader_model,
                 api_key=reader_fallback_settings.api_key,
                 base_url=reader_fallback_settings.base_url,
                 request_config=reader_fallback_settings.request,
             )
-        elif not reader_fallback_settings.configured:
+        else:
             reader_fallback = event_fallback
+        fallback_routes.append(
+            ConfiguredProgramFallbackRoute(
+                event_semantics=event_fallback,
+                reader_card=reader_fallback,
+                reader_card_alias=not reader_fallback_settings.configured,
+            )
+        )
     return NewsProgramRuntimeComposition(
         program_configured=availability.program_configured,
         event_semantics_primary=event_primary,
         reader_card_primary=reader_primary,
-        event_semantics_fallback=event_fallback,
-        reader_card_fallback=reader_fallback,
+        fallbacks=tuple(fallback_routes),
         reader_card_primary_alias=not settings.llm.news_reader_card.configured,
-        reader_card_fallback_alias=bool(
-            event_fallback is not None and not settings.llm.news_reader_card_fallback.configured
-        ),
     )
+
+
+def _is_http_endpoint(value: str | None) -> bool:
+    parsed = urlsplit(str(value or ""))
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname)
 
 
 def active_arm_manifest(

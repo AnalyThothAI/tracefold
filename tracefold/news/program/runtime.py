@@ -90,12 +90,14 @@ PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS: Final[int] = 60
 
 # A JSON-schema-capable Predictor may make its initial call plus one stock
 # JSONAdapter format fallback.  There are two serial Predictors per route and
-# two complete routes in the primary -> fallback chain.
+# up to four complete routes in the primary -> fallback[1..3] chain.
 PROGRAM_PREDICTOR_MAX_CALLS: Final[int] = 2
 
 PROGRAM_ROUTE_MAX_CALLS: Final[int] = 4
 
-PROGRAM_JUDGMENT_MAX_CALLS: Final[int] = 8
+PROGRAM_MAX_FALLBACK_ROUTES: Final[int] = 3
+
+PROGRAM_JUDGMENT_MAX_CALLS: Final[int] = 16
 
 # These exact public DSPy failures may open the primary breaker.  Routing turns
 # the names into classes; execution identity addresses the same tuple so a

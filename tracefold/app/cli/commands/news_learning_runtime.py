@@ -56,10 +56,10 @@ def _learning_program_judges(
         judges[(arm_name, arm.bundle_sha)] = RoutedSemanticJudge(
             NativeNewsProgram(artifact),
             primary=_recorded_route(slots, artifact=artifact, route="primary"),
-            fallback=(
-                _recorded_route(slots, artifact=artifact, route="fallback")
+            fallbacks=(
+                (_recorded_route(slots, artifact=artifact, route="fallback"),)
                 if any(key[1] == "fallback" for key in slots)
-                else None
+                else ()
             ),
         )
     return judges

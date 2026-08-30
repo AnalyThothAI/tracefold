@@ -698,7 +698,7 @@ image as `<program_sha256>.json` and selected by the code-owned registry. Since
 than an advisory appended to a rendered stack, and the reviewed seed text lives
 in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
 code identity is computed rather than declared. The stable root is
-`2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+`56fd82f78038e74c85028b3c1c1386492efcd15e6373d1a7f56ab0038e9de63c`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's

@@ -1103,8 +1103,9 @@ def test_status_marks_an_invalid_dedicated_reader_endpoint_bad(monkeypatch: pyte
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["pipeline"]["reader_card_model"] is None
-    assert data["pipeline"]["reader_card_fallback_model"] is None
-    assert data["pipeline"]["reader_card_fallback_dedicated"] is False
+    assert data["pipeline"]["triage_fallback_models"] == []
+    assert data["pipeline"]["reader_card_fallback_models"] == []
+    assert data["pipeline"]["reader_card_fallback_dedicated"] == []
     assert data["health"]["model"] == {
         "level": "bad",
         "summary_zh": "Reader 模型不可用",

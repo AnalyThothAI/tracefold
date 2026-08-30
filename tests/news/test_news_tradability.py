@@ -47,6 +47,21 @@ def test_parenthesized_us_ticker_is_confident_without_a_grounded_asset() -> None
     assert identity.deletion_safe is False
 
 
+def test_model_primary_without_provider_grounding_is_searchable_but_never_deletion_safe() -> None:
+    identity = tradability_candidate_identity(
+        event={"leader_title": "Ethena Foundation links protocol revenue to ENA"},
+        verdict={
+            "headline_zh": "Ethena 基金会将协议收益与 ENA 挂钩",
+            "assets": [{"symbol": "ENA", "role": "primary"}],
+        },
+        symbols=[],
+    )
+
+    assert identity.candidates == ("ENA",)
+    assert identity.searchable is True
+    assert identity.deletion_safe is False
+
+
 def test_exchange_prefixed_us_ticker_is_confident_without_a_grounded_asset() -> None:
     candidates, confident = tradability_candidates(
         event={"leader_title": "Microsoft (NASDAQ: MSFT) updates guidance"},

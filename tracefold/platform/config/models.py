@@ -133,24 +133,32 @@ class _LlmEndpointConfig(BaseModel):
         return "llm_endpoint_configuration_incomplete"
 
 
-class LlmFallbackConfig(_LlmEndpointConfig):
-    """A second endpoint used only when the primary Program route fails (issue #65)."""
-
-    @property
-    def incomplete_error_code(self) -> str:
-        return "llm_fallback_configuration_incomplete"
-
-
 class LlmReaderCardConfig(_LlmEndpointConfig):
     """Optional primary endpoint dedicated to the ReaderCard Predictor."""
 
 
 class LlmReaderCardFallbackConfig(_LlmEndpointConfig):
-    """Optional ReaderCard endpoint for the all-or-none fallback route."""
+    """Optional ReaderCard endpoint dedicated to one complete fallback route."""
 
     @property
     def incomplete_error_code(self) -> str:
         return "llm_reader_card_fallback_configuration_incomplete"
+
+
+class LlmFallbackConfig(_LlmEndpointConfig):
+    """One complete fallback Program route, in operator-declared order."""
+
+    reader_card: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
+
+    @model_validator(mode="after")
+    def require_event_endpoint_for_reader(self) -> LlmFallbackConfig:
+        if self.reader_card.configured and not self.configured:
+            raise ValueError("llm_reader_card_fallback_without_event_fallback")
+        return self
+
+    @property
+    def incomplete_error_code(self) -> str:
+        return "llm_fallback_configuration_incomplete"
 
 
 class LlmCompilerReflectionConfig(_LlmEndpointConfig):
@@ -176,8 +184,7 @@ class LlmConfig(BaseModel):
     news_triage_model: str | None = None
     request: LlmRequestConfig = Field(default_factory=LlmRequestConfig)
     news_reader_card: LlmReaderCardConfig = Field(default_factory=LlmReaderCardConfig)
-    news_triage_fallback: LlmFallbackConfig = Field(default_factory=LlmFallbackConfig)
-    news_reader_card_fallback: LlmReaderCardFallbackConfig = Field(default_factory=LlmReaderCardFallbackConfig)
+    news_fallbacks: tuple[LlmFallbackConfig, ...] = Field(default_factory=tuple, max_length=3)
     news_compiler_reflection: LlmCompilerReflectionConfig = Field(default_factory=LlmCompilerReflectionConfig)
 
     @field_validator("api_key", "news_triage_model", mode="before")
@@ -199,12 +206,13 @@ class LlmConfig(BaseModel):
         configured = (self.api_key, self.base_url, self.news_triage_model)
         if any(configured) and not all(configured):
             raise ValueError("llm_direct_configuration_incomplete")
-        if self.news_triage_fallback.configured and not all(configured):
+        if self.news_fallbacks and not all(configured):
             raise ValueError("llm_fallback_without_primary")
         if self.news_reader_card.configured and not all(configured):
             raise ValueError("llm_reader_card_without_primary")
-        if self.news_reader_card_fallback.configured and not self.news_triage_fallback.configured:
-            raise ValueError("llm_reader_card_fallback_without_event_fallback")
+        route_ids = tuple((fallback.base_url, fallback.model) for fallback in self.news_fallbacks)
+        if len(route_ids) != len(set(route_ids)):
+            raise ValueError("llm_fallback_route_duplicate")
         return self
 
 
@@ -665,9 +673,9 @@ class NewsModelAvailability:
     triage_model: str | None
     reader_card_model: str | None
     reader_card_dedicated: bool
-    triage_fallback_model: str | None = None
-    reader_card_fallback_model: str | None = None
-    reader_card_fallback_dedicated: bool = False
+    triage_fallback_models: tuple[str, ...] = ()
+    reader_card_fallback_models: tuple[str, ...] = ()
+    reader_card_fallback_dedicated: tuple[bool, ...] = ()
 
     @property
     def program_configured(self) -> bool:
@@ -679,10 +687,16 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
     triage = direct and bool(settings.llm.news_triage_model)
     reader = settings.llm.news_reader_card
     reader_ok = triage and reader.configured and _is_http_base_url(reader.base_url)
-    fallback = settings.llm.news_triage_fallback
-    fallback_ok = triage and fallback.configured and _is_http_base_url(fallback.base_url)
-    reader_fallback = settings.llm.news_reader_card_fallback
-    reader_fallback_ok = fallback_ok and reader_fallback.configured and _is_http_base_url(reader_fallback.base_url)
+    fallback_routes = tuple(
+        fallback
+        for fallback in settings.llm.news_fallbacks
+        if (
+            triage
+            and fallback.configured
+            and _is_http_base_url(fallback.base_url)
+            and (not fallback.reader_card.configured or _is_http_base_url(fallback.reader_card.base_url))
+        )
+    )
     return NewsModelAvailability(
         triage_configured=triage,
         triage_model=settings.llm.news_triage_model if triage else None,
@@ -690,15 +704,23 @@ def news_model_availability(settings: Settings) -> NewsModelAvailability:
             reader.model if reader_ok else settings.llm.news_triage_model if triage and not reader.configured else None
         ),
         reader_card_dedicated=bool(reader_ok),
-        triage_fallback_model=fallback.model if fallback_ok else None,
-        reader_card_fallback_model=(
-            reader_fallback.model
-            if reader_fallback_ok
-            else fallback.model
-            if fallback_ok and not reader_fallback.configured
-            else None
+        triage_fallback_models=tuple(fallback.model for fallback in fallback_routes if fallback.model is not None),
+        reader_card_fallback_models=tuple(
+            cast(
+                str,
+                (
+                    fallback.reader_card.model
+                    if fallback.reader_card.configured and _is_http_base_url(fallback.reader_card.base_url)
+                    else fallback.model
+                ),
+            )
+            for fallback in fallback_routes
+            if fallback.model is not None
         ),
-        reader_card_fallback_dedicated=bool(reader_fallback_ok),
+        reader_card_fallback_dedicated=tuple(
+            bool(fallback.reader_card.configured and _is_http_base_url(fallback.reader_card.base_url))
+            for fallback in fallback_routes
+        ),
     )
 
 

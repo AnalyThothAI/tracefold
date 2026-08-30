@@ -477,6 +477,7 @@ class ProgramNormalizationTrace(_ExactContractModel):
 class ProgramCallTrace(_ExactContractModel):
     predictor: Literal["event_semantics", "reader_card"]
     route: Literal["primary", "fallback"]
+    route_slot: Literal["primary", "fallback_1", "fallback_2", "fallback_3"] | None = None
     attempt: int
     request_sha256: str
     input_sha256: str
@@ -582,13 +583,17 @@ class ProgramTrace(_ExactContractModel):
                 or call.runtime_binding_sha256 is None
             ):
                 raise ValueError("news_program_native_call_audit_incomplete")
+            if call.route_slot is None:
+                raise ValueError("news_program_native_call_route_slot_missing")
+            if call.route_slot is not None and ((call.route == "primary") != (call.route_slot == "primary")):
+                raise ValueError("news_program_native_call_route_slot_mismatch")
         return self
 
 
 class ProgramUsage(_ExactContractModel):
     wall_latency_ms: int = Field(ge=0)
-    call_count: int = Field(ge=0, le=8)
-    physical_call_count: int = Field(default=0, ge=0, le=8)
+    call_count: int = Field(ge=0, le=16)
+    physical_call_count: int = Field(default=0, ge=0, le=16)
     input_tokens: int = Field(ge=0)
     output_tokens: int = Field(ge=0)
     cached_tokens: int = Field(ge=0)

@@ -258,8 +258,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(news["models"]["triage_model"], "deepseek-chat")
         self.assertEqual(news["models"]["reader_card_model"], "deepseek-chat")
         self.assertIs(news["models"]["reader_card_dedicated"], False)
-        self.assertIsNone(news["models"]["reader_card_fallback_model"])
-        self.assertIs(news["models"]["reader_card_fallback_dedicated"], False)
+        self.assertEqual(news["models"]["triage_fallback_models"], [])
+        self.assertEqual(news["models"]["reader_card_fallback_models"], [])
+        self.assertEqual(news["models"]["reader_card_fallback_dedicated"], [])
         self.assertIsInstance(news["watchlist"], list)
         self.assertNotIn("hourly_cap", news["push"])
         self.assertEqual(
@@ -332,20 +333,7 @@ class CliTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual(
-            payload["llm"]["news_reader_card_fallback"],
-            {
-                "api_key": None,
-                "base_url": None,
-                "model": None,
-                "request": {
-                    "send_temperature": None,
-                    "temperature": 0,
-                    "structured_output": "auto",
-                    "extra_body": {},
-                },
-            },
-        )
+        self.assertEqual(payload["llm"]["news_fallbacks"], [])
         self.assertNotIn("opennews_strategy_ids", payload["news"])
         self.assertEqual(payload["news"]["broker"]["url"], "amqp://tracefold:tracefold@rabbitmq:5672/")
         self.assertEqual(settings.news.broker.name_prefix, "")

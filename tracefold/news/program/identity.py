@@ -37,6 +37,7 @@ from .runtime import (
     _UNTRUSTED_EVENT_OPEN,
     _VISIBLE_INPUT,
     PROGRAM_JUDGMENT_MAX_CALLS,
+    PROGRAM_MAX_FALLBACK_ROUTES,
     PROGRAM_PREDICTOR_MAX_CALLS,
     PROGRAM_PREDICTOR_MAX_TOKENS,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
@@ -389,7 +390,8 @@ def execution_envelope() -> dict[str, Any]:
         "assembly": _assembly_surface(),
         "route": {
             "model_binding_slots": sorted(_MODEL_BINDING_SLOTS),
-            "order": ["primary", "fallback"],
+            "order": ["primary", "fallback_1", "fallback_2", "fallback_3"],
+            "max_fallback_routes": PROGRAM_MAX_FALLBACK_ROUTES,
             "route_graph": ["event_semantics", "normalize_validate", "reader_card", "assemble"],
             "fallback_restart": "event_semantics",
             "deadline_seconds": PROGRAM_ROUTE_DEADLINE_SECONDS,
@@ -416,7 +418,7 @@ def execution_envelope() -> dict[str, Any]:
                 "output_truncated": "fallback_output_failure_no_format_retry",
                 "timeout_cancelled": "fallback_and_primary_breaker",
                 "late_completion": "fallback_and_primary_breaker",
-                "dual_route_failure": "SemanticJudgeError",
+                "all_routes_failed": "SemanticJudgeError",
             },
         },
     }

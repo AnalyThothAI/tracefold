@@ -196,7 +196,11 @@ def _judge(
             cards=fallback_cards,
         )
     return (
-        RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary, fallback=fallback),
+        RoutedSemanticJudge(
+            NativeNewsProgram(artifact),
+            primary=primary,
+            fallbacks=(fallback,) if fallback is not None else (),
+        ),
         primary_event,
         primary_card,
         fallback_event,
@@ -448,7 +452,7 @@ def test_the_primary_breaker_carries_across_cases_within_one_run() -> None:
     program = RoutedSemanticJudge(
         NativeNewsProgram(artifact),
         primary=primary_route,
-        fallback=fallback_route,
+        fallbacks=(fallback_route,),
     )
 
     report = run_baseline(cases, mode="runtime_live", artifact=artifact, semantic_judge=program)

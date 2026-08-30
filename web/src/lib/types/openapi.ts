@@ -1471,11 +1471,14 @@ export interface components {
             reader_card_dedicated: boolean;
             /**
              * Reader Card Fallback Dedicated
-             * @default false
+             * @default []
              */
-            reader_card_fallback_dedicated: boolean;
-            /** Reader Card Fallback Model */
-            reader_card_fallback_model?: string | null;
+            reader_card_fallback_dedicated: boolean[];
+            /**
+             * Reader Card Fallback Models
+             * @default []
+             */
+            reader_card_fallback_models: string[];
             /** Reader Card Model */
             reader_card_model?: string | null;
             /**
@@ -1556,8 +1559,11 @@ export interface components {
             triage_degraded_by_code_24h?: {
                 [key: string]: number;
             };
-            /** Triage Fallback Model */
-            triage_fallback_model?: string | null;
+            /**
+             * Triage Fallback Models
+             * @default []
+             */
+            triage_fallback_models: string[];
             /** Triage Model */
             triage_model?: string | null;
             /** Triage P50 Ms */

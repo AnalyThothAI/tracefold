@@ -656,6 +656,7 @@ def _program_call(
     return ProgramCallTrace(
         predictor=predictor,
         route="primary",
+        route_slot="primary",
         attempt=1,
         request_sha256=marker * 64,
         input_sha256=marker * 64,
@@ -801,7 +802,7 @@ def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_cal
             output_tokens=2,
             cached_tokens=1,
             provider_cost_microusd=11,
-        ).model_copy(update={"route": "fallback"}),
+        ).model_copy(update={"route": "fallback", "route_slot": "fallback_1"}),
         _program_call(
             predictor="reader_card",
             marker="2",
@@ -809,7 +810,7 @@ def test_failed_program_usage_ignores_synthetic_entry_before_costed_fallback_cal
             output_tokens=3,
             cached_tokens=0,
             provider_cost_microusd=13,
-        ).model_copy(update={"route": "fallback"}),
+        ).model_copy(update={"route": "fallback", "route_slot": "fallback_1"}),
     )
     program_trace = _program_trace(
         fallback_from="news_program_model_binding_unresolved",
@@ -1792,6 +1793,78 @@ def test_single_name_without_a_grounded_asset_is_edited_when_the_title_resolves_
         ReaderTradeTarget("METALIGHT", "bitget.perp", "METALIGHTUSDT", "METALIGHT", "USDT"),
     )
     assert sender.edited_presentations[0].market_movements[0].ticker == "METALIGHT"
+    assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
+
+
+def test_single_name_model_primary_is_verified_and_edited_when_provider_grounding_is_absent() -> None:
+    """A provider missing its coin tag must not strand an exact model primary at `unverified`."""
+
+    async def scenario() -> tuple[RecordingNews, RecordingEditableSender, list[str]]:
+        order: list[str] = []
+        news = _delivery_news(
+            event_card=_card(
+                leader_title="Ethena Foundation adjusts token mechanics to link protocol revenue to ENA",
+                grounded_assets=[],
+                storyline_key="asset:ENA",
+            ),
+            latest_verdict=lambda **_kwargs: {
+                "final_decision": "push",
+                "verdict": {
+                    "direction": "bullish",
+                    "magnitude": 2,
+                    "scope": "single_name",
+                    "novelty": "new_fact",
+                    "headline_zh": "Ethena 基金会调整代币机制，将协议收益与 ENA 挂钩以缓解解锁抛压",
+                    "assets": [{"symbol": "ENA", "role": "primary"}],
+                },
+            },
+        )
+        sender = RecordingEditableSender(order)
+        verifier = ScriptedTradabilityVerifier(
+            {
+                "state": "matched",
+                "candidates": ["ENA"],
+                "checked_venues": ["binance", "hyperliquid", "okx", "lighter", "bitget"],
+                "failed_venues": [],
+                "matches": [
+                    {
+                        "requested_symbol": "ENA",
+                        "venue_family": "binance",
+                        "venue": "binance.perp",
+                        "venue_symbol": "ENAUSDT",
+                        "price_symbol": "ENAUSDT",
+                        "base_symbol": "ENA",
+                        "quote_asset": "USDT",
+                        "instrument_class": "crypto",
+                    }
+                ],
+                "reason_zh": "已在 binance.perp 官方市场目录命中可交易合约。",
+            },
+            order,
+        )
+
+        async def fetch(_venue_symbol: str, targets_ms: Sequence[int]) -> Mapping[int, PricePoint]:
+            return {target: PricePoint(at_ms=target, price=Decimal("0.25"), basis="trade") for target in targets_ms}
+
+        consumer = _deliverer(
+            news,
+            FakeBus(),
+            sender=sender,
+            tradability_verifier=verifier,
+            price_fetcher_for=lambda venue: fetch if venue == "binance.perp" else None,
+        )
+        await consumer.handle(_message("verdict", {"event_id": "ev-strong", "kind": "first"}))
+        await consumer.close()
+        return news, sender, order
+
+    news, sender, order = asyncio.run(scenario())
+
+    assert order == ["prepare", "send", "market-search", "edit"]
+    assert "ENA" not in sender.cards[0]["elements"][0]["content"].splitlines()[-1]
+    assert "ENA" in sender.edited_cards[0]["elements"][0]["content"].splitlines()[-1]
+    assert sender.edited_presentations[0].trade_targets == (
+        ReaderTradeTarget("ENA", "binance.perp", "ENAUSDT", "ENA", "USDT"),
+    )
     assert news.kwargs_of("begin_delivery_edit")["card"] == sender.edited_cards[0]
 
 

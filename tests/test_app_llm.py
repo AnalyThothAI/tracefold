@@ -96,6 +96,20 @@ def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
     assert "extra_body" not in endpoint.model_kwargs
 
 
+def test_minimax_m27_uses_the_provider_supported_reasoning_split_request() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="MiniMax-M2.7")
+
+    assert endpoint.model_name == "openai/MiniMax-M2.7"
+    assert endpoint.temperature == 1.0
+    assert endpoint.structured_output == "prompt_json"
+    assert endpoint.model_kwargs == {
+        "top_p": 0.95,
+        "extra_body": {"reasoning_split": True},
+    }
+
+
 @pytest.mark.parametrize(
     ("model", "base_url", "expected_mode", "expected_format", "expected_extra"),
     [
@@ -119,6 +133,13 @@ def test_minimax_m3_can_explicitly_keep_thinking_enabled() -> None:
             "prompt_json",
             "prompt",
             {"thinking": {"type": "disabled"}},
+        ),
+        (
+            "MiniMax-M2.7",
+            "https://minimax.test/v1",
+            "prompt_json",
+            "prompt",
+            {"reasoning_split": True},
         ),
     ],
 )
@@ -304,8 +325,6 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
         "reader_card.primary": None,
-        "event_semantics.fallback": None,
-        "reader_card.fallback": None,
     }
     assert composition.slot_aliases() == {}
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
@@ -359,7 +378,7 @@ def test_compile_baseline_uses_native_module_without_production_availability_con
     assert compile_judge is not None
     assert compile_judge.route_deadline_seconds is None
     assert compile_judge.primary_breaker_enabled is False
-    assert compile_judge.fallback is None
+    assert compile_judge.fallbacks == ()
     assert runtime_judge is not None
     assert runtime_judge.route_deadline_seconds == 20
     assert runtime_judge.primary_breaker_enabled is True
@@ -425,11 +444,13 @@ def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
                 "api_key": "primary-key",
                 "base_url": "https://primary.test/v1",
                 "news_triage_model": "primary-model",
-                "news_triage_fallback": {
-                    "api_key": "fallback-key",
-                    "base_url": "https://fallback.test/v1",
-                    "model": "fallback-model",
-                },
+                "news_fallbacks": [
+                    {
+                        "api_key": "fallback-key",
+                        "base_url": "https://fallback.test/v1",
+                        "model": "fallback-model",
+                    }
+                ],
             }
         }
     )
@@ -440,10 +461,10 @@ def test_active_arm_uses_the_composed_secret_free_runtime_bindings() -> None:
 
     assert arm.runtime_model_bindings_sha256 == composition.runtime_model_bindings_sha256
     assert slots["event_semantics.primary"] == slots["reader_card.primary"]
-    assert slots["event_semantics.fallback"] == slots["reader_card.fallback"]
+    assert slots["event_semantics.fallback_1"] == slots["reader_card.fallback_1"]
     assert composition.slot_aliases() == {
         "reader_card.primary": "event_semantics.primary",
-        "reader_card.fallback": "event_semantics.fallback",
+        "reader_card.fallback_1": "event_semantics.fallback_1",
     }
     assert "primary-key" not in repr(slots) and "fallback-key" not in repr(slots)
     assert "primary.test" not in repr(slots) and "fallback.test" not in repr(slots)
@@ -530,6 +551,59 @@ def test_runtime_binding_identity_canonicalizes_equivalent_endpoint_urls() -> No
     assert explicit_default_port.runtime_model_bindings_sha256 == canonical.runtime_model_bindings_sha256
 
 
+def test_runtime_composition_preserves_all_ordered_fallback_routes_and_indexed_slots() -> None:
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "minimax-key",
+                "base_url": "https://api.minimaxi.com/v1",
+                "news_triage_model": "MiniMax-M3",
+                "news_fallbacks": [
+                    {
+                        "api_key": "minimax-key",
+                        "base_url": "https://api.minimaxi.com/v1",
+                        "model": "MiniMax-M2.7",
+                    },
+                    {
+                        "api_key": "deepseek-key",
+                        "base_url": "https://api.deepseek.com",
+                        "model": "deepseek-v4-pro",
+                    },
+                    {
+                        "api_key": "deepseek-key",
+                        "base_url": "https://api.deepseek.com",
+                        "model": "deepseek-v4-flash",
+                    },
+                ],
+            }
+        }
+    )
+
+    composition = learning_runtime.compose_news_program_runtime(settings)
+
+    assert [route.event_semantics.model_name for route in composition.fallbacks] == [
+        "openai/MiniMax-M2.7",
+        "openai/deepseek-v4-pro",
+        "openai/deepseek-v4-flash",
+    ]
+    assert set(composition.secret_free_slot_identities()) == {
+        "event_semantics.primary",
+        "reader_card.primary",
+        "event_semantics.fallback_1",
+        "reader_card.fallback_1",
+        "event_semantics.fallback_2",
+        "reader_card.fallback_2",
+        "event_semantics.fallback_3",
+        "reader_card.fallback_3",
+    }
+    assert composition.slot_aliases() == {
+        "reader_card.primary": "event_semantics.primary",
+        "reader_card.fallback_1": "event_semantics.fallback_1",
+        "reader_card.fallback_2": "event_semantics.fallback_2",
+        "reader_card.fallback_3": "event_semantics.fallback_3",
+    }
+
+
 def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
     settings = Settings.model_validate(
         {
@@ -537,16 +611,18 @@ def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
                 "api_key": "triage-key",
                 "base_url": "https://triage.test/v1",
                 "news_triage_model": "triage-model",
-                "news_triage_fallback": {
-                    "api_key": "event-fallback-key",
-                    "base_url": "https://event-fallback.test/v1",
-                    "model": "event-fallback-model",
-                },
-                "news_reader_card_fallback": {
-                    "api_key": "reader-fallback-key",
-                    "base_url": "https://reader-fallback.test/v1",
-                    "model": "reader-fallback-model",
-                },
+                "news_fallbacks": [
+                    {
+                        "api_key": "event-fallback-key",
+                        "base_url": "https://event-fallback.test/v1",
+                        "model": "event-fallback-model",
+                        "reader_card": {
+                            "api_key": "reader-fallback-key",
+                            "base_url": "https://reader-fallback.test/v1",
+                            "model": "reader-fallback-model",
+                        },
+                    }
+                ],
             }
         }
     )
@@ -554,7 +630,7 @@ def test_dedicated_reader_fallback_has_its_own_explicit_slot_identity() -> None:
     composition = learning_runtime.compose_news_program_runtime(settings)
     slots = composition.secret_free_slot_identities()
 
-    assert slots["event_semantics.fallback"] != slots["reader_card.fallback"]
+    assert slots["event_semantics.fallback_1"] != slots["reader_card.fallback_1"]
     assert composition.slot_aliases() == {"reader_card.primary": "event_semantics.primary"}
     rendered = repr(slots)
     assert "event-fallback.test" not in rendered
@@ -570,16 +646,18 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
                 "api_key": "triage-key",
                 "base_url": "https://triage.test/v1",
                 "news_triage_model": "triage-model",
-                "news_triage_fallback": {
-                    "api_key": "event-fallback-key",
-                    "base_url": "https://event-fallback.test/v1",
-                    "model": "event-fallback-model",
-                },
-                "news_reader_card_fallback": {
-                    "api_key": "reader-fallback-key",
-                    "base_url": "ftp://reader-fallback.test/v1",
-                    "model": "reader-fallback-model",
-                },
+                "news_fallbacks": [
+                    {
+                        "api_key": "event-fallback-key",
+                        "base_url": "https://event-fallback.test/v1",
+                        "model": "event-fallback-model",
+                        "reader_card": {
+                            "api_key": "reader-fallback-key",
+                            "base_url": "ftp://reader-fallback.test/v1",
+                            "model": "reader-fallback-model",
+                        },
+                    }
+                ],
             }
         }
     )
@@ -587,9 +665,8 @@ def test_invalid_requested_reader_fallback_disables_the_whole_fallback_route() -
     composition = learning_runtime.compose_news_program_runtime(settings)
 
     assert composition.program_configured is True
-    assert composition.event_semantics_fallback is not None
-    assert composition.reader_card_fallback is None
-    assert composition.secret_free_slot_identities()["reader_card.fallback"] is None
+    assert composition.fallbacks == ()
+    assert "reader_card.fallback_1" not in composition.secret_free_slot_identities()
 
 
 def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:

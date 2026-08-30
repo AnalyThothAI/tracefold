@@ -86,8 +86,9 @@ def _audited(
     artifact: ProgramStrategyArtifactV1,
     predictor: str,
     route: str,
+    model_label: str | None = None,
 ) -> AuditedConfiguredLM:
-    model = f"scripted/{route}-{predictor}"
+    model = model_label or f"scripted/{route}-{predictor}"
     delegate = ScriptedLM(steps, model=model)
     binding = getattr(getattr(artifact, predictor).model_bindings, route)
     return AuditedConfiguredLM(
@@ -106,10 +107,23 @@ def _route(
     route: str,
     semantics: list[Any],
     cards: list[Any],
+    model_label: str | None = None,
 ) -> RouteLMs:
     return RouteLMs(
-        event_semantics=_audited(semantics, artifact=artifact, predictor="event_semantics", route=route),
-        reader_card=_audited(cards, artifact=artifact, predictor="reader_card", route=route),
+        event_semantics=_audited(
+            semantics,
+            artifact=artifact,
+            predictor="event_semantics",
+            route=route,
+            model_label=model_label,
+        ),
+        reader_card=_audited(
+            cards,
+            artifact=artifact,
+            predictor="reader_card",
+            route=route,
+            model_label=model_label,
+        ),
     )
 
 
@@ -262,7 +276,7 @@ def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None
             semantics=[dspy.LMServerError("unavailable", code="server")],
             cards=[],
         ),
-        fallback=_route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()]),
+        fallbacks=(_route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()]),),
     )
 
     judgment = asyncio.run(judge.judge(_context()))
@@ -273,6 +287,61 @@ def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None
         ("fallback", "reader_card"),
     ]
     assert judgment.trace.calls[0].terminal_disposition == "provider_error"
+    assert judgment.trace.answering_route == "fallback"
+    assert judgment.fallback_from == "news_program_lm_server"
+
+
+def test_three_fallback_routes_run_in_order_and_stop_after_the_first_success() -> None:
+    artifact = build_code_owned_program_artifact()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(
+            artifact,
+            route="primary",
+            semantics=[dspy.LMServerError("m3 unavailable", code="server")],
+            cards=[],
+            model_label="scripted/MiniMax-M3",
+        ),
+        fallbacks=(
+            _route(
+                artifact,
+                route="fallback",
+                semantics=[dspy.LMServerError("m2.7 unavailable", code="server")],
+                cards=[],
+                model_label="scripted/MiniMax-M2.7",
+            ),
+            _route(
+                artifact,
+                route="fallback",
+                semantics=[_semantics()],
+                cards=[_card()],
+                model_label="scripted/deepseek-v4-pro",
+            ),
+            _route(
+                artifact,
+                route="fallback",
+                semantics=[_semantics()],
+                cards=[_card()],
+                model_label="scripted/deepseek-v4-flash",
+            ),
+        ),
+    )
+
+    judgment = asyncio.run(judge.judge(_context()))
+
+    assert [call.runtime_model for call in judgment.trace.calls] == [
+        "scripted/MiniMax-M3",
+        "scripted/MiniMax-M2.7",
+        "scripted/deepseek-v4-pro",
+        "scripted/deepseek-v4-pro",
+    ]
+    assert [call.route_slot for call in judgment.trace.calls] == [
+        "primary",
+        "fallback_1",
+        "fallback_2",
+        "fallback_2",
+    ]
+    assert judgment.answering_model == "scripted/deepseek-v4-pro"
     assert judgment.trace.answering_route == "fallback"
     assert judgment.fallback_from == "news_program_lm_server"
 
@@ -331,11 +400,13 @@ def test_dual_provider_failure_returns_one_complete_partial_trace() -> None:
             semantics=[dspy.LMRateLimitError("busy", code="rate_limit")],
             cards=[],
         ),
-        fallback=_route(
-            artifact,
-            route="fallback",
-            semantics=[dspy.LMServerError("down", code="server")],
-            cards=[],
+        fallbacks=(
+            _route(
+                artifact,
+                route="fallback",
+                semantics=[dspy.LMServerError("down", code="server")],
+                cards=[],
+            ),
         ),
     )
 
@@ -348,6 +419,33 @@ def test_dual_provider_failure_returns_one_complete_partial_trace() -> None:
     assert error.attempts == 2
     assert error.partial_trace is not None
     assert [call.route for call in error.partial_trace.calls] == ["primary", "fallback"]
+
+
+def test_four_exhausted_routes_publish_all_sixteen_physical_attempts() -> None:
+    artifact = build_code_owned_program_artifact()
+
+    def exhausted(route: str) -> RouteLMs:
+        return _route(
+            artifact,
+            route=route,
+            semantics=["not-json", _semantics()],
+            cards=["not-json", "still-not-json"],
+        )
+
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=exhausted("primary"),
+        fallbacks=(exhausted("fallback"), exhausted("fallback"), exhausted("fallback")),
+    )
+
+    with pytest.raises(SemanticJudgeError) as caught:
+        asyncio.run(judge.judge(_context()))
+
+    error = caught.value
+    assert error.attempts == 16
+    assert error.partial_trace is not None
+    assert len(error.partial_trace.calls) == 16
+    assert sum(call.physical_provider_call for call in error.partial_trace.calls) == 16
 
 
 def test_primary_breaker_opens_after_three_retryable_failures_and_skips_a_physical_call() -> None:
@@ -364,7 +462,7 @@ def test_primary_breaker_opens_after_three_retryable_failures_and_skips_a_physic
         semantics=[_semantics() for _ in range(4)],
         cards=[_card() for _ in range(4)],
     )
-    judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary, fallback=fallback)
+    judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary, fallbacks=(fallback,))
 
     judgments = [asyncio.run(judge.judge(_context())) for _ in range(4)]
 

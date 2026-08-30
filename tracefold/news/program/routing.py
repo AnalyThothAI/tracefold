@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+from collections.abc import Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from typing import Literal
@@ -31,6 +32,7 @@ from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, LMOutputTrunca
 from .module import NativeNewsProgram, NativeProgramResult
 from .runtime import (
     PROGRAM_JUDGMENT_MAX_CALLS,
+    PROGRAM_MAX_FALLBACK_ROUTES,
     PROGRAM_PREDICTOR_MAX_CALLS,
     PROGRAM_PRIMARY_BREAKER_FAILURES,
     PROGRAM_PRIMARY_BREAKER_OPEN_SECONDS,
@@ -41,6 +43,7 @@ from .runtime import (
 )
 
 RouteName = Literal["primary", "fallback"]
+RouteSlot = Literal["primary", "fallback_1", "fallback_2", "fallback_3"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +91,7 @@ class RoutedSemanticJudge:
         program: NativeNewsProgram,
         *,
         primary: RouteLMs,
-        fallback: RouteLMs | None = None,
+        fallbacks: Sequence[RouteLMs] = (),
         route_deadline_seconds: float | None = PROGRAM_ROUTE_DEADLINE_SECONDS,
         primary_breaker_enabled: bool = True,
     ) -> None:
@@ -99,11 +102,13 @@ class RoutedSemanticJudge:
         self.program = program
         self.artifact = program.artifact
         self.primary = primary
-        self.fallback = fallback
+        self.fallbacks = tuple(fallbacks)
+        if len(self.fallbacks) > PROGRAM_MAX_FALLBACK_ROUTES:
+            raise ValueError("news_program_fallback_route_count_exceeded")
         self.route_deadline_seconds = route_deadline_seconds
         self.primary_breaker_enabled = primary_breaker_enabled
         self._validate_route(primary, "primary")
-        if fallback is not None:
+        for fallback in self.fallbacks:
             self._validate_route(fallback, "fallback")
         self._primary_failures = 0
         self._primary_open_until = 0.0
@@ -147,6 +152,7 @@ class RoutedSemanticJudge:
                 answer = await self._run_route(
                     "primary",
                     self.primary,
+                    route_slot="primary",
                     context=typed,
                     context_sha=context_sha,
                     ledger=ledger,
@@ -169,38 +175,43 @@ class RoutedSemanticJudge:
                     started=started,
                 )
 
-        if self.fallback is None:
+        if not self.fallbacks:
             if primary_failure is None:  # pragma: no cover - guarded by the primary return above
                 raise RuntimeError("news_program_primary_failure_missing")
             raise self._public_error(primary_failure, calls, context_sha=context_sha)
-        try:
-            answer = await self._run_route(
-                "fallback",
-                self.fallback,
-                context=typed,
-                context_sha=context_sha,
-                ledger=ledger,
-            )
-        except _RouteFailure as fallback_failure:
-            calls.extend(fallback_failure.calls)
-            if primary_failure is None:  # pragma: no cover - guarded by the primary return above
-                raise RuntimeError("news_program_primary_failure_missing") from fallback_failure
-            raise self._public_error(
-                fallback_failure,
-                calls,
-                context_sha=context_sha,
-                primary_failure=primary_failure,
-            ) from None
-        calls.extend(answer.calls)
         if primary_failure is None:  # pragma: no cover - guarded by the primary return above
             raise RuntimeError("news_program_primary_failure_missing")
-        return self._judgment(
-            answer.result,
+        fallback_failure: _RouteFailure | None = None
+        for index, fallback in enumerate(self.fallbacks, start=1):
+            try:
+                answer = await self._run_route(
+                    "fallback",
+                    fallback,
+                    route_slot=f"fallback_{index}",  # type: ignore[arg-type]
+                    context=typed,
+                    context_sha=context_sha,
+                    ledger=ledger,
+                )
+            except _RouteFailure as exc:
+                fallback_failure = exc
+                calls.extend(exc.calls)
+                continue
+            calls.extend(answer.calls)
+            return self._judgment(
+                answer.result,
+                calls,
+                context_sha=context_sha,
+                route="fallback",
+                fallback_from=primary_failure.code,
+                started=started,
+            )
+        if fallback_failure is None:  # pragma: no cover - non-empty tuple and loop above
+            raise RuntimeError("news_program_fallback_failure_missing")
+        raise self._public_error(
+            fallback_failure,
             calls,
             context_sha=context_sha,
-            route="fallback",
-            fallback_from=primary_failure.code,
-            started=started,
+            primary_failure=primary_failure,
         )
 
     async def _run_route(
@@ -208,6 +219,7 @@ class RoutedSemanticJudge:
         route: RouteName,
         lms: RouteLMs,
         *,
+        route_slot: RouteSlot,
         context: TriageContext,
         context_sha: str,
         ledger: LMCallLedger,
@@ -233,7 +245,7 @@ class RoutedSemanticJudge:
                     if result.instruction_rejected is not None:
                         raise ValueError(result.instruction_rejected)
         except TimeoutError as exc:
-            calls = self._route_calls(ledger, start_index, deadline=True)
+            calls = self._route_calls(ledger, start_index, route_slot=route_slot, deadline=True)
             raise _RouteFailure(
                 "news_program_route_deadline",
                 retryable=True,
@@ -254,7 +266,7 @@ class RoutedSemanticJudge:
             ):
                 with suppress(dspy.LMError):
                     ledger.domain_failure(code)
-            calls = self._route_calls(ledger, start_index)
+            calls = self._route_calls(ledger, start_index, route_slot=route_slot)
             failure = self._classify_failure(exc, code=code, calls=calls)
             raise failure from exc
 
@@ -262,7 +274,7 @@ class RoutedSemanticJudge:
             late = getattr(ledger, "late_completion", None)
             if callable(late):
                 late("news_program_route_deadline")
-            calls = self._route_calls(ledger, start_index, deadline=True)
+            calls = self._route_calls(ledger, start_index, route_slot=route_slot, deadline=True)
             raise _RouteFailure(
                 "news_program_route_deadline",
                 retryable=True,
@@ -272,7 +284,7 @@ class RoutedSemanticJudge:
                 failing_predictor=calls[-1].predictor if calls else "event_semantics",
             )
 
-        successful_calls = list(self._route_calls(ledger, start_index))
+        successful_calls = list(self._route_calls(ledger, start_index, route_slot=route_slot))
         if len(successful_calls) > PROGRAM_ROUTE_MAX_CALLS:
             raise _RouteFailure(
                 "news_program_route_call_budget_exhausted",
@@ -318,9 +330,13 @@ class RoutedSemanticJudge:
         ledger: LMCallLedger,
         start_index: int,
         *,
+        route_slot: RouteSlot,
         deadline: bool = False,
     ) -> tuple[ProgramCallTrace, ...]:
-        calls = [receipt.to_program_call_trace() for receipt in ledger.receipts[start_index:]]
+        calls = [
+            call.model_copy(update={"route_slot": route_slot}) if call.physical_provider_call else call
+            for call in (receipt.to_program_call_trace() for receipt in ledger.receipts[start_index:])
+        ]
         if deadline and calls:
             calls[-1] = calls[-1].model_copy(update={"error_code": "news_program_route_deadline"})
         return tuple(calls)

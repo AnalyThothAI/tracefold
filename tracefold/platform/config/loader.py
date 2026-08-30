@@ -78,24 +78,7 @@ llm:
       temperature: 0
       structured_output: "auto"
       extra_body: {{}}
-  news_triage_fallback:
-    api_key:
-    base_url:
-    model:
-    request:
-      send_temperature:
-      temperature: 0
-      structured_output: "auto"
-      extra_body: {{}}
-  news_reader_card_fallback:
-    api_key:
-    base_url:
-    model:
-    request:
-      send_temperature:
-      temperature: 0
-      structured_output: "auto"
-      extra_body: {{}}
+  news_fallbacks: []
 
 news:
   enabled: true

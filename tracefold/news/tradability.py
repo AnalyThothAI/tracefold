@@ -114,10 +114,12 @@ def tradability_candidate_identity(
 ) -> TradabilityCandidateIdentity:
     """Separate catalogue-search confidence from permission to delete a delivered message.
 
-    A non-numeric ticker is already an exchange-style identifier. A bare number is not: it becomes deletion-safe
-    only when the source or judged headline carries an explicit market suffix such as ``02605.HK``. A bare
-    parenthesized acronym such as ``Apple (AAPL)`` is useful for a catalogue search, but cannot by itself authorize
-    deletion because ordinary names such as ``OpenAI (GPT)`` have the same text shape.
+    A non-numeric provider-grounded ticker is already an exchange-style identifier. When provider grounding is
+    absent, the model's primary asset is a search seed only: an official catalogue match may promote it into the
+    reader card, but its absence can never authorize deletion. A bare number is ambiguous unless the source or
+    judged headline carries an explicit market suffix such as ``02605.HK``. A bare parenthesized acronym such as
+    ``Apple (AAPL)`` is useful for a catalogue search, but cannot by itself authorize deletion because ordinary
+    names such as ``OpenAI (GPT)`` have the same text shape.
     """
 
     texts = (
@@ -139,6 +141,16 @@ def tradability_candidate_identity(
         if not symbol.isdigit():
             searchable = True
             deletion_safe = True
+    if not requested:
+        model_primaries = [
+            str(asset.get("symbol") or "").strip().upper().removeprefix("XYZ-")
+            for asset in (verdict.get("assets") or ())
+            if isinstance(asset, Mapping) and asset.get("role") == "primary"
+        ]
+        for symbol in model_primaries:
+            add(symbol)
+            if symbol and not symbol.isdigit() and _SYMBOL_RE.fullmatch(symbol):
+                searchable = True
     for text in texts:
         for match in _EXCHANGE_TICKER_RE.finditer(text):
             add(match.group("ticker"))

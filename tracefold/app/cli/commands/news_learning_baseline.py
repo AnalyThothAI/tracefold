@@ -323,8 +323,12 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
         # The judge belongs to the metric, not the Program, so it gets its own endpoint rather than the task
         # route: the compiler reflection endpoint when configured, otherwise the Triage fallback.
         reflection = getattr(settings.llm, "news_compiler_reflection", None)
-        source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
-        if not source.configured:
+        source = (
+            reflection
+            if reflection is not None and reflection.configured
+            else next(iter(settings.llm.news_fallbacks), None)
+        )
+        if source is None or not source.configured:
             raise ValueError("news_program_baseline_judge_endpoint_not_configured")
         if dataset_sha and source is not reflection:
             # The trusted compile judges on the compiler reflection route. A dataset-bound baseline that
@@ -418,8 +422,12 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch, build_drafter_lm
 
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
-    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
-    if not source.configured:
+    source = (
+        reflection
+        if reflection is not None and reflection.configured
+        else next(iter(settings.llm.news_fallbacks), None)
+    )
+    if source is None or not source.configured:
         raise ValueError("news_review_drafter_endpoint_not_configured")
 
     principal = Principal(subject="operator")

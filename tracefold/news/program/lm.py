@@ -514,6 +514,8 @@ def _safe_extra_body(value: Any) -> dict[str, Any]:
         template = dict(raw["chat_template_kwargs"])
         if set(template) == {"enable_thinking"} and isinstance(template["enable_thinking"], bool):
             return {"chat_template_kwargs": {"enable_thinking": template["enable_thinking"]}}
+    if set(raw) == {"reasoning_split"} and isinstance(raw["reasoning_split"], bool):
+        return {"reasoning_split": raw["reasoning_split"]}
     raise dspy.LMConfigurationError("news_program_lm_extra_body_unsupported")
 
 

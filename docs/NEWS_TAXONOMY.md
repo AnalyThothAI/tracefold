@@ -15,7 +15,7 @@ Schema deployment is not evidence that the classifier passed those gates.
 - IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
 - Production Program: `news_semantic_program_v8`, Program SHA
-  `2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+  `56fd82f78038e74c85028b3c1c1386492efcd15e6373d1a7f56ab0038e9de63c`.
 - Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
   `assertion_status`. Code derives `source_authority` from structured source and

@@ -15,13 +15,13 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "4d2080ec2b51f230a14509aad493aebdbaadd60329f841fa418134fc3b687702"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "61eebb0e940281a61a6a57f5793063d54ad796cac64aa894a9dcf85582f877bb"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9ac97cfde86426cc6be7c96d23e48d8ccd963b16790fe61ecea2c098af235f4e"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "fc1eef4204774b03d1e2b87b5d63af58857c3c2e421bbbbf337ea3509e639f0e"
 
-NEWS_STABLE_PROGRAM_SHA256 = "2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71"
+NEWS_STABLE_PROGRAM_SHA256 = "56fd82f78038e74c85028b3c1c1386492efcd15e6373d1a7f56ab0038e9de63c"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -190,6 +190,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
     assert set(envelope["route"]) == {
         "model_binding_slots",
         "order",
+        "max_fallback_routes",
         "route_graph",
         "fallback_restart",
         "deadline_seconds",
@@ -215,6 +216,7 @@ def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_
     "mutate",
     [
         pytest.param(lambda e: e["route"].__setitem__("deadline_seconds", 999), id="route_deadline"),
+        pytest.param(lambda e: e["route"].__setitem__("max_fallback_routes", 999), id="fallback_route_limit"),
         pytest.param(lambda e: e["route"]["primary_breaker"].__setitem__("failures", 999), id="breaker"),
         pytest.param(
             lambda e: e["capabilities"]["event_semantics.fallback"]["json_object"].__setitem__(

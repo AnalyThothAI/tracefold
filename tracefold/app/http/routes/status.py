@@ -68,8 +68,8 @@ def get_news_status(request: Request) -> Response:
         "triage_model": models.triage_model,
         "reader_card_model": models.reader_card_model,
         "reader_card_dedicated": models.reader_card_dedicated,
-        "triage_fallback_model": models.triage_fallback_model,
-        "reader_card_fallback_model": models.reader_card_fallback_model,
+        "triage_fallback_models": models.triage_fallback_models,
+        "reader_card_fallback_models": models.reader_card_fallback_models,
         "reader_card_fallback_dedicated": models.reader_card_fallback_dedicated,
     }
     delivery = {

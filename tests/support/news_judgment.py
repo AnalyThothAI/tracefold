@@ -99,6 +99,7 @@ def semantic_judgment(
         ProgramCallTrace(
             predictor=predictor,
             route="primary",
+            route_slot="primary",
             attempt=1,
             request_sha256="0" * 64,
             input_sha256="0" * 64,

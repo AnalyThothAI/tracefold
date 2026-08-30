@@ -3123,20 +3123,20 @@
             "type": "boolean"
           },
           "reader_card_fallback_dedicated": {
-            "default": false,
+            "default": [],
+            "items": {
+              "type": "boolean"
+            },
             "title": "Reader Card Fallback Dedicated",
-            "type": "boolean"
+            "type": "array"
           },
-          "reader_card_fallback_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reader Card Fallback Model"
+          "reader_card_fallback_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reader Card Fallback Models",
+            "type": "array"
           },
           "reader_card_model": {
             "anyOf": [
@@ -3238,16 +3238,13 @@
             "title": "Triage Degraded By Code 24H",
             "type": "object"
           },
-          "triage_fallback_model": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Triage Fallback Model"
+          "triage_fallback_models": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Triage Fallback Models",
+            "type": "array"
           },
           "triage_model": {
             "anyOf": [

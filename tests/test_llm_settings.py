@@ -20,14 +20,14 @@ def test_partial_fallback_triple_fails_validation() -> None:
             api_key="k",
             base_url="http://192.168.0.2:8080/v1",
             news_triage_model="qwen3.8-27b",
-            news_triage_fallback={"api_key": "d", "base_url": "https://api.deepseek.com/v1"},
+            news_fallbacks=[{"api_key": "d", "base_url": "https://api.deepseek.com/v1"}],
         )
 
 
 def test_fallback_without_primary_fails_validation() -> None:
     with pytest.raises(ValidationError, match="llm_fallback_without_primary"):
         LlmConfig(
-            news_triage_fallback={"api_key": "d", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"}
+            news_fallbacks=[{"api_key": "d", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"}]
         )
 
 
@@ -36,24 +36,59 @@ def test_availability_reports_primary_and_fallback_models() -> None:
         api_key="k",
         base_url="http://192.168.0.2:8080/v1/",
         news_triage_model="qwen3.8-27b",
-        news_triage_fallback={"api_key": "d", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
+        news_fallbacks=[{"api_key": "d", "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"}],
     )
     models = _availability(llm)
     assert models.triage_configured and models.triage_model == "qwen3.8-27b"
-    assert models.triage_fallback_model == "deepseek-chat"
-    assert models.reader_card_fallback_model == "deepseek-chat"
-    assert models.reader_card_fallback_dedicated is False
+    assert models.triage_fallback_models == ("deepseek-chat",)
+    assert models.reader_card_fallback_models == ("deepseek-chat",)
+    assert models.reader_card_fallback_dedicated == (False,)
     assert llm.base_url == "http://192.168.0.2:8080/v1"
+
+
+def test_availability_preserves_the_operator_order_of_three_complete_fallback_routes() -> None:
+    llm = LlmConfig(
+        api_key="minimax-key",
+        base_url="https://api.minimaxi.com/v1",
+        news_triage_model="MiniMax-M3",
+        news_fallbacks=[
+            {
+                "api_key": "minimax-key",
+                "base_url": "https://api.minimaxi.com/v1",
+                "model": "MiniMax-M2.7",
+            },
+            {
+                "api_key": "deepseek-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-pro",
+            },
+            {
+                "api_key": "deepseek-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-v4-flash",
+            },
+        ],
+    )
+
+    models = _availability(llm)
+
+    assert models.triage_fallback_models == (
+        "MiniMax-M2.7",
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    )
+    assert models.reader_card_fallback_models == models.triage_fallback_models
+    assert models.reader_card_fallback_dedicated == (False, False, False)
 
 
 def test_availability_without_fallback_is_unchanged() -> None:
     llm = LlmConfig(api_key="k", base_url="https://api.deepseek.com/v1", news_triage_model="deepseek-chat")
     models = _availability(llm)
-    assert models.triage_model == "deepseek-chat" and models.triage_fallback_model is None
+    assert models.triage_model == "deepseek-chat" and models.triage_fallback_models == ()
     assert models.reader_card_model == "deepseek-chat"
     assert models.reader_card_dedicated is False
     assert models.program_configured is True
-    assert LlmConfig().news_triage_fallback.configured is False
+    assert LlmConfig().news_fallbacks == ()
 
 
 def test_the_compiler_tariff_key_is_gone_rather_than_ignored() -> None:
@@ -74,11 +109,15 @@ def test_reader_fallback_requires_the_event_fallback_route() -> None:
             api_key="k",
             base_url="https://triage.test/v1",
             news_triage_model="triage-model",
-            news_reader_card_fallback={
-                "api_key": "reader-key",
-                "base_url": "https://reader-fallback.test/v1",
-                "model": "reader-fallback-model",
-            },
+            news_fallbacks=[
+                {
+                    "reader_card": {
+                        "api_key": "reader-key",
+                        "base_url": "https://reader-fallback.test/v1",
+                        "model": "reader-fallback-model",
+                    }
+                }
+            ],
         )
 
 
@@ -87,23 +126,25 @@ def test_availability_reports_dedicated_reader_fallback_endpoint() -> None:
         api_key="k",
         base_url="https://triage.test/v1",
         news_triage_model="triage-model",
-        news_triage_fallback={
-            "api_key": "event-fallback-key",
-            "base_url": "https://event-fallback.test/v1",
-            "model": "event-fallback-model",
-        },
-        news_reader_card_fallback={
-            "api_key": "reader-fallback-key",
-            "base_url": "https://reader-fallback.test/v1",
-            "model": "reader-fallback-model",
-        },
+        news_fallbacks=[
+            {
+                "api_key": "event-fallback-key",
+                "base_url": "https://event-fallback.test/v1",
+                "model": "event-fallback-model",
+                "reader_card": {
+                    "api_key": "reader-fallback-key",
+                    "base_url": "https://reader-fallback.test/v1",
+                    "model": "reader-fallback-model",
+                },
+            }
+        ],
     )
 
     models = _availability(llm)
 
-    assert models.triage_fallback_model == "event-fallback-model"
-    assert models.reader_card_fallback_model == "reader-fallback-model"
-    assert models.reader_card_fallback_dedicated is True
+    assert models.triage_fallback_models == ("event-fallback-model",)
+    assert models.reader_card_fallback_models == ("reader-fallback-model",)
+    assert models.reader_card_fallback_dedicated == (True,)
 
 
 def test_partial_reader_card_endpoint_fails_validation() -> None:
