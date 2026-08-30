@@ -39,6 +39,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.release.candidate",
         "tracefold.news.program.resources.candidates",
         "tracefold.news.program.artifact",
+        "tracefold.news.program.artifact_tool",
         "tracefold.news.program.lm",
         "tracefold.news.program.module",
         "tracefold.news.program.routing",
@@ -357,6 +358,16 @@ def test_business_dependency_dag_is_one_way() -> None:
             if unexpected:
                 violations[path.relative_to(ROOT).as_posix()] = unexpected
     assert violations == {}
+
+
+def test_business_packages_do_not_own_argparse_cli_semantics() -> None:
+    violations = [
+        path.relative_to(ROOT).as_posix()
+        for package in BUSINESS_PACKAGES
+        for path in _python_files(SRC / package)
+        if "argparse" in _imports(path)
+    ]
+    assert violations == []
 
 
 def test_news_search_planner_is_consumed_only_by_the_news_read_path() -> None:

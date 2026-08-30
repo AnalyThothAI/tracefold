@@ -6,7 +6,6 @@ profile.
 
 from __future__ import annotations
 
-import argparse
 import importlib.resources
 import json
 import os
@@ -93,16 +92,6 @@ def regenerate_stable_program_artifact(*, programs_root: Path | None = None) -> 
             raise ValueError("news_program_previous_image_identity_invalid")
         old_image.unlink()
     return artifact.program_sha256
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser()
-    parser.parse_args(argv)
-    print(regenerate_stable_program_artifact())
-
-
-if __name__ == "__main__":
-    main()
 
 
 __all__ = ["regenerate_stable_program_artifact"]
