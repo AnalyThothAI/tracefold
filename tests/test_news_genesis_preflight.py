@@ -2,11 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
 
 from tracefold.app.cli.commands import db
+
+
+def test_fresh_install_probe_refuses_missing_identity_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Connection:
+        @staticmethod
+        def execute(_statement: str) -> SimpleNamespace:
+            return SimpleNamespace(fetchone=lambda: None)
+
+    monkeypatch.setattr(db, "connect_postgres", lambda _dsn: nullcontext(Connection()))
+
+    with pytest.raises(RuntimeError, match="migration identity probe returned no row"):
+        db._database_is_unmigrated("postgresql://test")
 
 
 def _settings() -> SimpleNamespace:

@@ -76,10 +76,9 @@ def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
 def _database_is_unmigrated(dsn: str) -> bool:
     with connect_postgres(dsn) as conn:
         exists = conn.execute("SELECT to_regclass('public.alembic_version') AS relation").fetchone()
-        if exists is None or exists["relation"] is None:
-            return True
-        row = conn.execute("SELECT version_num AS revision FROM alembic_version LIMIT 1").fetchone()
-        return row is None or row["revision"] is None
+        if exists is None:
+            raise RuntimeError("database migration identity probe returned no row")
+        return exists["relation"] is None
 
 
 def _prepare_news_genesis_evidence(settings: Any, *, fresh_install: bool = False) -> None:
