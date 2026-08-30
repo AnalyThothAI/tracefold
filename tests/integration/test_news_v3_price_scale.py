@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.pricing import (
     QUOTE_TARGET_MAX,
@@ -24,6 +24,7 @@ NOW = 1_787_000_000_000
 HOUR = 3_600_000
 EVENTS = 50_000
 ASSETS_PER_EVENT = 2
+VERDICT_BATCH = 5_000
 
 
 @pytest.fixture(scope="module")
@@ -91,8 +92,9 @@ def _seed(conn: Any) -> None:
         """,
         (window_start, step, EVENTS),
     )
-    conn.execute(
-        """
+    seed_current_news_evidence(conn)
+    conn.commit()
+    verdict_sql = """
         WITH base AS (
           SELECT g,
                  (ARRAY['push', 'drop', 'throttled', 'escalate'])[1 + g %% 4] AS final_decision,
@@ -111,7 +113,7 @@ def _seed(conn: Any) -> None:
                    'headline_zh', '容量测试 ' || g,
                    'why_zh', ''
                  ) AS verdict
-            FROM generate_series(1, %s) AS g
+            FROM generate_series(%s::integer, %s::integer) AS g
         ), judgment AS (
           SELECT *, jsonb_build_object(
                    'judgment_contract_version', 'news_judgment_v2',
@@ -155,17 +157,23 @@ def _seed(conn: Any) -> None:
                  'verdict_sha256', verdict_sha,
                  'runtime_manifest_sha', repeat('b', 64),
                  'evidence_version', 1,
-                 'evidence_sha256', repeat('e', 64),
+                 'evidence_sha256', evidence.evidence_sha256,
                  'focus_fact_id', 'fact:' || g,
+                 'program_version', 'news_semantic_program_v8',
+                 'program_sha256', repeat('a', 64),
                  'told', '[]'::jsonb,
                  'told_count', 0,
                  'judgment', judgment_atom
                ),
-               1, repeat('e', 64), 'fact:' || g, %s + g * %s::bigint
+               1, evidence.evidence_sha256, 'fact:' || g, %s + g * %s::bigint
           FROM addressed
-        """,
-        (EVENTS, window_start, step),
-    )
+          JOIN news_event_evidence_snapshots evidence
+            ON evidence.event_id = 'e-' || g AND evidence.evidence_version = 1
+        """
+    for batch_start in range(1, EVENTS + 1, VERDICT_BATCH):
+        batch_end = min(EVENTS, batch_start + VERDICT_BATCH - 1)
+        conn.execute(verdict_sql, (batch_start, batch_end, window_start, step))
+        conn.commit()
     conn.execute(
         """
         INSERT INTO news_deliveries (event_id, kind, state, card, attempted_at_ms, settled_at_ms, created_at_ms)

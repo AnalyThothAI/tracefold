@@ -35,6 +35,39 @@ def upgrade() -> None:
     op.execute("ALTER TABLE news_verdicts DROP COLUMN novelty_defaulted")
     op.execute("ALTER TABLE news_verdicts ADD COLUMN judgment_contract_version text")
     op.execute("ALTER TABLE news_verdicts ADD COLUMN judgment_origin text")
+    op.execute("ALTER TABLE news_events ADD COLUMN current_contract_archive_only boolean NOT NULL DEFAULT true")
+    op.execute("ALTER TABLE news_events ALTER COLUMN current_contract_archive_only SET DEFAULT false")
+    op.execute("ALTER TABLE news_reviews ADD COLUMN current_contract_archive_only boolean NOT NULL DEFAULT true")
+    op.execute("ALTER TABLE news_reviews ALTER COLUMN current_contract_archive_only SET DEFAULT false")
+    op.execute("ALTER TABLE news_events DROP CONSTRAINT news_events_source_contract_reason_check")
+    op.execute("ALTER TABLE news_events DROP CONSTRAINT news_events_source_contract_consistency_check")
+    op.execute(
+        """
+        ALTER TABLE news_events
+        ADD CONSTRAINT news_events_source_contract_reason_check CHECK ((
+          current_contract_archive_only
+          OR source_contract_reason IS NULL
+          OR source_contract_reason IN ('source_contract_drift', 'unsupported_market_contract')
+        ) IS TRUE) NOT VALID
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE news_events
+        ADD CONSTRAINT news_events_source_contract_consistency_check CHECK ((
+          current_contract_archive_only
+          OR (event_kind IN ('news', 'listing') AND source_contract_reason IS NULL)
+          OR (
+            event_kind IN ('oi', 'liquidation')
+            AND (source_contract_reason IS NULL OR source_contract_reason = 'source_contract_drift')
+          )
+          OR (
+            event_kind = 'unsupported_market'
+            AND source_contract_reason IN ('source_contract_drift', 'unsupported_market_contract')
+          )
+        ) IS TRUE) NOT VALID
+        """
+    )
     op.execute("ALTER TABLE news_verdicts DROP CONSTRAINT news_verdicts_scored_judgment_triplet_check")
     op.execute("ALTER TABLE news_verdicts DROP CONSTRAINT news_verdicts_v10_scored_judgment_required")
     op.execute("ALTER TABLE news_verdicts DROP CONSTRAINT news_verdicts_final_decision_check")
@@ -1029,10 +1062,15 @@ def upgrade() -> None:
           AND focus_fact_id IS NOT NULL AND focus_fact_id <> ''
           AND seen_scope IN ('','all')
           AND (throttled_by IS NULL OR right(throttled_by, 5) <> (chr(58) || 'seen') OR seen_scope = 'all')
+          -- `type` is legitimate inside audited provider/adapter protocols.  The exact-key validators for
+          -- told entries, evidence, verdicts and structured judgment atoms reject it only in those retired
+          -- compact-projection owners; the unambiguous compact keys remain forbidden throughout the trace.
+          AND NOT (trace ? 'type')
           AND news_jsonb_forbidden_keys_absent(trace, ARRAY[
                 'event_type','event_type_zh','title_zh','actionable','model_decision',
                 'novelty_defaulted','provider_cost_usd','legacy_label','legacy_event_type',
-                'project_legacy_event_type','unclear_push_event_types','display_title'
+                'project_legacy_event_type','unclear_push_event_types','display_title',
+                'sym','m','dir','family'
               ])
           AND news_current_told_trace_valid(trace -> 'told')
           AND news_jsonb_int64_valid(trace -> 'told_count')
@@ -1046,6 +1084,8 @@ def upgrade() -> None:
           AND trace ->> 'evidence_sha256' = evidence_sha256
           AND trace ->> 'focus_fact_id' = focus_fact_id
           AND trace ->> 'runtime_manifest_sha' = runtime_manifest_sha
+          AND trace ->> 'program_version' = program_version
+          AND trace ->> 'program_sha256' = program_sha256
           AND (
             (judgment_origin = 'model'
              AND NOT degraded AND error_code IS NULL AND model IS NOT NULL
@@ -1189,6 +1229,130 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE UNIQUE INDEX ux_news_event_evidence_current_identity
+        ON news_event_evidence_snapshots (
+          event_id, evidence_version, evidence_sha256, focus_fact_id
+        )
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE news_verdicts
+        ADD CONSTRAINT news_verdicts_current_evidence_fk
+        FOREIGN KEY (event_id, evidence_version, evidence_sha256, focus_fact_id)
+        REFERENCES news_event_evidence_snapshots (
+          event_id, evidence_version, evidence_sha256, focus_fact_id
+        ) NOT VALID
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION news_current_verdict_evidence_guard() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM news_events event
+             WHERE event.event_id = NEW.event_id
+               AND event.current_contract_archive_only
+          ) THEN
+            RAISE EXCEPTION USING
+              ERRCODE = '23514',
+              CONSTRAINT = 'news_current_event_archive_only_check',
+              MESSAGE = 'news_current_verdict_targets_archive_event';
+          END IF;
+          IF NEW.judgment_contract_version = 'news_judgment_v2'
+             AND NOT EXISTS (
+               SELECT 1 FROM news_event_evidence_snapshots evidence
+                WHERE evidence.event_id = NEW.event_id
+                  AND evidence.evidence_version = NEW.evidence_version
+                  AND evidence.evidence_sha256 = NEW.evidence_sha256
+                  AND evidence.focus_fact_id = NEW.focus_fact_id
+             ) THEN
+            RAISE EXCEPTION USING
+              ERRCODE = '23514',
+              CONSTRAINT = 'news_verdicts_current_evidence_check',
+              MESSAGE = 'news_current_verdict_evidence_not_exact';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER news_verdicts_current_evidence_check
+        BEFORE INSERT OR UPDATE ON news_verdicts
+        FOR EACH ROW EXECUTE FUNCTION news_current_verdict_evidence_guard()
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION news_current_event_archive_guard() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF TG_TABLE_NAME IN ('news_events', 'news_reviews') THEN
+            IF OLD.current_contract_archive_only IS DISTINCT FROM NEW.current_contract_archive_only THEN
+              RAISE EXCEPTION USING
+                ERRCODE = '23514',
+                CONSTRAINT = CASE WHEN TG_TABLE_NAME = 'news_events'
+                                  THEN 'news_current_event_archive_only_check'
+                                  ELSE 'news_current_review_archive_only_check' END,
+                MESSAGE = 'news_archive_marker_is_immutable';
+            END IF;
+            RETURN NEW;
+          END IF;
+          IF EXISTS (
+            SELECT 1 FROM news_events event
+             WHERE event.event_id = NEW.event_id
+               AND event.current_contract_archive_only
+          ) THEN
+            RAISE EXCEPTION USING
+              ERRCODE = '23514',
+              CONSTRAINT = 'news_current_event_archive_only_check',
+              MESSAGE = 'news_current_evidence_targets_archive_event';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER news_events_current_archive_only_check
+        BEFORE UPDATE OF current_contract_archive_only ON news_events
+        FOR EACH ROW EXECUTE FUNCTION news_current_event_archive_guard()
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER news_reviews_current_archive_only_check
+        BEFORE UPDATE OF current_contract_archive_only ON news_reviews
+        FOR EACH ROW EXECUTE FUNCTION news_current_event_archive_guard()
+        """
+    )
+    op.execute(
+        """
+        CREATE VIEW news_current_events_v1 WITH (security_barrier = true) AS
+        SELECT * FROM news_events WHERE NOT current_contract_archive_only
+        """
+    )
+    op.execute(
+        """
+        CREATE INDEX ix_news_events_current_opened
+        ON news_events (opened_at_ms, event_id)
+        WHERE NOT current_contract_archive_only
+        """
+    )
+    op.execute("GRANT SELECT ON news_current_events_v1 TO tracefold_serve, tracefold_workers")
+    op.execute(
+        """
+        CREATE TRIGGER news_event_evidence_current_archive_only_check
+        BEFORE INSERT OR UPDATE ON news_event_evidence_snapshots
+        FOR EACH ROW EXECUTE FUNCTION news_current_event_archive_guard()
+        """
+    )
+    op.execute(
+        """
         ALTER TABLE news_events
         ADD CONSTRAINT news_events_current_focus_fact_check
         CHECK ((focus_fact_method <> 'legacy_reconstructed') IS TRUE) NOT VALID
@@ -1251,30 +1415,10 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER news_reviews_current_acceptance_target_check
-        BEFORE INSERT ON news_reviews
+        BEFORE INSERT OR UPDATE ON news_reviews
         FOR EACH ROW EXECUTE FUNCTION news_current_review_acceptance_target_guard()
         """
     )
-    op.execute(
-        """
-        CREATE OR REPLACE VIEW news_review_records_v1 WITH (security_barrier = true) AS
-        SELECT review_id, idempotency_key, idempotency_request_sha, review_kind,
-               subject_kind, task_id, task_version, event_id, evidence_version,
-               external_snapshot_id, pairwise_case_id, rubric_version,
-               reader_contract_version, reviewer, should_push, dimensions,
-               novelty, first_bad_owner, evidence_refs, expected_correction,
-               note, selection, payload, supersedes_review_id,
-               accepts_review_id, release_eligible, created_at_ms
-          FROM news_reviews
-         WHERE news_current_review_valid(
-                 review_kind, subject_kind, rubric_version, reader_contract_version,
-                 event_id, evidence_version, external_snapshot_id, pairwise_case_id,
-                 should_push, dimensions, novelty, first_bad_owner, evidence_refs,
-                 expected_correction, note, selection, payload, accepts_review_id
-               ) IS TRUE
-        """
-    )
-
     op.execute(
         """
         CREATE VIEW news_review_task_source_v1 WITH (security_barrier = true) AS
@@ -1312,7 +1456,7 @@ def upgrade() -> None:
                v.scored_judgment_sha256 AS judgment_sha256,
                v.runtime_manifest_sha,
                e.event_kind
-          FROM news_events e
+          FROM news_current_events_v1 e
           JOIN LATERAL (
             SELECT x.* FROM news_verdicts x
              WHERE x.event_id = e.event_id AND x.stage = 'triage'
@@ -1342,6 +1486,136 @@ def upgrade() -> None:
         """
     )
     op.execute("GRANT SELECT ON news_review_task_source_v1 TO tracefold_serve, tracefold_workers")
+    op.execute(
+        """
+        CREATE FUNCTION news_current_review_source_exists(
+          subject_kind_value text, task_id_value text,
+          event_id_value text, evidence_version_value integer,
+          external_snapshot_id_value text, pairwise_case_id_value text
+        ) RETURNS boolean
+        LANGUAGE sql STABLE PARALLEL SAFE AS $$
+          SELECT CASE subject_kind_value
+            WHEN 'event' THEN EXISTS (
+              SELECT 1 FROM news_review_task_source_v1 source
+               WHERE source.event_id = event_id_value
+                 AND source.evidence_version = evidence_version_value
+                 AND source.trace #>> '{agent_assignment,bundle_sha}' ~ '^[0-9a-f]{64}$'
+                 AND task_id_value =
+                       'evt.' || source.event_id || '.' || source.evidence_version::text || '.' ||
+                       left(encode(digest(convert_to(news_canonical_jsonb(jsonb_build_object(
+                         'task', 'news_review_task_v2',
+                         'event_id', source.event_id,
+                         'evidence_version', source.evidence_version,
+                         'rubric', 'news_review_v6',
+                         'reader_contract', 'reader_contract_v2',
+                         'reader_contract_sha256',
+                           'bb7f436d232b02446c4f0f17c7b0b4f56c421aa4daf1a3869c5baa9b89970082',
+                         'agent_cohort_sha256', source.trace #>> '{agent_assignment,bundle_sha}'
+                       )), 'UTF8'), 'sha256'), 'hex'), 16)
+            )
+            WHEN 'external_miss' THEN
+              task_id_value = 'external.' || external_snapshot_id_value
+              AND EXISTS (
+                    SELECT 1 FROM news_review_external_source_v1 source
+                     WHERE source.snapshot_id = external_snapshot_id_value
+                       AND source.provenance = 'operator_reported'
+                       AND source.snapshot ->> 'schema_version' = 'news_external_miss_v1'
+                  )
+            WHEN 'pairwise' THEN
+              EXISTS (
+                SELECT 1
+                  FROM news_learning_cases pair_source
+                  JOIN news_learning_artifacts dataset
+                    ON dataset.kind = 'dataset'
+                   AND dataset.artifact_sha = pair_source.dataset_sha
+                  JOIN LATERAL (
+                    SELECT stable_sha FROM news_review_active_agent_v1
+                     ORDER BY created_at_ms DESC LIMIT 1
+                  ) active ON true
+                 WHERE pairwise_case_id_value = pair_source.run_sha || ':' || pair_source.case_id
+                   AND task_id_value = 'pair.' || pair_source.run_sha || '.' || pair_source.case_id
+                   AND pair_source.evaluation_stage IN ('offline','holdout')
+                   AND COALESCE((pair_source.comparison ->> 'review_eligible')::boolean, false)
+                   AND pair_source.review_id IS NOT NULL
+                   AND dataset.payload #>> '{agent_cohort,bundle_sha}' = active.stable_sha
+                   AND dataset.payload ->> 'learning_epoch' = 'bundle_' || left(active.stable_sha, 8)
+                   AND CASE pair_source.subject_kind
+                     WHEN 'event' THEN EXISTS (
+                       SELECT 1 FROM news_review_task_source_v1 source
+                        WHERE source.event_id = pair_source.event_id
+                          AND source.evidence_version = pair_source.evidence_version
+                     )
+                     WHEN 'external_miss' THEN EXISTS (
+                       SELECT 1 FROM news_review_external_source_v1 source
+                        WHERE source.snapshot_id = pair_source.external_snapshot_id
+                          AND source.provenance = 'operator_reported'
+                          AND source.snapshot ->> 'schema_version' = 'news_external_miss_v1'
+                     )
+                     ELSE false
+                   END
+              )
+            ELSE false
+          END
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION news_current_review_source_guard() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          IF NEW.rubric_version = 'news_review_v6'
+             AND news_current_review_valid(
+                   NEW.review_kind, NEW.subject_kind,
+                   NEW.rubric_version, NEW.reader_contract_version,
+                   NEW.event_id, NEW.evidence_version,
+                   NEW.external_snapshot_id, NEW.pairwise_case_id,
+                   NEW.should_push, NEW.dimensions, NEW.novelty,
+                   NEW.first_bad_owner, NEW.evidence_refs,
+                   NEW.expected_correction, NEW.note, NEW.selection,
+                   NEW.payload, NEW.accepts_review_id
+                 ) IS TRUE
+             AND news_current_review_source_exists(
+                   NEW.subject_kind, NEW.task_id, NEW.event_id, NEW.evidence_version,
+                   NEW.external_snapshot_id, NEW.pairwise_case_id
+                 ) IS NOT TRUE THEN
+            RAISE EXCEPTION USING
+              ERRCODE = '23514',
+              CONSTRAINT = 'news_reviews_current_task_source_check',
+              MESSAGE = 'news_review_current_task_source_missing';
+          END IF;
+          RETURN NEW;
+        END;
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER news_reviews_current_task_source_check
+        BEFORE INSERT OR UPDATE ON news_reviews
+        FOR EACH ROW EXECUTE FUNCTION news_current_review_source_guard()
+        """
+    )
+    op.execute(
+        """
+        CREATE OR REPLACE VIEW news_review_records_v1 WITH (security_barrier = true) AS
+        SELECT review_id, idempotency_key, idempotency_request_sha, review_kind,
+               subject_kind, task_id, task_version, event_id, evidence_version,
+               external_snapshot_id, pairwise_case_id, rubric_version,
+               reader_contract_version, reviewer, should_push, dimensions,
+               novelty, first_bad_owner, evidence_refs, expected_correction,
+               note, selection, payload, supersedes_review_id,
+               accepts_review_id, release_eligible, created_at_ms
+          FROM news_reviews
+         WHERE NOT current_contract_archive_only
+           AND news_current_review_valid(
+                 review_kind, subject_kind, rubric_version, reader_contract_version,
+                 event_id, evidence_version, external_snapshot_id, pairwise_case_id,
+                 should_push, dimensions, novelty, first_bad_owner, evidence_refs,
+                 expected_correction, note, selection, payload, accepts_review_id
+               ) IS TRUE
+        """
+    )
 
     op.execute(
         """
@@ -1357,21 +1631,7 @@ def upgrade() -> None:
         WITH old_events AS (
           SELECT e.event_id
             FROM news_events e
-           WHERE EXISTS (
-                   SELECT 1 FROM news_verdicts v
-                    WHERE v.event_id = e.event_id
-                      AND v.judgment_contract_version IS NULL
-                 )
-              OR NOT EXISTS (
-                   SELECT 1 FROM news_event_evidence_snapshots s
-                    WHERE s.event_id = e.event_id
-                      AND s.evidence_version = (
-                        SELECT max(x.evidence_version) FROM news_event_evidence_snapshots x
-                         WHERE x.event_id = e.event_id
-                      )
-                      AND s.provenance = 'observed'
-                      AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
-                 )
+           WHERE e.current_contract_archive_only
         ), counts AS (
           SELECT
             (SELECT count(*) FROM news_verdicts
@@ -1381,10 +1641,8 @@ def upgrade() -> None:
                 AND model IS NOT NULL AND NOT degraded
                 AND news_current_model_editorial_valid(editorial) IS TRUE) AS current_taxonomy_present_rows,
             (SELECT count(*) FROM old_events) AS archive_only_event_rows,
-            (SELECT count(*) FROM news_reviews r
-              WHERE r.event_id IS NOT NULL
-                AND EXISTS (SELECT 1 FROM old_events e WHERE e.event_id = r.event_id)
-            ) AS affected_review_rows,
+            (SELECT count(*) FROM news_reviews
+              WHERE current_contract_archive_only) AS affected_review_rows,
             (SELECT count(*) FROM news_deliveries d
               WHERE d.state = 'sent'
                 AND EXISTS (SELECT 1 FROM old_events e WHERE e.event_id = d.event_id)

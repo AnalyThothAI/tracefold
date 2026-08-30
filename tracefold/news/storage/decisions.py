@@ -35,7 +35,7 @@ _READER_HISTORY_PROJECTION = """
                        WHERE ea.event_id = e.event_id) bases),
              '[]'::jsonb
            ) AS canonical_assets
-      FROM news_events e
+      FROM news_current_events_v1 e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
                             AND d.delete_state IS DISTINCT FROM 'deleted'
       JOIN LATERAL (
@@ -82,7 +82,7 @@ class DecisionStorage:
 
         exact = self.conn.execute(
             "WITH current_event AS ("
-            " SELECT dedupe_family, comparison_fingerprint FROM news_events WHERE event_id = %s"
+            " SELECT dedupe_family, comparison_fingerprint FROM news_current_events_v1 WHERE event_id = %s"
             ") "
             + _READER_HISTORY_PROJECTION
             + """
@@ -105,7 +105,7 @@ class DecisionStorage:
             """
             WITH current_event AS (
               SELECT event_id, dedupe_family, comparison_fingerprint
-                FROM news_events WHERE event_id = %s
+                FROM news_current_events_v1 WHERE event_id = %s
             ), current_bases AS (
               SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
                 FROM current_event current
@@ -181,10 +181,11 @@ class DecisionStorage:
         """
 
         row = self.conn.execute(
-            "SELECT count(*)::int AS n FROM news_oi_signals "
-            "WHERE metric_version = %s AND symbol = %s "
-            "AND observed_at_ms > %s AND observed_at_ms <= %s AND event_id <> %s "
-            "AND whale_oi_ratio_bps > %s AND abs(oi_change_bps) >= %s",
+            "SELECT count(*)::int AS n FROM news_oi_signals signal "
+            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "WHERE signal.metric_version = %s AND signal.symbol = %s "
+            "AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s AND signal.event_id <> %s "
+            "AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s",
             (
                 metric_version,
                 symbol,
@@ -201,10 +202,13 @@ class DecisionStorage:
         """The code-verified OI row that may ground its deterministic reader card."""
 
         row = self.conn.execute(
-            "SELECT event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
-            "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, "
-            "source_strategy_id, source_contract_version, measurement_window_ms "
-            "FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
+            "SELECT signal.event_id, signal.metric_version, signal.symbol, signal.direction, "
+            "signal.oi_change_bps, signal.oi_value_usd, signal.whale_long_profit_bps, "
+            "signal.whale_oi_ratio_bps, signal.observed_at_ms, signal.rank_in_window, "
+            "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms "
+            "FROM news_oi_signals signal "
+            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "WHERE signal.event_id = %s AND signal.metric_version = %s",
             (event_id, metric_version),
         ).fetchone()
         return dict(row) if row is not None else None

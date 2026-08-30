@@ -51,6 +51,7 @@ from tracefold.news.program.contracts import (
     SemanticJudgment,
     TriageContext,
 )
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.reader_history import ReaderHistorySnapshot, assemble_reader_history
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DEFAULT_POLICY
@@ -58,7 +59,6 @@ from tracefold.platform.resource import ResourceAdmissionTimeout
 
 NOW_MS = 1_800_000_000_000
 WATCHLIST = frozenset({"BTC", "NVDA"})
-PROGRAM_VERSION = "news_semantic_program_test_v1"
 PROGRAM_SHA256 = "9" * 64
 
 
@@ -3957,9 +3957,6 @@ def test_telemetry_is_judged_without_a_model_and_settles_on_the_ordinary_path() 
     # The rank ledger is written, and the card goes out on the one delivery lane there has ever been.
     ledger = news.kwargs_of("insert_oi_signal")
     assert ledger["symbol"] == "TRUMP" and ledger["rank_in_window"] == 1
-    resolved = news.kwargs_of("resolve_unverified_source_contract")
-    assert resolved["event_id"] == "ev-oi" and resolved["reason"] is None
-    assert isinstance(resolved["now_ms"], int)
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -4001,7 +3998,6 @@ def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:
     asyncio.run(_triage(news, FakeBus()).handle(_message("event", {"event_id": "ev-oi"})))
 
     assert news.kwargs_of("insert_verdict")["error_code"] == "oi_parse_failed"
-    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] == "source_contract_drift"
     assert "record_event_assets" not in news.names()
     assert "insert_oi_signal" not in news.names()
 
@@ -4124,7 +4120,6 @@ def test_liquidation_is_judged_from_the_typed_fact_with_zero_model_calls() -> No
     assert inserted["trace"]["judgment"]["fact"]["forced_order_side"] == "buy"
     assert inserted["trace"]["gate_policy_version"] == "news_liquidation_admission_v1"
     assert inserted["trace"]["judgment"]["fact"]["source_contract_complete"] is False
-    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] is None
     assert bus.routing_keys() == [RK_VERDICT_PUSH]
 
 
@@ -4146,7 +4141,6 @@ def test_liquidation_missing_typed_fact_fails_closed_without_a_model_call() -> N
     assert inserted["override_rule"] == "liquidation_parse_failed"
     assert inserted["error_code"] == "liquidation_parse_failed"
     assert inserted["trace"]["liquidation"]["failure_stage"] == "source_contract_drift"
-    assert news.kwargs_of("resolve_unverified_source_contract")["reason"] == "source_contract_drift"
 
 
 def test_liquidation_redelivery_uses_its_independent_policy_identity() -> None:

@@ -125,9 +125,11 @@ def test_an_unproven_window_is_a_named_reason_in_the_trace_not_a_missing_key() -
     assert unproven["source_contract_rule"] == "source_window_unproven"
     assert unproven["measurement_window_ms"] is None
     assert unproven["source_strategy_id"] is None
-    # Still a complete judgment: the four numbers and the rank rule are untouched.
+    # Still a complete judgment: the four numbers live once in the typed atom,
+    # not duplicated into the source-contract trace.
     assert unproven["parsed"] is True
-    assert unproven["oi_change_bps"] == FIXTURE["expected"]["oi_change_bps"]
+    assert judgment.signal is not None
+    assert judgment.judgment_atom["signal"]["oi_change_bps"] == FIXTURE["expected"]["oi_change_bps"]
 
     proven = oi_judgment_trace(
         judgment, policy=DEFAULT_OI_POLICY, source=oi_source_contract(FIXTURE["provider_metadata"])

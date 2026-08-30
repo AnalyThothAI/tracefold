@@ -239,24 +239,23 @@ def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
     unexpected = set(row).difference(_READER_HISTORY_ROW_FIELDS)
     if unexpected:
         raise ValueError(f"news_reader_history_fields_unexpected:{','.join(sorted(unexpected))}")
-    required = {"dedupe_family", "magnitude", "direction", "headline_zh", "why_zh"}
+    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason"})
     missing = required.difference(row)
     if missing:
         raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
     assets = tuple(
         str(value.get("symbol") if isinstance(value, Mapping) else value)
-        for value in row.get("assets") or ()
+        for value in row["assets"] or ()
         if value and (not isinstance(value, Mapping) or value.get("symbol"))
     )
-    grounded = tuple(str(value) for value in row.get("grounded_assets") or () if value)
-    canonical_values = row.get("canonical_assets") if "canonical_assets" in row else (*grounded, *assets)
-    canonical = tuple(sorted({base_symbol(str(value)) for value in canonical_values or () if value}))
+    grounded = tuple(str(value) for value in row["grounded_assets"] or () if value)
+    canonical = tuple(sorted({base_symbol(str(value)) for value in row["canonical_assets"] or () if value}))
     return ReaderHistoryRow(
-        event_id=str(row.get("event_id") or ""),
-        at_ms=int(row.get("at_ms") or 0),
-        storyline_key=str(row.get("storyline_key") or ""),
-        comparison_title=str(row.get("comparison_title") or ""),
-        comparison_fingerprint=str(row.get("comparison_fingerprint") or ""),
+        event_id=str(row["event_id"]),
+        at_ms=int(row["at_ms"]),
+        storyline_key=str(row["storyline_key"]),
+        comparison_title=str(row["comparison_title"]),
+        comparison_fingerprint=str(row["comparison_fingerprint"]),
         dedupe_family=str(row["dedupe_family"]),
         grounded_assets=grounded,
         assets=assets,

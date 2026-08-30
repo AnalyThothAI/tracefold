@@ -154,6 +154,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
         policy_version = LIQUIDATION_TRIAGE_POLICY_VERSION
         trace = {"liquidation": liquidation_metadata(fact), "judgment": judgment.judgment_atom}
     runtime_manifest_sha = "b" * 64
+    program_sha256 = "c" * 64
     trace.update(
         {
             "judgment_contract_version": judgment.judgment_contract_version,
@@ -161,6 +162,8 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
             "judgment_sha256": judgment_sha256,
             "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
             "runtime_manifest_sha": runtime_manifest_sha,
+            "program_version": program_version,
+            "program_sha256": program_sha256,
             "evidence_version": int(evidence["evidence_version"]),
             "evidence_sha256": str(evidence["evidence_sha256"]),
             "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -184,7 +187,7 @@ def _verdict(news: Any, event_id: str, *, error_code: str | None = None) -> None
         runtime_manifest_sha=runtime_manifest_sha,
         model=model,
         program_version=program_version,
-        program_sha256="c" * 64,
+        program_sha256=program_sha256,
         degraded=False,
         error_code=error_code,
         trace=trace,
@@ -239,12 +242,15 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         )
         judgment_sha256 = judgment.judgment_sha256
         runtime_manifest_sha = "b" * 64
+        program_sha256 = "c" * 64
         trace = {
             "judgment_contract_version": judgment.judgment_contract_version,
             "judgment_origin": "oi",
             "judgment_sha256": judgment_sha256,
             "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
             "runtime_manifest_sha": runtime_manifest_sha,
+            "program_version": OI_PROGRAM_VERSION,
+            "program_sha256": program_sha256,
             "evidence_version": int(evidence["evidence_version"]),
             "evidence_sha256": str(evidence["evidence_sha256"]),
             "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -270,7 +276,7 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             runtime_manifest_sha=runtime_manifest_sha,
             model=None,
             program_version=OI_PROGRAM_VERSION,
-            program_sha256="c" * 64,
+            program_sha256=program_sha256,
             degraded=False,
             error_code=None,
             trace=trace,
@@ -348,7 +354,6 @@ def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadat
         ],
     }
     assert row["provenance"] == ["1019", "2083"]
-    assert news.status_snapshot(now_ms=NOW + 1)["pipeline"]["telemetry_received_24h"] == 1
 
 
 def test_exact_artifact_and_band_dedupe_never_cross_event_kind(conn) -> None:
@@ -519,7 +524,7 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
     }
 
     status = news.status_snapshot(now_ms=NOW + 1)["pipeline"]
-    assert status["telemetry_received_24h"] == 2
+    assert status["telemetry_received_24h"] == 0
     assert status["source_classifier_version"] == SOURCE_CONTRACT_CLASSIFIER_VERSION
     assert status["source_contracts_24h"] == {
         "news_v1": {"received": 2, "parsed": 2, "parse_failed": 0, "unsupported": 0, "verdict": 1},

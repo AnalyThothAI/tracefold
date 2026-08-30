@@ -676,7 +676,7 @@ export interface components {
              */
             reporting_origin: string;
             /** Source Contract Reason */
-            source_contract_reason: ("source_contract_drift" | "source_contract_unverified" | "unsupported_market_contract") | null;
+            source_contract_reason: ("source_contract_drift" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default
@@ -957,7 +957,7 @@ export interface components {
              */
             reporting_origin: string;
             /** Source Contract Reason */
-            source_contract_reason: ("source_contract_drift" | "source_contract_unverified" | "unsupported_market_contract") | null;
+            source_contract_reason: ("source_contract_drift" | "unsupported_market_contract") | null;
             /**
              * Storyline Key
              * @default

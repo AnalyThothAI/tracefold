@@ -552,18 +552,18 @@ class ProgramCallTrace(_ExactContractModel):
 
 
 class ProgramTrace(_ExactContractModel):
-    program_version: str
-    program_sha256: str
-    context_sha256: str
+    program_version: Literal["news_semantic_program_v8"]
+    program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # The computed identity of everything the code decided about this call — request envelope, output
     # contract and schema, visible input shape, route budget and breaker (#314). It replaced a declared
     # `factory_id` the graph copied off the artifact: the stamp is now derived from the behavior it
     # names, so a deployment cannot move what the model sees while leaving this field still.
     envelope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    event_semantics_sha256: str | None = None
-    reader_card_sha256: str | None = None
-    verdict_sha256: str | None = None
-    editorial_sha256: str | None = None
+    event_semantics_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reader_card_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    verdict_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    editorial_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     answering_route: Literal["primary", "fallback"] | None = None
     fallback_from: str | None = None
     calls: tuple[ProgramCallTrace, ...] = ()
@@ -670,6 +670,11 @@ class SemanticJudgment(_ExactContractModel):
             self.program_version != self.trace.program_version
             or self.program_sha256 != self.trace.program_sha256
             or self.fallback_from != self.trace.fallback_from
+            or not self.answering_model
+            or self.trace.answering_route is None
+            or self.trace.answering_route != ("fallback" if self.fallback_from else "primary")
+            or self.trace.event_semantics_sha256 is None
+            or self.trace.reader_card_sha256 is None
             or self.trace.verdict_sha256 != canonical_sha(self.verdict.model_dump(mode="json"))
             or self.trace.editorial_sha256 != self.editorial.editorial_sha256
         ):

@@ -22,7 +22,7 @@ from tracefold.news.delivery import (
     sanitize_ai_text,
 )
 from tracefold.news.eval.replay import replay_hits
-from tracefold.news.events.facts import extract_fact_units
+from tracefold.news.events.facts import FactUnit, extract_fact_units
 from tracefold.news.events.gate import GateInput, evaluate_gate, grounded_assets
 from tracefold.news.events.minhash import BANDS, band_keys, estimate_jaccard, minhash_signature
 from tracefold.news.events.storyline import (
@@ -37,6 +37,7 @@ from tracefold.news.market_review.pricing import CHANGE_BASIS_ZH
 from tracefold.news.models import ReaderMarketMovement, ReaderReceipt, ReaderTradeTarget, TriageAsset, TriageVerdict
 from tracefold.news.opennews import source_artifact_identity
 from tracefold.news.outcome import OVERRIDE_RULE_ZH, throttled_by_zh
+from tracefold.news.pipeline.admission import _event_identity
 from tracefold.news.similarity import similarity
 from tracefold.news.triage_rules import (
     DEFAULT_POLICY,
@@ -57,6 +58,24 @@ FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sampl
 
 def _hits() -> list[dict]:
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_current_event_identity_never_reuses_the_pre_cut_item_primary_key() -> None:
+    item_id = "a" * 64
+    fact = FactUnit(
+        fact_id="b" * 64,
+        ordinal=0,
+        text="current fact",
+        context="",
+        span_start=0,
+        span_end=12,
+        method="whole_item",
+    )
+
+    news_id = _event_identity(item_id=item_id, fact=fact, event_kind="news")
+    assert news_id != item_id
+    assert news_id == _event_identity(item_id=item_id, fact=fact, event_kind="news")
+    assert news_id != _event_identity(item_id=item_id, fact=fact, event_kind="oi")
 
 
 # ---------------------------------------------------------------- titles

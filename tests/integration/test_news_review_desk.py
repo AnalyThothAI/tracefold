@@ -4,7 +4,7 @@ import json
 import uuid
 
 import pytest
-from psycopg.errors import InsufficientPrivilege, RaiseException
+from psycopg.errors import CheckViolation, InsufficientPrivilege, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import news_taxonomy
@@ -169,6 +169,8 @@ def _open_event(
                 "verdict_sha256": judgment.verdict_sha256,
                 "editorial_sha256": editorial.editorial_sha256,
                 "runtime_manifest_sha": "a" * 64,
+                "program_version": PROGRAM_VERSION,
+                "program_sha256": program_sha256,
                 "evidence_version": int(evidence["evidence_version"]),
                 "evidence_sha256": str(evidence["evidence_sha256"]),
                 "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -1488,9 +1490,9 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
     assert direct["evidence_disposition"] == "audit_only"
     assert direct["review_status"] == "audit_only"
 
-    judgment_id, acceptance_id = "9" * 64, "a" * 64
-    conn.execute(
-        """
+    with pytest.raises(CheckViolation, match="news_review_current_task_source_missing"):
+        conn.execute(
+            """
             INSERT INTO news_reviews (
               review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
               rubric_version, reader_contract_version, reviewer, selection, payload, accepts_review_id,
@@ -1500,38 +1502,38 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
                'news_review_v6', 'reader_contract_v2', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
               (%s, 'acceptance', 'pairwise', %s, %s, %s,
                'news_review_v6', 'reader_contract_v2', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
-        """,
-        (
-            judgment_id,
-            old_task_id,
-            direct["task_version"],
-            f"{old_run_sha}:{old_case_id}",
-            json.dumps(direct["selection"]),
-            json.dumps(
-                {
-                    "kind": "blind_pairwise",
-                    "preference": "A",
-                    "critical_errors": [],
-                    "evidence_refs": [],
-                    "note": "",
-                }
+            """,
+            (
+                "9" * 64,
+                old_task_id,
+                direct["task_version"],
+                f"{old_run_sha}:{old_case_id}",
+                json.dumps(direct["selection"]),
+                json.dumps(
+                    {
+                        "kind": "blind_pairwise",
+                        "preference": "A",
+                        "critical_errors": [],
+                        "evidence_refs": [],
+                        "note": "",
+                    }
+                ),
+                NOW - 1,
+                "a" * 64,
+                old_task_id,
+                direct["task_version"],
+                f"{old_run_sha}:{old_case_id}",
+                "9" * 64,
+                NOW,
             ),
-            NOW - 1,
-            acceptance_id,
-            old_task_id,
-            direct["task_version"],
-            f"{old_run_sha}:{old_case_id}",
-            judgment_id,
-            NOW,
-        ),
-    )
+        )
     assert desk.open(DeskQuery(mode="pairwise", status="accepted"), principal=PRINCIPAL)["tasks"] == []
     historical = {
         task["task_id"]: task
         for task in desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"]
     }[old_task_id]
     assert historical["review_status"] == "audit_only"
-    assert historical["accepted_review"]["review_id"] == judgment_id
+    assert historical["accepted_review"] is None
 
     old_ref = TaskRef(task_id=old_task_id, task_version=direct["task_version"])
     with (
@@ -1549,7 +1551,7 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
             "SELECT count(*) AS n FROM news_reviews WHERE pairwise_case_id = %s",
             (f"{old_run_sha}:{old_case_id}",),
         ).fetchone()["n"]
-        == 2
+        == 0
     )
 
 

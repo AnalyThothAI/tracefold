@@ -10,7 +10,6 @@ from alembic import command
 
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -123,6 +122,24 @@ def _legacy_pipeline_metrics(conn: Any) -> dict[str, float | int]:
     )
 
 
+def _promoted_pipeline_metrics(conn: Any) -> dict[str, float | int]:
+    return dict(
+        conn.execute(
+            """
+            SELECT
+              percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS triage_p50_ms,
+              percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS triage_p95_ms,
+              percentile_cont(0.95) WITHIN GROUP (ORDER BY queue_lag_ms) AS queue_lag_p95_ms,
+              count(*) FILTER (WHERE reasked_after_told_change) AS reasked_24h,
+              count(*) FILTER (WHERE novelty_defaulted) AS novelty_defaulted_24h
+              FROM news_verdicts
+             WHERE stage = 'triage' AND created_at_ms >= %s
+            """,
+            (NOW - 24 * 3_600_000,),
+        ).fetchone()
+    )
+
+
 def test_0311_backfills_metrics_and_preserves_the_pipeline_percentile_bytes() -> None:
     conn: Any | None = None
     try:
@@ -134,7 +151,7 @@ def test_0311_backfills_metrics_and_preserves_the_pipeline_percentile_bytes() ->
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade("20260826_0311")
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
@@ -148,10 +165,9 @@ def test_0311_backfills_metrics_and_preserves_the_pipeline_percentile_bytes() ->
                 ")"
             ).fetchall()
         }
-        snapshot = repositories_for_connection(conn).news.status_snapshot(now_ms=NOW + 1)["pipeline"]
-        after = {key: snapshot[key] for key in before}
+        after = _promoted_pipeline_metrics(conn)
 
-        assert revision == "20260830_0330"
+        assert revision == "20260826_0311"
         assert generated == {
             "latency_ms": "ALWAYS",
             "queue_lag_ms": "ALWAYS",

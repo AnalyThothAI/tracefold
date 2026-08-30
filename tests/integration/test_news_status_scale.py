@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
+from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage, seed_current_news_evidence
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import NewsSettings, Settings
 
@@ -51,13 +51,14 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
               storyline_key, ingest_mode, created_at_ms, updated_at_ms
             )
             SELECT 'status-event-' || g, 'status-item-' || g, 'general', 'news', 'status-fingerprint-' || g,
-                   'comparison', 'leader ' || g, 'fact:' || g, 'leader ' || g, 'whole_title',
+                   'comparison', 'leader ' || g, 'fact:' || g, 'leader ' || g, 'whole_item',
                    %s, %s, %s + 3600000,
                    'candidate', 'asset:STATUS' || g, 'live', %s, %s
               FROM generate_series(1, %s) AS g
             """,
             (now_ms, now_ms, now_ms, now_ms, now_ms, VERDICTS),
         )
+        seed_current_news_evidence(conn)
         conn.execute(
             """
             WITH payload AS (
@@ -105,8 +106,10 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
                      'verdict_sha256', verdict_sha256,
                      'runtime_manifest_sha', repeat('a', 64),
                      'evidence_version', 1,
-                     'evidence_sha256', repeat('c', 64),
+                     'evidence_sha256', evidence.evidence_sha256,
                      'focus_fact_id', 'fact:' || g,
+                     'program_version', 'news_semantic_program_v8',
+                     'program_sha256', repeat('b', 64),
                      'told', '[]'::jsonb,
                      'told_count', 0,
                      'judgment', atom,
@@ -119,8 +122,10 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
                      )
                    ),
                    judgment_sha256, repeat('a', 64), 'news_semantic_program_v8',
-                   repeat('b', 64), 1, repeat('c', 64), 'fact:' || g, %s
+                   repeat('b', 64), 1, evidence.evidence_sha256, 'fact:' || g, %s
               FROM hashed
+              JOIN news_event_evidence_snapshots evidence
+                ON evidence.event_id = 'status-event-' || g AND evidence.evidence_version = 1
             """,
             (VERDICTS, TRACE_CHUNKS, now_ms),
         )

@@ -162,6 +162,72 @@ def test_every_trace_rejects_unaddressed_or_unsettled_physical_call() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "invalid"),
+    (
+        ("program_version", "retired-program"),
+        ("program_sha256", ""),
+        ("context_sha256", "not-a-sha"),
+    ),
+)
+def test_program_trace_rejects_retired_or_unaddressed_identity(field_name: str, invalid: str) -> None:
+    values = {
+        "program_version": PROGRAM_VERSION,
+        "program_sha256": "c" * 64,
+        "context_sha256": "d" * 64,
+        "envelope_sha256": "e" * 64,
+    }
+    values[field_name] = invalid
+
+    with pytest.raises(ValueError):
+        ProgramTrace.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("trace_field", "judgment_field"),
+    (
+        ("event_semantics_sha256", None),
+        ("reader_card_sha256", None),
+        ("answering_route", None),
+        (None, "answering_model"),
+    ),
+)
+def test_successful_judgment_requires_complete_answer_identity(
+    trace_field: str | None, judgment_field: str | None
+) -> None:
+    artifact = build_code_owned_program_artifact()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
+    )
+    judgment = asyncio.run(judge.judge(_context()))
+    payload = judgment.model_dump(mode="json")
+    if trace_field is not None:
+        payload["trace"][trace_field] = None
+    if judgment_field is not None:
+        payload[judgment_field] = None
+
+    with pytest.raises(ValueError, match="news_program_judgment_trace_identity_mismatch"):
+        type(judgment).model_validate(payload)
+
+
+@pytest.mark.parametrize(("answering_route", "fallback_from"), (("fallback", None), ("primary", "failure")))
+def test_successful_judgment_route_matches_fallback_cause(answering_route: str, fallback_from: str | None) -> None:
+    artifact = build_code_owned_program_artifact()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
+    )
+    judgment = asyncio.run(judge.judge(_context()))
+    payload = judgment.model_dump(mode="json")
+    payload["fallback_from"] = fallback_from
+    payload["trace"]["fallback_from"] = fallback_from
+    payload["trace"]["answering_route"] = answering_route
+
+    with pytest.raises(ValueError, match="news_program_judgment_trace_identity_mismatch"):
+        type(judgment).model_validate(payload)
+
+
 def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded() -> None:
     artifact = build_code_owned_program_artifact()
     judge = RoutedSemanticJudge(

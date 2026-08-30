@@ -50,7 +50,7 @@ def feed_page_sql(where_sql: str) -> str:
                t.trace -> 'judgment' AS oi_judgment,
                t.trace -> 'oi_signal' AS oi_metadata,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
-          FROM news_events e
+          FROM news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot
@@ -82,7 +82,7 @@ def feed_counts_sql(where_sql: str) -> str:
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
-          FROM news_events e
+          FROM news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot

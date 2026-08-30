@@ -17,7 +17,6 @@ SourceContractFamily = Literal["news_v1", "listing_v1", "oi_v1", "liquidation_v1
 EventKind = Literal["news", "listing", "oi", "liquidation", "unsupported_market"]
 SourceContractReason = Literal[
     "source_contract_drift",
-    "source_contract_unverified",
     "unsupported_market_contract",
 ]
 

@@ -490,11 +490,11 @@ historical verdict/delivery ledger; a durable sent receipt still projects as
 delivered even though the current admission is the named hold. Current
 `event_kind` stops any pre-cut queued Triage or Delivery message, so an old push
 verdict with no delivery becomes held rather than permanently pending.
-Pre-cut deterministic rows lacking durable typed success evidence read
-`source_contract_unverified`; they remain an honest historical parsed gap until
-current Admission or an already queued deterministic Triage run settles that
-same Event with the strict parser. The OI signal row used during migration is a
-derived read-model row, not an alternate material truth.
+Pre-cut deterministic rows lacking durable typed success evidence retain the
+historical `source_contract_unverified` value only in archive rows. Current
+Admission and Triage neither read nor settle those Events. The OI signal row
+used during migration is a derived read-model row, not an alternate material
+truth.
 
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).

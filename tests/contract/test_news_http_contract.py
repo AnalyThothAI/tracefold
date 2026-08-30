@@ -15,6 +15,7 @@ from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
+from tracefold.news.storage.feed import _triage_assets
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
@@ -711,6 +712,9 @@ def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
     validated = event_schemas.NewsVerdictData.model_validate(payload)
     assert validated.judgment_origin == "model"
     assert validated.verdict.assets[0].market_type == "crypto"
+    assert _triage_assets(verdict["assets"]) == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
+    with pytest.raises(KeyError):
+        _triage_assets([{"symbol": "BTC", "role": "primary"}])
     deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
     assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
     with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):

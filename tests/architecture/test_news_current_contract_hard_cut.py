@@ -12,16 +12,16 @@ ROOT = Path(__file__).resolve().parents[2]
 THIS_FILE = Path(__file__).resolve()
 
 _ALL_SURFACES = (
-    ROOT / "src" / "tracefold",
+    ROOT / "tracefold",
     ROOT / "web" / "src",
     ROOT / "web" / "tests",
     ROOT / "docs" / "generated",
     ROOT / "tests",
 )
 _NEWS_SURFACES = (
-    ROOT / "src" / "tracefold" / "news",
-    ROOT / "src" / "tracefold" / "app" / "http",
-    ROOT / "src" / "tracefold" / "app" / "cli",
+    ROOT / "tracefold" / "news",
+    ROOT / "tracefold" / "app" / "http",
+    ROOT / "tracefold" / "app" / "cli",
     ROOT / "web" / "src",
     ROOT / "web" / "tests",
     ROOT / "docs" / "generated",
@@ -62,6 +62,7 @@ _RETIRED_EVERYWHERE = (
             "news_editorial_v1",
             "novelty_defaulted",
             "provider_cost_usd",
+            "source_contract_unverified",
             "news_triage_model_unconfigured",
             "news_triage_output_invalid",
             "news_triage_output_truncated",
@@ -74,71 +75,74 @@ _RETIRED_EVERYWHERE = (
 _RETIRED_NEWS_ONLY = frozenset({"actionable"})
 _RETIRED_WITH_DERIVATIVES = frozenset({"model_decision", "novelty_defaulted"})
 _CURRENT_LEDGER_CONTRACT_FILES = (
-    ROOT / "src" / "tracefold" / "news" / "reader_history.py",
-    ROOT / "src" / "tracefold" / "news" / "told_context.py",
-    ROOT / "src" / "tracefold" / "news" / "pipeline" / "delivery.py",
-    ROOT / "src" / "tracefold" / "news" / "pipeline" / "triage_audit.py",
-    ROOT / "src" / "tracefold" / "news" / "program" / "contracts.py",
+    ROOT / "tracefold" / "news" / "reader_history.py",
+    ROOT / "tracefold" / "news" / "told_context.py",
+    ROOT / "tracefold" / "news" / "pipeline" / "delivery.py",
+    ROOT / "tracefold" / "news" / "pipeline" / "triage_audit.py",
+    ROOT / "tracefold" / "news" / "program" / "contracts.py",
 )
 
 # Historical bytes, migration inputs, and negative contract assertions stay inspectable, but each exception is
 # one file plus one exact token. Ordinary fixtures never belong here.
 _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
-    "src/tracefold/platform/postgres/alembic/current_schema_20260818_0275.sql": frozenset(
+    "tracefold/platform/postgres/alembic/current_schema_20260818_0275.sql": frozenset(
         {"display_title", "family", "model_decision"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260821_0284_learning_evidence_foundation.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260821_0284_learning_evidence_foundation.py": frozenset(
         {"legacy_reconstructed"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260821_0285_review_v2.py": frozenset({"legacy_label"}),
-    "src/tracefold/platform/postgres/alembic/versions/20260826_0311_news_status_metrics.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260821_0285_review_v2.py": frozenset({"legacy_label"}),
+    "tracefold/platform/postgres/alembic/versions/20260826_0311_news_status_metrics.py": frozenset(
         {"novelty_defaulted"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0292_dspy_program_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260822_0292_dspy_program_epoch.py": frozenset(
         {"news_semantic_program_v1"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0293_program_v2_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260822_0293_program_v2_epoch.py": frozenset(
         {"news_semantic_program_v1"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0294_program_v3_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260822_0294_program_v3_epoch.py": frozenset(
         {"news_semantic_program_v1"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0295_program_v4_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260822_0295_program_v4_epoch.py": frozenset(
         {"news_semantic_program_v2"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0297_news_oi_signals.py": frozenset(
-        {"news_oi_signal_v1"}
-    ),
-    "src/tracefold/platform/postgres/alembic/versions/20260822_0298_program_v5_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260822_0297_news_oi_signals.py": frozenset({"news_oi_signal_v1"}),
+    "tracefold/platform/postgres/alembic/versions/20260822_0298_program_v5_epoch.py": frozenset(
         {"news_semantic_program_v3"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260823_0301_trade_relevance_program_v6.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260823_0301_trade_relevance_program_v6.py": frozenset(
         {"news_oi_signal_v1", "news_semantic_program_v4", "news_triage_policy_v10"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260824_0303_program_v7_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260824_0303_program_v7_epoch.py": frozenset(
         {"news_review_v4", "news_semantic_program_v5"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260824_0304_program_strategy_artifact.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260824_0304_program_strategy_artifact.py": frozenset(
         {"news_review_v4", "news_semantic_program_v5"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260825_0305_compile_record.py": frozenset({"news_review_v4"}),
-    "src/tracefold/platform/postgres/alembic/versions/20260825_0306_compile_record_run_spend.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260825_0305_compile_record.py": frozenset({"news_review_v4"}),
+    "tracefold/platform/postgres/alembic/versions/20260825_0306_compile_record_run_spend.py": frozenset(
         {"news_review_v4"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260825_0307_prompt_candidate.py": frozenset({"news_review_v4"}),
-    "src/tracefold/platform/postgres/alembic/versions/20260827_0315_news_event_kind.py": frozenset(
-        {"news_liquidation_fact_v1", "news_oi_signal_v1", "news_semantic_program_v5"}
+    "tracefold/platform/postgres/alembic/versions/20260825_0307_prompt_candidate.py": frozenset({"news_review_v4"}),
+    "tracefold/platform/postgres/alembic/versions/20260827_0315_news_event_kind.py": frozenset(
+        {
+            "news_liquidation_fact_v1",
+            "news_oi_signal_v1",
+            "news_semantic_program_v5",
+            "source_contract_unverified",
+        }
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260828_0318_program_v8_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260828_0318_program_v8_epoch.py": frozenset(
         {"news_semantic_program_v5"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260828_0319_program_v9_epoch.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260828_0319_program_v9_epoch.py": frozenset(
         {"news_semantic_program_v5"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260829_0328_news_taxonomy_v1.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260829_0328_news_taxonomy_v1.py": frozenset(
         {"news_review_v5", "news_semantic_program_v7"}
     ),
-    "src/tracefold/platform/postgres/alembic/versions/20260830_0330_news_current_contract_hard_cut.py": frozenset(
+    "tracefold/platform/postgres/alembic/versions/20260830_0330_news_current_contract_hard_cut.py": frozenset(
         {
             "actionable",
             "display_title",
@@ -213,7 +217,12 @@ _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
     ),
     "tests/integration/test_news_candidate_evaluator.py": frozenset({"news_semantic_program_v1"}),
     "tests/integration/test_news_event_kind_migration.py": frozenset(
-        {"news_review_v5", "news_semantic_program_v5", "news_semantic_program_v7"}
+        {
+            "news_review_v5",
+            "news_semantic_program_v5",
+            "news_semantic_program_v7",
+            "source_contract_unverified",
+        }
     ),
     "tests/integration/test_news_status_metrics_migration.py": frozenset({"novelty_defaulted"}),
     "tests/integration/test_postgres_schema_runtime.py": frozenset({"family", "model_decision", "novelty_defaulted"}),
@@ -222,6 +231,7 @@ _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
 }
 
 _TEST_SHAPE_ALLOWLIST: dict[str, frozenset[str]] = {
+    "tests/integration/test_delivery_lifecycle_constraint_migration.py": frozenset({"family"}),
     "tests/integration/test_news_event_assets_migration.py": frozenset({"family"}),
     "tests/integration/test_news_event_kind_migration.py": frozenset({"family"}),
     "tests/integration/test_news_learning_migration.py": frozenset({"family"}),
@@ -330,6 +340,26 @@ def test_retired_news_contract_tokens_exist_only_at_exact_historical_boundaries(
     assert {path: frozenset(tokens) for path, tokens in found_allowed_tokens.items()} == _EXACT_ALLOWLIST
 
 
+def test_ordinary_feed_reads_only_the_current_review_projection() -> None:
+    feed = _text(ROOT / "tracefold" / "news" / "storage" / "feed.py")
+
+    assert "news_review_records_v1" in feed
+    assert "news_reviews" not in feed
+
+
+def test_ordinary_news_reads_only_the_current_event_projection() -> None:
+    users = {
+        path.relative_to(ROOT).as_posix(): len(re.findall(r"\b(?:FROM|JOIN)\s+news_events\b", _text(path)))
+        for path in (ROOT / "tracefold" / "news").rglob("*.py")
+        if re.search(r"\b(?:FROM|JOIN)\s+news_events\b", _text(path))
+    }
+
+    assert users == {
+        "tracefold/news/storage/feed.py": 1,
+        "tracefold/news/storage/operations.py": 2,
+    }
+
+
 def test_ordinary_tests_do_not_build_retired_news_shapes() -> None:
     found_allowed: dict[str, set[str]] = {path: set() for path in _TEST_SHAPE_ALLOWLIST}
     offenders: list[str] = []
@@ -346,7 +376,7 @@ def test_ordinary_tests_do_not_build_retired_news_shapes() -> None:
 
 
 def test_current_python_verdict_and_event_identity_are_exact() -> None:
-    from tracefold.news.models import TriageVerdict
+    from tracefold.news.models import EVENT_IDENTITY_VERSION, TriageVerdict
     from tracefold.news.program.contracts import FrozenEventEvidence
 
     assert set(TriageVerdict.model_fields) == {
@@ -362,6 +392,7 @@ def test_current_python_verdict_and_event_identity_are_exact() -> None:
         "why_zh",
     }
     assert TriageVerdict.model_config["extra"] == "forbid"
+    assert EVENT_IDENTITY_VERSION == "news_event_identity_v6"
     assert "dedupe_family" in FrozenEventEvidence.model_fields
     assert "family" not in FrozenEventEvidence.model_fields
     assert FrozenEventEvidence.model_config["extra"] == "forbid"
@@ -443,6 +474,8 @@ def test_generated_news_schema_has_only_current_identity_columns() -> None:
         columns = _table_columns(schema, table)
         assert "dedupe_family" in columns
         assert "family" not in columns
+    assert "current_contract_archive_only" in _table_columns(schema, "news_events")
+    assert "current_contract_archive_only" in _table_columns(schema, "news_reviews")
     verdict_columns = _table_columns(schema, "news_verdicts")
     assert {"judgment_contract_version", "judgment_origin", "scored_judgment_sha256"}.issubset(verdict_columns)
     assert "model_decision" not in verdict_columns

@@ -102,15 +102,9 @@ def _event_identity(
     fact: FactUnit,
     event_kind: EventKind,
 ) -> str:
-    # Preserve ordinary News identities. A non-News source contract is a distinct fact
-    # even when the provider emits the same record through more than one Strategy. The
-    # reason is deliberately not identity: a migrated unverified frame must reconcile
-    # in place when the same provider fact is redelivered through the current parser.
-    if event_kind == "news":
-        if fact.method == "whole_item":
-            return item_id
-        return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}".encode()).hexdigest()
-    return hashlib.sha256(f"{item_id}\x1f{fact.fact_id}\x1f{event_kind}".encode()).hexdigest()
+    return hashlib.sha256(
+        f"{EVENT_IDENTITY_VERSION}\x1f{item_id}\x1f{fact.fact_id}\x1f{event_kind}".encode()
+    ).hexdigest()
 
 
 def admit_frame(
@@ -306,12 +300,6 @@ def admit_item(
         event_kind=source_contract.event_kind,
     )
     if existing_membership is not None:
-        if source_contract.event_kind in {"oi", "liquidation"}:
-            news.resolve_unverified_source_contract(
-                event_id=str(existing_membership["event_id"]),
-                reason=source_contract_reason,
-                now_ms=now_ms,
-            )
         ev = news.event_admission(str(existing_membership["event_id"]))
         return AdmitResult(
             item_id=item_id,
@@ -387,17 +375,6 @@ def admit_item(
             source_contract_reason=source_contract_reason,
         )
     if exact is not None:
-        reconciled_liquidation = (
-            source_contract.event_kind == "liquidation"
-            and exact.get("source_contract_reason") == "source_contract_unverified"
-            and source_contract_reason is None
-        )
-        if source_contract.event_kind in {"oi", "liquidation"}:
-            news.resolve_unverified_source_contract(
-                event_id=str(exact["event_id"]),
-                reason=source_contract_reason,
-                now_ms=now_ms,
-            )
         news.add_member(
             event_id=str(exact["event_id"]),
             item_id=item_id,
@@ -423,11 +400,6 @@ def admit_item(
             reporting_origin=event.entry.reporting_origin or "opennews",
             now_ms=now_ms,
         )
-        if reconciled_liquidation and not result.evidence_focus_changed:
-            # The current Item owns the typed fact that proved this migrated
-            # Event valid. Triage must read that fact rather than the pre-cut
-            # leader, even when ordinary strength heuristics tie.
-            result = replace(result, evidence_focus_changed=True)
         news.append_evidence_snapshot(
             event_id=result.event_id,
             now_ms=now_ms,
@@ -515,15 +487,6 @@ def admit_item(
         fact=fact,
         event_kind=source_contract.event_kind,
     )
-    if source_contract.event_kind == "news" and not inserted:
-        # Before identity v5, ordinary News owned both the whole-Item and split-
-        # FactUnit encodings. Migration can legitimately reclassify either row
-        # as a non-News kind. If the same material fact later arrives through an
-        # ordinary News Strategy, retain the migrated Event and give only this
-        # legacy collision a deterministic namespaced News identity.
-        occupied = news.event_admission(event_id)
-        if occupied is not None and str(occupied.get("event_kind") or "news") != "news":
-            event_id = hashlib.sha256(f"{item_id}\x1f{fact.fact_id}\x1fnews".encode()).hexdigest()
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,

@@ -222,9 +222,9 @@ class TriageConsumer:
         facts = _gate_facts(card, self.watchlist_symbols)
         if event_kind == "oi":
             # #137. Fixed-format open-interest telemetry: judged here by arithmetic instead of by two
-            # structured model calls that would re-read four numbers a regex already has. Everything
-            # after the judgment — decide(), the storyline lock, the verdict row, delivery, the receipt,
-            # the outcome, the feed — is the ordinary path, because nothing after the judgment differs.
+            # structured model calls that would re-read four numbers a regex already has. The typed OI
+            # judgment owns its DecisionResult; the storyline lock, verdict row, delivery, receipt, outcome
+            # and feed then use the ordinary settle path.
             await self._judge_telemetry(
                 event_id=event_id,
                 card=card,
@@ -679,9 +679,8 @@ class TriageConsumer:
     ) -> None:
         """Deterministic judgment for one telemetry frame, then the ordinary settle path.
 
-        No model call, so no arm assignment, no circuit breaker and no Program identity: the verdict
-        carries `OI_PROGRAM_VERSION` instead, which is what the trace, `news why` and the release
-        cohorts read.
+        No model call, so no arm assignment and no circuit breaker: the verdict carries the deterministic
+        OI Program identity, which is what the trace, `news why` and the release cohorts read.
 
         Rank, ledger and verdict are one transaction under one storyline lock. The rank is a count of
         this symbol's other eligible frames in the window, so reading it outside the lock lets two frames for
@@ -697,6 +696,7 @@ class TriageConsumer:
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
             "attempt": message.attempt,
             "program_version": oi_signals.PROGRAM_VERSION,
+            "program_sha256": oi_signals.program_sha256(self.oi_policy),
             "runtime_manifest_sha": self.runtime_manifest_sha,
             "policy": self.oi_policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
@@ -738,15 +738,10 @@ class TriageConsumer:
                 program_sha256=oi_signals.program_sha256(self.oi_policy),
             )
 
-            def _settle_drift(repos: Any) -> _TriageOutcome:
-                repos.news.resolve_unverified_source_contract(
-                    event_id=event_id,
-                    reason="source_contract_drift",
-                    now_ms=stamp,
-                )
+            def _settle_failure(repos: Any) -> _TriageOutcome:
                 return self._decide_and_persist(repos, s=settle)
 
-            outcome = await self.db.tx("news_triage_persist", _settle_drift)
+            outcome = await self.db.tx("news_triage_persist", _settle_failure)
         else:
             # What the provider proves about *how* the frame was measured, kept beside what it measured
             # (#265). `None` is a real answer — the interval is unproven — and the frame is still a
@@ -787,7 +782,6 @@ class TriageConsumer:
                     source_contract_version=None if source is None else source.contract_version,
                     measurement_window_ms=None if source is None else source.measurement_window_ms,
                 )
-                repos.news.resolve_unverified_source_contract(event_id=event_id, reason=None, now_ms=stamp)
                 trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
                 return self._decide_and_persist(
                     repos,
@@ -832,6 +826,7 @@ class TriageConsumer:
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
             "attempt": message.attempt,
             "program_version": liquidations.PROGRAM_VERSION,
+            "program_sha256": liquidations.program_sha256(),
             "runtime_manifest_sha": self.runtime_manifest_sha,
             "policy": {"policy_version": liquidations.TRIAGE_POLICY_VERSION},
             "gate_policy_version": liquidations.ADMISSION_POLICY_VERSION,
@@ -863,13 +858,7 @@ class TriageConsumer:
                     fact_trace["title_sha256"],
                     fact_trace["parser_version"],
                 )
-                repos.news.resolve_unverified_source_contract(
-                    event_id=event_id,
-                    reason="source_contract_drift",
-                    now_ms=stamp,
-                )
             else:
-                repos.news.resolve_unverified_source_contract(event_id=event_id, reason=None, now_ms=stamp)
                 fact = liquidations.LiquidationFact(
                     source_key=str(row["source_key"]),
                     item_id=str(row["item_id"]),

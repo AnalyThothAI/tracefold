@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.learning.evaluate import CandidateEvaluator
@@ -265,6 +267,19 @@ def test_reader_history_preserves_an_explicit_empty_canonical_asset_projection()
     )
 
     assert history.targeted_told_rows == ()
+
+
+def test_reader_history_rejects_an_incomplete_current_projection() -> None:
+    prior = _row("incomplete", NOW_MS - 1)
+    del prior["canonical_assets"]
+
+    with pytest.raises(ValueError, match="news_reader_history_fields_missing:canonical_assets"):
+        build_reader_history(
+            (prior,),
+            now_ms=NOW_MS,
+            comparison_fingerprint="current-fingerprint",
+            canonical_assets=(),
+        )
 
 
 def test_reader_history_exact_fingerprint_uses_the_same_dedupe_family_as_postgres() -> None:

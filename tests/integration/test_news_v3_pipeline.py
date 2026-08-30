@@ -31,6 +31,7 @@ NEWS_TABLES = {
     "news_opennews_incidents",
     "news_items",
     "news_events",
+    "news_current_events_v1",
     "news_event_members",
     "news_event_bands",
     "news_event_assets",
@@ -181,6 +182,8 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -638,6 +641,8 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
         "judgment_sha256": degraded_judgment.judgment_sha256,
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -813,6 +818,8 @@ def _insert_test_verdict(
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "d" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),
@@ -1109,7 +1116,7 @@ def test_same_provider_fact_keeps_one_event_per_kind_in_either_strategy_order(
         == "source_contract_drift"
     )
     ids = {row["event_kind"]: row["event_id"] for row in rows}
-    assert ids["news"] == item_id
+    assert ids["news"] != item_id
     assert len(set(ids.values())) == 3
     oi_card = repos.news.event_card(ids["oi"])
     assert oi_card is not None
@@ -1912,6 +1919,8 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
                 "judgment_sha256": judgment.judgment_sha256,
                 "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
                 "runtime_manifest_sha": runtime_manifest_sha,
+                "program_version": OI_PROGRAM_VERSION,
+                "program_sha256": "d" * 64,
                 "evidence_version": int(evidence["evidence_version"]),
                 "evidence_sha256": str(evidence["evidence_sha256"]),
                 "focus_fact_id": str(evidence["focus_fact_id"]),

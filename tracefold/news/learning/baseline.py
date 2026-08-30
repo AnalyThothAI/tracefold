@@ -872,10 +872,8 @@ def _build_report(
             "metric": metric_receipt(bind_metric(judge), review_rubric_version="news_review_v6"),
             "metric_id": METRIC_ID,
             "runtime_model": dict(runtime_identity or {}),
-            # `current` is the release-plane population (this Program, this policy, this epoch); `all`
-            # drops that and reads every accepted review in the window. Both are legitimate and they answer
-            # different questions, so the receipt names which one it read rather than leaving it to the
-            # command line that produced it.
+            # `current` is the active release epoch; `frozen_development` is the content-addressed dataset
+            # registered before candidate evaluation. The receipt makes that evidence boundary explicit.
             "cohort_scope": cohort_scope,
             "case_root_sha256": canonical_sha(sorted(case.episode.case_id for case in cases)),
             # The id list answers "the same cases?"; only this answers "the same inputs?". Hashing ids alone

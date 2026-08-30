@@ -83,6 +83,8 @@ def _persist_triage_verdict(
         "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
         "editorial_sha256": judgment.editorial.editorial_sha256,
         "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),

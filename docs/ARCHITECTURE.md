@@ -270,12 +270,12 @@ classification `news|listing|oi|liquidation|unsupported_market`; exact,
 artifact and near-duplicate joins are restricted to the same kind so source
 contracts cannot collapse into each other. Its nullable durable
 `source_contract_reason` records only `source_contract_drift` or
-`source_contract_unverified` or `unsupported_market_contract`. A missing value
-means the current writer parsed the selected contract (or it needs no strict
-parser); pre-cut OI/liquidation rows without durable typed success evidence are
-backfilled as unverified rather than inferred successful. An OI signal row is
-derived read-model evidence for that conservative migration, not a second
-material fact source. OpenNews's raw `coins` annotation remains
+`unsupported_market_contract`. A missing value means the current writer parsed
+the selected contract (or it needs no strict parser). Pre-cut OI/liquidation
+rows without durable typed success evidence retain their historical
+`source_contract_unverified` bytes behind the archive-only boundary and never
+enter the current read model. An OI signal row is derived read-model evidence,
+not a second material fact source. OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it. `news_event_assets` is the durable Event-market
 identity ledger: it contains those Gate-grounded symbols and the primary symbol
@@ -795,14 +795,9 @@ a lane admission timeout is a `DeferError` (uncounted requeue), a statement
 overrun is a `TransientError` (counted).
 
 Identity: `news_items.item_id = sha256(source_id, params.id)`. Event identity
-v5 keeps the legacy encoding for ordinary News (`item_id` for a whole Item,
-`sha256(item_id, fact_id)` for a split FactUnit) and uses
-`sha256(item_id, fact_id, event_kind)` for every non-News kind.
-If migration reclassified a pre-v5 ordinary-News identity — `item_id` for a
-whole Item or `sha256(item_id, fact_id)` for a split FactUnit — as non-News, a
-later ordinary-News projection for that same fact uses the deterministic
-collision fallback `sha256(item_id, fact_id, "news")`; no existing Event or
-dependent ledger is rekeyed.
+v6 is `sha256(identity_version, item_id, fact_id, event_kind)` for every route.
+Pre-v6 Events remain archive-only; current Admission neither reuses nor rekeys
+them and contains no legacy collision branch.
 `tracefold.news.events.titles`
 extracts the first content block (skipping URL-only, label-only, `reply/quote:`
 lines and pinned wire source labels/suffixes; exchange names and `@handles`
@@ -812,11 +807,10 @@ normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce th
 band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
-non-News Event identity. A source-contract reason never splits the same
-Item/FactUnit/kind identity: a migrated `source_contract_unverified` Event is
-settled in place by the current parser. Cross-Item exact/artifact/near joins are
-reason-fenced; the sole exception is an unverified migration candidate, which
-is resolved to the current parser result before the new member joins.
+non-News Event identity. Current cross-Item exact/artifact/near joins require
+the same source-contract reason. Archive-only Events are never dedupe
+candidates and are never repaired, translated, or joined by the current
+writer.
 
 That text-derived identity is deliberately weak, and #154 adds the exact one
 beside it rather than loosening it. `news_items.source_artifact_id` is the
@@ -850,31 +844,14 @@ Recovery runs the same classifier and, when history carries the complete tuple,
 the same side-effect-free parser and persists that reason; it does not write the
 live OI rank fact and never delivers. A provider history row missing a tuple
 field fails closed as drift rather than inferring a contract from its id.
-Ordinary and
-deterministic recovery keeps `admission=recovery`, while unsupported contracts
-retain the named `unsupported_market_contract` admission. Event identity v5
-keeps ordinary News identities stable and namespaces non-News FactUnits by
-kind, so different contracts for one provider record cannot merge by arrival
-order. There is no source registry, queue, worker, or ID-only routing.
-The hard cut keeps historical verdict/delivery rows, moves unsupported Events
-to the current named hold, and gives a durable `delivery.state=sent` priority
-over that routing admission so a card the reader received remains delivered.
-Both consumers re-read current `event_kind` before model or outbound work,
-which safely drains pre-cut queued messages without leaving a false pending card.
-Migration 0315 deliberately does not manufacture extra historical Events from
-secondary Strategy tuples on a merged Item. For an already judged Event it
-uses the exact evidence snapshot bound to the latest Triage verdict and keeps
-the route named by that verdict's Program; unsupported contracts and known tuple
-drift still fail closed first. This migration-only compatibility rule prevents
-a pre-cut generic verdict from being replayed as an OI or liquidation verdict.
-An unjudged Event uses its latest evidence focus and the exact source classifier.
-The tuple and provider score always come from the same snapshot. Only an
-incomplete tuple may fall back to an explicit deterministic admission, or to a
-recovery liquidation typed fact. This preserves the Item's complete tuple union
-without rewriting a verdict already queued for delivery. The missing secondary
-Event is a declared historical projection residual, not a loss of fact truth;
-rebuilding the Item through current Admission, or a later provider redelivery,
-creates it deterministically.
+Ordinary and deterministic recovery keep `admission=recovery`, while
+unsupported contracts retain the named `unsupported_market_contract`
+admission. Event identity v6 namespaces every FactUnit by route, so different
+contracts for one provider record cannot merge by arrival order. There is no
+source registry, queue, worker, ID-only routing, or pre-v6 identity bridge.
+Migration 0315's historical classifications remain unchanged audit bytes;
+migration 0330 marks every pre-cut Event archive-only. A later provider
+redelivery creates a new current Event through the single v6 writer.
 
 Gate and storyline (`tracefold.news.events.gate`, `tracefold.news.events.storyline`) are pure
 functions and keep no Strategy name table of their own: grounded assets are the

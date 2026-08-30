@@ -167,6 +167,7 @@ def _event(
         error_code = None
         trace_extra = {"editorial_sha256": judgment.editorial.editorial_sha256}
     runtime_manifest_sha = "b" * 64
+    program_sha256 = "a" * 64
     trace = {
         **trace_extra,
         "judgment_contract_version": judgment.judgment_contract_version,
@@ -177,6 +178,8 @@ def _event(
         "evidence_version": int(evidence["evidence_version"]),
         "evidence_sha256": str(evidence["evidence_sha256"]),
         "focus_fact_id": str(evidence["focus_fact_id"]),
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": program_sha256,
         "told": [],
         "told_count": 0,
     }
@@ -196,7 +199,7 @@ def _event(
         runtime_manifest_sha=runtime_manifest_sha,
         model=model,
         program_version=SEMANTIC_PROGRAM_VERSION,
-        program_sha256="a" * 64,
+        program_sha256=program_sha256,
         degraded=degraded,
         error_code=error_code,
         trace=trace,

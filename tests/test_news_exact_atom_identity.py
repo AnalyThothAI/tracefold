@@ -12,7 +12,7 @@ def test_exact_atom_identity_normalizes_presentation_noise_but_preserves_numbers
     identities = [describe_exact_atom(title) for title in variants]
 
     assert len({identity.comparison_fingerprint for identity in identities}) == 1
-    assert {identity.event_family for identity in identities} == {"general"}
+    assert {identity.dedupe_family for identity in identities} == {"general"}
     assert {identity.duplicate_window_ms for identity in identities} == {12 * 60 * 60_000}
     assert (
         describe_exact_atom("Magnitude 6.4 earthquake strikes northern Chile").comparison_fingerprint

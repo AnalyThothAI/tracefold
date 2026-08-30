@@ -9,7 +9,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 NEWS_BUS_SCHEMA_VERSION = "news_bus_v1"
-EVENT_IDENTITY_VERSION = "news_event_identity_v5"
+EVENT_IDENTITY_VERSION = "news_event_identity_v6"
 GATE_POLICY_VERSION = "news_gate_v5"
 STORYLINE_POLICY_VERSION = "news_storyline_v3"
 # v10 (#160) removes queue/provider hints from editorial authority and chooses

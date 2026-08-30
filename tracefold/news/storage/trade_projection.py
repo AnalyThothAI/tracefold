@@ -204,7 +204,7 @@ class TradeProjectionStorage:
                AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
                      IS NOT DISTINCT FROM s.measurement_window_ms
-              JOIN news_events e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
+              JOIN news_current_events_v1 e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
               LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'

@@ -379,10 +379,10 @@ liquidation contracts select their strict parsers. The pinned tuples are
 `2083 / Large-scale liquidation / market / market` are explicitly unsupported.
 Known tuple drift and unbound scoreless market/wallet frames persist Item/Event
 provenance with nullable Event field
-`source_contract_reason=source_contract_drift|source_contract_unverified|unsupported_market_contract`,
-with `source_contract_unverified` reserved for pre-cut deterministic rows that
-have no durable typed success evidence/read-model row. Unsupported rows call no model and create
-no delivery. A malformed OI/liquidation frame stores `source_contract_drift`;
+`source_contract_reason=source_contract_drift|unsupported_market_contract`.
+The historical `source_contract_unverified` value is archive-only and is not a
+current contract member. Unsupported rows call no model and create no delivery.
+A malformed OI/liquidation frame stores `source_contract_drift`;
 a valid current-writer contract stores `null`. Recovery uses the same classifier
 and, when provider history includes the complete tuple, the same strict parser;
 it persists the result but does not write the live OI rank fact and never
@@ -520,8 +520,8 @@ title alone selects a deterministic route.
   `source_classifier_version`, and `source_contracts_24h` keyed by the five
   closed families. Each family counts the same Event cohort opened in the last
   24 h: `received`; `parsed` (durably verified OI/liquidation parses, all
-  supported News/listing Events, and zero for unsupported; unverified rows
-  remain the explicit gap rather than being inferred successful);
+  supported News/listing Events, and zero for unsupported; archive-only rows
+  are outside the current cohort);
   `parse_failed` (`source_contract_reason=source_contract_drift`); `unsupported`; and
   `verdict` (any Triage verdict for the Event). It also returns degraded counts
   incl. `triage_degraded_by_code_24h`, decided pushes,
@@ -582,21 +582,16 @@ honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
 `measured_at_ms`. All News routes require the operator token.
 
 Item identity is `sha256(source_id, params.id)`; `params.strategy.id` is
-provenance, not fact identity. Event identity v5 preserves the established
-leader-Item identity for ordinary News and namespaces every non-News FactUnit
-by `event_kind`. The same Item/FactUnit/kind remains one Event while a migrated
-`source_contract_unverified` reason is settled by the current parser. Events
-whose pre-v5 ordinary-News identity (`item_id` for a whole Item or
-`sha256(item_id,fact_id)` for a split FactUnit) was migrated to a non-News kind
-reserve that legacy key; a later ordinary-News projection uses
-`sha256(item_id,fact_id,"news")` rather than colliding or rekeying history.
-Events
+provenance, not fact identity. Event identity v6 is
+`sha256(identity_version,item_id,fact_id,event_kind)` for every route.
+Archive-only identities are not candidates for current Event membership and
+there is no pre-v6 collision or rekey bridge. Events
 merge different Items only within the same `event_kind` and current
 source-contract reason, by exact comparison fingerprint or MinHash/LSH
 near-duplicate (estimated Jaccard >= 0.55 with strong-fact compatibility)
 inside the dedupe-family window (market telemetry 2 h, disaster 6 h, filing 72 h,
-general 12 h). An unverified migration Event may match exact/artifact evidence
-and is resolved before membership; verified drift/success cohorts never cross.
+general 12 h). Archive-only Events never enter exact, artifact, or near-match
+candidate sets; current drift and success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
 Verdict identity is `(event_id, stage, policy_version)`. Current rows also carry

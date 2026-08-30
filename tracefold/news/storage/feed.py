@@ -210,7 +210,7 @@ class FeedStorage:
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         boundary = self.conn.execute(
             """
-            SELECT e.event_id, latest.provenance, latest.schema_version
+            SELECT e.event_id, e.current_contract_archive_only, latest.provenance, latest.schema_version
               FROM news_events e
               LEFT JOIN LATERAL (
                 SELECT s.provenance, s.snapshot ->> 'schema_version' AS schema_version
@@ -224,7 +224,11 @@ class FeedStorage:
         ).fetchone()
         if boundary is None:
             return None
-        if boundary["provenance"] != "observed" or boundary["schema_version"] != "news_event_evidence_v3":
+        if (
+            boundary["current_contract_archive_only"]
+            or boundary["provenance"] != "observed"
+            or boundary["schema_version"] != "news_event_evidence_v3"
+        ):
             return {"archive_only": True}
         card = self._current_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
@@ -343,44 +347,16 @@ class FeedStorage:
             """
             SELECT j.*, counts.judgment_n
               FROM (
-                SELECT count(*) AS judgment_n FROM news_reviews
+                SELECT count(*) AS judgment_n FROM news_review_records_v1
                  WHERE event_id = %s AND review_kind = 'judgment'
                    AND subject_kind = 'event'
-                   AND news_current_review_valid(
-                         review_kind, subject_kind, rubric_version, reader_contract_version,
-                         event_id, evidence_version, external_snapshot_id, pairwise_case_id,
-                         should_push, dimensions, novelty, first_bad_owner, evidence_refs,
-                         expected_correction, note, selection, payload, accepts_review_id
-                       ) IS TRUE
               ) counts
               LEFT JOIN LATERAL (
                 SELECT judgment.*
-                  FROM news_reviews acceptance
-                  JOIN news_reviews judgment ON judgment.review_id = acceptance.accepts_review_id
+                  FROM news_review_records_v1 acceptance
+                  JOIN news_review_records_v1 judgment ON judgment.review_id = acceptance.accepts_review_id
                  WHERE acceptance.review_kind = 'acceptance' AND judgment.event_id = %s
                    AND judgment.subject_kind = 'event'
-                   AND news_current_review_valid(
-                         acceptance.review_kind, acceptance.subject_kind,
-                         acceptance.rubric_version, acceptance.reader_contract_version,
-                         acceptance.event_id, acceptance.evidence_version,
-                         acceptance.external_snapshot_id, acceptance.pairwise_case_id,
-                         acceptance.should_push, acceptance.dimensions, acceptance.novelty,
-                         acceptance.first_bad_owner, acceptance.evidence_refs,
-                         acceptance.expected_correction, acceptance.note, acceptance.selection,
-                         acceptance.payload,
-                         acceptance.accepts_review_id
-                       ) IS TRUE
-                   AND news_current_review_valid(
-                         judgment.review_kind, judgment.subject_kind,
-                         judgment.rubric_version, judgment.reader_contract_version,
-                         judgment.event_id, judgment.evidence_version,
-                         judgment.external_snapshot_id, judgment.pairwise_case_id,
-                         judgment.should_push, judgment.dimensions, judgment.novelty,
-                         judgment.first_bad_owner, judgment.evidence_refs,
-                         judgment.expected_correction, judgment.note, judgment.selection,
-                         judgment.payload,
-                         judgment.accepts_review_id
-                       ) IS TRUE
                  ORDER BY acceptance.created_at_ms DESC, acceptance.review_id DESC LIMIT 1
               ) j ON true
             """,
@@ -416,19 +392,28 @@ class FeedStorage:
         row = self.conn.execute(
             """
             SELECT
-              (SELECT count(*) FROM news_items
-                WHERE observed_at_ms >= %s
+              (SELECT count(*) FROM news_items item
+                WHERE item.observed_at_ms >= %s
                   AND EXISTS (
                     SELECT 1
-                      FROM jsonb_array_elements(COALESCE(provider_metadata -> 'strategies', '[]'::jsonb)) s
+                      FROM news_event_members member
+                      JOIN news_current_events_v1 current_event
+                        ON current_event.event_id = member.event_id
+                     WHERE member.item_id = item.item_id
+                  )
+                  AND EXISTS (
+                    SELECT 1
+                      FROM jsonb_array_elements(COALESCE(item.provider_metadata -> 'strategies', '[]'::jsonb)) s
                      WHERE s ->> 'id' = %s
                        AND s ->> 'name' = %s
                        AND s ->> 'source_type' = %s
                        AND s ->> 'engine_type' = %s
                   )
               ) AS telemetry_received_24h,
-              (SELECT count(*) FROM news_oi_signals
-                WHERE created_at_ms >= %s) AS telemetry_parsed_24h,
+              (SELECT count(*)
+                 FROM news_oi_signals signal
+                 JOIN news_current_events_v1 current_event ON current_event.event_id = signal.event_id
+                WHERE signal.created_at_ms >= %s) AS telemetry_parsed_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
                   AND judgment_contract_version = 'news_judgment_v2'
@@ -439,19 +424,19 @@ class FeedStorage:
                   AND created_at_ms >= %s
                   AND program_version = 'news_oi_signal_v2') AS telemetry_push_24h,
               -- #207: Events, not provider items. `telemetry_received_24h` counts exact OI source frames
-              -- *before* the Gate, so it names frames the monitor's table can never show; the three by-rule
-              -- buckets count judged verdicts, so together they miss a frame still waiting for one. This is
-              -- the table's own universe — exactly the rows `admission=telemetry_deterministic&hours=24`
-              -- serves — and it is what the 全部 tab counts.
-              (SELECT count(*) FROM news_events
-                WHERE opened_at_ms >= %s
-                  AND admission = 'telemetry_deterministic'
+              -- attached to a current-contract Event; the three by-rule buckets count judged verdicts, so
+              -- together they miss a current frame still waiting for one. The Event subquery is the table's
+              -- own universe — exactly the rows `admission=telemetry_deterministic&hours=24` serves — and it
+              -- is what the 全部 tab counts.
+              (SELECT count(*) FROM news_current_events_v1 current_event
+                WHERE current_event.opened_at_ms >= %s
+                  AND current_event.admission = 'telemetry_deterministic'
                   AND EXISTS (
                     SELECT 1 FROM news_event_evidence_snapshots evidence
-                     WHERE evidence.event_id = news_events.event_id
+                     WHERE evidence.event_id = current_event.event_id
                        AND evidence.evidence_version = (
                          SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                          WHERE latest.event_id = news_events.event_id
+                          WHERE latest.event_id = current_event.event_id
                        )
                        AND evidence.provenance = 'observed'
                        AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -486,7 +471,7 @@ class FeedStorage:
                      WHERE e.source_contract_reason = 'source_contract_drift'
                         OR COALESCE(v.parse_failed, false)
                    ) AS parse_failed
-              FROM news_events e
+              FROM news_current_events_v1 e
               LEFT JOIN LATERAL (
                 SELECT bool_or(true) AS has_verdict,
                        bool_or(error_code IN ('oi_parse_failed', 'liquidation_parse_failed')) AS parse_failed
@@ -578,12 +563,14 @@ class FeedStorage:
 
         rows = self.conn.execute(
             """
-            SELECT symbol, count(*)::int AS used
-              FROM news_oi_signals
-             WHERE metric_version = %s AND observed_at_ms > %s AND observed_at_ms <= %s
-               AND whale_oi_ratio_bps > %s AND abs(oi_change_bps) >= %s
-             GROUP BY symbol
-             ORDER BY used DESC, symbol ASC
+            SELECT signal.symbol, count(*)::int AS used
+              FROM news_oi_signals signal
+              JOIN news_current_events_v1 current_event ON current_event.event_id = signal.event_id
+             WHERE signal.metric_version = %s
+               AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s
+               AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s
+             GROUP BY signal.symbol
+             ORDER BY used DESC, signal.symbol ASC
              LIMIT %s
             """,
             (
@@ -609,14 +596,14 @@ class FeedStorage:
                 count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
                 count(*) AS events_24h,
                 count(*) FILTER (WHERE admission = 'candidate') AS candidates_24h
-                FROM news_events
-               WHERE opened_at_ms >= %s
+                FROM news_current_events_v1 current_event
+               WHERE current_event.opened_at_ms >= %s
                  AND EXISTS (
                    SELECT 1 FROM news_event_evidence_snapshots evidence
-                    WHERE evidence.event_id = news_events.event_id
+                    WHERE evidence.event_id = current_event.event_id
                       AND evidence.evidence_version = (
                         SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                         WHERE latest.event_id = news_events.event_id
+                         WHERE latest.event_id = current_event.event_id
                       )
                       AND evidence.provenance = 'observed'
                       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -656,19 +643,27 @@ class FeedStorage:
         delivery = self.conn.execute(
             """
             SELECT
-              (SELECT count(*) FROM news_deliveries WHERE state = 'sent' AND settled_at_ms >= %s) AS sent_24h,
-              (SELECT count(*) FROM news_deliveries WHERE state = 'sent' AND settled_at_ms >= %s) AS sent_1h,
-              (SELECT count(*) FROM news_deliveries WHERE state = 'terminal' AND settled_at_ms >= %s) AS terminal_24h,
-              (SELECT error_code FROM news_deliveries WHERE state = 'terminal'
-                ORDER BY settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
+              (SELECT count(*) FROM news_deliveries d
+                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_24h,
+              (SELECT count(*) FROM news_deliveries d
+                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
+              (SELECT count(*) FROM news_deliveries d
+                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                WHERE d.state = 'terminal' AND d.settled_at_ms >= %s) AS terminal_24h,
+              (SELECT d.error_code FROM news_deliveries d
+                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                WHERE d.state = 'terminal'
+                ORDER BY d.settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
               (SELECT percentile_cont(0.5)
                  WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-                 FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
+                 FROM news_deliveries d JOIN news_current_events_v1 e ON e.event_id = d.event_id
                  JOIN news_items i ON i.item_id = e.leader_item_id
                 WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p50_ms,
               (SELECT percentile_cont(0.95)
                  WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-                 FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
+                 FROM news_deliveries d JOIN news_current_events_v1 e ON e.event_id = d.event_id
                  JOIN news_items i ON i.item_id = e.leader_item_id
                 WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
             """,
@@ -740,10 +735,11 @@ class FeedStorage:
             return {}
         rows = self.conn.execute(
             """
-            SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols
-              FROM news_event_assets
-             WHERE event_id = ANY(%s)
-             GROUP BY event_id
+            SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols
+              FROM news_event_assets asset
+              JOIN news_current_events_v1 current_event ON current_event.event_id = asset.event_id
+             WHERE asset.event_id = ANY(%s)
+             GROUP BY asset.event_id
             """,
             (wanted,),
         ).fetchall()
@@ -764,10 +760,11 @@ class FeedStorage:
 
         rows = self.conn.execute(
             """
-            SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols
-              FROM news_event_assets
-             WHERE opened_at_ms >= %s
-             GROUP BY event_id
+            SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols
+              FROM news_event_assets asset
+              JOIN news_current_events_v1 current_event ON current_event.event_id = asset.event_id
+             WHERE asset.opened_at_ms >= %s
+             GROUP BY asset.event_id
             """,
             (int(now_ms) - 24 * 3600_000,),
         ).fetchall()
@@ -778,14 +775,14 @@ class FeedStorage:
 
         suppressed = self.conn.execute(
             f"""
-            SELECT admission, count(*) AS n FROM news_events
-             WHERE opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
+            SELECT admission, count(*) AS n FROM news_current_events_v1 current_event
+             WHERE current_event.opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
                AND EXISTS (
                  SELECT 1 FROM news_event_evidence_snapshots evidence
-                  WHERE evidence.event_id = news_events.event_id
+                  WHERE evidence.event_id = current_event.event_id
                     AND evidence.evidence_version = (
                       SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                       WHERE latest.event_id = news_events.event_id
+                       WHERE latest.event_id = current_event.event_id
                     )
                     AND evidence.provenance = 'observed'
                     AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -843,27 +840,10 @@ class FeedStorage:
                      WHERE j.subject_kind = 'external_miss'
                        AND j.should_push IN ('must_push', 'should_push')
                    ) AS external
-              FROM news_reviews acceptance
-              JOIN news_reviews j ON j.review_id = acceptance.accepts_review_id
+              FROM news_review_records_v1 acceptance
+              JOIN news_review_records_v1 j ON j.review_id = acceptance.accepts_review_id
               JOIN current_epoch ON true
              WHERE acceptance.review_kind = 'acceptance'
-               AND news_current_review_valid(
-                     acceptance.review_kind, acceptance.subject_kind,
-                     acceptance.rubric_version, acceptance.reader_contract_version,
-                     acceptance.event_id, acceptance.evidence_version,
-                     acceptance.external_snapshot_id, acceptance.pairwise_case_id,
-                     acceptance.should_push, acceptance.dimensions, acceptance.novelty,
-                     acceptance.first_bad_owner, acceptance.evidence_refs,
-                     acceptance.expected_correction, acceptance.note, acceptance.selection,
-                     acceptance.payload,
-                     acceptance.accepts_review_id
-                   ) IS TRUE
-               AND news_current_review_valid(
-                     j.review_kind, j.subject_kind, j.rubric_version, j.reader_contract_version,
-                     j.event_id, j.evidence_version, j.external_snapshot_id, j.pairwise_case_id,
-                     j.should_push, j.dimensions, j.novelty, j.first_bad_owner, j.evidence_refs,
-                     j.expected_correction, j.note, j.selection, j.payload, j.accepts_review_id
-                   ) IS TRUE
                AND acceptance.release_eligible AND j.release_eligible
                AND acceptance.created_at_ms >= greatest(%s, current_epoch.starts_at_ms)
                AND j.created_at_ms >= current_epoch.starts_at_ms
@@ -882,7 +862,7 @@ class FeedStorage:
                      WHERE admission IN ({ADMITTED_SQL})
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
-                          WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                          WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
                             AND v.judgment_contract_version = 'news_judgment_v2'
                        )
                    ) AS triaged,
@@ -890,21 +870,21 @@ class FeedStorage:
                      WHERE admission IN ({ADMITTED_SQL})
                        AND EXISTS (
                          SELECT 1 FROM news_verdicts v
-                          WHERE v.event_id = news_events.event_id AND v.stage = 'triage'
+                          WHERE v.event_id = current_event.event_id AND v.stage = 'triage'
                             AND v.judgment_contract_version = 'news_judgment_v2'
                        )
                        AND EXISTS (
                          SELECT 1 FROM news_deliveries d
-                          WHERE d.event_id = news_events.event_id AND d.kind = 'first' AND d.state = 'sent'
+                          WHERE d.event_id = current_event.event_id AND d.kind = 'first' AND d.state = 'sent'
                        )
                    ) AS delivered
-              FROM news_events WHERE opened_at_ms >= %s
+              FROM news_current_events_v1 current_event WHERE current_event.opened_at_ms >= %s
                AND EXISTS (
                  SELECT 1 FROM news_event_evidence_snapshots evidence
-                  WHERE evidence.event_id = news_events.event_id
+                  WHERE evidence.event_id = current_event.event_id
                     AND evidence.evidence_version = (
                       SELECT max(latest.evidence_version) FROM news_event_evidence_snapshots latest
-                       WHERE latest.event_id = news_events.event_id
+                       WHERE latest.event_id = current_event.event_id
                     )
                     AND evidence.provenance = 'observed'
                     AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -1041,17 +1021,24 @@ def _triage_summary(
     }
 
 
-def _triage_assets(value: Any) -> list[dict[str, str]]:
+def _triage_assets(value: Any) -> list[dict[str, str | None]]:
     if not isinstance(value, list):
         return []
-    out: list[dict[str, str]] = []
+    out: list[dict[str, str | None]] = []
     for item in value:
         if not isinstance(item, Mapping):
             continue
-        symbol = str(item.get("symbol") or "").strip()
+        symbol = str(item["symbol"]).strip()
         if not symbol:
             continue
-        out.append({"symbol": symbol, "role": str(item.get("role") or "mentioned")})
+        market_type = item["market_type"]
+        out.append(
+            {
+                "symbol": symbol,
+                "market_type": None if market_type is None else str(market_type),
+                "role": str(item["role"]),
+            }
+        )
     return out
 
 
