@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -22,6 +23,7 @@ from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.platform.postgres.client import create_pool
 from tracefold.trading.capital_lane import CapitalLane, CapitalLaneConfig
 from tracefold.trading.catalog import (
+    PreparedVenueCatalogSnapshot,
     VenueCatalog,
     VenueInstrumentCatalogEntryV1,
     VenueInstrumentCatalogSnapshotV1,
@@ -73,6 +75,25 @@ def _pool() -> Any:
     )
     pool.wait(timeout=5.0)
     return pool
+
+
+def _forge_prepared(
+    prepared: PreparedVenueCatalogSnapshot,
+    **changes: Any,
+) -> PreparedVenueCatalogSnapshot:
+    """Bypass the validated constructor only to probe the repository's conflict defense."""
+
+    forged = object.__new__(PreparedVenueCatalogSnapshot)
+    for name in (
+        "snapshot_sha256",
+        "binding",
+        "captured_at_ms",
+        "stale_after_ms",
+        "provider_instrument_count",
+        "payload_json",
+    ):
+        object.__setattr__(forged, name, changes.get(name, getattr(prepared, name)))
+    return forged
 
 
 def _seed_active_catalogs() -> None:
@@ -171,6 +192,7 @@ class _TightAuthorityIdleTimeout:
 class _TightWriteIdleTimeout:
     def __init__(self, delegate: WorkerTradingDatabase) -> None:
         self._delegate = delegate
+        self.repository_statement_counts: list[int] = []
 
     async def tx(
         self,
@@ -181,7 +203,19 @@ class _TightWriteIdleTimeout:
     ) -> Any:
         def with_tight_idle_timeout(repos: Any) -> Any:
             repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
-            return fn(repos)
+            statement_count = 0
+
+            def count_statement() -> None:
+                nonlocal statement_count
+                statement_count += 1
+
+            original_conn = repos.trading.conn
+            repos.trading.conn = _CountingConnection(original_conn, count_statement)
+            try:
+                return fn(repos)
+            finally:
+                repos.trading.conn = original_conn
+                self.repository_statement_counts.append(statement_count)
 
         return await self._delegate.tx(name, with_tight_idle_timeout, timeout_seconds=timeout_seconds)
 
@@ -280,7 +314,7 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
             await tight_writes.tx(
                 "trading_venue_catalog_conflict_probe",
                 lambda repos: repos.trading.store_venue_catalog_snapshot(
-                    prepared=replace(prepared_stored, payload_json="{}"),
+                    prepared=_forge_prepared(prepared_stored, payload_json="{}"),
                     now_ms=NOW + 2,
                 ),
                 timeout_seconds=3.0,
@@ -289,6 +323,7 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
 
     try:
         stored = asyncio.run(publish_idempotently_and_reject_a_conflict())
+        assert tight_writes.repository_statement_counts == [1, 1, 1]
         conn = connect_postgres_test(read_only=False)
         try:
             row = conn.execute(
@@ -298,5 +333,95 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
         finally:
             conn.close()
     finally:
+        database.close_executors()
+        pool.close()
+
+
+def test_prepared_catalog_rejects_an_unbound_first_write_identity() -> None:
+    """A forged digest or metadata tuple must fail before a transaction can open."""
+
+    prepared = prepare_venue_catalog_snapshot(_catalog("BINANCE_USDM"))
+    for changes in (
+        {"snapshot_sha256": "0" * 64},
+        {"binding": "HYPERLIQUID_PERP"},
+        {"captured_at_ms": prepared.captured_at_ms + 1},
+        {"stale_after_ms": prepared.stale_after_ms + 1},
+        {"provider_instrument_count": prepared.provider_instrument_count + 1},
+        {"payload_json": "{}"},
+    ):
+        with pytest.raises(ValueError, match="venue_catalog_prepared_identity_invalid"):
+            replace(prepared, **changes)
+
+
+def test_catalog_publish_concurrent_identical_first_write_is_idempotent() -> None:
+    """A retry blocked behind the first insert must observe that committed identical row."""
+
+    source = _catalog("BINANCE_USDM").model_copy(update={"captured_at_ms": NOW + 10_000})
+    prepared = prepare_venue_catalog_snapshot(source)
+    blocker = connect_postgres_test(read_only=False)
+    blocker.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (prepared.snapshot_sha256,),
+    )
+    blocker.execute(
+        """
+        INSERT INTO trading_venue_catalog_snapshots (
+          snapshot_sha256, binding, captured_at_ms, stale_after_ms,
+          provider_instrument_count, payload, created_at_ms
+        ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+        """,
+        (
+            prepared.snapshot_sha256,
+            prepared.binding,
+            prepared.captured_at_ms,
+            prepared.stale_after_ms,
+            prepared.provider_instrument_count,
+            prepared.payload_json,
+            NOW,
+        ),
+    )
+    pool = _pool()
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    trading = WorkerTradingDatabase(database)
+    retry_started = threading.Event()
+
+    def store_with_start_signal(repos: Any) -> None:
+        original_conn = repos.trading.conn
+        repos.trading.conn = _CountingConnection(original_conn, retry_started.set)
+        try:
+            repos.trading.store_venue_catalog_snapshot(
+                prepared=prepared,
+                now_ms=NOW + 1,
+            )
+        finally:
+            repos.trading.conn = original_conn
+
+    async def retry_while_the_first_insert_is_uncommitted() -> None:
+        retry = asyncio.create_task(
+            trading.tx(
+                "trading_venue_catalog_concurrent_retry",
+                store_with_start_signal,
+                timeout_seconds=3.0,
+            )
+        )
+        try:
+            for _ in range(100):
+                if retry_started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert retry_started.is_set(), "the identical retry never reached the repository write"
+        finally:
+            blocker.commit()
+        await asyncio.wait_for(retry, timeout=3.0)
+
+    try:
+        asyncio.run(retry_while_the_first_insert_is_uncommitted())
+        row = blocker.execute(
+            "SELECT catalog_snapshot_sha256 FROM trading_binding_runtime WHERE binding = 'BINANCE_USDM'"
+        ).fetchone()
+        assert row is not None and row["catalog_snapshot_sha256"] == prepared.snapshot_sha256
+    finally:
+        blocker.rollback()
+        blocker.close()
         database.close_executors()
         pool.close()

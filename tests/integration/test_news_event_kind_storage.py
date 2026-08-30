@@ -15,6 +15,7 @@ from tracefold.news.liquidations import TRIAGE_POLICY_VERSION as LIQUIDATION_TRI
 from tracefold.news.liquidations import judge as judge_liquidation
 from tracefold.news.liquidations import parse_liquidation
 from tracefold.news.liquidations import trace as liquidation_metadata
+from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
@@ -212,6 +213,10 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
     )
     judgment = evaluate_oi(signal, earlier_eligible_count=0, policy=policy)
     with repos.transaction():
+        repos.instruments.apply_snapshot(
+            [Instrument("binance.perp", "BTCUSDT", "BTC", "crypto", "USDT")],
+            now_ms=NOW - 1,
+        )
         news.register_agent_runtime_manifest(
             manifest_sha="d" * 64,
             stable_bundle_sha="f" * 64,
@@ -239,6 +244,8 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             observed_at_ms=NOW,
             rank_in_window=judgment.rank_in_window,
             now_ms=NOW,
+            source_item_id="projection-oi-item",
+            source_venue="binance",
         )
         judgment_sha256 = judgment.judgment_sha256
         runtime_manifest_sha = "b" * 64
@@ -296,6 +303,36 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
     assert [(row["symbol"], row["rank_in_window"], row["source_rule"]) for row in projected()] == [
         ("BTC", 1, "opening_move_with_whale_concentration")
     ]
+    catalog_rows = news.trade_evidence_catalog_rows(
+        metric_version=OI_METRIC_VERSION,
+        start_observed_at_ms=NOW,
+        end_observed_at_ms=NOW + 1,
+        known_at_or_before_ms=NOW,
+        available_at_or_before_ms=NOW,
+        source_limit=20,
+        catalog_limit=100,
+    )
+    assert [(row["event_id"], row["venue_symbol"]) for row in catalog_rows] == [("projection-oi-event", "BTCUSDT")]
+    source_rows = news.trade_fixed_window_oi_sources(
+        metric_version=OI_METRIC_VERSION,
+        start_observed_at_ms=NOW,
+        end_observed_at_ms=NOW + 1,
+        drain_cutoff_ms=NOW,
+        limit=20,
+    )
+    assert [(row["event_id"], row["source_venue"]) for row in source_rows] == [("projection-oi-event", "binance")]
+    conn.execute("UPDATE news_events SET ingest_mode = 'recovery' WHERE event_id = 'projection-oi-event'")
+    assert (
+        news.trade_fixed_window_oi_sources(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=NOW,
+            end_observed_at_ms=NOW + 1,
+            drain_cutoff_ms=NOW,
+            limit=20,
+        )
+        == []
+    )
+    conn.execute("UPDATE news_events SET ingest_mode = 'live' WHERE event_id = 'projection-oi-event'")
     conn.execute("UPDATE news_oi_signals SET rank_in_window = 2 WHERE event_id = 'projection-oi-event'")
     assert projected() == []
     conn.execute(
@@ -309,6 +346,23 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         "measurement_window_ms = 300000 WHERE event_id = 'projection-oi-event'"
     )
     assert projected() == []
+    with repos.transaction():
+        # Reproduce a pre-hard-cut archived row.  Production forbids changing this marker, so the
+        # regression fixture bypasses triggers only while creating that historical database state.
+        conn.execute("SET LOCAL session_replication_role = 'replica'")
+        conn.execute(
+            "UPDATE news_events SET current_contract_archive_only = true WHERE event_id = 'projection-oi-event'"
+        )
+    assert (
+        news.trade_fixed_window_oi_sources(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=NOW,
+            end_observed_at_ms=NOW + 1,
+            drain_cutoff_ms=NOW,
+            limit=20,
+        )
+        == []
+    )
 
 
 def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadata(conn) -> None:

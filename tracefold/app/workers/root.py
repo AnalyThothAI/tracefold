@@ -171,6 +171,8 @@ async def run_workers(settings: Settings) -> None:
             db,
             runtime_id,
             runtime_version,
+            identity.runtime_revision,
+            identity.image_digest,
             started_at_ms,
             operation_timeout_seconds=_CONTROL_TIMEOUT_SECONDS,
         )
@@ -634,12 +636,16 @@ def _runtime_begin(
     db: WorkerDatabase,
     runtime_id: str,
     runtime_version: str,
+    runtime_revision: str,
+    image_digest: str,
     started_at_ms: int,
 ) -> bool:
     with db.worker_session("workers_runtime_begin", 1.0) as repos, repos.transaction():
         return WorkersRuntimeRepository(repos.conn).begin(
             runtime_id=runtime_id,
             runtime_version=runtime_version,
+            runtime_revision=runtime_revision,
+            image_digest=image_digest,
             started_at_ms=started_at_ms,
             now_ms=_now_ms(),
         )

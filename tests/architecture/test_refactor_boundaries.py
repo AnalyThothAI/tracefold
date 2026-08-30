@@ -390,6 +390,37 @@ def test_cross_context_boundaries_carry_named_typed_rows() -> None:
     assert violations == []
 
 
+CROSS_CONTEXT_TYPED_PARAMETERS = {
+    "app/cli/commands/trading_evidence.py": {"_fetch_blind_market_health": {"capture"}},
+    "trading/evidence_research.py": {
+        "build_future_capture_collection_health": {"collector", "workers", "market"},
+        "summarize_blind_market_health": {"probes"},
+    },
+    "trading/evidence_verification.py": {
+        "fixed_window_verification_checks": {"serve", "sources"},
+        "release_verification_checks": {"observations", "window_sources"},
+        "rollback_verification_checks": {"serve"},
+    },
+}
+
+
+def test_evidence_cross_context_facts_have_named_annotations() -> None:
+    violations: list[str] = []
+    for relative, functions in CROSS_CONTEXT_TYPED_PARAMETERS.items():
+        tree = ast.parse((SRC / relative).read_text(encoding="utf-8"), filename=relative)
+        by_name = {
+            node.name: node for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for function_name, parameter_names in functions.items():
+            function = by_name[function_name]
+            parameters = {argument.arg: argument for argument in (*function.args.args, *function.args.kwonlyargs)}
+            for parameter_name in parameter_names:
+                annotation = parameters[parameter_name].annotation
+                if annotation is None or _is_any_mapping(annotation):
+                    violations.append(f"{relative}:{function.lineno}:{function_name}:{parameter_name}")
+    assert violations == []
+
+
 def test_news_to_trading_mapper_matches_the_projection_version() -> None:
     from tracefold.app.workers.wiring.news_to_trading import MAPPED_NEWS_PROJECTION_VERSION
     from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION

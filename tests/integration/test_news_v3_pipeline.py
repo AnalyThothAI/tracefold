@@ -944,6 +944,8 @@ def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
     )
     with repos.transaction():
         for event_id, symbol, ratio_bps, change_bps, at_ms in rows:
+            card = repos.news.event_card(event_id)
+            assert card is not None
             repos.news.insert_oi_signal(
                 event_id=event_id,
                 metric_version="oi_issue_179_repro",
@@ -956,6 +958,8 @@ def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
                 observed_at_ms=at_ms,
                 rank_in_window=99,
                 now_ms=observed_at_ms,
+                source_item_id=str(card["leader_item_id"]),
+                source_venue="binance",
             )
 
     earlier_eligible_count = repos.news.count_recent_eligible_oi_signals(
@@ -1026,6 +1030,8 @@ def test_same_symbol_concurrency_serializes_eligible_rank_and_caps_pushes(conn) 
                     ),
                     earlier_eligible_count=count,
                 )
+                card = repos.news.event_card(event_id)
+                assert card is not None
                 repos.news.insert_oi_signal(
                     event_id=event_id,
                     metric_version="oi_issue_179_concurrency",
@@ -1038,6 +1044,8 @@ def test_same_symbol_concurrency_serializes_eligible_rank_and_caps_pushes(conn) 
                     observed_at_ms=observed_at_ms,
                     rank_in_window=judgment.rank_in_window,
                     now_ms=observed_at_ms,
+                    source_item_id=str(card["leader_item_id"]),
+                    source_venue="binance",
                 )
             return judgment.decision.final
         finally:

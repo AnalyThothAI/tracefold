@@ -51,6 +51,8 @@ class WorkersRuntimeRepository:
         *,
         runtime_id: str,
         runtime_version: str,
+        runtime_revision: str,
+        image_digest: str,
         started_at_ms: int,
         now_ms: int,
     ) -> bool:
@@ -62,22 +64,26 @@ class WorkersRuntimeRepository:
             """
             INSERT INTO workers_runtime(
               singleton_key, runtime_id, runtime_version, lifecycle_state,
-              started_at_ms, heartbeat_at_ms, fatal_code
+              started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
             )
-            VALUES (true, %s, %s, 'starting', %s, %s, NULL)
+            VALUES (true, %s, %s, 'starting', %s, %s, NULL, %s, %s)
             ON CONFLICT(singleton_key) DO UPDATE SET
               runtime_id = excluded.runtime_id,
               runtime_version = excluded.runtime_version,
               lifecycle_state = excluded.lifecycle_state,
               started_at_ms = excluded.started_at_ms,
               heartbeat_at_ms = excluded.heartbeat_at_ms,
-              fatal_code = NULL
+              fatal_code = NULL,
+              runtime_revision = excluded.runtime_revision,
+              image_digest = excluded.image_digest
             """,
             (
                 runtime_uuid,
                 _required_text(runtime_version, "runtime_version"),
                 int(started_at_ms),
                 int(now_ms),
+                _required_text(runtime_revision, "runtime_revision"),
+                _required_text(image_digest, "image_digest"),
             ),
         )
         return True
@@ -136,7 +142,8 @@ def workers_runtime_read_query() -> ReadQuerySpec:
         name="workers_runtime",
         sql="""
             SELECT runtime_id::text AS runtime_id, runtime_version,
-                   lifecycle_state, started_at_ms, heartbeat_at_ms, fatal_code
+                   lifecycle_state, started_at_ms, heartbeat_at_ms, fatal_code,
+                   runtime_revision, image_digest
               FROM workers_runtime
              WHERE singleton_key
         """,

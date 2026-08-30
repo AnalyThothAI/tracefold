@@ -75,6 +75,16 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     if rank is None:
         return SourceRejected(rule="rank_missing", symbol=symbol)
 
+    measurements = {
+        "oi_change_bps": _int(row.get("oi_change_bps")),
+        "oi_value_usd": _int(row.get("oi_value_usd")),
+        "whale_long_profit_bps": _int(row.get("whale_long_profit_bps")),
+        "whale_oi_ratio_bps": _int(row.get("whale_oi_ratio_bps")),
+    }
+    missing_measurement = next((name for name, value in measurements.items() if value is None), None)
+    if missing_measurement is not None:
+        return SourceRejected(rule=f"{missing_measurement}_missing", symbol=symbol)
+
     direction = str(row.get("direction") or "").strip().lower()
     if direction not in ("rise", "fall"):
         return SourceRejected(rule="oi_direction_unknown", symbol=symbol)
@@ -98,10 +108,10 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
             base_symbol=symbol,
             venue=venue,
             oi_direction=direction,
-            oi_change_bps=_int(row.get("oi_change_bps"), 0) or 0,
-            oi_value_usd=_int(row.get("oi_value_usd"), 0) or 0,
-            whale_long_profit_bps=_int(row.get("whale_long_profit_bps"), 0) or 0,
-            whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
+            oi_change_bps=measurements["oi_change_bps"],
+            oi_value_usd=measurements["oi_value_usd"],
+            whale_long_profit_bps=measurements["whale_long_profit_bps"],
+            whale_oi_ratio_bps=measurements["whale_oi_ratio_bps"],
             rank_in_window=rank,
             final_decision=str(row.get("final_decision") or ""),
             source_rule=source_rule,

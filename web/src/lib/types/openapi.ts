@@ -2227,6 +2227,17 @@ export interface components {
              */
             store: "postgresql";
         };
+        /** ServeRuntimeData */
+        ServeRuntimeData: {
+            /** Image Digest */
+            image_digest: string;
+            /** Runtime Id */
+            runtime_id: string;
+            /** Runtime Revision */
+            runtime_revision: string;
+            /** Started At Ms */
+            started_at_ms: number;
+        };
         /** StatusData */
         StatusData: {
             /** Measured At Ms */
@@ -2253,6 +2264,7 @@ export interface components {
             ok: boolean;
             /** Reasons */
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
+            serve_runtime: components["schemas"]["ServeRuntimeData"];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
         /** TradingAuthorityEvidenceData */

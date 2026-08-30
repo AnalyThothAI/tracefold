@@ -25,16 +25,20 @@ from typing import Any
 
 from tracefold.news.storage.trade_projection import (
     OiTradeProjectionRow,
+    TradeEvidenceCatalogProjectionRow,
+    TradeEvidenceCollectionHealthRow,
+    TradeFixedWindowOiSourceRow,
     TradeInstrumentProjectionRow,
 )
 from tracefold.trading.contracts import (
+    FixedWindowSourceFactV1,
     InstrumentCandidateRow,
     OiCandidateRow,
 )
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v10"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v12"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -47,6 +51,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
 
     return OiCandidateRow(
         event_id=row["event_id"],
+        source_item_id=row["source_item_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
         source_rule=row["source_rule"],
@@ -70,6 +75,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
         rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
+        source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],
         venue=row["venue"],
     )
@@ -86,6 +92,33 @@ def to_instrument_candidate_row(row: TradeInstrumentProjectionRow) -> Instrument
         quote_asset=row["quote_asset"],
         status=row["status"],
         last_seen_ms=row["last_seen_ms"],
+    )
+
+
+def to_evidence_catalog_candidate_row(row: TradeEvidenceCatalogProjectionRow) -> InstrumentCandidateRow:
+    """Bulk evidence catalogue row -> the exact Trading instrument candidate shape."""
+
+    return InstrumentCandidateRow(
+        venue=row["venue"],
+        venue_symbol=row["venue_symbol"],
+        base_symbol=row["base_symbol"],
+        instrument_class=row["instrument_class"],
+        quote_asset=row["quote_asset"],
+        status=row["status"],
+        last_seen_ms=row["last_seen_ms"],
+    )
+
+
+def to_fixed_window_source_fact(row: TradeFixedWindowOiSourceRow) -> FixedWindowSourceFactV1:
+    """News fixed-window source identity -> Trading's typed conservation input."""
+
+    return FixedWindowSourceFactV1(
+        event_id=row["event_id"],
+        metric_version=row["metric_version"],
+        source_venue=row["source_venue"],
+        observed_at_ms=row["observed_at_ms"],
+        available_at_ms=row["available_at_ms"],
+        verdict_created_at_ms=row["verdict_created_at_ms"],
     )
 
 
@@ -134,8 +167,12 @@ def news_trade_instruments(
 
 __all__ = [
     "MAPPED_NEWS_PROJECTION_VERSION",
+    "TradeEvidenceCatalogProjectionRow",
+    "TradeEvidenceCollectionHealthRow",
     "news_oi_sources",
     "news_trade_instruments",
+    "to_evidence_catalog_candidate_row",
+    "to_fixed_window_source_fact",
     "to_instrument_candidate_row",
     "to_oi_candidate_row",
 ]

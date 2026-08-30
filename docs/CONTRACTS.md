@@ -959,10 +959,16 @@ reader/writer.
   `tracefold.trading.contracts`, and a News route must not assert it.
 - Workers refresh both public venue catalogs without credentials. Each refresh
   appends a content-addressed snapshot and atomically moves only that binding's
-  pointer. Provider error marks that binding `error` when no snapshot exists or
-  `stale` while retaining last-known-good; it never empties the catalog or
-  changes the other binding. There is no operator refresh command and no
-  execution authorization in this operation.
+  pointer. Before the transaction opens, the prepared storage value revalidates
+  the complete catalog model, canonical JSON, metadata tuple, and SHA-256. The
+  repository makes one client SQL call to a PostgreSQL function. That function
+  takes the digest-scoped transaction advisory lock, either appends the exact
+  bytes or proves an identical prior row, and activates the binding pointer in
+  the same transaction; a same-digest mismatch fails closed. Provider error marks that
+  binding `error` when no snapshot exists or `stale` while retaining
+  last-known-good; it never empties the catalog or changes the other binding.
+  There is no operator refresh command and no execution authorization in this
+  operation.
 - `tracefold trading replay-oi --days 7 --strategy
   source_native_oi_smart_money_long_v3 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It
@@ -970,6 +976,76 @@ reader/writer.
   gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
   response names an immutable artifact and PostgreSQL receipt by deterministic
   `run_id`; funding and portfolio drawdown remain `null`.
+- `tracefold trading evidence` is the #377 Production V3 evidence clock. Its
+  write-free stages are deliberately separate: `capture` freezes only
+  point-in-time OI facts and their source-time catalog; `drain` later freezes
+  a gap-free five-minute bar window (a middle gap is typed `MISSING`, never a
+  shorter implicit episode) and the independent funding window
+  `[source observed, source observed + max outcome horizon)`. Evaluation applies
+  only provider funding timestamps in the replay's explicit
+  `[opened_at,closed_at)` holding interval and values each payment with the first
+  five-minute close at or after the funding event; pre-entry rates are not charged.
+  `corpus-seal` evaluates a
+  discovery partition without provider I/O. `candidate-register` appends
+  exactly one `CANDIDATE_LOCKED` or `NO_CANDIDATE` receipt per
+  corpus/binding before the future start. Registration re-runs the code-owned
+  finite selector over the sealed corpus and binds the exact eligible source
+  identities and terminal; a supplied file cannot invent a candidate. All public
+  transition timestamps come from PostgreSQL. Future `capture` is a sequence of
+  contiguous append-only batches at the locked interval. Each batch persists its
+  exact sources plus collector/Workers health, expected/missing/late/catalog
+  source mass, bar/funding continuity, and artifact integrity;
+  App supplies value-free provider clocks and Trading interprets continuity.
+  PostgreSQL rejects gaps, overlaps, wrong binding/protocol, calls beyond the
+  maximum lag, incomplete chains, and caller-forged health/incident summaries.
+  Only the complete chain freezes the fixed-cutoff population as the
+  protocol's one `FUTURE_CAPTURE_SEALED`. A future `drain` refuses provider I/O before the fixed
+  cutoff, then transactionally commits that exact capture/drain pair as the one
+  `FUTURE_DRAIN_SEALED` receipt for that protocol before exposing
+  its labels. `future-unblind` accepts only that committed drain and PostgreSQL
+  admits only one result for the locked protocol. Candidate registration also
+  pins the code-owned finite selection digest and the discovery cost digest;
+  its executable model is the exact Nautilus BAR taker fee, provider funding,
+  first-closed-five-minute entry, extra stress and zero-return benchmark contract.
+  A `PROMOTE` receipt is research evidence only: it cannot
+  create a grant, arm, Intent, provider write, or `RUNNING` control.
+- `trading evidence release-register --file RELEASE` must run before the fixed
+  window starts. It observes the authenticated local Serve status, reads the
+  durable current Workers generation, and lets PostgreSQL bind both exact
+  runtime ids/start times/revisions/images to the approved release and window.
+  A later process replacement cannot inherit that registration.
+- `trading evidence verify` is the one credential-free, provider-write-free
+  verifier. Exactly one of `--receipt`, `--case-id`, `--window FILE`,
+  `--release FILE`, or `--rollback FILE` selects its subject. Receipt mode
+  follows and re-hashes the complete corpus -> candidate -> result parent
+  chain. Case mode proves the Admission/Case/Intent/risk lifecycle and rejects
+  an unfenced provider write, unprotected fill, nonterminal exposure, or
+  unproved flat. Window mode accepts only a preregistered exact seven-day
+  `[start,end)` plus drain cutoff and nonzero activity floors; it performs
+  Source/Admission, Case, Intent, terminal, protection, settlement, fees/PnL
+  and missingness conservation from PostgreSQL. Release mode additionally
+  first verifies the annotated release tag signature and resolves that tag to
+  the exact commit/tree. It then compares image/migration/OpenAPI/web/Nautilus,
+  contract, binding/account, corpus/result/grant/risk identities, the exact
+  canary Intent set, and every canary's grant/future/risk/`CLOSED_FLAT` chain.
+  Release and window verification require the preregistration and the same
+  Workers and Serve generations to span the complete window. Nautilus appends
+  one immutable start fact per process generation, so the
+  declared restart drill must show two exact release generations ordered after
+  native protection and before authoritative flat. Release verification then
+  runs the same window accounting. The window also requires one exact Workers
+  commit/image runtime spanning its start through end and release-matching
+  Admission and Intent authority chains. Rollback mode re-hashes the named exact
+  release artifact and requires matching release binding/grant scope and
+  post-window ordering, Capital `PAUSED`, zero active
+  Intent/risk, every named binding authoritatively flat with no active arm, and
+  every named grant revoked or expired. It also proves that Decision and the
+  observer continued after rollback, zero refill/provider submission occurred,
+  and no terminal Intent was revived. Any unknown or missing link is a stable
+  failed check and a nonzero exit; zero activity never verifies a release.
+  The canonical window/release verifier report includes the digest of the full
+  per-binding policy/capital/Q1/Q2/risk/stage/latency/financial/missingness
+  report; changing any of those figures changes the verifier report identity.
 **One HTTP owner per durable aggregate (#331, #350).** Nothing crosses: a Case
 carries frozen evidence plus independent Policy and Capital attribution; an
 Intent carries its lifecycle and a `case_id` back-reference; status carries
@@ -1033,7 +1109,7 @@ orthogonal durable runtime facts and bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|show|replay-oi|blacklist|control`;
+- Trading: `trading status|cases|show|replay-oi|evidence|authority|blacklist|control`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -1052,7 +1128,7 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260830_0333`). Since
+append without rewrite access (current at migration `20260830_0334`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
@@ -1540,11 +1616,14 @@ publishes one content-addressed artifact, materializes timed blacklist expiry
 through a short Workers transaction, and inserts one immutable replay receipt;
 it has no execution credentials and performs no provider order write.
 
-Trading consumes `news_trade_projection_v10`: exact current
-`news_judgment_v2` OI rows plus the public instrument catalogue. Editorial News
+Trading consumes `news_trade_projection_v12`: exact current
+`news_judgment_v2` OI rows, their immutable source Item identity and availability
+clock, a bounded bulk point-in-time public instrument catalogue, and the complete
+cutoff-bounded OI source universe used for fixed-window Gate conservation. Editorial News
 and liquidation do not cross this capital seam. OI rows freeze `ingest_mode`,
 so Item retention cannot erase live/recovery provenance; recovery rows are not
-eligible triggers.
+eligible triggers. The fixed-window universe joins the same current-Event view
+and requires `ingest_mode=live`, matching Gate eligibility exactly.
 
 `trading_manifest_v9` freezes the learning epoch, OI Program v2 version and
 SHA, policy v11, judgment contract/origin/SHA, runtime-manifest SHA, and the OI

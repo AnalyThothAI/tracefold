@@ -10,15 +10,18 @@ from .capabilities import CapabilityStorage
 from .cases import CaseStorage
 from .catalog import CatalogStorage
 from .control import ControlStorage
+from .evidence import EvidenceStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
 from .lane import LaneStorage
 from .queries import QueryStorage
 from .replay import ReplayStorage
+from .verification import VerificationStorage
 
 
 class TradingRepository(
     ControlStorage,
+    EvidenceStorage,
     AuthorityStorage,
     BindingStorage,
     CatalogStorage,
@@ -29,6 +32,7 @@ class TradingRepository(
     LaneStorage,
     QueryStorage,
     ReplayStorage,
+    VerificationStorage,
 ):
     """Connection-bound persistence facade; callers continue to own transactions."""
 
