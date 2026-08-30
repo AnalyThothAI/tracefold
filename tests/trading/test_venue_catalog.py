@@ -177,3 +177,57 @@ def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_v
     assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in (
         telemetry.render_prometheus_text()
     )
+
+
+def test_catalog_stop_interrupts_an_inflight_capability_compile(monkeypatch: pytest.MonkeyPatch) -> None:
+    stop = asyncio.Event()
+    compile_started = asyncio.Event()
+    compile_cancelled = asyncio.Event()
+
+    class Trading:
+        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
+            del snapshot, now_ms
+
+    class Database:
+        async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
+            del timeout_seconds
+            return fn(type("Repositories", (), {"trading": Trading()})())
+
+    class Compiler:
+        async def compile(self, _snapshot: Any) -> None:
+            compile_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                compile_cancelled.set()
+                raise
+
+    async def binance() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        return (_row("BTCUSDT", raw="binance"),)
+
+    async def hyperliquid() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
+        raise AssertionError("stop_must_prevent_the_next_provider_call")
+
+    monkeypatch.setattr(trading_wiring, "fetch_binance_usdm_catalog", binance)
+    monkeypatch.setattr(trading_wiring, "fetch_hyperliquid_perp_catalog", hyperliquid)
+    catalog = VenueCatalog(
+        db=Database(),  # type: ignore[arg-type]
+        clock=lambda: 1_900_000_000_000,
+        stale_after_ms=21_600_000,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            trading_wiring.run_venue_catalog(
+                catalog,
+                capability_compiler=Compiler(),  # type: ignore[arg-type]
+                stop_event=stop,
+                period_seconds=0.05,
+            )
+        )
+        await compile_started.wait()
+        stop.set()
+        await asyncio.wait_for(task, timeout=0.25)
+
+    asyncio.run(scenario())
+    assert compile_cancelled.is_set()

@@ -7,7 +7,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() -> None:
+def test_production_v3_trading_node_config_is_mainnet_reconciling_and_in_memory() -> None:
     from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
     from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
     from nautilus_trader.live.node import TradingNode
@@ -49,7 +49,7 @@ def test_public_v1_trading_node_config_is_demo_only_reconciling_and_in_memory() 
     assert config.data_clients[BINANCE].instrument_provider.query_commission_rates is False
     assert execution.instrument_provider.query_commission_rates is False
     assert execution.account_type == BinanceAccountType.USDT_FUTURES
-    assert execution.environment == BinanceEnvironment.DEMO
+    assert execution.environment == BinanceEnvironment.LIVE
     assert execution.use_reduce_only is True
     assert execution.max_retries is None
     assert execution.api_key == "demo-key"

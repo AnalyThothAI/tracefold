@@ -36,6 +36,11 @@ def conn(postgres_module_clone_dsn: str):
         snapshot=catalog,
         now_ms=now_ms,
     )
+    connection.execute(
+        "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', updated_at_ms = %s "
+        "WHERE binding = 'BINANCE_USDM'",
+        (now_ms,),
+    )
     assert repositories_for_connection(connection).trading.append_and_activate_execution_capability_snapshot(
         snapshot,
         created_at_ms=now_ms,

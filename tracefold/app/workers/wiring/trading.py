@@ -142,7 +142,12 @@ async def run_venue_catalog(
                     snapshot = await catalog.publish(binding=binding, instruments=instruments)
                     if capability_compiler is not None:
                         try:
-                            await capability_compiler.compile(snapshot)
+                            if not await _compile_capability_until_stopped(
+                                capability_compiler,
+                                snapshot,
+                                stop_event=stop_event,
+                            ):
+                                return
                         except ExecutionCapabilityCompileError as exc:
                             complete = False
                             logger.warning(
@@ -168,6 +173,37 @@ async def run_venue_catalog(
         wait = period_seconds if complete else min(period_seconds, VENUE_CATALOG_RETRY_SECONDS)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(wait)))
+
+
+async def _compile_capability_until_stopped(
+    compiler: ExecutionCapabilityCompiler,
+    snapshot: Any,
+    *,
+    stop_event: asyncio.Event,
+) -> bool:
+    """Cancel provider-native compilation promptly without interrupting the catalog commit."""
+
+    if stop_event.is_set():
+        return False
+    compile_task = asyncio.create_task(compiler.compile(snapshot))
+    stop_task = asyncio.create_task(stop_event.wait())
+    try:
+        done, _ = await asyncio.wait((compile_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
+        if stop_task in done and compile_task not in done:
+            compile_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await compile_task
+            return False
+        await compile_task
+        return True
+    finally:
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
+        if not compile_task.done():
+            compile_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await compile_task
 
 
 async def run_capital_lane(

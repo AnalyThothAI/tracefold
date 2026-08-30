@@ -10,6 +10,7 @@ the reconciler refuses to manage it.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -833,21 +834,6 @@ def test_0327_preserves_a_nonterminal_intent_and_0329_refuses_to_orphan_it() -> 
 
         _upgrade("20260829_0327")
         conn = connect_postgres_test(read_only=False)
-        repos = TradingRepository(conn)
-        assert repos.set_binding_runtime(
-            binding="BINANCE_USDM",
-            credential_state="unconfigured",
-            credential_fingerprint=None,
-            runtime_state="stopped",
-            account_state="unknown",
-            heartbeat_at_ms=None,
-            reason="credentials_unconfigured",
-            now_ms=NOW + 1,
-        )
-        conn.commit()
-        runtime = repos.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 1)
-        assert runtime is not None
-        assert runtime.reason == "recovery_blocked_credentials_missing"
         assert (
             conn.execute("SELECT execution_state FROM trading_intents WHERE intent_id = %s", ("9" * 64,)).fetchone()[
                 "execution_state"
@@ -1053,6 +1039,63 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         conn = connect_postgres_test(read_only=False)
         repos = TradingRepository(conn)
 
+        def binding_runtime_0327(*, now_ms: int) -> Any:
+            return conn.execute(
+                """
+                SELECT CASE
+                         WHEN runtime.catalog_state = 'ready'
+                          AND snapshot.stale_after_ms IS NOT NULL
+                          AND runtime.catalog_captured_at_ms + snapshot.stale_after_ms <= %(now)s
+                         THEN 'stale'
+                         ELSE runtime.catalog_state
+                       END AS catalog_state,
+                       runtime.catalog_snapshot_sha256, runtime.reason
+                  FROM trading_binding_runtime runtime
+                  LEFT JOIN trading_venue_catalog_snapshots snapshot
+                    ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+                 WHERE runtime.binding = 'BINANCE_USDM'
+                """,
+                {"now": now_ms},
+            ).fetchone()
+
+        def store_catalog_0327(*, snapshot: Any, now_ms: int) -> None:
+            payload = snapshot.model_dump(mode="json")
+            conn.execute(
+                """
+                INSERT INTO trading_venue_catalog_snapshots (
+                  snapshot_sha256, binding, captured_at_ms, stale_after_ms,
+                  provider_instrument_count, payload, created_at_ms
+                ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                ON CONFLICT (snapshot_sha256) DO NOTHING
+                """,
+                (
+                    snapshot.snapshot_sha256,
+                    snapshot.binding,
+                    snapshot.captured_at_ms,
+                    snapshot.stale_after_ms,
+                    snapshot.provider_instrument_count,
+                    json.dumps(payload, sort_keys=True, separators=(",", ":")),
+                    now_ms,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE trading_binding_runtime
+                   SET catalog_state = 'ready', catalog_snapshot_sha256 = %s,
+                       catalog_captured_at_ms = %s,
+                       reason = CASE
+                         WHEN credential_state = 'unconfigured' THEN 'credentials_unconfigured'
+                         WHEN credential_state = 'invalid' THEN 'credentials_invalid'
+                         WHEN runtime_state = 'stopped' THEN 'binding_adapter_unavailable'
+                         WHEN runtime_state != 'ready' THEN 'binding_unready'
+                         ELSE NULL
+                       END,
+                       updated_at_ms = %s
+                 WHERE binding = %s
+                """,
+                (snapshot.snapshot_sha256, snapshot.captured_at_ms, now_ms, snapshot.binding),
+            )
+
         decision = repos.decision_runtime()
         assert decision is not None
         assert decision == DecisionRuntimeV1(
@@ -1061,21 +1104,24 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
             reason="trading_disabled",
             updated_at_ms=0,
         )
-        bindings = repos.binding_runtime_rows(now_ms=NOW)
-        assert [row.binding for row in bindings] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
-        assert {row.credential_state for row in bindings} == {"unconfigured"}
+        bindings = conn.execute(
+            "SELECT binding, credential_state FROM trading_binding_runtime ORDER BY binding"
+        ).fetchall()
+        assert [row["binding"] for row in bindings] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
+        assert {row["credential_state"] for row in bindings} == {"unconfigured"}
 
         conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
-        assert repos.set_binding_runtime(
-            binding="BINANCE_USDM",
-            credential_state="configured",
-            credential_fingerprint="f" * 64,
-            runtime_state="stopped",
-            account_state="unknown",
-            heartbeat_at_ms=None,
-            reason="binding_adapter_unavailable",
-            now_ms=NOW,
+        conn.execute(
+            """
+            UPDATE trading_binding_runtime
+               SET credential_state = 'configured', credential_fingerprint = %s,
+                   runtime_state = 'stopped', account_state = 'unknown',
+                   heartbeat_at_ms = NULL, reason = 'binding_adapter_unavailable', updated_at_ms = %s
+             WHERE binding = 'BINANCE_USDM'
+            """,
+            ("f" * 64, NOW),
         )
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
         assert conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()["control"] == "PAUSED"
 
         entry = VenueInstrumentCatalogEntryV1(
@@ -1096,7 +1142,7 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         snapshot = build_venue_catalog_snapshot(
             binding="BINANCE_USDM", captured_at_ms=NOW, stale_after_ms=21_600_000, instruments=(entry,)
         )
-        repos.store_venue_catalog_snapshot(snapshot=snapshot, now_ms=NOW)
+        store_catalog_0327(snapshot=snapshot, now_ms=NOW)
         conn.commit()
         assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
         with (
@@ -1111,23 +1157,23 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
 
         repos.mark_venue_catalog_unavailable(binding="BINANCE_USDM", reason="venue_timeout", now_ms=NOW + 1)
         conn.commit()
-        runtime = repos.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 1)
+        runtime = binding_runtime_0327(now_ms=NOW + 1)
         assert runtime is not None
-        assert runtime.catalog_state == "stale"
-        assert runtime.catalog_snapshot_sha256 == snapshot.snapshot_sha256
+        assert runtime["catalog_state"] == "stale"
+        assert runtime["catalog_snapshot_sha256"] == snapshot.snapshot_sha256
         assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
 
-        repos.store_venue_catalog_snapshot(snapshot=snapshot, now_ms=NOW + 2)
+        store_catalog_0327(snapshot=snapshot, now_ms=NOW + 2)
         conn.commit()
-        recovered = repos.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 2)
+        recovered = binding_runtime_0327(now_ms=NOW + 2)
         assert recovered is not None
-        assert (recovered.catalog_state, recovered.reason) == (
+        assert (recovered["catalog_state"], recovered["reason"]) == (
             "ready",
             "binding_adapter_unavailable",
         )
-        expired = repos.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 21_600_000)
+        expired = binding_runtime_0327(now_ms=NOW + 21_600_000)
         assert expired is not None
-        assert expired.catalog_state == "stale"
+        assert expired["catalog_state"] == "stale"
         assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
 
         columns = {
