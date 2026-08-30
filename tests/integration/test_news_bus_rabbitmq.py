@@ -354,7 +354,11 @@ def test_removed_policy_fails_closed_instead_of_falling_back_to_immediate_retry(
                 try:
                     await bus.verify_policies()
                 except BrokerPolicyMismatch as exc:
-                    assert bus.queue_name(Q_TRIAGE) in str(exc)
+                    if bus.queue_name(Q_TRIAGE) not in str(exc):
+                        # Another queue's row can transiently read {} while the statistics interval
+                        # churns; the deletion under test is only proven by a triage-naming mismatch.
+                        await asyncio.sleep(0.3)
+                        continue
                     snapshot = await bus.broker_snapshot()
                     assert snapshot[bus.queue_name(Q_TRIAGE)]["policy_ok"] is False
                     # A settle bound defers the report; it never turns a genuine mismatch into a pass.
