@@ -888,7 +888,7 @@ def test_0329_adds_the_bounded_submission_fence_contract() -> None:
             conn.close()
 
 
-def test_0330_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> None:
+def test_0331_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> None:
     """#376 PR 1 cannot orphan a live V1/V2 Intent; a terminal archive may cross."""
 
     conn: Any | None = None
@@ -943,7 +943,7 @@ def test_0330_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> N
         conn = None
 
         with pytest.raises(DBAPIError, match="trading_v3_contract_cutover_legacy_obligation"):
-            _upgrade("20260830_0330")
+            _upgrade("20260830_0331")
 
         conn = connect_postgres_test(read_only=False)
         conn.execute(
@@ -956,9 +956,9 @@ def test_0330_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> N
         conn.close()
         conn = None
 
-        _upgrade("20260830_0330")
+        _upgrade("20260830_0331")
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0331"
         assert (
             conn.execute("SELECT intent_version FROM trading_intents WHERE intent_id = %s", (intent_id,)).fetchone()[
                 "intent_version"

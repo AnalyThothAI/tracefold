@@ -1782,7 +1782,7 @@ obligation; removing it would erase the exact state the no-key binding projectio
 Program v7/taxonomy-v1 epoch hard cut.
 `20260829_0329` installs Intent-level Q1/fence/Q2 quote authority after a
 paused, zero-recovery-obligation cutover.
-`20260830_0330` hard-cuts current execution truth to per-binding Capability V2,
+`20260830_0331` hard-cuts current execution truth to per-binding Capability V2,
 immutable ExecutionBinding V1, source-native routing, and TradeIntent V3 while
 retaining only terminal V1/V2 rows as archive facts.
 No chained revision has a downgrade. Exact-image replacement requires the
@@ -2065,7 +2065,7 @@ Intent quote; a tick delivered in the new generation is required before quote
 authority can resume. No quote tick is written to PostgreSQL, and quote state is
 neither binding readiness nor a global readiness claim.
 
-Migration `20260830_0330` repeats the PAUSED/zero-nonterminal cutover and then
+Migration `20260830_0331` repeats the PAUSED/zero-nonterminal cutover and then
 removes Demo from every current writer and lifecycle reader. The active
 capability pointer is per closed binding, the complete provider universe is an
 included/excluded V2 partition, and a verified mainnet process activates an

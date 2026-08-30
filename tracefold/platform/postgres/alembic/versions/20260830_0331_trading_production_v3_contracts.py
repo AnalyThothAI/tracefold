@@ -1,15 +1,15 @@
 """Production V3 contract/storage hard cut (#376).
 
-Revision ID: 20260830_0330
-Revises: 20260829_0329
+Revision ID: 20260830_0331
+Revises: 20260830_0330
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260830_0330"
-down_revision = "20260829_0329"
+revision = "20260830_0331"
+down_revision = "20260830_0330"
 branch_labels = None
 depends_on = None
 

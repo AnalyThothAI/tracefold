@@ -121,6 +121,7 @@ def _manifest(event_id: str, *, symbol: str = "SOL") -> TradingCaseManifest:
         cutoff_ms=NOW,
         instrument=InstrumentRef(
             exchange_id="binance",
+            binding="BINANCE_USDM",
             venue="binance.usdm",
             provider_symbol=f"{symbol}USDT",
             base_symbol=symbol,
