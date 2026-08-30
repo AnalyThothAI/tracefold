@@ -97,7 +97,7 @@ cannot be passed positionally, which is a fact about Python rather than about th
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "<module>"
-line = 58
+line = 81
 operator = "core/ReplaceTrueWithFalse"
 occurrence = 1
 reason = """
@@ -111,7 +111,7 @@ frozen instance is asserted directly — which is why only the `slots` mutant su
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "<module>"
-line = 126
+line = 149
 operator = "core/ReplaceTrueWithFalse"
 occurrence = 5
 reason = """
@@ -125,7 +125,7 @@ frozen instance is asserted directly — which is why only the `slots` mutant su
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "from_outcome"
-line = 138
+line = 161
 operator = "core/ReplaceComparisonOperator_NotEq_IsNot"
 occurrence = 0
 reason = """
@@ -145,7 +145,7 @@ doing when this module next gets attention and is more than a mutation-score lin
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "from_outcome"
-line = 143
+line = 166
 operator = "core/ReplaceComparisonOperator_NotEq_Gt"
 occurrence = 1
 reason = """
@@ -159,7 +159,7 @@ this observable, and that change would fail the type check first.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "from_outcome"
-line = 143
+line = 166
 operator = "core/ReplaceComparisonOperator_NotEq_IsNot"
 occurrence = 1
 reason = """
@@ -179,7 +179,7 @@ doing when this module next gets attention and is more than a mutation-score lin
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "rejected"
-line = 167
+line = 190
 operator = "core/ReplaceBinaryOperator_Mul_Div"
 occurrence = 1
 reason = """
@@ -194,7 +194,7 @@ cannot be passed positionally, which is a fact about Python rather than about th
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 193
+line = 216
 operator = "core/NumberReplacer"
 occurrence = 15
 reason = """
@@ -210,7 +210,7 @@ rather than by arithmetic accident.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 193
+line = 216
 operator = "core/ReplaceComparisonOperator_LtE_Eq"
 occurrence = 2
 reason = """
@@ -226,7 +226,7 @@ rather than by arithmetic accident.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 193
+line = 216
 operator = "core/ReplaceComparisonOperator_LtE_Lt"
 occurrence = 2
 reason = """
@@ -242,7 +242,7 @@ rather than by arithmetic accident.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 197
+line = 220
 operator = "core/ReplaceComparisonOperator_Eq_Is"
 occurrence = 0
 reason = """
@@ -257,7 +257,7 @@ no fixture — runtime-built or otherwise — could separate them.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 197
+line = 220
 operator = "core/ReplaceComparisonOperator_Eq_LtE"
 occurrence = 0
 reason = """
@@ -271,7 +271,7 @@ this observable, and that change would fail the type check first.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/NumberReplacer"
 occurrence = 23
 reason = """
@@ -285,7 +285,7 @@ clause is masked from both sides for the one input that could distinguish it.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/NumberReplacer"
 occurrence = 24
 reason = """
@@ -301,7 +301,7 @@ so if the intent-window check ever moves below the clock check this reasoning fa
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/NumberReplacer"
 occurrence = 25
 reason = """
@@ -317,7 +317,7 @@ so if the intent-window check ever moves below the clock check this reasoning fa
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/ReplaceComparisonOperator_Lt_Eq"
 occurrence = 3
 reason = """
@@ -333,7 +333,7 @@ so if the intent-window check ever moves below the clock check this reasoning fa
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/ReplaceComparisonOperator_Lt_LtE"
 occurrence = 3
 reason = """
@@ -349,7 +349,7 @@ so if the intent-window check ever moves below the clock check this reasoning fa
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 205
+line = 228
 operator = "core/ReplaceOrWithAnd"
 occurrence = 8
 reason = """
@@ -363,7 +363,7 @@ impossible: a negative init timestamp is always also out of order, which is asse
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 207
+line = 230
 operator = "core/ReplaceBinaryOperator_Add_LShift"
 occurrence = 0
 reason = """
@@ -378,7 +378,7 @@ by applying this mutation by hand and watching the suite stay green.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 207
+line = 230
 operator = "core/ReplaceBinaryOperator_Add_Mul"
 occurrence = 0
 reason = """
@@ -393,7 +393,7 @@ by applying this mutation by hand and watching the suite stay green.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 207
+line = 230
 operator = "core/ReplaceComparisonOperator_Gt_Is"
 occurrence = 1
 reason = """
@@ -408,7 +408,7 @@ by applying this mutation by hand and watching the suite stay green.
 [[accepted]]
 module = "tracefold/trading/quote_authority.py"
 function = "validate_entry_quote"
-line = 228
+line = 251
 operator = "core/ReplaceBinaryOperator_Sub_Mod"
 occurrence = 3
 reason = """
