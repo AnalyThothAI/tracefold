@@ -49,9 +49,9 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
 def test_public_api_is_status_news_trading_and_macro_only() -> None:
     """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain.
 
-    `/api/trading/*` is one route per durable aggregate (#331), named individually rather than by prefix:
-    the capital lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix
-    wildcard would let a fifth route join without anyone reading this line.
+    `/api/trading/*` is an exact read-only allowlist, named individually rather than by prefix: the
+    capital lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix
+    wildcard would let a mutation route join without anyone reading this line.
     """
 
     from tracefold.app.http.app import create_app
@@ -68,6 +68,8 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         # One route per durable aggregate (#331). `/cases` is the replacement for the retired
         # `intents.cases_without_intents`, not a second synonym beside it.
         "/api/trading/cases",
+        "/api/trading/capabilities",
+        "/api/trading/evidence",
         "/api/trading/intents",
         # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",

@@ -59,6 +59,8 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
     "/api/trading/intents": ("trading_console_intents",),
     # One route per durable aggregate (#331): Cases no longer ride along on the Intent read.
     "/api/trading/cases": ("trading_console_cases",),
+    "/api/trading/capabilities": ("trading_capability_bindings", "trading_capability_snapshot"),
+    "/api/trading/evidence": ("trading_authority_projection", "trading_console_capital_evidence"),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
@@ -208,6 +210,57 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  LIMIT 101
             """,
             params=(since_ms,),
+        ),
+        ReadQuerySpec(
+            name="trading_capability_bindings",
+            sql="""
+                SELECT runtime.binding, runtime.capability_snapshot_sha256
+                  FROM trading_binding_runtime runtime
+                  LEFT JOIN trading_venue_catalog_snapshots snapshot
+                    ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+                 ORDER BY runtime.binding
+            """,
+        ),
+        ReadQuerySpec(
+            name="trading_capability_snapshot",
+            sql="""
+                SELECT payload
+                  FROM trading_execution_capability_snapshots
+                 WHERE snapshot_sha256 = %s
+                   AND payload ->> 'snapshot_version' = 'execution_capability_snapshot_v2'
+            """,
+            params=("0" * 64,),
+        ),
+        ReadQuerySpec(
+            name="trading_authority_projection",
+            sql="""
+                SELECT runtime.binding, arm.payload, promotion.payload, policy.payload, revocation.payload
+                  FROM trading_binding_runtime runtime
+                  LEFT JOIN trading_operator_arm_receipts arm
+                    ON arm.arm_receipt_sha256 = runtime.active_arm_receipt_sha256
+                  LEFT JOIN trading_production_promotion_grants promotion
+                    ON promotion.grant_sha256 = arm.grant_sha256
+                  LEFT JOIN trading_daily_risk_policies policy
+                    ON policy.risk_policy_sha256 = arm.risk_policy_sha256
+                  LEFT JOIN trading_promotion_grant_revocations revocation
+                    ON revocation.grant_sha256 = promotion.grant_sha256
+                 ORDER BY runtime.binding
+            """,
+        ),
+        ReadQuerySpec(
+            name="trading_console_capital_evidence",
+            sql="""
+                SELECT reservation.reservation_sha256, state.status, state.updated_at_ms,
+                       receipt.authorization_receipt_sha256, intent.execution_state
+                  FROM trading_capital_risk_reservations reservation
+                  JOIN trading_capital_authorization_receipts receipt
+                    ON receipt.reservation_sha256 = reservation.reservation_sha256
+                  JOIN trading_capital_risk_reservation_state state
+                    ON state.reservation_sha256 = reservation.reservation_sha256
+                  JOIN trading_intents intent ON intent.intent_id = state.intent_id
+                 ORDER BY state.updated_at_ms DESC, reservation.reservation_sha256 DESC
+                 LIMIT 101
+            """,
         ),
     )
 

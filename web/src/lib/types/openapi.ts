@@ -137,6 +137,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trading/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Capabilities
+         * @description Current durable V2 partition; never compiles capabilities or contacts a venue.
+         */
+        get: operations["get_trading_capabilities_api_trading_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/trading/cases": {
         parameters: {
             query?: never;
@@ -149,6 +169,26 @@ export interface paths {
          * @description Frozen Cases and the frozen evidence each was decided on.
          */
         get: operations["get_trading_cases_api_trading_cases_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trading/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Trading Evidence
+         * @description Redacted grant/arm/risk proof and bounded capital lifecycle rows from PostgreSQL.
+         */
+        get: operations["get_trading_evidence_api_trading_evidence_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -366,9 +406,29 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
+        /** ApiEnvelope[TradingCapabilitiesData] */
+        ApiEnvelope_TradingCapabilitiesData_: {
+            data?: components["schemas"]["TradingCapabilitiesData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
         /** ApiEnvelope[TradingCasesData] */
         ApiEnvelope_TradingCasesData_: {
             data?: components["schemas"]["TradingCasesData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingEvidenceData] */
+        ApiEnvelope_TradingEvidenceData_: {
+            data?: components["schemas"]["TradingEvidenceData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2180,6 +2240,35 @@ export interface components {
             reasons: ("database_unavailable" | "database_schema_mismatch" | "runtime_status_query_failed" | "runtime_missing" | "runtime_heartbeat_stale" | "runtime_starting" | "runtime_stopping" | "runtime_stopped" | "runtime_failed")[];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
+        /** TradingAuthorityEvidenceData */
+        TradingAuthorityEvidenceData: {
+            /** Active Arm Receipt Sha256 */
+            active_arm_receipt_sha256?: string | null;
+            /** Approved Release */
+            approved_release?: string | null;
+            /** Arm Expires At Ms */
+            arm_expires_at_ms?: number | null;
+            /**
+             * Binding
+             * @enum {string}
+             */
+            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /** Grant Expires At Ms */
+            grant_expires_at_ms?: number | null;
+            /** Grant Sha256 */
+            grant_sha256?: string | null;
+            /** Risk Policy Expires At Ms */
+            risk_policy_expires_at_ms?: number | null;
+            /** Risk Policy Sha256 */
+            risk_policy_sha256?: string | null;
+            /** Settlement Limits */
+            settlement_limits?: components["schemas"]["TradingSettlementRiskLimitData"][];
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "absent" | "active" | "expired" | "revoked" | "invalid";
+        };
         /** TradingBindingRuntimeData */
         TradingBindingRuntimeData: {
             /** Account Generation */
@@ -2189,6 +2278,8 @@ export interface components {
              * @enum {string}
              */
             account_state: "unknown" | "reconciled_flat" | "exposure_present";
+            /** Active Arm Receipt Sha256 */
+            active_arm_receipt_sha256?: string | null;
             /**
              * Binding
              * @enum {string}
@@ -2243,6 +2334,164 @@ export interface components {
         TradingBudgetData: {
             /** Target Notional Usd */
             target_notional_usd: string;
+        };
+        /** TradingCapabilitiesData */
+        TradingCapabilitiesData: {
+            /** Bindings */
+            bindings?: components["schemas"]["TradingCapabilityBindingData"][];
+            /** Complete */
+            complete: boolean;
+            /** Entries */
+            entries?: components["schemas"]["TradingCapabilityEntryData"][];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** TradingCapabilityBindingData */
+        TradingCapabilityBindingData: {
+            /**
+             * Binding
+             * @enum {string}
+             */
+            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /**
+             * Capability State
+             * @enum {string}
+             */
+            capability_state: "missing" | "ready" | "stale" | "error";
+            /**
+             * Catalog Instrument Count
+             * @default 0
+             */
+            catalog_instrument_count: number;
+            /** Catalog Snapshot Sha256 */
+            catalog_snapshot_sha256?: string | null;
+            /** Compile Error */
+            compile_error?: string | null;
+            /** Compiled At Ms */
+            compiled_at_ms?: number | null;
+            /**
+             * Excluded Count
+             * @default 0
+             */
+            excluded_count: number;
+            /**
+             * Included Count
+             * @default 0
+             */
+            included_count: number;
+            /**
+             * Last Known Good
+             * @default false
+             */
+            last_known_good: boolean;
+            /** Partition Sha256 */
+            partition_sha256?: string | null;
+            /** Snapshot Sha256 */
+            snapshot_sha256?: string | null;
+        };
+        /** TradingCapabilityEntryData */
+        TradingCapabilityEntryData: {
+            /**
+             * Binding
+             * @enum {string}
+             */
+            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /** Canonical Asset */
+            canonical_asset?: string | null;
+            /** Canonical Namespace */
+            canonical_namespace?: string | null;
+            /** Catalog Entry Id */
+            catalog_entry_id: string;
+            /**
+             * Disposition
+             * @enum {string}
+             */
+            disposition: "included" | "excluded";
+            /** Exclusion Reason */
+            exclusion_reason?: string | null;
+            /** Instrument Id */
+            instrument_id?: string | null;
+            /** Min Notional */
+            min_notional?: string | null;
+            /** Min Quantity */
+            min_quantity?: string | null;
+            /** Price Increment */
+            price_increment?: string | null;
+            /** Provider Instrument Id */
+            provider_instrument_id: string;
+            /** Settlement Asset */
+            settlement_asset?: string | null;
+            /** Size Increment */
+            size_increment?: string | null;
+        };
+        /** TradingCapitalLifecycleEvidenceData */
+        TradingCapitalLifecycleEvidenceData: {
+            /** Arm Receipt Sha256 */
+            arm_receipt_sha256: string;
+            /** Attempt Consumed */
+            attempt_consumed: boolean;
+            /** Attempt Day End Ms */
+            attempt_day_end_ms?: number | null;
+            /** Attempt Day Start Ms */
+            attempt_day_start_ms?: number | null;
+            /** Authorization Receipt Sha256 */
+            authorization_receipt_sha256: string;
+            /**
+             * Binding
+             * @enum {string}
+             */
+            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
+            /** Case Id */
+            case_id: string;
+            /** Current Planned Risk Amount */
+            current_planned_risk_amount: string;
+            /** Economic Lifecycle Id */
+            economic_lifecycle_id: string;
+            /** Execution Phase */
+            execution_phase?: ("ENTRY" | "PROTECTION" | "EXIT") | null;
+            /**
+             * Execution State
+             * @enum {string}
+             */
+            execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
+            /** Flat Verified At Ms */
+            flat_verified_at_ms?: number | null;
+            /** Grant Sha256 */
+            grant_sha256: string;
+            /** Initial Planned Risk Amount */
+            initial_planned_risk_amount: string;
+            /** Intent Id */
+            intent_id: string;
+            /** Reason Code */
+            reason_code?: string | null;
+            /** Reservation Sha256 */
+            reservation_sha256: string;
+            /** Risk Day End Ms */
+            risk_day_end_ms: number;
+            /** Risk Day Start Ms */
+            risk_day_start_ms: number;
+            /** Risk Policy Sha256 */
+            risk_policy_sha256: string;
+            /**
+             * Risk Status
+             * @enum {string}
+             */
+            risk_status: "RESERVED" | "FENCED" | "OPEN" | "MANUAL_REVIEW" | "RELEASED" | "SETTLED";
+            /**
+             * Settlement Asset
+             * @enum {string}
+             */
+            settlement_asset: "USDT" | "USDC";
+            /** Settlement Known */
+            settlement_known: boolean;
+            /** Target Notional */
+            target_notional: string;
+            /** Terminal Outcome */
+            terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
+            /** Updated At Ms */
+            updated_at_ms: number;
         };
         /** TradingCapitalRuntimeData */
         TradingCapitalRuntimeData: {
@@ -2333,6 +2582,8 @@ export interface components {
             complete: boolean;
             /** Measured At Ms */
             measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Reason Counts 24H */
             reason_counts_24h?: {
                 [key: string]: number;
@@ -2355,6 +2606,19 @@ export interface components {
              * @enum {string}
              */
             state: "DISABLED" | "STARTING" | "RUNNING" | "FAULTED";
+        };
+        /** TradingEvidenceData */
+        TradingEvidenceData: {
+            /** Authorities */
+            authorities?: components["schemas"]["TradingAuthorityEvidenceData"][];
+            /** Complete */
+            complete: boolean;
+            /** Lifecycles */
+            lifecycles?: components["schemas"]["TradingCapitalLifecycleEvidenceData"][];
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {
@@ -2581,6 +2845,10 @@ export interface components {
             execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
             /** Flat Verified At Ms */
             flat_verified_at_ms?: number | null;
+            /** Funding By Currency */
+            funding_by_currency?: {
+                [key: string]: string;
+            } | null;
             /** Instrument Id */
             instrument_id: string;
             /** Intent Id */
@@ -2660,6 +2928,8 @@ export interface components {
             intents?: components["schemas"]["TradingIntentData"][];
             /** Measured At Ms */
             measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
             /** Outcome Counts 24H */
             outcome_counts_24h?: {
                 [key: string]: number;
@@ -2752,6 +3022,20 @@ export interface components {
             latest_position_closed_at_ms?: number | null;
             /** Latest Position Opened At Ms */
             latest_position_opened_at_ms?: number | null;
+        };
+        /** TradingSettlementRiskLimitData */
+        TradingSettlementRiskLimitData: {
+            /** Fee Slippage Reserve Bps */
+            fee_slippage_reserve_bps: number;
+            /** Max Planned Risk Amount */
+            max_planned_risk_amount: string;
+            /** Max Realized Loss Amount */
+            max_realized_loss_amount: string;
+            /**
+             * Settlement Asset
+             * @enum {string}
+             */
+            settlement_asset: "USDT" | "USDC";
         };
         /** TradingStatusData */
         TradingStatusData: {
@@ -3031,11 +3315,46 @@ export interface operations {
             };
         };
     };
+    get_trading_capabilities_api_trading_capabilities_get: {
+        parameters: {
+            query?: {
+                binding?: string;
+                disposition?: string;
+                detail?: string;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingCapabilitiesData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_trading_cases_api_trading_cases_get: {
         parameters: {
             query?: {
                 underlying?: string;
                 state?: string;
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -3050,6 +3369,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_TradingCasesData_"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_trading_evidence_api_trading_evidence_get: {
+        parameters: {
+            query?: {
+                binding?: string;
+                state?: string;
+                detail?: string;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingEvidenceData_"];
                 };
             };
             /** @description Validation Error */
@@ -3120,6 +3473,7 @@ export interface operations {
                 day?: string;
                 underlying?: string;
                 state?: string;
+                cursor?: string;
             };
             header?: never;
             path?: never;

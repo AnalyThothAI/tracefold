@@ -15,8 +15,10 @@ import {
 } from "@tests/fixtures/newsFixture";
 import {
   TRADING_NOW_MS,
-  tradingGateFixture,
+  tradingCapabilitiesFixture,
   tradingCasesForUnderlying,
+  tradingEvidenceFixture,
+  tradingGateFixture,
   tradingIntentsForUnderlying,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
@@ -87,6 +89,8 @@ export async function installMockApi(
     // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
     // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
     if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
+    if (path === "/api/trading/capabilities") return fulfill(route, tradingCapabilitiesFixture());
+    if (path === "/api/trading/evidence") return fulfill(route, tradingEvidenceFixture());
     // #282: the token page asks for one underlying, and what it gets back has to belong to that name —
     // otherwise 资本复盘 renders its empty path on every baseline and the panel is frozen in the one
     // state it is least useful in.

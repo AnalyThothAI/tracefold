@@ -19,6 +19,8 @@ under, and never applies it to an existing one.
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 import time
 from datetime import UTC, datetime
@@ -29,7 +31,14 @@ from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
+from tracefold.trading import (
+    CapitalRuntimeV1,
+    DailyRiskPolicyV1,
+    DecisionRuntimeV1,
+    OperatorArmReceiptV1,
+    ProductionPromotionGrantV1,
+    VenueBindingRuntimeV1,
+)
 from tracefold.trading.intent import ACTIVE_INTENT_STATES
 
 from ..dependencies import _authenticated_runtime, _validate_query_params
@@ -44,6 +53,8 @@ _IntentsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingIntentsData]
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _GateEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateData]
 _GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceData]
+_CapabilitiesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCapabilitiesData]
+_EvidenceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingEvidenceData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ROW_LIMIT: Final = 100
@@ -58,6 +69,10 @@ _CASE_STATE_FILTERS: Final[dict[str, tuple[str, ...]]] = {
     "blocked": ("BLOCKED",),
     "emitted": ("INTENT_EMITTED",),
 }
+_BINDINGS: Final = frozenset({"BINANCE_USDM", "HYPERLIQUID_PERP"})
+_CAPABILITY_DISPOSITIONS: Final = frozenset({"all", "included", "excluded"})
+_DETAIL_FILTERS: Final = frozenset({"summary", "entries", "lifecycles"})
+_RISK_STATES: Final = frozenset({"RESERVED", "FENCED", "OPEN", "MANUAL_REVIEW", "RELEASED", "SETTLED"})
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
@@ -185,13 +200,15 @@ def get_trading_cases(
     request: Request,
     underlying: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=16)] = "",
+    cursor: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
     """Frozen Cases and the frozen evidence each was decided on."""
 
-    _validate_query_params(request, supported={"state", "token", "underlying"})
+    _validate_query_params(request, supported={"cursor", "state", "token", "underlying"})
     if state and state not in _CASE_STATE_FILTERS:
         raise ApiBadRequest("trading_cases_state_invalid", field="state")
     underlying_key = _underlying_key(underlying, error="trading_cases_underlying_invalid")
+    before = _cursor_pair(cursor, kind="cases", error="trading_cases_cursor_invalid")
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
@@ -199,6 +216,7 @@ def get_trading_cases(
             since_ms=now_ms - _WINDOW_MS,
             underlying_key=underlying_key,
             states=_CASE_STATE_FILTERS.get(state, ()),
+            before=before,
             limit=_ROW_LIMIT + 1,
         )
         states = repos.trading.case_counts(since_ms=now_ms - _WINDOW_MS)
@@ -211,6 +229,7 @@ def get_trading_cases(
             "reason_counts_24h": reasons,
             "capital_reason_counts_24h": capital_reasons,
             "complete": len(rows) <= _ROW_LIMIT,
+            "next_cursor": _next_pair_cursor(rows, kind="cases", time_key="case_created_at_ms", id_key="case_id"),
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
@@ -225,13 +244,15 @@ def get_trading_intents(
     day: Annotated[str, Query(max_length=10)] = "",
     underlying: Annotated[str, Query(max_length=32)] = "",
     state: Annotated[str, Query(max_length=16)] = "",
+    cursor: Annotated[str, Query(max_length=256)] = "",
 ) -> Response:
     """Immutable capital requests and their execution outcomes. Cases live at `/trading/cases`."""
 
-    _validate_query_params(request, supported={"day", "state", "token", "underlying"})
+    _validate_query_params(request, supported={"cursor", "day", "state", "token", "underlying"})
     if state and state not in _INTENT_STATE_FILTERS:
         raise ApiBadRequest("trading_intents_state_invalid", field="state")
     underlying_key = _underlying_key(underlying, error="trading_intents_underlying_invalid")
+    before = _cursor_pair(cursor, kind="intents", error="trading_intents_cursor_invalid")
     closed_from_ms: int | None = None
     closed_until_ms: int | None = None
     if day:
@@ -256,6 +277,7 @@ def get_trading_intents(
             closed_until_ms=closed_until_ms,
             underlying_key=underlying_key,
             states=states,
+            before=before,
             limit=_ROW_LIMIT + 1,
         )
         counts = repos.trading.intent_counts(since_ms=now_ms - _WINDOW_MS)
@@ -266,12 +288,324 @@ def get_trading_intents(
             "outcome_counts_24h": counts["by_outcome"],
             "reason_counts_24h": counts["by_reason"],
             "complete": len(intents) <= _ROW_LIMIT,
+            "next_cursor": _next_pair_cursor(intents, kind="intents", time_key="created_at_ms", id_key="intent_id"),
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
         request,
         envelope=_IntentsEnvelope,
     )
+
+
+@router.get("/trading/capabilities", response_model=_CapabilitiesEnvelope)
+def get_trading_capabilities(
+    request: Request,
+    binding: Annotated[str, Query(max_length=32)] = "",
+    disposition: Annotated[str, Query(max_length=16)] = "all",
+    detail: Annotated[str, Query(max_length=16)] = "entries",
+    cursor: Annotated[str, Query(max_length=256)] = "",
+) -> Response:
+    """Current durable V2 partition; never compiles capabilities or contacts a venue."""
+
+    _validate_query_params(request, supported={"binding", "cursor", "detail", "disposition", "token"})
+    if binding and binding not in _BINDINGS:
+        raise ApiBadRequest("trading_capabilities_binding_invalid", field="binding")
+    if disposition not in _CAPABILITY_DISPOSITIONS:
+        raise ApiBadRequest("trading_capabilities_disposition_invalid", field="disposition")
+    if detail not in {"summary", "entries"}:
+        raise ApiBadRequest("trading_capabilities_detail_invalid", field="detail")
+    after = _cursor_values(cursor, kind="capabilities", count=3, error="trading_capabilities_cursor_invalid")
+    if detail == "summary" and after is not None:
+        raise ApiBadRequest("trading_capabilities_cursor_invalid", field="cursor")
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    summaries: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
+    with runtime.repositories() as repos:
+        for row in repos.trading.binding_runtime_rows(now_ms=now_ms):
+            if binding and row.binding != binding:
+                continue
+            snapshot = repos.trading.active_execution_capability_snapshot(binding=row.binding)
+            summaries.append(
+                {
+                    "binding": row.binding,
+                    "capability_state": row.capability_state,
+                    "snapshot_sha256": None if snapshot is None else snapshot.snapshot_sha256,
+                    "catalog_snapshot_sha256": None if snapshot is None else snapshot.catalog_snapshot_sha256,
+                    "catalog_instrument_count": 0 if snapshot is None else snapshot.catalog_instrument_count,
+                    "included_count": 0 if snapshot is None else snapshot.included_count,
+                    "excluded_count": 0 if snapshot is None else snapshot.excluded_count,
+                    "partition_sha256": None if snapshot is None else snapshot.partition_sha256,
+                    "compiled_at_ms": row.capability_compiled_at_ms,
+                    "compile_error": row.capability_compile_error,
+                    "last_known_good": snapshot is not None,
+                }
+            )
+            if detail == "entries" and snapshot is not None:
+                if disposition in {"all", "included"}:
+                    entries.extend(
+                        _included_capability(row.binding, key, value) for key, value in snapshot.included.items()
+                    )
+                if disposition in {"all", "excluded"}:
+                    entries.extend(
+                        _excluded_capability(row.binding, key, value) for key, value in snapshot.excluded.items()
+                    )
+    entries.sort(key=_capability_cursor_key)
+    if after is not None:
+        marker = tuple(str(value) for value in after)
+        entries = [item for item in entries if _capability_cursor_key(item) > marker]
+    page = entries[:_ROW_LIMIT]
+    complete = len(entries) <= _ROW_LIMIT
+    next_cursor = None
+    if not complete and page:
+        next_cursor = _encode_cursor("capabilities", *_capability_cursor_key(page[-1]))
+    return _etagged(
+        {
+            "bindings": summaries,
+            "entries": page,
+            "complete": complete,
+            "next_cursor": next_cursor,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_CapabilitiesEnvelope,
+    )
+
+
+@router.get("/trading/evidence", response_model=_EvidenceEnvelope)
+def get_trading_evidence(
+    request: Request,
+    binding: Annotated[str, Query(max_length=32)] = "",
+    state: Annotated[str, Query(max_length=24)] = "",
+    detail: Annotated[str, Query(max_length=16)] = "lifecycles",
+    cursor: Annotated[str, Query(max_length=256)] = "",
+) -> Response:
+    """Redacted grant/arm/risk proof and bounded capital lifecycle rows from PostgreSQL."""
+
+    _validate_query_params(request, supported={"binding", "cursor", "detail", "state", "token"})
+    if binding and binding not in _BINDINGS:
+        raise ApiBadRequest("trading_evidence_binding_invalid", field="binding")
+    normalized_state = state.upper()
+    if normalized_state and normalized_state not in _RISK_STATES:
+        raise ApiBadRequest("trading_evidence_state_invalid", field="state")
+    if detail not in {"summary", "lifecycles"}:
+        raise ApiBadRequest("trading_evidence_detail_invalid", field="detail")
+    before = _cursor_pair(cursor, kind="evidence", error="trading_evidence_cursor_invalid")
+    if detail == "summary" and before is not None:
+        raise ApiBadRequest("trading_evidence_cursor_invalid", field="cursor")
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    with runtime.repositories() as repos:
+        authority_rows = repos.trading.authority_projection()
+        rows = (
+            []
+            if detail == "summary"
+            else repos.trading.console_capital_evidence(
+                binding=binding or None,
+                statuses=() if not normalized_state else (normalized_state,),
+                before=before,
+                limit=_ROW_LIMIT + 1,
+            )
+        )
+    if binding:
+        authority_rows = [row for row in authority_rows if row["binding"] == binding]
+    return _etagged(
+        {
+            "authorities": [_authority_evidence(row, now_ms=now_ms) for row in authority_rows],
+            "lifecycles": [_capital_lifecycle(row) for row in rows[:_ROW_LIMIT]],
+            "complete": len(rows) <= _ROW_LIMIT,
+            "next_cursor": _next_pair_cursor(
+                rows, kind="evidence", time_key="updated_at_ms", id_key="reservation_sha256"
+            ),
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_EvidenceEnvelope,
+    )
+
+
+def _encode_cursor(kind: str, *values: object) -> str:
+    raw = json.dumps(
+        {"v": 1, "kind": kind, "values": list(values)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _cursor_values(cursor: str, *, kind: str, count: int, error: str) -> list[object] | None:
+    if not cursor:
+        return None
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        payload = json.loads(base64.urlsafe_b64decode((cursor + padding).encode()).decode())
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ApiBadRequest(error, field="cursor") from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"v", "kind", "values"}
+        or payload.get("v") != 1
+        or payload.get("kind") != kind
+        or not isinstance(payload.get("values"), list)
+        or len(payload["values"]) != count
+    ):
+        raise ApiBadRequest(error, field="cursor")
+    return list(payload["values"])
+
+
+def _cursor_pair(cursor: str, *, kind: str, error: str) -> tuple[int, str] | None:
+    values = _cursor_values(cursor, kind=kind, count=2, error=error)
+    if values is None:
+        return None
+    timestamp, identity = values
+    if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0:
+        raise ApiBadRequest(error, field="cursor")
+    if not isinstance(identity, str) or not identity or len(identity) > 256:
+        raise ApiBadRequest(error, field="cursor")
+    return timestamp, identity
+
+
+def _next_pair_cursor(
+    rows: list[dict[str, Any]],
+    *,
+    kind: str,
+    time_key: str,
+    id_key: str,
+) -> str | None:
+    if len(rows) <= _ROW_LIMIT:
+        return None
+    last = rows[_ROW_LIMIT - 1]
+    return _encode_cursor(kind, int(last[time_key]), str(last[id_key]))
+
+
+def _included_capability(binding: str, key: str, value: Any) -> dict[str, Any]:
+    return {
+        "binding": binding,
+        "catalog_entry_id": key,
+        "disposition": "included",
+        "provider_instrument_id": value.provider_instrument_id,
+        "instrument_id": value.instrument_id,
+        "canonical_asset": value.canonical_asset,
+        "canonical_namespace": value.canonical_namespace,
+        "settlement_asset": value.settlement_asset,
+        "price_increment": value.price_increment,
+        "size_increment": value.size_increment,
+        "min_quantity": value.min_quantity,
+        "min_notional": value.min_notional,
+        "exclusion_reason": None,
+    }
+
+
+def _excluded_capability(binding: str, key: str, value: Any) -> dict[str, Any]:
+    return {
+        "binding": binding,
+        "catalog_entry_id": key,
+        "disposition": "excluded",
+        "provider_instrument_id": value.provider_instrument_id,
+        "instrument_id": None,
+        "canonical_asset": None,
+        "canonical_namespace": None,
+        "settlement_asset": None,
+        "price_increment": None,
+        "size_increment": None,
+        "min_quantity": None,
+        "min_notional": None,
+        "exclusion_reason": value.reason,
+    }
+
+
+def _capability_cursor_key(item: dict[str, Any]) -> tuple[str, str, str]:
+    return str(item["binding"]), str(item["disposition"]), str(item["catalog_entry_id"])
+
+
+def _authority_evidence(row: dict[str, Any], *, now_ms: int) -> dict[str, Any]:
+    arm_payload = row.get("arm_payload")
+    grant_payload = row.get("grant_payload")
+    policy_payload = row.get("policy_payload")
+    status = "absent"
+    arm = None
+    grant = None
+    policy = None
+    if row.get("active_arm_receipt_sha256") is not None:
+        status = "invalid"
+        try:
+            arm = OperatorArmReceiptV1.model_validate(arm_payload)
+            grant = ProductionPromotionGrantV1.model_validate(grant_payload)
+            policy = DailyRiskPolicyV1.model_validate(policy_payload)
+        except ValueError:
+            pass
+        else:
+            exact = (
+                arm.binding == row["binding"]
+                and grant.binding == row["binding"]
+                and arm.grant_sha256 == grant.grant_sha256
+                and arm.risk_policy_sha256 == policy.risk_policy_sha256
+                and grant.risk_policy_sha256 == policy.risk_policy_sha256
+                and arm.approved_release == grant.approved_release == policy.approved_release
+            )
+            if not exact:
+                status = "invalid"
+            elif row.get("revocation_payload") is not None:
+                status = "revoked"
+            elif min(arm.expires_at_ms, grant.expires_at_ms, policy.expires_at_ms) <= now_ms:
+                status = "expired"
+            else:
+                status = "active"
+    return {
+        "binding": str(row["binding"]),
+        "status": status,
+        "active_arm_receipt_sha256": row.get("active_arm_receipt_sha256"),
+        "arm_expires_at_ms": None if arm is None else arm.expires_at_ms,
+        "grant_sha256": None if grant is None else grant.grant_sha256,
+        "grant_expires_at_ms": None if grant is None else grant.expires_at_ms,
+        "risk_policy_sha256": None if policy is None else policy.risk_policy_sha256,
+        "risk_policy_expires_at_ms": None if policy is None else policy.expires_at_ms,
+        "approved_release": None if policy is None else policy.approved_release,
+        "settlement_limits": (
+            []
+            if policy is None
+            else [
+                {
+                    "settlement_asset": limit.settlement_asset,
+                    "max_planned_risk_amount": str(limit.max_planned_risk_amount),
+                    "max_realized_loss_amount": str(limit.max_realized_loss_amount),
+                    "fee_slippage_reserve_bps": limit.fee_slippage_reserve_bps,
+                }
+                for limit in policy.settlement_limits
+            ]
+        ),
+    }
+
+
+def _capital_lifecycle(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "reservation_sha256": str(row["reservation_sha256"]),
+        "authorization_receipt_sha256": str(row["authorization_receipt_sha256"]),
+        "case_id": str(row["case_id"]),
+        "intent_id": str(row["intent_id"]),
+        "economic_lifecycle_id": str(row["economic_lifecycle_id"]),
+        "binding": str(row["binding"]),
+        "settlement_asset": str(row["settlement_asset"]),
+        "risk_policy_sha256": str(row["risk_policy_sha256"]),
+        "grant_sha256": str(row["grant_sha256"]),
+        "arm_receipt_sha256": str(row["arm_receipt_sha256"]),
+        "risk_day_start_ms": int(row["risk_day_start_ms"]),
+        "risk_day_end_ms": int(row["risk_day_end_ms"]),
+        "target_notional": str(row["target_notional"]),
+        "initial_planned_risk_amount": str(row["planned_risk_amount"]),
+        "current_planned_risk_amount": str(row["current_planned_risk_amount"]),
+        "risk_status": str(row["status"]),
+        "attempt_consumed": bool(row["attempt_consumed"]),
+        "attempt_day_start_ms": _int(row.get("attempt_day_start_ms")),
+        "attempt_day_end_ms": _int(row.get("attempt_day_end_ms")),
+        "settlement_known": bool(row["settlement_known"]),
+        "execution_state": str(row["execution_state"]),
+        "execution_phase": row.get("execution_phase"),
+        "terminal_outcome": row.get("terminal_outcome"),
+        "reason_code": row.get("reason_code"),
+        "flat_verified_at_ms": _int(row.get("flat_verified_at_ms")),
+        "updated_at_ms": int(row["updated_at_ms"]),
+    }
 
 
 def _binding_runtime(row: VenueBindingRuntimeV1) -> dict[str, Any]:
@@ -290,6 +624,7 @@ def _binding_runtime(row: VenueBindingRuntimeV1) -> dict[str, Any]:
         "capability_compiled_at_ms": row.capability_compiled_at_ms,
         "capability_compile_error": row.capability_compile_error,
         "execution_binding_sha256": row.execution_binding_sha256,
+        "active_arm_receipt_sha256": row.active_arm_receipt_sha256,
         "heartbeat_at_ms": row.heartbeat_at_ms,
         "reason": row.reason,
     }
@@ -472,6 +807,7 @@ def _intent(row: dict[str, Any]) -> dict[str, Any]:
             "flat_verified_at_ms",
             "realized_pnl_currency",
             "commissions_by_currency",
+            "funding_by_currency",
             "created_at_ms",
             "updated_at_ms",
         )

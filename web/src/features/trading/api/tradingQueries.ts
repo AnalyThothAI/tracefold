@@ -1,7 +1,7 @@
 import { getApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 type TradingSchemas = components["schemas"];
 
@@ -21,6 +21,12 @@ export type TradingGate = TradingSchemas["TradingGateData"];
 export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
 export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
 export type TradingGateConfig = TradingSchemas["TradingGateConfigData"];
+export type TradingCapabilities = TradingSchemas["TradingCapabilitiesData"];
+export type TradingCapabilityBinding = TradingSchemas["TradingCapabilityBindingData"];
+export type TradingCapabilityEntry = TradingSchemas["TradingCapabilityEntryData"];
+export type TradingEvidence = TradingSchemas["TradingEvidenceData"];
+export type TradingAuthorityEvidence = TradingSchemas["TradingAuthorityEvidenceData"];
+export type TradingCapitalLifecycleEvidence = TradingSchemas["TradingCapitalLifecycleEvidenceData"];
 
 /**
  * The capital lane moves at the speed of a frame, not of a price feed. 15 s is the same rhythm the status
@@ -80,6 +86,50 @@ export const useTradingCasesWithToken = (token: string, underlying?: string) =>
           token,
         })
       ).data,
+    refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+/** Complete V2 included/excluded partitions, page-by-page from the durable projection. */
+export const useTradingCapabilitiesWithToken = (token: string) =>
+  useInfiniteQuery<TradingCapabilities>({
+    enabled: Boolean(token),
+    getNextPageParam: (lastPage) =>
+      lastPage.complete ? undefined : (lastPage.next_cursor ?? undefined),
+    initialPageParam: "",
+    queryFn: async ({ pageParam }): Promise<TradingCapabilities> => {
+      const cursor = typeof pageParam === "string" ? pageParam : "";
+      return (
+        await getApi<TradingCapabilities>("/api/trading/capabilities", {
+          etagKey: `trading-capabilities:${cursor || "first"}`,
+          params: cursor ? { cursor } : undefined,
+          token,
+        })
+      ).data;
+    },
+    queryKey: queryKeys.tradingCapabilities(),
+    refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+/** Redacted authority chain and reservation/Intent lifecycle evidence; never provider I/O. */
+export const useTradingEvidenceWithToken = (token: string) =>
+  useInfiniteQuery<TradingEvidence>({
+    enabled: Boolean(token),
+    getNextPageParam: (lastPage) =>
+      lastPage.complete ? undefined : (lastPage.next_cursor ?? undefined),
+    initialPageParam: "",
+    queryFn: async ({ pageParam }): Promise<TradingEvidence> => {
+      const cursor = typeof pageParam === "string" ? pageParam : "";
+      return (
+        await getApi<TradingEvidence>("/api/trading/evidence", {
+          etagKey: `trading-evidence:${cursor || "first"}`,
+          params: cursor ? { cursor } : undefined,
+          token,
+        })
+      ).data;
+    },
+    queryKey: queryKeys.tradingEvidence(),
     refetchInterval: TRADING_REFETCH_MS,
     staleTime: 5_000,
   });

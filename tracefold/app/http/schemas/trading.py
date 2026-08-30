@@ -62,6 +62,7 @@ class TradingBindingRuntimeData(ExactApiSchema):
     capability_compiled_at_ms: int | None = None
     capability_compile_error: str | None = None
     execution_binding_sha256: str | None = None
+    active_arm_receipt_sha256: str | None = None
     heartbeat_at_ms: int | None = None
     reason: str | None = None
 
@@ -232,6 +233,7 @@ class TradingCasesData(ExactApiSchema):
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     capital_reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     complete: bool
+    next_cursor: str | None = None
     window_hours: int
     measured_at_ms: int
 
@@ -293,6 +295,7 @@ class TradingIntentData(ExactApiSchema):
     realized_pnl_amount: str | None = None
     realized_pnl_currency: str | None = None
     commissions_by_currency: dict[str, str] | None = None
+    funding_by_currency: dict[str, str] | None = None
     created_at_ms: int
     updated_at_ms: int
     policy_id: str
@@ -305,7 +308,105 @@ class TradingIntentsData(ExactApiSchema):
     outcome_counts_24h: dict[str, int] = Field(default_factory=dict)
     reason_counts_24h: dict[str, int] = Field(default_factory=dict)
     complete: bool
+    next_cursor: str | None = None
     window_hours: int
+    measured_at_ms: int
+
+
+# ---------------------------------------------------------------------------- Capability partition
+class TradingCapabilityBindingData(ExactApiSchema):
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    capability_state: Literal["missing", "ready", "stale", "error"]
+    snapshot_sha256: str | None = None
+    catalog_snapshot_sha256: str | None = None
+    catalog_instrument_count: int = 0
+    included_count: int = 0
+    excluded_count: int = 0
+    partition_sha256: str | None = None
+    compiled_at_ms: int | None = None
+    compile_error: str | None = None
+    last_known_good: bool = False
+
+
+class TradingCapabilityEntryData(ExactApiSchema):
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    catalog_entry_id: str
+    disposition: Literal["included", "excluded"]
+    provider_instrument_id: str
+    instrument_id: str | None = None
+    canonical_asset: str | None = None
+    canonical_namespace: str | None = None
+    settlement_asset: str | None = None
+    price_increment: str | None = None
+    size_increment: str | None = None
+    min_quantity: str | None = None
+    min_notional: str | None = None
+    exclusion_reason: str | None = None
+
+
+class TradingCapabilitiesData(ExactApiSchema):
+    bindings: list[TradingCapabilityBindingData] = Field(default_factory=list)
+    entries: list[TradingCapabilityEntryData] = Field(default_factory=list)
+    complete: bool
+    next_cursor: str | None = None
+    measured_at_ms: int
+
+
+# ---------------------------------------------------------------------------- Capital evidence
+class TradingSettlementRiskLimitData(ExactApiSchema):
+    settlement_asset: Literal["USDT", "USDC"]
+    max_planned_risk_amount: str
+    max_realized_loss_amount: str
+    fee_slippage_reserve_bps: int
+
+
+class TradingAuthorityEvidenceData(ExactApiSchema):
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    status: Literal["absent", "active", "expired", "revoked", "invalid"]
+    active_arm_receipt_sha256: str | None = None
+    arm_expires_at_ms: int | None = None
+    grant_sha256: str | None = None
+    grant_expires_at_ms: int | None = None
+    risk_policy_sha256: str | None = None
+    risk_policy_expires_at_ms: int | None = None
+    approved_release: str | None = None
+    settlement_limits: list[TradingSettlementRiskLimitData] = Field(default_factory=list)
+
+
+class TradingCapitalLifecycleEvidenceData(ExactApiSchema):
+    reservation_sha256: str
+    authorization_receipt_sha256: str
+    case_id: str
+    intent_id: str
+    economic_lifecycle_id: str
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    settlement_asset: Literal["USDT", "USDC"]
+    risk_policy_sha256: str
+    grant_sha256: str
+    arm_receipt_sha256: str
+    risk_day_start_ms: int
+    risk_day_end_ms: int
+    target_notional: str
+    initial_planned_risk_amount: str
+    current_planned_risk_amount: str
+    risk_status: Literal["RESERVED", "FENCED", "OPEN", "MANUAL_REVIEW", "RELEASED", "SETTLED"]
+    attempt_consumed: bool
+    attempt_day_start_ms: int | None = None
+    attempt_day_end_ms: int | None = None
+    settlement_known: bool
+    execution_state: Literal["PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW", "TERMINAL"]
+    execution_phase: Literal["ENTRY", "PROTECTION", "EXIT"] | None = None
+    terminal_outcome: Literal["EXPIRED", "REJECTED", "CLOSED_FLAT"] | None = None
+    reason_code: str | None = None
+    flat_verified_at_ms: int | None = None
+    updated_at_ms: int
+
+
+class TradingEvidenceData(ExactApiSchema):
+    authorities: list[TradingAuthorityEvidenceData] = Field(default_factory=list)
+    lifecycles: list[TradingCapitalLifecycleEvidenceData] = Field(default_factory=list)
+    complete: bool
+    next_cursor: str | None = None
     measured_at_ms: int
 
 

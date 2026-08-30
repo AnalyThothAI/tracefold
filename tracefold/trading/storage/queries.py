@@ -169,6 +169,7 @@ class QueryStorage:
         since_ms: int,
         underlying_key: str | None = None,
         states: tuple[str, ...] = (),
+        before: tuple[int, str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Frozen Cases with their frozen policy evidence, newest first.
@@ -186,6 +187,9 @@ class QueryStorage:
         if states:
             where.append("c.state = ANY(%s)")
             params.append(list(states))
+        if before is not None:
+            where.append("(c.created_at_ms, c.case_id) < (%s, %s)")
+            params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
             f"""
@@ -193,7 +197,7 @@ class QueryStorage:
               FROM trading_cases c
               LEFT JOIN trading_intents i ON i.case_id = c.case_id
              WHERE {" AND ".join(where)}
-             ORDER BY c.created_at_ms DESC, c.case_id
+             ORDER BY c.created_at_ms DESC, c.case_id DESC
              LIMIT %s
             """,
             tuple(params),
@@ -231,6 +235,7 @@ class QueryStorage:
         closed_until_ms: int | None = None,
         underlying_key: str | None = None,
         states: tuple[str, ...] = (),
+        before: tuple[int, str] | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         if closed_from_ms is not None and closed_until_ms is not None:
@@ -252,6 +257,9 @@ class QueryStorage:
         if states:
             where.append("i.execution_state = ANY(%s)")
             params.append(list(states))
+        if before is not None:
+            where.append("(i.created_at_ms, i.intent_id) < (%s, %s)")
+            params.extend((int(before[0]), str(before[1])))
         params.append(int(limit))
         rows = self.conn.execute(
             f"""
@@ -259,7 +267,7 @@ class QueryStorage:
               FROM trading_intents i
               JOIN trading_cases c ON c.case_id = i.case_id
              WHERE {" AND ".join(where)}
-             ORDER BY i.created_at_ms DESC
+             ORDER BY i.created_at_ms DESC, i.intent_id DESC
              LIMIT %s
             """,
             tuple(params),

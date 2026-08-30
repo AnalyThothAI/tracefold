@@ -118,6 +118,14 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_delivery_1h",
         "news_status_learning_retention",
     )
+    assert catalog.query_routes["/api/trading/capabilities"] == (
+        "trading_capability_bindings",
+        "trading_capability_snapshot",
+    )
+    assert catalog.query_routes["/api/trading/evidence"] == (
+        "trading_authority_projection",
+        "trading_console_capital_evidence",
+    )
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes

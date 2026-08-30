@@ -2,6 +2,8 @@ import { TradingPage } from "@features/trading";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import {
+  tradingCapabilitiesFixture,
+  tradingEvidenceFixture,
   tradingIntentFixture,
   tradingIntentsFixture,
   tradingStatusFixture,
@@ -20,6 +22,12 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/intents$/, () =>
         HttpResponse.json({ ok: true, data: tradingIntentsFixture() }),
       ),
+      http.get(/.*\/api\/trading\/capabilities$/, () =>
+        HttpResponse.json({ ok: true, data: tradingCapabilitiesFixture() }),
+      ),
+      http.get(/.*\/api\/trading\/evidence$/, () =>
+        HttpResponse.json({ ok: true, data: tradingEvidenceFixture() }),
+      ),
     );
   });
 
@@ -30,10 +38,13 @@ describe("TradingPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Decision / Capital" })).toBeVisible();
     expect(await screen.findByText("决策运行、资本暂停、凭证未配置，当前无法交易")).toBeVisible();
-    expect(await screen.findByText("BINANCE_USDM")).toBeVisible();
-    expect(await screen.findByText("HYPERLIQUID_PERP")).toBeVisible();
+    expect((await screen.findAllByText("BINANCE_USDM")).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("HYPERLIQUID_PERP")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("credentials unconfigured")).toHaveLength(2);
     expect(await screen.findByText("OPEN_PROTECTED")).toBeVisible();
+    expect(await screen.findByText("provider_page_incomplete")).toBeVisible();
+    expect(await screen.findByText("PROTECTION_CONTRACT_UNPROVEN")).toBeVisible();
+    expect(screen.getAllByText("absent")).toHaveLength(2);
     expect(screen.queryByText(/paper|OpenTrade|订单/i)).toBeNull();
   });
 
@@ -95,6 +106,19 @@ describe("TradingPage", () => {
     // The row and the 24 h outcome distribution both name it; the realised amount appears once.
     expect((await screen.findAllByText("CLOSED_FLAT")).length).toBeGreaterThan(0);
     expect(screen.getByText("0.25 USDT")).toBeVisible();
+  });
+
+  it("does not turn a capability API failure into a truthful empty partition", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/capabilities$/, () =>
+        HttpResponse.json({ ok: false, error: "capability_unavailable" }, { status: 503 }),
+      ),
+    );
+
+    renderTrading();
+
+    expect(await screen.findByText("capability_unavailable")).toBeVisible();
+    expect(screen.queryByText(/当前筛选没有 capability entry/)).toBeNull();
   });
 });
 
