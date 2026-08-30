@@ -104,6 +104,24 @@ def _delete_test_topology(url: str, name_prefix: str) -> None:
     asyncio.run(run())
 
 
+def _settle_effective_policy(url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    async def run() -> None:
+        bus = RabbitMQBus(
+            url=url,
+            name_prefix=name_prefix,
+            connect_timeout_seconds=5.0,
+            management_url=_management_url(url),
+        )
+        try:
+            await bus.verify_policies(settle_timeout_seconds=30.0)
+        finally:
+            await bus.close()
+
+    asyncio.run(run())
+
+
 def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq_url: str) -> None:
     amqp_url = rabbitmq_url
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -140,6 +158,11 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq
                 applied = io.StringIO()
                 assert main(["news", "bus-policy", "apply"], stdout=applied) == 0
                 assert json.loads(applied.getvalue())["ok"] is True
+
+                # bus-check reads the effective per-queue policy, which the broker publishes on its own
+                # statistics interval after the document is in place. Wait with the same bounded settle
+                # Workers runs before consuming; bus-check itself stays a one-shot snapshot.
+                _settle_effective_policy(amqp_url, name_prefix)
 
                 stdout = io.StringIO()
                 exit_code = main(["news", "bus-check"], stdout=stdout)

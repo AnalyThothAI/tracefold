@@ -64,9 +64,11 @@ def _handle_bus_policy(args: Namespace) -> tuple[int, dict[str, Any]]:
         # would refuse to be redeclared.
         bus = _bus(settings)
         applied = await bus.apply_policies() if args.policy_action == "apply" else None
-        verified = await bus.verify_policies()
-        effective = await bus.effective_policies()
-        return {"applied": applied, "verified": verified, "effective": effective}
+        # The policy document, not the per-queue effect: this command runs before any consumer has
+        # declared the topology, and on a fresh broker there is nothing for a policy to be effective on
+        # yet. `news bus-check` is where the effective per-queue policy is read back.
+        verified = await bus.verify_policy_documents()
+        return {"applied": applied, "verified": verified}
 
     try:
         result = asyncio.run(_run())

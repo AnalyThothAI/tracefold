@@ -73,6 +73,9 @@ async def _bus(*, delay_ms: int = FAST_DELAY_MS, apply_policies: bool = True) ->
     await bus.connect()
     if apply_policies:
         await bus.apply_policies()
+        # The same bounded settle Workers runs before consuming: the broker publishes the per-queue
+        # effect of the just-imported document on its statistics interval.
+        await bus.verify_policies(settle_timeout_seconds=30.0)
     try:
         yield bus
     finally:
@@ -266,6 +269,54 @@ def test_effective_policy_is_the_checked_in_retry_contract() -> None:
     asyncio.run(scenario())
 
 
+def test_policies_can_be_provisioned_before_any_queue_exists() -> None:
+    """Provisioning must not depend on the topology, or a fresh broker can never be deployed to.
+
+    A RabbitMQ policy is a name-pattern rule that exists whether or not anything matches it. The
+    `rabbitmq-policy` Compose service runs before Workers declares a single queue, and during the #400
+    cutover it runs when the old queues have just been deleted — so a provisioning check that asks about
+    queues deadlocks against the consumer that would create them.
+    """
+
+    async def scenario() -> None:
+        prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
+        bus = RabbitMQBus(
+            url=AMQP_URL,
+            name_prefix=prefix,
+            connect_timeout_seconds=5,
+            management_url=MANAGEMENT_URL,
+            retry_delay_ms=FAST_DELAY_MS,
+        )
+        try:
+            # No connect(), so no exchange, no queue, no binding exists anywhere on the broker.
+            assert await bus.apply_policies() == {
+                "vhost": _management_vhost(),
+                "policies": [policy.name for policy in broker_policy.policies(name_prefix=prefix)],
+            }
+            assert await bus.verify_policy_documents() == {
+                "verified": sorted(policy.name for policy in broker_policy.policies(name_prefix=prefix))
+            }
+            # The queues genuinely do not exist yet, which is what the per-queue check would trip on.
+            assert await bus.topology_drift() == {"queues": [], "exchanges": []}
+            with pytest.raises(BrokerPolicyMismatch):
+                await bus.verify_policies()
+            # Declaring the topology is what makes the policy effective, and only then does the
+            # per-queue contract a consumer depends on hold. The settle bound is the exact call Workers
+            # makes before consuming: freshly declared queues report `{}` until the management API's
+            # statistics interval publishes their effective policy, so a one-shot read here would kill
+            # the first Workers boot on every fresh broker volume.
+            await bus.connect()
+            assert await bus.verify_policies(settle_timeout_seconds=30.0) == {
+                "verified": sorted(topology(prefix).queue_names)
+            }
+        finally:
+            await bus.connect()
+            await bus.delete_topology()
+            await bus.close()
+
+    asyncio.run(scenario())
+
+
 def test_removed_policy_fails_closed_instead_of_falling_back_to_immediate_retry() -> None:
     """A missing policy is not a degraded mode: it is the quorum default limit with no delay at all."""
 
@@ -283,6 +334,9 @@ def test_removed_policy_fails_closed_instead_of_falling_back_to_immediate_retry(
                     assert bus.queue_name(Q_TRIAGE) in str(exc)
                     snapshot = await bus.broker_snapshot()
                     assert snapshot[bus.queue_name(Q_TRIAGE)]["policy_ok"] is False
+                    # A settle bound defers the report; it never turns a genuine mismatch into a pass.
+                    with pytest.raises(BrokerPolicyMismatch):
+                        await bus.verify_policies(settle_timeout_seconds=1.5)
                     return
                 await asyncio.sleep(0.3)
             raise AssertionError("removing a policy did not fail verification")
