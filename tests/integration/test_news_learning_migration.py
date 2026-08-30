@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -63,7 +64,311 @@ def _fresh_schema_at(revision: str) -> None:
     _upgrade(revision)
 
 
-def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_marker() -> None:
+def test_0336_news_current_contract_genesis_is_destructive_current_only_and_irreversible(monkeypatch) -> None:
+    conn: Any | None = None
+    git_sha = "1" * 40
+    image_digest = "sha256:" + "2" * 64
+    runtime_manifest_sha = "3" * 64
+    snapshot_sha = "4" * 64
+
+    def trading_table_counts(connection: Any) -> dict[str, int]:
+        tables = [
+            str(row["table_name"])
+            for row in connection.execute(
+                """
+                SELECT table_name FROM information_schema.tables
+                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                   AND table_name LIKE 'trading_%'
+                 ORDER BY table_name
+                """
+            ).fetchall()
+        ]
+        return {
+            table: int(connection.execute(f"SELECT count(*) AS n FROM {table}").fetchone()["n"]) for table in tables
+        }
+
+    try:
+        _fresh_schema_at("20260830_0335")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+              first_ingest_mode, created_at_ms, updated_at_ms
+            ) VALUES ('genesis-item', 'opennews', 'genesis-key', 'old evidence', 10, 10, 'live', 10, 10)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_events (
+              event_id, leader_item_id, dedupe_family, comparison_fingerprint, comparison_title,
+              leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
+              ingest_mode, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text,
+              focus_fact_method, event_kind
+            ) VALUES (
+              repeat('a', 64), 'genesis-item', 'general', 'old-fingerprint', 'old evidence',
+              'old evidence', 10, 10, 20, 'candidate', 'live', 10, 10, 'old-fact',
+              'old evidence', 'whole_item', 'news'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_agent_runtime_manifests (
+              manifest_sha, stable_bundle_sha, candidate_shas, image_digest,
+              runtime_revision, registered_at_ms
+            ) VALUES (repeat('5', 64), repeat('6', 64), '[]'::jsonb, 'sha256:prior', 'prior', 9)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_market_instruments (
+              venue, venue_symbol, base_symbol, instrument_class, quote_asset, status, last_seen_ms
+            ) VALUES ('genesis.venue', 'KEEP-USDT', 'KEEP', 'crypto', 'USDT', 'trading', 10)
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO news_quote_snapshots (
+              source_key, quotes, target_count, payload_sha256, received_at_ms, updated_at_ms
+            ) VALUES ('genesis-keep', '{}'::jsonb, 0, repeat('7', 64), 10, 10)
+            """
+        )
+        trading_counts = trading_table_counts(conn)
+        conn.commit()
+        conn.close()
+        conn = None
+
+        preflight = {
+            "mode": "maintenance_window",
+            "tested_git_sha": git_sha,
+            "deployed_git_sha": git_sha,
+            "image_digest": image_digest,
+            "runtime_revision": git_sha,
+            "runtime_manifest_sha": runtime_manifest_sha,
+            "snapshot_sha256": snapshot_sha,
+            "snapshot_verified": True,
+            "queue_ready": 0,
+            "queue_unacked": 0,
+            "queue_dead_letter": 0,
+            "queue_stale_reference_count": 0,
+        }
+        monkeypatch.setenv("TRACEFOLD_RUNTIME_REVISION", git_sha)
+        monkeypatch.setenv("TRACEFOLD_IMAGE_DIGEST", image_digest)
+        monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256", runtime_manifest_sha)
+        monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", json.dumps(preflight))
+        _upgrade("20260830_0336")
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0336"
+        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_events").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_agent_runtime_manifests").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_learning_epochs").fetchone()["n"] == 0
+        assert conn.execute("SELECT count(*) AS n FROM news_ingest_state").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM news_learning_retention_state").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM news_market_instruments").fetchone()["n"] == 1
+        assert conn.execute("SELECT count(*) AS n FROM news_quote_snapshots").fetchone()["n"] == 1
+        assert {
+            row["column_name"]
+            for row in conn.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name IN ('news_events', 'news_reviews')
+                """
+            ).fetchall()
+        }.isdisjoint({"current_contract_archive_only"})
+        assert (
+            conn.execute("SELECT to_regclass('public.news_current_events_v1') AS relation").fetchone()["relation"]
+            is None
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM pg_proc "
+                "WHERE pronamespace = 'public'::regnamespace AND proname = 'news_current_event_archive_guard'"
+            ).fetchone()["n"]
+            == 0
+        )
+        assert (
+            conn.execute(
+                """
+                SELECT count(*) AS n FROM pg_constraint con
+                JOIN pg_class rel ON rel.oid = con.conrelid
+                WHERE rel.relnamespace = 'public'::regnamespace
+                  AND left(rel.relname, 5) = 'news_' AND NOT con.convalidated
+                """
+            ).fetchone()["n"]
+            == 0
+        )
+        assert trading_table_counts(conn) == trading_counts
+
+        receipt = conn.execute(
+            """
+            SELECT artifact_sha, payload FROM news_learning_artifacts
+             WHERE kind = 'epoch_reset' AND created_by = 'migration_20260830_0336'
+            """
+        ).fetchone()
+        assert receipt is not None
+        payload = receipt["payload"]
+        assert payload["kind"] == "news_current_contract_genesis"
+        assert payload["migration_identity"] == "20260830_0336"
+        assert payload["tested_git_sha"] == payload["deployed_git_sha"] == git_sha
+        assert payload["image_digest"] == image_digest
+        assert payload["runtime_manifest_sha"] == runtime_manifest_sha
+        assert payload["snapshot_sha256"] == snapshot_sha
+        assert payload["queue_stale_reference_count"] == 0
+        assert payload["broker_observation_sha256"] == "5" * 64
+        assert payload["archive_only_row_count"] == 0
+        assert payload["pre_counts"]["news_events"] == 1
+        assert payload["post_counts"]["news_events"] == 0
+        assert payload["post_counts"]["news_learning_artifacts"] == 1
+        assert payload["post_counts"]["news_ingest_state"] == 1
+        assert payload["post_counts"]["news_learning_retention_state"] == 1
+        assert payload["preserved_counts"]["news_market_instruments"] == 1
+        assert set(payload["disposition"]["cleared_tables"]) == set(payload["pre_counts"])
+        assert set(payload["disposition"]["preserved_tables"]) == set(payload["preserved_counts"])
+        assert set(payload["disposition"]["schema_objects_before"]) - set(
+            payload["disposition"]["schema_objects_after"]
+        ) == set(payload["disposition"]["retired_schema_objects"])
+        assert set(payload["disposition"]["retired_compatibility_objects"]) == {
+            "news_events.current_contract_archive_only",
+            "news_reviews.current_contract_archive_only",
+            "news_current_events_v1",
+            "ix_news_events_current_opened",
+            "news_current_event_archive_guard",
+            "news_events_current_archive_only_check",
+            "news_reviews_current_archive_only_check",
+            "news_event_evidence_current_archive_only_check",
+        }
+        assert payload["schema_digest_before"] != payload["schema_digest_after"]
+        assert payload["rollback"] == "verified_snapshot_restore_only"
+        assert receipt["artifact_sha"] == _ledger_artifact_sha("epoch_reset", payload)
+        with pytest.raises(RaiseException, match="news_learning_append_only"):
+            conn.execute(
+                "UPDATE news_learning_artifacts SET created_at_ms = created_at_ms + 1 WHERE artifact_sha = %s",
+                (receipt["artifact_sha"],),
+            )
+        conn.rollback()
+        conn.close()
+        conn = None
+
+        with pytest.raises(RuntimeError, match="irreversible News current-contract genesis"):
+            config = alembic_config()
+            config.attributes["database_url"] = postgres_test_dsn()
+            command.downgrade(config, "20260830_0335")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0336_refuses_nonempty_news_without_verified_preflight(monkeypatch) -> None:
+    _fresh_schema_at("20260830_0335")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(
+            """
+            INSERT INTO news_items (
+              item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
+              first_ingest_mode, created_at_ms, updated_at_ms
+            ) VALUES ('must-snapshot', 'opennews', 'must-snapshot', 'must snapshot', 1, 1, 'live', 1, 1)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.delenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", raising=False)
+    with pytest.raises(RuntimeError, match="requires TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON"):
+        _upgrade("20260830_0336")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
+        assert conn.execute("SELECT count(*) AS n FROM news_items").fetchone()["n"] == 1
+    finally:
+        conn.close()
+
+
+def test_0336_fresh_install_is_bound_before_migration_without_row_shape_inference(monkeypatch) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.delenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", raising=False)
+    monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL", "1")
+    _upgrade("20260830_0336")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        receipt = conn.execute(
+            "SELECT payload FROM news_learning_artifacts "
+            "WHERE kind = 'epoch_reset' AND created_by = 'migration_20260830_0336'"
+        ).fetchone()
+        assert receipt["payload"]["preflight_mode"] == "fresh_install"
+        assert receipt["payload"]["tested_git_sha"] == "1" * 40
+        assert receipt["payload"]["runtime_manifest_sha"] == "3" * 64
+        assert receipt["payload"]["snapshot_sha256"] == hashlib.sha256(b"").hexdigest()
+    finally:
+        conn.close()
+
+
+def test_0336_refuses_news_table_disposition_drift() -> None:
+    _fresh_schema_at("20260830_0335")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("CREATE TABLE news_unowned_contract (id bigint PRIMARY KEY)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match=r"News table disposition drift:.*news_unowned_contract"):
+        _upgrade("20260830_0336")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
+        assert conn.execute("SELECT to_regclass('public.news_unowned_contract') AS name").fetchone()["name"]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("ddl", "identity"),
+    (
+        ("CREATE VIEW news_unowned_contract_v1 AS SELECT 1 AS value", "view:news_unowned_contract_v1"),
+        (
+            "CREATE FUNCTION news_unowned_contract() RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 1'",
+            "function:news_unowned_contract()",
+        ),
+        (
+            "CREATE TABLE foreign_news_ref (event_id text REFERENCES news_events(event_id))",
+            "fk:foreign_news_ref.foreign_news_ref_event_id_fkey->news_events",
+        ),
+    ),
+)
+def test_0336_refuses_news_schema_object_disposition_drift(ddl: str, identity: str) -> None:
+    _fresh_schema_at("20260830_0335")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(ddl)
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match=rf"News schema object disposition drift:.*{re.escape(identity)}"):
+        _upgrade("20260830_0336")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
+    finally:
+        conn.close()
+
+
+def test_0329_to_0330_installs_current_contract_constraints_for_new_writes() -> None:
     conn: Any | None = None
     try:
         _fresh_schema_at("20260829_0329")
@@ -120,7 +425,7 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
             INSERT INTO news_items (
               item_id, source_id, source_item_key, title, published_at_ms, observed_at_ms,
               first_ingest_mode, created_at_ms, updated_at_ms
-            ) VALUES ('archive-item', 'opennews', 'archive-key', 'archive title', 1, 1, 'live', 1, 1)
+            ) VALUES ('legacy-item', 'opennews', 'legacy-key', 'legacy title', 1, 1, 'live', 1, 1)
             """
         )
         conn.execute(
@@ -131,9 +436,9 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
               ingest_mode, created_at_ms, updated_at_ms, focus_fact_id, focus_fact_text,
               focus_fact_method, event_kind
             ) VALUES (
-              'archive-event', 'archive-item', 'general', 'archive-fingerprint', 'archive title',
-              'archive title', 1, 1, 2, 'candidate', 'live', 1, 1, 'archive-fact',
-              'archive title', 'whole_title', 'news'
+              'legacy-event', 'legacy-item', 'general', 'legacy-fingerprint', 'legacy title',
+              'legacy title', 1, 1, 2, 'candidate', 'live', 1, 1, 'legacy-fact',
+              'legacy title', 'whole_title', 'news'
             )
             """
         )
@@ -143,7 +448,7 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
               event_id, stage, policy_version, model_decision, rule_baseline_decision,
               final_decision, verdict, degraded, trace, created_at_ms
             ) VALUES (
-              'archive-event', 'triage', 'archive-policy', 'drop', 'drop', 'drop',
+              'legacy-event', 'triage', 'legacy-policy', 'drop', 'drop', 'drop',
               '{}'::jsonb, false, '{}'::jsonb, 1
             )
             """
@@ -188,7 +493,7 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
             (canonical_sha(old_v3_snapshot), json.dumps(old_v3_snapshot)),
         )
         for offset, (policy_version, editorial) in enumerate(
-            (("archive-valid-taxonomy", valid_editorial), ("archive-invalid-taxonomy", invalid_editorial)),
+            (("legacy-valid-taxonomy", valid_editorial), ("legacy-invalid-taxonomy", invalid_editorial)),
             start=2,
         ):
             conn.execute(
@@ -199,8 +504,8 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
                   runtime_manifest_sha, model, program_version, program_sha256,
                   degraded, trace, created_at_ms
                 ) VALUES (
-                  'archive-event', 'triage', %s, 'drop', 'drop', 'drop', '{}'::jsonb,
-                  %s::jsonb, %s, %s, 'archive-model', 'news_semantic_program_v8', %s,
+                  'legacy-event', 'triage', %s, 'drop', 'drop', 'drop', '{}'::jsonb,
+                  %s::jsonb, %s, %s, 'legacy-model', 'news_semantic_program_v8', %s,
                   false, '{}'::jsonb, %s
                 )
                 """,
@@ -256,102 +561,6 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
             ).fetchall()
         }
         assert "dedupe_family" in columns and "family" not in columns
-        archived = conn.execute(
-            "SELECT judgment_contract_version, judgment_origin FROM news_verdicts WHERE event_id = 'archive-event'"
-        ).fetchall()
-        assert archived == [
-            {"judgment_contract_version": None, "judgment_origin": None},
-            {"judgment_contract_version": None, "judgment_origin": None},
-            {"judgment_contract_version": None, "judgment_origin": None},
-        ]
-        assert conn.execute("SELECT count(*) AS n FROM news_reviews WHERE task_id = 'pair.direct'").fetchone()["n"] == 2
-        assert (
-            conn.execute("SELECT count(*) AS n FROM news_review_records_v1 WHERE task_id = 'pair.direct'").fetchone()[
-                "n"
-            ]
-            == 0
-        )
-        assert conn.execute("SELECT count(*) AS n FROM news_current_events_v1").fetchone()["n"] == 0
-        news = repositories_for_connection(conn).news
-        assert news.latest_verdict(event_id="archive-event", stage="triage") is None
-        assert news.event_detail("archive-event") == {"archive_only": True}
-        assert news.event_detail("old-v3-event") == {"archive_only": True}
-        feed = news.list_feed(
-            event_family=None,
-            change_state=None,
-            assertion_status=None,
-            source_authority=None,
-            subject_code=None,
-            final_decision=None,
-            event_kind=None,
-            admission=None,
-            search=None,
-            limit=10,
-            cursor=None,
-        )
-        assert feed["events"] == []
-        receipt = conn.execute(
-            "SELECT artifact_sha, payload FROM news_learning_artifacts "
-            "WHERE kind = 'epoch_reset' AND created_by = 'migration_20260830_0330'"
-        ).fetchone()
-        assert receipt is not None
-        expected_receipt = {
-            "kind": "news_current_contract_hard_cut",
-            "source_issue": "https://github.com/AnalyThothAI/tracefold/issues/369",
-            "judgment_contract_version": "news_judgment_v2",
-            "evidence_contract_version": "news_event_evidence_v3",
-            "total_old_verdict_rows": 3,
-            "current_taxonomy_present_rows": 1,
-            "missing_invalid_conflicting_rows": 2,
-            "archive_only_event_rows": 2,
-            "affected_review_rows": 2,
-            "affected_history_rows": 0,
-            "affected_learning_rows": 0,
-            "disposition": "immutable_audit_only",
-        }
-        assert receipt["payload"] == expected_receipt
-        assert receipt["artifact_sha"] == _ledger_artifact_sha("epoch_reset", expected_receipt)
-
-        assert {
-            row["event_id"]
-            for row in conn.execute(
-                "SELECT event_id FROM news_events WHERE current_contract_archive_only ORDER BY event_id"
-            ).fetchall()
-        } == {"archive-event", "old-v3-event"}
-        with pytest.raises(CheckViolation) as review_resurrection_rejected:
-            conn.execute("UPDATE news_reviews SET current_contract_archive_only = false WHERE task_id = 'pair.direct'")
-        assert review_resurrection_rejected.value.diag.constraint_name == "news_current_review_archive_only_check"
-        conn.rollback()
-        with pytest.raises(CheckViolation) as archive_evidence_rejected:
-            conn.execute(
-                """
-                INSERT INTO news_event_evidence_snapshots (
-                  event_id, evidence_version, focus_fact_id, evidence_sha256,
-                  provenance, release_eligible, snapshot, created_at_ms
-                ) VALUES (
-                  'old-v3-event', 2, 'old-v3-fact', repeat('f', 64),
-                  'observed', true, '{}'::jsonb, 6
-                )
-                """
-            )
-        assert archive_evidence_rejected.value.diag.constraint_name == "news_current_event_archive_only_check"
-        conn.rollback()
-        with pytest.raises(CheckViolation) as archive_verdict_rejected:
-            conn.execute(
-                """
-                INSERT INTO news_verdicts (
-                  event_id, stage, policy_version, judgment_contract_version, judgment_origin,
-                  rule_baseline_decision, final_decision, verdict, degraded, trace,
-                  evidence_version, evidence_sha256, focus_fact_id, created_at_ms
-                ) VALUES (
-                  'old-v3-event', 'triage', 'direct-archive-write', 'news_judgment_v2', 'degraded',
-                  'drop', 'drop', '{}'::jsonb, true, '{}'::jsonb,
-                  1, repeat('f', 64), 'old-v3-fact', 7
-                )
-                """
-            )
-        assert archive_verdict_rejected.value.diag.constraint_name == "news_current_event_archive_only_check"
-        conn.rollback()
 
         current_event_id = "8" * 64
         conn.execute(
@@ -377,9 +586,15 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
             """,
             (current_event_id,),
         )
+        news = repositories_for_connection(conn).news
         current_evidence = news.append_evidence_snapshot(event_id=current_event_id, now_ms=11)
         conn.commit()
-        assert conn.execute("SELECT event_id FROM news_current_events_v1").fetchone()["event_id"] == current_event_id
+        assert (
+            conn.execute("SELECT event_id FROM news_events WHERE event_id = %s", (current_event_id,)).fetchone()[
+                "event_id"
+            ]
+            == current_event_id
+        )
         current_evidence_version = int(current_evidence["evidence_version"])
         current_evidence_sha256 = str(current_evidence["evidence_sha256"])
         current_focus_fact_id = str(current_evidence["focus_fact_id"])
@@ -838,8 +1053,8 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
                   reviewer, should_push, dimensions, novelty, first_bad_owner,
                   evidence_refs, selection, payload, release_eligible, created_at_ms
                 ) VALUES (
-                  %s, 'judgment', 'event', 'event.archive-event.1', %s,
-                  'archive-event', 1, 'news_review_v6', 'reader_contract_v2',
+                  %s, 'judgment', 'event', 'event.legacy-event.1', %s,
+                  'legacy-event', 1, 'news_review_v6', 'reader_contract_v2',
                   'direct-reviewer', 'should_hold', %s::jsonb, %s::jsonb, 'unknown',
                   '[]'::jsonb, %s::jsonb, %s::jsonb, false, 6
                 )
@@ -955,7 +1170,7 @@ def test_0283_to_head_preserves_eventless_legacy_label_byte_for_byte() -> None:
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade("20260830_0335")
 
         conn = connect_postgres_test(read_only=False)
         revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
@@ -1041,7 +1256,7 @@ def test_0288_to_head_repairs_the_worker_evidence_grant() -> None:
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade("20260830_0335")
 
         conn = connect_postgres_test(read_only=False)
         privileges = conn.execute(
@@ -1101,7 +1316,7 @@ def test_0291_to_head_preserves_prompt_recordings_as_audit_and_starts_program_ep
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -1429,7 +1644,7 @@ def test_0300_to_head_hard_cuts_queue_priority_editorial_and_program_v6() -> Non
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -1684,7 +1899,7 @@ def test_0303_to_0304_trips_the_open_activation_and_records_the_hard_cut_without
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -1841,7 +2056,7 @@ def test_0304_to_0305_admits_the_compile_record_and_closes_the_old_chain_without
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -1966,7 +2181,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)
@@ -1981,7 +2196,7 @@ def test_0305_to_0306_closes_an_activation_written_against_the_flat_compile_reco
         )
         assert activation["state"] == "tripped"
         assert activation["revision"] == 4
-        # `_upgrade("head")` runs 0307 after this, and it finds nothing armed to trip: each hard cut closes
+        # The historical upgrade through 0334 finds nothing armed to trip: each hard cut closes
         # what it is about, once. An activation cannot be tripped twice.
         assert activation["trip_reason"] == _RUN_SPEND_TRIP_REASON
         assert deployed_after_ms <= activation["tripped_at_ms"] <= deployed_before_ms
@@ -2035,7 +2250,7 @@ def test_0306_to_0307_admits_the_prompt_candidate_and_closes_the_compile_chain_r
         conn = None
 
         deployed_after_ms = int(time.time() * 1000) - 5_000
-        _upgrade("head")
+        _upgrade("20260830_0335")
         deployed_before_ms = int(time.time() * 1000) + 5_000
 
         conn = connect_postgres_test(read_only=False)

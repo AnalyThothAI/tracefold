@@ -729,8 +729,8 @@ class DevelopmentDatasetStore:
         # reader; review showed that reader could never reach the branch, and #343 then deleted the
         # migration path entirely — dead code claiming to enable something is worse than its absence.
         #
-        # No live evidence is lost by saying so: every pre-hard-cut dataset is archive-only, and the
-        # predecessor of this check already refused it for naming an epoch that was not current.
+        # The genesis removed every pre-hard-cut dataset, and the predecessor of this check already
+        # refused one for naming an epoch that was not current.
         # Carry-forward works from #314 onward, bundle to bundle, which is the case it exists for.
         sealed_epoch = str(exact_payload.get("learning_epoch") or "")
         sealed_bundle = (dict(exact_payload.get("agent_cohort") or {})).get("bundle_sha")

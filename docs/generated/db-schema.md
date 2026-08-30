@@ -189,7 +189,6 @@
 | `focus_span_end` | `INTEGER` | False | `0` |
 | `event_kind` | `TEXT` | False | `None` |
 | `source_contract_reason` | `TEXT` | True | `None` |
-| `current_contract_archive_only` | `BOOLEAN` | False | `false` |
 
 ## `news_external_miss_snapshots`
 
@@ -479,7 +478,6 @@
 | `accepts_review_id` | `TEXT` | True | `None` |
 | `release_eligible` | `BOOLEAN` | False | `true` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `current_contract_archive_only` | `BOOLEAN` | False | `false` |
 
 ## `news_symbol_aliases`
 

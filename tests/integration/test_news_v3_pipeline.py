@@ -32,7 +32,6 @@ NEWS_TABLES = {
     "news_opennews_incidents",
     "news_items",
     "news_events",
-    "news_current_events_v1",
     "news_event_members",
     "news_event_bands",
     "news_event_assets",
