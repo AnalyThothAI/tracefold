@@ -77,6 +77,7 @@ def _row(**overrides: Any) -> OiCandidateRow:
         "whale_oi_ratio_bps": 6_000,
         "rank_in_window": 1,
         "observed_at_ms": NOW - 60_000,
+        "source_available_at_ms": NOW - 30_000,
         "ingest_mode": "live",
         "venue": "binance",
     }
@@ -227,12 +228,18 @@ class FakeTrading:
         case_id: str,
         manifest: TradingCaseManifest,
         admission: dict[str, Any],
+        release_revision: str,
         now_ms: int,
     ) -> bool:
         source_key = manifest.primary_trigger.source_key
         if any(case["manifest"].primary_trigger.source_key == source_key for case in self.cases.values()):
             return False
-        self.cases[case_id] = {"manifest": manifest, "created_at_ms": now_ms, "state": CaseState.PENDING}
+        self.cases[case_id] = {
+            "manifest": manifest,
+            "created_at_ms": now_ms,
+            "state": CaseState.PENDING,
+            "release_revision": release_revision,
+        }
         self.admission.append({**admission, "case_id": case_id})
         self.claimable.append(case_id)
         return True

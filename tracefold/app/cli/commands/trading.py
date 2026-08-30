@@ -38,6 +38,10 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         from .trading_replay import handle_oi_replay
 
         return handle_oi_replay(settings, args, now_ms=now)
+    if command == "evidence":
+        from .trading_evidence import handle_trading_evidence
+
+        return handle_trading_evidence(settings, args, now_ms=now)
     listing_only = command == "blacklist" and str(getattr(args, "blacklist_action", "list") or "list") == "list"
     role: Literal["serve", "workers"] = "serve" if (command in _READ_COMMANDS or listing_only) else "workers"
 

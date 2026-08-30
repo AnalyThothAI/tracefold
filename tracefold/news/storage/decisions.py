@@ -267,7 +267,8 @@ class DecisionStorage:
             "SELECT signal.event_id, signal.metric_version, signal.symbol, signal.direction, "
             "signal.oi_change_bps, signal.oi_value_usd, signal.whale_long_profit_bps, "
             "signal.whale_oi_ratio_bps, signal.observed_at_ms, signal.rank_in_window, "
-            "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms "
+            "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms, "
+            "signal.source_item_id, signal.source_venue, signal.available_at_ms, signal.learning_epoch "
             "FROM news_oi_signals signal "
             "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
             "WHERE signal.event_id = %s AND signal.metric_version = %s",
@@ -292,6 +293,8 @@ class DecisionStorage:
         source_strategy_id: str | None = None,
         source_contract_version: str | None = None,
         measurement_window_ms: int | None = None,
+        source_item_id: str,
+        source_venue: str | None,
     ) -> None:
         """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict.
 
@@ -310,8 +313,19 @@ class DecisionStorage:
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
               whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms,
-              source_strategy_id, source_contract_version, measurement_window_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              source_strategy_id, source_contract_version, measurement_window_ms,
+              source_item_id, source_venue, available_at_ms, learning_epoch
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s,
+              COALESCE((SELECT epoch.epoch_id
+                 FROM news_learning_epochs epoch
+                WHERE epoch.bundle_sha = (
+                  SELECT stable_sha FROM news_review_active_agent_v1
+                   ORDER BY created_at_ms DESC LIMIT 1
+                )
+                ORDER BY epoch.starts_at_ms DESC LIMIT 1), 'unproven')
+            )
             ON CONFLICT (event_id, metric_version) DO NOTHING
             """,
             (
@@ -329,6 +343,9 @@ class DecisionStorage:
                 source_strategy_id if proven else None,
                 source_contract_version if proven else None,
                 int(measurement_window_ms) if proven and measurement_window_ms is not None else None,
+                source_item_id,
+                source_venue,
+                int(now_ms),
             ),
         )
 

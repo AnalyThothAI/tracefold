@@ -119,6 +119,8 @@ class ReplayTerminalOutcomeV1(_Frozen):
     replay_intent: ReplayExecutionIntentV1 | None = None
     entry_price: Decimal | None = None
     exit_price: Decimal | None = None
+    opened_at_ms: int | None = Field(default=None, ge=0)
+    closed_at_ms: int | None = Field(default=None, ge=0)
     quantity: Decimal | None = None
     gross_result: Decimal | None = None
     fees: Decimal | None = None
@@ -249,6 +251,8 @@ class BarEpisodeResult:
     reason: str
     entry_price: Decimal | None = None
     exit_price: Decimal | None = None
+    opened_at_ms: int | None = None
+    closed_at_ms: int | None = None
     quantity: Decimal | None = None
     gross_result: Decimal | None = None
     fees: Decimal | None = None
@@ -417,7 +421,7 @@ def evaluate_replay_market_slices(
     slices: list[ReplayMarketSlice],
     *,
     policy: CapitalPolicy,
-    snapshot: ExecutionCapabilitySnapshotV2,
+    snapshot: ExecutionCapabilitySnapshotV2 | None,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
     price_window: PriceWindow,
@@ -441,7 +445,7 @@ def _market_outcome(
     item: ReplayMarketSlice,
     *,
     policy: CapitalPolicy,
-    snapshot: ExecutionCapabilitySnapshotV2,
+    snapshot: ExecutionCapabilitySnapshotV2 | None,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
     price_window: PriceWindow,
@@ -525,6 +529,8 @@ def _market_outcome(
         replay_intent=replay_intent,
         entry_price=episode.entry_price,
         exit_price=episode.exit_price,
+        opened_at_ms=episode.opened_at_ms,
+        closed_at_ms=episode.closed_at_ms,
         quantity=episode.quantity,
         gross_result=episode.gross_result,
         fees=episode.fees,
@@ -556,9 +562,11 @@ def _market_missing(
 
 def _capital_admission(
     plan: DirectionalReplayPlan,
-    snapshot: ExecutionCapabilitySnapshotV2,
+    snapshot: ExecutionCapabilitySnapshotV2 | None,
     blacklist: BlacklistSnapshotV1,
 ) -> tuple[Literal["ELIGIBLE", "DENIED", "NOT_APPLICABLE"], str | None]:
+    if snapshot is None:
+        return "NOT_APPLICABLE", "research_only"
     expected_venue = "binance.usdm" if plan.venue == "binance.perp" else "hyperliquid.perp"
     if snapshot.venue != expected_venue:
         return "NOT_APPLICABLE", "capability_binding_unavailable"
@@ -573,9 +581,9 @@ def _capital_admission(
 def _scenario_capability(
     plan: DirectionalReplayPlan,
     bars: list[ReplayBarV1],
-    snapshot: ExecutionCapabilitySnapshotV2,
+    snapshot: ExecutionCapabilitySnapshotV2 | None,
 ) -> ReplayScenarioCapabilityV1:
-    capital = snapshot.capability_for_instrument(plan.instrument_id)
+    capital = None if snapshot is None else snapshot.capability_for_instrument(plan.instrument_id)
     if capital is not None:
         price_precision = capital.price_precision
         size_precision = capital.size_precision

@@ -66,7 +66,7 @@ def test_0330_to_0332_authority_matrix_names_every_created_contract_object() -> 
 
 def test_latest_current_event_view_revision_has_no_projection_wildcard() -> None:
     revision = (
-        ROOT / "tracefold/platform/postgres/alembic/versions/20260830_0334_news_current_view_columns.py"
+        ROOT / "tracefold/platform/postgres/alembic/versions/20260830_0335_news_current_view_columns.py"
     ).read_text(encoding="utf-8")
 
     assert "SELECT *" not in revision

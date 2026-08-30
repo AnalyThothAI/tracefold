@@ -7,7 +7,6 @@ code, so a model cannot promote its own answer to first-party or filing status.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Final, Literal
 from urllib.parse import urlsplit
@@ -264,10 +263,10 @@ class NewsTaxonomyV1(ModelTaxonomyV1):
         return cls(**model.model_dump(mode="json"), source_authority=source_authority)
 
 
-_REGULATORY_SOURCES: Final = frozenset(
-    {"sec", "sec.gov", "www.sec.gov", "edgar", "edgar.sec.gov", "securities and exchange commission"}
-)
-_ISSUER_SOURCES: Final = frozenset(
+SOURCE_AUTHORITY_CLASSIFIER_VERSION: Final = "news_source_authority_v2"
+_REGULATORY_SOURCE_NAMES: Final = frozenset({"sec", "edgar", "securities and exchange commission"})
+_REGULATORY_HOSTNAMES: Final = frozenset({"sec.gov", "www.sec.gov", "edgar.sec.gov"})
+_ISSUER_SOURCE_NAMES: Final = frozenset(
     {
         "aave",
         "binance",
@@ -286,65 +285,106 @@ _ISSUER_SOURCES: Final = frozenset(
         "upbit",
     }
 )
-_SECONDARY_SOURCES: Final = frozenset(
+_ISSUER_HANDLES: Final = _ISSUER_SOURCE_NAMES
+_SECONDARY_SOURCE_NAMES: Final = frozenset(
     {
         "associated press",
         "ap",
         "bloomberg",
-        "bloomberg.com",
         "cnbc",
-        "cnbc.com",
         "coindesk",
-        "coindesk.com",
         "financial times",
-        "ft.com",
         "reuters",
-        "reuters.com",
         "the block",
-        "theblock.co",
         "the wall street journal",
         "wall street journal",
-        "wsj.com",
         "wsj",
+    }
+)
+_SECONDARY_HOSTNAMES: Final = frozenset(
+    {
+        "bloomberg.com",
+        "www.bloomberg.com",
+        "cnbc.com",
+        "www.cnbc.com",
+        "coindesk.com",
+        "www.coindesk.com",
+        "ft.com",
+        "www.ft.com",
+        "reuters.com",
+        "www.reuters.com",
+        "theblock.co",
+        "www.theblock.co",
+        "wsj.com",
+        "www.wsj.com",
+    }
+)
+_SOURCE_AUTHORITY_REGISTRY: Final = {
+    "regulatory_filing": {
+        "names": sorted(_REGULATORY_SOURCE_NAMES),
+        "handles": [],
+        "hostnames": sorted(_REGULATORY_HOSTNAMES),
+    },
+    "issuer_first_party": {
+        "names": sorted(_ISSUER_SOURCE_NAMES),
+        "handles": sorted(_ISSUER_HANDLES),
+        "hostnames": [],
+    },
+    "reputable_secondary": {
+        "names": sorted(_SECONDARY_SOURCE_NAMES),
+        "handles": [],
+        "hostnames": sorted(_SECONDARY_HOSTNAMES),
+    },
+}
+SOURCE_AUTHORITY_REGISTRY_SHA256: Final = canonical_sha(
+    {
+        "classifier_version": SOURCE_AUTHORITY_CLASSIFIER_VERSION,
+        "registry": _SOURCE_AUTHORITY_REGISTRY,
     }
 )
 
 
-def _source_tokens(values: Sequence[str]) -> set[str]:
-    tokens: set[str] = set()
-    for raw in values:
-        value = str(raw).strip().lower().removeprefix("@").rstrip(".")
-        if not value:
-            continue
-        tokens.add(value)
-        parsed = urlsplit(value if "://" in value else f"//{value}")
-        if parsed.hostname:
-            tokens.add(parsed.hostname.lower().removeprefix("www."))
-        tokens.update(part.strip() for part in re.split(r"[|:/]", value) if part.strip())
-    return tokens
+def _source_identity(raw: str) -> tuple[str, str] | None:
+    value = str(raw).strip().casefold()
+    if not value:
+        return None
+    if value.startswith("@"):
+        return ("handles", value[1:]) if value.count("@") == 1 else None
+    if "://" not in value:
+        kind = "hostnames" if "." in value and " " not in value else "names"
+        return kind, value
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    return "hostnames", parsed.hostname.casefold()
 
 
 def source_authority(values: Sequence[str]) -> SourceAuthority:
     """Classify exact structured source identities; uncertainty stays unknown."""
 
-    tokens = _source_tokens(values)
-    if tokens & _REGULATORY_SOURCES:
-        return "regulatory_filing"
-    if tokens & _ISSUER_SOURCES:
-        return "issuer_first_party"
-    if tokens & _SECONDARY_SOURCES:
-        return "reputable_secondary"
+    identities = {identity for value in values if (identity := _source_identity(value)) is not None}
+    for authority in ("regulatory_filing", "issuer_first_party", "reputable_secondary"):
+        registry = _SOURCE_AUTHORITY_REGISTRY[authority]
+        if any(value in registry[kind] for kind, value in identities):
+            return authority
     return "unknown"
 
 
 def source_authority_from_evidence(evidence: Any) -> SourceAuthority:
     if isinstance(evidence, Mapping):
         source = str(evidence.get("source") or evidence.get("reporting_origin") or "")
-        strategies = evidence.get("strategies") or evidence.get("provenance") or ()
     else:
         source = str(getattr(evidence, "source", "") or "")
-        strategies = getattr(evidence, "strategies", ()) or ()
-    return source_authority((source, *(str(value) for value in strategies)))
+    return source_authority((source,))
 
 
 def taxonomy_public(value: Mapping[str, Any] | NewsTaxonomyV1 | None) -> dict[str, Any] | None:
@@ -377,6 +417,8 @@ __all__ = [
     "IPTC_SUBJECT_CODES",
     "IPTC_SUBJECT_LABELS_ZH",
     "SOURCE_AUTHORITIES",
+    "SOURCE_AUTHORITY_CLASSIFIER_VERSION",
+    "SOURCE_AUTHORITY_REGISTRY_SHA256",
     "TAXONOMY_VERSION",
     "AssertionStatus",
     "ChangeState",

@@ -431,7 +431,7 @@ class RabbitMQBus:
                 "broker" if isinstance(exc, (news_bus.BrokerBackpressure, news_bus.BrokerUnavailable)) else "handler"
             )
             self._record_consumer_fatal(queue, reason)
-            log.exception("news bus handler crashed for %s", message.message_id)
+            log.error("news bus handler crashed for %s (%s)", message.message_id, type(exc).__name__)
             raise
         await self._settle(queue, incoming.ack())
 

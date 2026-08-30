@@ -21,13 +21,17 @@ from .bindings import binding_for_source_venue
 from .contracts import ExchangeId, InstrumentCandidateRow, InstrumentRef, canonical_base_symbol
 
 _NATIVE_PERP_VENUE: Mapping[str, str] = {"binance": "binance.perp", "hyperliquid": "hl.perp"}
-_SIGNAL_VENUE: Mapping[str, ExchangeId] = {"binance": "binance", "hyperliquid": "hyperliquid"}
+_EXCHANGE_BY_BINDING: Mapping[str, ExchangeId] = {
+    "BINANCE_USDM": "binance",
+    "HYPERLIQUID_PERP": "hyperliquid",
+}
 
 
 def signal_exchange_id(venue: object) -> ExchangeId | None:
     """The venue an OI frame's own provider tag names, or `None` when it names nothing executable."""
 
-    return _SIGNAL_VENUE.get(str(venue or "").strip().lower())
+    binding = binding_for_source_venue(venue)
+    return None if binding is None else _EXCHANGE_BY_BINDING[binding]
 
 
 def resolve_instrument(

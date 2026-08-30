@@ -276,7 +276,10 @@ the selected contract (or it needs no strict parser). Pre-cut OI/liquidation
 rows without durable typed success evidence retain their historical
 `source_contract_unverified` bytes behind the archive-only boundary and never
 enter the current read model. An OI signal row is derived read-model evidence,
-not a second material fact source. OpenNews's raw `coins` annotation remains
+not a second material fact source. At insertion it freezes the exact source Item,
+source venue, actual availability clock, and learning epoch; evidence capture never
+reconstructs those fields from a later Event leader or the currently active epoch.
+OpenNews's raw `coins` annotation remains
 source evidence in `news_items.provider_metadata`; the Gate derives the bounded
 `grounded_assets` from it. `news_event_assets` is the durable Event-market
 identity ledger: it contains those Gate-grounded symbols and the primary symbol
@@ -366,6 +369,9 @@ tracefold.news
     objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
     optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
     evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
+    taxonomy_shadow.py  bounded 0-2-call taxonomy execution with ordered record/replay observations
+    taxonomy_evaluation.py  taxonomy metrics, complete-population denominators, and quality gates
+    taxonomy.py       taxonomy Gold/registration/deployment/release evidence verification only
     ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
@@ -402,6 +408,9 @@ tracefold.trading
   capabilities.py     the frozen Binance Demo instrument universe
   intent.py           immutable TradeIntent and current Outcome contract
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
+  evidence_clock.py   immutable discovery, finite selection and periodic blind-holdout contracts
+  evidence_research.py  pure capture/drain/corpus and locked future evaluation
+  evidence_verification.py  pure Case/window/release/rollback verifier semantics
   replay.py, research/  credential-free BAR replay over the same policy identity
 
 tracefold.integrations
@@ -460,11 +469,15 @@ port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v10` and Trading's own candidate
+row contracts, News's `news_trade_projection_v12` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. Version 10 publishes
-only the deterministic OI judgment and instrument catalogue used by Trading;
-editorial News and liquidation have no capital-lane projection.
+either side fails at the seam rather than inside a runner. Version 12 publishes
+the deterministic OI judgment, frozen source-availability clock, a bounded bulk
+point-in-time instrument catalogue, and the complete fixed-window OI source
+universe used by Trading. That universe reuses the production Gate's exact
+current-Event and live-ingest eligibility, so recovery or archived rows cannot
+manufacture a missing Gate disposition; editorial News and liquidation have no
+capital-lane projection.
 The live OI handoff reads that projection through the News cold adapter, closes
 the News transaction, and then lets the Trading adapter open its own bounded
 transactions. No callback receives both repositories and there is no
@@ -506,6 +519,9 @@ live in the owning storage/PostgreSQL boundary or the small named App adapter
 allowlist. Public and cross-context projections list columns explicitly.
 High-risk runtime and query-audit paths import the same canonical statement
 builder; the audit does not maintain a representative copy.
+SQL functions follow the same ownership rule: a Trading trigger may
+call only Trading/platform helpers, including its own canonical-JSON seal
+helper, never a News-prefixed function.
 
 ## Transaction ownership
 
@@ -973,8 +989,9 @@ intent `reader_value` (`escalate|realtime|background|none`). It has no separate
 model-authored `decision` or `actionable` field. Issue #117 also makes it emit
 the four model-owned axes of `news_taxonomy_v1`: at most three pinned IPTC
 subject qcodes, event family, change state and assertion status. The assembler
-derives the fifth axis, source authority, from structured provenance; the model
-cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
+derives the fifth axis, source authority, only from the exact structured
+reporting-source identity; strategy/provenance routing IDs confer no authority
+and the model cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
 input to Gate, `decide()`, ReaderCard, Delivery or Trading.
 For `new_fact` and `progression`, the normalizer discards any stray non-negative
 `restates` index and records the raw and normalized values on the originating
@@ -1000,7 +1017,7 @@ stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
 holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor, and `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+`404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc`.
 Issue #117 changes the EventSemantics instruction and typed output while
 preserving the same two-Predictor graph and exact two-call common-success path.
 
@@ -1858,7 +1875,11 @@ retaining only terminal V1/V2 rows as archive facts.
 the arm epoch after a paused cutover.
 `20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
 handoff repair/status scan.
-`20260830_0334` replaces the current Event security-barrier view's published
+`20260830_0334` installs the Trading evidence clock, frozen News handoff clocks,
+append-only future-capture batches, database-stamped evidence receipts, exact
+release/window preregistration, and the promotion/verification hard links. It
+also rejects any attempt to revive a terminal Intent after rollback.
+`20260830_0335` replaces the current Event security-barrier view's published
 wildcard with the same explicit column sequence, so future base-table columns
 cannot silently widen Serve, Review, learning, or Trading handoff contracts.
 No chained revision has a downgrade. Exact-image replacement requires the
@@ -2096,6 +2117,52 @@ Three invariants define the lifecycle:
 The venue is execution-outcome authority; PostgreSQL becomes durable truth only
 when reconciliation writes the observed result back. The application does not
 copy Nautilus's complete Order/Fill history.
+
+### Production evidence, promotion, and verification (#376, #377)
+
+The evidence clock is a Trading-owned state machine over immutable artifacts and
+append-only PostgreSQL receipts. Discovery capture freezes the News handoff's original
+source Item, venue, availability clock, learning epoch, and source-time instrument
+catalogue. Drain occurs later and freezes the complete bar/funding inputs. A sealed
+corpus can enter only the code-owned finite selector: eligibility is a complete valid
+normalized row with one directional, closed discovery episode for the binding. The
+selector's exact eligible identities and terminal (`CANDIDATE_LOCKED` or
+`NO_CANDIDATE`) are hashed into the candidate receipt; an operator file is never an
+independent strategy-selection authority.
+
+Future capture is a contiguous sequence of append-only batches. PostgreSQL locks the
+candidate receipt and enforces the next interval, maximum capture lag, binding, and
+protocol identity. Each batch records the collector and Workers generation health,
+expected/missing/late/catalog source mass, bar/funding continuity, artifact integrity,
+and the exact source rows. App fetches only value-free bar interval and funding
+timestamp observations; Trading owns continuity and staleness meaning. The database
+recomputes the exact chain extent, blind-health digest, and incident set, so a caller
+cannot seal an incomplete window or supply a healthier summary. Only a complete batch chain can be
+sealed as `FUTURE_CAPTURE`; only its later committed drain can be unblinded once. The
+database overwrites caller timestamps with its actual clock for receipts, future
+batches, and release registration; a caller-provided clock cannot manufacture ordering.
+Filesystem/provider work is completed before a short transaction; no artifact or
+network I/O occurs while a database transaction is open.
+
+Research evidence is not capital authority. A `PROMOTE` future result is hard-linked
+through immutable risk policy, promotion grant, operator arm, reservation,
+authorization, Intent, native protection, authoritative `CLOSED_FLAT`, and settlement
+facts. Before its start, the final seven-day window is registered against one signed
+tag, commit, OCI image, the exact already-running Workers and Serve generations,
+release-tagged authority chain, and nonzero activity floors. Both generations must span
+the window under the registered revision/image. Replacing either process or the release
+makes the window fail rather than silently continuing it.
+The final verifier independently reads News's complete cutoff-bounded OI source
+universe and requires exact equality with Trading's Gate source keys. Its per-binding
+report includes policy/capital and Q1/Q2 reasons, reservation/execution lifecycle,
+stage latency, financial accounting, and explicit source-without-Gate missingness.
+
+`tracefold.trading.evidence_verification` owns the pure meaning of receipt chains, Case,
+Intent, fixed-window, release, canary/restart, and rollback checks. `tracefold.app` only
+collects bounded PostgreSQL rows, raw artifact bytes, local Git identities, and the
+authenticated local Serve observation before passing those facts to Trading. Missing,
+unknown, late, mismatched, nonterminal, unprotected, or unsettled evidence is a named
+failed check; no App handler may reinterpret it as success.
 
 ### Runtime and cutover
 

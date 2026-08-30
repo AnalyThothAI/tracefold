@@ -654,6 +654,7 @@ def test_db_migrate_enforces_the_db_only_quote_authority_preflight_without_nauti
 def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_additive_news_head(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|1|1|1"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260830_0333|t|t"
 
     result = subprocess.run(
         ["make", "db-migrate"],
@@ -665,7 +666,7 @@ def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_additive_news_head(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Trading capital-authority hard cut is already present at database head 20260830_0334" in result.stdout
+    assert "Trading capital-authority hard cut is already present at database head 20260830_0333" in result.stdout
     assert "Trading hard-cut preflight passed" not in result.stdout
 
 

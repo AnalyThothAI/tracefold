@@ -206,6 +206,41 @@ class NewsProgramRuntimeComposition:
         )
         return ProgressionReviewProgram(lm)
 
+    def taxonomy_shadow_program(
+        self,
+        *,
+        lm_type: Any = dspy.LM,
+    ) -> Any:
+        """Bind the bounded offline taxonomy Predictor to the existing primary endpoint."""
+
+        if not self.program_configured:
+            raise ValueError("news_taxonomy_shadow_model_not_configured")
+        from tracefold.news.learning.taxonomy_shadow import (
+            TAXONOMY_SHADOW_MAX_CALLS,
+            TAXONOMY_SHADOW_MAX_TOKENS,
+            TAXONOMY_SHADOW_MODEL_BINDING,
+            TaxonomyShadowProgramV2,
+        )
+        from tracefold.news.program.lm import LMCallLedger
+
+        ledger = LMCallLedger(
+            max_calls_per_predictor=TAXONOMY_SHADOW_MAX_CALLS,
+            max_calls_per_route=TAXONOMY_SHADOW_MAX_CALLS,
+            max_calls_per_scope=TAXONOMY_SHADOW_MAX_CALLS,
+        )
+        return TaxonomyShadowProgramV2(
+            lm=_configured_program_lm(
+                self.event_semantics_primary,
+                timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
+                max_tokens=TAXONOMY_SHADOW_MAX_TOKENS,
+                predictor="taxonomy_shadow",
+                route="shadow",
+                model_binding=TAXONOMY_SHADOW_MODEL_BINDING,
+                lm_type=lm_type,
+                ledger=ledger,
+            )
+        )
+
 
 def compose_news_program_runtime(settings: Any) -> NewsProgramRuntimeComposition:
     """Resolve operator settings once into the four secret-free Program slot identities and endpoints."""
@@ -336,6 +371,7 @@ def _configured_program_lm(
     route: str,
     model_binding: str,
     lm_type: Any = dspy.LM,
+    ledger: Any = None,
 ) -> AuditedConfiguredLM:
     """Create a stock DSPy LM and add only Tracefold's secret-free audit seam."""
 
@@ -364,6 +400,7 @@ def _configured_program_lm(
         predictor=predictor,
         route=route,
         model_binding=model_binding,
+        ledger=ledger,
     )
 
 

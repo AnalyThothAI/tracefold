@@ -13,6 +13,7 @@ from tracefold.news.program.lm import (
     AuditedConfiguredLM,
     LMCallContext,
     LMCallLedger,
+    LMDelegateProgramError,
     LMOutputTruncatedError,
     RecordedLM,
     RecordedLMMiss,
@@ -185,16 +186,15 @@ def test_provider_error_public_exception_and_recording_are_fully_sanitized() -> 
     assert receipt.error_code == "news_program_lm_auth"
 
 
-def test_unexpected_exception_suppresses_secret_bearing_cause() -> None:
-    secret = "sk-abcdefghijklmnopqrstu"
-    lm, _, ledger = _audited([RuntimeError(f"failed with {secret}")])
+def test_unknown_delegate_exception_propagates_unchanged() -> None:
+    error = RuntimeError("programmer defect")
+    lm, _, ledger = _audited([error])
 
-    with pytest.raises(dspy.LMUnexpectedError) as captured, ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
+    with pytest.raises(LMDelegateProgramError) as captured, ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
-    assert secret not in "".join(traceback.format_exception(captured.value))
-    assert captured.value.__suppress_context__ is True
-    assert secret not in repr(ledger.receipts[0].recording)
+    assert captured.value.original is error
+    assert ledger.receipts[0].recording is None
 
 
 def test_scope_reconciles_non_exception_base_exception_as_abandoned_provider_call() -> None:

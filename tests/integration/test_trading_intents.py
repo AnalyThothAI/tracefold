@@ -17,6 +17,7 @@ from psycopg.errors import CheckViolation, ForeignKeyViolation, InsufficientPriv
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.trading_v3_fixtures import (
+    append_capital_evidence_fixture,
     binance_binding,
     binance_capability,
     binance_catalog,
@@ -155,14 +156,17 @@ def _insert_test_intent(repos: Any, intent: TradeIntent) -> bool:
         catalog=CATALOG_SNAPSHOT,
         capability=CAPABILITY_SNAPSHOT,
         binding=EXECUTION_BINDING,
+        allowed_capability_entry_id=intent.capability_entry_id,
     )
     arm = capital_arm_fixture(
         catalog=CATALOG_SNAPSHOT,
         capability=CAPABILITY_SNAPSHOT,
         binding=EXECUTION_BINDING,
+        allowed_capability_entry_id=intent.capability_entry_id,
     )
     if repos.trading.daily_risk_policy(policy.risk_policy_sha256) is None:
         repos.trading.append_daily_risk_policy(policy, created_at_ms=NOW)
+    append_capital_evidence_fixture(repos)
     if repos.trading.production_promotion_grant(grant.grant_sha256) is None:
         repos.trading.append_production_promotion_grant(grant, created_at_ms=NOW)
     if repos.trading.operator_arm_receipt(arm.arm_receipt_sha256) is None:
@@ -425,7 +429,13 @@ def _pending_executable_case(
     manifest = manifest or _executable_manifest()
     repos = repositories_for_connection(connection)
     admission = _admission_row(manifest)
-    assert repos.trading.create_case(case_id=case_id, manifest=manifest, admission=admission, now_ms=NOW)
+    assert repos.trading.create_case(
+        case_id=case_id,
+        manifest=manifest,
+        admission=admission,
+        release_revision="test-release",
+        now_ms=NOW,
+    )
     connection.commit()
     return manifest
 
@@ -471,22 +481,33 @@ def _activate_lane_authority(connection: Any, lane: CapitalLane) -> tuple[str, s
     repos = repositories_for_connection(connection)
     _set_binance_binding_flat(connection)
     policy = capital_risk_policy_fixture()
+    capability_entry = CAPABILITY_SNAPSHOT.resolve("SOL")
+    assert capability_entry is not None
     base_grant = capital_grant_fixture(
         catalog=CATALOG_SNAPSHOT,
         capability=CAPABILITY_SNAPSHOT,
         binding=EXECUTION_BINDING,
+        allowed_capability_entry_id=capability_entry.catalog_entry_id,
+    )
+    future_result = append_capital_evidence_fixture(
+        repos,
+        source_contract_sha256=lane.source_contract_sha256,
+        feature_contract_sha256=lane.feature_contract_sha256,
+        policy_config_sha256=CAPITAL_POLICY.config_digest,
     )
     grant = base_grant.model_copy(
         update={
             "source_contract_sha256": lane.source_contract_sha256,
             "feature_contract_sha256": lane.feature_contract_sha256,
             "policy_config_sha256": CAPITAL_POLICY.config_digest,
+            "locked_future_report_sha256": future_result.report_sha256,
         }
     )
     base_arm = capital_arm_fixture(
         catalog=CATALOG_SNAPSHOT,
         capability=CAPABILITY_SNAPSHOT,
         binding=EXECUTION_BINDING,
+        allowed_capability_entry_id=capability_entry.catalog_entry_id,
     )
     arm = base_arm.model_copy(
         update={

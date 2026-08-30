@@ -51,6 +51,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/execution_policy.py",
     "trading/quote_authority.py",
     "trading/telemetry.py",
+    "trading/evidence_clock.py",
     "trading/storage/root.py",
     "trading/storage/authority.py",
     "trading/storage/bindings.py",
@@ -61,6 +62,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/storage/catalog.py",
     "trading/storage/gate.py",
     "trading/storage/intents.py",
+    "trading/storage/evidence.py",
     "trading/storage/queries.py",
     "trading/storage/query_sql.py",
     "trading/storage/sql_values.py",
@@ -82,6 +84,18 @@ WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 # `DO UPDATE SET` and `FOR UPDATE SKIP LOCKED` both put a keyword where the regex expects a table.
 _SQL_KEYWORDS = frozenset({"set", "skip", "select", "lateral", "jsonb_each", "values", "of"})
+SQL_FUNCTION_DEFINITION_RE = re.compile(
+    r"CREATE(?: OR REPLACE)? FUNCTION\s+(?P<name>[a-z][a-z0-9_]*)\s*"
+    r"\([^;]*?\).*?AS \$\$(?P<body>.*?)\$\$",
+    re.IGNORECASE | re.DOTALL,
+)
+SQL_FUNCTION_CALL_RE = re.compile(r"\b(?P<name>[a-z][a-z0-9_]*)\s*\(", re.IGNORECASE)
+SQL_TRIGGER_FUNCTION_RE = re.compile(
+    r"CREATE TRIGGER\s+(?P<trigger>[a-z][a-z0-9_]*)\b"
+    r"(?:(?!CREATE TRIGGER).)*?\bON\s+(?P<table>(?P<owner>news|trading)_[a-z0-9_]*)\b"
+    r"(?:(?!CREATE TRIGGER).)*?EXECUTE FUNCTION\s+(?P<function>[a-z][a-z0-9_]*)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _module_name(path: Path) -> str:
@@ -195,7 +209,14 @@ def test_the_capital_path_manifest_is_complete() -> None:
     assert missing == []
     # Every `tracefold.trading` module is either on the capital path or a research module. Nothing may
     # be neither, because "neither" is how a file leaves the scan set without anyone noticing.
-    research = {"trading/replay.py", "trading/research/oi_replay.py", "trading/storage/replay.py"}
+    research = {
+        "trading/evidence_research.py",
+        "trading/evidence_verification.py",
+        "trading/replay.py",
+        "trading/research/oi_replay.py",
+        "trading/storage/replay.py",
+        "trading/storage/verification.py",
+    }
     covered = set(CAPITAL_PATH) | research
     unclassified = [
         str(path.relative_to(SRC))
@@ -318,6 +339,39 @@ def test_news_never_reads_or_writes_a_trading_table() -> None:
             for match in SQL_TABLE_RE.finditer(";\n".join(_sql_literals(path)))
             if match.group("table").lower().startswith("trading_")
         )
+    assert offenders == []
+
+
+def test_business_sql_functions_do_not_call_a_sibling_domains_function() -> None:
+    """SQL function ownership is as strict as Python and table ownership."""
+
+    def owner(name: str) -> str | None:
+        lowered = name.lower()
+        for package in ("news", "trading"):
+            if lowered.startswith(f"{package}_") or f"_{package}_" in lowered or lowered.endswith(f"_{package}"):
+                return package
+        return None
+
+    offenders: list[str] = []
+    migrations = SRC / "platform" / "postgres" / "alembic" / "versions"
+    for path in sorted(migrations.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for definition in SQL_FUNCTION_DEFINITION_RE.finditer(source):
+            function_name = definition.group("name")
+            function_owner = owner(function_name)
+            if function_owner is None:
+                continue
+            for call in SQL_FUNCTION_CALL_RE.finditer(definition.group("body")):
+                called_name = call.group("name")
+                called_owner = owner(called_name)
+                if called_owner is not None and called_owner != function_owner:
+                    offenders.append(f"{path.relative_to(ROOT)}:{function_name}->{called_name}")
+        for trigger in SQL_TRIGGER_FUNCTION_RE.finditer(source):
+            function_name = trigger.group("function")
+            function_owner = owner(function_name)
+            table_owner = trigger.group("owner").lower()
+            if function_owner is not None and function_owner != table_owner:
+                offenders.append(f"{path.relative_to(ROOT)}:{trigger.group('trigger')}->{function_name}")
     assert offenders == []
 
 
@@ -468,6 +522,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
+        "NautilusRuntimeStartV1",
         "OperatorArmReceiptV1",
         "ProductionPromotionGrantRevocationV1",
         "ProductionPromotionGrantV1",

@@ -125,7 +125,7 @@ class VenueInstrumentCatalogSnapshotV1(_Frozen):
 
 @dataclass(frozen=True, slots=True)
 class PreparedVenueCatalogSnapshot:
-    """Immutable storage input whose CPU-heavy serialization is already complete."""
+    """Validated storage input whose CPU-heavy identity work is already complete."""
 
     snapshot_sha256: str
     binding: VenueBinding
@@ -133,6 +133,38 @@ class PreparedVenueCatalogSnapshot:
     stale_after_ms: int
     provider_instrument_count: int
     payload_json: str
+
+    def __post_init__(self) -> None:
+        """Make an unbound digest or metadata tuple impossible to pass to storage."""
+
+        try:
+            snapshot = VenueInstrumentCatalogSnapshotV1.model_validate_json(self.payload_json)
+        except ValueError as exc:
+            raise ValueError("venue_catalog_prepared_identity_invalid") from exc
+        canonical_payload = json.dumps(
+            snapshot.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        identity = (
+            hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest(),
+            snapshot.binding,
+            snapshot.captured_at_ms,
+            snapshot.stale_after_ms,
+            snapshot.provider_instrument_count,
+            canonical_payload,
+        )
+        if identity != (
+            self.snapshot_sha256,
+            self.binding,
+            self.captured_at_ms,
+            self.stale_after_ms,
+            self.provider_instrument_count,
+            self.payload_json,
+        ):
+            raise ValueError("venue_catalog_prepared_identity_invalid")
 
 
 def build_venue_catalog_snapshot(

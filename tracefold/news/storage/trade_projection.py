@@ -1,6 +1,6 @@
 """News-owned point-in-time projection read by App composition for Trading.
 
-The two row contracts below are the published shape of that projection. They are `TypedDict`s
+The row contracts below are the published shape of that projection. They are `TypedDict`s
 because the rows *are* the SELECT lists — naming the columns is the whole contract, and a runtime
 model here would coerce values PostgreSQL already typed and turn a nullable LEFT JOIN column into a
 different value. Nothing outside this module may add, rename or retype a key without editing them,
@@ -46,7 +46,13 @@ from typing import Any, TypedDict
 # read and the instrument reads are what remains.
 # v10 (#369): OI carries its typed judgment identity directly.  The retired
 # synthetic Editorial envelope is neither read nor reconstructed.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v10"
+# v11 (#377): the OI ledger freezes its source Item, venue, availability clock and learning epoch at
+# insertion. Evidence capture no longer reconstructs an old frame from a mutable Event leader or the
+# currently active learning bundle.
+# v12 (#377): evidence capture and fixed-window verification publish bounded bulk catalogue/source
+# projections. App no longer runs one catalogue query per source or treats Trading's Gate ledger as
+# the universe of News facts that should have reached that Gate.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v12"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -78,6 +84,7 @@ class OiTradeProjectionRow(TypedDict):
     """
 
     event_id: str
+    source_item_id: str
     verdict_created_at_ms: int
     final_decision: str
     # `evaluate_oi`'s non-empty named rule from the current canonical judgment atom.
@@ -106,6 +113,7 @@ class OiTradeProjectionRow(TypedDict):
     whale_oi_ratio_bps: int
     rank_in_window: int
     observed_at_ms: int
+    source_available_at_ms: int
     ingest_mode: str
     # LEFT JOIN on the leader Item, then a JSON member: absent frames and untagged frames both read None.
     venue: str | None
@@ -123,8 +131,79 @@ class TradeInstrumentProjectionRow(TypedDict):
     last_seen_ms: int
 
 
+class TradeEvidenceCollectionHealthRow(TypedDict):
+    """Blind-safe collector state and source denominator for one future batch."""
+
+    connected: bool
+    last_frame_at_ms: int | None
+    last_error_code: str | None
+    expected_source_count: int
+
+
+class TradeEvidenceCatalogProjectionRow(TypedDict):
+    """One point-in-time listing row attached to its bounded evidence source."""
+
+    event_id: str
+    metric_version: str
+    source_observed_at_ms: int
+    venue: str
+    venue_symbol: str
+    base_symbol: str
+    instrument_class: str
+    quote_asset: str | None
+    status: str
+    last_seen_ms: int
+
+
+class TradeFixedWindowOiSourceRow(TypedDict):
+    """Complete News-owned OI source identity for one fixed acceptance window."""
+
+    event_id: str
+    metric_version: str
+    source_venue: str | None
+    observed_at_ms: int
+    available_at_ms: int
+    verdict_created_at_ms: int
+
+
 class TradeProjectionStorage:
     conn: Any
+
+    def trade_evidence_collection_health(
+        self,
+        *,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        available_at_or_before_ms: int,
+        source_venues: tuple[str, ...],
+    ) -> TradeEvidenceCollectionHealthRow:
+        """News-owned raw collector and denominator facts for blind-safe Trading health."""
+
+        row = self.conn.execute(
+            """
+            SELECT ingest.connected, ingest.last_frame_at_ms, ingest.last_error_code,
+                   (SELECT count(*)
+                      FROM news_oi_signals signal
+                     WHERE signal.observed_at_ms >= %(start)s
+                       AND signal.observed_at_ms < %(end)s
+                       AND signal.available_at_ms <= %(available)s
+                       AND signal.source_venue = ANY(%(venues)s)) AS expected_source_count
+              FROM news_ingest_state ingest
+             WHERE ingest.singleton_key = 'opennews'
+            """,
+            {
+                "start": int(start_observed_at_ms),
+                "end": int(end_observed_at_ms),
+                "available": int(available_at_or_before_ms),
+                "venues": list(source_venues),
+            },
+        ).fetchone()
+        return TradeEvidenceCollectionHealthRow(
+            connected=False if row is None else bool(row["connected"]),
+            last_frame_at_ms=None if row is None else row["last_frame_at_ms"],
+            last_error_code="collector_state_missing" if row is None else row["last_error_code"],
+            expected_source_count=0 if row is None else int(row["expected_source_count"]),
+        )
 
     def trade_candidate_oi_rows(
         self,
@@ -164,6 +243,7 @@ class TradeProjectionStorage:
         rows = self.conn.execute(
             f"""
             SELECT v.event_id,
+                   s.source_item_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
                    v.trace #>> '{{judgment,rule}}' AS source_rule,
@@ -187,8 +267,9 @@ class TradeProjectionStorage:
                    (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
                    (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
                    s.observed_at_ms,
-                   e.ingest_mode,
-                   i.provider_metadata ->> 'source' AS venue
+                   s.available_at_ms AS source_available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
+                   s.source_venue AS venue
               FROM news_verdicts v
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
@@ -205,8 +286,8 @@ class TradeProjectionStorage:
                AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
                      IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_items i ON i.item_id = s.source_item_id
               JOIN news_current_events_v1 e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
-              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
@@ -231,6 +312,268 @@ class TradeProjectionStorage:
             ),
         ).fetchall()
         return [_oi_projection_row(row) for row in rows]
+
+    def trade_evidence_oi_rows(
+        self,
+        *,
+        metric_version: str,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        known_at_or_before_ms: int,
+        available_at_or_before_ms: int,
+        limit: int = TRADE_PROJECTION_ROW_LIMIT,
+    ) -> list[OiTradeProjectionRow]:
+        """Freeze sources known by the batch end and durably available by its capture clock (#377)."""
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id,
+                   s.source_item_id,
+                   v.created_at_ms          AS verdict_created_at_ms,
+                   v.final_decision,
+                   v.trace #>> '{judgment,rule}' AS source_rule,
+                   s.learning_epoch,
+                   v.program_version,
+                   v.program_sha256,
+                   v.policy_version,
+                   v.judgment_contract_version,
+                   v.judgment_origin,
+                   v.scored_judgment_sha256 AS judgment_sha256,
+                   v.runtime_manifest_sha,
+                   s.metric_version,
+                   s.source_strategy_id,
+                   s.source_contract_version,
+                   s.measurement_window_ms,
+                   v.trace #>> '{judgment,signal,symbol}' AS symbol,
+                   v.trace #>> '{judgment,signal,direction}' AS direction,
+                   (v.trace #>> '{judgment,signal,oi_change_bps}')::bigint AS oi_change_bps,
+                   (v.trace #>> '{judgment,signal,oi_value_usd}')::bigint AS oi_value_usd,
+                   (v.trace #>> '{judgment,signal,whale_long_profit_bps}')::bigint AS whale_long_profit_bps,
+                   (v.trace #>> '{judgment,signal,whale_oi_ratio_bps}')::bigint AS whale_oi_ratio_bps,
+                   (v.trace #>> '{judgment,rank_in_window}')::integer AS rank_in_window,
+                   s.observed_at_ms,
+                   s.available_at_ms AS source_available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
+                   s.source_venue AS venue
+              FROM news_verdicts v
+              JOIN news_oi_signals s
+                ON s.event_id = v.event_id AND s.metric_version = %s
+               AND v.trace #> '{judgment,signal}' = jsonb_build_object(
+                     'symbol', s.symbol,
+                     'direction', s.direction,
+                     'oi_change_bps', s.oi_change_bps,
+                     'oi_value_usd', s.oi_value_usd,
+                     'whale_long_profit_bps', s.whale_long_profit_bps,
+                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
+                   )
+               AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
+               AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
+               AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
+               AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
+                     IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_items i ON i.item_id = s.source_item_id
+             WHERE v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_origin = 'oi'
+               AND v.program_version = 'news_oi_signal_v2'
+               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.editorial IS NULL
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
+               AND v.degraded = false
+               AND s.available_at_ms <= %s
+               AND s.observed_at_ms >= %s
+               AND s.observed_at_ms < %s
+               AND v.created_at_ms <= %s
+             ORDER BY s.observed_at_ms, v.event_id
+             LIMIT %s
+            """,
+            (
+                metric_version,
+                int(available_at_or_before_ms),
+                int(start_observed_at_ms),
+                int(end_observed_at_ms),
+                int(known_at_or_before_ms),
+                int(limit),
+            ),
+        ).fetchall()
+        return [_oi_projection_row(row) for row in rows]
+
+    def trade_evidence_catalog_rows(
+        self,
+        *,
+        metric_version: str,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        known_at_or_before_ms: int,
+        available_at_or_before_ms: int,
+        source_limit: int,
+        catalog_limit: int,
+    ) -> list[TradeEvidenceCatalogProjectionRow]:
+        """Bulk point-in-time catalogues for the exact bounded evidence-source query."""
+
+        rows = self.conn.execute(
+            """
+            WITH sources AS (
+              SELECT v.event_id, s.metric_version, s.observed_at_ms,
+                     v.trace #>> '{judgment,signal,symbol}' AS symbol,
+                     s.source_venue
+                FROM news_verdicts v
+                JOIN news_oi_signals s
+                  ON s.event_id = v.event_id AND s.metric_version = %(metric)s
+                 AND v.trace #> '{judgment,signal}' = jsonb_build_object(
+                       'symbol', s.symbol,
+                       'direction', s.direction,
+                       'oi_change_bps', s.oi_change_bps,
+                       'oi_value_usd', s.oi_value_usd,
+                       'whale_long_profit_bps', s.whale_long_profit_bps,
+                       'whale_oi_ratio_bps', s.whale_oi_ratio_bps
+                     )
+                 AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
+                 AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
+                 AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
+                 AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
+                       IS NOT DISTINCT FROM s.measurement_window_ms
+               WHERE v.stage = 'triage'
+                 AND v.judgment_contract_version = 'news_judgment_v2'
+                 AND v.judgment_origin = 'oi'
+                 AND v.program_version = 'news_oi_signal_v2'
+                 AND v.policy_version = 'news_triage_policy_v11'
+                 AND v.editorial IS NULL
+                 AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+                 AND v.scored_judgment_sha256 IS NOT NULL
+                 AND v.runtime_manifest_sha IS NOT NULL
+                 AND v.degraded = false
+                 AND s.available_at_ms <= %(available)s
+                 AND s.observed_at_ms >= %(start)s
+                 AND s.observed_at_ms < %(end)s
+                 AND v.created_at_ms <= %(known)s
+               ORDER BY s.observed_at_ms, v.event_id
+               LIMIT %(source_limit)s
+            )
+            SELECT source.event_id, source.metric_version,
+                   source.observed_at_ms AS source_observed_at_ms,
+                   historical.venue, historical.venue_symbol, historical.base_symbol,
+                   historical.instrument_class, historical.quote_asset, historical.status,
+                   historical.observed_at_ms AS last_seen_ms
+              FROM sources source
+              JOIN LATERAL (
+                SELECT DISTINCT ON (event.venue, event.venue_symbol)
+                       event.venue, event.venue_symbol, event.base_symbol,
+                       event.instrument_class, event.quote_asset, event.status, event.observed_at_ms
+                  FROM news_market_instrument_listing_events event
+                 WHERE event.venue = CASE
+                         WHEN lower(coalesce(source.source_venue, '')) IN
+                           ('binance', 'binance.perp', 'binance.usdm') THEN 'binance.perp'
+                         WHEN lower(coalesce(source.source_venue, '')) IN
+                           ('hyperliquid', 'hl.perp', 'hyperliquid.perp') THEN 'hl.perp'
+                         ELSE ''
+                       END
+                   AND event.base_symbol = regexp_replace(upper(btrim(source.symbol)), '^XYZ-', '')
+                   AND event.observed_at_ms <= source.observed_at_ms
+                 ORDER BY event.venue, event.venue_symbol, event.observed_at_ms DESC
+              ) historical ON historical.status = 'trading' AND historical.instrument_class = 'crypto'
+             ORDER BY source.observed_at_ms, source.event_id, historical.venue,
+                      CASE historical.quote_asset WHEN 'USDT' THEN 0 WHEN 'USDC' THEN 1 ELSE 2 END,
+                      length(historical.venue_symbol), historical.venue_symbol
+             LIMIT %(catalog_limit)s
+            """,
+            {
+                "metric": metric_version,
+                "available": int(available_at_or_before_ms),
+                "start": int(start_observed_at_ms),
+                "end": int(end_observed_at_ms),
+                "known": int(known_at_or_before_ms),
+                "source_limit": int(source_limit),
+                "catalog_limit": int(catalog_limit),
+            },
+        ).fetchall()
+        return [
+            TradeEvidenceCatalogProjectionRow(
+                event_id=str(row["event_id"]),
+                metric_version=str(row["metric_version"]),
+                source_observed_at_ms=int(row["source_observed_at_ms"]),
+                venue=str(row["venue"]),
+                venue_symbol=str(row["venue_symbol"]),
+                base_symbol=str(row["base_symbol"]),
+                instrument_class=str(row["instrument_class"]),
+                quote_asset=None if row["quote_asset"] is None else str(row["quote_asset"]),
+                status=str(row["status"]),
+                last_seen_ms=int(row["last_seen_ms"]),
+            )
+            for row in rows
+        ]
+
+    def trade_fixed_window_oi_sources(
+        self,
+        *,
+        metric_version: str,
+        start_observed_at_ms: int,
+        end_observed_at_ms: int,
+        drain_cutoff_ms: int,
+        limit: int,
+    ) -> list[TradeFixedWindowOiSourceRow]:
+        """Complete, bounded News source universe known by the preregistered drain cutoff."""
+
+        rows = self.conn.execute(
+            """
+            SELECT v.event_id, s.metric_version, s.source_venue,
+                   s.observed_at_ms, s.available_at_ms,
+                   v.created_at_ms AS verdict_created_at_ms
+              FROM news_verdicts v
+              JOIN news_oi_signals s
+                ON s.event_id = v.event_id AND s.metric_version = %s
+               AND v.trace #> '{judgment,signal}' = jsonb_build_object(
+                     'symbol', s.symbol,
+                     'direction', s.direction,
+                     'oi_change_bps', s.oi_change_bps,
+                     'oi_value_usd', s.oi_value_usd,
+                     'whale_long_profit_bps', s.whale_long_profit_bps,
+                     'whale_oi_ratio_bps', s.whale_oi_ratio_bps
+                   )
+               AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
+               AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
+               AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
+               AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
+                     IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_current_events_v1 e ON e.event_id = v.event_id
+             WHERE v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
+               AND v.judgment_origin = 'oi'
+               AND v.program_version = 'news_oi_signal_v2'
+               AND v.policy_version = 'news_triage_policy_v11'
+               AND v.editorial IS NULL
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
+               AND v.scored_judgment_sha256 IS NOT NULL
+               AND v.runtime_manifest_sha IS NOT NULL
+               AND v.degraded = false
+               AND e.ingest_mode = 'live'
+               AND s.observed_at_ms >= %s AND s.observed_at_ms < %s
+               AND s.available_at_ms <= %s AND v.created_at_ms <= %s
+             ORDER BY s.observed_at_ms, v.event_id
+             LIMIT %s
+            """,
+            (
+                metric_version,
+                int(start_observed_at_ms),
+                int(end_observed_at_ms),
+                int(drain_cutoff_ms),
+                int(drain_cutoff_ms),
+                int(limit),
+            ),
+        ).fetchall()
+        return [
+            TradeFixedWindowOiSourceRow(
+                event_id=str(row["event_id"]),
+                metric_version=str(row["metric_version"]),
+                source_venue=None if row["source_venue"] is None else str(row["source_venue"]),
+                observed_at_ms=int(row["observed_at_ms"]),
+                available_at_ms=int(row["available_at_ms"]),
+                verdict_created_at_ms=int(row["verdict_created_at_ms"]),
+            )
+            for row in rows
+        ]
 
     def trade_candidate_instrument(
         self,
@@ -357,6 +700,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
 
     return OiTradeProjectionRow(
         event_id=row["event_id"],
+        source_item_id=row["source_item_id"],
         verdict_created_at_ms=row["verdict_created_at_ms"],
         final_decision=row["final_decision"],
         source_rule=row["source_rule"],
@@ -380,6 +724,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
         rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
+        source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],
         venue=row["venue"],
     )

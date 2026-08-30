@@ -17,6 +17,7 @@ from ..capital_authority import (
     ProductionPromotionGrantV1,
 )
 from ..contracts import VenueBinding
+from ..evidence_clock import CandidateLockedV1
 from ..intent import TradeIntent
 from .sql_values import _dumps
 
@@ -75,13 +76,38 @@ class AuthorityStorage:
         policy = self.daily_risk_policy(value.risk_policy_sha256)
         if policy is None or policy.cost_model_sha256 != value.cost_model_sha256:
             raise ValueError("production_grant_risk_policy_mismatch")
+        future_result = cast(Any, self).future_holdout_result_for_artifact(value.locked_future_report_sha256)
+        if (
+            future_result is None
+            or future_result.terminal != "PROMOTE"
+            or future_result.binding != value.binding
+            or future_result.sealed_corpus_sha256 != value.sealed_corpus_sha256
+        ):
+            raise ValueError("production_grant_future_evidence_mismatch")
+        candidate = cast(Any, self).locked_candidate_for_receipt(future_result.candidate_receipt_sha256)
+        if not isinstance(candidate, CandidateLockedV1) or (
+            candidate.binding != value.binding
+            or candidate.sealed_corpus_sha256 != value.sealed_corpus_sha256
+            or candidate.protocol_sha256 != future_result.protocol_sha256
+            or candidate.source_contract_sha256 != value.source_contract_sha256
+            or candidate.feature_contract_sha256 != value.feature_contract_sha256
+            or candidate.policy_id != value.policy_id
+            or candidate.policy_config_sha256 != value.policy_config_sha256
+            or candidate.execution.cost_model_sha256 != value.cost_model_sha256
+            or candidate.execution.adapter_contract_sha256 != value.adapter_contract_sha256
+            or candidate.execution.execution_policy_sha256 != value.execution_policy_sha256
+            or candidate.execution.quote_contract_sha256 != value.quote_contract_sha256
+            or candidate.execution.protection_contract_sha256 != value.protection_contract_sha256
+        ):
+            raise ValueError("production_grant_candidate_evidence_mismatch")
         digest = value.grant_sha256
         inserted = self.conn.execute(
             """
             INSERT INTO trading_production_promotion_grants (
               grant_sha256, binding, risk_policy_sha256, issued_at_ms, review_at_ms,
-              expires_at_ms, created_at_ms, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+              expires_at_ms, created_at_ms, sealed_corpus_sha256,
+              locked_future_report_sha256, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
             ON CONFLICT (grant_sha256) DO NOTHING
             RETURNING grant_sha256
             """,
@@ -93,6 +119,8 @@ class AuthorityStorage:
                 value.review_at_ms,
                 value.expires_at_ms,
                 int(created_at_ms),
+                value.sealed_corpus_sha256,
+                value.locked_future_report_sha256,
                 _dumps(value.model_dump(mode="json")),
             ),
         ).fetchone()

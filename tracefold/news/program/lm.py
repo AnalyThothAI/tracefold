@@ -472,6 +472,14 @@ class LMOutputTruncatedError(dspy.LMError):  # type: ignore[misc]
     response: Any = None
 
 
+class LMDelegateProgramError(dspy.LMError):  # type: ignore[misc]
+    """Carries an unknown delegate defect through DSPy's format-fallback catch boundary."""
+
+    def __init__(self, original: Exception) -> None:
+        self.original = original
+        super().__init__("news_program_lm_delegate_program_error", code="program_error")
+
+
 class RecordedLMMiss(dspy.LMError):  # type: ignore[misc]
     """Strict replay has no response for the actual normalized request."""
 
@@ -835,9 +843,7 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
                 sanitized = _sanitized_lm_error(exc, self.runtime_identity)
             raise sanitized from None
         except Exception as exc:
-            wrapped = dspy.LMUnexpectedError(_scrub_detail(str(exc)) or "news_program_lm_unexpected_error")
-            sanitized = self._failed(call, wrapped, "provider_error")
-            raise sanitized from None
+            raise LMDelegateProgramError(exc) from None
         finally:
             del ledger
 
@@ -865,9 +871,7 @@ class AuditedConfiguredLM(dspy.BaseLM):  # type: ignore[misc]
                 sanitized = _sanitized_lm_error(exc, self.runtime_identity)
             raise sanitized from None
         except Exception as exc:
-            wrapped = dspy.LMUnexpectedError(_scrub_detail(str(exc)) or "news_program_lm_unexpected_error")
-            sanitized = self._failed(call, wrapped, "provider_error")
-            raise sanitized from None
+            raise LMDelegateProgramError(exc) from None
         finally:
             del ledger
 
@@ -1253,6 +1257,7 @@ __all__ = [
     "LMCallContext",
     "LMCallLedger",
     "LMCallReceipt",
+    "LMDelegateProgramError",
     "LMOutputTruncatedError",
     "RecordedLM",
     "RecordedLMMiss",

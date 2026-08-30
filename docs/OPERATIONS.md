@@ -60,6 +60,101 @@ composition is invalid, Workers must fail startup/readiness or record Decision
 `FAULTED`. Do not classify an arbitrary exception as legal no-key observer
 mode.
 
+#### Production V3 evidence clock (#377)
+
+Keep Capital `PAUSED` while building discovery and future-holdout evidence.
+Use one content-addressed artifact root and record every returned full digest
+and receipt; never edit an artifact in place or reuse a future window after a
+protocol change. The operator sequence is:
+
+```text
+trading evidence capture --partition discovery ...
+trading evidence drain --capture ... --max-horizon-ms ... --finalization-lag-ms ... --cost-model ...
+trading evidence corpus-seal --capture ... --drain ...
+trading evidence candidate-register --file ...
+trading evidence capture --partition future ... --candidate ... --candidate-receipt ...  # repeat each locked interval
+trading evidence drain --capture ... --candidate ... --candidate-receipt ...
+trading evidence future-unblind --capture ... --drain ... --candidate ... --candidate-receipt ...
+```
+
+Capture and drain are not one command: the first cannot see outcome bars or
+funding. Future capture is periodic, not one post-window query. Run it at every
+candidate-locked `capture_interval_ms`. Each call appends only the next contiguous
+batch and reports blind collection health: collector/Workers generation, expected and
+missing source mass, `capture_lag_ms`, late/catalog counts, bar/funding continuity, and
+artifact integrity. PostgreSQL rejects a gap, overlap, wrong binding, late call
+beyond `maximum_capture_lag_ms`, or changed candidate. The last batch seals the one
+`FUTURE_CAPTURE_SEALED` only after PostgreSQL recomputes the full interval chain,
+health digest, and canonical incident set; later source-population variants cannot replace it. A missed
+deadline fails closed and requires a new preregistered future protocol, not a backfill.
+The second refuses all future provider I/O before the locked drain cutoff or under a
+different candidate receipt/cost/horizon. The first successful future drain
+transaction appends `FUTURE_DRAIN_SEALED`; a second drain cannot replace it, and
+unblind accepts only its exact capture and drain artifacts. During the blind period inspect collection
+health only: batch continuity, schedule lag, raw source counts, late availability,
+catalog coverage, and provider availability. Do not calculate candidate PnL, cohort profitability, hurdle
+distance, or extend/stop the window based on results. Provider outage,
+source-wide missingness, catalog reset/delist, correction, missing bars or
+funding, protection drift, and clock violations use the locked incident map;
+they are never adjudicated after unblind.
+
+All public evidence transitions use PostgreSQL `clock_timestamp`; the caller's wall
+clock is not preregistration evidence. Candidate registration re-runs the code-owned
+finite selector over the sealed corpus and refuses a hand-authored terminal or eligible
+population. The News handoff fields are the source Item/venue/availability/learning
+epoch frozen when the OI ledger row was inserted, not reconstructed from current Event
+or deployment state.
+
+Before any human grant review, run `trading evidence verify --receipt SHA` on
+the exact `PROMOTE` result. Promotion then follows #376's separate immutable
+risk-policy -> grant -> arm path and still requires the explicit bounded
+canary approval. A canary passes only after the durable Intent reaches
+authoritative `CLOSED_FLAT` and risk settlement; profit is irrelevant and
+`MANUAL_REVIEW` is not a pass. Keep the exact canary Intent ids. For the
+required restart drill, stop the Nautilus generation only after the Intent is
+filled and natively protected, start the same frozen release again, let it
+query-first reconcile and close, and bind both immutable runtime ids plus the
+final `flat_verified_at_ms` in the restart receipt. A service restart without
+those two PostgreSQL start facts is not restart evidence.
+
+Freeze the release candidate before final observation. Its artifact names the
+exact tag/commit/tree, OCI image, migration head, committed OpenAPI, built web
+tree, Workers/Serve revisions, Nautilus wheel/source, execution contracts,
+per-binding catalog/capability/account identities, evidence/grant/risk
+receipts, and one exact seven-day window with nonzero minimum activity. With the exact
+approved Workers and Serve processes already running, execute
+`trading evidence release-register --file FILE` before the window starts. The database
+records its own registration time and binds both current runtime ids, start times,
+revisions, and image digests; restarting either process invalidates the window. Run
+`trading evidence verify --release FILE` only after its drain cutoff. The tag
+must be an annotated signature-verifiable Git tag resolving to the declared
+commit and tree; the release file must enumerate the exact canary Intent set
+and one protected-to-recovered Nautilus restart receipt. A green
+CI run or a mathematically conserved empty window is not acceptance. At window
+start, the preregistered Workers and Serve generations must already report the
+declared commit and image; the Workers durable heartbeat and a final authenticated
+Serve observation must cover the end, and every Admission plus Intent authority chain in
+the window must name that same release. Deploying another release invalidates
+the window. At
+rollback, pause Capital, revoke/expire every grant, reconcile every enabled
+venue flat, drain active risk/Intent obligations, then run
+`trading evidence verify --rollback FILE`. Keep the observer/Decision path
+running past the rollback receipt; do not revive a terminal Intent, submit a
+replacement entry, or infer a flat account from local
+state. The rollback receipt names and re-hashes the exact release-candidate
+artifact, covers its exact binding/grant scope, and cannot predate that release
+window's drain cutoff. The v2 rollback receipt also names new Workers and Serve
+runtime ids; both must differ from the registered release generations and must
+start at or after rollback. Every enabled binding must then report `ready`,
+`reconciled_flat`, and a query-first reconciliation heartbeat no earlier than
+both rollback and the new Workers start before zero-refill and
+observer-continuity checks can pass.
+
+These commands implement the clock and verification mechanism. Until the
+calendar window, human approval, venue receipts, fixed seven-day accounting,
+and rollback receipts actually exist, #377 remains open and no production
+terminal may be claimed.
+
 On a fresh database, `tracefold init` and `make up` create the Nautilus
 password and role with the other runtime roles. For an existing volume that
 predates `20260828_0316`, stop the entire stack and run
@@ -100,7 +195,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0334`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0335`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -117,7 +212,9 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    repeats the full venue-flat/Nautilus preflight. Upgrading `0331` to Trading
    capital authority `0332` also repeats that preflight. `0333` is the
    subsequent additive News Verdict-handoff partial index and has no capital
-   cutover predicate. Older execution-authority cutover routes retain the full
+   cutover predicate. `0334` adds the Trading evidence clock and requires Capital
+   `PAUSED` with no pre-existing unbound promotion grant, but does not require a
+   recovery-only Nautilus process. Older execution-authority cutover routes retain the full
    venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
@@ -849,10 +946,17 @@ those quality denominators exist, by operator sequencing decision. New ordinary
 News judgments therefore carry taxonomy immediately, while taxonomy quality
 stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
 registration derives its exact Git/image/bundle identity from the active
-Workers deployment receipt. `taxonomy-evaluate` then accepts only that
+Workers deployment receipt and computes the Shadow Program/model binding from
+operator configuration. Run bounded `taxonomy-shadow --file CONTEXTS --limit N
+--out RECEIPTS` batches next; each case records success, schema invalid,
+provider failure, or budget/deadline failure, with one or two ordered replayable
+physical attempts. Provider I/O is outside the database transaction, and the
+command writes only append-only learning artifacts. `taxonomy-evaluate` then accepts only that
 PostgreSQL-clock registration, database-verified current regression evidence,
 accepted Review v6 Gold and replayable shadow artifacts, and still requires
-complete development and post-registration holdout denominators. Do not use taxonomy to alter Gate,
+complete observation/attempt/recording, development and post-registration
+holdout denominators. Missing Shadow evidence is `UNKNOWN`, never an empty-set
+PASS. Do not use taxonomy to alter Gate,
 delivery or Trading, and do not describe schema deployment as a model-quality PASS.
 The immediate cost is the normal 1 -> 2 provider-call increase. The intended
 future benefit is per-Predictor feedback, demonstrations, routing and
@@ -1016,7 +1120,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the single linear chain through `20260830_0334_news_current_view_columns`. The #112 chain
+the single linear chain through `20260830_0335_news_current_view_columns`. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
