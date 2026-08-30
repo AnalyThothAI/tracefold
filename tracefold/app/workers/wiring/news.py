@@ -153,7 +153,7 @@ async def _connect_news_bus(
     *,
     telemetry: TelemetryRegistry | None = None,
 ) -> RabbitMQBus:
-    from tracefold.integrations.rabbitmq import RabbitMQBus
+    from tracefold.integrations.rabbitmq import POLICY_EFFECTIVE_TIMEOUT_SECONDS, RabbitMQBus
 
     broker_url = settings.news.broker.url
     if not broker_url:
@@ -169,7 +169,10 @@ async def _connect_news_bus(
     # Retry now lives in the broker policy (#400). Workers refuses to consume against a topology whose
     # effective policy is not the checked-in contract, because a missing policy is not a degraded mode:
     # it is immediate redelivery, the quorum default delivery limit and at-most-once dead lettering.
-    await bus.verify_policies()
+    # The settle bound covers the first boot against a fresh broker: connect() has just declared the
+    # queues, and the management API only publishes their effective policy on its statistics interval,
+    # so an unbounded-truth one-shot read here would kill Workers on every fresh volume.
+    await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS)
     return bus
 
 

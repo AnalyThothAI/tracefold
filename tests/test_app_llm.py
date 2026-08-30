@@ -853,7 +853,8 @@ class _StartupBus:
     async def connect(self) -> None:
         self.connected = True
 
-    async def verify_policies(self) -> dict[str, Any]:
+    async def verify_policies(self, *, settle_timeout_seconds: float | None = None) -> dict[str, Any]:
+        del settle_timeout_seconds
         self.policies_verified = True
         return {"verified": []}
 
