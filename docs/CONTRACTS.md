@@ -1447,7 +1447,7 @@ content-addressed Workers deployment receipt, never accepted as operator input;
 an unversioned image/revision or mismatched active bundle is rejected.
 `taxonomy-evaluate --file CASES --out REPORT` seals a cluster-deduplicated
 `TaxonomyEvaluationReportV1` and writes it through the existing append-only
-learning artifact ledger. The command accepts only database-verified Review v5
+learning artifact ledger. The command accepts only database-verified Review v6
 Gold and exact replayable `shadow_observation` artifacts under that durable
 registration; it reports every preregistered denominator and gate. Insufficient
 development or future holdout evidence forces `UNKNOWN`. The four existing

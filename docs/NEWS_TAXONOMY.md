@@ -100,14 +100,14 @@ ToldContext, progression, learning replay, and evaluation carry full current
 field names and exact current identities; none accepts a compact or historical
 shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
-fabricate model taxonomy or enter the generic Review v5 queue.
+fabricate model taxonomy or enter the generic Review v6 queue.
 
 ## Gold, shadow and evaluation
 
 Only an accepted `news_review_v6` receipt is Gold. A model draft records its
 author; that author cannot accept it. Product/financial/guidance families,
-confirmed-vs-rumor, `other`/`unknown`, legacy collisions, draft disagreement and
-other critical cases require a different adjudicator before release eligibility.
+confirmed-vs-rumor, `other`/`unknown`, draft disagreement and other current-axis
+critical cases require a different adjudicator before release eligibility.
 Connected fact clusters are the independent sample; provider duplicates fold to
 one representative.
 
@@ -135,7 +135,7 @@ shadow observation's exact `{model_identity, model_binding}` object.
 Then run `tracefold news learning taxonomy-evaluate --file CASES --out REPORT`
 over the frozen case document. The document references that registration SHA,
 four PostgreSQL `release_evidence` references for the same current
-candidate/dataset/metric, and one accepted Review v5 Gold plus one
+candidate/dataset/metric, and one accepted Review v6 Gold plus one
 `shadow_observation` artifact SHA per case. The workers connection re-reads and
 validates every registration, acceptance, judgment, ordinary-News Event,
 evidence version, event time, connected-fact cluster and replayable shadow
@@ -151,10 +151,10 @@ artifact addresses enter the population/split roots. Missing or non-PASS
 regression evidence prevents an overall PASS.
 
 `TaxonomyEvaluationReportV1` records those identities, confusion matrices,
-per-class and multilabel metrics, legacy baseline, five-axis abstention
-risk-coverage, language/source/audience/scope slices, reviewer agreement,
-adjudication rate, every data-readiness denominator and every preregistered
-quality gate. An unknown split, missing/mismatched durable candidate
+per-class and multilabel metrics, five-axis abstention risk-coverage,
+language/source/audience/scope slices, reviewer agreement, adjudication rate,
+absolute current quality gates, exact Stable/Candidate regression receipts and
+every data-readiness denominator. An unknown split, missing/mismatched durable candidate
 registration, forged Gold/shadow receipt, or holdout item at/before registration
 is rejected. Any incomplete denominator
 makes the quality gates and overall result `UNKNOWN`; only complete development
@@ -169,7 +169,7 @@ physical model calls; taxonomy is part of the existing EventSemantics output,
 not a third Predictor.
 
 Migration `20260829_0328` trips open canaries and records the identity and prior
-evidence disposition. Review v4 and older Program evidence remains append-only
-audit history and cannot enter Review v5 denominators. Worker startup opens the
+evidence disposition. Review v5 and older Program evidence remains append-only
+audit history and cannot enter Review v6 denominators. Worker startup opens the
 new bundle-owned epoch. Rollback restores the prior exact image/bundle; it never
 deletes or rewrites taxonomy judgments, reviews, or receipts.

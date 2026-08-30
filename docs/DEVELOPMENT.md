@@ -733,15 +733,15 @@ without a trusted worst-case rate. Note also that `_BudgetMeter` reserves
 `max_call_cost_microusd` for every call, so the reachable call count is
 `max_cost / max_call_cost`: the two limits look independent and are not.
 
-The metric scores the **reader-facing action**, not the assembler's compatibility
-`decision` field. Each sealed episode carries one `ScoredJudgment` and a frozen
+The metric scores the **reader-facing final action**, not a model-owned action
+proxy. Each sealed episode carries one `ScoredJudgment` and a frozen
 policy projection — objective Gate facts plus the ordered sent ledger — so the
 shared pure/version-bound `production_decision()` returns the complete
 `DecisionResult` used by failure-cluster selection, baseline, the optimizer and
 CandidateEvaluator. The projection contains no queue priority, provider score,
 macro lexicon or control state. Grounded restatement, stale-source, similarity,
 listing/telemetry and watchlist guards can all differ from model intent, so an
-offline gain measured on the compatibility field could not predict what the
+offline gain measured on editorial relevance alone could not predict what the
 reader would see.
 
 Hard gates come first and are not averaged with anything: `must_push` miss,

@@ -770,7 +770,7 @@ stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
 registration derives its exact Git/image/bundle identity from the active
 Workers deployment receipt. `taxonomy-evaluate` then accepts only that
 PostgreSQL-clock registration, database-verified current regression evidence,
-accepted Review v5 Gold and replayable shadow artifacts, and still requires
+accepted Review v6 Gold and replayable shadow artifacts, and still requires
 complete development and post-registration holdout denominators. Do not use taxonomy to alter Gate,
 delivery or Trading, and do not describe schema deployment as a model-quality PASS.
 The immediate cost is the normal 1 -> 2 provider-call increase. The intended

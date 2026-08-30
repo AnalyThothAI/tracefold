@@ -40,9 +40,6 @@ _BASELINE_FILE = "baseline-compile-live.json"
 _OPTIMIZATION_DIR = "optimization"
 _OPTIMIZATION_FILE = "optimization_report.json"
 _CANDIDATE_FILE = "prompt_candidate.json"
-# Written by pre-#343 runs; still cleared so a reused directory cannot present a stale comparability
-# verdict beside fresh reports.
-_LEGACY_SUMMARY_FILE = "run_summary.json"
 
 
 def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
@@ -55,7 +52,6 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
     # a fresh `readiness.json` beside the last run's report and candidate from different corpora.
     # `optimize` clears its own stale candidate for the same reason.
     for stale in (
-        out / _LEGACY_SUMMARY_FILE,
         out / _BASELINE_FILE,
         out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE,
         out / _OPTIMIZATION_DIR / _CANDIDATE_FILE,
