@@ -24,7 +24,6 @@ TRIP_REASON = "news_current_contract_hard_cut"
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("SET LOCAL statement_timeout = '120s'")
-    op.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
     op.execute("DROP VIEW news_review_task_source_v1")
     op.execute("ALTER TABLE news_events RENAME COLUMN family TO dedupe_family")
@@ -299,8 +298,8 @@ def upgrade() -> None:
              AND value ->> 'editorial_contract_version' = 'news_editorial_v2'
              AND value ->> 'editorial_origin' = 'model'
              AND value ->> 'editorial_sha256' ~ '^[0-9a-f]{64}$'
-             AND value ->> 'editorial_sha256' = encode(digest(
-                   convert_to(news_canonical_jsonb(value - 'editorial_sha256'), 'UTF8'), 'sha256'), 'hex')
+             AND value ->> 'editorial_sha256' = encode(sha256(
+                   convert_to(news_canonical_jsonb(value - 'editorial_sha256'), 'UTF8')), 'hex')
              AND news_jsonb_exact_keys(value -> 'taxonomy', ARRAY[
                    'subject_codes','event_family','change_state','assertion_status',
                    'taxonomy_version','source_authority','codebook_sha256'
@@ -1078,8 +1077,8 @@ def upgrade() -> None:
           AND trace ->> 'judgment_contract_version' = judgment_contract_version
           AND trace ->> 'judgment_origin' = judgment_origin
           AND trace ->> 'judgment_sha256' = scored_judgment_sha256
-          AND trace ->> 'verdict_sha256' = encode(digest(
-                convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex')
+          AND trace ->> 'verdict_sha256' = encode(sha256(
+                convert_to(news_canonical_jsonb(verdict), 'UTF8')), 'hex')
           AND trace ->> 'evidence_version' = evidence_version::text
           AND trace ->> 'evidence_sha256' = evidence_sha256
           AND trace ->> 'focus_fact_id' = focus_fact_id
@@ -1093,12 +1092,12 @@ def upgrade() -> None:
              AND policy_version = 'news_triage_policy_v11'
              AND news_current_model_editorial_valid(editorial)
              AND trace ->> 'editorial_sha256' = editorial ->> 'editorial_sha256'
-             AND scored_judgment_sha256 = encode(digest(convert_to(news_canonical_jsonb(jsonb_build_object(
+             AND scored_judgment_sha256 = encode(sha256(convert_to(news_canonical_jsonb(jsonb_build_object(
                    'judgment_contract_version', judgment_contract_version,
                    'verdict', verdict,
                    'editorial', editorial,
                    'verdict_sha256', trace ->> 'verdict_sha256'
-                 )), 'UTF8'), 'sha256'), 'hex'))
+                 )), 'UTF8')), 'hex'))
             OR
             (judgment_origin = 'oi'
              AND editorial IS NULL AND model IS NULL AND NOT degraded
@@ -1150,8 +1149,8 @@ def upgrade() -> None:
                         THEN 'push' ELSE 'drop' END
                     AND rule_baseline_decision = final_decision
                   END
-             AND scored_judgment_sha256 = encode(digest(convert_to(
-                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8'), 'sha256'), 'hex')
+             AND scored_judgment_sha256 = encode(sha256(convert_to(
+                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8')), 'hex')
              AND error_code IS NOT DISTINCT FROM
                    CASE WHEN jsonb_typeof(trace #> '{judgment,signal}') = 'null'
                         THEN 'oi_parse_failed' ELSE NULL END)
@@ -1187,8 +1186,8 @@ def upgrade() -> None:
                     trace #>> '{judgment,rule}' = 'liquidation_fact_only'
                     AND final_decision = 'push' AND rule_baseline_decision = 'push'
                   END
-             AND scored_judgment_sha256 = encode(digest(convert_to(
-                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8'), 'sha256'), 'hex')
+             AND scored_judgment_sha256 = encode(sha256(convert_to(
+                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8')), 'hex')
              AND error_code IS NOT DISTINCT FROM
                    CASE WHEN jsonb_typeof(trace #> '{judgment,fact}') = 'null'
                         THEN 'liquidation_parse_failed' ELSE NULL END)
@@ -1210,8 +1209,8 @@ def upgrade() -> None:
              AND trace #>> '{judgment,decision,override_rule}' IS NOT DISTINCT FROM override_rule
              AND trace #>> '{judgment,decision,throttled_by}' IS NOT DISTINCT FROM throttled_by
              AND trace #>> '{judgment,error_code}' = error_code
-             AND scored_judgment_sha256 = encode(digest(convert_to(
-                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8'), 'sha256'), 'hex'))
+             AND scored_judgment_sha256 = encode(sha256(convert_to(
+                   news_canonical_jsonb(trace -> 'judgment'), 'UTF8')), 'hex'))
           )
         ) IS TRUE) NOT VALID
         """
@@ -1222,8 +1221,8 @@ def upgrade() -> None:
         ADD CONSTRAINT news_event_evidence_current_contract_check CHECK ((
           provenance = 'observed' AND release_eligible
           AND news_current_evidence_snapshot_valid(snapshot, event_id, focus_fact_id)
-          AND evidence_sha256 = encode(digest(
-                convert_to(news_canonical_jsonb(snapshot), 'UTF8'), 'sha256'), 'hex')
+          AND evidence_sha256 = encode(sha256(
+                convert_to(news_canonical_jsonb(snapshot), 'UTF8')), 'hex')
         ) IS TRUE) NOT VALID
         """
     )
@@ -1502,7 +1501,7 @@ def upgrade() -> None:
                  AND source.trace #>> '{agent_assignment,bundle_sha}' ~ '^[0-9a-f]{64}$'
                  AND task_id_value =
                        'evt.' || source.event_id || '.' || source.evidence_version::text || '.' ||
-                       left(encode(digest(convert_to(news_canonical_jsonb(jsonb_build_object(
+                       left(encode(sha256(convert_to(news_canonical_jsonb(jsonb_build_object(
                          'task', 'news_review_task_v2',
                          'event_id', source.event_id,
                          'evidence_version', source.evidence_version,
@@ -1511,7 +1510,7 @@ def upgrade() -> None:
                          'reader_contract_sha256',
                            'bb7f436d232b02446c4f0f17c7b0b4f56c421aa4daf1a3869c5baa9b89970082',
                          'agent_cohort_sha256', source.trace #>> '{agent_assignment,bundle_sha}'
-                       )), 'UTF8'), 'sha256'), 'hex'), 16)
+                       )), 'UTF8')), 'hex'), 16)
             )
             WHEN 'external_miss' THEN
               task_id_value = 'external.' || external_snapshot_id_value
@@ -1669,9 +1668,9 @@ def upgrade() -> None:
           FROM counts
         ), addressed AS (
           SELECT payload,
-                 encode(digest(convert_to(news_canonical_jsonb(jsonb_build_object(
+                 encode(sha256(convert_to(news_canonical_jsonb(jsonb_build_object(
                    'kind', 'epoch_reset', 'payload', payload
-                 )), 'UTF8'), 'sha256'), 'hex') AS artifact_sha
+                 )), 'UTF8')), 'hex') AS artifact_sha
             FROM receipt
         )
         INSERT INTO news_learning_artifacts (
