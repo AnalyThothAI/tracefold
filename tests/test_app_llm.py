@@ -842,14 +842,20 @@ class _StartupBus:
         url: str,
         name_prefix: str,
         connect_timeout_seconds: float,
+        management_url: str | None = None,
         telemetry: Any | None = None,
     ) -> None:
-        del url, connect_timeout_seconds, telemetry
+        del url, connect_timeout_seconds, management_url, telemetry
         self.prefix = name_prefix
         self.connected = False
+        self.policies_verified = False
 
     async def connect(self) -> None:
         self.connected = True
+
+    async def verify_policies(self) -> dict[str, Any]:
+        self.policies_verified = True
+        return {"verified": []}
 
 
 def _startup_settings() -> Settings:

@@ -48,8 +48,13 @@ def build_parser() -> argparse.ArgumentParser:
     news = subcommands.add_parser("news", help="News V3 broker, ReviewDesk, and learning commands")
     news_subcommands = news.add_subparsers(dest="news_command", required=True)
     news_subcommands.add_parser(
-        "bus-check", help="connect to RabbitMQ, declare the News topology, and print queue depths"
+        "bus-check",
+        help="declare the News topology and report queue state, effective retry policy, and topology drift",
     )
+    news_bus_policy = news_subcommands.add_parser(
+        "bus-policy", help="apply or verify the checked-in RabbitMQ retry/dead-letter policy document"
+    )
+    news_bus_policy.add_argument("policy_action", choices=("apply", "verify"))
     news_instruments = news_subcommands.add_parser(
         "instruments", help="instrument universe: snapshot the venues, or inspect what is stored"
     )

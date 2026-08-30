@@ -74,6 +74,11 @@ class _TriageSettle:
     trace: dict[str, Any]
     stamp: int
     allow_stale: bool
+    # #400: which durable transition the stable arm's Triage circuit owes PostgreSQL, applied inside the
+    # same persist transaction as the verdict. There is no process-memory copy of incident state: an
+    # open circuit re-asserts the incident on every settle and a stable Program answer closes it, so a
+    # failed transaction converges on the next attempt instead of leaving PostgreSQL stale forever.
+    circuit_incident: Literal["open", "close"] | None = None
 
     @property
     def verdict(self) -> TriageVerdict:
@@ -199,6 +204,9 @@ class _ProgramAttempts:
     first_judgment: ScoredJudgment | None = None
     reasked: bool = False
     reask_reason: str | None = None
+    # Whether the stable Program answered on this route. It is the recovery signal the durable Triage
+    # circuit incident is closed by, and it is recomputed on every attempt rather than remembered.
+    stable_program_answered: bool = False
 
 
 @dataclass(frozen=True, slots=True)

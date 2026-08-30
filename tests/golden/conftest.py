@@ -27,6 +27,15 @@ import pytest
 
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
+
+
+def _default_management_url(amqp_url: str) -> str:
+    return os.environ.get(
+        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
+        f"http://{urlsplit(amqp_url).hostname or '127.0.0.1'}:15672",
+    ).rstrip("/")
+
+
 GOLDEN_WS_TOKEN = "golden-token"
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -143,6 +152,10 @@ def golden_runtime(
     app_home = tmp_path / "app-home"
     app_home.mkdir()
     name_prefix = f"tf_golden_{uuid.uuid4().hex[:10]}"
+    management_url = _default_management_url(golden_rabbitmq_url)
+    # Workers refuses to consume against a topology whose effective retry policy is not the checked-in
+    # contract (#400), so the golden harness provisions this prefix the same way `make up` does.
+    asyncio.run(_apply_policies(golden_rabbitmq_url, management_url, name_prefix))
     worker_port = _unused_port()
     worker_log = tmp_path / "workers.log"
     worker_fp = worker_log.open("w", encoding="utf-8")
@@ -162,6 +175,8 @@ def golden_runtime(
             str(worker_port),
             "--app-home",
             str(app_home),
+            "--management-url",
+            management_url,
         ],
         cwd=ROOT,
         env=dict(os.environ),
@@ -323,6 +338,22 @@ async def _publish_opennews(amqp_url: str, name_prefix: str, params: dict[str, o
         await bus.close()
 
 
+async def _apply_policies(amqp_url: str, management_url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5.0,
+        management_url=management_url,
+    )
+    await bus.connect()
+    try:
+        await bus.apply_policies()
+    finally:
+        await bus.close()
+
+
 async def _wait_for_empty_queues(amqp_url: str, name_prefix: str) -> dict[str, int]:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
@@ -343,7 +374,12 @@ async def _wait_for_empty_queues(amqp_url: str, name_prefix: str) -> dict[str, i
 async def _delete_topology(amqp_url: str, name_prefix: str) -> None:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
-    bus = RabbitMQBus(url=amqp_url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5.0,
+        management_url=_default_management_url(amqp_url),
+    )
     try:
         await bus.connect()
         await bus.delete_topology()

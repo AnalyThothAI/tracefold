@@ -39,6 +39,10 @@ def main() -> int:
         app_home = tmp / "app-home"
         app_home.mkdir()
         name_prefix = f"tf_browser_{uuid.uuid4().hex[:10]}"
+        management_url = _management_url(amqp_url)
+        # Workers refuses to consume against a topology whose effective retry policy is not the
+        # checked-in contract (#400), so this harness provisions the prefix the way `make up` does.
+        asyncio.run(_apply_policies(amqp_url, management_url, name_prefix))
         worker_port = _unused_port()
         worker_log = tmp / "workers.log"
         serve_log = tmp / "serve.log"
@@ -60,6 +64,8 @@ def main() -> int:
                 str(worker_port),
                 "--app-home",
                 str(app_home),
+                "--management-url",
+                management_url,
             ],
             cwd=ROOT,
             env=dict(os.environ),
@@ -295,10 +301,38 @@ def _terminate(
         proc.wait(timeout=5.0)
 
 
+def _management_url(amqp_url: str) -> str:
+    return os.environ.get(
+        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
+        f"http://{urlsplit(amqp_url).hostname or '127.0.0.1'}:15672",
+    ).rstrip("/")
+
+
+async def _apply_policies(amqp_url: str, management_url: str, name_prefix: str) -> None:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5.0,
+        management_url=management_url,
+    )
+    await bus.connect()
+    try:
+        await bus.apply_policies()
+    finally:
+        await bus.close()
+
+
 async def _delete_topology(amqp_url: str, name_prefix: str) -> None:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
-    bus = RabbitMQBus(url=amqp_url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
+    bus = RabbitMQBus(
+        url=amqp_url,
+        name_prefix=name_prefix,
+        connect_timeout_seconds=5.0,
+        management_url=_management_url(amqp_url),
+    )
     try:
         await bus.connect()
         await bus.delete_topology()

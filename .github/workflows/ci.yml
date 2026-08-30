@@ -96,12 +96,16 @@ jobs:
           --health-cmd "pg_isready -U postgres -d tracefold_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
       rabbitmq: &rabbitmq_service
-        image: rabbitmq:4.1-management-alpine@sha256:5ae1b436f98ed304168a55a90280dadfb0f1bfe5736d6e2e970e69f7f8fdf5e4
+        # 4.3 is required, not preferred: quorum delayed retry, broker-owned delivery counting and
+        # at-least-once dead lettering replaced Tracefold's own retry lane (#400).
+        image: rabbitmq:4.3.5-management-alpine@sha256:e2f08f846de10bb09649a8b020f286ed362a8f72ee45e5a8d043851f1533fda8
         env: {RABBITMQ_DEFAULT_PASS: tracefold, RABBITMQ_DEFAULT_USER: tracefold}
         ports: ["5672:5672", "15672:15672"]
+        # The probe runs as `rabbitmq`: a root-run CLI that reaches /var/lib/rabbitmq before the node has
+        # written .erlang.cookie creates it root-owned and 0400, and 4.3.5 then refuses to boot.
         options: >-
-          --health-cmd "rabbitmq-diagnostics -q ping"
-          --health-interval 5s --health-timeout 5s --health-retries 20
+          --health-cmd "su -s /bin/sh rabbitmq -c 'rabbitmq-diagnostics -q ping'"
+          --health-interval 5s --health-timeout 10s --health-retries 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with: {fetch-depth: 0, persist-credentials: false, ref: "${{ env.TESTED_SHA }}"}
@@ -186,6 +190,19 @@ jobs:
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked
       - run: npm ci --prefix web
+      - name: Name the disposable broker
+        # #400 proves process, channel and broker restart on one persisted node. A test never picks a
+        # broker to restart on its own — the local default is the operator's own deployment — so the
+        # service container is named here, and a missing one fails the job rather than skipping a test.
+        run: |
+          set -euo pipefail
+          container=$(docker ps --filter "label=com.docker.compose.service" --format '{{.Names}} {{.Image}}' \
+            | awk '$2 ~ /rabbitmq/ {print $1; exit}')
+          if [ -z "$container" ]; then
+            container=$(docker ps --format '{{.Names}} {{.Image}}' | awk '$2 ~ /rabbitmq/ {print $1; exit}')
+          fi
+          test -n "$container"
+          echo "TRACEFOLD_TEST_RABBITMQ_CONTAINER=$container" >> "$GITHUB_ENV"
       - name: Run process, deployment, E2E, golden, and slow tests
         env: *resource_env
         run: make ci-runtime-process

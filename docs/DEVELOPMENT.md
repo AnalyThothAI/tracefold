@@ -416,7 +416,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260830_0334` head; schema tests also run against that migrated head.
+current `20260830_0335` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -938,14 +938,26 @@ its evidence starts from zero. It retains two normal serial Predictor calls and
 creates separable semantic/copy feedback behind the unchanged
 `SemanticJudge.judge()` Interface.
 Broker behavior is covered by `tests/integration/test_news_bus_rabbitmq.py`
-against the compose RabbitMQ (`TRACEFOLD_TEST_AMQP_URL`, default
-`amqp://tracefold:tracefold@127.0.0.1:5672/`; skipped when unreachable); every
-test declares its own `tf_test_<id>`-prefixed topology and deletes it on
-teardown, so the operator queues are never touched. Run the focused lane with:
+(the settlement, delayed-retry and dead-letter contract) and
+`tests/integration/test_news_durable_event_plane.py` (what PostgreSQL looks like
+after the broker has exercised it), against a RabbitMQ 4.3 broker at
+`TRACEFOLD_TEST_AMQP_URL` (default `amqp://tracefold:tracefold@127.0.0.1:5672/`;
+skipped when unreachable) with its management API at
+`TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL` (default port 15672). Every test
+declares its own `tf_test_<id>`/`tf_plane_<id>`-prefixed topology, applies its
+own prefixed policies, and deletes both on teardown, so the operator queues and
+the production policy are never touched.
+
+Two `slow` tests restart the broker. They need
+`TRACEFOLD_TEST_RABBITMQ_CONTAINER` to name a container that is safe to bounce
+and skip without it — a test must never decide on its own to restart the
+operator's own deployment. CI names its service container in the
+`runtime-process` job and fails if it cannot find one.
 
 ```bash
 uv run pytest -q tests/news tests/integration/test_news_v3_pipeline.py \
-  tests/integration/test_news_v3_consumers.py tests/integration/test_news_bus_rabbitmq.py
+  tests/integration/test_news_v3_consumers.py tests/integration/test_news_bus_rabbitmq.py \
+  tests/integration/test_news_durable_event_plane.py
 ```
 
 Transport/status acceptance records disconnect, overflow, process outage, and
@@ -962,6 +974,10 @@ recovery seam.
 `cli-help.md` (`scripts/regen_cli_help.py`), `db-schema.md`
 (`scripts/regen_db_schema.py`, needs PostgreSQL), and `openapi.json`
 (`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`).
+`docker/rabbitmq/definitions.json` is generated the same way, from
+`tracefold.news.broker_policy` via `scripts/regen_rabbitmq_definitions.py`, so
+the policy a deployment imports and the constants the tests assert cannot drift
+apart. `make check-static` fails on a stale copy.
 
 ```bash
 make docs-generated   # db-schema.md + cli-help.md

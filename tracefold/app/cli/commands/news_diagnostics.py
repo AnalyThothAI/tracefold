@@ -13,6 +13,10 @@ def handle_news(args: Namespace) -> tuple[int, dict[str, Any]]:
         from .news_bus import _handle_bus_check
 
         return _handle_bus_check()
+    if args.news_command == "bus-policy":
+        from .news_bus import _handle_bus_policy
+
+        return _handle_bus_policy(args)
     if args.news_command == "instruments":
         from .news_instruments import _handle_instruments
 

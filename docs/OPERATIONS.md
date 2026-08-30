@@ -195,7 +195,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0334`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0335`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -214,7 +214,10 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    subsequent additive News Verdict-handoff partial index and has no capital
    cutover predicate. `0334` adds the Trading evidence clock and requires Capital
    `PAUSED` with no pre-existing unbound promotion grant, but does not require a
-   recovery-only Nautilus process. Older execution-authority cutover routes retain the full
+   recovery-only Nautilus process. `0335` adds the News open-incident uniqueness
+   index; its preflight fails if two incidents of one cause class are already
+   open, which an operator resolves by closing the stale duplicate rather than by
+   deleting evidence. Older execution-authority cutover routes retain the full
    venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
@@ -422,6 +425,152 @@ database/schema mismatch. There is no durable worker queue left to inspect:
 News backlog lives in RabbitMQ and is reported by `/api/news/status.broker`
 and `tracefold news bus-check`.
 
+## RabbitMQ durable-event plane (#400)
+
+RabbitMQ 4.3 owns News retry. There is no application retry lane, scheduler or
+attempt counter, and there is no `news.retry` queue or exchange. What the broker
+does is configured by one policy per queue, generated from
+`tracefold.news.broker_policy` into `docker/rabbitmq/definitions.json` and
+imported by the one-shot `rabbitmq-policy` Compose service (`tracefold news
+bus-policy apply`) before Workers starts. Workers verifies the effective policy
+at startup and refuses to consume on a mismatch.
+
+| Setting | Value | Why this value |
+|---|---|---|
+| `delayed-retry-type` | `all` | Delays counted returns (`TransientError`) and uncounted ones (`DeferError`) alike, so a defer waits exactly as long as it did through the old TTL lane. |
+| `delayed-retry-min` / `-max` | `30000` / `30000` | Frozen from the removed lane's TTL. A flat delay, not a backoff: changing it needs its own production evidence. |
+| `delivery-limit` | `2` | Measured on 4.3.5: a quorum queue delivers `delivery-limit + 1` times, because the first delivery carries no `x-delivery-count`. Two keeps the frozen three total handler attempts. |
+| `dead-letter-strategy` | `at-least-once` | A `news.dead` that is unavailable or full must hold the message on its source queue, not drop it. |
+| `overflow` | `reject-publish` | At the bound the newest publish is rejected as `BrokerBackpressure`; the oldest message is never dropped. |
+| `dead-letter-exchange` | `news.dlx` | Terminal deliveries only: decode failure, `PermanentError`, spent delivery limit. |
+| `max-length-bytes` | see below | Bounded so the queue rejects before the node-wide memory alarm blocks every publisher. |
+
+### How the byte bounds were measured
+
+`max-length-bytes(q) = p99 envelope bytes x peak messages per minute x 10`,
+rounded up to a power-of-two MiB and floored at 4 MiB. `news.dead` is terminal
+evidence rather than arrival-driven, so it is sized as 8,192 dead letters
+instead. Envelope sizes are the broker's own `message_bytes` (body plus AMQP
+properties and headers); rates are the worst single minute in a seven-day
+window.
+
+| Queue | p99 envelope | Peak/min | Bound | Backlog that buys |
+|---|---:|---:|---:|---|
+| `news.raw` | 2,048 B | 2,882 | 64 MiB | ~11 min of the worst minute ever observed (a Recovery backfill, itself capped at 1,000 messages per 30 s run), or ~42 h at the p99 minute of 13/min |
+| `news.triage` | 512 B | 111 | 4 MiB | ~8,192 Events: ~73 min at the worst minute, ~12 h at the p99 minute |
+| `news.deliver` | 512 B | 7 | 4 MiB | ~8,192 push Verdicts |
+| `news.dead` | 2,048 B | n/a | 16 MiB | ~8,192 dead letters an operator can still page through |
+
+The four bounds total 88 MiB against a 768 MiB broker container whose default
+`vm_memory_high_watermark` blocks publishers near 460 MiB. That ordering is the
+point: a queue bound rejects one queue's publishes as a typed
+`BrokerBackpressure`, which opens an incident and later replays through
+Recovery, while the memory alarm blocks every publisher on the node with no
+typed signal at all. Re-measure with `SELECT` over `news_items` /
+`news_events` / `news_verdicts` per-minute counts and the management API's
+`message_bytes / messages`, then edit `tracefold/news/broker_policy.py` and run
+`uv run python scripts/regen_rabbitmq_definitions.py`.
+
+### Signals
+
+`/api/news/status.broker.queues` and `tracefold news bus-check` carry, per
+queue: `messages`, `ready`, `unacked`, `delayed` (inside a native retry window),
+`dead_letter_pending` (at-least-once dead letters the source queue is holding
+because `news.dead` would not take them), `message_bytes` / `bytes_used_bps`
+against the bound, `consumers`, and `policy_ok`. The broker health item turns
+`bad` on policy drift, a queue with no consumer, any pending dead letter, or a
+queue past 80% of its byte bound.
+
+A blocked dead letter is never lost, but it is not instant either: RabbitMQ
+retries the transfer roughly every three minutes, so `dead_letter_pending`
+staying above zero for one tick is expected during a `news.dead` outage and
+staying there for many is not.
+
+### Deployment boundary
+
+One RabbitMQ node, one durable volume. Process, channel and broker restart on
+that persisted node are covered and tested. Node-level HA and survival of the
+volume's destruction are not: a real three-node cluster would be a separate
+infrastructure change, and nothing here should be read as claiming it.
+
+The healthcheck runs `rabbitmq-diagnostics` as the `rabbitmq` user, never as
+root. On 4.3 the server runs as `rabbitmq`, and a root-run CLI that reaches
+`/var/lib/rabbitmq` before the node has written `.erlang.cookie` creates that
+file owned by root with mode 0400 — after which the server cannot read its own
+cookie and refuses to boot. A volume that already carries a correctly owned
+cookie hides this completely, so it only appears on a fresh volume.
+
+### Cutting over from the removed TTL retry lane
+
+Run this once, from the primary checkout, when deploying the #400 image onto a
+deployment that still has `news.retry`. It fails closed at every step. Two
+things change on the broker: the policies appear, and the three business queues
+lose the arguments the policy now owns. `news.dead` is untouched — its
+declaration is unchanged, and it holds evidence.
+
+1. Prove the broker: `docker compose exec -T rabbitmq su -s /bin/sh rabbitmq -c
+   'rabbitmqctl version'` must report 4.3 or newer. Native delayed retry does
+   not exist before 4.3, and an older broker would silently retry immediately.
+2. Apply the policies while the old image is still running, from the checkout
+   rather than from the container: `uv run tracefold news bus-policy apply`,
+   then `uv run tracefold news bus-policy verify`. The deployed image predates
+   the command, and `uv run` reaches the same broker because the compose host
+   name is rewritten to its published loopback port. A policy overrides a queue
+   argument on 4.3, so from here the retry contract is already in force and
+   there is no later window in which a queue is unconfigured. Every deployment
+   after this one re-applies it through the `rabbitmq-policy` Compose service.
+3. Observe the old lane and let it drain. Record ready, unacked and the oldest
+   message: `curl -s -u "$USER:$PASS" http://127.0.0.1:15672/api/queues/%2F/news.retry`.
+4. If anything in `news.retry` cannot drain deterministically, stop here. Do not
+   purge it to make the migration proceed; the messages in it are business facts
+   that have not been handled.
+5. Stop the consumers and drain the business queues:
+   `docker compose stop -t 40 workers`, then confirm `news.raw`, `news.triage`
+   and `news.deliver` all read zero. The OpenNews frames that arrive during this
+   window are the ordinary deployment gap, and Recovery backfills them from
+   official history afterwards.
+6. Delete the three business queues so the new image can declare them without
+   the arguments the policy now owns. Keeping those arguments would work today
+   and silently restore the old delivery limit, at-most-once dead lettering and
+   message-count bound the moment the policy were removed:
+
+   ```bash
+   for q in news.raw news.triage news.deliver; do
+     docker compose exec -T rabbitmq \
+       su -s /bin/sh rabbitmq -c "rabbitmqctl delete_queue $q --if-empty"
+   done
+   ```
+
+   `--if-empty` is the safety: `rabbitmqctl` refuses rather than discarding a
+   message that arrived after step 5. Do not delete `news.dead`.
+7. Deploy the hard-cut image (`make up`). Workers redeclares the three queues,
+   verifies the effective policy and refuses to consume if it does not match.
+   From this point no code path can publish to `news.retry`.
+8. Wait at least one former TTL interval (30 s) and prove `messages_ready` and
+   `messages_unacknowledged` on `news.retry` are both still zero. Then delete
+   the old lane by hand — the application deliberately will not:
+
+   ```bash
+   docker compose exec -T rabbitmq \
+     su -s /bin/sh rabbitmq -c 'rabbitmqctl delete_queue news.retry --if-empty'
+   curl -fsS -u "$USER:$PASS" -X DELETE \
+     http://127.0.0.1:15672/api/exchanges/%2F/news.retry
+   ```
+
+   There is no `rabbitmqctl delete_exchange`; the exchange is a management-API
+   delete. `uv run tracefold news bus-check` must then report empty `drift` lists
+   and `policy_ok` on every queue.
+9. Cold-restart the stack (`docker compose restart rabbitmq workers`) and re-run
+   `make status`, `uv run tracefold news bus-check`, and the open-incident check
+   `SELECT cause_class, count(*) FROM news_opennews_incidents WHERE closed_at_ms
+   IS NULL GROUP BY 1` — which the `0335` partial unique index now makes
+   impossible to exceed one row per cause class.
+
+Rollback before step 6 may restore the previous image; the policies are additive
+and the old image ignores them. After step 6 the queues carry the new shape and
+after step 8 the old lane is gone, so rolling back would recreate an
+unconfigured retry queue rather than the one that was deleted. Roll forward.
+
 ## Worker ownership
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
@@ -620,8 +769,9 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
-  -> q:news.retry (30 s TTL) for TransientError/DeferError; retry publish confirms before original ack;
-     q:news.dead for decode/PermanentError/exhausted transient or broker delivery-limit terminal cases
+  -> RabbitMQ 4.3 native delayed retry inside each business queue: TransientError is a counted return
+     (30 s delay, terminal after 3 total attempts), DeferError is an uncounted return (same delay);
+     q:news.dead (at-least-once) for decode/PermanentError/exhausted-transient terminal cases
   -> Janitor: Event->Triage and push-Verdict->Delivery repair (15 s minimum age,
      30 min relevance ceiling, 50 rows/stage), band expiry, 30-day purge, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
@@ -801,8 +951,12 @@ Diagnose News in this order:
    identity, `event_kind`, `source_contract_reason`, admission, classifier version and parser
    version. Do not retry a named unsupported contract into the model lane.
 3. `tracefold news bus-check`: consumers attached to every queue (Deduper and
-   Deliverer show exactly one), `news.dead` depth, `news.retry` depth;
-   `tracefold news dlq inspect` for the dead-letter bodies.
+   Deliverer show exactly one), `news.dead` depth, each queue's `delayed`
+   (native retry backlog), `dead_letter_pending` (at-least-once dead letters the
+   source queue is still holding) and `bytes_used_bps`, plus `policy_ok` and a
+   `drift` list of names the final topology does not contain. It exits non-zero
+   on either policy drift or topology drift. `tracefold news dlq inspect` prints
+   the dead-letter bodies with their broker `delivery_count`.
 4. `pipeline`: `candidate_share_24h` (the Gate now admits nearly every ordinary News Item;
    a share far below ~90% means the low-signal switch or a template flood),
    `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,

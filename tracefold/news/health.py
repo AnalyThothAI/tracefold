@@ -22,6 +22,11 @@ FRAME_STALE_WARN_MS: Final = 10 * 60_000
 FRAME_STALE_BAD_MS: Final = 30 * 60_000
 QUEUE_DEPTH_WARN: Final = 50
 QUEUE_DEPTH_BAD: Final = 200
+# #400: a queue past this share of its byte bound is close to rejecting publishes; at the bound the
+# Receiver opens a broker_backpressure incident and the frames it could not publish come back through
+# Recovery. Basis points of the policy's max-length-bytes.
+QUEUE_BYTES_WARN_BPS: Final = 5_000
+QUEUE_BYTES_BAD_BPS: Final = 8_000
 DEGRADED_SHARE_WARN: Final = 0.03
 DEGRADED_SHARE_BAD: Final = 0.10
 DELIVERY_FAIL_SHARE_WARN: Final = 0.10
@@ -113,18 +118,57 @@ def broker_health(broker: Mapping[str, Any], *, open_causes: frozenset[str] = fr
     consumers_missing = [
         name for name in _BUSINESS_QUEUES if name in queues and int((queues.get(name) or {}).get("consumers") or 0) == 0
     ]
+    # #400: the broker owns retry, so its own contract is a health fact. A queue whose effective policy is
+    # not the checked-in one has no native delay, no at-least-once dead lettering and the quorum default
+    # delivery limit; nothing else on this page would show that.
+    absent = sorted(name for name, row in queues.items() if (row or {}).get("missing"))
+    policy_drift = [name for name, row in queues.items() if (row or {}).get("policy_ok") is False]
+    policy_unknown = queues and all((row or {}).get("policy_ok") is None for row in queues.values())
+    stuck_dead_letters = {
+        name: int((row or {}).get("dead_letter_pending") or 0)
+        for name, row in queues.items()
+        if int((row or {}).get("dead_letter_pending") or 0) > 0
+    }
+    if absent:
+        return HealthItem("bad", "队列不存在", "、".join(absent))
+    if policy_drift:
+        return HealthItem("bad", "队列策略与契约不符", "、".join(sorted(policy_drift)))
     if consumers_missing:
         return HealthItem("bad", "有队列没有消费者", "、".join(consumers_missing))
+    if stuck_dead_letters:
+        detail = "、".join(f"{name} {count}" for name, count in sorted(stuck_dead_letters.items()))
+        return HealthItem("bad", "死信投递被卡住", f"{detail}；news.dead 不可写或已满")
+    over_bytes = _worst_byte_pressure(queues)
+    if over_bytes is not None and over_bytes[1] >= QUEUE_BYTES_BAD_BPS:
+        return HealthItem("bad", f"{over_bytes[0]} 接近字节上限", f"{over_bytes[1] / 100:.1f}%，到顶会拒收新帧")
     if worst_depth >= QUEUE_DEPTH_BAD:
         return HealthItem("bad", f"{worst_name} 积压 {worst_depth} 条", "消费速度跟不上，检查模型延迟与 Workers")
+    if over_bytes is not None and over_bytes[1] >= QUEUE_BYTES_WARN_BPS:
+        return HealthItem("warn", f"{over_bytes[0]} 已用 {over_bytes[1] / 100:.1f}% 字节额度", "")
     if worst_depth >= QUEUE_DEPTH_WARN:
         return HealthItem("warn", f"{worst_name} 积压 {worst_depth} 条", "")
     if dead > 0:
         return HealthItem("warn", f"死信队列有 {dead} 条", "需要人工查看 news.dead")
     if broker.get("connected") is None:
         return HealthItem("warn", "队列状态未知", "Janitor 还没有上报快照")
+    # AMQP answered but the management API did not: depths are real, retry policy and delayed/dead-letter
+    # state are simply not known this tick. That is a warning, never a silent pass.
+    if policy_unknown:
+        return HealthItem("warn", "队列策略未知", "RabbitMQ 管理 API 读不到，重试契约无法核对")
     summary = f"raw {depths['news.raw']} · triage {depths['news.triage']} · deliver {depths['news.deliver']}"
     return HealthItem("ok", "队列畅通", summary)
+
+
+def _worst_byte_pressure(queues: Mapping[str, Any]) -> tuple[str, int] | None:
+    used = {
+        name: int((row or {}).get("bytes_used_bps") or 0)
+        for name, row in queues.items()
+        if (row or {}).get("bytes_used_bps") is not None
+    }
+    if not used:
+        return None
+    name, bps = max(used.items(), key=lambda kv: kv[1])
+    return (name, bps) if bps > 0 else None
 
 
 def model_health(
@@ -249,6 +293,8 @@ __all__ = [
     "FRAME_STALE_BAD_MS",
     "FRAME_STALE_WARN_MS",
     "HEALTH_VERSION",
+    "QUEUE_BYTES_BAD_BPS",
+    "QUEUE_BYTES_WARN_BPS",
     "QUEUE_DEPTH_BAD",
     "QUEUE_DEPTH_WARN",
     "HealthItem",

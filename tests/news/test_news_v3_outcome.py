@@ -401,6 +401,34 @@ def test_news_why_names_the_restated_card_time_and_targeted_retrieval_reason() -
     assert decide["facts"]["restated_retrieval_reason"] == "exact_fingerprint"
 
 
+def _queue(
+    *,
+    messages: int = 0,
+    consumers: int = 0,
+    ready: int = 0,
+    delayed: int = 0,
+    dead_letter_pending: int = 0,
+    bytes_used_bps: int | None = 0,
+    policy_ok: bool | None = True,
+    missing: bool = False,
+) -> dict[str, object]:
+    """One row of the #400 broker snapshot: depth from AMQP, the rest from the management API."""
+
+    return {
+        "messages": messages,
+        "consumers": consumers,
+        "ready": ready,
+        "unacked": max(0, messages - ready),
+        "delayed": delayed,
+        "dead_letter_pending": dead_letter_pending,
+        "message_bytes": messages * 512,
+        "max_length_bytes": 4 * 1024 * 1024,
+        "bytes_used_bps": bytes_used_bps,
+        "policy_ok": policy_ok,
+        "missing": missing,
+    }
+
+
 def _status_inputs(**over: object) -> dict[str, object]:
     base: dict[str, object] = {
         "ingest": {"connected": True, "last_frame_at_ms": NOW - 60_000, "open_incidents": []},
@@ -408,10 +436,10 @@ def _status_inputs(**over: object) -> dict[str, object]:
             "configured": True,
             "connected": True,
             "queues": {
-                "news.raw": {"messages": 0, "consumers": 1},
-                "news.triage": {"messages": 3, "consumers": 1},
-                "news.deliver": {"messages": 0, "consumers": 1},
-                "news.dead": {"messages": 0, "consumers": 0},
+                "news.raw": _queue(consumers=1),
+                "news.triage": _queue(messages=3, ready=3, consumers=1),
+                "news.deliver": _queue(consumers=1),
+                "news.dead": _queue(),
             },
         },
         "pipeline": {
@@ -489,6 +517,94 @@ def test_status_health_is_green_with_funnel_and_named_reasons() -> None:
     assert all(r["label_zh"] for r in reasons)
     # The provider tag is its own label — inventing the English word it collided with would be a guess.
     assert {"stage": "ungrounded", "key": "SPOT", "label_zh": "SPOT", "count": 38} in reasons
+
+
+def _broker_health(**queues: object) -> tuple[str, str]:
+    inputs = _status_inputs()
+    inputs["broker"] = {"configured": True, "connected": True, "queues": queues}
+    item = status_health(**inputs)["health"]["broker"]  # type: ignore[arg-type]
+    return str(item["level"]), str(item["summary_zh"])
+
+
+def test_broker_health_is_bad_when_the_retry_policy_does_not_match_the_contract() -> None:
+    """#400: without the policy there is no delay, no delivery limit and no at-least-once dead lettering.
+
+    Nothing else on this page would show that, because depths and consumer counts look exactly the same.
+    """
+
+    level, title = _broker_health(
+        **{
+            "news.raw": _queue(consumers=1),
+            "news.triage": _queue(consumers=1, policy_ok=False),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(),
+        }
+    )
+    assert (level, title) == ("bad", "队列策略与契约不符")
+
+
+def test_broker_health_is_bad_when_a_queue_is_not_declared_at_all() -> None:
+    """A queue that no longer exists must not read as an idle queue at depth zero."""
+
+    level, title = _broker_health(
+        **{
+            "news.raw": _queue(consumers=1),
+            "news.triage": _queue(consumers=1),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(missing=True, policy_ok=None, bytes_used_bps=None),
+        }
+    )
+    assert (level, title) == ("bad", "队列不存在")
+
+
+def test_broker_health_is_bad_when_a_dead_letter_is_stuck_on_its_source_queue() -> None:
+    """at-least-once dead lettering holds the message rather than dropping it, and that must be visible."""
+
+    level, title = _broker_health(
+        **{
+            "news.raw": _queue(consumers=1),
+            "news.triage": _queue(messages=1, consumers=1, dead_letter_pending=1),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(),
+        }
+    )
+    assert (level, title) == ("bad", "死信投递被卡住")
+
+
+def test_broker_health_warns_before_a_queue_reaches_its_byte_bound() -> None:
+    warned, warned_title = _broker_health(
+        **{
+            "news.raw": _queue(messages=10, consumers=1, bytes_used_bps=5_200),
+            "news.triage": _queue(consumers=1),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(),
+        }
+    )
+    assert warned == "warn" and "字节额度" in warned_title
+    bad, bad_title = _broker_health(
+        **{
+            "news.raw": _queue(messages=10, consumers=1, bytes_used_bps=9_100),
+            "news.triage": _queue(consumers=1),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(),
+        }
+    )
+    assert bad == "bad" and "接近字节上限" in bad_title
+
+
+def test_broker_health_warns_when_the_management_api_could_not_be_read() -> None:
+    """AMQP answered, the management API did not: depths are real, the retry contract is unknown."""
+
+    unknown = _queue(policy_ok=None, bytes_used_bps=None)
+    level, title = _broker_health(
+        **{
+            "news.raw": {**unknown, "consumers": 1},
+            "news.triage": {**unknown, "consumers": 1},
+            "news.deliver": {**unknown, "consumers": 1},
+            "news.dead": dict(unknown),
+        }
+    )
+    assert (level, title) == ("warn", "队列策略未知")
 
 
 def test_status_funnel_reads_the_single_event_cohort() -> None:

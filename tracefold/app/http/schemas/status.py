@@ -61,6 +61,20 @@ class NewsIngestStatusData(ExactApiSchema):
 class NewsBrokerQueueData(ExactApiSchema):
     messages: int
     consumers: int
+    # #400: what AMQP cannot report. `delayed` is the native retry backlog, `dead_letter_pending` the
+    # at-least-once dead letters a source queue is still holding because the DLQ would not take them,
+    # and `bytes_used_bps` how close the queue is to the byte bound that rejects new publishes.
+    # Null means the management API could not be read this tick, not zero and not healthy.
+    ready: int | None = None
+    unacked: int | None = None
+    delayed: int | None = None
+    dead_letter_pending: int | None = None
+    message_bytes: int | None = None
+    max_length_bytes: int | None = None
+    bytes_used_bps: int | None = None
+    policy_ok: bool | None = None
+    # The queue is not declared on the broker at all, which is a topology fault, not an idle queue.
+    missing: bool = False
 
 
 class NewsBrokerStatusData(ExactApiSchema):

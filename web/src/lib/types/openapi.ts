@@ -552,10 +552,31 @@ export interface components {
         };
         /** NewsBrokerQueueData */
         NewsBrokerQueueData: {
+            /** Bytes Used Bps */
+            bytes_used_bps?: number | null;
             /** Consumers */
             consumers: number;
+            /** Dead Letter Pending */
+            dead_letter_pending?: number | null;
+            /** Delayed */
+            delayed?: number | null;
+            /** Max Length Bytes */
+            max_length_bytes?: number | null;
+            /** Message Bytes */
+            message_bytes?: number | null;
             /** Messages */
             messages: number;
+            /**
+             * Missing
+             * @default false
+             */
+            missing: boolean;
+            /** Policy Ok */
+            policy_ok?: boolean | null;
+            /** Ready */
+            ready?: number | null;
+            /** Unacked */
+            unacked?: number | null;
         };
         /** NewsBrokerStatusData */
         NewsBrokerStatusData: {

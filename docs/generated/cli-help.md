@@ -155,12 +155,14 @@ options:
 
 ```
 usage: tracefold news [-h]
-                      {bus-check,instruments,review,learning,release,replay,why,dlq} ...
+                      {bus-check,bus-policy,instruments,review,learning,release,replay,why,dlq} ...
 
 positional arguments:
-  {bus-check,instruments,review,learning,release,replay,why,dlq}
-    bus-check           connect to RabbitMQ, declare the News topology, and
-                        print queue depths
+  {bus-check,bus-policy,instruments,review,learning,release,replay,why,dlq}
+    bus-check           declare the News topology and report queue state,
+                        effective retry policy, and topology drift
+    bus-policy          apply or verify the checked-in RabbitMQ retry/dead-
+                        letter policy document
     instruments         instrument universe: snapshot the venues, or inspect
                         what is stored
     review              ReviewDesk queue, evidence, and append-only judgments
@@ -186,6 +188,19 @@ usage: tracefold news bus-check [-h]
 
 options:
   -h, --help  show this help message and exit
+
+```
+
+## `news bus-policy`
+
+```
+usage: tracefold news bus-policy [-h] {apply,verify}
+
+positional arguments:
+  {apply,verify}
+
+options:
+  -h, --help      show this help message and exit
 
 ```
 

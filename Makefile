@@ -264,6 +264,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff format --check .
 	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
+	@uv run python scripts/regen_rabbitmq_definitions.py --check
 	@uv run python scripts/regen_trading_contract_receipt.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
@@ -448,6 +449,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
 			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
+			20260830_0335\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0335." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
@@ -523,7 +525,7 @@ _up-locked:
 		fi; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
-		runtime_services="migrate serve workers"; \
+		runtime_services="migrate rabbitmq-policy serve workers"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -633,7 +635,7 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		runtime_services="migrate serve workers"; \
+		runtime_services="migrate rabbitmq-policy serve workers"; \
 		base_services="$$runtime_services"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
@@ -771,12 +773,15 @@ clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__
 	@find tracefold tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
-.PHONY: docs-generated docs-db-schema docs-cli-help
+.PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions
 
-docs-generated: docs-db-schema docs-cli-help ## regenerate docs/generated/*
+docs-generated: docs-db-schema docs-cli-help docs-rabbitmq-definitions ## regenerate docs/generated/* and the broker policy document
 
 docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 	@uv run python scripts/regen_db_schema.py
 
 docs-cli-help: ## regenerate docs/generated/cli-help.md
 	@uv run python scripts/regen_cli_help.py
+
+docs-rabbitmq-definitions:
+	@uv run python scripts/regen_rabbitmq_definitions.py

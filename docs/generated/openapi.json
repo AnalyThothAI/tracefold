@@ -835,13 +835,106 @@
       "NewsBrokerQueueData": {
         "additionalProperties": false,
         "properties": {
+          "bytes_used_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Used Bps"
+          },
           "consumers": {
             "title": "Consumers",
             "type": "integer"
           },
+          "dead_letter_pending": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dead Letter Pending"
+          },
+          "delayed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delayed"
+          },
+          "max_length_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Length Bytes"
+          },
+          "message_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Bytes"
+          },
           "messages": {
             "title": "Messages",
             "type": "integer"
+          },
+          "missing": {
+            "default": false,
+            "title": "Missing",
+            "type": "boolean"
+          },
+          "policy_ok": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Ok"
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready"
+          },
+          "unacked": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unacked"
           }
         },
         "required": [

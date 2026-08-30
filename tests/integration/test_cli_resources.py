@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
 import tempfile
 import uuid
 from pathlib import Path
@@ -75,11 +76,25 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     assert all(isinstance(stage["n"], int) for stage in data["stage_latency_ms"].values())
 
 
+def _management_url(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    return os.environ.get(
+        "TRACEFOLD_TEST_RABBITMQ_MANAGEMENT_URL",
+        f"http://{urlsplit(url).hostname or '127.0.0.1'}:15672",
+    ).rstrip("/")
+
+
 def _delete_test_topology(url: str, name_prefix: str) -> None:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
     async def run() -> None:
-        bus = RabbitMQBus(url=url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
+        bus = RabbitMQBus(
+            url=url,
+            name_prefix=name_prefix,
+            connect_timeout_seconds=5.0,
+            management_url=_management_url(url),
+        )
         try:
             await bus.connect()
             await bus.delete_topology()
@@ -103,11 +118,30 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq
 
         payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         name_prefix = f"tf_test_{uuid.uuid4().hex[:8]}"
-        payload["news"] = {**(payload.get("news") or {}), "broker": {"url": amqp_url, "name_prefix": name_prefix}}
+        payload["news"] = {
+            **(payload.get("news") or {}),
+            "broker": {
+                "url": amqp_url,
+                "name_prefix": name_prefix,
+                "management_url": _management_url(amqp_url),
+            },
+        }
         config_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
-        stdout = io.StringIO()
         try:
             with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+                # #400: a topology whose retry policy has never been applied is not healthy, so
+                # bus-check fails closed until the operator applies the checked-in document.
+                drifted = io.StringIO()
+                drift_code = main(["news", "bus-check"], stdout=drifted)
+                drift_payload = json.loads(drifted.getvalue())
+                assert drift_code == 1 and drift_payload["ok"] is False
+                assert not all(row["policy_ok"] for row in drift_payload["data"]["queues"].values())
+
+                applied = io.StringIO()
+                assert main(["news", "bus-policy", "apply"], stdout=applied) == 0
+                assert json.loads(applied.getvalue())["ok"] is True
+
+                stdout = io.StringIO()
                 exit_code = main(["news", "bus-check"], stdout=stdout)
         finally:
             _delete_test_topology(amqp_url, name_prefix)
@@ -116,3 +150,5 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq
     assert exit_code == 0
     assert response["ok"] is True
     assert "queues" in response["data"]
+    assert response["data"]["drift"] == {"queues": [], "exchanges": []}
+    assert all(row["policy_ok"] for row in response["data"]["queues"].values())

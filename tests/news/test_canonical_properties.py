@@ -55,7 +55,7 @@ def test_canonical_identity_rejects_nonfinite_numbers(value: float) -> None:
     occurred_at_ms=st.integers(min_value=1, max_value=10**30),
     payload=_OBJECT,
     priority=st.integers(min_value=0, max_value=9),
-    attempt=st.integers(min_value=1, max_value=100),
+    delivery_count=st.integers(min_value=0, max_value=100),
 )
 def test_bus_encode_decode_preserves_the_frozen_envelope(
     kind: str,
@@ -64,7 +64,7 @@ def test_bus_encode_decode_preserves_the_frozen_envelope(
     occurred_at_ms: int,
     payload: dict[str, object],
     priority: int,
-    attempt: int,
+    delivery_count: int,
 ) -> None:
     message = BusMessage(
         kind=kind,  # type: ignore[arg-type]
@@ -80,7 +80,7 @@ def test_bus_encode_decode_preserves_the_frozen_envelope(
         message.body(),
         routing_key=message.routing_key,
         priority=priority,
-        headers={"x-news-attempt": attempt},
+        headers={"x-delivery-count": delivery_count},
     )
 
     assert decoded == BusMessage(
@@ -91,8 +91,9 @@ def test_bus_encode_decode_preserves_the_frozen_envelope(
         trace_id=trace_id,
         occurred_at_ms=occurred_at_ms,
         priority=priority,
-        attempt=attempt,
-        headers={"x-news-attempt": attempt},
+        # The broker counts failed deliveries from zero, so attempt 1 carries no header at all (#400).
+        attempt=delivery_count + 1,
+        headers={"x-delivery-count": delivery_count},
     )
 
 
