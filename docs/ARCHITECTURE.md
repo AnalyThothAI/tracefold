@@ -1462,8 +1462,8 @@ Recovery scans on startup, explicit wakeup, and a 300-second fallback. It pages
 the official Strategy history for closed pending intervals and publishes
 stable-ID `raw.recovery.*` frames under one turn-wide 30-second / 60-provider-
 call / 1,000-message budget. Typed provider, broker, or database faults leave
-the incident pending (provider/broker errors record their bounded code) and use
-bounded in-process backoff; budget exhaustion also stays
+the incident pending; provider/broker and known-incident database errors record
+their bounded code and use bounded in-process backoff; budget exhaustion also stays
 pending and schedules another turn. Provider calls and confirmed broker
 publishes each inherit the remaining turn deadline, so neither can overrun the
 wall budget. An empty current Strategy list is a retryable configuration state,

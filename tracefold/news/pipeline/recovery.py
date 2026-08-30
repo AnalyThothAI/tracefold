@@ -18,11 +18,16 @@ from ..bus import (
     new_trace_id,
     now_ms,
 )
-from ..opennews import OpenNewsHistoryError, OpenNewsStrategyHistory, enabled_strategy_ids, parse_opennews_strategy_hits
+from ..opennews import (
+    OPENNEWS_HISTORY_PAGE_SIZE,
+    OpenNewsHistoryError,
+    OpenNewsStrategyHistory,
+    enabled_strategy_ids,
+    parse_opennews_strategy_hits,
+)
 from ..telemetry import NewsRecoveryBudget, NewsRecoveryOutcome, NewsTelemetryPort, NewsWorkSemantics
 from .runtime import NewsDatabasePort, _sleep_or_stop
 
-_HISTORY_PAGE_SIZE = 100
 _RECOVERY_OVERLAP_MS = 30_000
 _RECOVERY_SCAN_SECONDS = 300.0
 _RECOVERY_BACKOFF_INITIAL_SECONDS = 5.0
@@ -32,6 +37,8 @@ _RECOVERY_MAX_WALL_SECONDS = 30.0
 _RECOVERY_MAX_PROVIDER_CALLS = 60
 _RECOVERY_MAX_PUBLISHED_MESSAGES = 1_000
 _EMPTY_STRATEGY_ERROR = "opennews_history_strategy_list_empty"
+_DB_TRANSIENT_ERROR = "news_recovery_database_transient"
+_DB_ERROR_RECORDED = "news_recovery_database_error_recorded"
 _RETRYABLE_RECOVERY_ERRORS = (
     OpenNewsHistoryError,
     BrokerBackpressure,
@@ -137,6 +144,7 @@ class RecoveryRunner:
         self._requested = asyncio.Event()
         # ponytail: this cursor only avoids replay inside one process; stable message IDs make restart replay safe.
         self._cursors: dict[int, _IncidentCursor] = {}
+        self._pending_db_errors: dict[int, str] = {}
 
     def request(self) -> None:
         self._requested.set()
@@ -219,12 +227,13 @@ class RecoveryRunner:
         """
 
         payload = await self._provider_call(
-            lambda: self.history_client.get_strategy_list(limit=100, page=1), budget=budget
+            lambda: self.history_client.get_strategy_list(limit=OPENNEWS_HISTORY_PAGE_SIZE, page=1), budget=budget
         )
         return tuple(sorted(enabled_strategy_ids(payload)))
 
     async def _recover_pending(self, budget: _TurnBudget | None = None) -> NewsRecoveryOutcome:
         budget = budget or self._new_budget()
+        await self._flush_pending_db_errors(budget)
         incidents = await self.db.read(
             "news_recovery_pending",
             lambda repos: repos.news.pending_recovery_incidents(),
@@ -330,13 +339,26 @@ class RecoveryRunner:
         *,
         budget: _TurnBudget,
     ) -> None:
-        await self.db.tx(
-            "news_recovery_error",
-            lambda repos: repos.news.record_recovery_error(
-                incident_id=incident_id, error_code=error_code, now_ms=now_ms()
-            ),
-            timeout_seconds=min(3.0, budget.checkpoint()),
-        )
+        try:
+            await self.db.tx(
+                "news_recovery_error",
+                lambda repos: repos.news.record_recovery_error(
+                    incident_id=incident_id, error_code=error_code, now_ms=now_ms()
+                ),
+                timeout_seconds=min(3.0, budget.checkpoint()),
+            )
+        except (DeferError, TransientError):
+            self._pending_db_errors[incident_id] = _DB_TRANSIENT_ERROR
+            raise
+
+    async def _flush_pending_db_errors(self, budget: _TurnBudget) -> None:
+        if not self._pending_db_errors:
+            return
+        for incident_id, error_code in tuple(self._pending_db_errors.items()):
+            await self._record_recovery_error(incident_id, error_code, budget=budget)
+            self._pending_db_errors.pop(incident_id, None)
+        # Preserve one bounded retry interval with the durable transient projection before recovery resumes.
+        raise DeferError(_DB_ERROR_RECORDED)
 
     async def _complete_incident(
         self,
@@ -349,19 +371,29 @@ class RecoveryRunner:
         to_ms: int | None,
         budget: _TurnBudget,
     ) -> None:
-        await self.db.tx(
-            "news_recovery_complete",
-            lambda repos: repos.news.complete_recovery(
-                incident_id=incident_id,
-                status=status,
-                recovered_count=recovered_count,
-                error_code=error_code,
-                recovery_from_at_ms=from_ms,
-                recovery_to_at_ms=to_ms,
-                now_ms=now_ms(),
-            ),
-            timeout_seconds=min(3.0, budget.checkpoint()),
-        )
+        try:
+            await self.db.tx(
+                "news_recovery_complete",
+                lambda repos: repos.news.complete_recovery(
+                    incident_id=incident_id,
+                    status=status,
+                    recovered_count=recovered_count,
+                    error_code=error_code,
+                    recovery_from_at_ms=from_ms,
+                    recovery_to_at_ms=to_ms,
+                    now_ms=now_ms(),
+                ),
+                timeout_seconds=min(3.0, budget.checkpoint()),
+            )
+        except (DeferError, TransientError):
+            self._pending_db_errors[incident_id] = _DB_TRANSIENT_ERROR
+            try:
+                await self._record_recovery_error(incident_id, _DB_TRANSIENT_ERROR, budget=budget)
+            except (_RecoveryBudgetExhausted, DeferError, TransientError):
+                pass
+            else:
+                self._pending_db_errors.pop(incident_id, None)
+            raise
         self._cursors.pop(incident_id, None)
 
     async def _recover_incident(
@@ -387,7 +419,7 @@ class RecoveryRunner:
             ) -> Awaitable[Mapping[str, Any]]:
                 return self.history_client.get_strategy_hits(
                     strategy_id=strategy_id,
-                    limit=_HISTORY_PAGE_SIZE,
+                    limit=OPENNEWS_HISTORY_PAGE_SIZE,
                     page=page_number,
                 )
 
@@ -395,13 +427,18 @@ class RecoveryRunner:
                 _get_page,
                 budget=budget,
             )
+            budget.checkpoint()
             page = parse_opennews_strategy_hits(payload)
+            budget.checkpoint()
             if page.page != page_number:
                 raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            raw_params_by_id = _raw_params_by_id(payload)
+            budget.checkpoint()
             for index, event in enumerate(page.events[cursor.event_index :], start=cursor.event_index):
+                budget.checkpoint()
                 published = event.entry.published_at_ms
                 if published is not None and from_ms <= int(published) < to_ms:
-                    raw_params = _raw_params_from_history(payload, event.provider_record_id)
+                    raw_params = raw_params_by_id.get(event.provider_record_id)
                     if raw_params is not None:
                         budget.before_publish()
                         stamp = now_ms()
@@ -426,6 +463,7 @@ class RecoveryRunner:
                         cursor.recovered_count += 1
                 cursor.event_index = index + 1
 
+            budget.checkpoint()
             oldest = min(
                 (int(event.entry.published_at_ms) for event in page.events if event.entry.published_at_ms is not None),
                 default=None,
@@ -469,8 +507,9 @@ class RecoveryRunner:
         return result
 
 
-def _raw_params_from_history(payload: Mapping[str, Any], provider_record_id: str) -> dict[str, Any] | None:
+def _raw_params_by_id(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    indexed: dict[str, dict[str, Any]] = {}
     for value in payload.get("data") or []:
-        if isinstance(value, Mapping) and str(value.get("id")) == provider_record_id:
-            return dict(value)
-    return None
+        if isinstance(value, Mapping):
+            indexed.setdefault(str(value.get("id")), dict(value))
+    return indexed

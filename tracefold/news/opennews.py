@@ -19,6 +19,7 @@ from .events.javascript_text import (
 from .models import NewsFeedEntry
 
 OPENNEWS_SOURCE_ID = "news-opennews"
+OPENNEWS_HISTORY_PAGE_SIZE = 100
 
 _TRACKING_PARAMS = frozenset(
     {
@@ -145,6 +146,9 @@ def parse_opennews_strategy_hits(payload: object) -> OpenNewsStrategyHitPage:
     page = _history_nonnegative_int(payload.get("page"), minimum=1)
     total = _history_nonnegative_int(payload.get("total"), minimum=0)
     limit = _history_nonnegative_int(payload.get("limit"), minimum=1)
+    remaining = max(0, total - ((page - 1) * limit))
+    if limit > OPENNEWS_HISTORY_PAGE_SIZE or len(data) > min(limit, remaining):
+        raise OpenNewsHistoryError("opennews_history_payload_invalid")
     events: list[OpenNewsEvent] = []
     for value in data:
         if not isinstance(value, Mapping):
@@ -165,7 +169,7 @@ def _history_data(payload: object) -> list[Any]:
     if not isinstance(payload, Mapping) or payload.get("success") is not True:
         raise OpenNewsHistoryError("opennews_history_payload_invalid")
     data = payload.get("data")
-    if not isinstance(data, list):
+    if not isinstance(data, list) or len(data) > OPENNEWS_HISTORY_PAGE_SIZE:
         raise OpenNewsHistoryError("opennews_history_payload_invalid")
     return data
 
@@ -444,6 +448,7 @@ def _content_text(value: object) -> str:
 
 
 __all__ = [
+    "OPENNEWS_HISTORY_PAGE_SIZE",
     "OPENNEWS_SOURCE_ID",
     "OpenNewsEvent",
     "OpenNewsExpectedError",

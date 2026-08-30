@@ -251,6 +251,35 @@ def test_official_strategy_history_adapter_classifies_unavailable_endpoint() -> 
     asyncio.run(scenario())
 
 
+def test_official_strategy_history_adapter_rejects_a_body_over_the_fixed_limit() -> None:
+    async def scenario() -> None:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    content=b"x" * (opennews_client.OPENNEWS_HISTORY_MAX_BODY_BYTES + 1),
+                )
+            ),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_too_large$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_rejects_more_than_one_hundred_rows() -> None:
+    overfull = {"success": True, "data": [{}] * 101, "page": 1, "limit": 100, "total": 101}
+
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+        parse_opennews_strategy_list(overfull)
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+        parse_opennews_strategy_hits(overfull)
+
+
 @pytest.mark.parametrize(
     ("strategy_id", "engine_type"),
     [

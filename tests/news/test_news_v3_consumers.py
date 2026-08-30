@@ -4351,6 +4351,62 @@ def test_recovery_provider_call_and_wall_budgets_leave_incident_pending() -> Non
             assert news.kwargs_of("record_recovery_error")["error_code"] == (f"opennews_recovery_{budget_name}_budget")
 
 
+def test_recovery_wall_budget_checkpoints_an_out_of_window_cpu_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"now": 0.0}
+
+    def _tick() -> float:
+        clock["now"] += 0.01
+        return clock["now"]
+
+    monkeypatch.setattr(recovery_module, "time", SimpleNamespace(perf_counter=_tick))
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    recovery = RecoveryRunner(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(hits=[_history_hit(index, 999_999_000_000) for index in range(100)]),
+        max_wall_seconds=0.2,
+    )
+
+    with pytest.raises(RuntimeError, match="opennews_recovery_wall_time_budget"):
+        asyncio.run(recovery._recover_pending())
+
+    assert "complete_recovery" not in news.names()
+
+
+@pytest.mark.parametrize(
+    "error_type",
+    [DeferError, TransientError],
+)
+def test_recovery_persists_a_known_incident_db_error_after_the_database_recovers(error_type: type[Exception]) -> None:
+    class _RecoveryDatabase(FakeWorkerDatabase):
+        fail_complete = True
+        fail_error_record = True
+
+        async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+            if name == "news_recovery_complete" and self.fail_complete:
+                raise error_type(f"db_failure:{name}")
+            if name == "news_recovery_error" and self.fail_error_record:
+                raise error_type(f"db_failure:{name}")
+            return await super().tx(name, fn, timeout_seconds=timeout_seconds)
+
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    db = _RecoveryDatabase(news)
+    recovery = RecoveryRunner(bus=FakeBus(), db=db, history_client=_HistoryClient())
+
+    with pytest.raises(error_type, match="db_failure:news_recovery_complete"):
+        asyncio.run(recovery._recover_pending())
+    assert "record_recovery_error" not in news.names()
+
+    db.fail_error_record = False
+    with pytest.raises(DeferError, match="news_recovery_database_error_recorded"):
+        asyncio.run(recovery._recover_pending())
+    assert news.kwargs_of("record_recovery_error")["error_code"] == "news_recovery_database_transient"
+
+    db.fail_complete = False
+    assert asyncio.run(recovery._recover_pending()) == "success"
+    assert news.kwargs_of("complete_recovery")["status"] == "recovered"
+
+
 def test_recovery_empty_strategy_list_stays_pending() -> None:
     class _NoStrategiesHistory:
         async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:

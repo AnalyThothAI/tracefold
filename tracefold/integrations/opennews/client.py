@@ -22,6 +22,7 @@ from tracefold.news.opennews import OpenNewsHistoryError
 OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
 OPENNEWS_HTTP_BASE_URL = "https://ai.6551.io/open"
 OPENNEWS_MAX_FRAME_BYTES = 1 * 1024 * 1024
+OPENNEWS_HISTORY_MAX_BODY_BYTES = 8 * 1024 * 1024
 OPENNEWS_WS_IDLE_SECONDS = 45.0
 _EXPECTED_WEBSOCKET_FAILURES = (
     OSError,
@@ -145,21 +146,28 @@ class OpenNewsStrategyHistoryClient:
 
     async def _get(self, path: str, *, params: Mapping[str, Any]) -> Mapping[str, Any]:
         try:
-            response = await self._client.get(path, params=params)
+            async with self._client.stream("GET", path, params=params) as response:
+                if response.status_code == 404:
+                    raise OpenNewsHistoryError("opennews_history_unavailable")
+                if response.status_code in {401, 403}:
+                    raise OpenNewsHistoryError("opennews_history_authentication")
+                if response.status_code == 429:
+                    raise OpenNewsHistoryError("opennews_history_rate_limited")
+                response.raise_for_status()
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > OPENNEWS_HISTORY_MAX_BODY_BYTES:
+                        raise OpenNewsHistoryError("opennews_history_payload_too_large")
+                    body.extend(chunk)
+        except OpenNewsHistoryError:
+            raise
         except httpx.TimeoutException:
             raise OpenNewsHistoryError("opennews_history_timeout") from None
         except httpx.HTTPError:
             raise OpenNewsHistoryError("opennews_history_http_error") from None
-        if response.status_code == 404:
-            raise OpenNewsHistoryError("opennews_history_unavailable")
-        if response.status_code in {401, 403}:
-            raise OpenNewsHistoryError("opennews_history_authentication")
-        if response.status_code == 429:
-            raise OpenNewsHistoryError("opennews_history_rate_limited")
         try:
-            response.raise_for_status()
-            payload = response.json()
-        except (httpx.HTTPStatusError, ValueError):
+            payload = json.loads(body)
+        except ValueError:
             raise OpenNewsHistoryError("opennews_history_http_error") from None
         if not isinstance(payload, Mapping):
             raise OpenNewsHistoryError("opennews_history_payload_invalid")
