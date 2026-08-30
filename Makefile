@@ -484,7 +484,8 @@ github-preflight:
 verify-main-ci: github-preflight ## require the exact origin/main SHA to have a trusted green ci-gate
 	@uv run python scripts/require_main_ci.py
 
-news-genesis-manifest: preflight ## print the exact News genesis target manifest for the configured image
+news-genesis-manifest: preflight github-preflight ## print the exact News genesis target manifest for the configured image
+	@uv run python scripts/require_main_ci.py
 	@set -eu; \
 		image=$$(docker compose config --images migrate 2>/dev/null \
 			| grep -v '@sha256:' | head -n 1); \
