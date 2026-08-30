@@ -959,10 +959,16 @@ reader/writer.
   `tracefold.trading.contracts`, and a News route must not assert it.
 - Workers refresh both public venue catalogs without credentials. Each refresh
   appends a content-addressed snapshot and atomically moves only that binding's
-  pointer. Provider error marks that binding `error` when no snapshot exists or
-  `stale` while retaining last-known-good; it never empties the catalog or
-  changes the other binding. There is no operator refresh command and no
-  execution authorization in this operation.
+  pointer. Before the transaction opens, the prepared storage value revalidates
+  the complete catalog model, canonical JSON, metadata tuple, and SHA-256. The
+  repository serializes concurrent writers for that digest with a
+  transaction-scoped advisory lock, then one data-modifying CTE either appends
+  the exact bytes or proves an identical prior row before activating the
+  pointer; a same-digest mismatch fails closed. Provider error marks that
+  binding `error` when no snapshot exists or `stale` while retaining
+  last-known-good; it never empties the catalog or changes the other binding.
+  There is no operator refresh command and no execution authorization in this
+  operation.
 - `tracefold trading replay-oi --days 7 --strategy
   source_native_oi_smart_money_long_v3 --venues binance.perp,hl.perp --fidelity bar_v1`
   gives every bounded source fact one terminal source-native BAR outcome. It

@@ -1845,6 +1845,8 @@ retaining only terminal V1/V2 rows as archive facts.
 the arm epoch after a paused cutover.
 `20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
 handoff repair/status scan.
+`20260830_0334` installs the Trading evidence clock, frozen News handoff clocks,
+append-only future-capture batches, and the promotion/verification hard links.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

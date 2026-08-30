@@ -277,6 +277,13 @@ class CatalogStorage:
     ) -> None:
         """Atomically persist and activate one already-materialized immutable snapshot."""
 
+        # Serialize writers for one content address before the persistence statement takes its
+        # READ COMMITTED snapshot. Without this transaction-scoped lock, a retry can lose an
+        # `ON CONFLICT DO NOTHING` race yet remain unable to see the winner in that same statement.
+        self.conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+            (prepared.snapshot_sha256,),
+        )
         row = self.conn.execute(
             """
             WITH inserted AS (
