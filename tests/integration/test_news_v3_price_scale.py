@@ -134,9 +134,9 @@ def _seed(conn: Any) -> None:
             FROM base
         ), addressed AS (
           SELECT *,
-                 encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex') AS verdict_sha,
-                 encode(digest(
-                   convert_to(news_canonical_jsonb(judgment_atom), 'UTF8'), 'sha256'
+                 encode(sha256(convert_to(news_canonical_jsonb(verdict), 'UTF8')), 'hex') AS verdict_sha,
+                 encode(sha256(
+                   convert_to(news_canonical_jsonb(judgment_atom), 'UTF8')
                  ), 'hex') AS judgment_sha
             FROM judgment
         )

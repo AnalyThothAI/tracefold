@@ -84,9 +84,9 @@ def _seed_production_sized_trace_corpus(*, now_ms: int) -> None:
                 FROM payload
             ), hashed AS (
               SELECT g, verdict, atom,
-                     encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex')
+                     encode(sha256(convert_to(news_canonical_jsonb(verdict), 'UTF8')), 'hex')
                        AS verdict_sha256,
-                     encode(digest(convert_to(news_canonical_jsonb(atom), 'UTF8'), 'sha256'), 'hex')
+                     encode(sha256(convert_to(news_canonical_jsonb(atom), 'UTF8')), 'hex')
                        AS judgment_sha256
                 FROM judgment
             )

@@ -118,8 +118,8 @@ def seed_current_news_evidence(conn: Any) -> None:
               WHERE evidence.event_id = event.event_id
            )
         ), addressed AS (
-          SELECT *, encode(digest(
-                   convert_to(news_canonical_jsonb(snapshot), 'UTF8'), 'sha256'
+          SELECT *, encode(sha256(
+                   convert_to(news_canonical_jsonb(snapshot), 'UTF8')
                  ), 'hex') AS evidence_sha256
             FROM snapshots
         )

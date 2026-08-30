@@ -68,6 +68,7 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
     try:
         _fresh_schema_at("20260829_0329")
         conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT count(*) AS n FROM pg_extension WHERE extname = 'pgcrypto'").fetchone()["n"] == 0
         taxonomy = {
             "subject_codes": ["medtop:20000178"],
             "event_family": "financial_results",
@@ -246,6 +247,7 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
 
         conn = connect_postgres_test(read_only=False)
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
+        assert conn.execute("SELECT count(*) AS n FROM pg_extension WHERE extname = 'pgcrypto'").fetchone()["n"] == 0
         columns = {
             row["column_name"]
             for row in conn.execute(
@@ -429,9 +431,9 @@ def test_0329_to_0330_preserves_old_rows_as_archive_and_rejects_missing_current_
                   FROM payload
                 ), hashed AS (
                   SELECT verdict, atom,
-                         encode(digest(convert_to(news_canonical_jsonb(verdict), 'UTF8'), 'sha256'), 'hex')
+                         encode(sha256(convert_to(news_canonical_jsonb(verdict), 'UTF8')), 'hex')
                            AS verdict_sha256,
-                         encode(digest(convert_to(news_canonical_jsonb(atom), 'UTF8'), 'sha256'), 'hex')
+                         encode(sha256(convert_to(news_canonical_jsonb(atom), 'UTF8')), 'hex')
                            AS judgment_sha256
                   FROM judgment
                 )
