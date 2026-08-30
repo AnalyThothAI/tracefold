@@ -12,6 +12,7 @@ from psycopg_pool import PoolClosed, PoolTimeout
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.search import NewsSearchPlan, compile_news_search
 from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import create_pool, postgres_health_check, with_password_from_file
@@ -53,6 +54,9 @@ class ServeRepositories:
 
     def workers_runtime_row(self) -> dict[str, Any] | None:
         return WorkersRuntimeRepository(self._conn).read()
+
+    def compile_news_search(self, *, q: str | None, symbol: str | None) -> NewsSearchPlan | None:
+        return compile_news_search(q=q, symbol=symbol, instruments=self.instruments)
 
     def session_policy(self) -> dict[str, str]:
         row = self._conn.execute(

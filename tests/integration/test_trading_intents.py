@@ -1620,6 +1620,15 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
               has_function_privilege(
                 'tracefold_serve', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
               ) AS serve_expiry_execute,
+              has_function_privilege(
+                'tracefold_nautilus', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS nautilus_canonical_json_execute,
+              has_function_privilege(
+                'tracefold_workers', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS workers_canonical_json_execute,
+              has_function_privilege(
+                'tracefold_serve', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
+              ) AS serve_canonical_json_execute,
               has_table_privilege('tracefold_serve', 'trading_intents', 'SELECT') AS serve_select,
               has_table_privilege('tracefold_serve', 'trading_intents', 'INSERT') AS serve_insert
             """
@@ -1650,6 +1659,9 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
         "nautilus_expiry_execute": True,
         "workers_expiry_execute": True,
         "serve_expiry_execute": False,
+        "nautilus_canonical_json_execute": True,
+        "workers_canonical_json_execute": True,
+        "serve_canonical_json_execute": False,
         "serve_select": True,
         "serve_insert": False,
     }

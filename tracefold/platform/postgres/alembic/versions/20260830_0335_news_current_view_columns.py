@@ -1,4 +1,4 @@
-"""Freeze the News current Event projection to explicit columns (#375).
+"""Freeze the News current Event projection and governed risk hashing (#375).
 
 Migration evidence:
 
@@ -15,7 +15,8 @@ Migration evidence:
 - rewrite_or_index_build: none
 - preflight_and_maintenance_boundary: normal stopped-writer migration gate
 - archive_current_compatibility: unchanged NOT current_contract_archive_only predicate and identical current columns
-- role_and_grant_impact: none; CREATE OR REPLACE preserves view owner and grants
+- role_and_grant_impact: CREATE OR REPLACE preserves view grants; tracefold_nautilus receives EXECUTE
+  only on the immutable canonical-JSON function needed by its existing risk-event append authority
 - failure_state: transactional DDL rolls back to the prior definition and business processes remain stopped
 - roll_forward_or_verified_backup_restore: roll forward; use the verified pre-migration backup for rollback
 - production_postgres_image:
@@ -55,6 +56,7 @@ def upgrade() -> None:
          WHERE NOT current_contract_archive_only
         """
     )
+    op.execute("GRANT EXECUTE ON FUNCTION trading_canonical_jsonb(JSONB) TO tracefold_nautilus")
 
 
 def downgrade() -> None:

@@ -804,11 +804,16 @@ class EventStorage:
     def append_prepared_evidence_snapshot(self, prepared: Mapping[str, Any]) -> dict[str, Any]:
         """Compare-and-append already serialized snapshot bytes."""
 
+        event_id = str(prepared["event_id"])
+        self.conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended(%s::text, 0))",
+            (event_id,),
+        )
         current = self.conn.execute(
             "SELECT evidence_version, evidence_sha256, focus_fact_id, snapshot, provenance, release_eligible, "
             "created_at_ms FROM news_event_evidence_snapshots WHERE event_id = %s "
-            "ORDER BY evidence_version DESC LIMIT 1 FOR UPDATE",
-            (str(prepared["event_id"]),),
+            "ORDER BY evidence_version DESC LIMIT 1",
+            (event_id,),
         ).fetchone()
         expected = (prepared.get("previous_version"), prepared.get("previous_sha256"))
         actual = (
@@ -828,7 +833,7 @@ class EventStorage:
                       created_at_ms
             """,
             (
-                str(prepared["event_id"]),
+                event_id,
                 int(prepared["evidence_version"]),
                 str(prepared["focus_fact_id"]),
                 str(prepared["evidence_sha256"]),

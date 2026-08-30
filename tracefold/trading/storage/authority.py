@@ -647,15 +647,15 @@ class AuthorityStorage:
             WITH event AS (
               SELECT jsonb_build_object(
                        'event_version', 'capital_risk_event_v1',
-                       'reservation_sha256', %(reservation)s,
-                       'intent_id', %(intent)s,
-                       'event_kind', %(kind)s,
-                       'current_planned_risk_amount', %(amount)s,
-                       'attempt_consumed', %(consumed)s,
-                       'settlement_asset', %(asset)s,
-                       'realized_loss_amount', %(loss)s,
-                       'occurred_at_ms', %(occurred)s,
-                       'event_identity', %(identity)s
+                       'reservation_sha256', %(reservation)s::text,
+                       'intent_id', %(intent)s::text,
+                       'event_kind', %(kind)s::text,
+                       'current_planned_risk_amount', %(amount)s::text,
+                       'attempt_consumed', %(consumed)s::boolean,
+                       'settlement_asset', %(asset)s::text,
+                       'realized_loss_amount', %(loss)s::text,
+                       'occurred_at_ms', %(occurred)s::bigint,
+                       'event_identity', %(identity)s::text
                      ) AS payload
             )
             INSERT INTO trading_capital_risk_events (
@@ -664,8 +664,8 @@ class AuthorityStorage:
               realized_loss_amount, occurred_at_ms, payload
             )
             SELECT encode(sha256(convert_to(trading_canonical_jsonb(payload), 'UTF8')), 'hex'),
-                   %(reservation)s, %(intent)s, %(kind)s, %(amount)s, %(consumed)s,
-                   %(asset)s, %(loss)s, %(occurred)s, payload
+                   %(reservation)s::text, %(intent)s::text, %(kind)s::text, %(amount)s::numeric,
+                   %(consumed)s::boolean, %(asset)s::text, %(loss)s::numeric, %(occurred)s::bigint, payload
               FROM event
             ON CONFLICT (event_sha256) DO NOTHING
             RETURNING event_sha256
