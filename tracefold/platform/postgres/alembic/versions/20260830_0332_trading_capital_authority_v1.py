@@ -1,15 +1,15 @@
 """Production V3 capital authority, UTC risk reservation, and arm epoch (#376).
 
-Revision ID: 20260830_0331
-Revises: 20260830_0330
+Revision ID: 20260830_0332
+Revises: 20260830_0331
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260830_0331"
-down_revision = "20260830_0330"
+revision = "20260830_0332"
+down_revision = "20260830_0331"
 branch_labels = None
 depends_on = None
 

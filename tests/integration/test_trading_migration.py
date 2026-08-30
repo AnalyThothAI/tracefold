@@ -986,10 +986,10 @@ def test_0331_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> N
             conn.close()
 
 
-def test_0331_capital_authority_cutover_requires_paused_and_installs_attempt_day_ledger() -> None:
+def test_0332_capital_authority_cutover_requires_paused_and_installs_attempt_day_ledger() -> None:
     conn: Any | None = None
     try:
-        _fresh_schema_at("20260830_0330")
+        _fresh_schema_at("20260830_0331")
         conn = connect_postgres_test(read_only=False)
         conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
         conn.commit()
@@ -997,17 +997,17 @@ def test_0331_capital_authority_cutover_requires_paused_and_installs_attempt_day
         conn = None
 
         with pytest.raises(DBAPIError, match="trading_capital_authority_cutover_requires_paused"):
-            _upgrade("20260830_0331")
+            _upgrade("20260830_0332")
 
         conn = connect_postgres_test(read_only=False)
         conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
         conn.commit()
         conn.close()
         conn = None
-        _upgrade("20260830_0331")
+        _upgrade("20260830_0332")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0331"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0332"
         columns = {
             row["column_name"]
             for row in conn.execute(
