@@ -14,7 +14,7 @@ import yaml
 from psycopg import conninfo, sql
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
-from tests.trading_v3_fixtures import binance_capability, binance_catalog
+from tests.trading_v3_fixtures import binance_capability, binance_catalog, store_catalog_fixture
 from tracefold.app.repository_session import repositories_for_connection
 
 pytestmark = pytest.mark.integration
@@ -32,10 +32,7 @@ def conn(postgres_module_clone_dsn: str):
     )
     catalog = binance_catalog(captured_at_ms=now_ms)
     snapshot = binance_capability(catalog=catalog, app_revision="test-revision")
-    repositories_for_connection(connection).trading.store_venue_catalog_snapshot(
-        snapshot=catalog,
-        now_ms=now_ms,
-    )
+    store_catalog_fixture(repositories_for_connection(connection).trading, catalog, now_ms=now_ms)
     connection.execute(
         "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', updated_at_ms = %s "
         "WHERE binding = 'BINANCE_USDM'",

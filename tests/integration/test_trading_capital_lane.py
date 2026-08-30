@@ -36,7 +36,7 @@ from hypothesis.stateful import (
 )
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.trading_v3_fixtures import binance_binding, binance_capability
+from tests.trading_v3_fixtures import binance_binding, binance_capability, store_catalog_fixture
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.catalog import (
@@ -189,8 +189,8 @@ def conn(postgres_module_clone_dsn: str):
     repos = repositories_for_connection(connection)
     # `trading_binding_runtime.catalog_snapshot_sha256` is a foreign key, so both the snapshot a Case
     # is frozen against and the different one a mismatch points at have to be real rows.
-    repos.trading.store_venue_catalog_snapshot(snapshot=FROZEN_CATALOG, now_ms=NOW)
-    repos.trading.store_venue_catalog_snapshot(snapshot=OTHER_CATALOG, now_ms=NOW)
+    store_catalog_fixture(repos.trading, FROZEN_CATALOG, now_ms=NOW)
+    store_catalog_fixture(repos.trading, OTHER_CATALOG, now_ms=NOW)
     connection.execute(
         "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', "
         "credential_state = 'configured', credential_fingerprint = %s, account_generation = 1, "

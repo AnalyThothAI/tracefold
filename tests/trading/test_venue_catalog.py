@@ -72,12 +72,12 @@ def test_catalog_digest_is_order_independent_and_preserves_every_provider_row() 
 def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_other_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    snapshots: list[Any] = []
+    snapshots: list[dict[str, Any]] = []
     unavailable: list[tuple[str, str]] = []
 
     class Trading:
-        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
-            snapshots.append((snapshot, now_ms))
+        def store_venue_catalog_snapshot(self, **values: Any) -> None:
+            snapshots.append(values)
 
         def mark_venue_catalog_unavailable(self, *, binding: str, reason: str, now_ms: int) -> None:
             unavailable.append((binding, reason))
@@ -108,7 +108,7 @@ def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_othe
 
     asyncio.run(trading_wiring.run_venue_catalog(catalog, stop_event=stop, period_seconds=0.05))
 
-    assert snapshots[0][0].binding == "BINANCE_USDM"
+    assert snapshots[0]["prepared"].binding == "BINANCE_USDM"
     assert unavailable == [("HYPERLIQUID_PERP", "venue_timeout")]
     metrics = telemetry.render_prometheus_text()
     assert (
@@ -131,8 +131,8 @@ def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_v
     stop = asyncio.Event()
 
     class Trading:
-        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
-            del snapshot, now_ms
+        def store_venue_catalog_snapshot(self, **values: Any) -> None:
+            del values
 
     class Database:
         async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
@@ -185,8 +185,8 @@ def test_catalog_stop_interrupts_an_inflight_capability_compile(monkeypatch: pyt
     compile_cancelled = asyncio.Event()
 
     class Trading:
-        def store_venue_catalog_snapshot(self, *, snapshot: Any, now_ms: int) -> None:
-            del snapshot, now_ms
+        def store_venue_catalog_snapshot(self, **values: Any) -> None:
+            del values
 
     class Database:
         async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:

@@ -23,6 +23,7 @@ from tests.trading_v3_fixtures import (
     capital_bundle_fixture,
     capital_grant_fixture,
     capital_risk_policy_fixture,
+    store_catalog_fixture,
     trade_intent,
 )
 from tracefold.app.repository_session import repositories_for_connection
@@ -80,7 +81,7 @@ def conn(postgres_module_clone_dsn: str):
         "WHERE id = 1",
         (NOW,),
     )
-    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
+    store_catalog_fixture(repos.trading, CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
         "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', "
         "credential_state = 'configured', credential_fingerprint = %s, account_generation = 1 "
@@ -254,10 +255,7 @@ def _reset_authority(connection: Any) -> None:
         """,
         (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
     )
-    repositories_for_connection(connection).trading.store_venue_catalog_snapshot(
-        snapshot=CATALOG_SNAPSHOT,
-        now_ms=NOW,
-    )
+    store_catalog_fixture(repositories_for_connection(connection).trading, CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
         """
         UPDATE trading_binding_runtime
@@ -960,7 +958,7 @@ def test_initial_capability_activation_requires_the_exact_catalog_and_flat_accou
 
     _set_binance_binding_flat(conn, runtime_state="stopped")
     other_catalog = binance_catalog(captured_at_ms=NOW + 1, symbols=("BTCUSDT",))
-    repos.trading.store_venue_catalog_snapshot(snapshot=other_catalog, now_ms=NOW + 1)
+    store_catalog_fixture(repos.trading, other_catalog, now_ms=NOW + 1)
     assert not repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
     conn.execute(
         "UPDATE trading_binding_runtime SET catalog_snapshot_sha256 = %s WHERE binding = 'BINANCE_USDM'",
