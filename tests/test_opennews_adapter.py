@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 
 import httpx
 import pytest
@@ -275,7 +276,7 @@ def test_official_strategy_history_adapter_rejects_compression_before_decoding()
     async def scenario() -> None:
         def _response(request: httpx.Request) -> httpx.Response:
             assert request.headers["Accept-Encoding"] == "identity"
-            return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=b"compressed")
+            return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b"{}"))
 
         client = opennews_client.OpenNewsStrategyHistoryClient(
             token="history-token",

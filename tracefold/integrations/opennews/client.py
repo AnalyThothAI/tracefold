@@ -157,11 +157,16 @@ class OpenNewsStrategyHistoryClient:
                 response.raise_for_status()
                 if response.headers.get("Content-Encoding", "identity").strip().lower() != "identity":
                     raise OpenNewsHistoryError("opennews_history_content_encoding_unsupported")
-                body = bytearray()
-                async for chunk in response.aiter_raw(chunk_size=_OPENNEWS_HISTORY_CHUNK_BYTES):
-                    if len(body) + len(chunk) > OPENNEWS_HISTORY_MAX_BODY_BYTES:
+                if response.is_stream_consumed:
+                    if len(response.content) > OPENNEWS_HISTORY_MAX_BODY_BYTES:
                         raise OpenNewsHistoryError("opennews_history_payload_too_large")
-                    body.extend(chunk)
+                    body = bytearray(response.content)
+                else:
+                    body = bytearray()
+                    async for chunk in response.aiter_raw(chunk_size=_OPENNEWS_HISTORY_CHUNK_BYTES):
+                        if len(body) + len(chunk) > OPENNEWS_HISTORY_MAX_BODY_BYTES:
+                            raise OpenNewsHistoryError("opennews_history_payload_too_large")
+                        body.extend(chunk)
         except OpenNewsHistoryError:
             raise
         except httpx.TimeoutException:
