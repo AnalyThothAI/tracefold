@@ -822,9 +822,9 @@ persist as `opennews_history_payload_<reason>` rather than one broad payload
 error. An accepted history hit must carry a normalized provider record ID and
 published timestamp; Recovery indexes the raw row with the same ID normalizer
 used by the canonical parser. Repeated rows for the same normalized provider
-record ID coalesce to the first row in provider order. A history hit missing
-`source_type` or another tuple field is named drift and must not be repaired by
-guessing from Strategy id. Ordinary and deterministic recovery remains
+record ID fail closed as `opennews_history_payload_hit_contract_invalid`. A
+history hit missing `source_type` or another tuple field is named drift and
+must not be repaired by guessing from Strategy id. Ordinary and deterministic recovery remains
 `admission=recovery`, while a newly observed unsupported contract retains its
 named `admission=unsupported_market_contract`. The hard cut does not rewrite a
 verdict/delivery ledger before genesis. Migration `0336` then deletes that
