@@ -44,7 +44,15 @@ class NautilusDatabaseBridge(_NautilusDatabaseBridge):
     """Test constructor with the one binding exercised by this module made explicit."""
 
     def __init__(self, settings: Any, queues: Any, **kwargs: Any) -> None:
-        super().__init__(settings, queues, binding="BINANCE_USDM", **kwargs)
+        capability = kwargs.pop("capability_snapshot_sha256", None)
+        pending = kwargs.pop("pending_execution_binding", None)
+        super().__init__(
+            settings,
+            queues,
+            capability_snapshot_sha256s={"BINANCE_USDM": capability},
+            pending_execution_bindings={} if pending is None else {"BINANCE_USDM": pending},
+            **kwargs,
+        )
 
 
 def _settings() -> Any:
@@ -66,6 +74,7 @@ def _outcome(intent: TradeIntent, **values: object) -> IntentOutcome:
         "intent_id": intent.intent_id,
         "execution_state": "PENDING",
         "commissions_by_currency": {},
+        "funding_by_currency": {},
         "updated_at_ms": NOW_MS,
     }
     payload.update(values)
@@ -547,6 +556,7 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
         realized_pnl_currency=None,
         commissions_by_currency={"USDT": "0.12"},
         now_ms=NOW_MS + 50,
+        funding_by_currency=None,
     )
     repos.trading.record_closed_flat.assert_not_called()
 
@@ -575,6 +585,7 @@ def test_unknown_outcomes_enter_manual_review_and_flat_requires_targeted_zero() 
         realized_pnl_currency=None,
         commissions_by_currency={"USDT": "0.12"},
         now_ms=NOW_MS + 500,
+        funding_by_currency=None,
     )
 
 

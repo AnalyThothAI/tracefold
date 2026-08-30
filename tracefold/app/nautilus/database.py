@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from decimal import Decimal
 from queue import Empty
@@ -56,17 +56,15 @@ class NautilusDatabaseBridge:
         settings: Settings,
         queues: StrategyQueues,
         *,
-        binding: VenueBinding,
-        pending_execution_binding: ExecutionBindingV1 | None = None,
-        capability_snapshot_sha256: str | None = None,
+        capability_snapshot_sha256s: Mapping[VenueBinding, str | None],
+        pending_execution_bindings: Mapping[VenueBinding, ExecutionBindingV1] | None = None,
         repository_factory: _RepositoryFactory = repositories,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._settings = settings
         self._queues = queues
-        self._binding = binding
-        self._pending_execution_binding = pending_execution_binding
-        self._capability_snapshot_sha256 = capability_snapshot_sha256
+        self._capability_snapshot_sha256s = dict(capability_snapshot_sha256s)
+        self._pending_execution_bindings = dict(pending_execution_bindings or {})
         self._repository_factory = repository_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
         self._stop_event = Event()
@@ -180,9 +178,12 @@ class NautilusDatabaseBridge:
         now_ms = self._now_ms()
         command: AdoptIntent | IntentReleased | None = None
         with repos.transaction():
-            runtime = repos.trading.binding_execution_runtime(binding=self._binding, for_update=True)
-            if runtime is None or runtime.get("capability_snapshot_sha256") != self._capability_snapshot_sha256:
-                raise RuntimeError("nautilus_capability_snapshot_changed")
+            runtimes: dict[VenueBinding, dict[str, Any]] = {}
+            for binding, capability_sha256 in self._capability_snapshot_sha256s.items():
+                runtime = repos.trading.binding_execution_runtime(binding=binding, for_update=True)
+                if runtime is None or runtime.get("capability_snapshot_sha256") != capability_sha256:
+                    raise RuntimeError(f"nautilus_capability_snapshot_changed:{binding}")
+                runtimes[binding] = runtime
             active = repos.trading.active_intent()
             if active is None:
                 self._dispatched_intent_id = None
@@ -195,7 +196,10 @@ class NautilusDatabaseBridge:
                     if expired is not None:
                         command = IntentReleased(intent_id=intent.intent_id)
                     self._dispatched_intent_id = None
-                elif self._should_dispatch(runtime, outcome) and self._dispatched_intent_id != intent.intent_id:
+                elif (
+                    self._should_dispatch(runtimes.get(intent.binding), outcome)
+                    and self._dispatched_intent_id != intent.intent_id
+                ):
                     if outcome.execution_state == "PENDING":
                         adopted = repos.trading.mark_intent_adopted(intent.intent_id, now_ms=now_ms)
                         if adopted is None:
@@ -203,20 +207,22 @@ class NautilusDatabaseBridge:
                         outcome = adopted
                     command = AdoptIntent(intent=intent, outcome=outcome)
                     self._dispatched_intent_id = intent.intent_id
-            repos.trading.set_binding_execution_runtime(
-                binding=self._binding,
-                heartbeat_at_ms=now_ms,
-                ready=self._engine_ready and self._projection_healthy,
-                readiness_reason=(
-                    self._readiness_reason if self._projection_healthy else "execution_projection_rejected"
-                ),
-                unexpected_exposure=self._unexpected_exposure,
-                now_ms=now_ms,
-            )
-            if self._engine_ready and self._projection_healthy and self._pending_execution_binding is not None:
-                if not repos.trading.append_and_activate_execution_binding(self._pending_execution_binding):
-                    raise RuntimeError("nautilus_execution_binding_activation_failed")
-                self._pending_execution_binding = None
+            for binding in self._capability_snapshot_sha256s:
+                repos.trading.set_binding_execution_runtime(
+                    binding=binding,
+                    heartbeat_at_ms=now_ms,
+                    ready=self._engine_ready and self._projection_healthy,
+                    readiness_reason=(
+                        self._readiness_reason if self._projection_healthy else "execution_projection_rejected"
+                    ),
+                    unexpected_exposure=self._unexpected_exposure,
+                    now_ms=now_ms,
+                )
+            if self._engine_ready and self._projection_healthy:
+                for binding, execution_binding in tuple(self._pending_execution_bindings.items()):
+                    if not repos.trading.append_and_activate_execution_binding(execution_binding):
+                        raise RuntimeError(f"nautilus_execution_binding_activation_failed:{binding}")
+                    del self._pending_execution_bindings[binding]
         with self._lock:
             self._heartbeat_at_ms = now_ms
         if command is not None:
@@ -236,13 +242,16 @@ class NautilusDatabaseBridge:
     def _handle_event(self, repos: Any, event: StrategyEvent) -> bool:
         if isinstance(event, BootstrapAccountZeroChanged):
             with repos.transaction():
-                return bool(
-                    repos.trading.set_binding_bootstrap_account_zero(
-                        binding=self._binding,
-                        verified_at_ms=event.verified_at_ms,
-                        now_ms=event.observed_at_ms,
-                        expected_capability_snapshot_sha256=self._capability_snapshot_sha256,
+                return all(
+                    bool(
+                        repos.trading.set_binding_bootstrap_account_zero(
+                            binding=binding,
+                            verified_at_ms=event.verified_at_ms,
+                            now_ms=event.observed_at_ms,
+                            expected_capability_snapshot_sha256=capability_sha256,
+                        )
                     )
+                    for binding, capability_sha256 in self._capability_snapshot_sha256s.items()
                 )
 
         if isinstance(event, ReadinessChanged):
@@ -443,6 +452,7 @@ class NautilusDatabaseBridge:
                 realized_pnl_currency=event.realized_pnl_currency,
                 commissions_by_currency=event.commissions_by_currency,
                 now_ms=event.closed_at_ms,
+                funding_by_currency=event.funding_by_currency,
             )
         elif isinstance(event, PositionFlatConfirmed):
             outcome = trading.record_closed_flat(
@@ -456,6 +466,7 @@ class NautilusDatabaseBridge:
                 realized_pnl_currency=event.realized_pnl_currency,
                 commissions_by_currency=event.commissions_by_currency,
                 now_ms=event.flat_verified_at_ms,
+                funding_by_currency=event.funding_by_currency,
             )
         elif isinstance(event, OrderOutcomeUnknown):
             if event.leg is None or event.intent_id is None:
@@ -551,11 +562,15 @@ class NautilusDatabaseBridge:
                     event.commissions_by_currency is None
                     or outcome.commissions_by_currency == event.commissions_by_currency
                 )
+                and (event.funding_by_currency is None or outcome.funding_by_currency == event.funding_by_currency)
             )
         if isinstance(event, PositionFlatConfirmed):
             return bool(
-                outcome.execution_state == "TERMINAL"
-                and outcome.terminal_outcome == "CLOSED_FLAT"
+                outcome.execution_state in {"TERMINAL", "MANUAL_REVIEW"}
+                and (
+                    (outcome.execution_state == "TERMINAL" and outcome.terminal_outcome == "CLOSED_FLAT")
+                    or (outcome.execution_state == "MANUAL_REVIEW" and outcome.reason_code == "settlement_unproven")
+                )
                 and outcome.position_id == event.position_id
                 and outcome.avg_exit_price == event.avg_exit_price
                 and outcome.closed_at_ms == event.closed_at_ms
@@ -566,6 +581,7 @@ class NautilusDatabaseBridge:
                     event.commissions_by_currency is None
                     or outcome.commissions_by_currency == event.commissions_by_currency
                 )
+                and (event.funding_by_currency is None or outcome.funding_by_currency == event.funding_by_currency)
             )
         if isinstance(event, OrderOutcomeUnknown):
             reason = {

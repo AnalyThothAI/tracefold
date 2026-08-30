@@ -81,16 +81,14 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
             supplied_settings: Settings,
             queues: object,
             *,
-            binding: str,
-            pending_execution_binding: object | None = None,
-            capability_snapshot_sha256: str | None = "not-passed",
+            pending_execution_bindings: object | None = None,
+            capability_snapshot_sha256s: object | None = None,
         ) -> None:
             calls.append("database")
             captured["bridge_settings"] = supplied_settings
             captured["queues"] = queues
-            captured["bridge_binding"] = binding
-            captured["pending_execution_binding"] = pending_execution_binding
-            captured["bridge_capability_snapshot_sha256"] = capability_snapshot_sha256
+            captured["pending_execution_bindings"] = pending_execution_bindings
+            captured["bridge_capability_snapshot_sha256s"] = capability_snapshot_sha256s
 
         def start(self) -> None:
             calls.append("database-start")
@@ -183,14 +181,13 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         ]
     )
     assert captured["node_config_args"] == {
-        "api_key": "demo-key",
-        "api_secret": "demo-secret",
-        "instrument_ids": expected_instruments,
+        "instrument_ids_by_binding": {"BINANCE_USDM": expected_instruments},
+        "binance_credentials": root.BinanceCredentials(api_key="demo-key", api_secret="demo-secret"),
+        "hyperliquid_credentials": None,
     }
     assert captured["bridge_settings"] is settings
-    assert captured["bridge_binding"] == "BINANCE_USDM"
-    assert captured["pending_execution_binding"] is None
-    assert captured["bridge_capability_snapshot_sha256"] == (None if snapshot_missing else "c" * 64)
+    assert captured["pending_execution_bindings"] == {}
+    assert captured["bridge_capability_snapshot_sha256s"] == {"BINANCE_USDM": None if snapshot_missing else "c" * 64}
     data_name, data_factory = captured["data_factory"]  # type: ignore[misc]
     assert data_name == root.BINANCE
     assert issubclass(data_factory, root.BinanceLiveDataClientFactory)
@@ -198,7 +195,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     strategy_args = captured["strategy_args"]
     assert isinstance(strategy_args, dict)
     assert strategy_args["queues"] is captured["queues"]
-    assert strategy_args["instrument_ids"] == captured["node_config_args"]["instrument_ids"]
+    assert strategy_args["instrument_ids"] == expected_instruments
     assert strategy_args["capabilities"] == (
         {}
         if snapshot_missing or forced_bootstrap
@@ -267,13 +264,64 @@ def test_binance_reconnect_callbacks_advance_quote_generation_before_resnapshot(
 
     asyncio.run(reconnect_both())
 
-    assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=1)
-    assert queues.commands.get_nowait() == root.QuoteStreamChanged(connected=True, generation=2)
-    assert generation.current() == 2
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(binding="BINANCE_USDM", connected=True, generation=1)
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(binding="BINANCE_USDM", connected=True, generation=2)
+    assert generation.current("BINANCE_USDM") == 2
     assert calls == ["resnapshot", "market-returned", "resnapshot"]
 
 
-def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(
+def test_hyperliquid_connection_segments_invalidate_only_hyperliquid_quotes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tracefold.app.nautilus import root
+
+    calls: list[str] = []
+
+    async def connect() -> None:
+        calls.append("connect")
+
+    async def disconnect() -> None:
+        calls.append("disconnect")
+
+    client = SimpleNamespace(_connect=connect, _disconnect=disconnect)
+    monkeypatch.setattr(root.HyperliquidLiveDataClientFactory, "create", lambda **_kwargs: client)
+    queues = root.strategy_queues()
+    generation = root._QuoteStreamGeneration()
+    factory = root._hyperliquid_quote_stream_data_client_factory(queues, generation)
+    factory_loop = asyncio.new_event_loop()
+    try:
+        assert (
+            factory.create(
+                loop=factory_loop,
+                name="HYPERLIQUID",
+                config=object(),
+                msgbus=object(),
+                cache=object(),
+                clock=object(),
+            )
+            is client
+        )
+    finally:
+        factory_loop.close()
+    asyncio.run(client._connect())
+    asyncio.run(client._disconnect())
+    asyncio.run(client._connect())
+
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
+        binding="HYPERLIQUID_PERP", connected=True, generation=1
+    )
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
+        binding="HYPERLIQUID_PERP", connected=False, generation=2
+    )
+    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
+        binding="HYPERLIQUID_PERP", connected=True, generation=3
+    )
+    assert generation.current("HYPERLIQUID_PERP") == 3
+    assert generation.current("BINANCE_USDM") == 0
+    assert calls == ["connect", "disconnect", "connect"]
+
+
+def test_nautilus_root_supports_a_zero_client_node_when_credentials_are_unconfigured(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -281,10 +329,27 @@ def test_nautilus_root_rejects_missing_credentials_before_constructing_the_node(
 
     settings = Settings()
     settings.set_config_dir(tmp_path)
-    monkeypatch.setattr(root, "TradingNode", lambda *args, **kwargs: pytest.fail("node constructed"))
+    captured: dict[str, object] = {}
 
-    with pytest.raises(ValueError, match=r"^nautilus_api_key_file_missing$"):
+    @contextmanager
+    def fake_repositories(*_args: object, **_kwargs: object):
+        yield SimpleNamespace(trading=SimpleNamespace())
+
+    monkeypatch.setattr(root, "repositories", fake_repositories)
+    monkeypatch.setattr(
+        root,
+        "build_node_config",
+        lambda **kwargs: captured.update(kwargs) or (_ for _ in ()).throw(RuntimeError("stop-after-config")),
+    )
+
+    with pytest.raises(RuntimeError, match=r"^stop-after-config$"):
         root.run_nautilus(settings)
+
+    assert captured == {
+        "instrument_ids_by_binding": {},
+        "binance_credentials": None,
+        "hyperliquid_credentials": None,
+    }
 
 
 @pytest.mark.parametrize(
@@ -350,7 +415,16 @@ def test_account_wide_positions_and_orders_are_reconciled_before_flat_confirmati
     async def complete_reports(_client: object) -> tuple[list[object], list[object]]:
         return [], []
 
+    async def funding_cashflows(_client: object, **kwargs: object) -> dict[str, str]:
+        assert kwargs == {
+            "provider_instrument_id": "SOLUSDT",
+            "opened_at_ms": 1_899_999_999_000,
+            "verified_at_ms": 1_900_000_000_600,
+        }
+        return {"USDT": "-0.01"}
+
     monkeypatch.setattr(root, "load_complete_account_reports", complete_reports)
+    monkeypatch.setattr(root, "load_funding_cashflows", funding_cashflows)
 
     class FakeExecutionEngine:
         def __init__(self) -> None:
@@ -378,6 +452,8 @@ def test_account_wide_positions_and_orders_are_reconciled_before_flat_confirmati
         instrument_id=instrument_id.value,
         account_id=venue_account_id.value,
         position_id="position-1",
+        provider_instrument_id="SOLUSDT",
+        opened_at_ms=1_899_999_999_000,
         closing_client_order_id="tf-c-owned",
         observed_at_ms=1_900_000_000_000,
     )
@@ -391,6 +467,7 @@ def test_account_wide_positions_and_orders_are_reconciled_before_flat_confirmati
         position_id=request.position_id,
         authoritative_quantity=Decimal(0),
         verified_at_ms=1_900_000_000_600,
+        funding_by_currency={"USDT": "-0.01"},
         account_wide_zero=True,
     )
 
@@ -439,6 +516,8 @@ def test_nonzero_account_position_report_never_confirms_flat(monkeypatch: pytest
         instrument_id=instrument_id.value,
         account_id=venue_account_id.value,
         position_id="position-1",
+        provider_instrument_id="SOLUSDT",
+        opened_at_ms=1_899_999_999_000,
         closing_client_order_id="tf-c-owned",
         observed_at_ms=1_900_000_000_000,
     )
@@ -476,7 +555,11 @@ def test_owned_account_open_order_requires_retirement_and_a_second_zero_proof(
     async def complete_reports(_client: object) -> tuple[list[object], list[object]]:
         return [], [order_report]
 
+    async def funding_cashflows(_client: object, **_kwargs: object) -> dict[str, str]:
+        return {}
+
     monkeypatch.setattr(root, "load_complete_account_reports", complete_reports)
+    monkeypatch.setattr(root, "load_funding_cashflows", funding_cashflows)
 
     engine = SimpleNamespace(
         get_clients_for_orders=lambda _orders: {FakeClient()},
@@ -495,6 +578,8 @@ def test_owned_account_open_order_requires_retirement_and_a_second_zero_proof(
         instrument_id=instrument_id.value,
         account_id=venue_account_id.value,
         position_id="position-1",
+        provider_instrument_id="SOLUSDT",
+        opened_at_ms=1_899_999_999_000,
         closing_client_order_id="tf-c-owned",
         observed_at_ms=1_900_000_000_000,
         owned_open_order_ids=("tf-stop-owned",),
@@ -508,6 +593,7 @@ def test_owned_account_open_order_requires_retirement_and_a_second_zero_proof(
         position_id=request.position_id,
         authoritative_quantity=Decimal(0),
         verified_at_ms=1_900_000_000_600,
+        funding_by_currency={},
         account_wide_zero=False,
     )
 
@@ -553,6 +639,8 @@ def test_unowned_account_open_order_never_confirms_flat(monkeypatch: pytest.Monk
         instrument_id=instrument_id.value,
         account_id=venue_account_id.value,
         position_id="position-1",
+        provider_instrument_id="SOLUSDT",
+        opened_at_ms=1_899_999_999_000,
         closing_client_order_id="tf-c-owned",
         observed_at_ms=1_900_000_000_000,
         owned_open_order_ids=("tf-stop-owned",),

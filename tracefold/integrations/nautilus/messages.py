@@ -15,6 +15,7 @@ from tracefold.trading import (
     IntentReasonCode,
     RejectedReason,
     TradeIntent,
+    VenueBinding,
 )
 
 OrderLeg = Literal["entry", "stop", "close"]
@@ -69,6 +70,7 @@ class EntryNoSubmitFinalized:
 class QuoteStreamChanged:
     """Invalidate cached execution quotes across a data-client disconnect/reconnect."""
 
+    binding: VenueBinding
     connected: bool
     generation: int
 
@@ -89,6 +91,7 @@ class VenueFlatConfirmed:
     position_id: str
     authoritative_quantity: Decimal
     verified_at_ms: int
+    funding_by_currency: dict[str, str]
     account_wide_zero: bool = True
 
 
@@ -109,6 +112,8 @@ class VenueFlatProofRequested:
     instrument_id: str
     account_id: str
     position_id: str
+    provider_instrument_id: str
+    opened_at_ms: int | None
     closing_client_order_id: str
     observed_at_ms: int
     owned_open_order_ids: tuple[str, ...] = ()
@@ -250,6 +255,7 @@ class PositionClosedObserved:
     realized_pnl_currency: str | None
     commissions_by_currency: dict[str, str] | None
     closed_at_ms: int
+    funding_by_currency: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +271,7 @@ class PositionFlatConfirmed:
     commissions_by_currency: dict[str, str] | None
     closed_at_ms: int
     flat_verified_at_ms: int
+    funding_by_currency: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)

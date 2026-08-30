@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal
+
+import yaml
 
 from tracefold.app.repository_session import repositories
 from tracefold.platform.config.loader import load_settings
-from tracefold.trading import CapitalRuntimeV1, DecisionRuntimeV1, VenueBindingRuntimeV1
+from tracefold.trading import (
+    CapitalRuntimeV1,
+    DailyRiskPolicyV1,
+    DecisionRuntimeV1,
+    OperatorArmReceiptV1,
+    ProductionPromotionGrantRevocationV1,
+    ProductionPromotionGrantV1,
+    VenueBindingRuntimeV1,
+)
 from tracefold.trading.contracts import canonical_base_symbol
 
-_CONTROL = {"running": "RUNNING", "close-only": "CLOSE_ONLY", "paused": "PAUSED"}
+_CONTROL = {"close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
 _READ_COMMANDS = frozenset({"status", "cases", "show"})
 
@@ -41,7 +52,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 updated_at_ms=now,
             )
             capital = trading.capital_runtime() or CapitalRuntimeV1(
-                control="PAUSED", blacklist_revision=0, updated_at_ms=now
+                control="PAUSED", blacklist_revision=0, arm_epoch=1, updated_at_ms=now
             )
             return 0, {
                 "ok": True,
@@ -54,6 +65,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     "capital": {
                         "control": capital.control,
                         "blacklist_revision": capital.blacklist_revision,
+                        "arm_epoch": capital.arm_epoch,
                     },
                     "bindings": [_binding_runtime(binding) for binding in trading.binding_runtime_rows(now_ms=now)],
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
@@ -137,6 +149,38 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                 trading.set_control(control=control, now_ms=now)
             return 0, {"ok": True, "data": {"control": control}}
 
+        if command == "authority":
+            action = str(getattr(args, "authority_command", "") or "")
+            if action == "activate":
+                arms = [str(value) for value in (getattr(args, "arm", None) or [])]
+                with repos.transaction():
+                    activated = trading.activate_operator_arms(arms, now_ms=now)
+                return (0 if activated else 1), {
+                    "ok": bool(activated),
+                    "data": {"activated": bool(activated), "arm_receipt_sha256s": sorted(arms)},
+                }
+            document = _authority_document(str(getattr(args, "file", "") or ""))
+            with repos.transaction():
+                if action == "risk-policy-install":
+                    policy = DailyRiskPolicyV1.model_validate(document)
+                    inserted = trading.append_daily_risk_policy(policy, created_at_ms=now)
+                    digest = policy.risk_policy_sha256
+                elif action == "grant-install":
+                    grant = ProductionPromotionGrantV1.model_validate(document)
+                    inserted = trading.append_production_promotion_grant(grant, created_at_ms=now)
+                    digest = grant.grant_sha256
+                elif action == "grant-revoke":
+                    revocation = ProductionPromotionGrantRevocationV1.model_validate(document)
+                    inserted = trading.revoke_production_promotion_grant(revocation, created_at_ms=now)
+                    digest = revocation.revocation_sha256
+                elif action == "arm-install":
+                    arm = OperatorArmReceiptV1.model_validate(document)
+                    inserted = trading.append_operator_arm_receipt(arm, created_at_ms=now)
+                    digest = arm.arm_receipt_sha256
+                else:
+                    return 2, {"ok": False, "error": f"unknown authority action: {action}"}
+            return 0, {"ok": True, "data": {"action": action, "sha256": digest, "inserted": inserted}}
+
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
 
 
@@ -147,13 +191,28 @@ def _binding_runtime(binding: VenueBindingRuntimeV1) -> dict[str, Any]:
         "credential_fingerprint": binding.credential_fingerprint,
         "runtime_state": binding.runtime_state,
         "account_state": binding.account_state,
+        "account_generation": binding.account_generation,
         "catalog_state": binding.catalog_state,
         "catalog_snapshot_sha256": binding.catalog_snapshot_sha256,
         "catalog_captured_at_ms": binding.catalog_captured_at_ms,
+        "capability_state": binding.capability_state,
+        "capability_snapshot_sha256": binding.capability_snapshot_sha256,
+        "capability_compiled_at_ms": binding.capability_compiled_at_ms,
+        "capability_compile_error": binding.capability_compile_error,
+        "execution_binding_sha256": binding.execution_binding_sha256,
+        "active_arm_receipt_sha256": binding.active_arm_receipt_sha256,
         "heartbeat_at_ms": binding.heartbeat_at_ms,
         "reason": binding.reason,
         "updated_at_ms": binding.updated_at_ms,
     }
+
+
+def _authority_document(path_value: str) -> dict[str, Any]:
+    path = Path(path_value).expanduser()
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        raise ValueError("trading_authority_document_invalid")
+    return document
 
 
 __all__ = ["handle_trading"]

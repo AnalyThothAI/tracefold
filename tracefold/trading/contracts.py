@@ -66,6 +66,7 @@ class CapitalRuntimeV1:
 
     control: ControlState
     blacklist_revision: int
+    arm_epoch: int
     updated_at_ms: int
 
 
@@ -87,6 +88,7 @@ class VenueBindingRuntimeV1:
     capability_compiled_at_ms: int | None
     capability_compile_error: str | None
     execution_binding_sha256: str | None
+    active_arm_receipt_sha256: str | None
     heartbeat_at_ms: int | None
     reason: str | None
     updated_at_ms: int
@@ -200,9 +202,12 @@ class CaseState(StrEnum):
     ORDER_PREPARED = "ORDER_PREPARED"
 
 
-# Exactly two answers the #350 writer may reach. `INTENT_EMITTED` remains readable history but is
-# deliberately absent until #360 owns reservation + Intent in one transaction.
-CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset({CaseState.NO_TRADE, CaseState.BLOCKED})
+# The current writer reaches INTENT_EMITTED only through the capital-authority transaction that also
+# creates its risk reservation, authorization receipt and TradeIntentV3.  Historical states remain
+# readable but have no writer path.
+CURRENT_TERMINAL_STATES: Final[frozenset[CaseState]] = frozenset(
+    {CaseState.NO_TRADE, CaseState.INTENT_EMITTED, CaseState.BLOCKED}
+)
 
 # Decision could not safely run; Policy stays `not_run` and Capital is not applicable.
 DecisionBlockReason = Literal[
@@ -212,8 +217,8 @@ DecisionBlockReason = Literal[
     "source_generation_retired",
 ]
 
-# Policy answered LONG, but independent capital authority refused it. #360 will extend this closed
-# vocabulary with grant, arm and risk reasons while keeping Policy attribution unchanged.
+# Policy answered LONG, but independent capital authority refused it.  Keep this vocabulary closed so
+# an operator projection never has to infer whether a database fault was a business refusal.
 CapitalBlockReason = Literal[
     "capital_paused",
     "capital_close_only",
@@ -223,7 +228,22 @@ CapitalBlockReason = Literal[
     "catalog_stale",
     "unexpected_exposure",
     "binding_unready",
-    "promotion_authority_unavailable",
+    "capability_mismatch",
+    "capital_blacklisted",
+    "active_lifecycle_present",
+    "promotion_grant_absent",
+    "promotion_grant_expired",
+    "promotion_grant_mismatch",
+    "operator_arm_invalid",
+    "risk_policy_unavailable",
+    "risk_policy_expired",
+    "risk_policy_mismatch",
+    "risk_settlement_unknown",
+    "risk_manual_review",
+    "risk_attempts_exhausted",
+    "risk_planned_exhausted",
+    "risk_realized_loss_exhausted",
+    "target_notional_exceeds_authority",
 ]
 
 

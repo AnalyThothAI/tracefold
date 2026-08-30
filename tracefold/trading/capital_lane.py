@@ -52,6 +52,7 @@ from typing import Any, ClassVar, Final, Literal, Protocol
 from pydantic import ValidationError
 
 from .admission import (
+    ADMISSION_VERSION,
     AdmissionConfig,
     AdmissionResult,
     AdmissionRow,
@@ -74,6 +75,7 @@ from .contracts import (
     OiMarketTrigger,
     OiTradeCandidate,
     TradingCaseManifest,
+    canonical_sha256,
     oi_source_key,
 )
 from .market_context import PriceWindow, pre_move_bps, select_bar
@@ -175,6 +177,7 @@ class LaneTurn:
     cases_created: int = 0
     no_trade: int = 0
     blocked: int = 0
+    intents_emitted: int = 0
 
     def as_dict(self) -> dict[str, str | int]:
         return {
@@ -184,6 +187,7 @@ class LaneTurn:
             "cases_created": self.cases_created,
             "no_trade": self.no_trade,
             "blocked": self.blocked,
+            "intents_emitted": self.intents_emitted,
         }
 
 
@@ -200,6 +204,7 @@ class CapitalLane:
         bars: BarFetcher,
         oi_projection: OiProjectionReader,
         news_generation: str,
+        release_revision: str,
         clock: Callable[[], int] = now_ms,
         telemetry: TradingExternalDataTelemetryPort | None = None,
     ) -> None:
@@ -210,10 +215,44 @@ class CapitalLane:
         # The News generation this process may advance a persisted Case under. Supplied by the App
         # seam, which is the only thing that knows both capabilities; Trading never reads a News table.
         self._news_generation = news_generation
+        self._release_revision = release_revision
+        self._source_contract_sha256 = canonical_sha256(
+            {
+                "version": "trading_oi_source_contract_v1",
+                "metric_version": config.oi_metric_version,
+                "news_generation": news_generation,
+                "upstream_measurement_schema": "news_oi_signal_v1",
+                "upstream_selection_schema": "news_triage_policy_v10",
+                "manifest_version": TRADING_MANIFEST_VERSION,
+                "source_native": True,
+            }
+        )
+        self._feature_contract_sha256 = canonical_sha256(
+            {
+                "version": "trading_oi_feature_contract_v1",
+                "admission_version": ADMISSION_VERSION,
+                "admission_config_sha256": config.admission.digest,
+                "price_window": config.price_window.as_dict(),
+                "policy_id": config.policy.policy_id,
+                "policy_config_sha256": config.policy.config_digest,
+            }
+        )
         self._clock = clock
         self._telemetry = telemetry
         self._run_id = uuid.uuid4().hex
         self._started = False
+
+    @property
+    def source_contract_sha256(self) -> str:
+        """Exact source contract an operator grant must bind for this lane instance."""
+
+        return self._source_contract_sha256
+
+    @property
+    def feature_contract_sha256(self) -> str:
+        """Exact admission/context contract an operator grant must bind for this lane instance."""
+
+        return self._feature_contract_sha256
 
     # ------------------------------------------------------------------ the one business action
     async def advance(self) -> LaneTurn:
@@ -280,7 +319,7 @@ class CapitalLane:
         await self._flush_admission(results, now)
         await self._maintain_admission(now)
 
-        no_trade = blocked = 0
+        no_trade = blocked = intents_emitted = 0
         for _ in range(_MAX_DECISIONS_PER_TURN):
             decided = await self._decide_one()
             if decided is None:
@@ -289,6 +328,8 @@ class CapitalLane:
                 blocked += 1
             elif decided is CaseState.NO_TRADE:
                 no_trade += 1
+            elif decided is CaseState.INTENT_EMITTED:
+                intents_emitted += 1
             else:
                 raise RuntimeError(f"trading_decision_state_unexpected:{decided}")
         return LaneTurn(
@@ -298,6 +339,7 @@ class CapitalLane:
             cases_created=created,
             no_trade=no_trade,
             blocked=blocked,
+            intents_emitted=intents_emitted,
         )
 
     async def _record_runtime(self, *, state: str, reason: str | None) -> None:
@@ -568,6 +610,10 @@ class CapitalLane:
                 manifest=manifest,
                 policy_reason=decision.rule,
                 policy_checks=evidence,
+                release_revision=self._release_revision,
+                source_contract_sha256=self._source_contract_sha256,
+                feature_contract_sha256=self._feature_contract_sha256,
+                target_notional=self._config.target_notional_usd,
                 now_ms=commit_at,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,

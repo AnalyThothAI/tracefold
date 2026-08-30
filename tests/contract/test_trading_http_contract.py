@@ -134,7 +134,7 @@ class _Trading:
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
     def capital_runtime(self) -> CapitalRuntimeV1:
-        return CapitalRuntimeV1(control="PAUSED", blacklist_revision=3, updated_at_ms=NOW)
+        return CapitalRuntimeV1(control="PAUSED", blacklist_revision=3, arm_epoch=1, updated_at_ms=NOW)
 
     def decision_runtime(self) -> DecisionRuntimeV1:
         return DecisionRuntimeV1(state="RUNNING", heartbeat_at_ms=NOW, reason=None, updated_at_ms=NOW)
@@ -157,6 +157,7 @@ class _Trading:
                 capability_compiled_at_ms=None,
                 capability_compile_error=None,
                 execution_binding_sha256=None,
+                active_arm_receipt_sha256=None,
                 heartbeat_at_ms=None,
                 reason="credentials_unconfigured",
                 updated_at_ms=NOW,
@@ -251,7 +252,7 @@ def test_status_publishes_orthogonal_durable_runtime_facts_and_policy_identity(c
     data = response.json()["data"]
     assert data["budget"] == {"target_notional_usd": "10"}
     assert data["decision"] == {"state": "RUNNING", "heartbeat_at_ms": NOW, "reason": None}
-    assert data["capital"] == {"control": "PAUSED", "blacklist_revision": 3}
+    assert data["capital"] == {"control": "PAUSED", "blacklist_revision": 3, "arm_epoch": 1}
     assert [row["binding"] for row in data["bindings"]] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
     assert all(row["credential_state"] == "unconfigured" for row in data["bindings"])
     assert data["counts"]["active_intents"] == 1

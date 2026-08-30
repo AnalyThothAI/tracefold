@@ -68,7 +68,7 @@ class ControlStorage:
     # ------------------------------------------------------------------ runtime state
     def capital_runtime(self) -> CapitalRuntimeV1 | None:
         row = self.conn.execute(
-            "SELECT control, blacklist_revision, updated_at_ms FROM trading_runtime_state WHERE id = 1"
+            "SELECT control, blacklist_revision, arm_epoch, updated_at_ms FROM trading_runtime_state WHERE id = 1"
         ).fetchone()
         return CapitalRuntimeV1(**dict(row)) if row is not None else None
 
@@ -161,10 +161,29 @@ class ControlStorage:
         return row is not None
 
     def set_control(self, *, control: str, now_ms: int) -> None:
+        if control == "RUNNING":
+            raise ValueError("capital_running_requires_operator_arm")
+        runtime = self.conn.execute(
+            "SELECT control, arm_epoch FROM trading_runtime_state WHERE id = 1 FOR UPDATE"
+        ).fetchone()
+        if runtime is None:
+            raise RuntimeError("trading_runtime_state_missing")
+        entering_paused = control == "PAUSED" and runtime["control"] != "PAUSED"
         self.conn.execute(
-            "UPDATE trading_runtime_state SET control = %s, updated_at_ms = %s WHERE id = 1",
-            (control, int(now_ms)),
+            """
+            UPDATE trading_runtime_state
+               SET control = %s,
+                   arm_epoch = arm_epoch + CASE WHEN %s THEN 1 ELSE 0 END,
+                   updated_at_ms = %s
+             WHERE id = 1
+            """,
+            (control, entering_paused, int(now_ms)),
         )
+        if entering_paused:
+            self.conn.execute(
+                "UPDATE trading_binding_runtime SET active_arm_receipt_sha256 = NULL, updated_at_ms = %s",
+                (int(now_ms),),
+            )
 
 
 __all__ = ["ControlStorage"]

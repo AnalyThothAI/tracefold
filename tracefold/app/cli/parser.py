@@ -427,7 +427,25 @@ def build_parser() -> argparse.ArgumentParser:
     trading_blacklist.add_argument("symbol", nargs="?", default="")
     trading_blacklist.add_argument("--reason", default="operator")
     trading_control = trading_subcommands.add_parser("control", help="set the runtime control state")
-    trading_control.add_argument("state", choices=("running", "close-only", "paused"))
+    trading_control.add_argument("state", choices=("close-only", "paused"))
+    trading_authority = trading_subcommands.add_parser(
+        "authority", help="install immutable human authority artifacts and explicitly re-arm"
+    )
+    authority_subcommands = trading_authority.add_subparsers(dest="authority_command", required=True)
+    for action, help_text in (
+        ("risk-policy-install", "install one DailyRiskPolicyV1 JSON/YAML artifact"),
+        ("grant-install", "install one ProductionPromotionGrantV1 JSON/YAML artifact"),
+        ("grant-revoke", "append one ProductionPromotionGrantRevocationV1 JSON/YAML artifact"),
+        ("arm-install", "install one OperatorArmReceiptV1 JSON/YAML artifact while paused"),
+    ):
+        authority_file = authority_subcommands.add_parser(action, help=help_text)
+        authority_file.add_argument("--file", required=True)
+    authority_activate = authority_subcommands.add_parser(
+        "activate", help="atomically activate the exact arm set for every configured binding"
+    )
+    authority_activate.add_argument(
+        "--arm", action="append", required=True, help="arm receipt SHA; repeat once per configured binding"
+    )
 
     ops = subcommands.add_parser("ops", help="maintenance commands")
     ops_subcommands = ops.add_subparsers(dest="ops_command", required=True)

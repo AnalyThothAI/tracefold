@@ -92,6 +92,14 @@ TRADING_TABLES = (
     "trading_decision_runtime",
     "trading_venue_catalog_snapshots",
     "trading_binding_runtime",
+    "trading_daily_risk_policies",
+    "trading_production_promotion_grants",
+    "trading_promotion_grant_revocations",
+    "trading_operator_arm_receipts",
+    "trading_capital_risk_reservations",
+    "trading_capital_authorization_receipts",
+    "trading_capital_risk_reservation_state",
+    "trading_capital_risk_events",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

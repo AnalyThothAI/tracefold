@@ -266,6 +266,81 @@ class QueryStorage:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    # ------------------------------------------------------------------ Capital evidence
+    def authority_projection(self) -> list[dict[str, Any]]:
+        """Current redacted authority chain per closed binding; payloads contain no credentials."""
+
+        rows = self.conn.execute(
+            """
+            SELECT runtime.binding, runtime.active_arm_receipt_sha256,
+                   arm.payload AS arm_payload,
+                   promotion.payload AS grant_payload,
+                   policy.payload AS policy_payload,
+                   revocation.payload AS revocation_payload
+              FROM trading_binding_runtime runtime
+              LEFT JOIN trading_operator_arm_receipts arm
+                ON arm.arm_receipt_sha256 = runtime.active_arm_receipt_sha256
+              LEFT JOIN trading_production_promotion_grants promotion
+                ON promotion.grant_sha256 = arm.grant_sha256
+              LEFT JOIN trading_daily_risk_policies policy
+                ON policy.risk_policy_sha256 = arm.risk_policy_sha256
+              LEFT JOIN trading_promotion_grant_revocations revocation
+                ON revocation.grant_sha256 = promotion.grant_sha256
+             ORDER BY runtime.binding
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def console_capital_evidence(
+        self,
+        *,
+        binding: str | None = None,
+        statuses: tuple[str, ...] = (),
+        before: tuple[int, str] | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Bounded reservation/authorization/outcome proof, newest state update first."""
+
+        where: list[str] = []
+        params: list[Any] = []
+        if binding:
+            where.append("reservation.binding = %s")
+            params.append(binding)
+        if statuses:
+            where.append("state.status = ANY(%s)")
+            params.append(list(statuses))
+        if before is not None:
+            where.append("(state.updated_at_ms, reservation.reservation_sha256) < (%s, %s)")
+            params.extend((int(before[0]), str(before[1])))
+        params.append(int(limit))
+        rows = self.conn.execute(
+            f"""
+            SELECT reservation.reservation_sha256, reservation.case_id,
+                   reservation.economic_lifecycle_id, reservation.binding,
+                   reservation.settlement_asset, reservation.risk_policy_sha256,
+                   reservation.grant_sha256, reservation.arm_receipt_sha256,
+                   reservation.risk_day_start_ms, reservation.risk_day_end_ms,
+                   reservation.target_notional, reservation.planned_risk_amount,
+                   receipt.authorization_receipt_sha256,
+                   state.intent_id, state.status, state.current_planned_risk_amount,
+                   state.attempt_consumed, state.attempt_day_start_ms, state.attempt_day_end_ms,
+                   state.settlement_known, state.updated_at_ms,
+                   intent.execution_state, intent.execution_phase, intent.terminal_outcome,
+                   intent.reason_code, intent.flat_verified_at_ms
+              FROM trading_capital_risk_reservations reservation
+              JOIN trading_capital_authorization_receipts receipt
+                ON receipt.reservation_sha256 = reservation.reservation_sha256
+              JOIN trading_capital_risk_reservation_state state
+                ON state.reservation_sha256 = reservation.reservation_sha256
+              JOIN trading_intents intent ON intent.intent_id = state.intent_id
+             {"WHERE " + " AND ".join(where) if where else ""}
+             ORDER BY state.updated_at_ms DESC, reservation.reservation_sha256 DESC
+             LIMIT %s
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
 
 def _count(row: Any) -> int:
     return 0 if row is None else int(row["n"])
