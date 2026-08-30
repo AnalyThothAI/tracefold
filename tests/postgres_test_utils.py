@@ -95,8 +95,7 @@ def seed_current_news_evidence(conn: Any) -> None:
                      (to_jsonb(event) - ARRAY[
                        'leader_title', 'context_line', 'search_doc', 'published_at_ms', 'followup_of',
                        'created_at_ms', 'updated_at_ms', 'focus_fact_text', 'focus_fact_context',
-                       'focus_fact_method', 'focus_span_start', 'focus_span_end',
-                       'current_contract_archive_only'
+                       'focus_fact_method', 'focus_span_start', 'focus_span_end'
                      ]::text[])
                      || jsonb_build_object(
                        'leader_url', item.canonical_url,
@@ -111,7 +110,7 @@ def seed_current_news_evidence(conn: Any) -> None:
                    'members', '[]'::jsonb,
                    'provenance', 'observed'
                  ) AS snapshot
-            FROM news_current_events_v1 event
+            FROM news_events event
             JOIN news_items item ON item.item_id = event.leader_item_id
            WHERE NOT EXISTS (
              SELECT 1 FROM news_event_evidence_snapshots evidence

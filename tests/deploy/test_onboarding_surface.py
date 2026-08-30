@@ -214,7 +214,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0335|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0336|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -688,6 +688,27 @@ def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_news_incident_head(
 
     assert result.returncode == 0, result.stderr
     assert "Trading evidence-clock hard cut is already present at database head 20260830_0335" in result.stdout
+    assert "Trading hard-cut preflight passed" not in result.stdout
+
+
+def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_news_genesis_head(tmp_path: Path) -> None:
+    """#398's `0336` is News-only and must not reopen a completed Trading cutover."""
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|1|1|1"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260830_0336|t|t"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading evidence-clock hard cut is already present at database head 20260830_0336" in result.stdout
     assert "Trading hard-cut preflight passed" not in result.stdout
 
 

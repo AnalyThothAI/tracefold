@@ -134,7 +134,8 @@ def test_news_routes_publish_exact_named_data_contracts() -> None:
         assert response_schema == {"$ref": f"#/components/schemas/{envelope}"}
 
     event_responses = schema["paths"]["/api/news/events/{event_id}"]["get"]["responses"]
-    assert event_responses["410"]["content"]["application/json"]["schema"] == {
+    assert set(event_responses) == {"200", "404", "422"}
+    assert event_responses["404"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ApiEnvelope_NewsEventDetailData_"
     }
 

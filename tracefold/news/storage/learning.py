@@ -1048,7 +1048,7 @@ class LearningStorage:
            v.trace, v.program_version, v.program_sha256,
            d.state AS delivery_state, d.error_code AS delivery_error_code, d.settled_at_ms
       FROM news_agent_assignments a
-      JOIN news_current_events_v1 e ON e.event_id = a.event_id
+      JOIN news_events e ON e.event_id = a.event_id
       LEFT JOIN LATERAL (
         SELECT x.* FROM news_verdicts x
          WHERE x.event_id = e.event_id AND x.stage = 'triage'
@@ -1186,7 +1186,7 @@ class LearningStorage:
                    v.event_id, v.final_decision, v.override_rule, v.throttled_by,
                    v.rule_baseline_decision, v.trace, e.watchlist_hits
               FROM news_verdicts v
-             JOIN news_current_events_v1 e ON e.event_id = v.event_id
+             JOIN news_events e ON e.event_id = v.event_id
              WHERE v.stage = 'triage' AND v.event_id = ANY(%s)
                AND v.judgment_contract_version = 'news_judgment_v2'
              ORDER BY v.event_id, v.created_at_ms DESC

@@ -100,10 +100,9 @@ Program execution envelope.
 
 Model-origin `EditorialEnvelope.v2` requires a complete taxonomy and hashes it
 with TradeRelevance in the same `news_judgment_v2` atom. Ordinary readers accept
-that current marker only. Earlier envelopes and judgments remain unchanged as
-immutable database evidence, but they are archive-only: no Program, history,
-review task, learning dataset, release gate, API, or Web path decodes or
-translates them.
+that current marker only. Migration `0336` physically deletes earlier envelopes
+and judgments; no Program, history, review task, learning dataset, release gate,
+API, or Web path decodes or translates their retired shapes.
 
 The Event detail API and console expose Chinese labels for all five axes, and
 market-review discovery reads versioned `event_family`. ReaderHistory,

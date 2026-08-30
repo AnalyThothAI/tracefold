@@ -110,12 +110,12 @@ class QuoteStorage:
             WITH candidates AS (
               SELECT a.symbol, a.opened_at_ms AS observed_at_ms
                 FROM news_event_assets a
-                JOIN news_current_events_v1 e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+                JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
                WHERE a.opened_at_ms >= %s
               UNION ALL
               SELECT o.symbol, o.observed_at_ms
                 FROM news_oi_signals o
-                JOIN news_current_events_v1 e ON e.event_id = o.event_id AND e.ingest_mode = 'live'
+                JOIN news_events e ON e.event_id = o.event_id AND e.ingest_mode = 'live'
                WHERE o.observed_at_ms >= %s AND e.admission = 'telemetry_deterministic'
                  AND o.metric_version = %s
             )
@@ -326,7 +326,7 @@ class QuoteStorage:
                       WHERE x ->> 'role' = 'primary'
                    ), false) AS is_primary
               FROM news_event_assets a
-              JOIN news_current_events_v1 e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
               -- A lateral probe on the primary key, not a hash join: the scan walks Event-assets oldest
               -- first and stops at the limit, so it must never read the whole Reaction table to do it.
               LEFT JOIN LATERAL (
@@ -365,7 +365,7 @@ class QuoteStorage:
                           ELSE %s - (a.opened_at_ms + 3600000) END
                    ) AS lateness
               FROM news_event_assets a
-              JOIN news_current_events_v1 e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+              JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
               LEFT JOIN news_event_reactions r
                 ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
              WHERE a.opened_at_ms <= %s
@@ -509,7 +509,7 @@ class QuoteStorage:
                    array_remove(array_agg(r.return_1h_bps), NULL) AS bps_1h,
                    array_remove(array_agg(r.return_4h_bps), NULL) AS bps_4h
               FROM prim p
-              JOIN news_current_events_v1 e ON e.event_id = p.event_id
+              JOIN news_events e ON e.event_id = p.event_id
               LEFT JOIN news_event_reactions r
                 ON r.event_id = p.event_id AND r.symbol = p.symbol AND r.metric_version = %s
              GROUP BY p.event_id

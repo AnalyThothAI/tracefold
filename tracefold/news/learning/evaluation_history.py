@@ -132,7 +132,7 @@ class EvaluationReaderHistory:
                      '[]'::jsonb
                    ) AS canonical_assets
               FROM news_deliveries d
-              JOIN news_current_events_v1 e ON e.event_id = d.event_id
+              JOIN news_events e ON e.event_id = d.event_id
               JOIN LATERAL (
                 SELECT candidate.*
                   FROM (

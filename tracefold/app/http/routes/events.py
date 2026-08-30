@@ -24,7 +24,6 @@ _QuotesEnvelope = api_schemas.ApiEnvelope[event_schemas.NewsQuotesData]
     response_model=_EventEnvelope,
     responses={
         404: {"model": _EventEnvelope, "description": "Event does not exist"},
-        410: {"model": _EventEnvelope, "description": "Event is archive-only under the current contract"},
     },
 )
 def get_news_event(request: Request, event_id: str) -> Response:
@@ -34,8 +33,6 @@ def get_news_event(request: Request, event_id: str) -> Response:
     runtime = _authenticated_runtime(request)
     with runtime.repositories() as repos:
         data = repos.news.event_detail(event_id)
-        if data == {"archive_only": True}:
-            return _json({"ok": False, "error": "news_event_archive_only"}, status_code=410)
         if data is not None:
             _attach_asset_refs([data["event"]], repos.news, repos.instruments)
             data["normalization"] = _normalization(data["event"], repos.instruments)

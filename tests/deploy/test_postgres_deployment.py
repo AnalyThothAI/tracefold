@@ -87,6 +87,13 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
 
+    assert services["migrate"]["environment"] == {
+        "TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}",
+        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": "${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}",
+    }
+    for role in ("serve", "workers", "nautilus"):
+        assert "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" not in services[role]["environment"]
+
     for role in ("serve", "workers", "nautilus"):
         depends = services[role]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"

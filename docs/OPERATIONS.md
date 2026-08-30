@@ -195,7 +195,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0335`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0336`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -217,7 +217,9 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    recovery-only Nautilus process. `0335` adds the News open-incident uniqueness
    index; its preflight fails if two incidents of one cause class are already
    open, which an operator resolves by closing the stale duplicate rather than by
-   deleting evidence. Older execution-authority cutover routes retain the full
+   deleting evidence. `0336` is the separate News genesis described in the
+   current migrations runbook below. Older execution-authority cutover routes
+   retain the full
    venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
@@ -802,13 +804,12 @@ writing the live OI rank fact; it never delivers. A history hit missing
 guessing from Strategy id. Ordinary and deterministic recovery remains
 `admission=recovery`, while a newly observed unsupported contract retains its
 named `admission=unsupported_market_contract`. The hard cut does not rewrite a
-historical verdict/delivery ledger; a durable sent receipt still projects as
-delivered even though the current admission is the named hold. Current
-`event_kind` stops any pre-cut queued Triage or Delivery message, so an old push
-verdict with no delivery becomes held rather than permanently pending.
-Pre-cut deterministic rows lacking durable typed success evidence retain the
-historical `source_contract_unverified` value only in archive rows. Current
-Admission and Triage neither read nor settle those Events. The OI signal row
+verdict/delivery ledger before genesis. Migration `0336` then deletes that
+entire pre-genesis ledger and requires all News queues to be empty, including
+stale Event references, before it runs.
+Migration `0336` deletes pre-cut deterministic rows that lacked durable typed
+success evidence. Current Admission and Triage therefore see only the current
+source contract. The OI signal row
 used during migration is a derived read-model row, not an alternate material
 truth.
 
@@ -1080,8 +1081,8 @@ Diagnose News in this order:
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
    (expect a handful per day; a surge means same-key floods). Program v8 fails
-   closed on missing `novelty` or taxonomy. Pre-current trace diagnostics are
-   archive-only and do not appear in the current status contract.
+   closed on missing `novelty` or taxonomy. Migration `0336` deletes pre-current
+   trace diagnostics; they do not appear in the current status contract.
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
@@ -1278,7 +1279,7 @@ The Alembic chain is the `20260818_0275` baseline (root; it executes
 creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
 `tracefold_migrate` roles when run by the bootstrap superuser, verifies the
 role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through `20260823_0299_news_source_artifact_id`. The #112 chain
+the linear revisions through the current `20260830_0336` head. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -1287,6 +1288,104 @@ a downgrade is a backup restore. Stop Serve and Workers before applying a
 chained revision
 (each takes the maintenance gate advisory lock and refuses to run while
 Workers hold the steady lock).
+
+### News current-contract genesis (`0336`, one time)
+
+This is the destructive cut required by #398, not an ordinary retention run.
+Run it once, from the exact reviewed main SHA and image, with Serve, Workers and
+Nautilus stopped. It is irreversible in Alembic: the only rollback is restoring
+the verified pre-cut database snapshot and the matching broker snapshot before
+starting the old image. It never converts, backfills, translates, dual-reads or
+serves old News evidence.
+
+The migration owns this complete disposition. It compares the live set of all
+`public.news_%` tables with these two lists before and after the cut; an added,
+missing or externally referenced table makes the transaction fail rather than
+widening it through `CASCADE`.
+
+| Disposition | Exact owners |
+| --- | --- |
+| Empty and reset identity | `news_agent_assignments`, `news_agent_runtime_manifests`, `news_canary_activations`, `news_deliveries`, `news_event_assets`, `news_event_bands`, `news_event_evidence_snapshots`, `news_event_members`, `news_event_reactions`, `news_events`, `news_external_miss_snapshots`, `news_ingest_state`, `news_items`, `news_learning_artifacts`, `news_learning_cases`, `news_learning_epochs`, `news_learning_retention_state`, `news_model_recordings`, `news_oi_signals`, `news_opennews_incidents`, `news_reviews`, `news_verdicts` |
+| Preserve rows and schema | `news_market_instrument_listing_events`, `news_market_instruments`, `news_market_liquidations`, `news_quote_snapshots`, `news_symbol_aliases` |
+| Drop permanently | both `current_contract_archive_only` columns; `news_current_events_v1`; `ix_news_events_current_opened`; `news_current_event_archive_guard`; all three archive-check triggers |
+| Recreate current-only | `news_review_task_source_v1`, `news_review_records_v1`, and the current verdict-evidence guard |
+| Keep current objects | `news_review_active_agent_v1`, `news_review_external_miss_tasks_v1`, `news_review_pairwise_tasks_v1`, current validation/append-only functions and triggers; the incident sequence is reset with its table |
+| Preserve outside News evidence | every `trading_%` and Capital owner, every historical Alembic revision, and the complete Price/instrument rows named above |
+
+Phase 0 is fail-closed:
+
+1. Verify the branch is merged, the primary checkout is clean at that exact
+   successful-main-CI SHA, and `uv run tracefold config` reports only the
+   intended operator-owned paths and redacted configured state. Record the Git
+   SHA, Alembic revision, image ID, runtime revision, target runtime-manifest
+   SHA, `tracefold db audit`, and `tracefold news bus-check` output in the
+   maintenance record.
+2. Let Workers drain the five code-owned queues (`news.raw`, `news.triage`,
+   `news.deliver`, `news.retry`, `news.dead`, with the configured prefix). Save
+   any dead-letter incident evidence, purge it with `tracefold news dlq purge`,
+   then stop Serve, Workers and Nautilus. Query RabbitMQ after the stop and
+   require `messages_ready=0` and `messages_unacknowledged=0` for every five
+   queues. With every queue empty, both the dead-letter count and stale Event
+   reference count are exactly zero.
+3. Take a restorable full PostgreSQL snapshot with the operator's normal backup
+   mechanism, restore it into an isolated database, and run `tracefold db
+   audit` there. Compute the SHA-256 of the immutable snapshot file only after
+   that restore succeeds. Also snapshot the RabbitMQ volume/topology if the
+   backup policy requires a whole-stack rollback. Do not continue with an
+   unverified or mutable snapshot.
+4. Prebuild the exact main image with
+   `TRACEFOLD_BUILD_REVISION=<40-hex-main-sha>`, inspect its full
+   `sha256:<64-hex>` image ID, and compute the target runtime-manifest SHA from
+   that same image's stable bundle, compiled candidate set, image ID and runtime
+   revision. Do not use a tag or a value from another build.
+5. Export one compact JSON value as
+   `TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON` with exactly these fields (no extra
+   keys), then run `make up`. The Makefile rechecks exact main CI, owns the
+   deployment lock, rebuilds or reuses the exact image, stops runtimes, and the
+   `migrate` service receives the JSON and image identity:
+
+   ```json
+   {
+     "mode": "maintenance_window",
+     "tested_git_sha": "<40 lowercase hex>",
+     "deployed_git_sha": "<same 40 lowercase hex>",
+     "image_digest": "sha256:<64 lowercase hex>",
+     "runtime_revision": "<same 40 lowercase hex>",
+     "runtime_manifest_sha": "<64 lowercase hex>",
+     "snapshot_sha256": "<64 lowercase hex>",
+     "snapshot_verified": true,
+     "queue_ready": 0,
+     "queue_unacked": 0,
+     "queue_dead_letter": 0,
+     "queue_stale_reference_count": 0
+   }
+   ```
+
+For a non-empty evidence plane, `0336` rejects a missing field, extra field,
+invalid identity, unverified snapshot, nonzero queue count, a Git mismatch, an
+image mismatch or table-inventory drift before deleting anything. A truly fresh
+database takes the separate `empty_install` path and still receives a genesis
+receipt.
+
+After commit, require Alembic head `20260830_0336`; zero rows in every cleared
+owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
+and fresh singleton rows in `news_ingest_state` and
+`news_learning_retention_state`;
+unchanged counts in all five preserved owners and all `trading_%` owners; no
+retired column/view/index/function/trigger; and no unvalidated `news_%`
+constraint. Recompute the receipt address from canonical
+`{kind: "epoch_reset", payload: ...}` and require it to equal `artifact_sha`.
+The payload must bind the exact Git/image/runtime manifest, pre/post News schema
+digests and counts, preserved counts, verified snapshot digest, zero queue and
+stale-canary counts, the full disposition, and
+`rollback=verified_snapshot_restore_only`.
+
+Start the exact image, then require Workers `/readyz` to publish the same target
+runtime-manifest SHA, all readiness endpoints green, the first new Event to
+complete the current evidence/verdict/delivery path, and a restart to preserve
+that result without recovering any pre-genesis identifier. Open a new review,
+dataset, candidate and canary epoch only from post-genesis evidence; the
+migration receipt is not evidence of model quality.
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
 Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve

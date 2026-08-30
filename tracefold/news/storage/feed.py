@@ -211,28 +211,6 @@ class FeedStorage:
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
-        boundary = self.conn.execute(
-            """
-            SELECT e.event_id, e.current_contract_archive_only, latest.provenance, latest.schema_version
-              FROM news_events e
-              LEFT JOIN LATERAL (
-                SELECT s.provenance, s.snapshot ->> 'schema_version' AS schema_version
-                  FROM news_event_evidence_snapshots s
-                 WHERE s.event_id = e.event_id
-                 ORDER BY s.evidence_version DESC LIMIT 1
-              ) latest ON true
-             WHERE e.event_id = %s
-            """,
-            (event_id,),
-        ).fetchone()
-        if boundary is None:
-            return None
-        if (
-            boundary["current_contract_archive_only"]
-            or boundary["provenance"] != "observed"
-            or boundary["schema_version"] != "news_event_evidence_v3"
-        ):
-            return {"archive_only": True}
         card = self._current_event_card(event_id)  # type: ignore[attr-defined]
         if card is None:
             return None
@@ -404,7 +382,7 @@ class FeedStorage:
                   AND EXISTS (
                     SELECT 1
                       FROM news_event_members member
-                      JOIN news_current_events_v1 current_event
+                      JOIN news_events current_event
                         ON current_event.event_id = member.event_id
                      WHERE member.item_id = item.item_id
                   )
@@ -419,7 +397,7 @@ class FeedStorage:
               ) AS telemetry_received_24h,
               (SELECT count(*)
                  FROM news_oi_signals signal
-                 JOIN news_current_events_v1 current_event ON current_event.event_id = signal.event_id
+                 JOIN news_events current_event ON current_event.event_id = signal.event_id
                 WHERE signal.created_at_ms >= %s) AS telemetry_parsed_24h,
               (SELECT count(*) FROM news_verdicts
                 WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
@@ -435,7 +413,7 @@ class FeedStorage:
               -- together they miss a current frame still waiting for one. The Event subquery is the table's
               -- own universe — exactly the rows `admission=telemetry_deterministic&hours=24` serves — and it
               -- is what the 全部 tab counts.
-              (SELECT count(*) FROM news_current_events_v1 current_event
+              (SELECT count(*) FROM news_events current_event
                 WHERE current_event.opened_at_ms >= %s
                   AND current_event.admission = 'telemetry_deterministic'
                   AND EXISTS (
@@ -478,7 +456,7 @@ class FeedStorage:
                      WHERE e.source_contract_reason = 'source_contract_drift'
                         OR COALESCE(v.parse_failed, false)
                    ) AS parse_failed
-              FROM news_current_events_v1 e
+              FROM news_events e
               LEFT JOIN LATERAL (
                 SELECT bool_or(true) AS has_verdict,
                        bool_or(error_code IN ('oi_parse_failed', 'liquidation_parse_failed')) AS parse_failed
@@ -572,7 +550,7 @@ class FeedStorage:
             """
             SELECT signal.symbol, count(*)::int AS used
               FROM news_oi_signals signal
-              JOIN news_current_events_v1 current_event ON current_event.event_id = signal.event_id
+              JOIN news_events current_event ON current_event.event_id = signal.event_id
              WHERE signal.metric_version = %s
                AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s
                AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s
@@ -604,7 +582,7 @@ class FeedStorage:
                 count(*) FILTER (WHERE opened_at_ms >= %s) AS events_1h,
                 count(*) AS events_24h,
                 count(*) FILTER (WHERE admission = 'candidate') AS candidates_24h
-                FROM news_current_events_v1 current_event
+                FROM news_events current_event
                WHERE current_event.opened_at_ms >= %s
                  AND EXISTS (
                    SELECT 1 FROM news_event_evidence_snapshots evidence
@@ -652,26 +630,26 @@ class FeedStorage:
             """
             SELECT
               (SELECT count(*) FROM news_deliveries d
-                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 JOIN news_events e ON e.event_id = d.event_id
                 WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_24h,
               (SELECT count(*) FROM news_deliveries d
-                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 JOIN news_events e ON e.event_id = d.event_id
                 WHERE d.state = 'sent' AND d.settled_at_ms >= %s) AS sent_1h,
               (SELECT count(*) FROM news_deliveries d
-                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 JOIN news_events e ON e.event_id = d.event_id
                 WHERE d.state = 'terminal' AND d.settled_at_ms >= %s) AS terminal_24h,
               (SELECT d.error_code FROM news_deliveries d
-                 JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 JOIN news_events e ON e.event_id = d.event_id
                 WHERE d.state = 'terminal'
                 ORDER BY d.settled_at_ms DESC NULLS LAST LIMIT 1) AS last_error_code,
               (SELECT percentile_cont(0.5)
                  WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-                 FROM news_deliveries d JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
                  JOIN news_items i ON i.item_id = e.leader_item_id
                 WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p50_ms,
               (SELECT percentile_cont(0.95)
                  WITHIN GROUP (ORDER BY (d.settled_at_ms - i.observed_at_ms)::double precision)
-                 FROM news_deliveries d JOIN news_current_events_v1 e ON e.event_id = d.event_id
+                 FROM news_deliveries d JOIN news_events e ON e.event_id = d.event_id
                  JOIN news_items i ON i.item_id = e.leader_item_id
                 WHERE d.state = 'sent' AND d.kind = 'first' AND d.settled_at_ms >= %s) AS e2e_p95_ms
             """,
@@ -746,7 +724,7 @@ class FeedStorage:
             """
             SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols
               FROM news_event_assets asset
-              JOIN news_current_events_v1 current_event ON current_event.event_id = asset.event_id
+              JOIN news_events current_event ON current_event.event_id = asset.event_id
              WHERE asset.event_id = ANY(%s)
              GROUP BY asset.event_id
             """,
@@ -771,7 +749,7 @@ class FeedStorage:
             """
             SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols
               FROM news_event_assets asset
-              JOIN news_current_events_v1 current_event ON current_event.event_id = asset.event_id
+              JOIN news_events current_event ON current_event.event_id = asset.event_id
              WHERE asset.opened_at_ms >= %s
              GROUP BY asset.event_id
             """,
@@ -784,7 +762,7 @@ class FeedStorage:
 
         suppressed = self.conn.execute(
             f"""
-            SELECT admission, count(*) AS n FROM news_current_events_v1 current_event
+            SELECT admission, count(*) AS n FROM news_events current_event
              WHERE current_event.opened_at_ms >= %s AND admission NOT IN ({ADMITTED_SQL})
                AND EXISTS (
                  SELECT 1 FROM news_event_evidence_snapshots evidence
@@ -834,7 +812,7 @@ class FeedStorage:
                 degraded_by_code[str(row["code"])] = degraded_by_code.get(str(row["code"]), 0) + n
         # Both current Review shapes of "the reader should have got this": an accepted Event judgment and an
         # accepted ExternalMissSnapshot. The latter is the only observed upper bound on upstream recall.
-        # Release eligibility and the active epoch are material facts; old review contracts are archive-only.
+        # Release eligibility and the active epoch are material facts; genesis removed old review contracts.
         missed = self.conn.execute(
             """
             WITH current_epoch AS (
@@ -887,7 +865,7 @@ class FeedStorage:
                           WHERE d.event_id = current_event.event_id AND d.kind = 'first' AND d.state = 'sent'
                        )
                    ) AS delivered
-              FROM news_current_events_v1 current_event WHERE current_event.opened_at_ms >= %s
+              FROM news_events current_event WHERE current_event.opened_at_ms >= %s
                AND EXISTS (
                  SELECT 1 FROM news_event_evidence_snapshots evidence
                   WHERE evidence.event_id = current_event.event_id

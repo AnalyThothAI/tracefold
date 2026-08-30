@@ -129,6 +129,9 @@ services:
   migrate:
     <<: *tracefold-app
     restart: "no"
+    environment:
+      TRACEFOLD_IMAGE_DIGEST: ${TRACEFOLD_IMAGE_DIGEST:-}
+      TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON: ${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}
     depends_on:
       postgres:
         condition: service_healthy
