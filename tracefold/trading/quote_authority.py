@@ -221,7 +221,7 @@ def validate_entry_quote(
 
     created_at_ns = intent.created_at_ms * 1_000_000
     valid_until_ns = intent.valid_until_ms * 1_000_000
-    if not now_ns < created_at_ns:
+    if now_ns < created_at_ns:
         return rejected("quote_intent_not_active", observed=quote)
     if now_ns >= valid_until_ns:
         return rejected("quote_intent_expired", observed=quote)
