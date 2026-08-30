@@ -7,7 +7,6 @@ import hashlib
 import json
 import subprocess
 from collections.abc import Sequence
-from itertools import pairwise
 from pathlib import Path
 from typing import Any, cast
 from urllib.request import ProxyHandler, Request, build_opener
@@ -24,7 +23,10 @@ from tracefold.app.trading_config import capital_lane_config
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.app.workers.wiring.news_to_trading import (
     MAPPED_NEWS_PROJECTION_VERSION,
-    news_trade_instruments,
+    TradeEvidenceCatalogProjectionRow,
+    TradeEvidenceCollectionHealthRow,
+    to_evidence_catalog_candidate_row,
+    to_fixed_window_source_fact,
     to_oi_candidate_row,
 )
 from tracefold.integrations.nautilus import NAUTILUS_RELEASE, installed_nautilus_wheel_identity
@@ -70,19 +72,26 @@ from tracefold.trading.evidence_clock import (
     prepare_future_capture_batch,
 )
 from tracefold.trading.evidence_research import (
+    BlindBarIntervalObservationV1,
+    BlindMarketHealthSummaryV1,
+    BlindMarketProbeObservationV1,
+    FutureCollectorObservationV1,
+    FutureWorkersObservationV1,
     build_evidence_capture,
     build_evidence_drain,
     build_future_capture_collection_health,
-    evidence_catalog_request,
     seal_discovery_corpus,
+    summarize_blind_market_health,
     unblind_future_holdout,
 )
 from tracefold.trading.evidence_verification import (
     FixedWindowAcceptanceV1,
     ProductionReleaseCandidateV1,
-    ProductionRollbackReceiptV1,
+    ProductionRollbackReceiptV2,
+    ReleaseVerificationObservationsV1,
     ServeRuntimeObservationV1,
     case_verification_checks,
+    fixed_window_binding_report,
     fixed_window_verification_checks,
     prepare_production_release_registration,
     receipt_artifact_requests,
@@ -96,6 +105,7 @@ from tracefold.trading.replay import DirectionalReplayPlan, ReplayBarV1, ReplayM
 from tracefold.trading.routing import resolve_instrument, signal_exchange_id
 
 EVIDENCE_ROW_LIMIT = 20_000
+EVIDENCE_CATALOG_ROW_LIMIT = 100_000
 GIT_EXECUTABLE = "/usr/bin/git"
 
 
@@ -191,11 +201,11 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         target_binding=target_binding,
         source_query_contract_sha256=source_query_contract,
         protocol_receipt_sha256=None if candidate_receipt is None else candidate_receipt.receipt_sha256,
-        protocol_locked_at_ms=None if candidate_receipt is None else candidate_receipt.created_at_ms,
+        protocol_locked_at_ms=candidate_recorded_at_ms,
     )
-    catalogs: dict[tuple[str, str, int], tuple[InstrumentCandidateRow, ...]] = {}
-    collector_health: dict[str, Any] = {}
-    workers_health: dict[str, Any] | None = None
+    catalog_rows: list[TradeEvidenceCatalogProjectionRow] = []
+    news_collection_health: TradeEvidenceCollectionHealthRow | None = None
+    workers_row: dict[str, Any] | None = None
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         rows = repos.news.trade_evidence_oi_rows(
@@ -208,20 +218,17 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         )
         if len(rows) >= EVIDENCE_ROW_LIMIT:
             raise RuntimeError("evidence_capture_source_truncated")
-        mapped = [to_oi_candidate_row(row) for row in rows]
-        if target_binding is not None:
-            mapped = [row for row in mapped if binding_for_source_venue(row.get("venue")) == target_binding]
-        requests = tuple(sorted({request for row in mapped if (request := evidence_catalog_request(row)) is not None}))
-        for request in requests:
-            key = (request.canonical_asset, request.venue, request.observed_at_ms)
-            catalogs[key] = tuple(
-                news_trade_instruments(
-                    repos,
-                    request.canonical_asset,
-                    (request.venue,),
-                    observed_at_ms=request.observed_at_ms,
-                )
-            )
+        catalog_rows = repos.news.trade_evidence_catalog_rows(
+            metric_version=NEWS_OI_METRIC_VERSION,
+            start_observed_at_ms=query_start_ms,
+            end_observed_at_ms=query_end_ms,
+            known_at_or_before_ms=known_at_cutoff_ms,
+            available_at_or_before_ms=available_at_cutoff_ms,
+            source_limit=EVIDENCE_ROW_LIMIT,
+            catalog_limit=EVIDENCE_CATALOG_ROW_LIMIT,
+        )
+        if len(catalog_rows) >= EVIDENCE_CATALOG_ROW_LIMIT:
+            raise RuntimeError("evidence_capture_catalog_truncated")
         if candidate is not None:
             source_venues = (
                 ("binance", "binance.perp", "binance.usdm")
@@ -234,8 +241,15 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
                 available_at_or_before_ms=now_ms,
                 source_venues=source_venues,
             )
-            collector_health = {**news_collection_health, "batch_end_ms": query_end_ms}
-            workers_health = WorkersRuntimeRepository(repos.conn).read()
+            workers_row = WorkersRuntimeRepository(repos.conn).read()
+
+    mapped = [to_oi_candidate_row(row) for row in rows]
+    if target_binding is not None:
+        mapped = [row for row in mapped if binding_for_source_venue(row.get("venue")) == target_binding]
+    catalogs: dict[tuple[str, str, int], list[InstrumentCandidateRow]] = {}
+    for row in catalog_rows:
+        key = (row["base_symbol"], row["venue"], row["source_observed_at_ms"])
+        catalogs.setdefault(key, []).append(to_evidence_catalog_candidate_row(row))
 
     def instruments(base: str, venue: str, observed_at_ms: int) -> Sequence[InstrumentCandidateRow]:
         return catalogs.get((base, venue, observed_at_ms), ())
@@ -243,17 +257,29 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     artifact = build_evidence_capture(mapped, spec=spec, instruments=instruments)
     root = Path(args.out).resolve()
     if candidate is not None and candidate_receipt is not None:
-        market_count, bar_continuous_count, funding_probe_ok_count = asyncio.run(
-            _fetch_blind_market_health(artifact, start_ms=query_start_ms, end_ms=query_end_ms)
+        if news_collection_health is None:
+            raise RuntimeError("evidence_future_collector_health_missing")
+        collector_health = FutureCollectorObservationV1(
+            connected=news_collection_health["connected"],
+            last_frame_at_ms=news_collection_health["last_frame_at_ms"],
+            last_error_code=news_collection_health["last_error_code"],
+            expected_source_count=news_collection_health["expected_source_count"],
+            batch_end_ms=query_end_ms,
         )
+        workers_health = (
+            None
+            if workers_row is None
+            else FutureWorkersObservationV1(
+                lifecycle_state=str(workers_row["lifecycle_state"]),
+                heartbeat_at_ms=workers_row["heartbeat_at_ms"],
+            )
+        )
+        market_health = asyncio.run(_fetch_blind_market_health(artifact, start_ms=query_start_ms, end_ms=query_end_ms))
         health = build_future_capture_collection_health(
             artifact.sources,
-            expected_source_count=int(collector_health.get("expected_source_count") or 0),
             collector=collector_health,
             workers=workers_health,
-            market_instrument_count=market_count,
-            bar_continuous_count=bar_continuous_count,
-            funding_probe_ok_count=funding_probe_ok_count,
+            market=market_health,
         )
         batch = FutureCaptureBatchV1(
             binding=candidate.binding,
@@ -415,15 +441,15 @@ def _drain(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any
     if capture.spec.partition == "future":
         if candidate is None or candidate_receipt is None:
             raise ValueError("evidence_future_candidate_required")
+        if now_ms < candidate.statistics.drain_cutoff_ms:
+            raise ValueError("evidence_future_drain_premature")
+        candidate_recorded_at_ms = _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
         if (
             candidate.binding != capture.spec.target_binding
             or candidate_receipt.receipt_sha256 != capture.spec.protocol_receipt_sha256
-            or candidate_receipt.created_at_ms != capture.spec.protocol_locked_at_ms
+            or candidate_recorded_at_ms != capture.spec.protocol_locked_at_ms
         ):
             raise ValueError("evidence_future_candidate_authority_mismatch")
-        if now_ms < candidate.statistics.drain_cutoff_ms:
-            raise ValueError("evidence_future_drain_premature")
-        _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
         capture_receipt = _load_durable_future_capture_receipt(
             settings,
             candidate,
@@ -573,7 +599,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     capture = load_evidence_artifact(capture_path, EvidenceCaptureArtifactV1)
     drain = load_evidence_artifact(drain_path, EvidenceDrainArtifactV1)
     candidate, candidate_receipt = _load_candidate_pair(args)
-    _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
+    candidate_recorded_at_ms = _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
     capture_receipt = _load_durable_future_capture_receipt(
         settings,
         candidate,
@@ -612,6 +638,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         drain,
         candidate=candidate,
         candidate_receipt=candidate_receipt,
+        candidate_recorded_at_ms=candidate_recorded_at_ms,
         admission=config.admission,
         policy=config.policy,
         price_window=config.price_window,
@@ -658,7 +685,7 @@ def _verify(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, An
         release = ProductionReleaseCandidateV1.model_validate(_mapping_file(str(args.release)))
         return _verify_release(settings, release, now_ms=now_ms)
     if str(getattr(args, "rollback", "") or ""):
-        receipt = ProductionRollbackReceiptV1.model_validate(_mapping_file(str(args.rollback)))
+        receipt = ProductionRollbackReceiptV2.model_validate(_mapping_file(str(args.rollback)))
         return _verify_rollback(settings, receipt, now_ms=now_ms)
     raise ValueError("evidence_verification_subject_required")
 
@@ -732,12 +759,22 @@ def _verify_window(
     serve = _observe_serve_runtime(settings)
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        source_rows = repos.news.trade_fixed_window_oi_sources(
+            metric_version=NEWS_OI_METRIC_VERSION,
+            start_observed_at_ms=spec.start_ms,
+            end_observed_at_ms=spec.end_ms,
+            drain_cutoff_ms=spec.drain_cutoff_ms,
+            limit=EVIDENCE_ROW_LIMIT,
+        )
+        if len(source_rows) >= EVIDENCE_ROW_LIMIT:
+            raise RuntimeError("evidence_fixed_window_source_truncated")
         snapshot = repos.trading.fixed_window_verification_snapshot(spec)
-    snapshot["serve_runtime"] = serve.model_dump(mode="json")
-    checks = fixed_window_verification_checks(spec, snapshot, now_ms=now_ms)
+    sources = tuple(to_fixed_window_source_fact(row) for row in source_rows)
+    checks = fixed_window_verification_checks(spec, snapshot, sources=sources, serve=serve, now_ms=now_ms)
+    by_binding = fixed_window_binding_report(snapshot["by_binding"], sources, snapshot["gate_source_keys"])
     return _verification_answer(
         verification_report(subject=f"fixed-window:{spec.window_sha256}", verified_at_ms=now_ms, checks=checks),
-        snapshot={"by_binding": snapshot["by_binding"]},
+        snapshot={"by_binding": by_binding},
     )
 
 
@@ -761,8 +798,16 @@ def _verify_release(
                 str(release.restart_drill.recovered_runtime_id),
             ),
         )
+        window_source_rows = repos.news.trade_fixed_window_oi_sources(
+            metric_version=NEWS_OI_METRIC_VERSION,
+            start_observed_at_ms=release.acceptance_window.start_ms,
+            end_observed_at_ms=release.acceptance_window.end_ms,
+            drain_cutoff_ms=release.acceptance_window.drain_cutoff_ms,
+            limit=EVIDENCE_ROW_LIMIT,
+        )
+        if len(window_source_rows) >= EVIDENCE_ROW_LIMIT:
+            raise RuntimeError("evidence_fixed_window_source_truncated")
         window_snapshot = repos.trading.fixed_window_verification_snapshot(release.acceptance_window)
-    window_snapshot["serve_runtime"] = serve.model_dump(mode="json")
     identity = runtime_identity()
     contract = build_execution_policy_contract_receipt()
     config = capital_lane_config(settings)
@@ -774,47 +819,55 @@ def _verify_release(
     receipt_artifacts = _read_receipt_artifacts(snapshot["receipts"])
     all_receipt_roots = release.corpus_receipt_sha256s + release.future_result_receipt_sha256s
     all_receipt_chains_valid = receipt_chains_valid(all_receipt_roots, snapshot["receipts"], receipt_artifacts)
+    window_sources = tuple(to_fixed_window_source_fact(row) for row in window_source_rows)
+    by_binding = fixed_window_binding_report(
+        window_snapshot["by_binding"],
+        window_sources,
+        window_snapshot["gate_source_keys"],
+    )
     checks = release_verification_checks(
         release,
         snapshot,
         window_snapshot,
-        {
-            "tag_signature_valid": signed_tag,
-            "tag_commit": tag_commit,
-            "tag_tree": tag_tree,
-            "runtime_revision": identity.runtime_revision,
-            "image_digest": identity.image_digest,
-            "openapi_sha256": openapi_sha,
-            "web_assets_sha256": web_sha,
-            "nautilus_wheel_sha256": wheel_sha,
-            "nautilus_source_git_commit": NAUTILUS_RELEASE.git_commit,
-            "execution_contract_receipt_sha256": contract.receipt_sha256,
-            "execution_policy_sha256": contract.execution_policy_sha256,
-            "quote_contract_sha256": contract.quote_contract_sha256,
-            "protection_contract_sha256": contract.protection_contract_sha256,
-            "policy_config_sha256": config.policy.config_digest,
-            "receipt_chains_valid": all_receipt_chains_valid,
-            "serve_runtime": serve.model_dump(mode="json"),
-        },
+        ReleaseVerificationObservationsV1(
+            tag_signature_valid=signed_tag,
+            tag_commit=tag_commit,
+            tag_tree=tag_tree,
+            runtime_revision=identity.runtime_revision,
+            image_digest=identity.image_digest,
+            openapi_sha256=openapi_sha,
+            web_assets_sha256=web_sha,
+            nautilus_wheel_sha256=wheel_sha,
+            nautilus_source_git_commit=NAUTILUS_RELEASE.git_commit,
+            execution_contract_receipt_sha256=contract.receipt_sha256,
+            execution_policy_sha256=contract.execution_policy_sha256,
+            quote_contract_sha256=contract.quote_contract_sha256,
+            protection_contract_sha256=contract.protection_contract_sha256,
+            policy_config_sha256=config.policy.config_digest,
+            receipt_chains_valid=all_receipt_chains_valid,
+            serve_runtime=serve,
+        ),
+        window_sources=window_sources,
         now_ms=now_ms,
     )
     return _verification_answer(
         verification_report(subject=f"release:{release.release_sha256}", verified_at_ms=now_ms, checks=checks),
-        snapshot={"by_binding": window_snapshot["by_binding"]},
+        snapshot={"by_binding": by_binding},
     )
 
 
 def _verify_rollback(
     settings: Any,
-    receipt: ProductionRollbackReceiptV1,
+    receipt: ProductionRollbackReceiptV2,
     *,
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
     release = ProductionReleaseCandidateV1.model_validate(_mapping_file(receipt.release_candidate_artifact_path))
+    serve = _observe_serve_runtime(settings)
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.rollback_verification_snapshot(receipt)
-    checks = rollback_verification_checks(receipt, release, snapshot, now_ms=now_ms)
+    checks = rollback_verification_checks(receipt, release, snapshot, serve=serve, now_ms=now_ms)
     return _verification_answer(
         verification_report(subject=f"rollback:{receipt.receipt_sha256}", verified_at_ms=now_ms, checks=checks)
     )
@@ -905,8 +958,8 @@ async def _fetch_blind_market_health(
     *,
     start_ms: int,
     end_ms: int,
-) -> tuple[int, int, int]:
-    """Probe only continuity counts during the blind period; never retain or return market values."""
+) -> BlindMarketHealthSummaryV1:
+    """Fetch only raw provider clocks; Trading owns every continuity interpretation."""
 
     unique = {(plan.venue, plan.instrument.provider_symbol): plan for plan in _capture_plans(capture)}
     plans = tuple(unique[key] for key in sorted(unique))
@@ -914,9 +967,13 @@ async def _fetch_blind_market_health(
     aligned_start = start_ms // EVIDENCE_BAR_INTERVAL_MS * EVIDENCE_BAR_INTERVAL_MS
     aligned_end = (end_ms + EVIDENCE_BAR_INTERVAL_MS - 1) // EVIDENCE_BAR_INTERVAL_MS * EVIDENCE_BAR_INTERVAL_MS
 
-    async def probe(plan: DirectionalReplayPlan) -> tuple[bool, bool]:
-        bars_ok = False
-        funding_ok = False
+    funding_start_ms = max(0, end_ms - 24 * 60 * 60 * 1000)
+
+    async def probe(plan: DirectionalReplayPlan) -> BlindMarketProbeObservationV1:
+        bars: Sequence[VenueBar] = ()
+        funding: Sequence[VenueFundingRate] = ()
+        bar_error_code: str | None = None
+        funding_error_code: str | None = None
         try:
             async with semaphore:
                 if plan.venue == "binance.perp":
@@ -933,39 +990,40 @@ async def _fetch_blind_market_health(
                         start_ms=aligned_start,
                         end_ms=aligned_end,
                     )
-            ordered = sorted(bars, key=lambda row: (row.open_at_ms, row.close_at_ms))
-            bars_ok = bool(ordered) and all(
-                row.close_at_ms - row.open_at_ms == EVIDENCE_BAR_INTERVAL_MS for row in ordered
-            )
-            bars_ok = bool(
-                bars_ok
-                and ordered[0].open_at_ms <= aligned_start
-                and ordered[-1].close_at_ms >= aligned_end
-                and all(previous.close_at_ms == current.open_at_ms for previous, current in pairwise(ordered))
-            )
         except VenueExpectedError:
-            bars_ok = False
+            bar_error_code = "venue_provider_outage"
         try:
             async with semaphore:
                 if plan.venue == "binance.perp":
-                    await fetch_binance_funding_rates(
+                    funding = await fetch_binance_funding_rates(
                         plan.instrument.provider_symbol,
-                        start_ms=start_ms,
+                        start_ms=funding_start_ms,
                         end_ms=end_ms,
                     )
                 else:
-                    await fetch_hyperliquid_funding_rates(
+                    funding = await fetch_hyperliquid_funding_rates(
                         plan.instrument.provider_symbol,
-                        start_ms=start_ms,
+                        start_ms=funding_start_ms,
                         end_ms=end_ms,
                     )
-            funding_ok = True
         except VenueExpectedError:
-            funding_ok = False
-        return bars_ok, funding_ok
+            funding_error_code = "venue_provider_outage"
+        return BlindMarketProbeObservationV1(
+            venue=plan.venue,
+            provider_instrument_id=plan.instrument.provider_symbol,
+            bar_start_ms=aligned_start,
+            bar_end_ms=aligned_end,
+            bars=tuple(
+                BlindBarIntervalObservationV1(open_at_ms=row.open_at_ms, close_at_ms=row.close_at_ms) for row in bars
+            ),
+            bar_error_code=bar_error_code,
+            funding_start_ms=funding_start_ms,
+            funding_end_ms=end_ms,
+            funding_at_ms=tuple(row.funding_at_ms for row in funding),
+            funding_error_code=funding_error_code,
+        )
 
-    results = await asyncio.gather(*(probe(plan) for plan in plans))
-    return len(plans), sum(bars_ok for bars_ok, _ in results), sum(funding_ok for _, funding_ok in results)
+    return summarize_blind_market_health(await asyncio.gather(*(probe(plan) for plan in plans)))
 
 
 async def _fetch_market_inputs(

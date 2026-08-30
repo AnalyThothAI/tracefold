@@ -10,23 +10,32 @@ from typing import Any
 import pytest
 from psycopg import Error as PostgresError
 
+from tests.integration.test_trading_capital_lane import _admission, _manifest
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tests.trading_v3_fixtures import capital_evidence_fixture, set_evidence_database_clock
 from tracefold.app.cli.commands import trading_evidence as evidence_cli
+from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
 from tracefold.platform.config.models import Settings
 from tracefold.trading.contracts import canonical_sha256
 from tracefold.trading.evidence_clock import (
     DiscoveryCorpusReceiptV1,
     FutureCaptureBatchV1,
+    FutureCaptureReceiptV1,
+    future_capture_health_summary,
     prepare_future_capture_batch,
 )
-from tracefold.trading.evidence_research import build_future_capture_collection_health
+from tracefold.trading.evidence_research import (
+    BlindMarketHealthSummaryV1,
+    FutureCollectorObservationV1,
+    FutureWorkersObservationV1,
+    build_future_capture_collection_health,
+)
 from tracefold.trading.evidence_verification import (
     FixedWindowAcceptanceV1,
     NautilusRuntimeStartV1,
     ProductionReleaseCandidateV1,
-    ProductionRollbackReceiptV1,
+    ProductionRollbackReceiptV2,
     ServeRuntimeObservationV1,
     prepare_production_release_registration,
 )
@@ -68,11 +77,69 @@ def _window() -> FixedWindowAcceptanceV1:
 def test_empty_fixed_window_snapshot_cannot_manufacture_operational_activity(conn: Any) -> None:
     snapshot = TradingRepository(conn).fixed_window_verification_snapshot(_window())
 
-    assert snapshot["counts"]["source_count"] == 0
+    assert snapshot["counts"]["gate_source_count"] == 0
     assert snapshot["counts"]["case_count"] == 0
     assert snapshot["counts"]["intent_count"] == 0
     assert snapshot["counts"]["closed_flat_count"] == 0
     assert snapshot["by_binding"] == []
+
+
+def test_fixed_window_per_binding_report_includes_case_reasons_and_missing_financials(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    manifest = _manifest("fixed-window-report")
+    admission = _admission(manifest) | {
+        "gate_version": _window().gate_version,
+        "gate_config_digest": _window().gate_config_digest,
+    }
+    with repos.transaction():
+        assert repos.trading.create_case(
+            case_id="fixed-window-report-case",
+            manifest=manifest,
+            admission=admission,
+            release_revision=_window().git_commit_sha,
+            now_ms=START,
+        )
+
+    snapshot = repos.trading.fixed_window_verification_snapshot(_window())
+
+    assert snapshot["gate_source_keys"] == (manifest.primary_trigger.source_key,)
+    assert snapshot["by_binding"] == [
+        {
+            "binding": "BINANCE_USDM",
+            "case_count": 1,
+            "intent_count": 0,
+            "closed_flat_count": 0,
+            "reservation_count": 0,
+            "fenced_count": 0,
+            "submitted_count": 0,
+            "opened_count": 0,
+            "protected_count": 0,
+            "closed_count": 0,
+            "flat_verified_count": 0,
+            "financial_missing_count": 0,
+            "policy_decisions": {"not_run": 1},
+            "policy_reasons": {"not_run": 1},
+            "capital_dispositions": {"not_applicable": 1},
+            "capital_reasons": {"missing": 1},
+            "q1_reasons": {},
+            "q2_reasons": {},
+            "reservation_states": {},
+            "execution_states": {},
+            "execution_phases": {},
+            "terminal_outcomes": {},
+            "execution_reasons": {},
+            "financials": [],
+            "stage_latency": {
+                "fence_avg_ms": None,
+                "submit_avg_ms": None,
+                "open_avg_ms": None,
+                "protect_avg_ms": None,
+                "close_avg_ms": None,
+                "flat_avg_ms": None,
+                "flat_max_ms": None,
+            },
+        }
+    ]
 
 
 def test_future_capture_batches_are_contiguous_and_append_only(conn: Any) -> None:
@@ -80,12 +147,22 @@ def test_future_capture_batches_are_contiguous_and_append_only(conn: Any) -> Non
     corpus, candidate_receipt, candidate, _, _ = capital_evidence_fixture()
     health = build_future_capture_collection_health(
         (),
-        expected_source_count=0,
-        collector={"connected": True, "batch_end_ms": candidate.statistics.future_end_ms},
-        workers={"lifecycle_state": "running", "heartbeat_at_ms": candidate.statistics.future_end_ms},
-        market_instrument_count=0,
-        bar_continuous_count=0,
-        funding_probe_ok_count=0,
+        collector=FutureCollectorObservationV1(
+            connected=True,
+            last_frame_at_ms=candidate.statistics.future_end_ms,
+            last_error_code=None,
+            expected_source_count=0,
+            batch_end_ms=candidate.statistics.future_end_ms,
+        ),
+        workers=FutureWorkersObservationV1(
+            lifecycle_state="running",
+            heartbeat_at_ms=candidate.statistics.future_end_ms,
+        ),
+        market=BlindMarketHealthSummaryV1(
+            market_instrument_count=0,
+            bar_continuous_count=0,
+            funding_probe_ok_count=0,
+        ),
     )
     batch = FutureCaptureBatchV1(
         binding=candidate.binding,
@@ -101,15 +178,46 @@ def test_future_capture_batches_are_contiguous_and_append_only(conn: Any) -> Non
         catalog_missing_count=0,
         health=health,
     )
+    health_sha256, incidents = future_capture_health_summary(
+        (batch,), maximum_missingness_bps=candidate.statistics.maximum_missingness_bps
+    )
+    capture_receipt = FutureCaptureReceiptV1(
+        binding=candidate.binding,
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+        capture_sha256="8" * 64,
+        artifact_sha256="8" * 64,
+        artifact_path="test-evidence/future-capture.json",
+        batch_count=1,
+        batch_health_sha256=health_sha256,
+        collection_incidents=incidents,
+        created_at_ms=candidate.statistics.future_end_ms + 1,
+    )
     with conn.transaction():
         set_evidence_database_clock(repository, corpus.created_at_ms)
         assert repository.append_discovery_corpus_receipt(corpus)
         set_evidence_database_clock(repository, candidate_receipt.created_at_ms)
         assert repository.append_candidate_decision_receipt(candidate_receipt, candidate)
+
+    with pytest.raises(PostgresError, match="future_capture_parent_invalid"), conn.transaction():
+        set_evidence_database_clock(repository, capture_receipt.created_at_ms)
+        repository.append_future_capture_receipt(capture_receipt)
+
+    with conn.transaction():
         set_evidence_database_clock(repository, batch.captured_at_ms)
         prepared = prepare_future_capture_batch(batch)
         assert repository.append_future_capture_batch(prepared)
         assert not repository.append_future_capture_batch(prepared)
+
+    forged = capture_receipt.model_copy(update={"batch_health_sha256": "0" * 64})
+    with pytest.raises(PostgresError, match="future_capture_parent_invalid"), conn.transaction():
+        set_evidence_database_clock(repository, forged.created_at_ms)
+        repository.append_future_capture_receipt(forged)
+
+    with conn.transaction():
+        set_evidence_database_clock(repository, capture_receipt.created_at_ms)
+        assert repository.append_future_capture_receipt(capture_receipt)
 
     with pytest.raises(PostgresError, match="append_only"), conn.transaction():
         conn.execute(
@@ -267,18 +375,20 @@ def test_release_registration_binds_actual_workers_and_serve_before_window(conn:
 
 def test_rollback_snapshot_requires_real_flat_bindings_and_revoked_grants(conn: Any) -> None:
     unsigned: dict[str, object] = {
-        "rollback_version": "production_v3_rollback_receipt_v1",
+        "rollback_version": "production_v3_rollback_receipt_v2",
         "release_candidate_sha256": "1" * 64,
         "release_candidate_artifact_path": "evidence/release.json",
         "bindings": ["BINANCE_USDM"],
         "grant_sha256s": ["2" * 64],
         "rolled_back_at_ms": START,
+        "restart_workers_runtime_id": "00000000-0000-0000-0000-000000000020",
+        "restart_serve_runtime_id": "00000000-0000-0000-0000-000000000021",
         "rolled_back_by": "operator",
         "statement": "ALL_ENABLED_VENUES_FLAT_GRANTS_REVOKED_CAPITAL_PAUSED_NO_TERMINAL_INTENT_REVIVAL",
     }
     from tracefold.trading.contracts import canonical_sha256
 
-    receipt = ProductionRollbackReceiptV1.model_validate(unsigned | {"receipt_sha256": canonical_sha256(unsigned)})
+    receipt = ProductionRollbackReceiptV2.model_validate(unsigned | {"receipt_sha256": canonical_sha256(unsigned)})
     snapshot = TradingRepository(conn).rollback_verification_snapshot(receipt)
 
     assert snapshot["control"] == "PAUSED"

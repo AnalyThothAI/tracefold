@@ -1049,6 +1049,9 @@ def future_capture_health_summary(
         health = batch.health
         if (
             not health.collector_connected
+            or health.collector_last_frame_at_ms is None
+            or health.collector_last_frame_at_ms < batch.batch_start_ms
+            or health.collector_error_code is not None
             or health.workers_state != "running"
             or health.workers_heartbeat_at_ms is None
             or health.workers_heartbeat_at_ms < batch.batch_end_ms

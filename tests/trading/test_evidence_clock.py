@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -30,10 +33,16 @@ from tracefold.trading.evidence_clock import (
     candidate_selection_program_sha256,
 )
 from tracefold.trading.evidence_research import (
+    BlindBarIntervalObservationV1,
+    BlindMarketHealthSummaryV1,
+    BlindMarketProbeObservationV1,
+    FutureCollectorObservationV1,
+    FutureWorkersObservationV1,
     build_evidence_capture,
     build_evidence_drain,
     build_future_capture_collection_health,
     seal_discovery_corpus,
+    summarize_blind_market_health,
     unblind_future_holdout,
 )
 from tracefold.trading.market_context import PriceWindow
@@ -290,12 +299,19 @@ def test_future_capture_batch_records_schedule_and_collection_health() -> None:
     source = capture.sources[0]
     health = build_future_capture_collection_health(
         (source,),
-        expected_source_count=1,
-        collector={"connected": True, "batch_end_ms": NOW + 2},
-        workers={"lifecycle_state": "running", "heartbeat_at_ms": NOW + 10},
-        market_instrument_count=1,
-        bar_continuous_count=1,
-        funding_probe_ok_count=1,
+        collector=FutureCollectorObservationV1(
+            connected=True,
+            last_frame_at_ms=NOW + 1,
+            last_error_code=None,
+            expected_source_count=1,
+            batch_end_ms=NOW + 2,
+        ),
+        workers=FutureWorkersObservationV1(lifecycle_state="running", heartbeat_at_ms=NOW + 10),
+        market=BlindMarketHealthSummaryV1(
+            market_instrument_count=1,
+            bar_continuous_count=1,
+            funding_probe_ok_count=1,
+        ),
     )
     batch = FutureCaptureBatchV1(
         binding="BINANCE_USDM",
@@ -318,6 +334,30 @@ def test_future_capture_batch_records_schedule_and_collection_health() -> None:
         FutureCaptureBatchV1.model_validate(payload)
 
 
+def test_blind_market_health_requires_gap_free_bars_and_a_recent_funding_clock() -> None:
+    probe = BlindMarketProbeObservationV1(
+        venue="binance.perp",
+        provider_instrument_id="BTCUSDT",
+        bar_start_ms=NOW,
+        bar_end_ms=NOW + 600_000,
+        bars=(
+            BlindBarIntervalObservationV1(open_at_ms=NOW, close_at_ms=NOW + 300_000),
+            BlindBarIntervalObservationV1(open_at_ms=NOW + 300_000, close_at_ms=NOW + 600_000),
+        ),
+        bar_error_code=None,
+        funding_start_ms=NOW - 86_400_000,
+        funding_end_ms=NOW + 600_000,
+        funding_at_ms=(NOW,),
+        funding_error_code=None,
+    )
+
+    healthy = summarize_blind_market_health((probe,))
+    missing_funding = summarize_blind_market_health((replace(probe, funding_at_ms=()),))
+
+    assert (healthy.bar_continuous_count, healthy.funding_probe_ok_count) == (1, 1)
+    assert missing_funding.funding_probe_ok_count == 0
+
+
 def test_public_evidence_handler_uses_database_clock_for_verification(monkeypatch: pytest.MonkeyPatch) -> None:
     args = SimpleNamespace(evidence_command="verify")
     monkeypatch.setattr(evidence_cli, "_database_now_ms", lambda _settings: NOW + 99)
@@ -331,6 +371,83 @@ def test_public_evidence_handler_uses_database_clock_for_verification(monkeypatc
 
     assert code == 0
     assert answer["data"]["verified_at_ms"] == NOW + 99
+
+
+def test_capture_snapshot_uses_fixed_bulk_reads_and_maps_after_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state = {"active": False, "source_reads": 0, "catalog_reads": 0}
+
+    class FakeConnection:
+        def execute(self, _query: str) -> None:
+            assert state["active"] is True
+
+    class FakeNews:
+        def __init__(self) -> None:
+            self.rows: list[dict[str, Any]] = []
+
+        def trade_evidence_oi_rows(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            assert state["active"] is True
+            state["source_reads"] += 1
+            return self.rows
+
+        def trade_evidence_catalog_rows(self, **_kwargs: Any) -> list[dict[str, Any]]:
+            assert state["active"] is True
+            state["catalog_reads"] += 1
+            return []
+
+    fake_news = FakeNews()
+
+    class FakeRepositories:
+        def __init__(self) -> None:
+            self.conn = FakeConnection()
+            self.news = fake_news
+
+        @contextmanager
+        def transaction(self):
+            state["active"] = True
+            try:
+                yield
+            finally:
+                state["active"] = False
+
+    @contextmanager
+    def fake_repositories(*_args: Any, **_kwargs: Any):
+        yield FakeRepositories()
+
+    original_mapper = evidence_cli.to_oi_candidate_row
+
+    def mapper(row: Any) -> Any:
+        assert state["active"] is False
+        return original_mapper(row)
+
+    monkeypatch.setattr(evidence_cli, "repositories", fake_repositories)
+    monkeypatch.setattr(evidence_cli, "to_oi_candidate_row", mapper)
+    args = SimpleNamespace(
+        partition="discovery",
+        start_ms=NOW,
+        end_ms=NOW + 100,
+        candidate="",
+        candidate_receipt="",
+        out=str(tmp_path),
+    )
+
+    for count in (1, 50):
+        fake_news.rows = [
+            _row(
+                event_id=f"bulk-{index}",
+                source_item_id=f"item-{index}",
+                observed_at_ms=NOW + index,
+                verdict_created_at_ms=NOW + index + 1,
+                source_available_at_ms=NOW + index + 2,
+            )
+            for index in range(count)
+        ]
+        code, _answer = evidence_cli._capture(SimpleNamespace(), args, now_ms=NOW + 100)
+        assert code == 0
+
+    assert state["source_reads"] == 2
+    assert state["catalog_reads"] == 2
 
 
 def test_future_partition_refuses_discovery_overlap_and_premature_unblind() -> None:
@@ -601,7 +718,7 @@ def test_future_unblind_is_protocol_locked_and_missing_funding_is_insufficient()
         target_binding=candidate.binding,
         source_query_contract_sha256="9" * 64,
         protocol_receipt_sha256=receipt.receipt_sha256,
-        protocol_locked_at_ms=candidate.locked_at_ms,
+        protocol_locked_at_ms=receipt.created_at_ms + 1,
     )
     future_capture = build_evidence_capture(
         [
@@ -630,6 +747,7 @@ def test_future_unblind_is_protocol_locked_and_missing_funding_is_insufficient()
     kwargs = {
         "candidate": candidate,
         "candidate_receipt": receipt,
+        "candidate_recorded_at_ms": receipt.created_at_ms + 1,
         "admission": AdmissionConfig(min_oi_value_usd=5_000_000),
         "policy": CapitalPolicy(),
         "price_window": PriceWindow(),
@@ -748,6 +866,7 @@ def test_future_long_return_adds_the_signed_funding_cashflow() -> None:
             drain,
             candidate=candidate,
             candidate_receipt=receipt,
+            candidate_recorded_at_ms=receipt.created_at_ms,
             admission=AdmissionConfig(min_oi_value_usd=5_000_000),
             policy=CapitalPolicy(),
             price_window=PriceWindow(),

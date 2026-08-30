@@ -84,7 +84,8 @@ batch and reports blind collection health: collector/Workers generation, expecte
 missing source mass, `capture_lag_ms`, late/catalog counts, bar/funding continuity, and
 artifact integrity. PostgreSQL rejects a gap, overlap, wrong binding, late call
 beyond `maximum_capture_lag_ms`, or changed candidate. The last batch seals the one
-`FUTURE_CAPTURE_SEALED`; later source-population variants cannot replace it. A missed
+`FUTURE_CAPTURE_SEALED` only after PostgreSQL recomputes the full interval chain,
+health digest, and canonical incident set; later source-population variants cannot replace it. A missed
 deadline fails closed and requires a new preregistered future protocol, not a backfill.
 The second refuses all future provider I/O before the locked drain cutoff or under a
 different candidate receipt/cost/horizon. The first successful future drain
@@ -142,7 +143,9 @@ running past the rollback receipt; do not revive a terminal Intent, submit a
 replacement entry, or infer a flat account from local
 state. The rollback receipt names and re-hashes the exact release-candidate
 artifact, covers its exact binding/grant scope, and cannot predate that release
-window's drain cutoff.
+window's drain cutoff. The v2 rollback receipt also names new Workers and Serve
+runtime ids; both must differ from the registered release generations and must
+start at or after rollback before zero-refill and observer-continuity checks can pass.
 
 These commands implement the clock and verification mechanism. Until the
 calendar window, human approval, venue receipts, fixed seven-day accounting,

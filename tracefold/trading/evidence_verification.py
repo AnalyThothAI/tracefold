@@ -15,7 +15,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .contracts import VenueBinding, canonical_sha256
+from .bindings import binding_for_source_venue
+from .contracts import FixedWindowSourceFactV1, VenueBinding, canonical_sha256
 from .evidence_clock import (
     CANDIDATE_DECISION_ADAPTER,
     CandidateDecisionReceiptV1,
@@ -217,6 +218,27 @@ class ServeRuntimeObservationV1(_Frozen):
         return self
 
 
+class ReleaseVerificationObservationsV1(_Frozen):
+    """Typed non-PostgreSQL release facts mechanically observed by App."""
+
+    tag_signature_valid: bool
+    tag_commit: str | None = None
+    tag_tree: str | None = None
+    runtime_revision: str
+    image_digest: str
+    openapi_sha256: str | None = None
+    web_assets_sha256: str | None = None
+    nautilus_wheel_sha256: str | None = None
+    nautilus_source_git_commit: str
+    execution_contract_receipt_sha256: str
+    execution_policy_sha256: str
+    quote_contract_sha256: str
+    protection_contract_sha256: str
+    policy_config_sha256: str
+    receipt_chains_valid: bool
+    serve_runtime: ServeRuntimeObservationV1
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedProductionReleaseRegistration:
     """Canonical release/window registration bytes prepared outside the write transaction."""
@@ -310,13 +332,15 @@ def prepare_production_release_registration(
     )
 
 
-class ProductionRollbackReceiptV1(_Frozen):
-    rollback_version: Literal["production_v3_rollback_receipt_v1"] = "production_v3_rollback_receipt_v1"
+class ProductionRollbackReceiptV2(_Frozen):
+    rollback_version: Literal["production_v3_rollback_receipt_v2"] = "production_v3_rollback_receipt_v2"
     release_candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     release_candidate_artifact_path: str = Field(min_length=1, max_length=1024)
     bindings: tuple[VenueBinding, ...] = Field(min_length=1, max_length=2)
     grant_sha256s: tuple[str, ...] = Field(min_length=1)
     rolled_back_at_ms: int = Field(gt=0)
+    restart_workers_runtime_id: UUID
+    restart_serve_runtime_id: UUID
     rolled_back_by: str = Field(min_length=1, max_length=128)
     statement: Literal["ALL_ENABLED_VENUES_FLAT_GRANTS_REVOKED_CAPITAL_PAUSED_NO_TERMINAL_INTENT_REVIVAL"]
     receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -632,14 +656,17 @@ def fixed_window_verification_checks(
     spec: FixedWindowAcceptanceV1,
     snapshot: dict[str, Any],
     *,
+    sources: tuple[FixedWindowSourceFactV1, ...],
+    serve: ServeRuntimeObservationV1,
     now_ms: int,
 ) -> list[EvidenceVerificationCheckV1]:
     """Verify one exact-release, non-moving seven-day operational window."""
 
     counts = snapshot["counts"]
     workers_runtime = snapshot.get("workers_runtime")
-    serve_runtime = snapshot.get("serve_runtime")
     registration = snapshot.get("release_registration")
+    source_keys = tuple(sorted(source.source_key for source in sources))
+    gate_source_keys = tuple(snapshot.get("gate_source_keys") or ())
     return [
         verification_check("window_drain_cutoff_reached", now_ms >= spec.drain_cutoff_ms),
         verification_check(
@@ -665,20 +692,19 @@ def fixed_window_verification_checks(
         verification_check(
             "window_exact_serve_release",
             registration is not None
-            and serve_runtime is not None
-            and serve_runtime["runtime_id"] == str(registration["serve_runtime_id"])
-            and serve_runtime["runtime_revision"] == spec.git_commit_sha
-            and serve_runtime["image_digest"] == spec.oci_image_digest
-            and serve_runtime["started_at_ms"] == registration["serve_started_at_ms"]
-            and serve_runtime["measured_at_ms"] >= spec.end_ms,
+            and str(serve.runtime_id) == str(registration["serve_runtime_id"])
+            and serve.runtime_revision == spec.git_commit_sha
+            and serve.image_digest == spec.oci_image_digest
+            and serve.started_at_ms == registration["serve_started_at_ms"]
+            and serve.measured_at_ms >= spec.end_ms,
         ),
         verification_check("window_source_release_identity", counts["wrong_release_source_count"] == 0),
         verification_check("window_gate_contract_identity", counts["wrong_gate_contract_count"] == 0),
         verification_check("window_intent_release_identity", counts["intent_release_mismatch_count"] == 0),
         verification_check(
             "window_minimum_sources",
-            counts["source_count"] >= spec.minimum_source_count,
-            count=counts["source_count"],
+            len(source_keys) >= spec.minimum_source_count,
+            count=len(source_keys),
         ),
         verification_check(
             "window_minimum_cases", counts["case_count"] >= spec.minimum_case_count, count=counts["case_count"]
@@ -693,10 +719,21 @@ def fixed_window_verification_checks(
             counts["closed_flat_count"] >= spec.minimum_closed_flat_count,
             count=counts["closed_flat_count"],
         ),
-        verification_check("window_source_admission_unique", counts["source_count"] == counts["unique_source_count"]),
+        verification_check("window_source_universe_unique", len(source_keys) == len(set(source_keys))),
+        verification_check(
+            "window_source_gate_conservation",
+            source_keys == gate_source_keys,
+            source_count=len(source_keys),
+            gate_source_count=len(gate_source_keys),
+        ),
+        verification_check(
+            "window_source_admission_unique",
+            counts["gate_source_count"] == counts["unique_source_count"],
+        ),
         verification_check(
             "window_source_disposition_conservation",
-            counts["source_count"] == counts["admitted_source_count"] + counts["rejected_or_deferred_source_count"],
+            counts["gate_source_count"]
+            == counts["admitted_source_count"] + counts["rejected_or_deferred_source_count"],
         ),
         verification_check(
             "window_admitted_source_case_conservation", counts["admitted_source_count"] == counts["case_count"]
@@ -716,6 +753,27 @@ def fixed_window_verification_checks(
         verification_check("window_closed_flat_proven", counts["closed_flat_proof_missing_count"] == 0),
         verification_check("window_financial_accounting_complete", counts["financial_accounting_missing_count"] == 0),
     ]
+
+
+def fixed_window_binding_report(
+    rows: list[dict[str, Any]],
+    sources: tuple[FixedWindowSourceFactV1, ...],
+    gate_source_keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Attach the complete source universe and per-venue missingness to the DB-owned report rows."""
+
+    by_binding = {str(row["binding"]): dict(row) for row in rows}
+    gate_keys = set(gate_source_keys)
+    for source in sources:
+        binding = binding_for_source_venue(source.source_venue) or "UNBOUND"
+        row = by_binding.setdefault(binding, {"binding": binding})
+        row["source_count"] = int(row.get("source_count") or 0) + 1
+        if source.source_key not in gate_keys:
+            row["source_without_gate_count"] = int(row.get("source_without_gate_count") or 0) + 1
+    for row in by_binding.values():
+        row.setdefault("source_count", 0)
+        row.setdefault("source_without_gate_count", 0)
+    return [by_binding[key] for key in sorted(by_binding)]
 
 
 def canary_closed_flat(row: dict[str, Any]) -> bool:
@@ -743,10 +801,11 @@ def canary_closed_flat(row: dict[str, Any]) -> bool:
 
 
 def rollback_verification_checks(
-    receipt: ProductionRollbackReceiptV1,
+    receipt: ProductionRollbackReceiptV2,
     release: ProductionReleaseCandidateV1,
     snapshot: dict[str, Any],
     *,
+    serve: ServeRuntimeObservationV1,
     now_ms: int,
 ) -> list[EvidenceVerificationCheckV1]:
     """Verify rollback scope, ordering, revoked authority and authoritative flat state."""
@@ -755,6 +814,7 @@ def rollback_verification_checks(
     grants = {str(row["grant_sha256"]): row for row in snapshot["grants"]}
     decision_runtime = snapshot.get("decision_runtime")
     workers_runtime = snapshot.get("workers_runtime")
+    registration = snapshot.get("release_registration")
     return [
         verification_check(
             "rollback_release_candidate_identity", release.release_sha256 == receipt.release_candidate_sha256
@@ -776,7 +836,25 @@ def rollback_verification_checks(
             and decision_runtime["heartbeat_at_ms"] >= receipt.rolled_back_at_ms,
         ),
         verification_check(
+            "rollback_workers_restarted",
+            registration is not None
+            and workers_runtime is not None
+            and workers_runtime["runtime_id"] == str(receipt.restart_workers_runtime_id)
+            and workers_runtime["runtime_id"] != str(registration["workers_runtime_id"])
+            and workers_runtime["started_at_ms"] >= receipt.rolled_back_at_ms
+            and workers_runtime["lifecycle_state"] == "running"
+            and workers_runtime["heartbeat_at_ms"] >= receipt.rolled_back_at_ms,
+        ),
+        verification_check(
             "rollback_observer_continues",
+            registration is not None
+            and str(serve.runtime_id) == str(receipt.restart_serve_runtime_id)
+            and str(serve.runtime_id) != str(registration["serve_runtime_id"])
+            and serve.started_at_ms >= receipt.rolled_back_at_ms
+            and serve.measured_at_ms >= receipt.rolled_back_at_ms,
+        ),
+        verification_check(
+            "rollback_workers_continues",
             workers_runtime is not None
             and workers_runtime["lifecycle_state"] == "running"
             and workers_runtime["heartbeat_at_ms"] >= receipt.rolled_back_at_ms,
@@ -817,8 +895,9 @@ def release_verification_checks(
     release: ProductionReleaseCandidateV1,
     snapshot: dict[str, Any],
     window_snapshot: dict[str, Any],
-    observations: dict[str, Any],
+    observations: ReleaseVerificationObservationsV1,
     *,
+    window_sources: tuple[FixedWindowSourceFactV1, ...],
     now_ms: int,
 ) -> list[EvidenceVerificationCheckV1]:
     """Verify one exact immutable release against DB and locally observed identities.
@@ -845,48 +924,46 @@ def release_verification_checks(
     }
     release_bindings = {row.binding for row in release.bindings}
     checks = [
-        verification_check("release_tag_signature_valid", observations["tag_signature_valid"]),
-        verification_check("release_tag_commit_identity", observations["tag_commit"] == release.git_commit_sha),
-        verification_check("release_tag_tree_identity", observations["tag_tree"] == release.git_tree_sha),
+        verification_check("release_tag_signature_valid", observations.tag_signature_valid),
+        verification_check("release_tag_commit_identity", observations.tag_commit == release.git_commit_sha),
+        verification_check("release_tag_tree_identity", observations.tag_tree == release.git_tree_sha),
         verification_check("release_migration_head", snapshot["migration_head"] == release.migration_head),
-        verification_check("release_runtime_revision", observations["runtime_revision"] == release.git_commit_sha),
-        verification_check("release_image_digest", observations["image_digest"] == release.oci_image_digest),
-        verification_check("release_openapi_identity", observations["openapi_sha256"] == release.openapi_sha256),
-        verification_check(
-            "release_web_assets_identity", observations["web_assets_sha256"] == release.web_assets_sha256
-        ),
+        verification_check("release_runtime_revision", observations.runtime_revision == release.git_commit_sha),
+        verification_check("release_image_digest", observations.image_digest == release.oci_image_digest),
+        verification_check("release_openapi_identity", observations.openapi_sha256 == release.openapi_sha256),
+        verification_check("release_web_assets_identity", observations.web_assets_sha256 == release.web_assets_sha256),
         verification_check(
             "release_nautilus_wheel_identity",
-            observations["nautilus_wheel_sha256"] == release.nautilus_wheel_sha256,
+            observations.nautilus_wheel_sha256 == release.nautilus_wheel_sha256,
         ),
         verification_check(
             "release_nautilus_source_identity",
-            observations["nautilus_source_git_commit"] == release.nautilus_source_git_commit,
+            observations.nautilus_source_git_commit == release.nautilus_source_git_commit,
         ),
         verification_check(
             "release_execution_contract_receipt",
-            observations["execution_contract_receipt_sha256"] == release.execution_contract_receipt_sha256,
+            observations.execution_contract_receipt_sha256 == release.execution_contract_receipt_sha256,
         ),
         verification_check(
             "release_execution_policy_identity",
-            observations["execution_policy_sha256"] == release.execution_policy_sha256,
+            observations.execution_policy_sha256 == release.execution_policy_sha256,
         ),
         verification_check(
-            "release_quote_contract_identity", observations["quote_contract_sha256"] == release.quote_contract_sha256
+            "release_quote_contract_identity", observations.quote_contract_sha256 == release.quote_contract_sha256
         ),
         verification_check(
             "release_protection_contract_identity",
-            observations["protection_contract_sha256"] == release.protection_contract_sha256,
+            observations.protection_contract_sha256 == release.protection_contract_sha256,
         ),
         verification_check(
-            "release_policy_config_identity", observations["policy_config_sha256"] == release.policy_config_sha256
+            "release_policy_config_identity", observations.policy_config_sha256 == release.policy_config_sha256
         ),
         verification_check(
             "release_registration_identity",
             window_snapshot.get("release_registration") is not None
             and window_snapshot["release_registration"]["release_sha256"] == release.release_sha256,
         ),
-        verification_check("release_evidence_receipt_chains_valid", observations["receipt_chains_valid"]),
+        verification_check("release_evidence_receipt_chains_valid", observations.receipt_chains_valid),
         verification_check(
             "release_corpus_receipts_complete",
             all(
@@ -1000,7 +1077,15 @@ def release_verification_checks(
             ),
         ]
     )
-    checks.extend(fixed_window_verification_checks(release.acceptance_window, window_snapshot, now_ms=now_ms))
+    checks.extend(
+        fixed_window_verification_checks(
+            release.acceptance_window,
+            window_snapshot,
+            sources=window_sources,
+            serve=observations.serve_runtime,
+            now_ms=now_ms,
+        )
+    )
     return checks
 
 
@@ -1013,14 +1098,17 @@ __all__ = [
     "EvidenceVerificationCheckV1",
     "EvidenceVerificationReportV1",
     "FixedWindowAcceptanceV1",
+    "FixedWindowSourceFactV1",
     "NautilusRuntimeStartV1",
     "PreparedProductionReleaseRegistration",
     "ProductionReleaseCandidateV1",
-    "ProductionRollbackReceiptV1",
+    "ProductionRollbackReceiptV2",
     "ReleaseBindingIdentityV1",
+    "ReleaseVerificationObservationsV1",
     "ServeRuntimeObservationV1",
     "canary_closed_flat",
     "case_verification_checks",
+    "fixed_window_binding_report",
     "fixed_window_verification_checks",
     "intent_verification_checks",
     "prepare_production_release_registration",

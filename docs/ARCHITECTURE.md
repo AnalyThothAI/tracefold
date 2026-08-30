@@ -466,11 +466,12 @@ port it needs from the process — `NewsDatabasePort`, `QuoteDatabasePort`,
 the lane, the deadline default and the error vocabulary. A business module never
 names `worker_session`, `run_news` or `heavy_business`: no import edge was never
 the same thing as no dependency. The handoff itself is two independent frozen
-row contracts, News's `news_trade_projection_v11` and Trading's own candidate
+row contracts, News's `news_trade_projection_v12` and Trading's own candidate
 input rows, translated field by field in `news_to_trading.py`, so a rename on
-either side fails at the seam rather than inside a runner. Version 11 publishes
-only the deterministic OI judgment, frozen source-availability clock, and instrument
-catalogue used by Trading; editorial News and liquidation have no capital-lane projection.
+either side fails at the seam rather than inside a runner. Version 12 publishes
+the deterministic OI judgment, frozen source-availability clock, a bounded bulk
+point-in-time instrument catalogue, and the complete fixed-window OI source
+universe used by Trading; editorial News and liquidation have no capital-lane projection.
 
 `tracefold.app` decides how capabilities are assembled and run, never what a
 business fact means. It reads business projections; it does not write business
@@ -2101,7 +2102,10 @@ Future capture is a contiguous sequence of append-only batches. PostgreSQL locks
 candidate receipt and enforces the next interval, maximum capture lag, binding, and
 protocol identity. Each batch records the collector and Workers generation health,
 expected/missing/late/catalog source mass, bar/funding continuity, artifact integrity,
-and the exact source rows. Only a complete batch chain can be
+and the exact source rows. App fetches only value-free bar interval and funding
+timestamp observations; Trading owns continuity and staleness meaning. The database
+recomputes the exact chain extent, blind-health digest, and incident set, so a caller
+cannot seal an incomplete window or supply a healthier summary. Only a complete batch chain can be
 sealed as `FUTURE_CAPTURE`; only its later committed drain can be unblinded once. The
 database overwrites caller timestamps with its actual clock for receipts, future
 batches, and release registration; a caller-provided clock cannot manufacture ordering.
@@ -2116,6 +2120,10 @@ tag, commit, OCI image, the exact already-running Workers and Serve generations,
 release-tagged authority chain, and nonzero activity floors. Both generations must span
 the window under the registered revision/image. Replacing either process or the release
 makes the window fail rather than silently continuing it.
+The final verifier independently reads News's complete cutoff-bounded OI source
+universe and requires exact equality with Trading's Gate source keys. Its per-binding
+report includes policy/capital and Q1/Q2 reasons, reservation/execution lifecycle,
+stage latency, financial accounting, and explicit source-without-Gate missingness.
 
 `tracefold.trading.evidence_verification` owns the pure meaning of receipt chains, Case,
 Intent, fixed-window, release, canary/restart, and rollback checks. `tracefold.app` only

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import pytest
 
-from tracefold.trading.contracts import canonical_sha256
+from tracefold.trading.contracts import FixedWindowSourceFactV1, canonical_sha256
 from tracefold.trading.evidence_verification import (
     EvidenceVerificationCheckV1,
     FixedWindowAcceptanceV1,
     ProductionReleaseCandidateV1,
+    ProductionRollbackReceiptV2,
+    ServeRuntimeObservationV1,
     case_verification_checks,
     fixed_window_verification_checks,
+    rollback_verification_checks,
     verification_report,
 )
 
@@ -122,6 +125,67 @@ def test_verification_report_is_canonical_and_any_failed_check_is_terminal() -> 
     assert tuple(check.code for check in report.checks) == ("a_failure", "z_pass")
 
 
+def test_rollback_requires_new_workers_and_serve_generations() -> None:
+    payload = _release_payload()
+    payload["approval_sha256"] = canonical_sha256(payload)
+    release = ProductionReleaseCandidateV1.model_validate(payload)
+    rolled_back_at_ms = release.acceptance_window.drain_cutoff_ms
+    unsigned = {
+        "rollback_version": "production_v3_rollback_receipt_v2",
+        "release_candidate_sha256": release.release_sha256,
+        "release_candidate_artifact_path": "release.json",
+        "bindings": ["BINANCE_USDM"],
+        "grant_sha256s": ["4" * 64],
+        "rolled_back_at_ms": rolled_back_at_ms,
+        "restart_workers_runtime_id": "00000000-0000-0000-0000-000000000020",
+        "restart_serve_runtime_id": "00000000-0000-0000-0000-000000000021",
+        "rolled_back_by": "operator",
+        "statement": "ALL_ENABLED_VENUES_FLAT_GRANTS_REVOKED_CAPITAL_PAUSED_NO_TERMINAL_INTENT_REVIVAL",
+    }
+    receipt = ProductionRollbackReceiptV2.model_validate(unsigned | {"receipt_sha256": canonical_sha256(unsigned)})
+    snapshot = {
+        "control": "PAUSED",
+        "decision_runtime": {"state": "RUNNING", "heartbeat_at_ms": rolled_back_at_ms},
+        "workers_runtime": {
+            "runtime_id": str(receipt.restart_workers_runtime_id),
+            "lifecycle_state": "running",
+            "started_at_ms": rolled_back_at_ms,
+            "heartbeat_at_ms": rolled_back_at_ms,
+        },
+        "release_registration": {
+            "workers_runtime_id": "00000000-0000-0000-0000-000000000010",
+            "serve_runtime_id": "00000000-0000-0000-0000-000000000011",
+        },
+        "active_intent_count": 0,
+        "active_risk_count": 0,
+        "post_rollback_intent_count": 0,
+        "post_rollback_submission_count": 0,
+        "bindings": [
+            {
+                "binding": "BINANCE_USDM",
+                "account_state": "reconciled_flat",
+                "active_arm_receipt_sha256": None,
+                "catalog_state": "ready",
+                "capability_state": "ready",
+            }
+        ],
+        "grants": [{"grant_sha256": "4" * 64, "expires_at_ms": rolled_back_at_ms, "revoked_at_ms": None}],
+    }
+    serve = ServeRuntimeObservationV1(
+        runtime_id=receipt.restart_serve_runtime_id,
+        runtime_revision=release.git_commit_sha,
+        image_digest=release.oci_image_digest,
+        started_at_ms=rolled_back_at_ms,
+        measured_at_ms=rolled_back_at_ms,
+    )
+
+    checks = rollback_verification_checks(receipt, release, snapshot, serve=serve, now_ms=rolled_back_at_ms)
+    assert all(check.passed for check in checks)
+    old_serve = serve.model_copy(update={"runtime_id": snapshot["release_registration"]["serve_runtime_id"]})
+    failed = rollback_verification_checks(receipt, release, snapshot, serve=old_serve, now_ms=rolled_back_at_ms)
+    assert {check.code: check.passed for check in failed}["rollback_observer_continues"] is False
+
+
 def test_case_verifier_rejects_an_allowed_case_without_its_one_intent() -> None:
     checks = case_verification_checks(
         {
@@ -140,7 +204,7 @@ def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
         "wrong_gate_contract_count": 0,
         "wrong_release_source_count": 0,
         "intent_release_mismatch_count": 0,
-        "source_count": 4,
+        "gate_source_count": 4,
         "unique_source_count": 4,
         "admitted_source_count": 3,
         "rejected_or_deferred_source_count": 1,
@@ -162,6 +226,7 @@ def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
     }
     snapshot = {
         "counts": counts,
+        "gate_source_keys": tuple(f"oi:event-{index}:open_interest_delta_v1" for index in range(4)),
         "workers_runtime": {
             "runtime_id": "00000000-0000-0000-0000-000000000010",
             "runtime_revision": "0" * 40,
@@ -169,13 +234,6 @@ def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
             "lifecycle_state": "running",
             "started_at_ms": START - 100,
             "heartbeat_at_ms": END,
-        },
-        "serve_runtime": {
-            "runtime_id": "00000000-0000-0000-0000-000000000011",
-            "runtime_revision": "1" * 40,
-            "image_digest": _window().oci_image_digest,
-            "started_at_ms": START - 100,
-            "measured_at_ms": END,
         },
         "release_registration": {
             "release_sha256": "f" * 64,
@@ -191,8 +249,34 @@ def test_fixed_window_verifier_binds_the_exact_workers_release() -> None:
         },
     }
 
-    checks = fixed_window_verification_checks(_window(), snapshot, now_ms=_window().drain_cutoff_ms)
+    sources = tuple(
+        FixedWindowSourceFactV1(
+            event_id=f"event-{index}",
+            metric_version="open_interest_delta_v1",
+            source_venue="binance.perp",
+            observed_at_ms=START + index,
+            available_at_ms=START + index,
+            verdict_created_at_ms=START + index,
+        )
+        for index in range(4)
+    )
+    serve = ServeRuntimeObservationV1(
+        runtime_id="00000000-0000-0000-0000-000000000011",
+        runtime_revision="1" * 40,
+        image_digest=_window().oci_image_digest,
+        started_at_ms=START - 100,
+        measured_at_ms=END,
+    )
+    checks = fixed_window_verification_checks(
+        _window(), snapshot, sources=sources, serve=serve, now_ms=_window().drain_cutoff_ms
+    )
 
     by_code = {check.code: check for check in checks}
     assert by_code["window_exact_workers_release"].passed is False
     assert all(check.passed for code, check in by_code.items() if code != "window_exact_workers_release")
+
+    missing_gate_snapshot = {**snapshot, "gate_source_keys": snapshot["gate_source_keys"][:-1]}
+    missing_gate_checks = fixed_window_verification_checks(
+        _window(), missing_gate_snapshot, sources=sources, serve=serve, now_ms=_window().drain_cutoff_ms
+    )
+    assert {check.code: check.passed for check in missing_gate_checks}["window_source_gate_conservation"] is False

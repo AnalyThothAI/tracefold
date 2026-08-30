@@ -283,6 +283,27 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class FixedWindowSourceFactV1(_Frozen):
+    """One complete News-owned source fact expected to have one durable Gate disposition."""
+
+    event_id: str = Field(min_length=1)
+    metric_version: str = Field(min_length=1)
+    source_venue: str | None = None
+    observed_at_ms: int = Field(ge=0)
+    available_at_ms: int = Field(ge=0)
+    verdict_created_at_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_clocks(self) -> FixedWindowSourceFactV1:
+        if self.available_at_ms < self.observed_at_ms or self.verdict_created_at_ms < self.observed_at_ms:
+            raise ValueError("fixed_window_source_clock_invalid")
+        return self
+
+    @property
+    def source_key(self) -> str:
+        return oi_source_key(self.event_id, self.metric_version)
+
+
 class Bar(_Frozen):
     """One closed interval from a public venue REST catalogue.
 
@@ -494,6 +515,7 @@ __all__ = [
     "ControlState",
     "DecisionBlockReason",
     "ExchangeId",
+    "FixedWindowSourceFactV1",
     "FrozenMarketContext",
     "FrozenPolicyContext",
     "InstrumentCandidateRow",

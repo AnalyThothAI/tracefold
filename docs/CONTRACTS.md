@@ -995,8 +995,10 @@ reader/writer.
   contiguous append-only batches at the locked interval. Each batch persists its
   exact sources plus collector/Workers health, expected/missing/late/catalog
   source mass, bar/funding continuity, and artifact integrity;
-  PostgreSQL rejects gaps, overlaps, wrong binding/protocol, and calls beyond the
-  maximum lag. Only the complete chain freezes the fixed-cutoff population as the
+  App supplies value-free provider clocks and Trading interprets continuity.
+  PostgreSQL rejects gaps, overlaps, wrong binding/protocol, calls beyond the
+  maximum lag, incomplete chains, and caller-forged health/incident summaries.
+  Only the complete chain freezes the fixed-cutoff population as the
   protocol's one `FUTURE_CAPTURE_SEALED`. A future `drain` refuses provider I/O before the fixed
   cutoff, then transactionally commits that exact capture/drain pair as the one
   `FUTURE_DRAIN_SEALED` receipt for that protocol before exposing
@@ -1611,9 +1613,10 @@ publishes one content-addressed artifact, materializes timed blacklist expiry
 through a short Workers transaction, and inserts one immutable replay receipt;
 it has no execution credentials and performs no provider order write.
 
-Trading consumes `news_trade_projection_v11`: exact current
+Trading consumes `news_trade_projection_v12`: exact current
 `news_judgment_v2` OI rows, their immutable source Item identity and availability
-clock, plus the public instrument catalogue. Editorial News
+clock, a bounded bulk point-in-time public instrument catalogue, and the complete
+cutoff-bounded OI source universe used for fixed-window Gate conservation. Editorial News
 and liquidation do not cross this capital seam. OI rows freeze `ingest_mode`,
 so Item retention cannot erase live/recovery provenance; recovery rows are not
 eligible triggers.

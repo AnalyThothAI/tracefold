@@ -30,6 +30,7 @@ from .contracts import (
     oi_source_key,
 )
 from .evidence_clock import (
+    EVIDENCE_BAR_INTERVAL_MS,
     CandidateDecisionReceiptV1,
     CandidateLockedV1,
     CapturedSourceV1,
@@ -100,6 +101,88 @@ class EvidenceCatalogRequest:
     observed_at_ms: int
 
 
+@dataclass(frozen=True, slots=True)
+class FutureCollectorObservationV1:
+    """News collector facts mechanically mapped by App for one blind batch."""
+
+    connected: bool
+    last_frame_at_ms: int | None
+    last_error_code: str | None
+    expected_source_count: int
+    batch_end_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class FutureWorkersObservationV1:
+    """Workers generation facts mechanically mapped by App for one blind batch."""
+
+    lifecycle_state: str
+    heartbeat_at_ms: int | None
+
+
+@dataclass(frozen=True, slots=True, order=True)
+class BlindBarIntervalObservationV1:
+    open_at_ms: int
+    close_at_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class BlindMarketProbeObservationV1:
+    """Value-free provider clocks; no price, return, rate or cohort crosses the blind seam."""
+
+    venue: str
+    provider_instrument_id: str
+    bar_start_ms: int
+    bar_end_ms: int
+    bars: tuple[BlindBarIntervalObservationV1, ...]
+    bar_error_code: str | None
+    funding_start_ms: int
+    funding_end_ms: int
+    funding_at_ms: tuple[int, ...]
+    funding_error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class BlindMarketHealthSummaryV1:
+    market_instrument_count: int
+    bar_continuous_count: int
+    funding_probe_ok_count: int
+
+
+def summarize_blind_market_health(
+    probes: Sequence[BlindMarketProbeObservationV1],
+) -> BlindMarketHealthSummaryV1:
+    """Interpret raw, value-free provider clocks entirely inside Trading."""
+
+    bars_ok = 0
+    funding_ok = 0
+    for probe in probes:
+        ordered = tuple(sorted(probe.bars))
+        if (
+            probe.bar_error_code is None
+            and ordered
+            and ordered[0].open_at_ms <= probe.bar_start_ms
+            and ordered[-1].close_at_ms >= probe.bar_end_ms
+            and all(row.close_at_ms - row.open_at_ms == EVIDENCE_BAR_INTERVAL_MS for row in ordered)
+            and all(previous.close_at_ms == current.open_at_ms for previous, current in pairwise(ordered))
+        ):
+            bars_ok += 1
+        latest_funding_at_ms = max(probe.funding_at_ms, default=None)
+        maximum_age_ms = 12 * 60 * 60 * 1000 if probe.venue == "binance.perp" else 4 * 60 * 60 * 1000
+        if (
+            probe.funding_error_code is None
+            and latest_funding_at_ms is not None
+            and probe.funding_start_ms <= latest_funding_at_ms <= probe.funding_end_ms
+            and latest_funding_at_ms >= probe.funding_end_ms - maximum_age_ms
+        ):
+            funding_ok += 1
+    return BlindMarketHealthSummaryV1(
+        market_instrument_count=len(probes),
+        bar_continuous_count=bars_ok,
+        funding_probe_ok_count=funding_ok,
+    )
+
+
 def _required_int(value: object, error: str) -> int:
     try:
         return int(cast(Any, value))
@@ -127,38 +210,35 @@ def evidence_catalog_request(row: OiCandidateRow) -> EvidenceCatalogRequest | No
 def build_future_capture_collection_health(
     sources: tuple[CapturedSourceV1, ...],
     *,
-    expected_source_count: int,
-    collector: dict[str, Any],
-    workers: dict[str, Any] | None,
-    market_instrument_count: int,
-    bar_continuous_count: int,
-    funding_probe_ok_count: int,
+    collector: FutureCollectorObservationV1,
+    workers: FutureWorkersObservationV1 | None,
+    market: BlindMarketHealthSummaryV1,
 ) -> FutureCaptureCollectionHealthV1:
     """Reduce raw collection facts to the only blind-safe health projection."""
 
     source_count = len(sources)
-    late_count = sum(row.available_at_ms > int(collector["batch_end_ms"]) for row in sources)
+    late_count = sum(row.available_at_ms > collector.batch_end_ms for row in sources)
     catalog_missing = sum(row.provider_instrument_id is None or not row.catalog.rows for row in sources)
-    missing_count = max(0, int(expected_source_count) - source_count)
+    missing_count = max(0, collector.expected_source_count - source_count)
     return FutureCaptureCollectionHealthV1(
-        collector_connected=bool(collector.get("connected")),
-        collector_last_frame_at_ms=collector.get("last_frame_at_ms"),
-        collector_error_code=collector.get("last_error_code"),
-        workers_state="missing" if workers is None else str(workers.get("lifecycle_state") or "missing"),
-        workers_heartbeat_at_ms=None if workers is None else workers.get("heartbeat_at_ms"),
+        collector_connected=collector.connected,
+        collector_last_frame_at_ms=collector.last_frame_at_ms,
+        collector_error_code=collector.last_error_code,
+        workers_state="missing" if workers is None else workers.lifecycle_state,
+        workers_heartbeat_at_ms=None if workers is None else workers.heartbeat_at_ms,
         source_count=source_count,
-        expected_source_count=int(expected_source_count),
+        expected_source_count=collector.expected_source_count,
         missing_source_count=missing_count,
         late_source_count=late_count,
         catalog_missing_count=catalog_missing,
-        missing_source_bps=_rate_bps(missing_count, int(expected_source_count)),
+        missing_source_bps=_rate_bps(missing_count, collector.expected_source_count),
         late_source_bps=_rate_bps(late_count, source_count),
         catalog_missing_bps=_rate_bps(catalog_missing, source_count),
-        market_instrument_count=market_instrument_count,
-        bar_continuous_count=bar_continuous_count,
-        funding_probe_ok_count=funding_probe_ok_count,
-        bar_continuity_bps=_rate_bps(bar_continuous_count, market_instrument_count),
-        funding_continuity_bps=_rate_bps(funding_probe_ok_count, market_instrument_count),
+        market_instrument_count=market.market_instrument_count,
+        bar_continuous_count=market.bar_continuous_count,
+        funding_probe_ok_count=market.funding_probe_ok_count,
+        bar_continuity_bps=_rate_bps(market.bar_continuous_count, market.market_instrument_count),
+        funding_continuity_bps=_rate_bps(market.funding_probe_ok_count, market.market_instrument_count),
         artifact_integrity_sha256=canonical_sha256(tuple(row.model_dump(mode="json") for row in sources)),
     )
 
@@ -429,6 +509,7 @@ def unblind_future_holdout(
     *,
     candidate: CandidateLockedV1,
     candidate_receipt: CandidateDecisionReceiptV1,
+    candidate_recorded_at_ms: int,
     admission: AdmissionConfig,
     policy: CapitalPolicy,
     price_window: PriceWindow,
@@ -439,7 +520,14 @@ def unblind_future_holdout(
 ) -> FutureHoldoutResultV1:
     """One protocol-locked decision after the fixed drain cutoff; persistence enforces one-shot."""
 
-    _validate_future_inputs(capture, drain, candidate, candidate_receipt, evaluated_at_ms=evaluated_at_ms)
+    _validate_future_inputs(
+        capture,
+        drain,
+        candidate,
+        candidate_receipt,
+        candidate_recorded_at_ms=candidate_recorded_at_ms,
+        evaluated_at_ms=evaluated_at_ms,
+    )
     population = _evaluate_population(
         capture,
         drain,
@@ -586,6 +674,7 @@ def _validate_future_inputs(
     candidate: CandidateLockedV1,
     receipt: CandidateDecisionReceiptV1,
     *,
+    candidate_recorded_at_ms: int,
     evaluated_at_ms: int,
 ) -> None:
     protocol = candidate.statistics
@@ -594,7 +683,8 @@ def _validate_future_inputs(
         or receipt.protocol_sha256 != candidate.protocol_sha256
         or receipt.artifact_sha256 != candidate.protocol_sha256
         or candidate.locked_at_ms > receipt.created_at_ms
-        or receipt.created_at_ms >= protocol.future_start_ms
+        or receipt.created_at_ms > candidate_recorded_at_ms
+        or candidate_recorded_at_ms >= protocol.future_start_ms
     ):
         raise ValueError("evidence_future_candidate_receipt_mismatch")
     if receipt.binding != candidate.binding or receipt.sealed_corpus_sha256 != candidate.sealed_corpus_sha256:
@@ -604,7 +694,7 @@ def _validate_future_inputs(
     if (
         capture.spec.target_binding != candidate.binding
         or capture.spec.protocol_receipt_sha256 != receipt.receipt_sha256
-        or capture.spec.protocol_locked_at_ms != receipt.created_at_ms
+        or capture.spec.protocol_locked_at_ms != candidate_recorded_at_ms
         or capture.spec.start_ms != protocol.future_start_ms
         or capture.spec.end_ms != protocol.future_end_ms
     ):
@@ -1042,10 +1132,16 @@ def _feature_contract_sha256(
 
 __all__ = [
     "EVIDENCE_EVALUATOR_VERSION",
+    "BlindBarIntervalObservationV1",
+    "BlindMarketHealthSummaryV1",
+    "BlindMarketProbeObservationV1",
+    "FutureCollectorObservationV1",
+    "FutureWorkersObservationV1",
     "build_evidence_capture",
     "build_evidence_drain",
     "build_future_capture_collection_health",
     "evidence_catalog_request",
     "seal_discovery_corpus",
+    "summarize_blind_market_health",
     "unblind_future_holdout",
 ]

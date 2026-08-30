@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..evidence_verification import FixedWindowAcceptanceV1, ProductionRollbackReceiptV1
+from ..evidence_verification import FixedWindowAcceptanceV1, ProductionRollbackReceiptV2
 
 
 class VerificationStorage:
@@ -85,7 +85,8 @@ class VerificationStorage:
                GROUP BY c.case_id, c.capital_disposition
             )
             SELECT
-              (SELECT count(*) FROM gates) AS source_count,
+              (SELECT count(*) FROM gates) AS gate_source_count,
+              (SELECT array_agg(source_key ORDER BY source_key) FROM gates) AS gate_source_keys,
               (SELECT count(*) FROM gates
                 WHERE gate_version <> %(gate_version)s
                    OR gate_config_digest <> %(gate_config)s) AS wrong_gate_contract_count,
@@ -142,19 +143,126 @@ class VerificationStorage:
                 "end": spec.end_ms,
             },
         ).fetchone()
-        counts = {} if row is None else {name: int(value or 0) for name, value in dict(row).items()}
+        values = {} if row is None else dict(row)
+        gate_source_keys = tuple(str(value) for value in (values.pop("gate_source_keys", None) or ()))
+        counts = {name: int(value or 0) for name, value in values.items()}
         binding_rows = self.conn.execute(
             """
-            SELECT i.binding, count(*) AS intent_count,
-                   count(*) FILTER (WHERE i.terminal_outcome = 'CLOSED_FLAT') AS closed_flat_count,
-                   count(*) FILTER (WHERE i.reason_code IS NOT NULL) AS reason_count
-              FROM trading_intents i
-              JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE c.trigger_kind = 'oi'
-               AND c.source_observed_at_ms >= %s AND c.source_observed_at_ms < %s
-             GROUP BY i.binding ORDER BY i.binding
+            WITH window_cases AS (
+              SELECT c.*,
+                     CASE lower(coalesce(c.manifest #>> '{primary_trigger,venue}', ''))
+                       WHEN 'binance' THEN 'BINANCE_USDM'
+                       WHEN 'binance.perp' THEN 'BINANCE_USDM'
+                       WHEN 'binance.usdm' THEN 'BINANCE_USDM'
+                       WHEN 'hyperliquid' THEN 'HYPERLIQUID_PERP'
+                       WHEN 'hl.perp' THEN 'HYPERLIQUID_PERP'
+                       WHEN 'hyperliquid.perp' THEN 'HYPERLIQUID_PERP'
+                       ELSE 'UNBOUND'
+                     END AS source_binding
+                FROM trading_cases c
+               WHERE c.trigger_kind = 'oi'
+                 AND c.source_observed_at_ms >= %(start)s
+                 AND c.source_observed_at_ms < %(end)s
+            ), window_intents AS (
+              SELECT i.*, c.source_binding,
+                     risk.status AS risk_status,
+                     risk.settlement_known AS settlement_known
+                FROM trading_intents i
+                JOIN window_cases c ON c.case_id = i.case_id
+                LEFT JOIN trading_capital_risk_reservation_state risk ON risk.intent_id = i.intent_id
+            ), bindings AS (
+              SELECT source_binding AS binding FROM window_cases
+              UNION SELECT binding FROM window_intents
+            )
+            SELECT b.binding,
+                   (SELECT count(*) FROM window_cases c WHERE c.source_binding = b.binding) AS case_count,
+                   (SELECT count(*) FROM window_intents i WHERE i.binding = b.binding) AS intent_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.terminal_outcome = 'CLOSED_FLAT') AS closed_flat_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.capital_authorization_receipt_sha256 IS NOT NULL)
+                     AS reservation_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.entry_fenced_at_ms IS NOT NULL) AS fenced_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.entry_submitted_at_ms IS NOT NULL) AS submitted_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.opened_at_ms IS NOT NULL) AS opened_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.protected_at_ms IS NOT NULL) AS protected_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.closed_at_ms IS NOT NULL) AS closed_count,
+                   (SELECT count(*) FROM window_intents i
+                     WHERE i.binding = b.binding AND i.flat_verified_at_ms IS NOT NULL) AS flat_verified_count,
+                   (SELECT count(*) FROM window_intents i WHERE i.binding = b.binding
+                     AND (i.realized_pnl_amount IS NULL OR i.realized_pnl_currency IS NULL
+                       OR i.commissions_by_currency IS NULL OR i.funding_by_currency IS NULL))
+                     AS financial_missing_count,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(c.policy_decision, 'missing') AS value, count(*) AS n
+                       FROM window_cases c WHERE c.source_binding = b.binding GROUP BY value
+                   ) x) AS policy_decisions,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(c.policy_reason, 'missing') AS value, count(*) AS n
+                       FROM window_cases c WHERE c.source_binding = b.binding GROUP BY value
+                   ) x) AS policy_reasons,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(c.capital_disposition, 'missing') AS value, count(*) AS n
+                       FROM window_cases c WHERE c.source_binding = b.binding GROUP BY value
+                   ) x) AS capital_dispositions,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(c.capital_reason, 'missing') AS value, count(*) AS n
+                       FROM window_cases c WHERE c.source_binding = b.binding GROUP BY value
+                   ) x) AS capital_reasons,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.entry_quote_q1 ->> 'reason', 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS q1_reasons,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.entry_quote_q2 ->> 'reason', 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS q2_reasons,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.risk_status, 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS reservation_states,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.execution_state, 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS execution_states,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.execution_phase, 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS execution_phases,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.terminal_outcome, 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS terminal_outcomes,
+                   (SELECT COALESCE(jsonb_object_agg(value, n ORDER BY value), '{}'::jsonb) FROM (
+                     SELECT coalesce(i.reason_code, 'missing') AS value, count(*) AS n
+                       FROM window_intents i WHERE i.binding = b.binding GROUP BY value
+                   ) x) AS execution_reasons,
+                   (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                     'intent_id', i.intent_id,
+                     'realized_pnl_amount', i.realized_pnl_amount,
+                     'realized_pnl_currency', i.realized_pnl_currency,
+                     'commissions_by_currency', i.commissions_by_currency,
+                     'funding_by_currency', i.funding_by_currency
+                   ) ORDER BY i.intent_id), '[]'::jsonb)
+                      FROM window_intents i WHERE i.binding = b.binding) AS financials,
+                   (SELECT jsonb_build_object(
+                     'fence_avg_ms', avg(i.entry_fenced_at_ms - i.created_at_ms)::bigint,
+                     'submit_avg_ms', avg(i.entry_submitted_at_ms - i.created_at_ms)::bigint,
+                     'open_avg_ms', avg(i.opened_at_ms - i.created_at_ms)::bigint,
+                     'protect_avg_ms', avg(i.protected_at_ms - i.created_at_ms)::bigint,
+                     'close_avg_ms', avg(i.closed_at_ms - i.created_at_ms)::bigint,
+                     'flat_avg_ms', avg(i.flat_verified_at_ms - i.created_at_ms)::bigint,
+                     'flat_max_ms', max(i.flat_verified_at_ms - i.created_at_ms)
+                   ) FROM window_intents i WHERE i.binding = b.binding) AS stage_latency
+              FROM bindings b
+             ORDER BY b.binding
             """,
-            (spec.start_ms, spec.end_ms),
+            {"start": spec.start_ms, "end": spec.end_ms},
         ).fetchall()
         workers_runtime = self.conn.execute(
             "SELECT runtime_id::text AS runtime_id, runtime_revision, image_digest, "
@@ -167,6 +275,7 @@ class VerificationStorage:
         ).fetchone()
         return {
             "counts": counts,
+            "gate_source_keys": gate_source_keys,
             "by_binding": [dict(item) for item in binding_rows],
             "workers_runtime": None if workers_runtime is None else dict(workers_runtime),
             "release_registration": None if registration is None else dict(registration),
@@ -269,13 +378,20 @@ class VerificationStorage:
             "runtime_starts": [dict(item) for item in runtime_starts],
         }
 
-    def rollback_verification_snapshot(self, receipt: ProductionRollbackReceiptV1) -> dict[str, Any]:
+    def rollback_verification_snapshot(self, receipt: ProductionRollbackReceiptV2) -> dict[str, Any]:
         runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
         decision = self.conn.execute(
             "SELECT state, heartbeat_at_ms, reason FROM trading_decision_runtime WHERE id = 1"
         ).fetchone()
         workers = self.conn.execute(
-            "SELECT lifecycle_state, heartbeat_at_ms FROM workers_runtime WHERE singleton_key"
+            "SELECT runtime_id::text AS runtime_id, lifecycle_state, started_at_ms, heartbeat_at_ms "
+            "FROM workers_runtime WHERE singleton_key"
+        ).fetchone()
+        registration = self.conn.execute(
+            "SELECT workers_runtime_id::text AS workers_runtime_id, "
+            "serve_runtime_id::text AS serve_runtime_id "
+            "FROM trading_production_release_registrations WHERE release_sha256 = %s",
+            (receipt.release_candidate_sha256,),
         ).fetchone()
         active = self.conn.execute(
             "SELECT count(*) AS n FROM trading_intents "
@@ -314,6 +430,7 @@ class VerificationStorage:
             "control": None if runtime is None else str(runtime["control"]),
             "decision_runtime": None if decision is None else dict(decision),
             "workers_runtime": None if workers is None else dict(workers),
+            "release_registration": None if registration is None else dict(registration),
             "active_intent_count": int(active["n"] if active is not None else 0),
             "active_risk_count": int(risk["n"] if risk is not None else 0),
             "post_rollback_intent_count": int(post_rollback["intent_count"] if post_rollback is not None else 0),

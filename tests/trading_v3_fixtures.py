@@ -49,7 +49,12 @@ from tracefold.trading.evidence_clock import (
 from tracefold.trading.evidence_clock import (
     source_contract_sha256 as evidence_source_contract_sha256,
 )
-from tracefold.trading.evidence_research import build_future_capture_collection_health
+from tracefold.trading.evidence_research import (
+    BlindMarketHealthSummaryV1,
+    FutureCollectorObservationV1,
+    FutureWorkersObservationV1,
+    build_future_capture_collection_health,
+)
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256, PROTECTION_CONTRACT_SHA256
 from tracefold.trading.market_context import PriceWindow
 from tracefold.trading.policy import CapitalPolicy
@@ -268,12 +273,22 @@ def append_capital_evidence_fixture(
     trading.append_candidate_decision_receipt(candidate_receipt, candidate)
     health = build_future_capture_collection_health(
         (),
-        expected_source_count=0,
-        collector={"connected": True, "batch_end_ms": candidate.statistics.future_end_ms},
-        workers={"lifecycle_state": "running", "heartbeat_at_ms": candidate.statistics.future_end_ms},
-        market_instrument_count=0,
-        bar_continuous_count=0,
-        funding_probe_ok_count=0,
+        collector=FutureCollectorObservationV1(
+            connected=True,
+            last_frame_at_ms=candidate.statistics.future_end_ms,
+            last_error_code=None,
+            expected_source_count=0,
+            batch_end_ms=candidate.statistics.future_end_ms,
+        ),
+        workers=FutureWorkersObservationV1(
+            lifecycle_state="running",
+            heartbeat_at_ms=candidate.statistics.future_end_ms,
+        ),
+        market=BlindMarketHealthSummaryV1(
+            market_instrument_count=0,
+            bar_continuous_count=0,
+            funding_probe_ok_count=0,
+        ),
     )
     batch = FutureCaptureBatchV1(
         binding=candidate.binding,

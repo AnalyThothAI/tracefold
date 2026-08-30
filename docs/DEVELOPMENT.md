@@ -435,10 +435,12 @@ append-only blind-batch continuity/health, deterministic block bootstrap and dec
 power. PostgreSQL tests prove the irreversible `0334` cutover, the append-only
 corpus -> candidate -> future capture -> future drain -> result parent chain,
 one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
-link, gap-free bar/funding boundaries, Case/Intent conservation, exact-release
+link, database-recomputed complete future chains/health incidents, gap-free
+bar/funding boundaries, News-source-to-Gate conservation, Case/Intent conservation, exact-release
 fixed-window accounting, pre-window release registration against exact
 Workers/Serve generations, append-only Nautilus process generations,
-signed-tag/restart/canary release binding, and release-bound rollback snapshots.
+signed-tag/restart/canary release binding, and release-bound rollback snapshots
+that require new Workers and Serve generations.
 Pure verifier tests own interpretation of receipt artifacts and the bounded
 DB/runtime/Git facts; App integration tests use real PostgreSQL, raw artifact bytes,
 and real Git identities to prove the public handler supplies those facts and cannot

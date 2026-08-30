@@ -261,6 +261,17 @@ def upgrade() -> None:
         DECLARE
           parent_row trading_evidence_clock_receipts%ROWTYPE;
           future_batch_count INTEGER;
+          future_batch_start BIGINT;
+          future_batch_end BIGINT;
+          future_start BIGINT;
+          future_end BIGINT;
+          capture_interval BIGINT;
+          maximum_missingness_bps INTEGER;
+          expected_batch_count INTEGER;
+          expected_health_sha256 TEXT;
+          source_incident BOOLEAN;
+          market_incident BOOLEAN;
+          expected_incidents JSONB;
         BEGIN
           NEW.recorded_at_ms := trading_evidence_now_ms();
           IF NEW.receipt_kind = 'DISCOVERY_CORPUS' THEN
@@ -268,7 +279,8 @@ def upgrade() -> None:
           END IF;
           SELECT * INTO parent_row
             FROM trading_evidence_clock_receipts
-           WHERE receipt_sha256 = NEW.parent_receipt_sha256;
+           WHERE receipt_sha256 = NEW.parent_receipt_sha256
+           FOR UPDATE;
           IF NOT FOUND THEN
             RAISE EXCEPTION 'trading_evidence_parent_missing';
           END IF;
@@ -303,15 +315,52 @@ def upgrade() -> None:
             RAISE EXCEPTION 'trading_evidence_future_drain_parent_invalid';
           END IF;
           IF NEW.receipt_kind = 'FUTURE_CAPTURE' THEN
-            SELECT count(*) INTO future_batch_count
+            future_start := (parent_row.payload #>> '{evidence,statistics,future_start_ms}')::BIGINT;
+            future_end := (parent_row.payload #>> '{evidence,statistics,future_end_ms}')::BIGINT;
+            capture_interval := (parent_row.payload #>> '{evidence,statistics,capture_interval_ms}')::BIGINT;
+            maximum_missingness_bps :=
+              (parent_row.payload #>> '{evidence,statistics,maximum_missingness_bps}')::INTEGER;
+            expected_batch_count :=
+              ((future_end - future_start + capture_interval - 1) / capture_interval)::INTEGER;
+            SELECT count(*), min(batch_start_ms), max(batch_end_ms),
+                   encode(sha256(convert_to(news_canonical_jsonb(
+                     COALESCE(jsonb_agg(payload -> 'health' ORDER BY batch_start_ms), '[]'::jsonb)
+                   ), 'UTF8')), 'hex'),
+                   COALESCE(bool_or(
+                     NOT collector_connected
+                     OR payload #>> '{health,collector_last_frame_at_ms}' IS NULL
+                     OR (payload #>> '{health,collector_last_frame_at_ms}')::BIGINT < batch_start_ms
+                     OR payload #>> '{health,collector_error_code}' IS NOT NULL
+                     OR payload #>> '{health,workers_state}' IS DISTINCT FROM 'running'
+                     OR payload #>> '{health,workers_heartbeat_at_ms}' IS NULL
+                     OR (payload #>> '{health,workers_heartbeat_at_ms}')::BIGINT < batch_end_ms
+                     OR missing_source_bps > maximum_missingness_bps
+                     OR late_source_bps > maximum_missingness_bps
+                     OR catalog_missing_bps > maximum_missingness_bps
+                   ), false),
+                   COALESCE(bool_or(
+                     (payload #>> '{health,market_instrument_count}')::INTEGER > 0
+                     AND (bar_continuity_bps < 10000 OR funding_continuity_bps < 10000)
+                   ), false)
+              INTO future_batch_count, future_batch_start, future_batch_end,
+                   expected_health_sha256, source_incident, market_incident
               FROM trading_evidence_future_capture_batches
              WHERE protocol_sha256 = NEW.protocol_sha256;
+            expected_incidents := to_jsonb(array_remove(ARRAY[
+              CASE WHEN market_incident THEN 'bar_or_funding_missing' END,
+              CASE WHEN source_incident THEN 'source_mass_missingness' END
+            ]::TEXT[], NULL));
             IF parent_row.receipt_kind <> 'CANDIDATE_DECISION'
               OR parent_row.terminal <> 'CANDIDATE_LOCKED'
               OR parent_row.binding <> NEW.binding
               OR parent_row.corpus_sha256 <> NEW.corpus_sha256
               OR parent_row.protocol_sha256 <> NEW.protocol_sha256
+              OR future_batch_start <> future_start
+              OR future_batch_end <> future_end
+              OR future_batch_count <> expected_batch_count
               OR (NEW.payload #>> '{receipt,batch_count}')::INTEGER <> future_batch_count
+              OR NEW.payload #>> '{receipt,batch_health_sha256}' IS DISTINCT FROM expected_health_sha256
+              OR NEW.payload #> '{receipt,collection_incidents}' IS DISTINCT FROM expected_incidents
             THEN
               RAISE EXCEPTION 'trading_evidence_future_capture_parent_invalid';
             END IF;
