@@ -65,7 +65,9 @@ import each other. `tracefold.app` is the single seam that knows both.
 never what a business fact means. It may read a business projection — the
 News → Trading handoff is exactly that — but it may not `INSERT`, `UPDATE` or
 `DELETE` a `news_*` or `trading_*` row. Business SQL lives in the owning
-package's storage module, behind a named repository method.
+package's storage module, behind a named repository method. News Release owns
+Canary identity, durable reasons, candidate artifact lineage, and startup
+reconciliation; App supplies the bounded transaction and neutral process facts.
 
 **Ports.** A business package states what it needs from the process as a narrow
 `Protocol` it owns (`NewsDatabasePort`, `QuoteDatabasePort`,

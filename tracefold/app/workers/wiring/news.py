@@ -11,7 +11,6 @@ import tracefold.news.program.resources.candidates as candidate_programs
 from tracefold.app.learning_runtime import (
     NewsProgramRuntimeComposition,
     active_arm_manifest,
-    candidate_program_artifact,
     compose_news_program_runtime,
     runtime_manifest_sha,
 )
@@ -52,6 +51,12 @@ from tracefold.news.program.artifact import (
 from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.release.canary import CanaryRuntimeArm
+from tracefold.news.release.runtime import (
+    CandidateArtifactUnavailable,
+    CandidateRuntimeFact,
+    candidate_program_artifact,
+    reconcile_canary_startup,
+)
 from tracefold.news.triage_rules import DecidePolicy
 from tracefold.platform.config.models import Settings, news_push_availability
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
@@ -189,9 +194,17 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
     semantic_judge = runtime_composition.semantic_judge(stable_artifact)
     progression_verifier = runtime_composition.progression_verifier()
     canary_arms: dict[str, CanaryRuntimeArm] = {}
-    candidate_failures: dict[str, str] = {}
+    candidate_facts = {
+        candidate_sha: CandidateRuntimeFact(
+            candidate_manifest_sha=candidate_sha,
+            compiled_bundle_sha=candidate.candidate_arm.bundle_sha,
+            runnable_bundle_sha=None,
+            failure_kind="runtime_unavailable",
+        )
+        for candidate_sha, candidate in compiled_candidates.items()
+    }
     if semantic_judge is not None:
-        canary_arms, candidate_failures = _candidate_runtime_arms(
+        canary_arms, candidate_facts = _candidate_runtime_arms(
             compiled_candidates,
             runtime_composition=runtime_composition,
             stable_artifact=stable_artifact,
@@ -199,11 +212,9 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
         )
     await db.run_news(
         "news_canary_startup_validation",
-        _trip_unavailable_active_canary,
+        _reconcile_news_canary_startup,
         db,
-        {candidate_sha: candidate.candidate_arm.bundle_sha for candidate_sha, candidate in compiled_candidates.items()},
-        frozenset(canary_arms),
-        dict(candidate_failures),
+        candidate_facts,
         operation_timeout_seconds=3.0,
     )
     return _ProgramArms(
@@ -259,36 +270,51 @@ def _candidate_runtime_arms(
     runtime_composition: NewsProgramRuntimeComposition,
     stable_artifact: ProgramStrategyArtifactV1,
     stable_arm: ArmManifest,
-) -> tuple[dict[str, CanaryRuntimeArm], dict[str, str]]:
-    """Executable candidate arms, plus the named reason each rejected candidate cannot run here."""
+) -> tuple[dict[str, CanaryRuntimeArm], dict[str, CandidateRuntimeFact]]:
+    """Compose candidate Programs and report neutral runtime-stage facts."""
 
     canary_arms: dict[str, CanaryRuntimeArm] = {}
-    candidate_failures: dict[str, str] = {}
+    candidate_facts: dict[str, CandidateRuntimeFact] = {}
     for candidate in compiled_candidates.values():
-        if candidate.parent_stable_sha != stable_arm.bundle_sha:
-            candidate_failures[candidate.candidate_sha] = "candidate_parent_stale"
-            logger.warning(
-                "ignoring canary candidate with stale parent candidate={} parent={} active={}",
-                candidate.candidate_sha,
-                candidate.parent_stable_sha,
-                stable_arm.bundle_sha,
-            )
-            continue
         arm = candidate.candidate_arm
         try:
-            candidate_artifact = candidate_program_artifact(candidate, stable_artifact)
-        except (OSError, ValueError) as exc:
-            candidate_failures[candidate.candidate_sha] = "candidate_artifact_invalid"
-            logger.error("candidate Program artifact rejected program={} error={}", arm.program_sha256, exc)
+            candidate_artifact = candidate_program_artifact(
+                candidate,
+                stable_arm,
+                stable_artifact=stable_artifact,
+            )
+        except CandidateArtifactUnavailable as exc:
+            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
+                candidate_manifest_sha=candidate.candidate_sha,
+                compiled_bundle_sha=arm.bundle_sha,
+                runnable_bundle_sha=None,
+                failure_kind=exc.failure_kind,
+            )
+            logger.warning(
+                "candidate Program artifact unavailable candidate={} stage={} error={}",
+                candidate.candidate_sha,
+                exc.failure_kind,
+                exc,
+            )
             continue
         try:
             candidate_program = runtime_composition.semantic_judge(candidate_artifact)
         except (TypeError, ValueError) as exc:
-            candidate_failures[candidate.candidate_sha] = "candidate_runtime_invalid"
+            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
+                candidate_manifest_sha=candidate.candidate_sha,
+                compiled_bundle_sha=arm.bundle_sha,
+                runnable_bundle_sha=None,
+                failure_kind="runtime_invalid",
+            )
             logger.error("candidate Program composition rejected program={} error={}", arm.program_sha256, exc)
             continue
         if candidate_program is None:
-            candidate_failures[candidate.candidate_sha] = "candidate_runtime_unavailable"
+            candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
+                candidate_manifest_sha=candidate.candidate_sha,
+                compiled_bundle_sha=arm.bundle_sha,
+                runnable_bundle_sha=None,
+                failure_kind="runtime_unavailable",
+            )
             continue
         canary_arms[arm.bundle_sha] = CanaryRuntimeArm(
             bundle_sha=arm.bundle_sha,
@@ -297,7 +323,13 @@ def _candidate_runtime_arms(
             program_version=arm.program_version,
             program_sha256=arm.program_sha256,
         )
-    return canary_arms, candidate_failures
+        candidate_facts[candidate.candidate_sha] = CandidateRuntimeFact(
+            candidate_manifest_sha=candidate.candidate_sha,
+            compiled_bundle_sha=arm.bundle_sha,
+            runnable_bundle_sha=arm.bundle_sha,
+            failure_kind=None,
+        )
+    return canary_arms, candidate_facts
 
 
 def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNewsPushSender | None:
@@ -406,57 +438,17 @@ def _compose_news_pipeline(
     )
 
 
-def _trip_unavailable_active_canary(
+def _reconcile_news_canary_startup(
     db: WorkerDatabase,
-    compiled_candidate_bundles: dict[str, str],
-    runnable_candidate_bundles: frozenset[str],
-    candidate_failures: dict[str, str],
+    candidate_facts: dict[str, CandidateRuntimeFact],
 ) -> bool:
-    """Fail closed a nonterminal candidate that this image cannot execute."""
+    """Run the News-owned startup use case inside the one Worker transaction."""
 
     with db.worker_session("news_canary_startup_validation", 3.0) as repos:
-        from tracefold.news.release.canary import (
-            CANARY_ELIGIBILITY_PROFILE_SHA,
-            CANARY_ROLLING_PROFILE_SHA,
-            CANARY_SELECTOR_VERSION,
-        )
-
-        status = repos.news.canary_status()
-        activation = status.get("activation")
-        if activation is None or str(activation["state"]) not in {"armed", "active"}:
-            return False
-        for field, expected, reason in (
-            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
-            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
-            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
-        ):
-            if str(activation.get(field) or "") != expected:
-                return bool(
-                    repos.news.transition_canary(
-                        activation_id=str(activation["activation_id"]),
-                        target_state="tripped",
-                        reason=reason,
-                        now_ms=_now_ms(),
-                    )
-                )
-        candidate_manifest_sha = str(activation["candidate_manifest_sha"])
-        candidate_bundle_sha = str(activation["candidate_bundle_sha"])
-        expected_bundle_sha = compiled_candidate_bundles.get(candidate_manifest_sha)
-        if candidate_bundle_sha == expected_bundle_sha and candidate_bundle_sha in runnable_candidate_bundles:
-            return False
-        if expected_bundle_sha is None:
-            reason = "candidate_manifest_missing_or_invalid"
-        elif candidate_bundle_sha != expected_bundle_sha:
-            reason = "candidate_bundle_mismatch"
-        else:
-            reason = candidate_failures.get(candidate_manifest_sha, "candidate_runtime_unavailable")
-        return bool(
-            repos.news.transition_canary(
-                activation_id=str(activation["activation_id"]),
-                target_state="tripped",
-                reason=reason,
-                now_ms=_now_ms(),
-            )
+        return reconcile_canary_startup(
+            repos.news,
+            candidate_facts=candidate_facts,
+            now_ms=_now_ms(),
         )
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import SplitResult, urlsplit, urlunsplit
@@ -12,10 +11,9 @@ import dspy  # type: ignore[import-untyped]
 from tracefold.app.llm import ConfiguredLMEndpoint, configured_lm_endpoint
 from tracefold.news import NEWS_RETRIEVAL_SHA256, PROGRESSION_REVIEW_TIMEOUT_SECONDS
 from tracefold.news.artifact_identity import canonical_sha, runtime_manifest_sha
-from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
+from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.program.artifact import (
     ProgramStrategyArtifactV1,
-    load_program_artifact,
     load_stable_program_artifact,
 )
 from tracefold.news.program.contracts import SemanticJudge
@@ -318,50 +316,6 @@ def active_arm_manifest(
     )
 
 
-def candidate_program_artifact(
-    candidate: CandidateManifest,
-    stable_artifact: ProgramStrategyArtifactV1,
-) -> ProgramStrategyArtifactV1:
-    """Resolve and validate the Program executable carried by one candidate.
-
-    A candidate must resolve to an image-carried artifact whose parent, recorded on the candidate's own
-    proposal receipt, is that exact stable Program — lineage belongs to the candidate, not to the running
-    behavior. This resolver is shared by worker composition and the canary control CLI so an artifact
-    rejected at startup cannot later be armed from its manifest alone. The policy-candidate branch is gone
-    with the policy candidate itself (#202 §1.3).
-    """
-
-    arm = candidate.candidate_arm
-    if (
-        arm.program_version != PROGRAM_VERSION
-        or candidate.proposal_receipt.program_parent_sha256 != stable_artifact.program_sha256
-        or candidate.proposal_receipt.program_candidate_sha256 != arm.program_sha256
-    ):
-        raise ValueError("news_candidate_program_parent_mismatch")
-    return load_program_artifact(arm.program_sha256)
-
-
-def artifact_valid_candidate_bundles(
-    stable: ArmManifest,
-    candidates: Mapping[str, CandidateManifest],
-) -> dict[str, str]:
-    """Return only same-parent candidates whose executable artifact validates."""
-
-    stable_artifact = load_stable_program_artifact()
-    if stable.program_version != PROGRAM_VERSION or stable_artifact.program_sha256 != stable.program_sha256:
-        raise ValueError("news_stable_program_manifest_mismatch")
-    shipped: dict[str, str] = {}
-    for candidate_sha, candidate in candidates.items():
-        if candidate.parent_stable_sha != stable.bundle_sha:
-            continue
-        try:
-            candidate_program_artifact(candidate, stable_artifact)
-        except (OSError, ValueError):
-            continue
-        shipped[candidate_sha] = candidate.candidate_arm.bundle_sha
-    return shipped
-
-
 def _configured_program_lm(
     endpoint: ConfiguredLMEndpoint,
     *,
@@ -479,8 +433,6 @@ def _optional_endpoint_identity(endpoint: ConfiguredLMEndpoint | None) -> dict[s
 __all__ = [
     "NewsProgramRuntimeComposition",
     "active_arm_manifest",
-    "artifact_valid_candidate_bundles",
-    "candidate_program_artifact",
     "canonical_sha",
     "compose_news_program_runtime",
     "runtime_manifest_sha",

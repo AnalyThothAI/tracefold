@@ -171,10 +171,10 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
 
     try:
         if action == "canary":
-            from tracefold.app.learning_runtime import artifact_valid_candidate_bundles
             from tracefold.app.repository_session import repositories
             from tracefold.news.program.resources.candidates import compiled_canary_candidates
             from tracefold.news.release.canary import apply_canary_control, parse_canary_control
+            from tracefold.news.release.runtime import artifact_valid_candidate_bundles
 
             subcommand = str(args.canary_command)
             payload = {

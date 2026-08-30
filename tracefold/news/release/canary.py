@@ -63,6 +63,19 @@ class CanaryRuntimeArm:
     program_sha256: str
 
 
+def canary_identity_mismatch_reason(activation: Mapping[str, object]) -> str | None:
+    """Return the first canonical reason when a code-owned Canary identity drifted."""
+
+    for field_name, expected, reason in (
+        ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
+        ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
+        ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
+    ):
+        if str(activation.get(field_name) or "") != expected:
+            return reason
+    return None
+
+
 def select_canary_arm(
     *,
     event_id: str,
@@ -142,21 +155,17 @@ def apply_canary_control(
             baseline_matches = str(activation["baseline_bundle_sha"]) == stable_bundle_sha
             candidate_sha = str(activation["candidate_manifest_sha"])
             candidate_matches = shipped_candidates.get(candidate_sha) == str(activation["candidate_bundle_sha"])
-            selector_matches = str(activation["selector_version"]) == CANARY_SELECTOR_VERSION
-            eligibility_matches = str(activation["eligibility_profile_sha"]) == CANARY_ELIGIBILITY_PROFILE_SHA
-            rolling_matches = str(activation["rolling_profile_sha"]) == CANARY_ROLLING_PROFILE_SHA
-            if not all((baseline_matches, candidate_matches, selector_matches, eligibility_matches, rolling_matches)):
+            identity_reason = canary_identity_mismatch_reason(activation)
+            if not baseline_matches or not candidate_matches or identity_reason is not None:
                 reason = (
                     "baseline_bundle_mismatch"
                     if not baseline_matches
                     else "candidate_artifact_missing"
                     if not candidate_matches
-                    else "selector_version_mismatch"
-                    if not selector_matches
-                    else "eligibility_profile_hash_mismatch"
-                    if not eligibility_matches
-                    else "rolling_profile_hash_mismatch"
+                    else identity_reason
                 )
+                if reason is None:
+                    raise AssertionError("news_canary_resume_reason_missing")
                 repos.news.transition_canary(
                     activation_id=str(command.activation_id),
                     target_state="tripped",
@@ -193,6 +202,7 @@ __all__ = [
     "CanaryRuntimeArm",
     "CanarySelection",
     "apply_canary_control",
+    "canary_identity_mismatch_reason",
     "parse_canary_control",
     "select_canary_arm",
 ]

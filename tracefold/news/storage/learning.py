@@ -25,29 +25,20 @@ class LearningStorage:
     def validated_active_canary(self, *, now_ms: int) -> dict[str, Any] | None:
         """Trip a durable activation whose code-owned selector identities drifted."""
 
-        from ..release.canary import (
-            CANARY_ELIGIBILITY_PROFILE_SHA,
-            CANARY_ROLLING_PROFILE_SHA,
-            CANARY_SELECTOR_VERSION,
-        )
+        from ..release.canary import canary_identity_mismatch_reason
 
         activation = self.active_canary()
         if activation is None:
             return None
-        expected = (
-            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
-            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
-            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
-        )
-        for field_name, value, reason in expected:
-            if str(activation.get(field_name) or "") != value:
-                self.transition_canary(
-                    activation_id=str(activation["activation_id"]),
-                    target_state="tripped",
-                    reason=reason,
-                    now_ms=now_ms,
-                )
-                return None
+        reason = canary_identity_mismatch_reason(activation)
+        if reason is not None:
+            self.transition_canary(
+                activation_id=str(activation["activation_id"]),
+                target_state="tripped",
+                reason=reason,
+                now_ms=now_ms,
+            )
+            return None
         return activation
 
     def canary_status(self) -> dict[str, Any]:
@@ -217,12 +208,7 @@ class LearningStorage:
     def evaluate_canary_rolling_slo(self, *, activation_id: str, now_ms: int) -> dict[str, Any]:
         """Evaluate one durable, pre-registered rolling candidate SLO bucket."""
 
-        from ..release.canary import (
-            CANARY_ELIGIBILITY_PROFILE_SHA,
-            CANARY_ROLLING_PROFILE,
-            CANARY_ROLLING_PROFILE_SHA,
-            CANARY_SELECTOR_VERSION,
-        )
+        from ..release.canary import CANARY_ROLLING_PROFILE, canary_identity_mismatch_reason
 
         row = self.conn.execute(
             "SELECT * FROM news_canary_activations WHERE activation_id = %s FOR UPDATE",
@@ -230,20 +216,15 @@ class LearningStorage:
         ).fetchone()
         if row is None or str(row["state"]) != "active":
             return {"evaluated": False, "reason": "activation_not_active"}
-        identity_checks = (
-            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
-            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
-            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
-        )
-        for field_name, value, reason in identity_checks:
-            if str(row[field_name]) != value:
-                self.transition_canary(
-                    activation_id=activation_id,
-                    target_state="tripped",
-                    reason=reason,
-                    now_ms=now_ms,
-                )
-                return {"evaluated": True, "tripped": True, "reason": reason}
+        reason = canary_identity_mismatch_reason(row)
+        if reason is not None:
+            self.transition_canary(
+                activation_id=activation_id,
+                target_state="tripped",
+                reason=reason,
+                now_ms=now_ms,
+            )
+            return {"evaluated": True, "tripped": True, "reason": reason}
         bucket_ms = int(CANARY_ROLLING_PROFILE["evaluation_bucket_ms"])
         bucket = int(now_ms) // bucket_ms * bucket_ms
         if row["rolling_last_bucket_ms"] is not None and int(row["rolling_last_bucket_ms"]) >= bucket:
@@ -396,11 +377,7 @@ class LearningStorage:
         executing the stale candidate Program.
         """
 
-        from ..release.canary import (
-            CANARY_ELIGIBILITY_PROFILE_SHA,
-            CANARY_ROLLING_PROFILE_SHA,
-            CANARY_SELECTOR_VERSION,
-        )
+        from ..release.canary import CANARY_SELECTOR_VERSION, canary_identity_mismatch_reason
 
         assignment = dict(existing)
         activation_id = assignment.get("activation_id")
@@ -421,15 +398,7 @@ class LearningStorage:
             assignment["validation_error"] = "candidate_activation_missing"
             return assignment
 
-        reason: str | None = None
-        for field_name, expected, mismatch in (
-            ("selector_version", CANARY_SELECTOR_VERSION, "selector_version_mismatch"),
-            ("eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA, "eligibility_profile_hash_mismatch"),
-            ("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA, "rolling_profile_hash_mismatch"),
-        ):
-            if str(activation[field_name]) != expected:
-                reason = mismatch
-                break
+        reason = canary_identity_mismatch_reason(activation)
         if reason is None and str(assignment.get("selector_version") or "") != CANARY_SELECTOR_VERSION:
             reason = "assignment_selector_version_mismatch"
         if reason is None and str(activation["baseline_bundle_sha"]) != stable_bundle_sha:
