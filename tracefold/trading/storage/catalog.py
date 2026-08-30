@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..catalog import VenueInstrumentCatalogSnapshotV1
+from ..catalog import PreparedVenueCatalogSnapshot
 from ..contracts import DecisionRuntimeV1, VenueBinding, VenueBindingRuntimeV1
-from .sql_values import _dumps
 
 
 class CatalogStorage:
@@ -273,69 +272,76 @@ class CatalogStorage:
     def store_venue_catalog_snapshot(
         self,
         *,
-        snapshot: VenueInstrumentCatalogSnapshotV1,
+        prepared: PreparedVenueCatalogSnapshot,
         now_ms: int,
     ) -> None:
-        digest = snapshot.snapshot_sha256
-        payload = snapshot.model_dump(mode="json")
-        self.conn.execute(
+        """Atomically persist and activate one already-materialized immutable snapshot."""
+
+        row = self.conn.execute(
             """
-            INSERT INTO trading_venue_catalog_snapshots (
-              snapshot_sha256, binding, captured_at_ms, stale_after_ms,
-              provider_instrument_count, payload, created_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
-            ON CONFLICT (snapshot_sha256) DO NOTHING
-            """,
-            (
-                digest,
-                snapshot.binding,
-                int(snapshot.captured_at_ms),
-                int(snapshot.stale_after_ms),
-                int(snapshot.provider_instrument_count),
-                _dumps(payload),
-                int(now_ms),
-            ),
-        )
-        stored = self.conn.execute(
-            "SELECT payload FROM trading_venue_catalog_snapshots WHERE snapshot_sha256 = %s",
-            (digest,),
-        ).fetchone()
-        if stored is None or stored["payload"] != payload:
-            raise RuntimeError("venue_catalog_snapshot_identity_conflict")
-        updated = self.conn.execute(
-            """
-            UPDATE trading_binding_runtime AS runtime
-               SET catalog_state = 'ready',
-                   catalog_snapshot_sha256 = %(digest)s,
-                   catalog_captured_at_ms = %(captured)s,
-                   capability_state = CASE
-                     WHEN runtime.capability_snapshot_sha256 IS NULL THEN 'missing'
-                     WHEN EXISTS (
-                       SELECT 1 FROM trading_execution_capability_snapshots capability
-                        WHERE capability.snapshot_sha256 = runtime.capability_snapshot_sha256
-                          AND capability.catalog_snapshot_sha256 = %(digest)s
-                     ) THEN runtime.capability_state
-                     ELSE 'stale'
-                   END,
-                   reason = CASE
-                     WHEN credential_state = 'unconfigured' THEN 'credentials_unconfigured'
-                     WHEN credential_state = 'invalid' THEN 'credentials_invalid'
-                     WHEN runtime_state = 'stopped' THEN 'binding_adapter_unavailable'
-                     WHEN runtime_state != 'ready' THEN 'binding_unready'
-                     ELSE NULL
-                   END,
-                   updated_at_ms = %(now)s
-             WHERE binding = %(binding)s
-         RETURNING binding
+            WITH inserted AS (
+                INSERT INTO trading_venue_catalog_snapshots (
+                  snapshot_sha256, binding, captured_at_ms, stale_after_ms,
+                  provider_instrument_count, payload, created_at_ms
+                )
+                SELECT %(digest)s, %(binding)s, %(captured)s, %(stale_after)s,
+                       %(instrument_count)s, %(payload)s::text::jsonb, %(now)s
+                ON CONFLICT (snapshot_sha256) DO NOTHING
+                RETURNING 1 AS valid
+            ), verified AS (
+                SELECT valid FROM inserted
+                UNION ALL
+                SELECT 1 AS valid
+                  FROM trading_venue_catalog_snapshots existing
+                 WHERE existing.snapshot_sha256 = %(digest)s
+                   AND existing.binding = %(binding)s
+                   AND existing.captured_at_ms = %(captured)s
+                   AND existing.stale_after_ms = %(stale_after)s
+                   AND existing.provider_instrument_count = %(instrument_count)s
+                   AND existing.payload = %(payload)s::text::jsonb
+                   AND NOT EXISTS (SELECT 1 FROM inserted)
+            ), activated AS (
+                UPDATE trading_binding_runtime AS runtime
+                   SET catalog_state = 'ready',
+                       catalog_snapshot_sha256 = %(digest)s,
+                       catalog_captured_at_ms = %(captured)s,
+                       capability_state = CASE
+                         WHEN runtime.capability_snapshot_sha256 IS NULL THEN 'missing'
+                         WHEN EXISTS (
+                           SELECT 1 FROM trading_execution_capability_snapshots capability
+                            WHERE capability.snapshot_sha256 = runtime.capability_snapshot_sha256
+                              AND capability.catalog_snapshot_sha256 = %(digest)s
+                         ) THEN runtime.capability_state
+                         ELSE 'stale'
+                       END,
+                       reason = CASE
+                         WHEN credential_state = 'unconfigured' THEN 'credentials_unconfigured'
+                         WHEN credential_state = 'invalid' THEN 'credentials_invalid'
+                         WHEN runtime_state = 'stopped' THEN 'binding_adapter_unavailable'
+                         WHEN runtime_state != 'ready' THEN 'binding_unready'
+                         ELSE NULL
+                       END,
+                       updated_at_ms = %(now)s
+                 WHERE runtime.binding = %(binding)s
+                   AND EXISTS (SELECT 1 FROM verified)
+             RETURNING runtime.binding
+            )
+            SELECT EXISTS (SELECT 1 FROM verified) AS identity_valid,
+                   (SELECT binding FROM activated) AS activated_binding
             """,
             {
-                "binding": snapshot.binding,
-                "digest": digest,
-                "captured": int(snapshot.captured_at_ms),
+                "binding": prepared.binding,
+                "captured": int(prepared.captured_at_ms),
+                "digest": prepared.snapshot_sha256,
+                "instrument_count": int(prepared.provider_instrument_count),
                 "now": int(now_ms),
+                "payload": prepared.payload_json,
+                "stale_after": int(prepared.stale_after_ms),
             },
         ).fetchone()
-        if updated is None:
+        if row is None or not bool(row["identity_valid"]):
+            raise RuntimeError("venue_catalog_snapshot_identity_conflict")
+        if row["activated_binding"] is None:
             raise RuntimeError("venue_catalog_binding_missing")
 
     def mark_venue_catalog_unavailable(self, *, binding: VenueBinding, reason: str, now_ms: int) -> None:
@@ -352,24 +358,6 @@ class CatalogStorage:
         ).fetchone()
         if updated is None:
             raise RuntimeError("venue_catalog_binding_missing")
-
-    def active_venue_catalog(self, *, binding: VenueBinding) -> VenueInstrumentCatalogSnapshotV1 | None:
-        row = self.conn.execute(
-            """
-            SELECT snapshot.payload, runtime.catalog_snapshot_sha256
-              FROM trading_binding_runtime runtime
-              LEFT JOIN trading_venue_catalog_snapshots snapshot
-                ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
-             WHERE runtime.binding = %s
-            """,
-            (binding,),
-        ).fetchone()
-        if row is None or row["payload"] is None:
-            return None
-        snapshot = VenueInstrumentCatalogSnapshotV1.model_validate(row["payload"])
-        if snapshot.snapshot_sha256 != row["catalog_snapshot_sha256"]:
-            raise RuntimeError("venue_catalog_snapshot_digest_mismatch")
-        return snapshot
 
 
 __all__ = ["CatalogStorage"]

@@ -25,6 +25,7 @@ from tracefold.trading import (
     canonical_sha256,
 )
 from tracefold.trading.capital_authority import risk_day_bounds
+from tracefold.trading.catalog import prepare_venue_catalog_snapshot
 from tracefold.trading.execution_policy import EXECUTION_POLICY_SHA256, PROTECTION_CONTRACT_SHA256
 from tracefold.trading.quote_authority import QUOTE_CONTRACT_SHA256
 
@@ -203,6 +204,15 @@ def binance_catalog(
         captured_at_ms=captured_at_ms,
         stale_after_ms=60_000,
         instruments=rows,
+    )
+
+
+def store_catalog_fixture(storage: Any, snapshot: VenueInstrumentCatalogSnapshotV1, *, now_ms: int) -> None:
+    """Persist a catalog directly when an integration fixture does not exercise `VenueCatalog`."""
+
+    storage.store_venue_catalog_snapshot(
+        prepared=prepare_venue_catalog_snapshot(snapshot),
+        now_ms=now_ms,
     )
 
 

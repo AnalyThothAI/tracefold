@@ -21,6 +21,7 @@ product reaching a Policy LONG with exactly one capital reason and no Intent.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any
@@ -38,7 +39,12 @@ from tracefold.trading.catalog import (
 )
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest
 from tracefold.trading.policy import CAPITAL_POLICY
-from tracefold.trading.storage.lane import BindingAuthority, CapitalAuthority, CapitalDispositionCommit
+from tracefold.trading.storage.lane import (
+    BindingAuthority,
+    CapitalAuthority,
+    CapitalAuthoritySnapshotRow,
+    CapitalDispositionCommit,
+)
 
 NOW = 1_787_000_000_000
 DIGEST = "a" * 64
@@ -163,8 +169,45 @@ class FakeTrading:
         self.runtime_states: list[tuple[str, str | None]] = []
 
     # -- read
-    def capital_authority(self, *, since_ms: int, now_ms: int) -> CapitalAuthority | None:
-        return self._authority
+    def capital_authority_snapshot(self, *, since_ms: int, now_ms: int) -> CapitalAuthoritySnapshotRow | None:
+        del since_ms, now_ms
+        if self._authority is None:
+            return None
+        return CapitalAuthoritySnapshotRow(
+            capital_control=self._authority.capital_control,
+            active_underlyings=sorted(self._authority.active_underlyings),
+            underlyings_in_flight=sorted(self._authority.underlyings_in_flight),
+            cased_source_keys=sorted(self._authority.cased_source_keys),
+            blacklist_rows_json=json.dumps(
+                [
+                    {
+                        "base_symbol": row.base_symbol,
+                        "reason": row.reason,
+                        "created_at_ms": row.created_at_ms,
+                        "expires_at_ms": row.expires_at_ms,
+                    }
+                    for row in self._authority.blacklist.entries.values()
+                ]
+            ),
+            binding_rows_json=json.dumps(
+                {
+                    binding: {
+                        "credential_state": row.credential_state,
+                        "runtime_state": row.runtime_state,
+                        "account_state": row.account_state,
+                        "catalog_state": row.catalog_state,
+                        "catalog_snapshot_sha256": row.catalog_snapshot_sha256,
+                        "reason": row.reason,
+                        "catalog_payload": (
+                            None
+                            if self._authority.catalogs[binding] is None
+                            else self._authority.catalogs[binding].model_dump(mode="json")
+                        ),
+                    }
+                    for binding, row in self._authority.bindings.items()
+                }
+            ),
+        )
 
     def set_decision_runtime(
         self,

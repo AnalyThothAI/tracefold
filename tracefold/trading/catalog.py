@@ -8,7 +8,10 @@ an instrument disappear by failing to normalise it.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, ClassVar, Final, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -120,6 +123,18 @@ class VenueInstrumentCatalogSnapshotV1(_Frozen):
         return matches[0] if matches else None
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedVenueCatalogSnapshot:
+    """Immutable storage input whose CPU-heavy serialization is already complete."""
+
+    snapshot_sha256: str
+    binding: VenueBinding
+    captured_at_ms: int
+    stale_after_ms: int
+    provider_instrument_count: int
+    payload_json: str
+
+
 def build_venue_catalog_snapshot(
     *,
     binding: VenueBinding,
@@ -146,6 +161,26 @@ def build_venue_catalog_snapshot(
         stale_after_ms=int(stale_after_ms),
         provider_instrument_count=len(rows),
         instruments=rows,
+    )
+
+
+def prepare_venue_catalog_snapshot(snapshot: VenueInstrumentCatalogSnapshotV1) -> PreparedVenueCatalogSnapshot:
+    """Serialize once before a database transaction and preserve the canonical identity contract."""
+
+    payload_json = json.dumps(
+        snapshot.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return PreparedVenueCatalogSnapshot(
+        snapshot_sha256=hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+        binding=snapshot.binding,
+        captured_at_ms=snapshot.captured_at_ms,
+        stale_after_ms=snapshot.stale_after_ms,
+        provider_instrument_count=snapshot.provider_instrument_count,
+        payload_json=payload_json,
     )
 
 
@@ -214,9 +249,13 @@ class VenueCatalog:
             stale_after_ms=self._stale_after_ms,
             instruments=instruments,
         )
+        prepared = prepare_venue_catalog_snapshot(snapshot)
         await self._db.tx(
             "trading_venue_catalog_publish",
-            lambda repos: repos.trading.store_venue_catalog_snapshot(snapshot=snapshot, now_ms=captured_at_ms),
+            lambda repos: repos.trading.store_venue_catalog_snapshot(
+                prepared=prepared,
+                now_ms=captured_at_ms,
+            ),
             timeout_seconds=10.0,
         )
         return snapshot
@@ -237,10 +276,12 @@ class VenueCatalog:
 __all__ = [
     "CATALOG_SNAPSHOT_VERSION",
     "CatalogDatabasePort",
+    "PreparedVenueCatalogSnapshot",
     "ProductKind",
     "VenueBinding",
     "VenueCatalog",
     "VenueInstrumentCatalogEntryV1",
     "VenueInstrumentCatalogSnapshotV1",
     "build_venue_catalog_snapshot",
+    "prepare_venue_catalog_snapshot",
 ]

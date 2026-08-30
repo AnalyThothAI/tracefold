@@ -81,7 +81,7 @@ from .contracts import (
 from .market_context import PriceWindow, pre_move_bps, select_bar
 from .policy import CapitalPolicy
 from .sources import SourceRejected, normalize_oi_source
-from .storage.lane import CapitalAuthority
+from .storage.lane import CapitalAuthority, materialize_capital_authority
 from .storage.root import TradingRepository
 from .telemetry import TradingExternalDataTelemetryPort, TradingWorkSemantics, observe_provider_call
 
@@ -278,14 +278,15 @@ class CapitalLane:
 
     async def _advance_turn(self) -> LaneTurn:
         now = self._clock()
-        authority = await self._db.read(
+        authority_snapshot = await self._db.read(
             "trading_capital_authority",
-            lambda repos: _trading(repos).capital_authority(
+            lambda repos: _trading(repos).capital_authority_snapshot(
                 since_ms=now - self._config.scan_horizon_ms,
                 now_ms=now,
             ),
             timeout_seconds=COLD_READ_TIMEOUT_SECONDS,
         )
+        authority = materialize_capital_authority(authority_snapshot)
         if authority is None:
             # No runtime authority row: no scan, no Case, no provider call, no Intent. This is
             # infrastructure state, not a business decision, and nothing durable records a refusal.

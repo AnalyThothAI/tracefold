@@ -29,7 +29,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.trading_v3_fixtures import binance_capability, binance_catalog
+from tests.trading_v3_fixtures import binance_capability, binance_catalog, store_catalog_fixture
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.app.workers.wiring.news_to_trading import (
@@ -120,7 +120,7 @@ class TradingDatabase:
 def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
     repos = repositories_for_connection(connection)
-    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
+    store_catalog_fixture(repos.trading, CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
         "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', updated_at_ms = %s "
         "WHERE binding = 'BINANCE_USDM'",

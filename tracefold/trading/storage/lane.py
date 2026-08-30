@@ -18,10 +18,11 @@ forever. An unknown repository error now rolls back and propagates; the Case sta
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 from ..admission import AdmissionRow
 from ..blacklist import Blacklist
@@ -68,6 +69,64 @@ class BindingAuthority:
     reason: str | None
 
 
+class CapitalAuthoritySnapshotRow(TypedDict):
+    """Raw result of the authority's one PostgreSQL statement.
+
+    JSON domain materialization is deliberately absent: the worker closes the read transaction before
+    `materialize_capital_authority` validates either venue catalog and recomputes its identity.
+    """
+
+    capital_control: str
+    active_underlyings: list[str]
+    underlyings_in_flight: list[str]
+    cased_source_keys: list[str]
+    blacklist_rows_json: str
+    binding_rows_json: str
+
+
+_CLOSED_BINDINGS: tuple[VenueBinding, ...] = ("BINANCE_USDM", "HYPERLIQUID_PERP")
+
+
+def materialize_capital_authority(snapshot: CapitalAuthoritySnapshotRow | None) -> CapitalAuthority | None:
+    """Validate one raw snapshot after its database transaction has closed."""
+
+    if snapshot is None:
+        return None
+    binding_rows = json.loads(snapshot["binding_rows_json"])
+    if set(binding_rows) != set(_CLOSED_BINDINGS):
+        raise RuntimeError("trading_binding_runtime_missing")
+    catalogs: dict[VenueBinding, VenueInstrumentCatalogSnapshotV1 | None] = {}
+    for binding in _CLOSED_BINDINGS:
+        row = binding_rows[binding]
+        payload = row["catalog_payload"]
+        if payload is None:
+            catalogs[binding] = None
+            continue
+        catalog = VenueInstrumentCatalogSnapshotV1.model_validate(payload)
+        if catalog.snapshot_sha256 != row["catalog_snapshot_sha256"]:
+            raise RuntimeError("venue_catalog_snapshot_digest_mismatch")
+        catalogs[binding] = catalog
+    return CapitalAuthority(
+        capital_control=snapshot["capital_control"],
+        blacklist=Blacklist.from_rows(json.loads(snapshot["blacklist_rows_json"])),
+        active_underlyings=frozenset(snapshot["active_underlyings"]),
+        underlyings_in_flight=frozenset(snapshot["underlyings_in_flight"]),
+        cased_source_keys=frozenset(snapshot["cased_source_keys"]),
+        bindings={
+            binding: BindingAuthority(
+                credential_state=str(binding_rows[binding]["credential_state"]),
+                runtime_state=str(binding_rows[binding]["runtime_state"]),
+                account_state=str(binding_rows[binding]["account_state"]),
+                catalog_state=str(binding_rows[binding]["catalog_state"]),
+                catalog_snapshot_sha256=binding_rows[binding]["catalog_snapshot_sha256"],
+                reason=binding_rows[binding]["reason"],
+            )
+            for binding in _CLOSED_BINDINGS
+        },
+        catalogs=catalogs,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CapitalDispositionCommit:
     """The one terminal answer `commit_capital_disposition` reached, and what it wrote."""
@@ -86,63 +145,84 @@ class LaneStorage:
     conn: Any
 
     # ------------------------------------------------------------------ read
-    def capital_authority(self, *, since_ms: int, now_ms: int) -> CapitalAuthority | None:
-        """One snapshot of control, capacity, deny-list, in-flight work and the active universe.
+    def capital_authority_snapshot(self, *, since_ms: int, now_ms: int) -> CapitalAuthoritySnapshotRow | None:
+        """One SQL snapshot of control, capacity, deny-list, in-flight work and the active universe.
 
         Returns `None` when the runtime authority row is absent. Every other failure raises: an
         unreadable deny-list is an infrastructure fault, and turning it into a "block everything"
         business snapshot filed one refusal per frame against a database problem.
         """
 
-        runtime = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
-        if runtime is None:
-            return None
-        active = self.conn.execute(
+        row = self.conn.execute(
             """
-            SELECT DISTINCT COALESCE(i.underlying_key, c.underlying_key) AS underlying_key
-              FROM trading_intents i JOIN trading_cases c ON c.case_id = i.case_id
-             WHERE i.execution_state = ANY(%s)
+            WITH capital_runtime AS (
+                SELECT control FROM trading_runtime_state WHERE id = 1
+            )
+            SELECT capital_runtime.control AS capital_control,
+                   ARRAY(
+                       SELECT DISTINCT COALESCE(intent.underlying_key, trading_case.underlying_key)
+                         FROM trading_intents intent
+                         JOIN trading_cases trading_case ON trading_case.case_id = intent.case_id
+                        WHERE intent.execution_state = ANY(%(active_states)s)
+                        ORDER BY 1
+                   ) AS active_underlyings,
+                   ARRAY(
+                       SELECT DISTINCT underlying_key
+                         FROM trading_cases
+                        WHERE state IN ('PENDING', 'RUNNING')
+                        ORDER BY 1
+                   ) AS underlyings_in_flight,
+                   ARRAY(
+                       SELECT DISTINCT primary_source_key
+                         FROM trading_cases
+                        WHERE observed_at_ms >= %(since_ms)s
+                        ORDER BY 1
+                   ) AS cased_source_keys,
+                   COALESCE((
+                       SELECT jsonb_agg(
+                           jsonb_build_object(
+                               'base_symbol', base_symbol,
+                               'reason', reason,
+                               'created_at_ms', created_at_ms,
+                               'expires_at_ms', expires_at_ms
+                           ) ORDER BY base_symbol
+                       )
+                         FROM trading_symbol_blacklist
+                   ), '[]'::jsonb)::text AS blacklist_rows_json,
+                   COALESCE((
+                       SELECT jsonb_object_agg(
+                           binding_runtime.binding,
+                           jsonb_build_object(
+                               'credential_state', binding_runtime.credential_state,
+                               'runtime_state', binding_runtime.runtime_state,
+                               'account_state', binding_runtime.account_state,
+                               'catalog_state', CASE
+                                   WHEN binding_runtime.catalog_state = 'ready'
+                                    AND catalog.stale_after_ms IS NOT NULL
+                                    AND binding_runtime.catalog_captured_at_ms + catalog.stale_after_ms <= %(now_ms)s
+                                   THEN 'stale'
+                                   ELSE binding_runtime.catalog_state
+                               END,
+                               'catalog_snapshot_sha256', binding_runtime.catalog_snapshot_sha256,
+                               'catalog_payload', catalog.payload,
+                               'reason', binding_runtime.reason
+                           )
+                       )
+                         FROM trading_binding_runtime binding_runtime
+                         LEFT JOIN trading_venue_catalog_snapshots catalog
+                           ON catalog.snapshot_sha256 = binding_runtime.catalog_snapshot_sha256
+                        WHERE binding_runtime.binding = ANY(%(bindings)s)
+                   ), '{}'::jsonb)::text AS binding_rows_json
+              FROM capital_runtime
             """,
-            (list(ACTIVE_INTENT_STATES),),
-        ).fetchall()
-        in_flight = self.conn.execute(
-            "SELECT DISTINCT underlying_key FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')"
-        ).fetchall()
-        cased = self.conn.execute(
-            "SELECT primary_source_key FROM trading_cases WHERE observed_at_ms >= %s",
-            (int(since_ms),),
-        ).fetchall()
-        blacklist_rows = self.conn.execute(
-            "SELECT base_symbol, reason, created_at_ms, expires_at_ms "
-            "FROM trading_symbol_blacklist ORDER BY base_symbol"
-        ).fetchall()
-        closed_bindings: tuple[VenueBinding, ...] = ("BINANCE_USDM", "HYPERLIQUID_PERP")
-        binding_rows = {
-            binding: cast(Any, self).binding_runtime(binding=binding, now_ms=now_ms) for binding in closed_bindings
-        }
-        if any(row is None for row in binding_rows.values()):
-            raise RuntimeError("trading_binding_runtime_missing")
-        catalogs = {binding: cast(Any, self).active_venue_catalog(binding=binding) for binding in closed_bindings}
-        return CapitalAuthority(
-            capital_control=str(runtime["control"]),
-            blacklist=Blacklist.from_rows([dict(row) for row in blacklist_rows]),
-            active_underlyings=frozenset(str(row["underlying_key"]) for row in active),
-            underlyings_in_flight=frozenset(str(row["underlying_key"]) for row in in_flight),
-            cased_source_keys=frozenset(str(row["primary_source_key"]) for row in cased),
-            bindings={
-                binding: BindingAuthority(
-                    credential_state=row.credential_state,
-                    runtime_state=row.runtime_state,
-                    account_state=row.account_state,
-                    catalog_state=row.catalog_state,
-                    catalog_snapshot_sha256=row.catalog_snapshot_sha256,
-                    reason=row.reason,
-                )
-                for binding, row in binding_rows.items()
-                if row is not None
+            {
+                "active_states": list(ACTIVE_INTENT_STATES),
+                "bindings": list(_CLOSED_BINDINGS),
+                "since_ms": int(since_ms),
+                "now_ms": int(now_ms),
             },
-            catalogs=catalogs,
-        )
+        ).fetchone()
+        return None if row is None else cast(CapitalAuthoritySnapshotRow, dict(row))
 
     # ------------------------------------------------------------------ freeze
     def create_case(

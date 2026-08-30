@@ -23,7 +23,11 @@ from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
 from tracefold.platform.postgres.migrations import alembic_config
-from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
+from tracefold.trading.catalog import (
+    VenueInstrumentCatalogEntryV1,
+    VenueInstrumentCatalogSnapshotV1,
+    build_venue_catalog_snapshot,
+)
 from tracefold.trading.contracts import DecisionRuntimeV1, canonical_sha256
 from tracefold.trading.storage.root import TradingRepository
 
@@ -1148,6 +1152,22 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
                 (snapshot.snapshot_sha256, snapshot.captured_at_ms, now_ms, snapshot.binding),
             )
 
+        def active_catalog_0327() -> VenueInstrumentCatalogSnapshotV1 | None:
+            row = conn.execute(
+                """
+                SELECT snapshot.payload, runtime.catalog_snapshot_sha256
+                  FROM trading_binding_runtime runtime
+                  LEFT JOIN trading_venue_catalog_snapshots snapshot
+                    ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+                 WHERE runtime.binding = 'BINANCE_USDM'
+                """
+            ).fetchone()
+            if row is None or row["payload"] is None:
+                return None
+            active = VenueInstrumentCatalogSnapshotV1.model_validate(row["payload"])
+            assert active.snapshot_sha256 == row["catalog_snapshot_sha256"]
+            return active
+
         decision = repos.decision_runtime()
         assert decision is not None
         assert decision == DecisionRuntimeV1(
@@ -1196,7 +1216,7 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         )
         store_catalog_0327(snapshot=snapshot, now_ms=NOW)
         conn.commit()
-        assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
+        assert active_catalog_0327() == snapshot
         with (
             pytest.raises(RaiseException, match="trading_append_only_mutation_forbidden"),
             conn.transaction(),
@@ -1217,7 +1237,7 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         assert runtime is not None
         assert runtime["catalog_state"] == "stale"
         assert runtime["catalog_snapshot_sha256"] == snapshot.snapshot_sha256
-        assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
+        assert active_catalog_0327() == snapshot
 
         store_catalog_0327(snapshot=snapshot, now_ms=NOW + 2)
         conn.commit()
@@ -1230,7 +1250,7 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
         expired = binding_runtime_0327(now_ms=NOW + 21_600_000)
         assert expired is not None
         assert expired["catalog_state"] == "stale"
-        assert repos.active_venue_catalog(binding="BINANCE_USDM") == snapshot
+        assert active_catalog_0327() == snapshot
 
         columns = {
             row["column_name"]
