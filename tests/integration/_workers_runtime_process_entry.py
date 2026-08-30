@@ -88,6 +88,10 @@ class _ManifestBarrierPipeline(_TurnPipeline):
         self._dsn = dsn
         self._release_gate = release_gate
 
+    @property
+    def runtime_manifest_sha(self) -> str:
+        return RUNTIME_MANIFEST_BARRIER_SHA
+
     async def register_runtime_manifest(self) -> None:
         Path(f"{self._release_gate}.entered").touch()
         while not self._release_gate.exists():

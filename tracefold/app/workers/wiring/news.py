@@ -74,6 +74,28 @@ class _ProgramArms:
     runtime_manifest: dict[str, Any]
 
 
+def configured_runtime_manifest_sha(
+    settings: Settings,
+    *,
+    runtime_composition: NewsProgramRuntimeComposition | None = None,
+    stable_arm: ArmManifest | None = None,
+    candidate_shas: list[str] | None = None,
+    identity: Any = None,
+) -> str:
+    """Hash the exact image/config Program set Workers will register."""
+
+    composition = runtime_composition or compose_news_program_runtime(settings)
+    stable = stable_arm or active_arm_manifest(settings, runtime_composition=composition)
+    candidates = sorted(_compiled_candidate_manifests()) if candidate_shas is None else sorted(candidate_shas)
+    process_identity = identity or runtime_identity()
+    return runtime_manifest_sha(
+        stable_bundle_sha=stable.bundle_sha,
+        candidate_shas=candidates,
+        image_digest=process_identity.image_digest,
+        runtime_revision=process_identity.runtime_revision,
+    )
+
+
 async def _wire_news_pipeline(
     *,
     settings: Settings,
@@ -191,11 +213,12 @@ async def _compose_program_arms(settings: Settings, *, db: WorkerDatabase) -> _P
         stable_bundle_sha=stable_arm.bundle_sha,
         canary_arms=canary_arms,
         runtime_manifest={
-            "manifest_sha": runtime_manifest_sha(
-                stable_bundle_sha=stable_arm.bundle_sha,
-                candidate_shas=sorted(compiled_candidates),
-                image_digest=identity.image_digest,
-                runtime_revision=identity.runtime_revision,
+            "manifest_sha": configured_runtime_manifest_sha(
+                settings,
+                runtime_composition=runtime_composition,
+                stable_arm=stable_arm,
+                candidate_shas=list(compiled_candidates),
+                identity=identity,
             ),
             "stable_bundle_sha": stable_arm.bundle_sha,
             # What this bundle *is*, carried down so the startup barrier can open its evidence epoch

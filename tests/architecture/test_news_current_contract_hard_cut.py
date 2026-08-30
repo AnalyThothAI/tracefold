@@ -1,4 +1,4 @@
-"""#369: retired News contracts exist only in explicitly named archives."""
+"""#369/#398: current News surfaces contain no retired contract path."""
 
 from __future__ import annotations
 
@@ -170,18 +170,6 @@ _EXACT_ALLOWLIST: dict[str, frozenset[str]] = {
             "unclear_push_event_types",
         }
     ),
-    "tests/fixtures/news_audit_replay_corpus_v2.json": frozenset(
-        {
-            "actionable",
-            "decision",
-            "event_type",
-            "family",
-            "news_editorial_v1",
-            "news_triage_policy_v10",
-            "title_zh",
-            "unclear_push_event_types",
-        }
-    ),
     "tests/contract/test_news_http_contract.py": frozenset(
         {
             "actionable",
@@ -347,17 +335,39 @@ def test_ordinary_feed_reads_only_the_current_review_projection() -> None:
     assert "news_reviews" not in feed
 
 
-def test_ordinary_news_reads_only_the_current_event_projection() -> None:
-    users = {
-        path.relative_to(ROOT).as_posix(): len(re.findall(r"\b(?:FROM|JOIN)\s+news_events\b", _text(path)))
-        for path in (ROOT / "tracefold" / "news").rglob("*.py")
-        if re.search(r"\b(?:FROM|JOIN)\s+news_events\b", _text(path))
-    }
+def test_ordinary_news_reads_current_events_without_a_compatibility_projection() -> None:
+    offenders = [
+        path.relative_to(ROOT).as_posix()
+        for root in (ROOT / "tracefold" / "news", ROOT / "tracefold" / "app" / "http")
+        for path in root.rglob("*.py")
+        if "news_current_events_v1" in _text(path)
+    ]
 
-    assert users == {
-        "tracefold/news/storage/feed.py": 1,
-        "tracefold/news/storage/operations.py": 2,
-    }
+    assert offenders == []
+
+
+def test_live_surfaces_have_no_archive_compatibility_contract() -> None:
+    tokens = (
+        "current_contract_archive_only",
+        "news_current_events_v1",
+        "news_current_event_archive_guard",
+        "news_event_archive_only",
+        '"archive_only"',
+    )
+    roots = (
+        ROOT / "tracefold" / "news",
+        ROOT / "tracefold" / "app" / "http",
+        ROOT / "web" / "src",
+        ROOT / "docs" / "generated",
+    )
+    offenders = [
+        f"{path.relative_to(ROOT).as_posix()}: {token}"
+        for path in sorted(_files(roots))
+        for token in tokens
+        if token in _text(path)
+    ]
+
+    assert offenders == []
 
 
 def test_ordinary_tests_do_not_build_retired_news_shapes() -> None:
@@ -474,8 +484,8 @@ def test_generated_news_schema_has_only_current_identity_columns() -> None:
         columns = _table_columns(schema, table)
         assert "dedupe_family" in columns
         assert "family" not in columns
-    assert "current_contract_archive_only" in _table_columns(schema, "news_events")
-    assert "current_contract_archive_only" in _table_columns(schema, "news_reviews")
+    assert "current_contract_archive_only" not in _table_columns(schema, "news_events")
+    assert "current_contract_archive_only" not in _table_columns(schema, "news_reviews")
     verdict_columns = _table_columns(schema, "news_verdicts")
     assert {"judgment_contract_version", "judgment_origin", "scored_judgment_sha256"}.issubset(verdict_columns)
     assert "model_decision" not in verdict_columns

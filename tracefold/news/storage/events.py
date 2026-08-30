@@ -15,7 +15,7 @@ _HANDOFF_STATE_LIMIT = 1_000
 _EVENT_HANDOFF_STATE_SQL = f"""
     WITH pending AS MATERIALIZED (
       SELECT e.opened_at_ms
-        FROM news_current_events_v1 e
+        FROM news_events e
        WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
          AND e.opened_at_ms >= %s
          AND (
@@ -29,7 +29,7 @@ _EVENT_HANDOFF_STATE_SQL = f"""
        LIMIT %s
     ), expired AS MATERIALIZED (
       SELECT e.opened_at_ms
-        FROM news_current_events_v1 e
+        FROM news_events e
        WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
          AND e.opened_at_ms < %s
          AND (
@@ -175,7 +175,7 @@ class EventStorage:
                    e.source_contract_reason
               FROM news_items i
               JOIN news_event_members m ON m.item_id = i.item_id
-              JOIN news_current_events_v1 e ON e.event_id = m.event_id
+              JOIN news_events e ON e.event_id = m.event_id
              WHERE i.source_artifact_id = %s AND i.item_id <> %s
                AND e.dedupe_family = %s AND e.event_kind = %s AND e.comparison_fingerprint = %s
                AND e.source_contract_reason IS NOT DISTINCT FROM %s
@@ -216,7 +216,7 @@ class EventStorage:
             """
             SELECT e.event_id, e.opened_at_ms, e.expires_at_ms, e.admission, e.published_at_ms,
                    e.source_contract_reason
-              FROM news_current_events_v1 e
+              FROM news_events e
              WHERE e.dedupe_family = %s AND e.event_kind = %s
                AND source_contract_reason IS NOT DISTINCT FROM %s
                AND e.comparison_fingerprint = %s AND e.expires_at_ms > %s
@@ -255,7 +255,7 @@ class EventStorage:
                WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
             )
             SELECT e.event_id, e.comparison_title, e.leader_title, e.opened_at_ms, e.grounded_assets
-              FROM news_current_events_v1 e JOIN hits ON hits.event_id = e.event_id
+              FROM news_events e JOIN hits ON hits.event_id = e.event_id
              WHERE e.event_kind = %s
                AND e.source_contract_reason IS NOT DISTINCT FROM %s
                AND (
@@ -414,7 +414,7 @@ class EventStorage:
             """
             INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms)
             SELECT q.symbol, e.event_id, q.market_type, e.opened_at_ms
-              FROM news_current_events_v1 e, unnest(%s::text[], %s::text[]) AS q(symbol, market_type)
+              FROM news_events e, unnest(%s::text[], %s::text[]) AS q(symbol, market_type)
              WHERE e.event_id = %s
             ON CONFLICT DO NOTHING
             """,
@@ -439,7 +439,7 @@ class EventStorage:
             INSERT INTO news_event_members
                    (event_id, item_id, joined_at_ms, match_kind, jaccard_estimate, fact_id, fact_text)
             SELECT e.event_id, %s, %s, %s, %s, %s, %s
-              FROM news_current_events_v1 e
+              FROM news_events e
              WHERE e.event_id = %s
             ON CONFLICT DO NOTHING
             """,
@@ -454,7 +454,7 @@ class EventStorage:
                    last_member_at_ms = GREATEST(last_member_at_ms, %s),
                    provider_score_max = GREATEST(COALESCE(provider_score_max, 0), COALESCE(%s, 0)),
                    updated_at_ms = %s
-             WHERE event_id = %s AND NOT current_contract_archive_only
+             WHERE event_id = %s
             """,
             (int(joined_at_ms), provider_score, int(now_ms), event_id),
         )
@@ -463,7 +463,7 @@ class EventStorage:
     def mark_event_published(self, *, event_id: str, now_ms: int) -> bool:
         cursor = self.conn.execute(
             "UPDATE news_events SET published_at_ms = %s, updated_at_ms = %s"
-            " WHERE event_id = %s AND NOT current_contract_archive_only AND published_at_ms IS NULL",
+            " WHERE event_id = %s AND published_at_ms IS NULL",
             (int(now_ms), int(now_ms), event_id),
         )
         return bool(cursor.rowcount)
@@ -482,7 +482,7 @@ class EventStorage:
         rows = self.conn.execute(
             f"""
             SELECT e.event_id, e.dedupe_family, e.queue_priority, e.trace_id, e.opened_at_ms
-              FROM news_current_events_v1 e
+              FROM news_events e
              WHERE e.published_at_ms IS NULL AND e.admission IN ({_ADMITTED_SQL})
                AND e.opened_at_ms <= %s AND e.opened_at_ms >= %s
                AND (
@@ -542,7 +542,7 @@ class EventStorage:
             UPDATE news_events
                SET admission = %s, queue_priority = %s, asset_class = %s, grounded_assets = %s::jsonb,
                    watchlist_hits = %s::jsonb, macro_lexicon = %s, updated_at_ms = %s
-             WHERE event_id = %s AND NOT current_contract_archive_only
+             WHERE event_id = %s
              RETURNING opened_at_ms
             """,
             (
@@ -572,15 +572,14 @@ class EventStorage:
         """Triage refined the storyline (final key from verdict primaries/scope); windows use this key from now on."""
 
         self.conn.execute(
-            "UPDATE news_events SET storyline_key = %s, updated_at_ms = %s"
-            " WHERE event_id = %s AND storyline_key <> %s AND NOT current_contract_archive_only",
+            "UPDATE news_events SET storyline_key = %s, updated_at_ms = %s WHERE event_id = %s AND storyline_key <> %s",
             (storyline_key[:120], int(now_ms), event_id, storyline_key[:120]),
         )
 
     def set_context_line(self, *, event_id: str, context_line: str, followup_of: str | None, now_ms: int) -> None:
         self.conn.execute(
             "UPDATE news_events SET context_line = %s, followup_of = COALESCE(%s, followup_of), updated_at_ms = %s"
-            " WHERE event_id = %s AND NOT current_contract_archive_only",
+            " WHERE event_id = %s",
             (context_line[:400], followup_of, int(now_ms), event_id),
         )
 
@@ -590,7 +589,7 @@ class EventStorage:
             SELECT e.*, i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
                    i.provider_metadata, i.provenance, i.published_at_ms AS leader_published_at_ms,
                    i.raw_first_line
-              FROM news_current_events_v1 e JOIN news_items i ON i.item_id = e.leader_item_id
+              FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE e.event_id = %s
             """,
             (event_id,),
@@ -641,7 +640,7 @@ class EventStorage:
             str(latest["provenance"]) != "observed"
             or str(dict(latest["snapshot"] or {}).get("schema_version") or "") != "news_event_evidence_v3"
         ):
-            raise ValueError("news_event_archive_only")
+            raise ValueError("news_event_evidence_contract_invalid")
         previous = dict(latest["snapshot"] or {}) if latest is not None else {}
         if focus_fact is not None:
             focus = {
@@ -790,7 +789,7 @@ class EventStorage:
                    evidence.evidence_sha256, evidence.provenance, evidence.release_eligible,
                    evidence.snapshot, evidence.created_at_ms
               FROM news_event_evidence_snapshots evidence
-              JOIN news_current_events_v1 event ON event.event_id = evidence.event_id
+              JOIN news_events event ON event.event_id = evidence.event_id
              WHERE evidence.event_id = %s
                AND evidence.provenance = 'observed'
                AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
@@ -837,7 +836,7 @@ class EventStorage:
                 """
                 SELECT m.event_id, m.match_kind
                  FROM news_event_members m
-                  JOIN news_current_events_v1 e ON e.event_id = m.event_id
+                  JOIN news_events e ON e.event_id = m.event_id
                  WHERE m.item_id = %s AND m.fact_id = %s AND e.event_kind = %s
                  ORDER BY e.opened_at_ms LIMIT 1
                 """,
@@ -851,7 +850,7 @@ class EventStorage:
         return cast(
             Mapping[str, Any] | None,
             self.conn.execute(
-                "SELECT admission, event_kind, storyline_key FROM news_current_events_v1 WHERE event_id = %s",
+                "SELECT admission, event_kind, storyline_key FROM news_events WHERE event_id = %s",
                 (event_id,),
             ).fetchone(),
         )
@@ -863,7 +862,7 @@ class EventStorage:
             """
             SELECT i.published_at_ms AS news_at_ms, e.opened_at_ms AS reaction_anchor_at_ms,
                    i.observed_at_ms, i.canonical_url
-              FROM news_current_events_v1 e JOIN news_items i ON i.item_id = e.leader_item_id
+              FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE e.event_id = %s
             """,
             (event_id,),
@@ -890,7 +889,7 @@ class EventStorage:
                 """
                 SELECT e.admission, e.storyline_key, e.published_at_ms,
                        i.reporting_origin AS leader_origin, i.provider_metadata AS leader_provider_metadata
-                  FROM news_current_events_v1 e JOIN news_items i ON i.item_id = e.leader_item_id
+                  FROM news_events e JOIN news_items i ON i.item_id = e.leader_item_id
                  WHERE e.event_id = %s
                 """,
                 (event_id,),

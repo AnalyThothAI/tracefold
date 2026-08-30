@@ -272,10 +272,9 @@ artifact and near-duplicate joins are restricted to the same kind so source
 contracts cannot collapse into each other. Its nullable durable
 `source_contract_reason` records only `source_contract_drift` or
 `unsupported_market_contract`. A missing value means the current writer parsed
-the selected contract (or it needs no strict parser). Pre-cut OI/liquidation
-rows without durable typed success evidence retain their historical
-`source_contract_unverified` bytes behind the archive-only boundary and never
-enter the current read model. An OI signal row is derived read-model evidence,
+the selected contract (or it needs no strict parser). Migration `0336`
+physically deletes every pre-genesis Event, including rows that carried the
+retired `source_contract_unverified` value. An OI signal row is derived read-model evidence,
 not a second material fact source. At insertion it freezes the exact source Item,
 source venue, actual availability clock, and learning epoch; evidence capture never
 reconstructs those fields from a later Event leader or the currently active epoch.
@@ -864,8 +863,8 @@ overrun is a `TransientError` (counted).
 
 Identity: `news_items.item_id = sha256(source_id, params.id)`. Event identity
 v6 is `sha256(identity_version, item_id, fact_id, event_kind)` for every route.
-Pre-v6 Events remain archive-only; current Admission neither reuses nor rekeys
-them and contains no legacy collision branch.
+Migration `0336` deletes all pre-v6 Events; current Admission contains no
+legacy collision or rekey branch.
 `tracefold.news.events.titles`
 extracts the first content block (skipping URL-only, label-only, `reply/quote:`
 lines and pinned wire source labels/suffixes; exchange names and `@handles`
@@ -876,9 +875,8 @@ band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.a
 is the single Deduper transaction. Fingerprints of at most two tokens never
 share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
 non-News Event identity. Current cross-Item exact/artifact/near joins require
-the same source-contract reason. Archive-only Events are never dedupe
-candidates and are never repaired, translated, or joined by the current
-writer.
+the same source-contract reason. Pre-genesis Events were physically deleted;
+the current writer has no repair, translation, or join path for them.
 
 That text-derived identity is deliberately weak, and #154 adds the exact one
 beside it rather than loosening it. `news_items.source_artifact_id` is the
@@ -917,9 +915,9 @@ unsupported contracts retain the named `unsupported_market_contract`
 admission. Event identity v6 namespaces every FactUnit by route, so different
 contracts for one provider record cannot merge by arrival order. There is no
 source registry, queue, worker, ID-only routing, or pre-v6 identity bridge.
-Migration 0315's historical classifications remain unchanged audit bytes;
-migration 0330 marks every pre-cut Event archive-only. A later provider
-redelivery creates a new current Event through the single v6 writer.
+Migration `0336` deletes the historical classifications and every Event marked
+by `0330`; a later provider redelivery creates a new current Event through the
+single v6 writer.
 
 Gate and storyline (`tracefold.news.events.gate`, `tracefold.news.events.storyline`) are pure
 functions and keep no Strategy name table of their own: grounded assets are the
@@ -1269,8 +1267,8 @@ applies to the whole route, not to each call. If primary still fails, fallback
 restarts the full Program with its own route deadline; the complete chain
 therefore makes at most eight visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
-attempts. Missing or invalid `novelty` fails closed, and pre-current Program
-traces are not decoded by this route. OI and liquidation use their typed
+attempts. Missing or invalid `novelty` fails closed; the genesis deleted
+pre-current Program traces. OI and liquidation use their typed
 deterministic judgments and bypass the Program. An ordinary Program failure is
 degraded, not silent: code-owned listing or grounded-watchlist objectives may
 use the wire headline; every other failure drops as
@@ -1882,6 +1880,12 @@ also rejects any attempt to revive a terminal Intent after rollback.
 partial unique index over `news_opennews_incidents(cause_class) WHERE
 closed_at_ms IS NULL`, preceded by a preflight that refuses rather than repairs
 pre-existing duplicates.
+`20260830_0336` performs the one-time News current-contract genesis: it empties
+the Event/Review/Learning/ReaderHistory/Delivery evidence plane, removes the
+archive columns, guards and compatibility view, preserves the Price and
+instrument tables plus every Trading/Capital owner, and appends one
+content-addressed genesis receipt. Its only rollback is restoring the verified
+pre-cut snapshot.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

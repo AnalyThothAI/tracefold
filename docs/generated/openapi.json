@@ -8182,16 +8182,6 @@
             },
             "description": "Event does not exist"
           },
-          "410": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiEnvelope_NewsEventDetailData_"
-                }
-              }
-            },
-            "description": "Event is archive-only under the current contract"
-          },
           "422": {
             "content": {
               "application/json": {

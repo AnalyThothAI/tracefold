@@ -20,10 +20,7 @@
   enums, symbols, content hashes, opaque identifiers, stable keys — has been
   replaced by a content hash, and a test scans the committed bytes for the shape
   of human language rather than for a list of key names. The allowlist direction
-  is the requirement, not a preference. The pre-hard-cut
-  `tests/fixtures/news_audit_replay_corpus_v2.json` remains only as explicitly
-  allowlisted immutable archive evidence; no ordinary test or current runtime
-  decodes it. Anything richer than that — raw evidence,
+  is the requirement, not a preference. Anything richer than that — raw evidence,
   prompts, cards, reviewer prose — stays out of the repository. The database
   copies are content-addressed audit evidence and append-only. Program artifact exports are canonical JSON
   but carry proprietary optimizer-written instructions, so “no credentials”

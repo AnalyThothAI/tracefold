@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 class _Components:
     news_pipeline: NewsPipeline | None
     news_bus: RabbitMQBus | None
+    runtime_manifest_sha: str | None = None
     capital_lane: CapitalLane | None = None
     venue_catalog: VenueCatalog | None = None
     execution_capability_compiler: ExecutionCapabilityCompiler | None = None
@@ -72,6 +73,7 @@ async def _wire_components(
         raise RuntimeError("news_push_unavailable:news_item_push_news_disabled")
     news_pipeline: NewsPipeline | None = None
     news_bus: RabbitMQBus | None = None
+    runtime_manifest_sha: str | None = None
     if settings.news.enabled:
         news_bus, news_pipeline = await _wire_news_pipeline(
             settings=settings,
@@ -80,6 +82,7 @@ async def _wire_components(
             telemetry=telemetry,
         )
         await news_pipeline.register_runtime_manifest()
+        runtime_manifest_sha = news_pipeline.runtime_manifest_sha
     trading_db = WorkerTradingDatabase(db)
     await project_binding_credentials(settings, trading_db)
     capital_lane = _wire_capital_lane(settings=settings, db=db, telemetry=telemetry)
@@ -102,6 +105,7 @@ async def _wire_components(
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
+        runtime_manifest_sha=runtime_manifest_sha,
         capital_lane=capital_lane,
         venue_catalog=venue_catalog,
         execution_capability_compiler=execution_capability_compiler,

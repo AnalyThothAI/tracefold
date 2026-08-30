@@ -107,13 +107,13 @@ def e2e_postgres() -> Iterator[str]:
 
     from testcontainers.postgres import PostgresContainer
 
+    from tests.postgres_test_utils import upgrade_test_head
     from tests.tracefold_postgres_container import tracefold_postgres_container
-    from tracefold.platform.postgres.migrations import upgrade_head
 
     with tracefold_postgres_container(PostgresContainer) as pg:
         dsn = pg.get_connection_url().replace("postgresql+psycopg2://", "postgresql://")
         try:
-            upgrade_head(dsn)
+            upgrade_test_head(dsn)
         except Exception as exc:
             pytest.fail(
                 f"alembic upgrade head failed against testcontainers PG ({dsn}): {exc}",

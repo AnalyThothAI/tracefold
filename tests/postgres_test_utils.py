@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -22,6 +23,53 @@ from tracefold.platform.postgres.migrations import upgrade_head
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 TEST_DATABASE_NAME = "tracefold_test"
 _CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case|migration)_[0-9a-f]{12}(?:_[0-9]+)?")
+_GENESIS_TEST_GIT_SHA = "1" * 40
+_GENESIS_TEST_IMAGE_DIGEST = "sha256:" + "2" * 64
+_GENESIS_TEST_RUNTIME_MANIFEST_SHA = "3" * 64
+
+
+@contextmanager
+def news_genesis_test_evidence() -> Iterator[None]:
+    """Supply deterministic cutover evidence only while a test owns its database."""
+
+    values = {
+        "TRACEFOLD_RUNTIME_REVISION": _GENESIS_TEST_GIT_SHA,
+        "TRACEFOLD_IMAGE_DIGEST": _GENESIS_TEST_IMAGE_DIGEST,
+        "TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256": _GENESIS_TEST_RUNTIME_MANIFEST_SHA,
+        "TRACEFOLD_NEWS_GENESIS_BROKER_OBSERVATION_SHA256": "5" * 64,
+        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": json.dumps(
+            {
+                "mode": "maintenance_window",
+                "tested_git_sha": _GENESIS_TEST_GIT_SHA,
+                "deployed_git_sha": _GENESIS_TEST_GIT_SHA,
+                "image_digest": _GENESIS_TEST_IMAGE_DIGEST,
+                "runtime_revision": _GENESIS_TEST_GIT_SHA,
+                "runtime_manifest_sha": _GENESIS_TEST_RUNTIME_MANIFEST_SHA,
+                "snapshot_sha256": "4" * 64,
+                "snapshot_verified": True,
+                "queue_ready": 0,
+                "queue_unacked": 0,
+                "queue_dead_letter": 0,
+                "queue_stale_reference_count": 0,
+            },
+            sort_keys=True,
+        ),
+    }
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update(values)
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+def upgrade_test_head(dsn: str) -> None:
+    with news_genesis_test_evidence():
+        upgrade_head(dsn)
 
 
 def test_postgres_dsn() -> str:
@@ -34,7 +82,7 @@ def ensure_migrated_postgres_resource(dsn: str, *, resource_name: str) -> None:
     try:
         with connect_postgres(dsn) as conn:
             assert_dedicated_test_database(conn)
-        upgrade_head(dsn)
+        upgrade_test_head(dsn)
     except Exception as exc:
         pytest.fail(f"alembic upgrade head failed for the declared {resource_name}: {exc}", pytrace=False)
 
@@ -95,8 +143,7 @@ def seed_current_news_evidence(conn: Any) -> None:
                      (to_jsonb(event) - ARRAY[
                        'leader_title', 'context_line', 'search_doc', 'published_at_ms', 'followup_of',
                        'created_at_ms', 'updated_at_ms', 'focus_fact_text', 'focus_fact_context',
-                       'focus_fact_method', 'focus_span_start', 'focus_span_end',
-                       'current_contract_archive_only'
+                       'focus_fact_method', 'focus_span_start', 'focus_span_end'
                      ]::text[])
                      || jsonb_build_object(
                        'leader_url', item.canonical_url,
@@ -111,7 +158,7 @@ def seed_current_news_evidence(conn: Any) -> None:
                    'members', '[]'::jsonb,
                    'provenance', 'observed'
                  ) AS snapshot
-            FROM news_current_events_v1 event
+            FROM news_events event
             JOIN news_items item ON item.item_id = event.leader_item_id
            WHERE NOT EXISTS (
              SELECT 1 FROM news_event_evidence_snapshots evidence
@@ -142,7 +189,7 @@ def reset_postgres_schema(conn) -> None:
     conn.execute("CREATE SCHEMA public")
     conn.execute("GRANT ALL ON SCHEMA public TO public")
     conn.commit()
-    upgrade_head(test_postgres_dsn())
+    upgrade_test_head(test_postgres_dsn())
 
 
 def reset_postgres_database(dsn: str) -> None:
@@ -154,7 +201,7 @@ def reset_postgres_database(dsn: str) -> None:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
-    upgrade_head(dsn)
+    upgrade_test_head(dsn)
 
 
 def assert_dedicated_test_database(conn: Any, *, expected_database: str | None = None) -> None:
@@ -185,7 +232,7 @@ class MigratedPostgresCloneFactory:
         self._baseline_database = f"{TEST_DATABASE_NAME}_baseline_{self.run_token}"
         self._create_database(self._baseline_database, template="template0")
         try:
-            upgrade_head(_database_dsn(self.server_dsn, self._baseline_database))
+            upgrade_test_head(_database_dsn(self.server_dsn, self._baseline_database))
         except BaseException:
             self._drop_database(self._baseline_database)
             raise

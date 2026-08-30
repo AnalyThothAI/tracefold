@@ -416,7 +416,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260830_0335` head; schema tests also run against that migrated head.
+current `20260830_0336` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -825,13 +825,10 @@ and a missing or tampered policy raises rather than scoring — a corpus that
 cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
-`tests/fixtures/news_audit_replay_corpus_v2.json` is immutable pre-hard-cut
-audit evidence. It is archive-only: no ordinary test, current metric, dataset,
-Program, or release gate imports it, and there is no current generator or
-recorded-mode reader for its legacy judgment shape. The current-contract
-architecture guard names the file and its historical keys explicitly; any new
-consumer or additional legacy reference fails CI. Current metric-v6 evidence is
-built only from exact `news_judgment_v2` rows in the active epoch.
+Migration `0336` removes the pre-genesis replay fixture with the database
+evidence it represented. Current metric-v6 evidence is built only from exact
+`news_judgment_v2` rows created in the post-genesis active epoch; tests do not
+carry a repository copy of the retired evidence shape.
 
 The tariff is not optional bookkeeping. Neither the local llama.cpp endpoint nor
 DeepSeek returns a price litellm can resolve, so `provider_cost_microusd` is

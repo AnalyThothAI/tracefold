@@ -12,12 +12,11 @@ from psycopg.errors import CheckViolation, NotNullViolation
 
 from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.events.identity import dedupe_family
 from tracefold.news.events.titles import extract_title
-from tracefold.news.opennews import OPENNEWS_SOURCE_ID, parse_opennews_message
-from tracefold.news.pipeline.admission import admit_item, item_identity
+from tracefold.news.opennews import OPENNEWS_SOURCE_ID
+from tracefold.news.pipeline.admission import item_identity
 from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
@@ -449,9 +448,6 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         legacy_collision_event_id = hashlib.sha256(
             f"{legacy_collision_item_id}\x1f{legacy_collision_fact.fact_id}".encode()
         ).hexdigest()
-        legacy_collision_news_event_id = hashlib.sha256(
-            f"{legacy_collision_item_id}\x1f{legacy_collision_fact.fact_id}\x1fnews".encode()
-        ).hexdigest()
         legacy_collision_comparison = extract_title(legacy_collision_fact.text).comparison
         _seed_event(
             conn,
@@ -589,10 +585,10 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade("20260827_0315")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260827_0315"
         assert {
             str(row["event_id"]): str(row["event_kind"])
             for row in conn.execute("SELECT event_id, event_kind FROM news_events ORDER BY event_id").fetchall()
@@ -676,143 +672,12 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
             "unknown-market": "unsupported_market_contract",
             "wallet-unsupported": "unsupported_market_contract",
         }
-        news = repositories_for_connection(conn).news
-        assert news.event_detail("sent-unsupported") == {"archive_only": True}
-        assert news.event_detail("queued-push-unsupported") == {"archive_only": True}
-        assert news.event_detail("dropped-unsupported") == {"archive_only": True}
         assert (
             conn.execute("SELECT count(*) AS n FROM news_events WHERE leader_item_id = 'i-ordinary-news'").fetchone()[
                 "n"
             ]
             == 1
         )
-
-        def _oi_frame(record_id: str, symbol: str):
-            title = f"{symbol} OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
-            parsed = parse_opennews_message(
-                {
-                    "method": "strategy.triggered",
-                    "params": {
-                        "id": record_id,
-                        "text": title,
-                        "source": "binance",
-                        "engineType": "market",
-                        "ts": NOW,
-                        "strategy": {"id": 1019, "name": "OI Event Monitor", "sourceType": "market"},
-                    },
-                }
-            )
-            assert parsed is not None
-            return parsed
-
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            same_item = admit_item(
-                repos,
-                event=_oi_frame("2881001", "SAME"),
-                ingest_mode="live",
-                observed_at_ms=NOW,
-                trace_id="post-cut-same-item-redelivery",
-                watchlist_symbols=frozenset(),
-                now_ms=NOW,
-            )
-            cross_item = admit_item(
-                repos,
-                event=_oi_frame("2881003", "CROSS"),
-                ingest_mode="live",
-                observed_at_ms=NOW,
-                trace_id="post-cut-cross-item-redelivery",
-                watchlist_symbols=frozenset(),
-                now_ms=NOW,
-            )
-        assert same_item.event_created and same_item.event_id != "pending-same-item-oi"
-        assert cross_item.event_created and cross_item.event_id != "pending-cross-item-oi"
-        assert same_item.event_id != cross_item.event_id
-        ordinary_redelivery = parse_opennews_message(
-            {
-                "method": "strategy.triggered",
-                "params": {
-                    "id": legacy_collision_record_id,
-                    "text": legacy_collision_title,
-                    "source": "wire",
-                    "engineType": "news",
-                    "score": 90,
-                    "ts": NOW,
-                    "strategy": {"id": 1018, "name": "News Score > 70", "sourceType": "news"},
-                },
-            }
-        )
-        assert ordinary_redelivery is not None
-        with repos.transaction():
-            ordinary = admit_item(
-                repos,
-                event=ordinary_redelivery,
-                ingest_mode="live",
-                observed_at_ms=NOW,
-                trace_id="post-cut-news-legacy-id-collision",
-                watchlist_symbols=frozenset(),
-                now_ms=NOW,
-            )
-        assert ordinary.event_kind == "news" and ordinary.event_created
-        assert ordinary.event_id != legacy_collision_news_event_id
-        assert {
-            row["event_kind"]
-            for row in conn.execute(
-                """
-                SELECT DISTINCT e.event_kind
-                  FROM news_event_members m JOIN news_events e ON e.event_id = m.event_id
-                 WHERE m.item_id = %s
-                """,
-                (legacy_collision_item_id,),
-            ).fetchall()
-        } == {"news", "oi"}
-        assert (
-            conn.execute(
-                "SELECT count(*) AS n FROM news_events WHERE event_id IN "
-                "('pending-same-item-oi', 'pending-cross-item-oi')"
-            ).fetchone()["n"]
-            == 2
-        )
-        assert (
-            conn.execute(
-                "SELECT count(DISTINCT item_id) AS n FROM news_event_members WHERE event_id = 'pending-cross-item-oi'"
-            ).fetchone()["n"]
-            == 1
-        )
-        assert {
-            row["event_id"]: row["source_contract_reason"]
-            for row in conn.execute(
-                "SELECT event_id, source_contract_reason FROM news_events "
-                "WHERE event_id IN ('pending-same-item-oi', 'pending-cross-item-oi')"
-            ).fetchall()
-        } == {
-            "pending-same-item-oi": "source_contract_unverified",
-            "pending-cross-item-oi": "source_contract_unverified",
-        }
-        assert {
-            row["event_id"]: row["source_contract_reason"]
-            for row in conn.execute(
-                "SELECT event_id, source_contract_reason FROM news_current_events_v1 "
-                "WHERE event_id = ANY(%s) ORDER BY event_id",
-                ([same_item.event_id, cross_item.event_id],),
-            ).fetchall()
-        } == {same_item.event_id: None, cross_item.event_id: None}
-
-        contracts = news.status_snapshot(now_ms=NOW + 1)["pipeline"]["source_contracts_24h"]
-        assert contracts["oi_v1"] == {
-            "received": 2,
-            "parsed": 2,
-            "parse_failed": 0,
-            "unsupported": 0,
-            "verdict": 0,
-        }
-        assert contracts["liquidation_v1"] == {
-            "received": 0,
-            "parsed": 0,
-            "parse_failed": 0,
-            "unsupported": 0,
-            "verdict": 0,
-        }
 
         columns = {
             str(row["column_name"]): str(row["is_nullable"])
@@ -841,47 +706,18 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         conn.execute("BEGIN")
         conn.execute("SAVEPOINT invalid_kind")
         with pytest.raises(CheckViolation, match="news_events_event_kind_check"):
-            conn.execute("UPDATE news_events SET event_kind='wallet' WHERE event_id=%s", (ordinary.event_id,))
+            conn.execute("UPDATE news_events SET event_kind='wallet' WHERE event_id='ordinary-news'")
         conn.execute("ROLLBACK TO SAVEPOINT invalid_kind")
         conn.execute("SAVEPOINT missing_kind")
         with pytest.raises(NotNullViolation):
-            conn.execute("UPDATE news_events SET event_kind=NULL WHERE event_id=%s", (ordinary.event_id,))
+            conn.execute("UPDATE news_events SET event_kind=NULL WHERE event_id='ordinary-news'")
         conn.execute("ROLLBACK TO SAVEPOINT missing_kind")
         conn.execute("SAVEPOINT invalid_reason")
         with pytest.raises(CheckViolation, match=r"news_events_source_contract_(reason|consistency)_check"):
             conn.execute(
-                "UPDATE news_events SET source_contract_reason='parser_unknown' WHERE event_id=%s",
-                (ordinary.event_id,),
+                "UPDATE news_events SET source_contract_reason='parser_unknown' WHERE event_id='ordinary-news'"
             )
         conn.execute("ROLLBACK TO SAVEPOINT invalid_reason")
-        conn.execute("SAVEPOINT current_unverified_reason")
-        with pytest.raises(CheckViolation, match=r"news_events_source_contract_(reason|consistency)_check"):
-            conn.execute(
-                "UPDATE news_events SET source_contract_reason='source_contract_unverified' WHERE event_id=%s",
-                (same_item.event_id,),
-            )
-        conn.execute("ROLLBACK TO SAVEPOINT current_unverified_reason")
-        conn.execute("SAVEPOINT unsupported_missing_reason")
-        with pytest.raises(CheckViolation, match="news_events_source_contract_consistency_check"):
-            conn.execute(
-                "UPDATE news_events SET event_kind='unsupported_market', source_contract_reason=NULL WHERE event_id=%s",
-                (ordinary.event_id,),
-            )
-        conn.execute("ROLLBACK TO SAVEPOINT unsupported_missing_reason")
-        conn.execute("SAVEPOINT news_with_drift_reason")
-        with pytest.raises(CheckViolation, match="news_events_source_contract_consistency_check"):
-            conn.execute(
-                "UPDATE news_events SET source_contract_reason='source_contract_drift' WHERE event_id=%s",
-                (ordinary.event_id,),
-            )
-        conn.execute("ROLLBACK TO SAVEPOINT news_with_drift_reason")
-        conn.execute("SAVEPOINT oi_with_unsupported_reason")
-        with pytest.raises(CheckViolation, match="news_events_source_contract_consistency_check"):
-            conn.execute(
-                "UPDATE news_events SET source_contract_reason='unsupported_market_contract' WHERE event_id=%s",
-                (same_item.event_id,),
-            )
-        conn.execute("ROLLBACK TO SAVEPOINT oi_with_unsupported_reason")
 
         activation = conn.execute(
             "SELECT state, revision, trip_reason FROM news_canary_activations WHERE activation_id=%s",
