@@ -30,7 +30,13 @@ import pytest
 from aio_pika import DeliveryMode, ExchangeType
 
 from tracefold.app.cli.commands.db import _observe_drained_news_broker
-from tracefold.integrations.rabbitmq import REMOVED_RETRY_LANE, BrokerPolicyMismatch, RabbitMQBus, topology
+from tracefold.integrations.rabbitmq import (
+    POLICY_EFFECTIVE_TIMEOUT_SECONDS,
+    REMOVED_RETRY_LANE,
+    BrokerPolicyMismatch,
+    RabbitMQBus,
+    topology,
+)
 from tracefold.news import broker_policy
 from tracefold.news.bus import (
     Q_DEAD,
@@ -75,7 +81,7 @@ async def _bus(*, delay_ms: int = FAST_DELAY_MS, apply_policies: bool = True) ->
         await bus.apply_policies()
         # The same bounded settle Workers runs before consuming: the broker publishes the per-queue
         # effect of the just-imported document on its statistics interval.
-        await bus.verify_policies(settle_timeout_seconds=30.0)
+        await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS)
     try:
         yield bus
     finally:
@@ -296,6 +302,23 @@ def test_policies_can_be_provisioned_before_any_queue_exists() -> None:
             assert await bus.verify_policy_documents() == {
                 "verified": sorted(policy.name for policy in broker_policy.policies(name_prefix=prefix))
             }
+            # Every field of the entry is contract, not just the definition: a pattern edited to match
+            # nothing ungoverns a queue exactly as thoroughly as a deleted policy, and must not pass.
+            drifted = broker_policy.policies(name_prefix=prefix)[0]
+            vhost = quote(_management_vhost(), safe="")
+            _management_put(
+                f"/api/policies/{vhost}/{quote(drifted.name, safe='')}",
+                {
+                    "pattern": "^tf-matches-nothing$",
+                    "apply-to": "queues",
+                    "priority": broker_policy.POLICY_PRIORITY,
+                    "definition": dict(drifted.definition),
+                },
+            )
+            with pytest.raises(BrokerPolicyMismatch, match="news_broker_policy_document_mismatch"):
+                await bus.verify_policy_documents()
+            # Re-applying is the repair, and it is explicit — verification never fixed anything.
+            await bus.apply_policies()
             # The queues genuinely do not exist yet, which is what the per-queue check would trip on.
             assert await bus.topology_drift() == {"queues": [], "exchanges": []}
             with pytest.raises(BrokerPolicyMismatch):
@@ -306,12 +329,12 @@ def test_policies_can_be_provisioned_before_any_queue_exists() -> None:
             # statistics interval publishes their effective policy, so a one-shot read here would kill
             # the first Workers boot on every fresh broker volume.
             await bus.connect()
-            assert await bus.verify_policies(settle_timeout_seconds=30.0) == {
+            assert await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS) == {
                 "verified": sorted(topology(prefix).queue_names)
             }
         finally:
-            await bus.connect()
-            await bus.delete_topology()
+            deleted = await bus.delete_topology()
+            assert set(deleted) >= set(topology(prefix).queue_names)
             await bus.close()
 
     asyncio.run(scenario())

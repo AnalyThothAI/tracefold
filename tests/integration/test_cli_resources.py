@@ -105,7 +105,9 @@ def _delete_test_topology(url: str, name_prefix: str) -> None:
 
 
 def _settle_effective_policy(url: str, name_prefix: str) -> None:
-    from tracefold.integrations.rabbitmq import RabbitMQBus
+    """The production attach sequence: declare the topology, then wait out the statistics interval."""
+
+    from tracefold.integrations.rabbitmq import POLICY_EFFECTIVE_TIMEOUT_SECONDS, RabbitMQBus
 
     async def run() -> None:
         bus = RabbitMQBus(
@@ -115,7 +117,8 @@ def _settle_effective_policy(url: str, name_prefix: str) -> None:
             management_url=_management_url(url),
         )
         try:
-            await bus.verify_policies(settle_timeout_seconds=30.0)
+            await bus.connect()
+            await bus.verify_policies(settle_timeout_seconds=POLICY_EFFECTIVE_TIMEOUT_SECONDS)
         finally:
             await bus.close()
 
@@ -158,6 +161,14 @@ def test_news_bus_check_reports_topology_or_fails_closed_without_broker(rabbitmq
                 applied = io.StringIO()
                 assert main(["news", "bus-policy", "apply"], stdout=applied) == 0
                 assert json.loads(applied.getvalue())["ok"] is True
+
+                # The standalone verify action proves the documents without touching the topology.
+                verified = io.StringIO()
+                assert main(["news", "bus-policy", "verify"], stdout=verified) == 0
+                verify_payload = json.loads(verified.getvalue())
+                assert verify_payload["ok"] is True
+                assert verify_payload["data"]["applied"] is None
+                assert verify_payload["data"]["verified"]["verified"]
 
                 # bus-check reads the effective per-queue policy, which the broker publishes on its own
                 # statistics interval after the document is in place. Wait with the same bounded settle
