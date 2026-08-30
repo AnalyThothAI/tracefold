@@ -84,7 +84,7 @@ def test_move_bps_reads_an_unpriced_end_as_missing(p0: str | None, p1: str | Non
     """Both ends, not just the denominator.
 
     `p0 <= 0` is a division problem and was guarded from the start; `p1 <= 0` is not, and was not.
-    A halted or delisted interval reporting `close = 0` returned `-10000` — a confident −100% move
+    A halted or delisted interval reporting `close = 0` returned `-10000` — a confident -100% move
     rather than an absence — which is precisely the mark this module exists to refuse to invent.
     """
 

@@ -74,7 +74,7 @@ def move_bps(p0: Decimal | None, p1: Decimal | None) -> int | None:
 
     Both ends must be a price that could have traded. The guard used to cover only `p0`, where a
     non-positive value is a division problem, and let a non-positive `p1` through as arithmetic:
-    a close of `0` on a halted or delisted interval returned a confident `-10000` — a −100% move
+    a close of `0` on a halted or delisted interval returned a confident `-10000` — a -100% move
     persisted as a material fact and served over HTTP. `Bar.close` carries no positivity constraint
     and the bars come from a provider REST page, so this is reachable from data rather than from a
     caller mistake. `select_bar`'s docstring names the same failure for the same reason: an absent

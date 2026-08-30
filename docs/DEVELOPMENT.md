@@ -474,6 +474,14 @@ survivor there means the suite imported unmutated source, which is the failure
 that reports good news: it is why `mutmut` is not used here, its shadow
 `mutants/` tree being importable as a namespace package alongside the real one.
 
+Zero survivors is only half a proof, so the sentinel runs `cosmic-ray baseline`
+first. Cosmic Ray records a kill for any non-zero exit, so a command that never
+reached an assertion — a collection error, a missing binary, a failed
+resolution — also produces zero survivors. The baseline requires the same
+command to be green on unmutated source, which is what makes the zero mean
+something; the scheduled job runs it against `mutation.toml` for the same
+reason, rather than a hand-written approximation of the command it measures.
+
 Cosmic Ray mutates in place, so for the length of a run the working tree holds a
 mutant in a tracked file. `make mutation` therefore refuses to start unless the
 modules it rewrites are clean and restores them however it exits, and a
@@ -482,7 +490,18 @@ whole-tree check run concurrently with a batch — `ruff check .`, or a `git add
 cannot share a checkout for the same reason. Parallelism is therefore one checkout per worker,
 which a job matrix already is: `scripts/mutation_shard.py` reserves a
 deterministic slice of the session for each runner by skipping the rest, and
-`scripts/mutation_survivors.py` sums the shard databases into one score. The
+`scripts/mutation_survivors.py` unions the shard databases into one score.
+
+The slice is keyed on `(module_path, operator_name, occurrence)` rather than on
+`job_id`, and that is a correctness requirement rather than a preference: each
+matrix leg runs its own `cosmic-ray init`, which mints fresh job ids, so a
+job-id ordering gives every shard an independent random slice instead of a
+partition. For the same reason the score unions mutant identities rather than
+summing per-session counts — every shard database holds the whole population,
+with the other shards' jobs marked skipped. Where the union falls short of the
+population the run is reported as partial and only unclassified survivors are
+checked, since "listed but no longer surviving" is a claim about the tests and
+not about which slice happened to run. The
 batch is sized against the 30-minute bound from measured numbers — 628 mutants
 at about 6 s each is roughly an hour sequentially, about 11 minutes across six
 shards — and each shard is capped at 30 minutes so an over-long batch fails

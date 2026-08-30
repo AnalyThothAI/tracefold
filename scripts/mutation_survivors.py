@@ -211,6 +211,36 @@ def _report(label: str, mutants: Iterable[Mutant]) -> None:
         sys.stderr.write(f"  {mutant.describe()}\n")
 
 
+def _report_stale(stale: Iterable[Mutant], survivors: Iterable[Mutant], triage_name: str) -> None:
+    """Say *why* an entry no longer matches, because the two reasons need opposite responses.
+
+    "No longer surviving" is the message for "a test now kills this, delete the exemption". It is
+    also what a moved line produces, and that wants the opposite response — the classification is
+    still correct and only its anchor is stale. The identity is keyed on a line number, so an edit
+    anywhere above a mutated module shifts every entry below it; that has happened three times while
+    this lane was being built. Matching the orphan against a survivor with the same operator and
+    occurrence tells the two apart without loosening what the gate accepts.
+    """
+
+    listed = sorted(stale)
+    if not listed:
+        return
+    moved = {(m.module, m.operator, m.occurrence): m for m in survivors}
+    sys.stderr.write(f"\nlisted in {triage_name} but no longer surviving ({len(listed)}):\n")
+    for mutant in listed:
+        elsewhere = moved.get((mutant.module, mutant.operator, mutant.occurrence))
+        if elsewhere is not None:
+            sys.stderr.write(
+                f"  {mutant.describe()}\n"
+                f"      still survives at line {elsewhere.line} — the line moved, so update the anchor\n"
+                f"      rather than deleting a classification that is still true.\n"
+            )
+        else:
+            sys.stderr.write(
+                f"  {mutant.describe()}\n      nothing with this identity survives; a test now kills it.\n"
+            )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("sessions", type=Path, nargs="+", help="cosmic-ray session databases, one per shard")
@@ -273,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     unused = [rule for rule in rules if not any(_matched_by_rule(mutant, [rule]) for mutant in survivors)]
 
     _report("SURVIVED and unclassified", unclassified)
-    _report(f"listed in {args.triage.name} but no longer surviving", stale)
+    _report_stale(stale, survivors, args.triage.name)
     for rule in unused:
         sys.stderr.write(f"\n[[rule]] {rule['kind']} / {rule['operator']} matched no survivor; drop it\n")
     if not complete:

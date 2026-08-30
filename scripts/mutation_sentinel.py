@@ -65,8 +65,8 @@ def main(argv: list[str] | None = None) -> int:
             ("init", ["cosmic-ray", "init", str(config), str(session)]),
             ("exec", ["cosmic-ray", "exec", str(config), str(session)]),
         )
-        for stage, argv in stages:
-            completed = subprocess.run(argv, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+        for stage, command in stages:
+            completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
             if completed.returncode != 0:
                 if stage == "baseline":
                     sys.stderr.write(
