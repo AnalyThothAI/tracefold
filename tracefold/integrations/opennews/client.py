@@ -23,6 +23,7 @@ OPENNEWS_WSS_URL = "wss://ai.6551.io/open/news_wss"
 OPENNEWS_HTTP_BASE_URL = "https://ai.6551.io/open"
 OPENNEWS_MAX_FRAME_BYTES = 1 * 1024 * 1024
 OPENNEWS_HISTORY_MAX_BODY_BYTES = 8 * 1024 * 1024
+_OPENNEWS_HISTORY_CHUNK_BYTES = 64 * 1024
 OPENNEWS_WS_IDLE_SECONDS = 45.0
 _EXPECTED_WEBSOCKET_FAILURES = (
     OSError,
@@ -120,7 +121,7 @@ class OpenNewsStrategyHistoryClient:
     ) -> None:
         self._client = httpx.AsyncClient(
             base_url=str(base_url).rstrip("/"),
-            headers={"Authorization": f"Bearer {token}"},
+            headers={"Authorization": f"Bearer {token}", "Accept-Encoding": "identity"},
             timeout=httpx.Timeout(10.0),
             follow_redirects=False,
             transport=transport,
@@ -154,8 +155,10 @@ class OpenNewsStrategyHistoryClient:
                 if response.status_code == 429:
                     raise OpenNewsHistoryError("opennews_history_rate_limited")
                 response.raise_for_status()
+                if response.headers.get("Content-Encoding", "identity").strip().lower() != "identity":
+                    raise OpenNewsHistoryError("opennews_history_content_encoding_unsupported")
                 body = bytearray()
-                async for chunk in response.aiter_bytes():
+                async for chunk in response.aiter_raw(chunk_size=_OPENNEWS_HISTORY_CHUNK_BYTES):
                     if len(body) + len(chunk) > OPENNEWS_HISTORY_MAX_BODY_BYTES:
                         raise OpenNewsHistoryError("opennews_history_payload_too_large")
                     body.extend(chunk)
@@ -167,8 +170,8 @@ class OpenNewsStrategyHistoryClient:
             raise OpenNewsHistoryError("opennews_history_http_error") from None
         try:
             payload = json.loads(body)
-        except ValueError:
-            raise OpenNewsHistoryError("opennews_history_http_error") from None
+        except (RecursionError, ValueError):
+            raise OpenNewsHistoryError("opennews_history_payload_invalid") from None
         if not isinstance(payload, Mapping):
             raise OpenNewsHistoryError("opennews_history_payload_invalid")
         return payload

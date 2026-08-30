@@ -271,6 +271,41 @@ def test_official_strategy_history_adapter_rejects_a_body_over_the_fixed_limit()
     asyncio.run(scenario())
 
 
+def test_official_strategy_history_adapter_rejects_compression_before_decoding() -> None:
+    async def scenario() -> None:
+        def _response(request: httpx.Request) -> httpx.Response:
+            assert request.headers["Accept-Encoding"] == "identity"
+            return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=b"compressed")
+
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(_response),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_content_encoding_unsupported$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_adapter_classifies_deep_json_as_invalid() -> None:
+    async def scenario() -> None:
+        body = (b'{"nested":' * 2_000) + b"null" + (b"}" * 2_000)
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=body)),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
 def test_official_strategy_history_rejects_more_than_one_hundred_rows() -> None:
     overfull = {"success": True, "data": [{}] * 101, "page": 1, "limit": 100, "total": 101}
 
