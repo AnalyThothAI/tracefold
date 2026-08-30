@@ -44,6 +44,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert policy["command"] == ["tracefold", "news", "bus-policy", "apply"]
     assert policy["restart"] == "no"
     assert policy["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    assert services["migrate"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["workers"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["postgres"]["image"] == POSTGRES_IMAGE
     assert "build" not in services["postgres"]

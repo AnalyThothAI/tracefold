@@ -531,6 +531,16 @@ _up-locked:
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		make --no-print-directory status || fail; \
+		if [ -n "$${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}" ]; then \
+			target_manifest=$$(printf '%s' "$$TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" \
+				| uv run python -c 'import json,sys; print(json.load(sys.stdin)["runtime_manifest_sha"])') || fail; \
+			ready_manifest=$$(curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" \
+				| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("runtime_manifest_sha") or ""))') || fail; \
+			if [ "$$ready_manifest" != "$$target_manifest" ]; then \
+				echo "Workers runtime manifest does not equal the committed News genesis target." >&2; \
+				fail; \
+			fi; \
+		fi; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout

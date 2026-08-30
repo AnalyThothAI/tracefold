@@ -135,6 +135,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq-policy:
+        condition: service_completed_successfully
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
       - ${HOME}/.tracefold/postgres_migrate_password:/root/.tracefold/postgres_migrate_password:ro

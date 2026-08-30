@@ -148,9 +148,12 @@ def postgres_module_clone_dsn(postgres_clone_factory) -> Iterator[str]:
 @pytest.fixture(scope="module")
 def postgres_migration_dsn(postgres_server_dsn: str) -> Iterator[str]:
     """Give historical migration owners an empty database without the head shortcut."""
-    from tests.postgres_test_utils import temporary_unmigrated_postgres_database
+    from tests.postgres_test_utils import news_genesis_test_evidence, temporary_unmigrated_postgres_database
 
-    with _routed_postgres_database(temporary_unmigrated_postgres_database(postgres_server_dsn)) as dsn:
+    with (
+        news_genesis_test_evidence(),
+        _routed_postgres_database(temporary_unmigrated_postgres_database(postgres_server_dsn)) as dsn,
+    ):
         yield dsn
 
 

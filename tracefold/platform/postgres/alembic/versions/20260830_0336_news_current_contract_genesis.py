@@ -22,6 +22,9 @@ depends_on = None
 
 _ISSUE = "https://github.com/AnalyThothAI/tracefold/issues/398"
 _PREFLIGHT_ENV = "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON"
+_BROKER_OBSERVATION_ENV = "TRACEFOLD_NEWS_GENESIS_BROKER_OBSERVATION_SHA256"
+_EXPECTED_RUNTIME_MANIFEST_ENV = "TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256"
+_FRESH_INSTALL_ENV = "TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 _IMAGE_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -60,6 +63,100 @@ _PRESERVED_TABLES = (
     "news_symbol_aliases",
 )
 _EXPECTED_TABLES = frozenset((*_CLEARED_TABLES, *_PRESERVED_TABLES))
+
+# Phase 0 owns the non-table schema inventory too. These are identities rather
+# than definitions; the schema digest below seals every definition and index.
+_EXPECTED_SCHEMA_OBJECTS_BEFORE = frozenset(
+    {
+        "fk:news_agent_assignments.news_agent_assignments_activation_id_fkey->news_canary_activations",
+        "fk:news_agent_assignments.news_agent_assignments_event_id_fkey->news_events",
+        "fk:news_deliveries.news_deliveries_event_id_fkey->news_events",
+        "fk:news_event_assets.news_event_assets_event_id_fkey->news_events",
+        "fk:news_event_bands.news_event_bands_event_id_fkey->news_events",
+        "fk:news_event_members.news_event_members_event_id_fkey->news_events",
+        "fk:news_event_members.news_event_members_item_id_fkey->news_items",
+        "fk:news_event_reactions.news_event_reactions_event_fkey->news_events",
+        "fk:news_events.news_events_leader_item_id_fkey->news_items",
+        "fk:news_oi_signals.news_oi_signals_event_id_fkey->news_events",
+        "fk:news_oi_signals.news_oi_signals_source_item_fk->news_items",
+        "fk:news_verdicts.news_verdicts_current_evidence_fk->news_event_evidence_snapshots",
+        "fk:news_verdicts.news_verdicts_event_id_fkey->news_events",
+        "function:news_canonical_jsonb(value jsonb)",
+        "function:news_current_decision_valid(value jsonb)",
+        "function:news_current_event_archive_guard()",
+        "function:news_current_event_review_payload_valid(value jsonb, expected_should_push text, "
+        "expected_dimensions jsonb, expected_novelty jsonb, expected_first_bad_owner text, "
+        "expected_evidence_refs jsonb, expected_correction text, expected_note text)",
+        "function:news_current_evidence_snapshot_valid(value jsonb, expected_event_id text, "
+        "expected_focus_fact_id text)",
+        "function:news_current_liquidation_fact_valid(value jsonb)",
+        "function:news_current_liquidation_metadata_valid(value jsonb, parsed boolean)",
+        "function:news_current_model_editorial_valid(value jsonb)",
+        "function:news_current_oi_metadata_valid(value jsonb, parsed boolean)",
+        "function:news_current_oi_signal_valid(value jsonb)",
+        "function:news_current_pairwise_review_payload_valid(value jsonb, expected_evidence_refs jsonb, "
+        "expected_note text)",
+        "function:news_current_review_acceptance_target_guard()",
+        "function:news_current_review_dimensions_valid(value jsonb)",
+        "function:news_current_review_evidence_refs_valid(value jsonb)",
+        "function:news_current_review_expected_valid(value jsonb)",
+        "function:news_current_review_novelty_valid(value jsonb)",
+        "function:news_current_review_selection_valid(value jsonb, subject_kind_value text)",
+        "function:news_current_review_source_exists(subject_kind_value text, task_id_value text, "
+        "event_id_value text, evidence_version_value integer, external_snapshot_id_value text, "
+        "pairwise_case_id_value text)",
+        "function:news_current_review_source_guard()",
+        "function:news_current_review_taxonomy_provenance_valid(value jsonb)",
+        "function:news_current_review_taxonomy_valid(value jsonb)",
+        "function:news_current_review_valid(review_kind_value text, subject_kind_value text, "
+        "rubric_version_value text, reader_contract_version_value text, event_id_value text, "
+        "evidence_version_value integer, external_snapshot_id_value text, pairwise_case_id_value text, "
+        "should_push_value text, dimensions_value jsonb, novelty_value jsonb, first_bad_owner_value text, "
+        "evidence_refs_value jsonb, expected_correction_value text, note_value text, selection_value jsonb, "
+        "payload_value jsonb, accepts_review_id_value text)",
+        "function:news_current_told_trace_valid(value jsonb)",
+        "function:news_current_triage_verdict_valid(value jsonb)",
+        "function:news_current_verdict_evidence_guard()",
+        "function:news_jsonb_exact_keys(value jsonb, expected text[])",
+        "function:news_jsonb_forbidden_keys_absent(value jsonb, forbidden text[])",
+        "function:news_jsonb_int64_valid(value jsonb)",
+        "function:news_jsonb_ordered_string_set_valid(value jsonb, allowed text[], maximum integer)",
+        "function:news_jsonb_required_optional_keys(value jsonb, required text[], optional text[])",
+        "function:news_strategy_provenance_valid(value jsonb)",
+        "sequence:news_opennews_incidents_incident_id_seq",
+        "trigger:news_agent_assignments.trg_news_agent_assignments_append_only",
+        "trigger:news_agent_runtime_manifests.trg_news_agent_runtime_manifests_append_only",
+        "trigger:news_event_evidence_snapshots.news_event_evidence_current_archive_only_check",
+        "trigger:news_event_evidence_snapshots.trg_news_event_evidence_append_only",
+        "trigger:news_events.news_events_current_archive_only_check",
+        "trigger:news_external_miss_snapshots.trg_news_external_miss_snapshots_append_only",
+        "trigger:news_learning_artifacts.trg_news_learning_artifacts_append_only",
+        "trigger:news_learning_cases.trg_news_learning_cases_append_only",
+        "trigger:news_learning_epochs.trg_news_learning_epochs_append_only",
+        "trigger:news_model_recordings.trg_news_model_recordings_append_only",
+        "trigger:news_reviews.news_reviews_current_acceptance_target_check",
+        "trigger:news_reviews.news_reviews_current_archive_only_check",
+        "trigger:news_reviews.news_reviews_current_task_source_check",
+        "trigger:news_reviews.trg_news_reviews_append_only",
+        "trigger:news_verdicts.news_verdicts_current_evidence_check",
+        "view:news_current_events_v1",
+        "view:news_review_active_agent_v1",
+        "view:news_review_external_source_v1",
+        "view:news_review_pairwise_tasks_v1",
+        "view:news_review_records_v1",
+        "view:news_review_task_source_v1",
+    }
+)
+_RETIRED_SCHEMA_OBJECTS = frozenset(
+    {
+        "function:news_current_event_archive_guard()",
+        "trigger:news_event_evidence_snapshots.news_event_evidence_current_archive_only_check",
+        "trigger:news_events.news_events_current_archive_only_check",
+        "trigger:news_reviews.news_reviews_current_archive_only_check",
+        "view:news_current_events_v1",
+    }
+)
+_EXPECTED_SCHEMA_OBJECTS_AFTER = _EXPECTED_SCHEMA_OBJECTS_BEFORE - _RETIRED_SCHEMA_OBJECTS
 
 _SCHEMA_DIGEST_SQL = """
 WITH objects AS (
@@ -129,6 +226,71 @@ def _schema_digest(bind: Any) -> str:
     return str(bind.execute(sa.text(_SCHEMA_DIGEST_SQL)).scalar_one())
 
 
+def _schema_object_inventory(bind: Any) -> frozenset[str]:
+    return frozenset(
+        bind.execute(
+            sa.text(
+                """
+                WITH news_tables AS (
+                  SELECT rel.oid, rel.relname::text AS name
+                    FROM pg_class rel
+                    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                   WHERE ns.nspname = 'public' AND left(rel.relname, 5) = 'news_'
+                     AND rel.relkind IN ('r', 'p')
+                ), objects AS (
+                  SELECT 'view:' || rel.relname::text AS identity
+                    FROM pg_class rel
+                    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                   WHERE ns.nspname = 'public' AND left(rel.relname, 5) = 'news_' AND rel.relkind = 'v'
+                  UNION ALL
+                  SELECT 'sequence:' || rel.relname::text
+                    FROM pg_class rel
+                    JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+                   WHERE ns.nspname = 'public' AND left(rel.relname, 5) = 'news_' AND rel.relkind = 'S'
+                  UNION ALL
+                  SELECT 'function:' || fn.proname::text || '(' || pg_get_function_identity_arguments(fn.oid) || ')'
+                    FROM pg_proc fn
+                    JOIN pg_namespace ns ON ns.oid = fn.pronamespace
+                   WHERE ns.nspname = 'public' AND left(fn.proname, 5) = 'news_' AND fn.prokind = 'f'
+                  UNION ALL
+                  SELECT 'trigger:' || owner.name || '.' || trigger.tgname::text
+                    FROM pg_trigger trigger
+                    JOIN news_tables owner ON owner.oid = trigger.tgrelid
+                   WHERE NOT trigger.tgisinternal
+                  UNION ALL
+                  SELECT 'fk:'
+                         || CASE WHEN source_ns.nspname = 'public' THEN source.relname::text
+                                 ELSE source_ns.nspname::text || '.' || source.relname::text END
+                         || '.' || con.conname::text || '->'
+                         || CASE WHEN target_ns.nspname = 'public' THEN target.relname::text
+                                 ELSE target_ns.nspname::text || '.' || target.relname::text END
+                    FROM pg_constraint con
+                    JOIN pg_class source ON source.oid = con.conrelid
+                    JOIN pg_namespace source_ns ON source_ns.oid = source.relnamespace
+                    JOIN pg_class target ON target.oid = con.confrelid
+                    JOIN pg_namespace target_ns ON target_ns.oid = target.relnamespace
+                   WHERE con.contype = 'f'
+                     AND ((source_ns.nspname = 'public' AND left(source.relname, 5) = 'news_')
+                       OR (target_ns.nspname = 'public' AND left(target.relname, 5) = 'news_'))
+                )
+                SELECT identity FROM objects ORDER BY identity COLLATE "C"
+                """
+            )
+        ).scalars()
+    )
+
+
+def _assert_schema_object_inventory(bind: Any, expected: frozenset[str]) -> frozenset[str]:
+    actual = _schema_object_inventory(bind)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise RuntimeError(
+            f"20260830_0336 News schema object disposition drift: missing={missing}, unexpected={unexpected}"
+        )
+    return actual
+
+
 def _assert_news_table_inventory(bind: Any) -> None:
     actual = frozenset(
         bind.execute(
@@ -148,6 +310,7 @@ def _assert_news_table_inventory(bind: Any) -> None:
 
 def _assert_current_only_schema(bind: Any) -> None:
     _assert_news_table_inventory(bind)
+    _assert_schema_object_inventory(bind, _EXPECTED_SCHEMA_OBJECTS_AFTER)
     legacy_count = int(
         bind.execute(
             sa.text(
@@ -180,61 +343,21 @@ def _assert_current_only_schema(bind: Any) -> None:
         raise RuntimeError("20260830_0336 left a retired News archive compatibility object")
 
 
-def _requires_preflight(bind: Any, counts: dict[str, int], preserved_counts: dict[str, int]) -> bool:
-    migration_seeded = {
-        "news_ingest_state",
-        "news_learning_artifacts",
-        "news_learning_epochs",
-        "news_learning_retention_state",
-    }
-    if any(count for table, count in counts.items() if table not in migration_seeded) or any(preserved_counts.values()):
-        return True
-    if bool(
-        bind.execute(
-            sa.text("SELECT EXISTS (SELECT 1 FROM news_learning_artifacts WHERE created_by NOT LIKE 'migration_%')")
-        ).scalar_one()
-    ):
-        return True
-    seeded_epochs = tuple(f"program_v{version}" for version in range(1, 10))
-    if bool(
-        bind.execute(
-            sa.text("SELECT EXISTS (SELECT 1 FROM news_learning_epochs WHERE epoch_id != ALL(:seeded))"),
-            {"seeded": list(seeded_epochs)},
-        ).scalar_one()
-    ):
-        return True
-    if bool(
-        bind.execute(
-            sa.text(
-                "SELECT EXISTS (SELECT 1 FROM news_learning_retention_state "
-                "WHERE last_run_at_ms IS NOT NULL OR eligible_recordings <> 0 "
-                "OR eligible_cases <> 0 OR eligible_artifacts <> 0 "
-                "OR deleted_recordings <> 0 OR deleted_cases <> 0 OR deleted_artifacts <> 0 "
-                "OR last_error_code IS NOT NULL)"
-            )
-        ).scalar_one()
-    ):
-        return True
-    return bool(
-        bind.execute(
-            sa.text(
-                "SELECT EXISTS (SELECT 1 FROM news_ingest_state "
-                "WHERE updated_at_ms <> 0 OR connected OR last_frame_at_ms IS NOT NULL "
-                "OR last_publish_at_ms IS NOT NULL OR last_error_code IS NOT NULL)"
-            )
-        ).scalar_one()
-    )
-
-
-def _preflight(bind: Any, counts: dict[str, int], preserved_counts: dict[str, int]) -> dict[str, Any]:
-    if not _requires_preflight(bind, counts, preserved_counts):
-        return {
-            "mode": "empty_install",
-            "tested_git_sha": "empty_install",
-            "deployed_git_sha": "empty_install",
-            "image_digest": "empty_install",
-            "runtime_revision": "empty_install",
-            "runtime_manifest_sha": "empty_install",
+def _preflight() -> dict[str, Any]:
+    raw = os.environ.get(_PREFLIGHT_ENV, "").strip()
+    expected_mode = "maintenance_window"
+    if not raw:
+        if os.environ.get(_FRESH_INSTALL_ENV) != "1":
+            raise RuntimeError(f"20260830_0336 requires {_PREFLIGHT_ENV}")
+        expected_mode = "fresh_install"
+        runtime_revision = os.environ.get("TRACEFOLD_RUNTIME_REVISION", "").strip()
+        value = {
+            "mode": "fresh_install",
+            "tested_git_sha": runtime_revision,
+            "deployed_git_sha": runtime_revision,
+            "image_digest": os.environ.get("TRACEFOLD_IMAGE_DIGEST", "").strip(),
+            "runtime_revision": runtime_revision,
+            "runtime_manifest_sha": os.environ.get(_EXPECTED_RUNTIME_MANIFEST_ENV, "").strip(),
             "snapshot_sha256": hashlib.sha256(b"").hexdigest(),
             "snapshot_verified": True,
             "queue_ready": 0,
@@ -242,14 +365,11 @@ def _preflight(bind: Any, counts: dict[str, int], preserved_counts: dict[str, in
             "queue_dead_letter": 0,
             "queue_stale_reference_count": 0,
         }
-
-    raw = os.environ.get(_PREFLIGHT_ENV, "").strip()
-    if not raw:
-        raise RuntimeError(f"20260830_0336 requires {_PREFLIGHT_ENV} for a non-empty News evidence plane")
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"{_PREFLIGHT_ENV} must be valid JSON") from exc
+    else:
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"{_PREFLIGHT_ENV} must be valid JSON") from exc
     expected = {
         "mode",
         "tested_git_sha",
@@ -264,7 +384,7 @@ def _preflight(bind: Any, counts: dict[str, int], preserved_counts: dict[str, in
         "queue_dead_letter",
         "queue_stale_reference_count",
     }
-    if not isinstance(value, dict) or set(value) != expected or value.get("mode") != "maintenance_window":
+    if not isinstance(value, dict) or set(value) != expected or value.get("mode") != expected_mode:
         raise RuntimeError(f"{_PREFLIGHT_ENV} has an invalid field set or mode")
     if not _GIT_SHA.fullmatch(str(value["tested_git_sha"])) or value["tested_git_sha"] != value["deployed_git_sha"]:
         raise RuntimeError("news genesis tested/deployed git identity is invalid")
@@ -283,6 +403,13 @@ def _preflight(bind: Any, counts: dict[str, int], preserved_counts: dict[str, in
         raise RuntimeError("news genesis preflight does not match the migration runtime revision")
     if os.environ.get("TRACEFOLD_IMAGE_DIGEST", "").strip() != value["image_digest"]:
         raise RuntimeError("news genesis preflight does not match the migration image digest")
+    expected_runtime_manifest = os.environ.get(_EXPECTED_RUNTIME_MANIFEST_ENV, "").strip()
+    if not _SHA256.fullmatch(expected_runtime_manifest) or expected_runtime_manifest != value["runtime_manifest_sha"]:
+        raise RuntimeError("news genesis runtime manifest does not match the exact image/config computation")
+    broker_observation_sha = os.environ.get(_BROKER_OBSERVATION_ENV, "").strip()
+    if not _SHA256.fullmatch(broker_observation_sha):
+        raise RuntimeError("news genesis requires a live drained-broker observation")
+    value["broker_observation_sha256"] = broker_observation_sha
     return value
 
 
@@ -472,10 +599,11 @@ def upgrade() -> None:
     op.execute("SET LOCAL statement_timeout = '300s'")
     bind = op.get_bind()
     _assert_news_table_inventory(bind)
+    schema_objects_before = _assert_schema_object_inventory(bind, _EXPECTED_SCHEMA_OBJECTS_BEFORE)
     pre_counts = _counts(bind, _CLEARED_TABLES)
     preserved_before = _counts(bind, _PRESERVED_TABLES)
     schema_digest_before = _schema_digest(bind)
-    preflight = _preflight(bind, pre_counts, preserved_before)
+    preflight = _preflight()
     genesis_at_ms = int(
         bind.execute(sa.text("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint")).scalar_one()
     )
@@ -516,6 +644,7 @@ def upgrade() -> None:
     post_counts["news_ingest_state"] = 1
     post_counts["news_learning_retention_state"] = 1
     schema_digest_after = _schema_digest(bind)
+    schema_objects_after = _schema_object_inventory(bind)
     identity_suffix = str(preflight["deployed_git_sha"])[:8]
     genesis_epoch_id = f"news_genesis_{genesis_at_ms}_{identity_suffix}"
     preflight_sha256 = hashlib.sha256(
@@ -541,6 +670,9 @@ def upgrade() -> None:
         "disposition": {
             "cleared_tables": list(_CLEARED_TABLES),
             "preserved_tables": list(_PRESERVED_TABLES),
+            "schema_objects_before": sorted(schema_objects_before),
+            "schema_objects_after": sorted(schema_objects_after),
+            "retired_schema_objects": sorted(_RETIRED_SCHEMA_OBJECTS),
             "retired_compatibility_objects": [
                 "news_events.current_contract_archive_only",
                 "news_reviews.current_contract_archive_only",
@@ -559,6 +691,7 @@ def upgrade() -> None:
         "queue_unacked": preflight["queue_unacked"],
         "queue_dead_letter": preflight["queue_dead_letter"],
         "queue_stale_reference_count": preflight["queue_stale_reference_count"],
+        "broker_observation_sha256": preflight["broker_observation_sha256"],
         "snapshot_sha256": preflight["snapshot_sha256"],
         "snapshot_verified": preflight["snapshot_verified"],
         "preflight_mode": preflight["mode"],

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping
 from typing import Any
@@ -154,6 +155,7 @@ def test_0336_news_current_contract_genesis_is_destructive_current_only_and_irre
         }
         monkeypatch.setenv("TRACEFOLD_RUNTIME_REVISION", git_sha)
         monkeypatch.setenv("TRACEFOLD_IMAGE_DIGEST", image_digest)
+        monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256", runtime_manifest_sha)
         monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", json.dumps(preflight))
         _upgrade("20260830_0336")
 
@@ -215,6 +217,7 @@ def test_0336_news_current_contract_genesis_is_destructive_current_only_and_irre
         assert payload["runtime_manifest_sha"] == runtime_manifest_sha
         assert payload["snapshot_sha256"] == snapshot_sha
         assert payload["queue_stale_reference_count"] == 0
+        assert payload["broker_observation_sha256"] == "5" * 64
         assert payload["archive_only_row_count"] == 0
         assert payload["pre_counts"]["news_events"] == 1
         assert payload["post_counts"]["news_events"] == 0
@@ -224,6 +227,9 @@ def test_0336_news_current_contract_genesis_is_destructive_current_only_and_irre
         assert payload["preserved_counts"]["news_market_instruments"] == 1
         assert set(payload["disposition"]["cleared_tables"]) == set(payload["pre_counts"])
         assert set(payload["disposition"]["preserved_tables"]) == set(payload["preserved_counts"])
+        assert set(payload["disposition"]["schema_objects_before"]) - set(
+            payload["disposition"]["schema_objects_after"]
+        ) == set(payload["disposition"]["retired_schema_objects"])
         assert set(payload["disposition"]["retired_compatibility_objects"]) == {
             "news_events.current_contract_archive_only",
             "news_reviews.current_contract_archive_only",
@@ -281,6 +287,34 @@ def test_0336_refuses_nonempty_news_without_verified_preflight(monkeypatch) -> N
         conn.close()
 
 
+def test_0336_fresh_install_is_bound_before_migration_without_row_shape_inference(monkeypatch) -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
+        conn.execute("CREATE SCHEMA public")
+        conn.execute("GRANT ALL ON SCHEMA public TO public")
+        conn.commit()
+    finally:
+        conn.close()
+
+    monkeypatch.delenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", raising=False)
+    monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL", "1")
+    _upgrade("20260830_0336")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        receipt = conn.execute(
+            "SELECT payload FROM news_learning_artifacts "
+            "WHERE kind = 'epoch_reset' AND created_by = 'migration_20260830_0336'"
+        ).fetchone()
+        assert receipt["payload"]["preflight_mode"] == "fresh_install"
+        assert receipt["payload"]["tested_git_sha"] == "1" * 40
+        assert receipt["payload"]["runtime_manifest_sha"] == "3" * 64
+        assert receipt["payload"]["snapshot_sha256"] == hashlib.sha256(b"").hexdigest()
+    finally:
+        conn.close()
+
+
 def test_0336_refuses_news_table_disposition_drift() -> None:
     _fresh_schema_at("20260830_0335")
     conn = connect_postgres_test(read_only=False)
@@ -297,6 +331,39 @@ def test_0336_refuses_news_table_disposition_drift() -> None:
     try:
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
         assert conn.execute("SELECT to_regclass('public.news_unowned_contract') AS name").fetchone()["name"]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    ("ddl", "identity"),
+    (
+        ("CREATE VIEW news_unowned_contract_v1 AS SELECT 1 AS value", "view:news_unowned_contract_v1"),
+        (
+            "CREATE FUNCTION news_unowned_contract() RETURNS integer LANGUAGE sql IMMUTABLE AS 'SELECT 1'",
+            "function:news_unowned_contract()",
+        ),
+        (
+            "CREATE TABLE foreign_news_ref (event_id text REFERENCES news_events(event_id))",
+            "fk:foreign_news_ref.foreign_news_ref_event_id_fkey->news_events",
+        ),
+    ),
+)
+def test_0336_refuses_news_schema_object_disposition_drift(ddl: str, identity: str) -> None:
+    _fresh_schema_at("20260830_0335")
+    conn = connect_postgres_test(read_only=False)
+    try:
+        conn.execute(ddl)
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(RuntimeError, match=rf"News schema object disposition drift:.*{re.escape(identity)}"):
+        _upgrade("20260830_0336")
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
     finally:
         conn.close()
 

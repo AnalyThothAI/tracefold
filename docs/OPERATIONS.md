@@ -1299,9 +1299,11 @@ starting the old image. It never converts, backfills, translates, dual-reads or
 serves old News evidence.
 
 The migration owns this complete disposition. It compares the live set of all
-`public.news_%` tables with these two lists before and after the cut; an added,
-missing or externally referenced table makes the transaction fail rather than
-widening it through `CASCADE`.
+`public.news_%` tables, views, functions, triggers, sequences and foreign keys
+with its explicit before/after inventories; an added, missing or externally
+referenced object makes the transaction fail rather than widening it through
+`CASCADE`. Its schema digest also seals definitions, columns, constraints and
+indexes.
 
 | Disposition | Exact owners |
 | --- | --- |
@@ -1309,7 +1311,7 @@ widening it through `CASCADE`.
 | Preserve rows and schema | `news_market_instrument_listing_events`, `news_market_instruments`, `news_market_liquidations`, `news_quote_snapshots`, `news_symbol_aliases` |
 | Drop permanently | both `current_contract_archive_only` columns; `news_current_events_v1`; `ix_news_events_current_opened`; `news_current_event_archive_guard`; all three archive-check triggers |
 | Recreate current-only | `news_review_task_source_v1`, `news_review_records_v1`, and the current verdict-evidence guard |
-| Keep current objects | `news_review_active_agent_v1`, `news_review_external_miss_tasks_v1`, `news_review_pairwise_tasks_v1`, current validation/append-only functions and triggers; the incident sequence is reset with its table |
+| Keep current objects | `news_review_active_agent_v1`, `news_review_external_source_v1`, `news_review_pairwise_tasks_v1`, current validation/append-only functions and triggers; the incident sequence is reset with its table |
 | Preserve outside News evidence | every `trading_%` and Capital owner, every historical Alembic revision, and the complete Price/instrument rows named above |
 
 Phase 0 is fail-closed:
@@ -1320,11 +1322,11 @@ Phase 0 is fail-closed:
    SHA, Alembic revision, image ID, runtime revision, target runtime-manifest
    SHA, `tracefold db audit`, and `tracefold news bus-check` output in the
    maintenance record.
-2. Let Workers drain the five code-owned queues (`news.raw`, `news.triage`,
-   `news.deliver`, `news.retry`, `news.dead`, with the configured prefix). Save
+2. Let Workers drain the four code-owned queues (`news.raw`, `news.triage`,
+   `news.deliver`, `news.dead`, with the configured prefix). Save
    any dead-letter incident evidence, purge it with `tracefold news dlq purge`,
    then stop Serve, Workers and Nautilus. Query RabbitMQ after the stop and
-   require `messages_ready=0` and `messages_unacknowledged=0` for every five
+   require `messages_ready=0` and `messages_unacknowledged=0` for all four
    queues. With every queue empty, both the dead-letter count and stale Event
    reference count are exactly zero.
 3. Take a restorable full PostgreSQL snapshot with the operator's normal backup
@@ -1335,14 +1337,20 @@ Phase 0 is fail-closed:
    unverified or mutable snapshot.
 4. Prebuild the exact main image with
    `TRACEFOLD_BUILD_REVISION=<40-hex-main-sha>`, inspect its full
-   `sha256:<64-hex>` image ID, and compute the target runtime-manifest SHA from
-   that same image's stable bundle, compiled candidate set, image ID and runtime
-   revision. Do not use a tag or a value from another build.
+   `sha256:<64-hex>` image ID. Record the expected target runtime-manifest SHA;
+   the migration command recomputes it inside that same image from the active
+   operator config, stable bundle, compiled candidate set, image ID and runtime
+   revision and rejects a mismatch. Do not use a tag or a value from another
+   build.
 5. Export one compact JSON value as
    `TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON` with exactly these fields (no extra
    keys), then run `make up`. The Makefile rechecks exact main CI, owns the
    deployment lock, rebuilds or reuses the exact image, stops runtimes, and the
-   `migrate` service receives the JSON and image identity:
+   `migrate` service receives the JSON and image identity. It runs only after
+   the broker policy import, reads every configured News queue after the
+   runtimes stop, and rejects a missing queue, consumer, policy/topology drift,
+   ready/unacked/delayed/dead-letter message, or a queue total that differs
+   from the JSON:
 
    ```json
    {
@@ -1361,11 +1369,15 @@ Phase 0 is fail-closed:
    }
    ```
 
-For a non-empty evidence plane, `0336` rejects a missing field, extra field,
-invalid identity, unverified snapshot, nonzero queue count, a Git mismatch, an
-image mismatch or table-inventory drift before deleting anything. A truly fresh
-database takes the separate `empty_install` path and still receives a genesis
-receipt.
+`0336` never infers freshness from mutable News or Trading rows. The migration
+command recognizes a fresh install only when `alembic_version` did not exist
+before the migration run; it still computes exact image/runtime identities and
+requires the same live empty-broker observation, but records the canonical empty
+snapshot digest because no pre-existing database state exists. Every existing
+database requires the operator JSON above. `0336` rejects a missing field,
+extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
+count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
+inventory drift before deleting anything.
 
 After commit, require Alembic head `20260830_0336`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
@@ -1376,8 +1388,9 @@ retired column/view/index/function/trigger; and no unvalidated `news_%`
 constraint. Recompute the receipt address from canonical
 `{kind: "epoch_reset", payload: ...}` and require it to equal `artifact_sha`.
 The payload must bind the exact Git/image/runtime manifest, pre/post News schema
-digests and counts, preserved counts, verified snapshot digest, zero queue and
-stale-canary counts, the full disposition, and
+digests and counts, preserved counts, verified snapshot digest, the
+content-addressed live broker observation, zero queue and stale-canary counts,
+the full disposition, and
 `rollback=verified_snapshot_restore_only`.
 
 Start the exact image, then require Workers `/readyz` to publish the same target
