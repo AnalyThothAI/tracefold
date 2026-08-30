@@ -387,6 +387,7 @@ def _trace(arm: ArmManifest, context: TriageContext, verdict: dict[str, object])
             ProgramCallTrace(
                 predictor=predictor,
                 route="primary",
+                route_slot="primary",
                 attempt=1,
                 request_sha256=request_sha,
                 input_sha256=_sha({"context_sha256": context_sha, "predictor": predictor}),
