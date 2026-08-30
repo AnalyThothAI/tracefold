@@ -77,3 +77,12 @@ def repositories(
     """Open one short-lived repository session for a CLI/application operation."""
     with postgres_connection(settings, role=role) as conn:
         yield repositories_for_connection(conn)
+
+
+__all__ = [
+    "NewsSearchPlan",
+    "RepositorySession",
+    "postgres_connection",
+    "repositories",
+    "repositories_for_connection",
+]
