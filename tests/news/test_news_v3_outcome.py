@@ -607,6 +607,47 @@ def test_broker_health_warns_when_the_management_api_could_not_be_read() -> None
     assert (level, title) == ("warn", "队列策略未知")
 
 
+def test_broker_health_warns_when_only_one_queue_is_missing_from_the_management_rows() -> None:
+    """A management API that answered about three queues has said nothing about the fourth.
+
+    Three verified policies prove nothing about the delivery the fourth queue governs, so a partial
+    answer is unknown, not healthy — and the warning names the queue nobody can vouch for.
+    """
+
+    item = status_health(
+        **{  # type: ignore[arg-type]
+            **_status_inputs(),
+            "broker": {
+                "configured": True,
+                "connected": True,
+                "queues": {
+                    "news.raw": _queue(consumers=1),
+                    "news.triage": _queue(consumers=1),
+                    "news.deliver": _queue(consumers=1, policy_ok=None, bytes_used_bps=None),
+                    "news.dead": _queue(),
+                },
+            },
+        }
+    )["health"]["broker"]
+
+    assert (item["level"], item["summary_zh"]) == ("warn", "队列策略未知")
+    assert "news.deliver" in str(item["detail_zh"])
+
+
+def test_an_unverifiable_policy_is_not_hidden_behind_the_standing_dead_letter_count() -> None:
+    """`news.dead` is rarely empty in production, so its warning must not outrank an unknown contract."""
+
+    level, title = _broker_health(
+        **{
+            "news.raw": _queue(consumers=1, policy_ok=None, bytes_used_bps=None),
+            "news.triage": _queue(consumers=1),
+            "news.deliver": _queue(consumers=1),
+            "news.dead": _queue(messages=38, ready=38),
+        }
+    )
+    assert (level, title) == ("warn", "队列策略未知")
+
+
 def test_status_funnel_reads_the_single_event_cohort() -> None:
     inputs = _status_inputs()
     inputs["pipeline"] = {

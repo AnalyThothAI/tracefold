@@ -34,6 +34,12 @@ _RAW_RETENTION_MAX_BATCHES = 4
 _RAW_RETENTION_MAX_WALL_SECONDS = 3.0
 _RAW_RETENTION_BATCH_TIMEOUT_SECONDS = 1.0
 _INSTRUMENT_SNAPSHOT_PERIOD_SECONDS = 6 * 3600.0
+# The bus bounds the snapshot's own AMQP and management work; this is only the loop's guard against an
+# adapter that never returns, so it has to sit above every snapshot that *does* finish. Cutting it below
+# the adapter's management read timeout would report a slow management API as a disconnected broker —
+# the one distinction the snapshot exists to make. It stays under the AMQP heartbeat, so a genuinely
+# hung connection still trips it and is reported, truthfully, as not connected.
+_BROKER_SNAPSHOT_DEADLINE_SECONDS = 15.0
 _INSTRUMENT_RETRY_SECONDS = 15 * 60.0
 _OPENNEWS_INCIDENT_CAUSES: tuple[NewsOpenNewsIncidentCause, ...] = (
     "authentication",
@@ -268,7 +274,7 @@ class JanitorLoop:
         if self.bus is not None:
             snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
             try:
-                depths = await asyncio.wait_for(self.bus.broker_snapshot(), timeout=5.0)
+                depths = await asyncio.wait_for(self.bus.broker_snapshot(), timeout=_BROKER_SNAPSHOT_DEADLINE_SECONDS)
                 prefix = f"{self.bus.prefix}." if getattr(self.bus, "prefix", "") else ""
                 snapshot.update(
                     connected=True,

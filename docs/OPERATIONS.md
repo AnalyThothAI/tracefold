@@ -863,9 +863,17 @@ delivery; they fail Workers instead. The queue is declared with delivery limit
 [--limit N]` peeks without consuming, `tracefold news dlq replay [--limit N]`
 republishes to the topic exchange with a fresh attempt counter, and
 `tracefold news dlq purge` empties it; the management UI (`127.0.0.1:15672`)
-and `bus-check` show the depth. A growing DLQ with a healthy DB means a code
-bug, not load. Purge only after the cause is fixed; recovered Items never
-deliver, so re-driving old raw frames is safe.
+and `bus-check` show the depth. Replay is the one that writes back into the
+pipeline, so it proves the broker contract first: an effective policy that is
+not the checked-in one, a management API that cannot be read, or any unexpected
+name under the prefix and it exits non-zero having read no message. A dead
+letter it cannot decode stops the batch — the message is returned to the queue
+and named in the error, along with how many had already been replayed — because
+`news.dead` is terminal and rejecting it would delete the only copy. Fix the
+decode path or remove that message with `purge`, which is the only command that
+destroys evidence. A growing DLQ with a healthy DB means a code bug, not load.
+Purge only after the cause is fixed; recovered Items never deliver, so
+re-driving old raw frames is safe.
 
 Control: there is none. `news_control_state` and `tracefold news control` were
 removed after the singleton never withheld a card: across the whole retained

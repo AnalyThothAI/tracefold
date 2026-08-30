@@ -328,6 +328,25 @@ def test_retired_news_contract_tokens_exist_only_at_exact_historical_boundaries(
     assert {path: frozenset(tokens) for path, tokens in found_allowed_tokens.items()} == _EXACT_ALLOWLIST
 
 
+def test_runtime_does_not_know_a_retired_queue_name() -> None:
+    """#407: the application declares the current topology and reports everything else.
+
+    A retired name in runtime code is not documentation — it is either a queue this image would
+    recreate or, worse, one it would delete on somebody's behalf. Both names stay readable in the
+    operations history and in the migration test that proves they are only ever reported.
+    """
+
+    offenders = [
+        f"{path.relative_to(ROOT).as_posix()}: {token}"
+        for path in (ROOT / "tracefold").rglob("*.py")
+        if not path.is_relative_to(ROOT / "tracefold" / "platform" / "postgres" / "alembic")
+        for token in ("news.retry", "news.deep", "RETIRED_QUEUES", "REMOVED_RETRY_LANE")
+        if _contains_token(_text(path), token)
+    ]
+
+    assert offenders == []
+
+
 def test_ordinary_feed_reads_only_the_current_review_projection() -> None:
     feed = _text(ROOT / "tracefold" / "news" / "storage" / "feed.py")
 

@@ -1380,8 +1380,9 @@ wears a ⚡ card header — and never triggers another Program execution. The re
 Analyst lane (`q:news.deep`, the `verdict.escalate`/`verdict.deep` routing
 keys, the evidence bundle and its `verify_verdict()` gate, follow-up cards)
 left `stage='deep'` verdicts and `kind='followup'` deliveries as historical
-rows that are never written again, and topology declaration deletes an old
-`news.deep` queue at startup.
+rows that are never written again. An old `news.deep` queue left on a broker is
+reported as topology drift like any other unexpected name; the runtime does not
+know it and never deletes it.
 
 Delivery (`tracefold.news.delivery`, `consumers.DelivererConsumer`) renders the
 reader contract (`news_delivery_card_v11`): the header is `headline_zh` (⚡ when

@@ -78,6 +78,13 @@ def _handle_bus_policy(args: Namespace) -> tuple[int, dict[str, Any]]:
 
 
 def _handle_dlq(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """Inspect, replay or purge `news.dead`.
+
+    `inspect` reads and requeues, `purge` is the one explicitly destructive command, and `replay` is the
+    only one that writes back into the pipeline — so it is the only one that has to prove the broker is
+    running the checked-in contract before it touches a message.
+    """
+
     settings = load_settings(require_ws_token=False)
 
     async def _run() -> dict[str, Any]:
@@ -86,9 +93,19 @@ def _handle_dlq(args: Namespace) -> tuple[int, dict[str, Any]]:
             await bus.connect()
             if args.dlq_action == "inspect":
                 return {"messages": await bus.dead_letters(limit=int(args.limit))}
-            if args.dlq_action == "replay":
-                return {"replayed": await bus.replay_dead_letters(limit=int(args.limit))}
-            return {"purged": await bus.purge_dead_letters()}
+            if args.dlq_action == "purge":
+                return {"purged": await bus.purge_dead_letters()}
+            # Replaying into a broker whose retry contract or topology is not the checked-in one
+            # republishes evidence into a lane that will mishandle it: no delay, the quorum default
+            # delivery limit, at-most-once dead lettering — and the next failure is terminal. Both
+            # questions already have an answer here, the same one Workers and `bus-check` read. A
+            # mismatch, an unknown (the management API raises rather than guessing) or any unexpected
+            # name refuses before the first `basic.get`.
+            await bus.verify_policies()
+            drift = await bus.topology_drift()
+            if drift["queues"] or drift["exchanges"]:
+                return {"replayed": 0, "drift": drift}
+            return {"replayed": await bus.replay_dead_letters(limit=int(args.limit))}
         finally:
             await bus.close()
 
@@ -96,4 +113,5 @@ def _handle_dlq(args: Namespace) -> tuple[int, dict[str, Any]]:
         result = asyncio.run(_run())
     except Exception as exc:
         return 1, {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:200]}
-    return 0, {"ok": True, "data": result}
+    refused = bool(result.get("drift"))
+    return (1 if refused else 0), {"ok": not refused, "data": result}
