@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
-from contextlib import nullcontext, suppress
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Literal
 
@@ -27,8 +27,8 @@ from .contracts import (
     aggregate_program_usage,
 )
 from .identity import EXECUTION_ENVELOPE_SHA256
-from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, LMOutputTruncatedError
-from .module import NativeNewsProgram, NativeProgramResult
+from .lm import AuditedConfiguredLM, LMCallContext, LMCallLedger, LMDelegateProgramError, LMOutputTruncatedError
+from .module import NativeNewsProgram, NativeProgramResult, ProgramOutputError
 from .runtime import (
     PROGRAM_JUDGMENT_MAX_CALLS,
     PROGRAM_PREDICTOR_MAX_CALLS,
@@ -231,7 +231,7 @@ class RoutedSemanticJudge:
                         card_lm=lms.reader_card,
                     )
                     if result.instruction_rejected is not None:
-                        raise ValueError(result.instruction_rejected)
+                        raise ProgramOutputError(result.instruction_rejected)
         except TimeoutError as exc:
             calls = self._route_calls(ledger, start_index, deadline=True)
             raise _RouteFailure(
@@ -242,18 +242,14 @@ class RoutedSemanticJudge:
                 finish_reason=calls[-1].finish_reason if calls else None,
                 failing_predictor=calls[-1].predictor if calls else "event_semantics",
             ) from exc
-        except BaseException as exc:
-            if isinstance(exc, (KeyboardInterrupt, SystemExit, GeneratorExit, asyncio.CancelledError)):
+        except LMDelegateProgramError as exc:
+            raise exc.original from None
+        except Exception as exc:
+            current = ledger.receipts[start_index:]
+            adapter_failure = bool(current and current[-1].terminal_disposition == "adapter_parse_error")
+            if not isinstance(exc, (dspy.LMError, LMOutputTruncatedError, ProgramOutputError)) and not adapter_failure:
                 raise
             code = self._exception_code(exc)
-            current = ledger.receipts[start_index:]
-            if (
-                not isinstance(exc, (dspy.LMError, LMOutputTruncatedError))
-                and current
-                and current[-1].terminal_disposition == "provider_success"
-            ):
-                with suppress(dspy.LMError):
-                    ledger.domain_failure(code)
             calls = self._route_calls(ledger, start_index)
             failure = self._classify_failure(exc, code=code, calls=calls)
             raise failure from exc
@@ -326,12 +322,14 @@ class RoutedSemanticJudge:
         return tuple(calls)
 
     @staticmethod
-    def _exception_code(exc: BaseException) -> str:
+    def _exception_code(exc: Exception) -> str:
         if isinstance(exc, LMOutputTruncatedError):
             return "news_program_output_truncated"
         if isinstance(exc, dspy.LMError):
             raw = str(getattr(exc, "code", "") or "lm_error")
             return raw if raw.startswith("news_program_") else f"news_program_lm_{raw}"
+        if isinstance(exc, ProgramOutputError):
+            return exc.code
         text = str(exc)
         if text.startswith("news_program_") or text == "primary_circuit_open":
             return text
@@ -339,7 +337,7 @@ class RoutedSemanticJudge:
 
     @staticmethod
     def _classify_failure(
-        exc: BaseException,
+        exc: Exception,
         *,
         code: str,
         calls: tuple[ProgramCallTrace, ...],
@@ -372,7 +370,7 @@ class RoutedSemanticJudge:
             or result.verdict is None
             or result.editorial is None
         ):
-            raise ValueError(result.instruction_rejected or "news_program_native_result_incomplete")
+            raise ProgramOutputError(result.instruction_rejected or "news_program_native_result_incomplete")
 
     def _record_primary_failure(self) -> None:
         self._primary_failures += 1

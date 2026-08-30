@@ -18,7 +18,13 @@ from pathlib import Path
 from typing import Any, Final
 
 from ..artifact_identity import canonical_json, canonical_sha
-from ..taxonomy import IPTC_CODEBOOK_SHA256, IPTC_SUBJECT_CODES, source_authority_from_evidence
+from ..taxonomy import (
+    IPTC_CODEBOOK_SHA256,
+    IPTC_SUBJECT_CODES,
+    SOURCE_AUTHORITY_CLASSIFIER_VERSION,
+    SOURCE_AUTHORITY_REGISTRY_SHA256,
+    source_authority_from_evidence,
+)
 from .assembly import normalize_restates, restatement_index_error
 from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
 from .lm import (
@@ -48,7 +54,7 @@ from .runtime import (
 )
 from .signatures import EventSemantics, EventSemanticsSignature, ReaderCardSignature
 
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v3"
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v4"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
@@ -105,6 +111,7 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "lm.py": (
         "LMCallLedger",
         "LMCallReceipt",
+        "LMDelegateProgramError",
         "RuntimeModelIdentity",
         "AuditedConfiguredLM",
         "RecordedLM",
@@ -146,7 +153,6 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "_rejected",
         "_relevance_normalizations",
     ),
-    "routing.py": ("RoutedSemanticJudge",),
     "signatures.py": ("EventSemantics", "ReaderCard"),
     "taxonomy.py": (
         "ModelTaxonomyV1",
@@ -155,6 +161,7 @@ _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
         "source_authority_from_evidence",
     ),
 }
+_MATERIAL_IMPLEMENTATION_MODULES: Final[tuple[str, ...]] = ("routing.py",)
 
 
 def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
@@ -261,7 +268,9 @@ def _assembly_surface() -> dict[str, Any]:
         "taxonomy": {
             "codebook_sha256": IPTC_CODEBOOK_SHA256,
             "subject_codes": list(IPTC_SUBJECT_CODES),
-            "source_authority_golden": source_authority_from_evidence({"source": "wire", "strategies": ["golden"]}),
+            "source_authority_classifier_version": SOURCE_AUTHORITY_CLASSIFIER_VERSION,
+            "source_authority_registry_sha256": SOURCE_AUTHORITY_REGISTRY_SHA256,
+            "source_authority_golden": source_authority_from_evidence({"source": "wire"}),
         },
     }
 
@@ -294,10 +303,17 @@ class _WithoutDocstrings(ast.NodeTransformer):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> Any:
         return self.generic_visit(self._strip(node))
 
+    def visit_Module(self, node: ast.Module) -> Any:
+        return self.generic_visit(self._strip(node))
+
 
 def _implementation_ast_identities() -> dict[str, str]:
     program_root = Path(__file__).resolve().parent
     identities: dict[str, str] = {}
+    for filename in _MATERIAL_IMPLEMENTATION_MODULES:
+        module = filename.removesuffix(".py")
+        source = (program_root / filename).read_text()
+        identities[f"{module}.__module__"] = _material_module_ast_sha(source, module=module)
     for filename, symbols in _MATERIAL_IMPLEMENTATION_SYMBOLS.items():
         in_program = filename != "taxonomy.py"
         module = filename.removesuffix(".py")
@@ -308,6 +324,16 @@ def _implementation_ast_identities() -> dict[str, str]:
                 source, module=identity_module, symbol=symbol
             )
     return dict(sorted(identities.items()))
+
+
+def _material_module_ast_sha(source: str, *, module: str) -> str:
+    normalized = _WithoutDocstrings().visit(ast.parse(source))
+    return canonical_sha(
+        {
+            "module": f"tracefold.news.program.{module}",
+            "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
+        }
+    )
 
 
 def _material_symbol_ast_sha(source: str, *, module: str, symbol: str) -> str:

@@ -30,22 +30,43 @@ def test_taxonomy_evaluate_has_one_frozen_input_and_one_report_output() -> None:
 
 
 def test_taxonomy_register_pins_candidate_code_and_model_before_holdout() -> None:
+    args = build_parser().parse_args(["news", "learning", "taxonomy-register"])
+
+    assert args.learning_command == "taxonomy-register"
+    assert not hasattr(args, "tested_git_sha")
+    assert not hasattr(args, "taxonomy_program_sha")
+    assert not hasattr(args, "taxonomy_model_binding_sha")
+
+
+def test_taxonomy_shadow_has_bounded_input_and_receipt_output() -> None:
     args = build_parser().parse_args(
         [
             "news",
             "learning",
-            "taxonomy-register",
-            "--taxonomy-program-sha",
-            "b" * 64,
-            "--taxonomy-model-binding-sha",
-            "c" * 64,
+            "taxonomy-shadow",
+            "--file",
+            "contexts.json",
+            "--limit",
+            "12",
+            "--out",
+            "shadow.json",
         ]
     )
 
-    assert args.learning_command == "taxonomy-register"
-    assert not hasattr(args, "tested_git_sha")
-    assert args.taxonomy_program_sha == "b" * 64
-    assert args.taxonomy_model_binding_sha == "c" * 64
+    assert args.learning_command == "taxonomy-shadow"
+    assert (args.file, args.limit, args.out) == ("contexts.json", 12, "shadow.json")
+
+
+def test_taxonomy_shadow_command_never_reflects_unknown_program_exception_text() -> None:
+    secret = "sk-secret-that-must-not-leak"
+
+    def broken_program(_context: object) -> object:
+        raise RuntimeError(f"provider echoed API key: {secret}")
+
+    with pytest.raises(RuntimeError, match=r"^news_taxonomy_shadow_program_failed$") as caught:
+        news_commands._execute_taxonomy_shadow_cases(broken_program, [("case-1", object())])
+
+    assert secret not in str(caught.value)
 
 
 def test_learning_optimize_requires_every_budget_and_takes_no_model_flags() -> None:

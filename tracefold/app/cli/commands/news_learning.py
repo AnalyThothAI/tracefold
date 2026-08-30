@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from argparse import Namespace
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,134 @@ from .news_learning_runtime import (
     _learning_program_judges,
     _load_candidate_bundle,
 )
+
+
+def _parse_taxonomy_shadow_request(document: Mapping[str, Any], *, limit: int) -> tuple[str, list[tuple[str, Any]]]:
+    from tracefold.news.program.contracts import TriageContext
+
+    raw_cases = document.get("cases")
+    if not isinstance(raw_cases, list) or not raw_cases:
+        raise ValueError("news_taxonomy_shadow_cases_required")
+    if len(raw_cases) > limit:
+        raise ValueError("news_taxonomy_shadow_case_limit_exceeded")
+    cases: list[tuple[str, Any]] = []
+    for raw in raw_cases:
+        if not isinstance(raw, Mapping):
+            raise ValueError("news_taxonomy_shadow_case_invalid")
+        case_id = str(raw.get("case_id") or "")
+        if not case_id:
+            raise ValueError("news_taxonomy_shadow_case_identity_required")
+        cases.append((case_id, TriageContext.model_validate(raw.get("context"))))
+    if len({case_id for case_id, _context in cases}) != len(cases):
+        raise ValueError("news_taxonomy_shadow_case_identity_duplicate")
+    return str(document.get("candidate_registration_sha256") or ""), cases
+
+
+def _verify_taxonomy_shadow_registration(
+    conn: Any,
+    registration_sha: str,
+    *,
+    code_identity: Any,
+    stable: Any,
+    program: Any,
+) -> Any:
+    from tracefold.news.learning.taxonomy import verify_taxonomy_candidate_registration
+
+    registration = verify_taxonomy_candidate_registration(
+        conn,
+        registration_sha,
+        code_identity=code_identity,
+        stable_bundle_sha256=stable.bundle_sha,
+        runtime_model_bindings_sha256=stable.runtime_model_bindings_sha256,
+        policy_sha256=stable.policy_sha256,
+    )
+    if (
+        registration.taxonomy_program_sha256 != program.shadow_program_sha256
+        or registration.taxonomy_model_binding_sha256 != program.model_binding_sha256
+    ):
+        raise ValueError("news_taxonomy_shadow_registration_program_mismatch")
+    return registration
+
+
+def _execute_taxonomy_shadow_cases(program: Any, cases: list[tuple[str, Any]]) -> list[tuple[str, Any]]:
+    try:
+        return [(case_id, program(context)) for case_id, context in cases]
+    except MemoryError:
+        raise
+    except Exception:
+        # Provider errors are typed observations. Anything escaping the Program is a defect;
+        # fail the command without reflecting exception text that may contain credentials.
+        raise RuntimeError("news_taxonomy_shadow_program_failed") from None
+
+
+def _persist_taxonomy_shadow_observations(
+    conn: Any,
+    registration: Any,
+    observations: list[tuple[str, Any]],
+) -> list[dict[str, Any]]:
+    created_at_ms = int(
+        conn.execute("SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms").fetchone()[
+            "now_ms"
+        ]
+    )
+    receipts: list[dict[str, Any]] = []
+    for case_id, observation in observations:
+        artifact_sha = _insert_learning_artifact(
+            conn,
+            kind="shadow_observation",
+            payload=observation.model_dump(mode="json"),
+            parent_sha=registration.artifact_sha256,
+            created_at_ms=created_at_ms,
+        )
+        receipts.append(
+            {
+                "case_id": case_id,
+                "event_id": observation.event_id,
+                "outcome": observation.outcome,
+                "physical_attempt_n": len(observation.attempts),
+                "observation_sha256": observation.observation_sha256,
+                "artifact_sha256": artifact_sha,
+            }
+        )
+    return receipts
+
+
+def _handle_taxonomy_shadow(args: Namespace, settings: Any) -> tuple[int, dict[str, Any]]:
+    from tracefold.app.learning_runtime import active_arm_manifest, compose_news_program_runtime
+    from tracefold.app.repository_session import postgres_connection
+    from tracefold.news.learning.taxonomy import taxonomy_code_identity
+    from tracefold.platform.postgres.client import transaction
+
+    document = _read_json_or_yaml(str(args.file))
+    registration_sha, cases = _parse_taxonomy_shadow_request(document, limit=int(args.limit))
+    runtime = compose_news_program_runtime(settings)
+    program = runtime.taxonomy_shadow_program()
+    stable = active_arm_manifest(settings, runtime_composition=runtime)
+    code_identity = taxonomy_code_identity()
+
+    def verify(conn: Any) -> Any:
+        return _verify_taxonomy_shadow_registration(
+            conn,
+            registration_sha,
+            code_identity=code_identity,
+            stable=stable,
+            program=program,
+        )
+
+    with postgres_connection(settings, role="workers") as conn:
+        verify(conn)
+    observations = _execute_taxonomy_shadow_cases(program, cases)
+    with postgres_connection(settings, role="workers") as conn, transaction(conn):
+        registration = verify(conn)
+        receipts = _persist_taxonomy_shadow_observations(conn, registration, observations)
+    output = {
+        "candidate_registration_sha256": registration_sha,
+        "taxonomy_program_sha256": program.shadow_program_sha256,
+        "taxonomy_model_binding_sha256": program.model_binding_sha256,
+        "receipts": receipts,
+    }
+    _write_json(str(args.out), output)
+    return 0, {"ok": True, "data": {**output, "report_written_to": str(args.out)}}
 
 
 def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
@@ -73,6 +202,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             return 0, {"ok": True, "data": result}
 
         if action == "taxonomy-register":
+            from tracefold.app.learning_runtime import compose_news_program_runtime
             from tracefold.news.learning.taxonomy import (
                 TaxonomyCandidateRegistrationV1,
                 taxonomy_code_identity,
@@ -80,7 +210,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             )
             from tracefold.platform.postgres.client import transaction
 
-            stable = active_arm_manifest(settings)
+            runtime = compose_news_program_runtime(settings)
+            program = runtime.taxonomy_shadow_program()
+            stable = active_arm_manifest(settings, runtime_composition=runtime)
             code_identity = taxonomy_code_identity()
             with postgres_connection(settings, role="workers") as conn, transaction(conn):
                 registered_at_ms = int(
@@ -97,8 +229,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     deployment=deployment,
                     policy_sha256=stable.policy_sha256,
                     runtime_model_bindings_sha256=stable.runtime_model_bindings_sha256,
-                    taxonomy_program_sha256=str(args.taxonomy_program_sha),
-                    taxonomy_model_binding_sha256=str(args.taxonomy_model_binding_sha),
+                    taxonomy_program_sha256=program.shadow_program_sha256,
+                    taxonomy_model_binding_sha256=program.model_binding_sha256,
                     registered_at_ms=registered_at_ms,
                 )
                 artifact_sha = _insert_learning_artifact(
@@ -121,14 +253,19 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 },
             }
 
+        if action == "taxonomy-shadow":
+            return _handle_taxonomy_shadow(args, settings)
+
         if action == "taxonomy-evaluate":
             from tracefold.news.learning.taxonomy import (
-                TaxonomyEvaluationContextV1,
-                build_taxonomy_evaluation_report,
                 taxonomy_code_identity,
                 verify_taxonomy_candidate_registration,
                 verify_taxonomy_evaluation_cases,
                 verify_taxonomy_regression_gates,
+            )
+            from tracefold.news.learning.taxonomy_evaluation import (
+                TaxonomyEvaluationContextV1,
+                build_taxonomy_evaluation_report,
             )
             from tracefold.platform.postgres.client import transaction
 
@@ -160,6 +297,8 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                     cases,
                     registration=registration,
                 )
+                if gold_verification.shadow_population is None:  # pragma: no cover - verifier owns this invariant
+                    raise RuntimeError("news_taxonomy_shadow_population_missing")
                 taxonomy_report = build_taxonomy_evaluation_report(
                     gold_verification.cases,
                     context=TaxonomyEvaluationContextV1(
@@ -167,6 +306,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                         candidate_registration=registration,
                         gold_ledger_root_sha256=gold_verification.ledger_root_sha256,
                         regression_gates=regression_gates,
+                        shadow_population=gold_verification.shadow_population,
                     ),
                 )
                 payload = taxonomy_report.model_dump(mode="json")

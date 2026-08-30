@@ -51,7 +51,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
         "tracefold.news.learning.objective",
+        # #367: the CLI composes the three explicit taxonomy owners. Evaluation owns metrics/gates,
+        # Release owns durable registration/verification, and Shadow owns the bounded Predictor.
         "tracefold.news.learning.taxonomy",
+        "tracefold.news.learning.taxonomy_evaluation",
+        "tracefold.news.learning.taxonomy_shadow",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.review.desk",
@@ -75,6 +79,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
+        # #367: App binds the release-neutral Shadow Predictor to the configured News endpoint.
+        "tracefold.news.learning.taxonomy_shadow",
         "tracefold.news.market_review.storage",
         "tracefold.news.storage.query_specs",
         "tracefold.news.program.contracts",

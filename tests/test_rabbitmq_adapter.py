@@ -153,6 +153,7 @@ def _leaves(exc: BaseException) -> list[BaseException]:
 def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
     failure: RuntimeError,
     reason: NewsRabbitConsumerFatalReason,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def scenario() -> None:
         incoming = _Incoming()
@@ -173,6 +174,8 @@ def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
         assert incoming.actions == []
         assert channel.is_closed
         assert telemetry.fatals == [("news.triage", reason)]
+        assert str(failure) not in caplog.text
+        assert type(failure).__name__ in caplog.text
 
     asyncio.run(scenario())
 
