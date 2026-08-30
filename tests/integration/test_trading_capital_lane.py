@@ -83,12 +83,12 @@ def _candidate(event_id: str, *, symbol: str = "SOL") -> OiTradeCandidate:
         source_contract_version="oi_contract_v1",
         measurement_window_ms=300_000,
         learning_epoch="bundle_00000000",
-        program_version="news_oi_signal_v1",
+        program_version="news_oi_signal_v2",
         program_sha256="a" * 64,
-        policy_version="news_triage_policy_v10",
-        editorial_origin="telemetry_deterministic",
-        editorial_sha256="b" * 64,
-        scored_judgment_sha256="c" * 64,
+        policy_version="news_triage_policy_v11",
+        judgment_contract_version="news_judgment_v2",
+        judgment_origin="oi",
+        judgment_sha256="c" * 64,
         runtime_manifest_sha="d" * 64,
     )
 

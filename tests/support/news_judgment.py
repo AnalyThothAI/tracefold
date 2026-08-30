@@ -92,7 +92,6 @@ def semantic_judgment(
 
     typed = verdict if isinstance(verdict, TriageVerdict) else TriageVerdict.model_validate(verdict)
     editorial = EditorialEnvelope.issue(
-        editorial_origin="model",
         relevance=trade_relevance(),
         taxonomy=news_taxonomy(),
     )
@@ -105,6 +104,11 @@ def semantic_judgment(
             input_sha256="0" * 64,
             model_binding="primary",
             physical_provider_call=True,
+            runtime_provider="test",
+            runtime_model=model,
+            runtime_model_sha256="e" * 64,
+            runtime_binding_sha256="f" * 64,
+            output_sha256="d" * 64,
             validated_output={"marker": marker},
             provider="test",
             model=model,
@@ -116,6 +120,8 @@ def semantic_judgment(
             total_tokens=2,
             provider_cost_microusd=1,
             finish_reason="stop",
+            terminal_disposition="provider_success",
+            invocation_sha256=marker * 64,
         )
         for predictor, marker in (("event_semantics", "8"), ("reader_card", "9"))
     )
@@ -130,7 +136,6 @@ def semantic_judgment(
         editorial_sha256=editorial.editorial_sha256,
         answering_route="primary",
         fallback_from=None,
-        novelty_defaulted=False,
         calls=calls,
     )
     physical = tuple(call for call in trace.calls if call.physical_provider_call)
@@ -161,15 +166,14 @@ def triage_verdict(**overrides: Any) -> TriageVerdict:
     values: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "partnership",
         "assets": [{"symbol": "NVDA", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
         "magnitude": 2,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
+        "audience": "us_equity",
         "headline_zh": "\u82f1\u4f1f\u8fbe\u6295\u8d44 OpenAI",
+        "why_zh": "\u91cd\u5927\u6295\u8d44\u4f1a\u6539\u53d8\u7b97\u529b\u9700\u6c42",
     }
     values.update(overrides)
     return TriageVerdict(**values)
