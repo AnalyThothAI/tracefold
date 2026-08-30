@@ -1,0 +1,105 @@
+name: Mutation
+
+# Deliberately a workflow of its own rather than a job in CI.
+#
+# `scripts/require_main_ci.py` admits a deployment only when the *whole* CI run for the exact main
+# SHA concluded successfully, so anything living in that workflow can block a deploy — including a
+# lane that is meant to inform rather than decide. Keeping mutation here means a red batch is loud
+# and costs nothing but attention, which is the correct authority for a measurement nobody is
+# waiting on.
+#
+# Cosmic Ray mutates source **in place**, so two workers cannot share a checkout without reading
+# each other's mutants. The matrix is one checkout per worker, which is the only reason the batch
+# fits its 30-minute bound on a hosted runner: ~63 minutes of work over six shards is ~11
+# minutes each, with room for a runner slower than the machine it was measured on.
+#
+# Every `uv run` here passes `--no-sync` so the environment cannot be re-resolved between the
+# sync and the batch that measures against it; `mutation.toml` explains the same flag on the
+# inner test command.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.13"
+  UV_VERSION: "0.11.7"
+  SHARDS: "6"
+
+jobs:
+  sentinel:
+    name: sentinel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked --group mutation
+      - name: Prove the harness executes mutated code
+        run: uv run --no-sync python scripts/mutation_sentinel.py
+
+  mutate:
+    name: mutate (${{ matrix.shard }}/6)
+    needs: sentinel
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked --group mutation
+      - name: Require a green baseline before mutating it
+        run: uv run --no-sync python -m pytest -x -q -p no:cacheprovider tests/trading tests/mutation
+      - name: Build the session and reserve this shard
+        run: |
+          mkdir -p artifacts/mutation
+          uv run --no-sync cosmic-ray init mutation.toml artifacts/mutation/shard-${{ matrix.shard }}.sqlite
+          uv run --no-sync python scripts/mutation_shard.py artifacts/mutation/shard-${{ matrix.shard }}.sqlite \
+            --shard ${{ matrix.shard }} --of ${{ env.SHARDS }}
+      - name: Execute the shard
+        run: uv run --no-sync cosmic-ray exec mutation.toml artifacts/mutation/shard-${{ matrix.shard }}.sqlite
+      - name: Leave the tree as it was found
+        run: git diff --exit-code
+      - if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutation-shard-${{ matrix.shard }}-${{ github.sha }}
+          path: artifacts/mutation
+          if-no-files-found: error
+
+  classify:
+    name: classify
+    needs: mutate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with: {python-version: "${{ env.PYTHON_VERSION }}"}
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
+        with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
+      - run: uv sync --locked --group mutation
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with: {pattern: "mutation-shard-*-${{ github.sha }}", path: artifacts/mutation, merge-multiple: true}
+      - name: Require every survivor to be classified
+        run: uv run --no-sync python scripts/mutation_survivors.py artifacts/mutation/shard-*.sqlite

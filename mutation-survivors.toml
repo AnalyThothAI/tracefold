@@ -1,0 +1,420 @@
+# Every mutant that survives the batch in `mutation.toml`, and why it is allowed to.
+#
+# `scripts/mutation_survivors.py` fails the lane on a survivor that is not covered here, on an entry
+# that no longer matches a survivor, and on a rule that matches none. The second and third matter as
+# much as the first: an exemption that outlives its reason is how a gate stops gating while still
+# looking like one.
+#
+# A survivor is only ever one of two things. Either a test should have caught it and does not, in
+# which case the fix is a test and not an entry here; or it cannot change observable behaviour, in
+# which case the reason belongs in writing where someone can disagree with it. Nothing is listed
+# here because it was inconvenient to kill.
+
+# ---------------------------------------------------------------------------------------------
+# Rules: mechanical categories, accepted only where the premise is checked against the source.
+# ---------------------------------------------------------------------------------------------
+
+[[rule]]
+kind = "annotation-union"
+operator = "core/ReplaceBinaryOperator_BitOr_.*"
+reason = """
+A `|` inside a type annotation, in a module with `from __future__ import annotations`. The
+annotation is stored as a string and never evaluated, so replacing the union operator with `+`,
+`&`, `/` or `>>` cannot change anything a test could observe, and no test can be written that
+would.
+
+`annotation-union` is checked per site rather than taken on trust, because the obvious phrasing of
+this rule is false. `quote_authority.py`'s `ExecutionQuoteAuditV1` builds a runtime type alias — `Annotated[A | B,
+Field(...)]` — whose `|` *is* evaluated at import, and the batch kills its mutants while every
+annotation `|` survives. Excluding the operator family by name, which is what an earlier draft of
+`mutation.toml` did, would have thrown away 13 mutants the tests genuinely catch. The classifier
+therefore parses the module and accepts the mutation only on a line where no `|` is evaluated.
+"""
+
+# ---------------------------------------------------------------------------------------------
+# Sites: one entry per mutation site, written by hand.
+# ---------------------------------------------------------------------------------------------
+# @dataclass(frozen=True, slots=False)
+[[accepted]]
+module = "tracefold/trading/market_context.py"
+function = "<module>"
+line = 38
+operator = "core/ReplaceTrueWithFalse"
+occurrence = 1
+reason = """
+`slots=True` becomes `slots=False`. That changes how instances are laid out in memory and nothing
+else: the class is still `frozen=True`, so attribute assignment still raises, and no test can
+observe the difference. The immutability half of the same decorator *is* covered — mutating a
+frozen instance is asserted directly — which is why only the `slots` mutant survives here.
+"""
+
+# def select_bar(bars: Sequence[Bar], /, target_ms: int, gap_tolerance_ms: int) -> Bar | None:
+[[accepted]]
+module = "tracefold/trading/market_context.py"
+function = "select_bar"
+line = 55
+operator = "core/ReplaceBinaryOperator_Mul_Div"
+occurrence = 0
+reason = """
+Cosmic Ray reads the bare `*` that opens a keyword-only section as a multiplication operator and
+rewrites it to `/`, which is the positional-only marker. The parameters after it become
+positional-or-keyword rather than keyword-only, so every existing call — all of which pass them by
+keyword — binds exactly as before. Killing this would mean asserting that a keyword-only parameter
+cannot be passed positionally, which is a fact about Python rather than about this function.
+"""
+
+# if best is None or int(target_ms) % best.close_at_ms > int(gap_tolerance_ms):
+[[accepted]]
+module = "tracefold/trading/market_context.py"
+function = "select_bar"
+line = 67
+operator = "core/ReplaceBinaryOperator_Sub_Mod"
+occurrence = 0
+reason = """
+`a - b` becomes `a % b`, on a pair of epoch timestamps where `b` is within a small window of `a`.
+For non-negative integers with `b > a / 2`, `a % b` is exactly `a - b`, so the two are the same
+expression over every input this line can receive. Reaching a case where they differ needs a
+subtrahend below half the minuend — a bar or quote timestamped before roughly 1985 — which the
+staleness and gap-tolerance bounds reject before the arithmetic is used for anything.
+"""
+
+# /,
+[[accepted]]
+module = "tracefold/trading/market_context.py"
+function = "pre_move_bps"
+line = 82
+operator = "core/ReplaceBinaryOperator_Mul_Div"
+occurrence = 2
+reason = """
+Cosmic Ray reads the bare `*` that opens a keyword-only section as a multiplication operator and
+rewrites it to `/`, which is the positional-only marker. The parameters after it become
+positional-or-keyword rather than keyword-only, so every existing call — all of which pass them by
+keyword — binds exactly as before. Killing this would mean asserting that a keyword-only parameter
+cannot be passed positionally, which is a fact about Python rather than about this function.
+"""
+
+# @dataclass(frozen=True, slots=False)
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "<module>"
+line = 58
+operator = "core/ReplaceTrueWithFalse"
+occurrence = 1
+reason = """
+`slots=True` becomes `slots=False`. That changes how instances are laid out in memory and nothing
+else: the class is still `frozen=True`, so attribute assignment still raises, and no test can
+observe the difference. The immutability half of the same decorator *is* covered — mutating a
+frozen instance is asserted directly — which is why only the `slots` mutant survives here.
+"""
+
+# @dataclass(frozen=True, slots=False)
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "<module>"
+line = 126
+operator = "core/ReplaceTrueWithFalse"
+occurrence = 5
+reason = """
+`slots=True` becomes `slots=False`. That changes how instances are laid out in memory and nothing
+else: the class is still `frozen=True`, so attribute assignment still raises, and no test can
+observe the difference. The immutability half of the same decorator *is* covered — mutating a
+frozen instance is asserted directly — which is why only the `slots` mutant survives here.
+"""
+
+# outcome.submission_fence_version is not "submission_fence_v1"
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "from_outcome"
+line = 138
+operator = "core/ReplaceComparisonOperator_NotEq_IsNot"
+occurrence = 0
+reason = """
+`!=` becomes `is not` on a comparison against a string literal, and every fixture supplies that
+literal, so identity and equality agree and no test here distinguishes them.
+
+This one is listed rather than dismissed, because it is not equivalent. The compared value reaches
+this line from PostgreSQL — a submission-fence version and a stage recorded on a Case — and a string
+decoded from a database row is not the interned constant, so `is not` would be true for a value that
+is equal and the fence would be refused in production while every test stayed green. The code
+correctly uses `!=`; what the entry records is that the tests cannot reach the difference. Killing
+it needs a fixture whose string is built at runtime rather than written as a literal, which is worth
+doing when this module next gets attention and is more than a mutation-score line item.
+"""
+
+# or q1.stage > "Q1"
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "from_outcome"
+line = 143
+operator = "core/ReplaceComparisonOperator_NotEq_Gt"
+occurrence = 1
+reason = """
+An equality against a string literal becomes an ordering. The compared value is a `Literal` with
+two members, and over that domain the ordering agrees with equality at both points, so the mutant
+computes the same answer for every value the type permits. Only widening the `Literal` would make
+this observable, and that change would fail the type check first.
+"""
+
+# or q1.stage is not "Q1"
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "from_outcome"
+line = 143
+operator = "core/ReplaceComparisonOperator_NotEq_IsNot"
+occurrence = 1
+reason = """
+`!=` becomes `is not` on a comparison against a string literal, and every fixture supplies that
+literal, so identity and equality agree and no test here distinguishes them.
+
+This one is listed rather than dismissed, because it is not equivalent. The compared value reaches
+this line from PostgreSQL — a submission-fence version and a stage recorded on a Case — and a string
+decoded from a database row is not the interned constant, so `is not` would be true for a value that
+is equal and the fence would be refused in production while every test stayed green. The code
+correctly uses `!=`; what the entry records is that the tests cannot reach the difference. Killing
+it needs a fixture whose string is built at runtime rather than written as a literal, which is worth
+doing when this module next gets attention and is more than a mutation-score line item.
+"""
+
+# /,
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "rejected"
+line = 167
+operator = "core/ReplaceBinaryOperator_Mul_Div"
+occurrence = 1
+reason = """
+Cosmic Ray reads the bare `*` that opens a keyword-only section as a multiplication operator and
+rewrites it to `/`, which is the positional-only marker. The parameters after it become
+positional-or-keyword rather than keyword-only, so every existing call — all of which pass them by
+keyword — binds exactly as before. Killing this would mean asserting that a keyword-only parameter
+cannot be passed positionally, which is a fact about Python rather than about this function.
+"""
+
+# if quote.bid <= 0 or quote.ask <= -1 or quote.bid > quote.ask:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 193
+operator = "core/NumberReplacer"
+occurrence = 15
+reason = """
+A perturbation of the `ask <= 0` bound. For this clause to decide the answer alone, the bid would
+have to be positive and no greater than the ask — `0 < bid <= ask <= 0` — which is empty. Every
+non-positive ask is either paired with a non-positive bid, which the first clause catches, or is a
+crossed book, which the third does. `tests/trading/test_quote_authority_guards.py` asserts that
+directly, and the clause is still worth keeping: it makes the rejection true for the stated reason
+rather than by arithmetic accident.
+"""
+
+# if quote.bid <= 0 or quote.ask == 0 or quote.bid > quote.ask:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 193
+operator = "core/ReplaceComparisonOperator_LtE_Eq"
+occurrence = 2
+reason = """
+A perturbation of the `ask <= 0` bound. For this clause to decide the answer alone, the bid would
+have to be positive and no greater than the ask — `0 < bid <= ask <= 0` — which is empty. Every
+non-positive ask is either paired with a non-positive bid, which the first clause catches, or is a
+crossed book, which the third does. `tests/trading/test_quote_authority_guards.py` asserts that
+directly, and the clause is still worth keeping: it makes the rejection true for the stated reason
+rather than by arithmetic accident.
+"""
+
+# if quote.bid <= 0 or quote.ask < 0 or quote.bid > quote.ask:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 193
+operator = "core/ReplaceComparisonOperator_LtE_Lt"
+occurrence = 2
+reason = """
+A perturbation of the `ask <= 0` bound. For this clause to decide the answer alone, the bid would
+have to be positive and no greater than the ask — `0 < bid <= ask <= 0` — which is empty. Every
+non-positive ask is either paired with a non-positive bid, which the first clause catches, or is a
+crossed book, which the third does. `tests/trading/test_quote_authority_guards.py` asserts that
+directly, and the clause is still worth keeping: it makes the rejection true for the stated reason
+rather than by arithmetic accident.
+"""
+
+# side_price = quote.ask if side is "buy" else quote.bid
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 197
+operator = "core/ReplaceComparisonOperator_Eq_Is"
+occurrence = 0
+reason = """
+`==` becomes `is` against a string literal — the same shape as the entries above, but genuinely
+equivalent rather than merely untested. `side` is not external data: it is the return value of
+`_execution_side`, which yields the literals `"buy"` and `"sell"` written in this module. Those are
+the interned constants by construction, so identity and equality cannot disagree for any input, and
+no fixture — runtime-built or otherwise — could separate them.
+"""
+
+# side_price = quote.ask if side <= "buy" else quote.bid
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 197
+operator = "core/ReplaceComparisonOperator_Eq_LtE"
+occurrence = 0
+reason = """
+An equality against a string literal becomes an ordering. The compared value is a `Literal` with
+two members, and over that domain the ordering agrees with equality at both points, so the mutant
+computes the same answer for every value the type permits. Only widening the `Literal` would make
+this observable, and that change would fail the type check first.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < -1 or now_ns < 0 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/NumberReplacer"
+occurrence = 23
+reason = """
+`ts_init_ns < 0` becomes `ts_init_ns < -1`, which changes the answer only when `ts_init_ns` is
+exactly -1. That needs `ts_event_ns` to be no greater than -1, or the fourth clause
+(`ts_init_ns < ts_event_ns`) fires; and if `ts_event_ns` is negative the first clause fires. The
+clause is masked from both sides for the one input that could distinguish it.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns < 1 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/NumberReplacer"
+occurrence = 24
+reason = """
+A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
+is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
+`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
+therefore cannot change an answer.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
+so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns < -1 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/NumberReplacer"
+occurrence = 25
+reason = """
+A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
+is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
+`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
+therefore cannot change an answer.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
+so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns == 0 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/ReplaceComparisonOperator_Lt_Eq"
+occurrence = 3
+reason = """
+A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
+is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
+`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
+therefore cannot change an answer.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
+so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 or now_ns <= 0 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/ReplaceComparisonOperator_Lt_LtE"
+occurrence = 3
+reason = """
+A perturbation of the `now_ns < 0` bound in the clock guard, which is unreachable. `created_at_ns`
+is a millisecond count scaled by 1_000_000 and is never negative, so any negative `now_ns` satisfies
+`now_ns < created_at_ns` and returns `quote_intent_not_active` two guards earlier. The mutation
+therefore cannot change an answer.
+`test_a_negative_clock_is_answered_by_the_intent_window_before_the_clock_guard` pins that ordering,
+so if the intent-window check ever moves below the clock check this reasoning fails loudly.
+"""
+
+# if quote.ts_event_ns < 0 or quote.ts_init_ns < 0 and now_ns < 0 or quote.ts_init_ns < quote.ts_event_ns:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 205
+operator = "core/ReplaceOrWithAnd"
+occurrence = 8
+reason = """
+The `or` between `ts_init_ns < 0` and `now_ns < 0` becomes `and`, which makes that middle clause
+always false because `now_ns < 0` is unreachable (see the entries for that clause). It would matter
+only for a quote with a negative `ts_init_ns` and a non-negative `ts_event_ns`, and that is
+impossible: a negative init timestamp is always also out of order, which is asserted directly.
+"""
+
+# if quote.ts_event_ns > now_ns << MAX_FUTURE_SKEW_NS or quote.ts_init_ns > now_ns + MAX_FUTURE_SKEW_NS:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 207
+operator = "core/ReplaceBinaryOperator_Add_LShift"
+occurrence = 0
+reason = """
+A mutation of the *event* half of the future-skew guard, which can never decide the answer alone.
+The clock guard immediately above has already established `ts_init_ns >= ts_event_ns`, so whenever
+`ts_event_ns` exceeds the skew bound `ts_init_ns` exceeds it too and the second clause rejects the
+quote for the same reason. The first clause is redundant given the guard order, which was confirmed
+by applying this mutation by hand and watching the suite stay green.
+"""
+
+# if quote.ts_event_ns > now_ns * MAX_FUTURE_SKEW_NS or quote.ts_init_ns > now_ns + MAX_FUTURE_SKEW_NS:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 207
+operator = "core/ReplaceBinaryOperator_Add_Mul"
+occurrence = 0
+reason = """
+A mutation of the *event* half of the future-skew guard, which can never decide the answer alone.
+The clock guard immediately above has already established `ts_init_ns >= ts_event_ns`, so whenever
+`ts_event_ns` exceeds the skew bound `ts_init_ns` exceeds it too and the second clause rejects the
+quote for the same reason. The first clause is redundant given the guard order, which was confirmed
+by applying this mutation by hand and watching the suite stay green.
+"""
+
+# if quote.ts_event_ns is now_ns + MAX_FUTURE_SKEW_NS or quote.ts_init_ns > now_ns + MAX_FUTURE_SKEW_NS:
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 207
+operator = "core/ReplaceComparisonOperator_Gt_Is"
+occurrence = 1
+reason = """
+A mutation of the *event* half of the future-skew guard, which can never decide the answer alone.
+The clock guard immediately above has already established `ts_init_ns >= ts_event_ns`, so whenever
+`ts_event_ns` exceeds the skew bound `ts_init_ns` exceeds it too and the second clause rejects the
+quote for the same reason. The first clause is redundant given the guard order, which was confirmed
+by applying this mutation by hand and watching the suite stay green.
+"""
+
+# reference_drift_bps = abs(side_price % intent.reference_price) * _BPS / intent.reference_price
+[[accepted]]
+module = "tracefold/trading/quote_authority.py"
+function = "validate_entry_quote"
+line = 228
+operator = "core/ReplaceBinaryOperator_Sub_Mod"
+occurrence = 3
+reason = """
+`a - b` becomes `a % b`, on a pair of epoch timestamps where `b` is within a small window of `a`.
+For non-negative integers with `b > a / 2`, `a % b` is exactly `a - b`, so the two are the same
+expression over every input this line can receive. Reaching a case where they differ needs a
+subtrahend below half the minuend — a bar or quote timestamped before roughly 1985 — which the
+staleness and gap-tolerance bounds reject before the arithmetic is used for anything.
+"""

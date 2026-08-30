@@ -26,6 +26,9 @@ CI_RUNTIME_PROCESS_SELECTION := tests -m "(deploy or e2e or golden or slow) and 
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
 TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
+TRACEFOLD_MUTATION_DIR ?= artifacts/mutation
+TRACEFOLD_MUTATION_SHARDS ?= 1
+TRACEFOLD_MUTATION_SHARD ?= 0
 
 # The required lanes run under `coverage run`, so the same execution that produces the JUnit report
 # produces the coverage data — there is no second full-suite pass. `--parallel-mode` keeps one data
@@ -39,7 +42,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -165,6 +168,43 @@ ci-test-effectiveness:
 		uv run python -m coverage json -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.json"; \
 		uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"; \
 		uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
+
+# The scheduled mutation batch. `mutation.toml` carries the scope and the reasoning; the sentinel
+# runs first because a mutation score is only evidence once the mutants provably reach the
+# interpreter, and a harness that silently tests unmutated source reports good news. Locally this is
+# one sequential shard (~63 min); CI splits the same session six ways, one checkout per worker,
+# because Cosmic Ray mutates in place. `uv sync --group mutation` first: the tool is in a
+# non-default group so that nothing which builds or ships the service can reach it.
+#
+# Mutating in place means the working tree holds a mutant for the whole run, and an interrupted run
+# leaves one behind — which is a live defect sitting in a tracked file, one `git add -A` away from
+# being committed. So the batch refuses to start unless the modules it rewrites are clean, and
+# restores them on the way out however it exits. The clean check is what makes the restore safe:
+# it is only ever discarding a mutant this target wrote.
+mutation: ## scheduled-lane mutation batch: sentinel, then the batch, then survivor triage
+	@set -eu; \
+		modules="$$(uv run --no-sync python -c 'import tomllib, pathlib; print(" ".join(tomllib.loads(pathlib.Path("mutation.toml").read_text())["cosmic-ray"]["module-path"]))')"; \
+		if ! git diff --quiet -- $$modules; then \
+			echo "mutation: these modules have uncommitted changes and the batch rewrites them in place:" >&2; \
+			echo "  $$modules" >&2; \
+			echo "commit or set the changes aside first." >&2; \
+			exit 1; \
+		fi; \
+		trap 'git checkout -- '"$$modules" EXIT; \
+		mkdir -p "$(TRACEFOLD_MUTATION_DIR)"; \
+		uv sync --locked --group mutation; \
+		uv run --no-sync python scripts/mutation_sentinel.py; \
+		session="$(TRACEFOLD_MUTATION_DIR)/shard-$(TRACEFOLD_MUTATION_SHARD).sqlite"; \
+		rm -f "$$session"; \
+		uv run --no-sync cosmic-ray init mutation.toml "$$session"; \
+		uv run --no-sync python scripts/mutation_shard.py "$$session" \
+			--shard $(TRACEFOLD_MUTATION_SHARD) --of $(TRACEFOLD_MUTATION_SHARDS); \
+		uv run --no-sync cosmic-ray exec mutation.toml "$$session"; \
+		uv run --no-sync python scripts/mutation_survivors.py "$$session"
+
+mutation-sentinel: ## prove the mutation harness executes mutated code, without running a batch
+	@uv sync --locked --group mutation
+	@uv run --no-sync python scripts/mutation_sentinel.py
 
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property

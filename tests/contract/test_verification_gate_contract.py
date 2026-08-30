@@ -23,6 +23,10 @@ REQUIRED_JOBS = {
 # Report-only (#373 PR 2). It is in the workflow but not in `ci-gate`'s dependencies, and the tests
 # below hold it to both halves of that: it may not decide a merge, and it may not run a test.
 REPORT_ONLY_JOB = "test-effectiveness"
+# Scheduled mutation (#373 PR 4) lives in its own workflow for the same reason, taken further:
+# `require_main_ci.py` reads the `ci-gate` check run and requires its workflow run's `path` to be
+# `.github/workflows/ci.yml`, so a lane outside that file cannot reach a deployment at all.
+MUTATION_WORKFLOW = ROOT / ".github" / "workflows" / "mutation.yml"
 pytestmark = pytest.mark.contract
 
 
@@ -285,3 +289,32 @@ def test_migration_marker_owns_every_historical_migration_module() -> None:
         source = module.read_text(encoding="utf-8")
         assert "pytest.mark.migration" in source, module
         assert 'pytest.mark.usefixtures("postgres_migration_dsn")' in source, module
+
+
+def test_the_mutation_lane_is_scheduled_and_cannot_gate_anything() -> None:
+    """The measurement informs; it never decides a merge or a deploy.
+
+    Two independent reasons, both asserted rather than assumed. It defines no `ci-gate` job, so
+    `require_unique_ci_gate_definition` still finds exactly one owner and `require_main_ci` never
+    reads this workflow. And it does not run on `pull_request` or `push`, so it produces no check
+    run on a commit anyone is waiting on.
+    """
+
+    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert "ci-gate" not in {str(job.get("name") or job_id) for job_id, job in jobs.items()}
+
+    # PyYAML resolves a bare `on:` key to the boolean True, which is why this is not `workflow["on"]`.
+    triggers = workflow[True]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+
+
+def test_the_mutation_lane_proves_its_harness_before_it_reports_a_score() -> None:
+    """A score from a harness that never delivered a mutant is the failure that looks like success."""
+
+    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert jobs["mutate"]["needs"] == "sentinel"
+    assert jobs["classify"]["needs"] == "mutate"
+    assert "scripts/mutation_sentinel.py" in str(jobs["sentinel"]["steps"])
+    assert jobs["mutate"]["timeout-minutes"] == 30
