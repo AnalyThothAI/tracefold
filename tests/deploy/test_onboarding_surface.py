@@ -109,7 +109,7 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
   service=''
   for argument do service="$argument"; done
   case "$service" in
-    postgres|rabbitmq|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
+    postgres|rabbitmq|rabbitmq-policy|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
     nautilus)
       if [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
         printf '%s\\n' nautilus-id
@@ -128,7 +128,7 @@ if [ "$1" = "inspect" ]; then
   container_id="$4"
   case "$format" in
     *State.Status*)
-      if [ "$container_id" = "migrate-id" ]; then
+      if [ "$container_id" = "migrate-id" ] || [ "$container_id" = "rabbitmq-policy-id" ]; then
         printf '%s\\n' exited
       elif [ "$container_id" = "nautilus-id" ] && [ ! -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
         printf '%s\\n' "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}"
@@ -140,7 +140,7 @@ if [ "$1" = "inspect" ]; then
     *State.Health*) printf '%s\\n' healthy ;;
     *Image*)
       case "$container_id" in
-        migrate-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
+        migrate-id|rabbitmq-policy-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
         nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
@@ -214,7 +214,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0334|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0335|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -667,6 +667,27 @@ def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_additive_news_head(
 
     assert result.returncode == 0, result.stderr
     assert "Trading capital-authority hard cut is already present at database head 20260830_0333" in result.stdout
+    assert "Trading hard-cut preflight passed" not in result.stdout
+
+
+def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_news_incident_head(tmp_path: Path) -> None:
+    """#400's `0335` is additive News schema; it must not drag a Trading capital preflight behind it."""
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|1|1|1"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260830_0335|t|t"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading evidence-clock hard cut is already present at database head 20260830_0335" in result.stdout
     assert "Trading hard-cut preflight passed" not in result.stdout
 
 

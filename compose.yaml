@@ -70,7 +70,9 @@ services:
           cpus: "5.0"
 
   rabbitmq:
-    image: rabbitmq:4-management@sha256:06fb591136a49e861e01aaaf9ce45085839ca23c35913d45a1e83519bb9778ca
+    # 4.3 is a hard requirement, not a preference: quorum delayed retry, broker-owned delivery counting
+    # and at-least-once dead lettering are what replaced Tracefold's own retry lane (#400).
+    image: rabbitmq:4.3.5-management@sha256:45226f38499559b9f56875c752cc6689ff90e8f20796fe80fd9bc28d64723031
     restart: unless-stopped
     hostname: tracefold-rabbitmq
     environment:
@@ -83,7 +85,12 @@ services:
     volumes:
       - tracefold-rabbitmq:/var/lib/rabbitmq
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      # As the `rabbitmq` user, never as root. The server runs as `rabbitmq`, and a root-run CLI that
+      # reaches /var/lib/rabbitmq before the node has written .erlang.cookie creates that file owned by
+      # root with mode 0400 — after which the server cannot read its own cookie and 4.3.5 refuses to
+      # boot. Reproduced on 4.3.5 with a fresh volume; it only stays hidden on a volume that already
+      # carries a correctly owned cookie.
+      test: ["CMD", "su", "-s", "/bin/sh", "rabbitmq", "-c", "rabbitmq-diagnostics -q check_port_connectivity"]
       interval: 10s
       timeout: 10s
       retries: 6
@@ -93,6 +100,20 @@ services:
         limits:
           cpus: "1.0"
           memory: 768M
+
+  # The News retry contract is a RabbitMQ policy, imported from the version-controlled definitions
+  # document before any consumer attaches. It is a one-shot declarative import with no state machine of
+  # its own; Workers verifies the effective policy and refuses to consume if it does not match.
+  rabbitmq-policy:
+    <<: *tracefold-app
+    restart: "no"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
+      - ${HOME}/.tracefold/logs:/root/.tracefold/logs
+    command: ["tracefold", "news", "bus-policy", "apply"]
 
   migrate:
     <<: *tracefold-app
@@ -151,6 +172,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      rabbitmq-policy:
+        condition: service_completed_successfully
       migrate:
         condition: service_completed_successfully
     ports:

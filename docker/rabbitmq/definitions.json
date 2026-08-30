@@ -1,0 +1,67 @@
+{
+  "policies": [
+    {
+      "apply-to": "queues",
+      "definition": {
+        "dead-letter-exchange": "news.dlx",
+        "dead-letter-strategy": "at-least-once",
+        "delayed-retry-max": 30000,
+        "delayed-retry-min": 30000,
+        "delayed-retry-type": "all",
+        "delivery-limit": 2,
+        "max-length-bytes": 67108864,
+        "overflow": "reject-publish"
+      },
+      "name": "news-raw",
+      "pattern": "^news\\.raw$",
+      "priority": 10,
+      "vhost": "/"
+    },
+    {
+      "apply-to": "queues",
+      "definition": {
+        "dead-letter-exchange": "news.dlx",
+        "dead-letter-strategy": "at-least-once",
+        "delayed-retry-max": 30000,
+        "delayed-retry-min": 30000,
+        "delayed-retry-type": "all",
+        "delivery-limit": 2,
+        "max-length-bytes": 4194304,
+        "overflow": "reject-publish"
+      },
+      "name": "news-triage",
+      "pattern": "^news\\.triage$",
+      "priority": 10,
+      "vhost": "/"
+    },
+    {
+      "apply-to": "queues",
+      "definition": {
+        "dead-letter-exchange": "news.dlx",
+        "dead-letter-strategy": "at-least-once",
+        "delayed-retry-max": 30000,
+        "delayed-retry-min": 30000,
+        "delayed-retry-type": "all",
+        "delivery-limit": 2,
+        "max-length-bytes": 4194304,
+        "overflow": "reject-publish"
+      },
+      "name": "news-deliver",
+      "pattern": "^news\\.deliver$",
+      "priority": 10,
+      "vhost": "/"
+    },
+    {
+      "apply-to": "queues",
+      "definition": {
+        "max-length-bytes": 16777216,
+        "overflow": "reject-publish"
+      },
+      "name": "news-dead",
+      "pattern": "^news\\.dead$",
+      "priority": 10,
+      "vhost": "/"
+    }
+  ],
+  "rabbit_version": "4.3.5"
+}

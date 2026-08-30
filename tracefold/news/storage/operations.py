@@ -69,21 +69,23 @@ class OperationsStorage:
     def open_incident(
         self, *, cause_class: str, now_ms: int, planned: bool = False, close_code: int | None = None
     ) -> int:
-        row = self.conn.execute(
-            """
-            SELECT incident_id FROM news_opennews_incidents
-             WHERE closed_at_ms IS NULL AND cause_class = %s
-             ORDER BY incident_id DESC LIMIT 1
-            """,
-            (cause_class,),
-        ).fetchone()
-        if row is not None:
-            return int(row["incident_id"])
+        """Open the one incident of this cause class, or return the one already open.
+
+        This is a single idempotent statement resting on the partial unique index
+        `ux_news_opennews_incidents_open_cause` (migration 0334), not a read-then-write. Two writers
+        racing therefore converge in PostgreSQL rather than through application locking, and no caller
+        needs to remember whether it already opened this incident.
+        """
+
         row = self.conn.execute(
             """
             INSERT INTO news_opennews_incidents (
               cause_class, opened_at_ms, planned, close_code, recovery_status, created_at_ms, updated_at_ms
             ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (cause_class) WHERE closed_at_ms IS NULL
+            DO UPDATE SET updated_at_ms = GREATEST(
+              news_opennews_incidents.updated_at_ms, EXCLUDED.updated_at_ms
+            )
             RETURNING incident_id
             """,
             (
@@ -96,6 +98,8 @@ class OperationsStorage:
                 int(now_ms),
             ),
         ).fetchone()
+        if row is None:
+            raise RuntimeError("news_incident_open_unresolved")
         return int(row["incident_id"])
 
     def close_open_incidents(self, *, cause_classes: Sequence[str] | None, now_ms: int) -> int:

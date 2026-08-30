@@ -60,6 +60,7 @@ def test_browser_success_fails_when_workers_exited_after_persisting_the_fact(
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_service_fact", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_terminate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_full_stack_smoke, "_delete_topology", _async_noop)
+    monkeypatch.setattr(run_full_stack_smoke, "_apply_policies", _async_noop)
     monkeypatch.setattr(
         run_full_stack_smoke.sys,
         "argv",
@@ -86,6 +87,7 @@ def test_golden_teardown_fails_when_serve_exited_after_the_assertions(
     monkeypatch.setattr(golden_conftest, "_wait_for_logged_port", lambda *_args, **_kwargs: 43202)
     monkeypatch.setattr(golden_conftest, "_terminate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(golden_conftest, "_delete_topology", _async_noop)
+    monkeypatch.setattr(golden_conftest, "_apply_policies", _async_noop)
 
     fixture = golden_conftest.golden_runtime.__wrapped__(
         "postgresql://example/tracefold_test",
@@ -124,6 +126,7 @@ def test_browser_success_fails_when_serve_readiness_regresses(
     monkeypatch.setattr(run_full_stack_smoke, "_wait_for_service_fact", lambda *_args: None)
     monkeypatch.setattr(run_full_stack_smoke, "_terminate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(run_full_stack_smoke, "_delete_topology", _async_noop)
+    monkeypatch.setattr(run_full_stack_smoke, "_apply_policies", _async_noop)
     monkeypatch.setattr(
         run_full_stack_smoke.sys,
         "argv",
@@ -157,6 +160,7 @@ def test_golden_teardown_fails_when_serve_readiness_regresses(
     monkeypatch.setattr(golden_conftest, "_wait_for_logged_port", lambda *_args, **_kwargs: 43402)
     monkeypatch.setattr(golden_conftest, "_terminate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(golden_conftest, "_delete_topology", _async_noop)
+    monkeypatch.setattr(golden_conftest, "_apply_policies", _async_noop)
 
     def readiness(url: str, **_kwargs: object) -> httpx.Response:
         if url == "http://127.0.0.1:43401/readyz":
@@ -194,6 +198,7 @@ def test_final_readiness_fails_if_workers_exit_during_the_serve_check(
     monkeypatch.setattr(module, "_wait_for_logged_port", lambda *_args, **_kwargs: serve_port)
     monkeypatch.setattr(module, "_terminate", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "_delete_topology", _async_noop)
+    monkeypatch.setattr(module, "_apply_policies", _async_noop)
 
     def readiness(url: str, **_kwargs: object) -> httpx.Response:
         if url == f"http://127.0.0.1:{worker_port}/readyz":

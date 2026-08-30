@@ -14,12 +14,10 @@ from .models import NEWS_BUS_SCHEMA_VERSION
 
 EXCHANGE: Final = "news"
 DLX: Final = "news.dlx"
-RETRY_EXCHANGE: Final = "news.retry"
 
 Q_RAW: Final = "news.raw"
 Q_TRIAGE: Final = "news.triage"
 Q_DELIVER: Final = "news.deliver"
-Q_RETRY: Final = "news.retry"
 Q_DEAD: Final = "news.dead"
 
 RK_RAW_LIVE: Final = "raw.opennews.{strategy_id}"
@@ -27,8 +25,10 @@ RK_RAW_RECOVERY: Final = "raw.recovery.{strategy_id}"
 RK_EVENT: Final = "event.{dedupe_family}.{queue_priority}"
 RK_VERDICT_PUSH: Final = "verdict.push"
 
-RETRY_TTL_MS: Final = 30_000
-MAX_TRANSIENT_ATTEMPTS: Final = 3
+# RabbitMQ 4.3 quorum queues count failed deliveries themselves; the header below is broker-written and
+# read-only for Tracefold. It is absent on the first delivery of a message.
+DELIVERY_COUNT_HEADER: Final = "x-delivery-count"
+ACQUIRED_COUNT_HEADER: Final = "x-acquired-count"
 _BODY_FIELDS: Final = frozenset({"schema_version", "kind", "message_id", "trace_id", "occurred_at_ms", "payload"})
 _IDENTIFIER_MAX_BYTES: Final = 128
 
@@ -44,6 +44,8 @@ class BusMessage:
     trace_id: str
     occurred_at_ms: int
     priority: int = 0
+    # Which handler attempt this delivery is. Derived from the broker's `x-delivery-count`; a publisher
+    # never sets it and no application path may increment it.
     attempt: int = 1
     headers: Mapping[str, Any] = field(default_factory=dict)
 
@@ -97,9 +99,6 @@ def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mappin
     if type(occurred_at_ms) is not int or occurred_at_ms <= 0:
         raise BusDecodeError("news_bus_timestamp_invalid")
     hdr = dict(headers or {})
-    attempt = hdr.get("x-news-attempt", 1)
-    if type(attempt) is not int or attempt <= 0:
-        raise BusDecodeError("news_bus_attempt_invalid")
     return BusMessage(
         kind=kind,
         message_id=message_id,
@@ -108,9 +107,26 @@ def decode_body(body: bytes, *, routing_key: str, priority: int, headers: Mappin
         trace_id=trace_id,
         occurred_at_ms=occurred_at_ms,
         priority=int(priority or 0),
-        attempt=attempt,
+        attempt=_attempt_from_broker(hdr),
         headers=hdr,
     )
+
+
+def _attempt_from_broker(headers: Mapping[str, Any]) -> int:
+    """Which handler attempt this delivery is, read from the broker's own failed-delivery counter.
+
+    `x-delivery-count` is absent on the first delivery and counts only deliveries the consumer returned
+    as failures (`basic.reject` with requeue). An uncounted return (`basic.nack` with requeue, the defer
+    lane) leaves it alone, so a deferred message never spends the transient budget. Anything other than
+    a non-negative integer means the delivery cannot be attributed and fails closed.
+    """
+
+    if DELIVERY_COUNT_HEADER not in headers:
+        return 1
+    delivered = headers[DELIVERY_COUNT_HEADER]
+    if type(delivered) is not int or delivered < 0:
+        raise BusDecodeError("news_bus_delivery_count_invalid")
+    return delivered + 1
 
 
 def _identifier(value: Any, *, field: str) -> str:
@@ -138,11 +154,17 @@ def now_ms() -> int:
 
 
 class TransientError(RuntimeError):
-    """Retryable failure of this message (upstream 5xx, statement timeout); counted, dead-lettered after 3."""
+    """Retryable failure of this message (upstream 5xx, statement timeout).
+
+    Returned to the broker as a counted failure, delayed natively, and dead-lettered once the broker's
+    delivery limit is spent."""
 
 
 class DeferError(RuntimeError):
-    """The process could not admit the message right now (DB lane saturated); requeued uncounted via the retry lane."""
+    """The process could not admit the message right now (DB lane saturated).
+
+    Returned to the broker uncounted, so it is delayed like a transient failure but never spends the
+    transient delivery budget and can never become terminal on its own."""
 
 
 class PermanentError(RuntimeError):
@@ -161,16 +183,14 @@ class Consumer(Protocol):
 
 
 __all__ = [
+    "ACQUIRED_COUNT_HEADER",
+    "DELIVERY_COUNT_HEADER",
     "DLX",
     "EXCHANGE",
-    "MAX_TRANSIENT_ATTEMPTS",
     "Q_DEAD",
     "Q_DELIVER",
     "Q_RAW",
-    "Q_RETRY",
     "Q_TRIAGE",
-    "RETRY_EXCHANGE",
-    "RETRY_TTL_MS",
     "RK_EVENT",
     "RK_RAW_LIVE",
     "RK_RAW_RECOVERY",

@@ -253,6 +253,10 @@ class NewsBrokerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     url: str | None = Field(default=None, repr=False)
+    # The management HTTP API carries what AMQP cannot: the effective retry policy, ready/unacked/
+    # delayed splits and pending at-least-once dead letters. Empty derives it from the AMQP host on the
+    # standard management port, which is what every supported deployment runs.
+    management_url: str | None = Field(default=None, repr=False)
     name_prefix: str = ""
     connect_timeout_seconds: float = 10.0
 
@@ -265,6 +269,17 @@ class NewsBrokerSettings(BaseModel):
         parsed = urlsplit(normalized)
         if parsed.scheme not in {"amqp", "amqps"} or not parsed.hostname:
             raise ValueError("news_broker_url_invalid")
+        return normalized
+
+    @field_validator("management_url", mode="before")
+    @classmethod
+    def parse_management_url(cls, value: Any) -> str | None:
+        normalized = str(value or "").strip().rstrip("/")
+        if not normalized:
+            return None
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("news_broker_management_url_invalid")
         return normalized
 
     @field_validator("name_prefix", mode="before")

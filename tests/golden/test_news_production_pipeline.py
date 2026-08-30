@@ -48,12 +48,13 @@ def test_opennews_frame_crosses_production_workers_and_reaches_the_reader(golden
     assert delivery["card"]["elements"]
     assert delivery["receipt"] == {"provider": "feishu", "code": 0, "status_code": 200}
     assert data["reader_receipt"]["state"] == "received"
+    # #400: the final topology is three business queues and the dead-letter queue. There is no retry
+    # lane left to drain, so an empty pipeline is exactly these four names at zero.
     assert golden_runtime.queue_depths() == {
         "news.raw": 0,
         "news.triage": 0,
         "news.deliver": 0,
         "news.dead": 0,
-        "news.retry": 0,
     }
 
 
