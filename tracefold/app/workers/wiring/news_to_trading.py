@@ -8,8 +8,9 @@ on both sides, nothing is computed, nothing is defaulted, and nothing is dropped
 
 **One live trigger crosses this seam (#331).** The editorial-verdict and liquidation mappers are gone
 with the projections behind them: editorial News no longer triggers automatic capital, and there is no
-online liquidation consumer. What is left is the OI frame the lane triggers on, the catalogue rows the
-*research* replay resolves scenarios from, and the Binance universe the cold capability refresh reads.
+online liquidation consumer. What is left is the OI frame the lane triggers on and the catalogue rows
+the *research* replay resolves. Execution capabilities compile only from Trading's complete
+provider-native catalogues.
 
 Field-by-field is the point. A `dict` passed straight through makes a News rename look like a Trading
 bug months later; here the same rename fails `mypy` at this seam, next to the comment explaining what
@@ -26,7 +27,6 @@ from tracefold.news.storage.trade_projection import (
     OiTradeProjectionRow,
     TradeInstrumentProjectionRow,
 )
-from tracefold.trading.capabilities import ExecutionUniverseCandidateRow
 from tracefold.trading.contracts import (
     InstrumentCandidateRow,
     OiCandidateRow,
@@ -132,26 +132,8 @@ def news_trade_instruments(
     ]
 
 
-def news_execution_instruments(repos: Any) -> list[ExecutionUniverseCandidateRow]:
-    """All News-owned Binance instrument facts mapped field by field for one cold refresh."""
-
-    return [
-        ExecutionUniverseCandidateRow(
-            venue=row["venue"],
-            venue_symbol=row["venue_symbol"],
-            base_symbol=row["base_symbol"],
-            instrument_class=row["instrument_class"],
-            quote_asset=row["quote_asset"],
-            status=row["status"],
-            last_seen_ms=row["last_seen_ms"],
-        )
-        for row in repos.news.trade_execution_instruments()
-    ]
-
-
 __all__ = [
     "MAPPED_NEWS_PROJECTION_VERSION",
-    "news_execution_instruments",
     "news_oi_sources",
     "news_trade_instruments",
     "to_instrument_candidate_row",

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
-
 import pytest
 from pydantic import ValidationError
 
+from tests.trading_v3_fixtures import trade_intent
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
-from tracefold.trading import BlacklistSnapshotV1, TradeIntent
 
 
 @pytest.mark.parametrize(
@@ -36,19 +34,9 @@ def test_target_notional_is_the_only_bounded_execution_value(value: str) -> None
 
 
 def test_intent_policy_owns_every_other_execution_value() -> None:
-    intent = TradeIntent.create(
-        case_id="case-1",
-        case_manifest_sha256="a" * 64,
-        execution_capability_snapshot_sha256="b" * 64,
-        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
-        instrument_id="ETHUSDT-PERP.BINANCE",
-        underlying_key="crypto:ETH",
-        created_at_ms=1_900_000_000_000,
-        reference_price=Decimal("100"),
-        target_notional_usd=Decimal("7.5"),
-    )
-    assert intent.execution_environment == "BINANCE_USDM_DEMO"
-    assert intent.instrument_id == "ETHUSDT-PERP.BINANCE"
+    intent = trade_intent()
+    assert (intent.source_venue, intent.binding) == ("binance.usdm", "BINANCE_USDM")
+    assert intent.instrument_id == "SOLUSDT-PERP.BINANCE"
     assert intent.side == "long"
     assert intent.valid_until_ms - intent.created_at_ms == 60_000
     assert (intent.stop_loss_bps, intent.max_holding_ms) == (200, 180_000)

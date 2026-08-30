@@ -9,7 +9,7 @@ import type {
 } from "@features/trading/api/tradingQueries";
 
 export const TRADING_NOW_MS = Date.parse("2026-08-25T12:00:00Z");
-export const CAPITAL_POLICY_ID = "binance_oi_smart_money_long_v2";
+export const CAPITAL_POLICY_ID = "source_native_oi_smart_money_long_v3";
 
 /**
  * One fixture per durable aggregate (#331), because one route per durable aggregate.
@@ -29,6 +29,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     bindings: [
       {
         binding: "BINANCE_USDM",
+        account_generation: 0,
         credential_state: "unconfigured",
         credential_fingerprint: null,
         runtime_state: "stopped",
@@ -36,11 +37,13 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
         catalog_state: "ready",
         catalog_snapshot_sha256: "b".repeat(64),
         catalog_captured_at_ms: TRADING_NOW_MS - 60_000,
+        capability_state: "missing",
         heartbeat_at_ms: null,
         reason: "credentials_unconfigured",
       },
       {
         binding: "HYPERLIQUID_PERP",
+        account_generation: 0,
         credential_state: "unconfigured",
         credential_fingerprint: null,
         runtime_state: "stopped",
@@ -48,6 +51,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
         catalog_state: "ready",
         catalog_snapshot_sha256: "h".repeat(64),
         catalog_captured_at_ms: TRADING_NOW_MS - 60_000,
+        capability_state: "missing",
         heartbeat_at_ms: null,
         reason: "credentials_unconfigured",
       },
@@ -235,10 +239,13 @@ export function tradingGateDecisionFixture(
 export function tradingGateConfigFixture(): TradingGate["config"] {
   return {
     config_digest: "c".repeat(64),
-    live_exchange_id: "binance",
     max_age_ms: 300_000,
     min_oi_value_usd: 5_000_000,
-    version: "trading_admission_v3",
+    source_native_bindings: {
+      BINANCE_USDM: "binance.usdm",
+      HYPERLIQUID_PERP: "hyperliquid.perp",
+    },
+    version: "trading_admission_v4",
   };
 }
 

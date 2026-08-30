@@ -41,13 +41,17 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/routing.py",
     "trading/market_context.py",
     "trading/contracts.py",
+    "trading/adapter_contracts.py",
+    "trading/bindings.py",
     "trading/capabilities.py",
+    "trading/contract_receipt.py",
     "trading/catalog.py",
     "trading/intent.py",
     "trading/execution_policy.py",
     "trading/quote_authority.py",
     "trading/telemetry.py",
     "trading/storage/root.py",
+    "trading/storage/bindings.py",
     "trading/storage/lane.py",
     "trading/storage/cases.py",
     "trading/storage/control.py",
@@ -74,7 +78,7 @@ BANNED_CAPABILITIES = ("subprocess", "shutil", "socket", "requests", "boto3")
 WRITE_SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.IGNORECASE)
 SQL_TABLE_RE = re.compile(r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)", re.I)
 # `DO UPDATE SET` and `FOR UPDATE SKIP LOCKED` both put a keyword where the regex expects a table.
-_SQL_KEYWORDS = frozenset({"set", "skip", "select", "lateral", "jsonb_each", "values"})
+_SQL_KEYWORDS = frozenset({"set", "skip", "select", "lateral", "jsonb_each", "values", "of"})
 
 
 def _module_name(path: Path) -> str:
@@ -413,17 +417,17 @@ def test_the_retired_lane_cluster_has_no_executable_reference() -> None:
     assert offenders == []
 
 
-def test_live_wiring_reaches_no_hyperliquid_bar_no_model_and_no_shadow_runner() -> None:
-    """The Decision catalog may read HL metadata; the Binance capital path may not read HL bars."""
+def test_live_wiring_reaches_both_source_native_bars_and_no_model_or_shadow_runner() -> None:
+    """Each closed source reaches only its own bar provider before a Case freezes."""
 
     wiring = SRC / "app/workers/wiring/trading.py"
     reachable = {name.lower() for name in _executable_names(wiring) if isinstance(name, str)}
-    for banned in ("fetch_hyperliquid_candles", "dspy", "tradingdecisionprogram", "liquidationshadowrunner"):
+    for banned in ("dspy", "tradingdecisionprogram", "liquidationshadowrunner"):
         assert banned not in reachable, banned
+    assert {"fetch_binance_candles", "fetch_hyperliquid_candles"} <= reachable
     modules = _imported_modules(wiring)
     assert "tracefold.integrations.venues.fetch_binance_candles" in modules
     assert "tracefold.integrations.trading_catalog.fetch_hyperliquid_perp_catalog" in modules
-    assert not any("fetch_hyperliquid_candles" in module.lower() for module in modules)
     assert not any("dspy" in module.lower() for module in modules)
 
 
@@ -433,24 +437,30 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     assert trading.__all__ == [
         "ACTIVE_INTENT_STATES",
         "BAR_FIDELITY_VERSION",
+        "BINANCE_USDM_ADAPTER_CONTRACT_SHA256",
+        "HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256",
         "INTENT_POLICY_SHA256",
         "MAX_RECEIVE_AGE_NS",
+        "PROTECTION_CONTRACT_SHA256",
+        "QUOTE_CONTRACT_SHA256",
         "Bar",
         "BlacklistSnapshotV1",
         "CapitalRuntimeV1",
         "CaseState",
         "DecisionRuntimeV1",
-        "ExecutionCapabilitySnapshotV1",
-        "ExecutionInstrumentCapabilityV1",
+        "ExecutionBindingV1",
+        "ExecutionCapabilityExclusionV2",
+        "ExecutionCapabilitySnapshotV2",
+        "ExecutionInstrumentCapabilityV2",
+        "ExecutionInstrumentEvidenceV1",
         "ExecutionQuote",
         "ExecutionQuoteAuditV1",
         "ExecutionQuoteRejectionV1",
         "ExecutionQuoteSnapshotV1",
-        "ExecutionUniverseCandidateRow",
+        "ExecutionVenue",
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
-        "ProviderInstrumentCandidateV1",
         "RejectedReason",
         "ReplayArtifactV1",
         "ReplayBarV1",
@@ -459,7 +469,6 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ReplayScenarioCapabilityV1",
         "ReplaySpecV1",
         "ReplayTerminalOutcomeV1",
-        "StableCapabilityExclusionV1",
         "SubmissionFenceV1",
         "TradeIntent",
         "TradingCaseManifest",
@@ -467,9 +476,13 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "VenueBindingRuntimeV1",
         "VenueInstrumentCatalogEntryV1",
         "VenueInstrumentCatalogSnapshotV1",
+        "binding_for_source_venue",
+        "build_execution_capability_snapshot",
         "build_venue_catalog_snapshot",
+        "canonical_sha256",
         "deterministic_client_order_id",
         "validate_entry_quote",
+        "venue_for_binding",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__
@@ -567,10 +580,10 @@ def test_execution_configuration_is_one_bounded_notional() -> None:
             TradingSettings.model_validate({retired: {}})
 
 
-def test_only_binance_bars_are_reachable_from_the_live_lane() -> None:
+def test_source_native_bar_fetcher_accepts_one_frozen_instrument_and_no_venue_override() -> None:
     import inspect
 
-    from tracefold.app.workers.wiring.trading import _binance_bars
+    from tracefold.app.workers.wiring.trading import _source_native_bars
 
-    signature = inspect.signature(_binance_bars)
-    assert list(signature.parameters) == ["provider_symbol", "start_ms", "end_ms"]
+    signature = inspect.signature(_source_native_bars)
+    assert list(signature.parameters) == ["instrument", "start_ms", "end_ms"]

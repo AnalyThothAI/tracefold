@@ -535,6 +535,12 @@
 | `heartbeat_at_ms` | `BIGINT` | True | `None` |
 | `reason` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `account_generation` | `BIGINT` | False | `0` |
+| `capability_state` | `TEXT` | False | `'missing'::text` |
+| `capability_snapshot_sha256` | `TEXT` | True | `None` |
+| `capability_compiled_at_ms` | `BIGINT` | True | `None` |
+| `capability_compile_error` | `TEXT` | True | `None` |
+| `execution_binding_sha256` | `TEXT` | True | `None` |
 
 ## `trading_candidate_gate_decisions`
 
@@ -600,16 +606,31 @@
 | `reason` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `trading_execution_bindings`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `binding_sha256` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `account_generation` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
 ## `trading_execution_capability_snapshots`
 
 | Column | Type | Nullable | Default |
 |--------|------|----------|---------|
 | `snapshot_sha256` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
-| `execution_environment` | `TEXT` | False | `None` |
+| `execution_environment` | `TEXT` | True | `None` |
 | `included_count` | `INTEGER` | False | `None` |
 | `excluded_count` | `INTEGER` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
+| `binding` | `TEXT` | True | `None` |
+| `venue` | `TEXT` | True | `None` |
+| `catalog_snapshot_sha256` | `TEXT` | True | `None` |
+| `catalog_instrument_count` | `INTEGER` | True | `None` |
+| `partition_sha256` | `TEXT` | True | `None` |
 
 ## `trading_intents`
 
@@ -620,13 +641,13 @@
 | `case_id` | `TEXT` | False | `None` |
 | `case_manifest_sha256` | `TEXT` | False | `None` |
 | `intent_policy_sha256` | `TEXT` | False | `None` |
-| `execution_environment` | `TEXT` | False | `None` |
+| `execution_environment` | `TEXT` | True | `None` |
 | `instrument_id` | `TEXT` | False | `None` |
 | `side` | `TEXT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `valid_until_ms` | `BIGINT` | False | `None` |
 | `reference_price` | `NUMERIC` | False | `None` |
-| `target_notional_usd` | `NUMERIC` | False | `None` |
+| `target_notional_usd` | `NUMERIC` | True | `None` |
 | `stop_loss_bps` | `INTEGER` | False | `None` |
 | `max_holding_ms` | `BIGINT` | False | `None` |
 | `max_entry_drift_bps` | `INTEGER` | False | `None` |
@@ -674,6 +695,28 @@
 | `entry_quote_q2` | `JSONB` | True | `None` |
 | `entry_submitted_at_ms` | `BIGINT` | True | `None` |
 | `entry_accepted_at_ms` | `BIGINT` | True | `None` |
+| `source_venue` | `TEXT` | True | `None` |
+| `source_identity` | `TEXT` | True | `None` |
+| `canonical_asset` | `TEXT` | True | `None` |
+| `binding` | `TEXT` | True | `None` |
+| `account_generation` | `BIGINT` | True | `None` |
+| `execution_binding_sha256` | `TEXT` | True | `None` |
+| `venue_catalog_snapshot_sha256` | `TEXT` | True | `None` |
+| `capability_entry_id` | `TEXT` | True | `None` |
+| `provider_instrument_id` | `TEXT` | True | `None` |
+| `settlement_asset` | `TEXT` | True | `None` |
+| `execution_policy_sha256` | `TEXT` | True | `None` |
+| `quote_contract_sha256` | `TEXT` | True | `None` |
+| `protection_contract_sha256` | `TEXT` | True | `None` |
+| `capital_authorization_receipt_sha256` | `TEXT` | True | `None` |
+| `economic_lifecycle_id` | `TEXT` | True | `None` |
+| `entry_leg_id` | `TEXT` | True | `None` |
+| `protection_leg_id` | `TEXT` | True | `None` |
+| `close_leg_id` | `TEXT` | True | `None` |
+| `leverage` | `INTEGER` | True | `None` |
+| `target_notional` | `NUMERIC` | True | `None` |
+| `max_risk_amount` | `NUMERIC` | True | `None` |
+| `risk_currency` | `TEXT` | True | `None` |
 
 ## `trading_order_observations`
 

@@ -22,7 +22,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tracefold.trading import BlacklistSnapshotV1, TradeIntent
+from tests.trading_v3_fixtures import trade_intent
+from tracefold.trading import TradeIntent
 from tracefold.trading.quote_authority import (
     MAX_EVENT_AGE_NS,
     MAX_FUTURE_SKEW_NS,
@@ -44,16 +45,11 @@ MAX_DRIFT_BPS = 25
 
 
 def _intent(**overrides: Any) -> TradeIntent:
-    intent = TradeIntent.create(
+    intent = trade_intent(
         case_id="case-quote-property",
         case_manifest_sha256="1" * 64,
-        execution_capability_snapshot_sha256="2" * 64,
-        blacklist_snapshot=BlacklistSnapshotV1(revision=0, active_rows=()),
-        instrument_id=INSTRUMENT,
-        underlying_key="crypto:SOL",
         created_at_ms=NOW_NS // 1_000_000,
         reference_price=REFERENCE,
-        target_notional_usd=Decimal("10"),
     )
     return replace(intent, **overrides) if overrides else intent
 

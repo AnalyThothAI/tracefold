@@ -156,23 +156,15 @@ def test_an_unroutable_frame_is_refused_and_still_counted_in_the_template_cohort
     assert report.routable_symbols == set()
 
 
-def test_a_hyperliquid_frame_is_replayed_in_full_and_never_marked_routable() -> None:
-    """#331: research may study a book this lane will never trade, and says which is which."""
+def test_a_hyperliquid_frame_is_replayed_in_full_and_is_source_native_routable() -> None:
 
     report = _replay([_row(event_id="hl", venue="hyperliquid")])
-    assert report.routable_symbols == set()
-    assert [row.routable for row in report.outcomes] == [False]
-    # It reached the policy rather than stopping at the venue: the replay measures Alpha on both books.
+    assert report.routable_symbols == {"TUT"}
+    assert [row.routable for row in report.outcomes] == [True]
     assert report.outcomes[0].stage in {"policy", "pending_market_context"}
 
 
-def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routable_one() -> None:
-    """Two cohorts under one rulebook, or the comparison between them means nothing.
-
-    `research_only_venue` ends the venue stage without ending the replay. It used to also skip
-    eligibility outright, so the Hyperliquid cohort was scored with no OI-value floor and no blacklist
-    — a laxer rulebook than the Binance cohort it was being read against.
-    """
+def test_both_closed_venues_are_held_to_the_same_eligibility_rules() -> None:
 
     ranked_out = {"oi_value_usd": 1_000_000}
     binance, hyperliquid = _replay(
@@ -184,7 +176,7 @@ def test_a_research_only_frame_is_held_to_the_same_eligibility_rules_as_a_routab
 
     assert (binance.stage, binance.reason) == ("eligibility", "oi_value_below_floor")
     assert (hyperliquid.stage, hyperliquid.reason) == (binance.stage, binance.reason)
-    assert (binance.routable, hyperliquid.routable) == (True, False)
+    assert (binance.routable, hyperliquid.routable) == (True, True)
 
 
 def test_coverage_is_left_to_the_caller_rather_than_reported_as_a_zero_nobody_measured() -> None:

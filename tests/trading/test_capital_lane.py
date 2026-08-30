@@ -3,8 +3,8 @@
 Every test here is an acceptance clause of #331, and several of them fail against the implementation
 this replaces:
 
-* a Hyperliquid frame with complete bars used to reach a frozen Case and be refused four stages later
-  as `intent_instrument_not_allowed`; it is now `RESEARCH_ONLY` before a Case exists;
+* a Hyperliquid frame stays source-native through its own catalogue, bars and binding rather than
+  being rerouted to Binance or discarded as research-only;
 * an absent `trading_runtime_state` row used to default to `{"control": "RUNNING"}`, so a lane with no
   runtime authority scanned, created Cases and spent budget on the strength of a dict literal;
 * an unknown repository error used to be caught and written as `BLOCKED / intent_admission_blocked`,
@@ -102,6 +102,33 @@ def _catalog(*instruments: VenueInstrumentCatalogEntryV1) -> VenueInstrumentCata
         captured_at_ms=NOW - 1_000,
         stale_after_ms=86_400_000,
         instruments=instruments or (_catalog_entry(),),
+    )
+
+
+def _hyperliquid_catalog_entry(symbol: str = "TUT") -> VenueInstrumentCatalogEntryV1:
+    return VenueInstrumentCatalogEntryV1(
+        provider_instrument_id=f"main:{symbol}",
+        provider_symbol=symbol,
+        venue="hyperliquid.perp",
+        canonical_asset=symbol,
+        canonical_namespace="main",
+        product_kind="linear_perpetual",
+        active=True,
+        settlement_asset="USDC",
+        margin_asset="USDC",
+        price_increment="0.0001",
+        size_increment="0.1",
+        min_quantity="0.1",
+        raw_metadata_sha256=DIGEST,
+    )
+
+
+def _hyperliquid_catalog() -> VenueInstrumentCatalogSnapshotV1:
+    return build_venue_catalog_snapshot(
+        binding="HYPERLIQUID_PERP",
+        captured_at_ms=NOW - 1_000,
+        stale_after_ms=86_400_000,
+        instruments=(_hyperliquid_catalog_entry(),),
     )
 
 
@@ -236,21 +263,32 @@ class FakeDb:
 
 
 def _authority(**overrides: Any) -> CapitalAuthority:
+    binance_catalog = overrides.pop("catalog", _catalog())
+    hyperliquid_catalog = overrides.pop("hyperliquid_catalog", _hyperliquid_catalog())
     values: dict[str, Any] = {
         "capital_control": "PAUSED",
         "blacklist": Blacklist.from_rows([]),
         "active_underlyings": frozenset(),
         "underlyings_in_flight": frozenset(),
         "cased_source_keys": frozenset(),
-        "binding": BindingAuthority(
-            credential_state="unconfigured",
-            runtime_state="stopped",
-            account_state="unknown",
-            catalog_state="ready",
-            catalog_snapshot_sha256=_catalog().snapshot_sha256,
-            reason="credentials_unconfigured",
-        ),
-        "catalog": _catalog(),
+        "bindings": {
+            binding: BindingAuthority(
+                credential_state="unconfigured",
+                runtime_state="stopped",
+                account_state="unknown",
+                catalog_state="ready",
+                catalog_snapshot_sha256=None if catalog is None else catalog.snapshot_sha256,
+                reason="credentials_unconfigured",
+            )
+            for binding, catalog in (
+                ("BINANCE_USDM", binance_catalog),
+                ("HYPERLIQUID_PERP", hyperliquid_catalog),
+            )
+        },
+        "catalogs": {
+            "BINANCE_USDM": binance_catalog,
+            "HYPERLIQUID_PERP": hyperliquid_catalog,
+        },
     }
     values.update(overrides)
     return CapitalAuthority(**values)
@@ -264,9 +302,9 @@ def _lane(
 ) -> tuple[CapitalLane, FakeDb]:
     db = FakeDb(trading)
 
-    async def fetch(symbol: str, start_ms: int, end_ms: int) -> Sequence[Bar]:
+    async def fetch(instrument: Any, start_ms: int, end_ms: int) -> Sequence[Bar]:
         if provider_calls is not None:
-            provider_calls.append((symbol, start_ms, end_ms))
+            provider_calls.append((instrument.provider_symbol, start_ms, end_ms))
         return _bars() if bars is None else bars
 
     lane = CapitalLane(
@@ -310,7 +348,7 @@ def test_a_no_key_binance_frame_becomes_one_case_and_an_independent_capital_bloc
     manifest = next(iter(trading.cases.values()))["manifest"]
     assert manifest.instrument.provider_symbol == "TUTUSDT"
     assert manifest.venue_catalog_snapshot_sha256 == _catalog().snapshot_sha256
-    assert manifest.policy_id == "binance_oi_smart_money_long_v2"
+    assert manifest.policy_id == "source_native_oi_smart_money_long_v3"
     # Every provider call happens outside a transaction: the read, the freeze and the commit are the
     # only database names in the turn, and the bar fetch sits between the first and the second.
     assert "trading_case_create" in db.names
@@ -330,9 +368,8 @@ def test_a_policy_no_trade_is_a_no_trade_case_with_frozen_checks_and_no_intent()
     assert trading.commits == []
 
 
-# ---------------------------------------------------------------------------- F2P 1: research only
-def test_a_hyperliquid_frame_with_complete_bars_is_research_only_and_creates_no_case() -> None:
-    """#331 F2P 1. The old lane froze a Case and failed at `intent_instrument_not_allowed`."""
+# ---------------------------------------------------------------------------- source-native dual venue
+def test_a_hyperliquid_frame_freezes_its_own_catalog_and_bars_without_rerouting() -> None:
 
     trading = FakeTrading(authority=_authority(), rows=[_row(venue="hyperliquid")])
     calls: list[tuple[str, int, int]] = []
@@ -340,13 +377,13 @@ def test_a_hyperliquid_frame_with_complete_bars_is_research_only_and_creates_no_
 
     turn = _advance(lane)
 
-    assert (turn.cases_created, turn.research_only) == (0, 1)
-    assert trading.cases == {}
-    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "venue:research_only_venue"}
-    assert trading.admission[0]["status"] == "RESEARCH_ONLY"
-    # Nothing was priced for it either: a research venue the live lane can fetch bars for is one
-    # refactor away from being traded by it.
-    assert calls == []
+    assert (turn.cases_created, turn.blocked) == (1, 1)
+    assert _reasons(trading) == {"oi:evt-1:oi_signal_v1": "freeze:case_created"}
+    manifest = next(iter(trading.cases.values()))["manifest"]
+    assert manifest.instrument.binding == "HYPERLIQUID_PERP"
+    assert manifest.instrument.venue == "hyperliquid.perp"
+    assert manifest.venue_catalog_snapshot_sha256 == _hyperliquid_catalog().snapshot_sha256
+    assert calls[0][0] == "TUT"
 
 
 def test_an_unrecognised_venue_tag_is_rejected_rather_than_routed() -> None:

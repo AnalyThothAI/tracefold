@@ -9,6 +9,7 @@ from typing import Final, Literal
 from .contracts import canonical_sha256
 
 EXECUTION_POLICY_VERSION = "trade_execution_policy_v1"
+PROTECTION_CONTRACT_VERSION = "native_reduce_only_protection_v1"
 ENTRY_TTL_MS: Final = 60_000
 STOP_LOSS_BPS: Final = 200
 MAX_HOLDING_MS: Final = 180_000
@@ -32,6 +33,17 @@ EXECUTION_POLICY_SHA256: Final = canonical_sha256(
         "stop": "floor(entry*(10000-stop_bps)/10000,price_increment)",
         "holding": "opened_at_plus_max_holding",
         "economic_leg_identity": "tf-leg-intent-prefix",
+    }
+)
+PROTECTION_CONTRACT_SHA256: Final = canonical_sha256(
+    {
+        "version": PROTECTION_CONTRACT_VERSION,
+        "native": True,
+        "reduce_only": True,
+        "quantity": "authoritative_filled_quantity",
+        "partial_fill": "resize_to_authoritative_filled_quantity",
+        "unknown": "manual_review",
+        "close_requires": "authoritative_flat_reconciliation",
     }
 )
 IntentLeg = Literal["entry", "stop", "close"]
@@ -121,6 +133,8 @@ __all__ = [
     "MAX_ENTRY_DRIFT_BPS",
     "MAX_HOLDING_MS",
     "MAX_SPREAD_BPS",
+    "PROTECTION_CONTRACT_SHA256",
+    "PROTECTION_CONTRACT_VERSION",
     "STOP_LOSS_BPS",
     "TARGET_NOTIONAL_CEILING_USD",
     "EntryPolicyDecision",

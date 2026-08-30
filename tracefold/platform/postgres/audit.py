@@ -87,6 +87,7 @@ TRADING_TABLES = (
     "trading_order_observations",
     "trading_intents",
     "trading_execution_capability_snapshots",
+    "trading_execution_bindings",
     "trading_replay_runs",
     "trading_decision_runtime",
     "trading_venue_catalog_snapshots",

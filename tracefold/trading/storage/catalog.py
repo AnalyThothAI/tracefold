@@ -51,7 +51,7 @@ class CatalogStorage:
         rows = self.conn.execute(
             """
             SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
-                   runtime.runtime_state, runtime.account_state,
+                   runtime.runtime_state, runtime.account_state, runtime.account_generation,
                    CASE
                      WHEN runtime.catalog_state = 'ready'
                       AND snapshot.stale_after_ms IS NOT NULL
@@ -60,6 +60,9 @@ class CatalogStorage:
                      ELSE runtime.catalog_state
                    END AS catalog_state,
                    runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
+                   runtime.capability_state, runtime.capability_snapshot_sha256,
+                   runtime.capability_compiled_at_ms, runtime.capability_compile_error,
+                   runtime.execution_binding_sha256,
                    runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
               FROM trading_binding_runtime runtime
               LEFT JOIN trading_venue_catalog_snapshots snapshot
@@ -74,7 +77,7 @@ class CatalogStorage:
         row = self.conn.execute(
             """
             SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
-                   runtime.runtime_state, runtime.account_state,
+                   runtime.runtime_state, runtime.account_state, runtime.account_generation,
                    CASE
                      WHEN runtime.catalog_state = 'ready'
                       AND snapshot.stale_after_ms IS NOT NULL
@@ -83,6 +86,9 @@ class CatalogStorage:
                      ELSE runtime.catalog_state
                    END AS catalog_state,
                    runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
+                   runtime.capability_state, runtime.capability_snapshot_sha256,
+                   runtime.capability_compiled_at_ms, runtime.capability_compile_error,
+                   runtime.execution_binding_sha256,
                    runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
               FROM trading_binding_runtime runtime
               LEFT JOIN trading_venue_catalog_snapshots snapshot
@@ -129,9 +135,17 @@ class CatalogStorage:
                 reason = "recovery_blocked_credentials_missing"
         row = self.conn.execute(
             """
-            UPDATE trading_binding_runtime
+            UPDATE trading_binding_runtime AS runtime
                SET credential_state = %(credential_state)s,
                    credential_fingerprint = %(credential_fingerprint)s,
+                   account_generation = CASE
+                     WHEN (credential_state, credential_fingerprint)
+                          IS DISTINCT FROM (%(credential_state)s, %(credential_fingerprint)s)
+                     THEN account_generation + 1 ELSE account_generation END,
+                   execution_binding_sha256 = CASE
+                     WHEN (credential_state, credential_fingerprint)
+                          IS DISTINCT FROM (%(credential_state)s, %(credential_fingerprint)s)
+                     THEN NULL ELSE execution_binding_sha256 END,
                    runtime_state = %(runtime_state)s,
                    account_state = %(account_state)s,
                    heartbeat_at_ms = %(heartbeat)s,
@@ -149,6 +163,99 @@ class CatalogStorage:
                 "heartbeat": None if heartbeat_at_ms is None else int(heartbeat_at_ms),
                 "reason": reason,
                 "now": int(now_ms),
+            },
+        ).fetchone()
+        return row is not None
+
+    def binding_execution_runtime(
+        self,
+        *,
+        binding: VenueBinding,
+        for_update: bool = False,
+    ) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT capital.control, runtime.binding, runtime.runtime_state, runtime.account_state,
+                   runtime.capability_state, runtime.capability_snapshot_sha256,
+                   runtime.execution_binding_sha256, runtime.heartbeat_at_ms
+              FROM trading_runtime_state capital
+              JOIN trading_binding_runtime runtime ON runtime.binding = %s
+             WHERE capital.id = 1
+            """
+            + (" FOR UPDATE OF capital, runtime" if for_update else ""),
+            (binding,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def set_binding_execution_runtime(
+        self,
+        *,
+        binding: VenueBinding,
+        heartbeat_at_ms: int,
+        ready: bool,
+        readiness_reason: str | None,
+        unexpected_exposure: bool,
+        now_ms: int,
+    ) -> None:
+        updated = self.conn.execute(
+            """
+            UPDATE trading_binding_runtime
+               SET runtime_state = CASE WHEN %(ready)s THEN 'ready' ELSE 'faulted' END,
+                   account_state = CASE
+                     WHEN %(unexpected)s THEN 'exposure_present'
+                     WHEN %(ready)s THEN 'reconciled_flat'
+                     ELSE account_state
+                   END,
+                   heartbeat_at_ms = %(heartbeat)s,
+                   reason = %(reason)s,
+                   updated_at_ms = %(now)s
+             WHERE binding = %(binding)s
+         RETURNING binding
+            """,
+            {
+                "binding": binding,
+                "heartbeat": int(heartbeat_at_ms),
+                "ready": bool(ready),
+                "reason": readiness_reason,
+                "unexpected": bool(unexpected_exposure),
+                "now": int(now_ms),
+            },
+        ).fetchone()
+        if updated is None:
+            raise RuntimeError(f"trading_binding_runtime_missing:{binding}")
+
+    def set_binding_bootstrap_account_zero(
+        self,
+        *,
+        binding: VenueBinding,
+        verified_at_ms: int | None,
+        now_ms: int,
+        expected_capability_snapshot_sha256: str | None,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            UPDATE trading_binding_runtime runtime
+               SET account_state = CASE WHEN %(verified)s IS NULL THEN 'unknown' ELSE 'reconciled_flat' END,
+                   heartbeat_at_ms = %(now)s,
+                   reason = CASE WHEN %(verified)s IS NULL THEN 'account_reconciliation_unproven'
+                                 ELSE 'bootstrap_account_flat' END,
+                   updated_at_ms = %(now)s
+              FROM trading_runtime_state capital
+             WHERE runtime.binding = %(binding)s
+               AND capital.id = 1
+               AND capital.control = 'PAUSED'
+               AND runtime.capability_snapshot_sha256 IS NOT DISTINCT FROM %(expected)s
+               AND NOT EXISTS (
+                 SELECT 1 FROM trading_intents
+                  WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+               )
+         RETURNING runtime.binding
+            """,
+            {
+                "binding": binding,
+                "verified": None if verified_at_ms is None else int(verified_at_ms),
+                "now": int(now_ms),
+                "expected": expected_capability_snapshot_sha256,
             },
         ).fetchone()
         return row is not None
@@ -188,10 +295,19 @@ class CatalogStorage:
             raise RuntimeError("venue_catalog_snapshot_identity_conflict")
         updated = self.conn.execute(
             """
-            UPDATE trading_binding_runtime
+            UPDATE trading_binding_runtime AS runtime
                SET catalog_state = 'ready',
                    catalog_snapshot_sha256 = %(digest)s,
                    catalog_captured_at_ms = %(captured)s,
+                   capability_state = CASE
+                     WHEN runtime.capability_snapshot_sha256 IS NULL THEN 'missing'
+                     WHEN EXISTS (
+                       SELECT 1 FROM trading_execution_capability_snapshots capability
+                        WHERE capability.snapshot_sha256 = runtime.capability_snapshot_sha256
+                          AND capability.catalog_snapshot_sha256 = %(digest)s
+                     ) THEN runtime.capability_state
+                     ELSE 'stale'
+                   END,
                    reason = CASE
                      WHEN credential_state = 'unconfigured' THEN 'credentials_unconfigured'
                      WHEN credential_state = 'invalid' THEN 'credentials_invalid'

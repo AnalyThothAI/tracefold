@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.trading_v3_fixtures import binance_capability, binance_catalog
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.app.workers.wiring.news_to_trading import (
@@ -41,9 +42,7 @@ from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
-from tracefold.trading.capabilities import ExecutionCapabilitySnapshotV1, ExecutionInstrumentCapabilityV1
 from tracefold.trading.capital_lane import BAR_INTERVAL_MS, CapitalLane, CapitalLaneConfig
-from tracefold.trading.catalog import VenueInstrumentCatalogEntryV1, build_venue_catalog_snapshot
 from tracefold.trading.contracts import Bar, CaseState
 
 pytestmark = pytest.mark.integration
@@ -61,50 +60,8 @@ OI_SYMBOL = "SOL"
 # `BTC` and `ETH` are. A frame that misses any of them stops earlier with a named reason, which is a
 # real outcome but not the one this module is about.
 OI_TITLE = f"{OI_SYMBOL} OI Rise 7.20%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
-CAPABILITY_SNAPSHOT = ExecutionCapabilitySnapshotV1(
-    app_revision="seam-revision",
-    app_image_digest="seam-image",
-    nautilus_wheel_identity="seam-wheel",
-    news_universe_digest="a" * 64,
-    provider_universe_digest="b" * 64,
-    included={
-        f"{OI_SYMBOL}USDT-PERP.BINANCE": ExecutionInstrumentCapabilityV1(
-            instrument_id=f"{OI_SYMBOL}USDT-PERP.BINANCE",
-            native_symbol=f"{OI_SYMBOL}USDT",
-            underlying_key=f"crypto:{OI_SYMBOL}",
-            quote_currency="USDT",
-            price_precision=2,
-            size_precision=3,
-            price_increment="0.01",
-            size_increment="0.001",
-            min_quantity="0.001",
-            min_notional="5",
-        )
-    },
-    excluded={},
-)
-CATALOG_SNAPSHOT = build_venue_catalog_snapshot(
-    binding="BINANCE_USDM",
-    captured_at_ms=NOW,
-    stale_after_ms=86_400_000,
-    instruments=(
-        VenueInstrumentCatalogEntryV1(
-            provider_instrument_id=f"{OI_SYMBOL}USDT",
-            provider_symbol=f"{OI_SYMBOL}USDT",
-            venue="binance.usdm",
-            canonical_asset=OI_SYMBOL,
-            canonical_namespace="crypto",
-            product_kind="linear_perpetual",
-            active=True,
-            settlement_asset="USDT",
-            margin_asset="USDT",
-            price_increment="0.01",
-            size_increment="0.001",
-            min_quantity="0.001",
-            raw_metadata_sha256="1" * 64,
-        ),
-    ),
-)
+CATALOG_SNAPSHOT = binance_catalog(captured_at_ms=NOW, symbol=f"{OI_SYMBOL}USDT")
+CAPABILITY_SNAPSHOT = binance_capability(catalog=CATALOG_SNAPSHOT, app_revision="seam-revision")
 
 
 class RecordingBus:
@@ -163,15 +120,13 @@ class TradingDatabase:
 def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
     repos = repositories_for_connection(connection)
-    # Activating a capability snapshot requires a fresh zero-exposure proof (#286): the runtime has to
-    # have seen a flat account since the snapshot it is replacing, or the activation refuses.
+    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = false, nautilus_unexpected_exposure = false,"
-        " nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
+        "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', updated_at_ms = %s "
+        "WHERE binding = 'BINANCE_USDM'",
         (NOW,),
     )
     assert repos.trading.append_and_activate_execution_capability_snapshot(CAPABILITY_SNAPSHOT, created_at_ms=NOW)
-    repos.trading.store_venue_catalog_snapshot(snapshot=CATALOG_SNAPSHOT, now_ms=NOW)
     # The Workers startup barrier appoints the running Agent and opens its evidence epoch. The trade
     # projection joins that appointment rather than the newest epoch row, so without this the SQL is
     # correct and returns nothing, which is exactly the shape of failure worth not mistaking for a bug.
@@ -210,11 +165,9 @@ def clean(conn: Any):
     conn.execute(
         """
         UPDATE trading_runtime_state
-           SET control = 'RUNNING', nautilus_ready = false, nautilus_unexpected_exposure = false,
-               active_capability_snapshot_sha256 = %s, active_capability_included_count = %s
+           SET control = 'RUNNING', nautilus_ready = false, nautilus_unexpected_exposure = false
          WHERE id = 1
-        """,
-        (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
+        """
     )
     conn.execute(
         """
@@ -324,7 +277,7 @@ def test_a_news_oi_frame_becomes_one_blocked_case_with_a_policy_long_and_no_inte
     conn = clean
     _judge_an_oi_frame(conn)
 
-    async def _bars(_symbol: str, start: int, end: int) -> list[Bar]:
+    async def _bars(_instrument: Any, start: int, end: int) -> list[Bar]:
         """A flat public-candle series over the window the lane asks for.
 
         The public REST candle catalogue is faked, and only that. It is not the risk boundary this

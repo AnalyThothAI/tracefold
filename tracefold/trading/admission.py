@@ -5,18 +5,17 @@ in News's SELECT, the floor again inside the strategy, the venue check in two pl
 `oi_rows = 0` unanswerable: a frame filtered out upstream and a frame that never existed were the same
 absence.
 
-**One trigger kind, one live venue (#331).** The live trigger is a Binance OI frame. A Hyperliquid frame
-is a legitimate research source with no capital authority, and it is answered here — `RESEARCH_ONLY`,
-before any Case exists — rather than being carried through routing, bar fetching, freezing and a policy
-run only to be refused by the Intent writer as `intent_instrument_not_allowed`. Editorial News frames
-are not admitted at all: they are not a Source of this lane and no code path offers one.
+**One trigger kind, two closed source-native bindings (#376).** A Binance OI frame binds only to
+`BINANCE_USDM`; a Hyperliquid OI frame binds only to `HYPERLIQUID_PERP`. Unknown venues fail before a
+Case exists, and there is no cross-venue fallback. Editorial News frames are not admitted at all: they
+are not a Source of this lane and no code path offers one.
 
 **What this module owns** is whether a Source may become a *trigger* now:
 
     source          the row is a usable, current-generation, live OI fact at all
-    venue           the frame's own venue carries live capital authority
+    venue           the frame's own venue resolves to exactly one closed binding
     eligibility     liquidity floor, blacklist, freshness, idempotency, one live thesis per underlying
-    catalog         the public Binance USD-M snapshot names an exact instrument for this issuer
+    catalog         that binding's public snapshot names an exact provider-native instrument
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
 
@@ -38,15 +37,9 @@ from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypedDict
 
+from .bindings import BINDING_VENUE, binding_for_source_venue
 from .blacklist import Blacklist
-from .contracts import (
-    LIVE_EXCHANGE_ID,
-    OiTradeCandidate,
-    TriggerKind,
-    canonical_sha256,
-    underlying_key,
-)
-from .routing import signal_exchange_id
+from .contracts import OiTradeCandidate, TriggerKind, canonical_sha256, underlying_key
 from .sources import SourceRejected
 
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
@@ -54,7 +47,7 @@ from .sources import SourceRejected
 # v4 is #350: credential-free public catalogue truth replaces execution capability at Decision freeze.
 ADMISSION_VERSION: Final = "trading_admission_v4"
 
-AdmissionStatus = Literal["DEFERRED", "REJECTED", "RESEARCH_ONLY", "CASE_CREATED", "EXPIRED"]
+AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
 
 # The closed vocabulary. A reason outside this set is a bug, not a new rule: the read model aggregates
@@ -64,10 +57,8 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "source_contract_invalid",
         "source_generation_mismatch",
         "source_not_live",
-        # A real market fact from a venue this lane may study but never trade (#331). Terminal, and not
-        # a rejection: nothing about the frame is wrong, and calling it one would make the research
-        # corpus read as a stream of failures.
-        "research_only_venue",
+        # An unknown source venue has no closed execution binding. Terminal and explicit; fallback to
+        # another venue would silently change the fact being evaluated.
         "venue_unresolved",
         "trigger_stale",
         "oi_value_below_floor",
@@ -113,8 +104,8 @@ class AdmissionConfig:
     of what the previous threshold decided — it starts a new record — which is the difference between a
     ledger and a mutable status field.
 
-    No `venue_priority`: there is one live venue and it is code-owned. An operator list that could
-    admit a second one would be a capital authority in a settings file.
+    No `venue_priority`: source venue selects one code-owned binding. An operator priority list would
+    authorize cross-venue fallback in a settings file.
     """
 
     max_age_ms: int = 300_000
@@ -125,7 +116,7 @@ class AdmissionConfig:
         return {
             "max_age_ms": self.max_age_ms,
             "min_oi_value_usd": self.min_oi_value_usd,
-            "live_exchange_id": LIVE_EXCHANGE_ID,
+            "source_native_bindings": dict(BINDING_VENUE),
         }
 
     @property
@@ -267,23 +258,14 @@ def admit_venue(candidate: OiTradeCandidate) -> AdmissionResult | None:
     research rather than discarded.
     """
 
-    exchange = signal_exchange_id(candidate.venue)
-    if exchange is None:
+    binding = binding_for_source_venue(candidate.venue)
+    if binding is None:
         return _result(
             candidate=candidate,
             status="REJECTED",
             stage="venue",
             reason="venue_unresolved",
             retryable=False,
-        )
-    if exchange != LIVE_EXCHANGE_ID:
-        return _result(
-            candidate=candidate,
-            status="RESEARCH_ONLY",
-            stage="venue",
-            reason="research_only_venue",
-            retryable=False,
-            evidence={"live_exchange_id": LIVE_EXCHANGE_ID},
         )
     return None
 

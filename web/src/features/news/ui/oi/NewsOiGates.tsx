@@ -62,8 +62,8 @@ export function NewsOiGates({
         className="news-oi-policy-trading"
         hint={
           gateUnread
-            ? "BINANCE_USDM_DEMO · 准入规则未读到"
-            : `BINANCE_USDM_DEMO · ${gate?.version ?? "—"} · Alpha 阈值随案例冻结，在资本判定`
+            ? "SOURCE_NATIVE · 准入规则未读到"
+            : `SOURCE_NATIVE · ${gate?.version ?? "—"} · Alpha 阈值随案例冻结，在资本判定`
         }
         title="准入闸 · TRADING"
       >
@@ -71,16 +71,16 @@ export function NewsOiGates({
         <PolicyTile label="帧时效" value={gate ? compactDuration(gate.max_age_ms) : "—"} />
         <PolicyTile
           /*
-           * One live venue, code-owned (#331). Everything else is `RESEARCH_ONLY`: a real market fact
-           * this lane may study and never trade, and the frame table says so per row.
+           * #376: source venue selects one code-owned execution binding. There is no venue priority
+           * and no cross-venue fallback. `RESEARCH_ONLY` remains only on historical ledger rows.
            *
            * The rank ceiling and the per-symbol cooldown used to sit in this panel and are gone with
            * the gates themselves (#348) — a panel naming a threshold nothing enforces is worse than
            * a shorter panel.
            */
-          label="资本场所"
-          note="其余仅研究"
-          value={gate?.live_exchange_id ?? "—"}
+          label="来源绑定"
+          note="按来源分区 · 禁止跨场所回退"
+          value={sourceBindingLabel(gate?.source_native_bindings)}
         />
       </PolicyPanel>
     </>
@@ -132,4 +132,12 @@ function compactDuration(value: number | null | undefined): string {
 
 function gateCount(value: number | undefined): string {
   return formatCount(value ?? 0);
+}
+
+function sourceBindingLabel(bindings: Record<string, string> | undefined): string {
+  if (!bindings) return "—";
+  const entries = Object.entries(bindings).sort(([left], [right]) => left.localeCompare(right));
+  return entries.length
+    ? entries.map(([binding, venue]) => `${venue} → ${binding}`).join(" · ")
+    : "—";
 }

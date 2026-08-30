@@ -1,4 +1,4 @@
-"""The one supported Nautilus/Binance runtime shape for #283."""
+"""The closed Nautilus/Binance USD-M mainnet runtime shape for Production V3."""
 
 from __future__ import annotations
 
@@ -81,14 +81,14 @@ def build_node_config(
     api_secret: str,
     instrument_ids: Sequence[InstrumentId],
 ) -> TradingNodeConfig:
-    """Build the exact public-v1 Demo node configuration from one frozen snapshot."""
+    """Build the exact Binance USD-M mainnet node from one active binding snapshot."""
 
     ids = frozenset(instrument_ids)
     provider = BinanceInstrumentProviderConfig(
         load_ids=ids,
         # The adapter already derives the account fee tier once. Per-symbol
         # commission reads multiply startup I/O by the whole cold universe and
-        # can exhaust Binance Demo's request budget before the node connects.
+        # can exhaust the provider request budget before the node connects.
         query_commission_rates=False,
     )
     return TradingNodeConfig(
@@ -108,7 +108,7 @@ def build_node_config(
                 api_key=api_key,
                 api_secret=api_secret,
                 account_type=BinanceAccountType.USDT_FUTURES,
-                environment=BinanceEnvironment.DEMO,
+                environment=BinanceEnvironment.LIVE,
                 instrument_provider=provider,
             )
         },
@@ -117,7 +117,7 @@ def build_node_config(
                 api_key=api_key,
                 api_secret=api_secret,
                 account_type=BinanceAccountType.USDT_FUTURES,
-                environment=BinanceEnvironment.DEMO,
+                environment=BinanceEnvironment.LIVE,
                 instrument_provider=provider,
                 use_reduce_only=True,
                 futures_leverages={BinanceSymbol(item.symbol.value.removesuffix("-PERP")): 1 for item in ids},

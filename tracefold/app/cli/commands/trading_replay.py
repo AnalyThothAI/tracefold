@@ -78,7 +78,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
             repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
         with repositories(settings, role="serve") as repos, repos.transaction():
             repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
-            snapshot, blacklist = repos.trading.replay_authority_snapshot(now_ms=now_ms)
+            snapshot, blacklist = repos.trading.replay_authority_snapshot(binding="BINANCE_USDM", now_ms=now_ms)
             fact_rows = repos.news.trade_candidate_oi_rows(
                 metric_version=NEWS_OI_METRIC_VERSION,
                 after_created_at_ms=start_ms,

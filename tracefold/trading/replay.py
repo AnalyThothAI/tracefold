@@ -13,7 +13,7 @@ from typing import Any, Final, Literal, Protocol, Self, cast
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .blacklist import BlacklistSnapshotV1
-from .capabilities import ExecutionCapabilitySnapshotV1, capability_instrument_id
+from .capabilities import ExecutionCapabilitySnapshotV2
 from .contracts import (
     Bar,
     FrozenMarketContext,
@@ -381,7 +381,7 @@ def plan_replay_scenarios(
             immediate.append(unresolved_replay_instrument(planned, policy=policy))
             continue
         replay_id = (
-            capability_instrument_id(instrument.provider_symbol)
+            f"{instrument.provider_symbol}-PERP.BINANCE"
             if planned.venue == "binance.perp"
             else f"{instrument.provider_symbol}-PERP.HYPERLIQUID"
         )
@@ -417,7 +417,7 @@ def evaluate_replay_market_slices(
     slices: list[ReplayMarketSlice],
     *,
     policy: CapitalPolicy,
-    snapshot: ExecutionCapabilitySnapshotV1,
+    snapshot: ExecutionCapabilitySnapshotV2,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
     price_window: PriceWindow,
@@ -441,7 +441,7 @@ def _market_outcome(
     item: ReplayMarketSlice,
     *,
     policy: CapitalPolicy,
-    snapshot: ExecutionCapabilitySnapshotV1,
+    snapshot: ExecutionCapabilitySnapshotV2,
     blacklist: BlacklistSnapshotV1,
     run_episode: BarEpisodeRunner,
     price_window: PriceWindow,
@@ -556,14 +556,15 @@ def _market_missing(
 
 def _capital_admission(
     plan: DirectionalReplayPlan,
-    snapshot: ExecutionCapabilitySnapshotV1,
+    snapshot: ExecutionCapabilitySnapshotV2,
     blacklist: BlacklistSnapshotV1,
 ) -> tuple[Literal["ELIGIBLE", "DENIED", "NOT_APPLICABLE"], str | None]:
-    if plan.venue != "binance.perp":
-        return "NOT_APPLICABLE", "research_only_venue"
+    expected_venue = "binance.usdm" if plan.venue == "binance.perp" else "hyperliquid.perp"
+    if snapshot.venue != expected_venue:
+        return "NOT_APPLICABLE", "capability_binding_unavailable"
     if any(row.underlying_key == underlying_key(plan.source.base_symbol) for row in blacklist.active_rows):
         return "DENIED", "blacklisted"
-    capability = snapshot.included.get(plan.instrument_id)
+    capability = snapshot.capability_for_instrument(plan.instrument_id)
     if capability is None or capability.underlying_key != underlying_key(plan.source.base_symbol):
         return "DENIED", "instrument_not_in_capability_snapshot"
     return "ELIGIBLE", None
@@ -572,9 +573,9 @@ def _capital_admission(
 def _scenario_capability(
     plan: DirectionalReplayPlan,
     bars: list[ReplayBarV1],
-    snapshot: ExecutionCapabilitySnapshotV1,
+    snapshot: ExecutionCapabilitySnapshotV2,
 ) -> ReplayScenarioCapabilityV1:
-    capital = snapshot.included.get(plan.instrument_id)
+    capital = snapshot.capability_for_instrument(plan.instrument_id)
     if capital is not None:
         price_precision = capital.price_precision
         size_precision = capital.size_precision
@@ -582,7 +583,7 @@ def _scenario_capability(
         size_increment = Decimal(capital.size_increment)
         min_quantity = None if capital.min_quantity is None else Decimal(capital.min_quantity)
         min_notional = None if capital.min_notional is None else Decimal(capital.min_notional)
-        quote_currency = capital.quote_currency
+        quote_currency = capital.settlement_asset
         provenance: Literal["execution_capability_snapshot", "bar_model"] = "execution_capability_snapshot"
     else:
         price_precision = min(

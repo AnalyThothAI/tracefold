@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from tracefold.app.workers.wiring.execution_capabilities import ExecutionCapabilityCompiler
 from tracefold.app.workers.wiring.trading import (
     CAPITAL_LANE_TASK_NAME,
     VENUE_CATALOG_TASK_NAME,
@@ -28,6 +29,7 @@ def worker_business_runners(
     news_pipeline: NewsPipeline | None,
     capital_lane: CapitalLane | None,
     venue_catalog: VenueCatalog | None = None,
+    execution_capability_compiler: ExecutionCapabilityCompiler | None = None,
     telemetry: Any | None = None,
 ) -> tuple[WorkerRunner, ...]:
     """Return the ordered task declarations consumed by the Workers root.
@@ -52,7 +54,11 @@ def worker_business_runners(
         runners.append(
             (
                 VENUE_CATALOG_TASK_NAME,
-                lambda stop: run_venue_catalog(catalog, stop_event=stop),
+                lambda stop: run_venue_catalog(
+                    catalog,
+                    stop_event=stop,
+                    capability_compiler=execution_capability_compiler,
+                ),
             )
         )
     return tuple(runners)

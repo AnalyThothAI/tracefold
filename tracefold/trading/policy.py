@@ -1,4 +1,4 @@
-"""The one production capital policy: `binance_oi_smart_money_long_v2`.
+"""The one production capital policy: `source_native_oi_smart_money_long_v3`.
 
 Pure, deterministic, long-only, and the whole of what decides a Case. It answers `long` or `no_trade`
 and nothing else — no permission, no execution environment, no venue. Capital authority is the lane's
@@ -6,7 +6,7 @@ and the durable capability snapshot's; a strategy string was never the place to 
 
 **Why a new identity rather than a retuned `oi_smart_money_momentum_v1` (#331).** The arithmetic is
 carried over unchanged, deliberately: this hard cut is not the place to move a threshold. What changed
-is everything around it — the trigger is Binance-only, the manifest lost the quadrant and the News
+is everything around it — the trigger is provider-native, the manifest lost the quadrant and the News
 counterpart, the config lost `allow_short`, and the decision now carries frozen per-check evidence. A
 Case decided under the old identity cannot be replayed under this code, and reusing the id would make
 every one of production's 153 historical rows claim rules they were never decided by. The old decoder
@@ -35,7 +35,7 @@ pre-move this rule reads: 1-3% returned +1.27% at 4 h, 3-6% returned +0.80%, and
 -0.77% on N=151, with a median 1 h MAE of -3.35%**. The ceiling admits the bottom half of that
 measured-negative bucket. Two things make it a decision an operator may take: the measurement is over
 the *whole* corpus and whether the three smart-money conditions change its sign inside their own
-cohort is unmeasured; and the lane risks Demo capital only.
+cohort is unmeasured; and the lane can request capital only through the Production V3 authority.
 
 **Inclusivity is in the field names and it is not negotiable.** `min_` reads `>=` and the two `above`
 conditions read `>`: `500` qualifies and `499` does not; `5001` qualifies and `5000` does not; `1`
@@ -59,7 +59,7 @@ from .contracts import (
     canonical_sha256,
 )
 
-CAPITAL_POLICY_ID: Final = "binance_oi_smart_money_long_v2"
+CAPITAL_POLICY_ID: Final = "source_native_oi_smart_money_long_v3"
 
 
 @dataclass(frozen=True, slots=True)

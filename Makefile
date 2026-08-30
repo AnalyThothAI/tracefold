@@ -201,6 +201,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff format --check .
 	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
+	@uv run python scripts/regen_trading_contract_receipt.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
 	@uv run python -m compileall tracefold tests
@@ -213,7 +214,7 @@ test-integration: ## run only tests/integration/ (real PostgreSQL boundary), exc
 
 trading-smoke: ## Decision/Capital no-key plus retained Intent evidence on real PostgreSQL (#350)
 	@echo "This focused lane proves no-key binding projection, Policy/Capital attribution, and retained Intent evidence."
-	@echo "It does not contact Binance Demo and is not a substitute for the complete verification entry."
+	@echo "It does not contact a venue and is not a substitute for the complete verification entry."
 	@uv run python -m pytest tests/integration/test_trading_intents.py tests/integration/test_trading_binding_projection.py -m integration
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
@@ -304,7 +305,7 @@ trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutove
 			exit 1; \
 		fi; \
 		curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { \
-			echo "Hard cut requires Nautilus readiness to prove the Demo venue is authoritative flat." >&2; \
+			echo "Hard cut requires Nautilus readiness to prove the bound account is authoritative flat." >&2; \
 			exit 1; \
 		}; \
 		cut_state=$$(docker compose exec -T postgres sh -eu -c \
@@ -378,7 +379,9 @@ _trading-hard-cut-preflight-if-needed:
 			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
 				make --no-print-directory trading-hard-cut-preflight ;; \
 			20260829_0328\|t\|t) make --no-print-directory _trading-intent-quote-preflight ;; \
-			20260829_0329\|t\|t|20260830_0330\|t\|t) echo "Trading hard cuts are already present." ;; \
+			20260829_0329\|t\|t) echo "Trading hard cuts are already present at database head 20260829_0329." ;; \
+			20260830_0330\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
+			20260830_0331\|t\|t) echo "Trading Production V3 hard cut is already present at database head 20260830_0331." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac

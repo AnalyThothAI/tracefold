@@ -52,9 +52,15 @@ class TradingBindingRuntimeData(ExactApiSchema):
     credential_fingerprint: str | None = None
     runtime_state: Literal["stopped", "starting", "ready", "stale", "faulted"]
     account_state: Literal["unknown", "reconciled_flat", "exposure_present"]
+    account_generation: int = Field(ge=0)
     catalog_state: Literal["missing", "ready", "stale", "error"]
     catalog_snapshot_sha256: str | None = None
     catalog_captured_at_ms: int | None = None
+    capability_state: Literal["missing", "ready", "stale", "error"]
+    capability_snapshot_sha256: str | None = None
+    capability_compiled_at_ms: int | None = None
+    capability_compile_error: str | None = None
+    execution_binding_sha256: str | None = None
     heartbeat_at_ms: int | None = None
     reason: str | None = None
 
@@ -129,7 +135,7 @@ class TradingGateConfigData(ExactApiSchema):
     config_digest: str
     max_age_ms: int
     min_oi_value_usd: int
-    live_exchange_id: str
+    source_native_bindings: dict[str, str]
 
 
 class TradingGateDecisionData(ExactApiSchema):
@@ -232,18 +238,41 @@ class TradingCasesData(ExactApiSchema):
 # ---------------------------------------------------------------------------- Intent / Outcome
 class TradingIntentData(ExactApiSchema):
     intent_id: str
-    intent_version: Literal["trade_intent_v1", "trade_intent_v2"]
+    intent_version: Literal["trade_intent_v1", "trade_intent_v2", "trade_intent_v3"]
     case_id: str
     event_id: str | None = None
     underlying_key: str
     base_symbol: str
-    execution_environment: Literal["BINANCE_USDM_DEMO"]
+    execution_environment: Literal["BINANCE_USDM_DEMO"] | None = None
+    source_venue: Literal["binance.usdm", "hyperliquid.perp"] | None = None
+    source_identity: str | None = None
+    canonical_asset: str | None = None
+    binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"] | None = None
+    account_generation: int | None = None
+    execution_binding_sha256: str | None = None
+    venue_catalog_snapshot_sha256: str | None = None
     execution_capability_snapshot_sha256: str | None = None
+    capability_entry_id: str | None = None
+    provider_instrument_id: str | None = None
+    settlement_asset: str | None = None
+    intent_policy_sha256: str | None = None
+    execution_policy_sha256: str | None = None
+    quote_contract_sha256: str | None = None
+    protection_contract_sha256: str | None = None
+    capital_authorization_receipt_sha256: str | None = None
     blacklist_revision_at_emission: int | None = None
     blacklist_snapshot_sha256_at_emission: str | None = None
     instrument_id: str
     side: Literal["long"]
-    target_notional_usd: str
+    target_notional_usd: str | None = None
+    target_notional: str | None = None
+    max_risk_amount: str | None = None
+    risk_currency: str | None = None
+    leverage: int | None = None
+    economic_lifecycle_id: str | None = None
+    entry_leg_id: str | None = None
+    protection_leg_id: str | None = None
+    close_leg_id: str | None = None
     reference_price: str
     valid_until_ms: int
     execution_state: Literal["PENDING", "IN_FLIGHT", "OPEN_PROTECTED", "MANUAL_REVIEW", "TERMINAL"]

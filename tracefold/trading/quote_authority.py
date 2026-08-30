@@ -8,6 +8,7 @@ from typing import Annotated, Final, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .contracts import canonical_sha256
 from .execution_policy import entry_spread_bps
 
 MAX_RECEIVE_AGE_NS: Final = 2_000_000_000
@@ -15,6 +16,28 @@ MAX_EVENT_AGE_NS: Final = 3_000_000_000
 MAX_SOURCE_LATENCY_NS: Final = 1_000_000_000
 MAX_FUTURE_SKEW_NS: Final = 500_000_000
 _BPS: Final = Decimal(10_000)
+QUOTE_CONTRACT_VERSION: Final = "execution_quote_contract_v1"
+QUOTE_CONTRACT_SHA256: Final = canonical_sha256(
+    {
+        "version": QUOTE_CONTRACT_VERSION,
+        "max_receive_age_ns": MAX_RECEIVE_AGE_NS,
+        "max_event_age_ns": MAX_EVENT_AGE_NS,
+        "max_source_latency_ns": MAX_SOURCE_LATENCY_NS,
+        "max_future_skew_ns": MAX_FUTURE_SKEW_NS,
+        "side_price": {"long": "ask", "short": "bid"},
+        "q1": "freeze_quantity_and_quote_before_provider_write",
+        "q2": "revalidate_same_fenced_quantity_immediately_before_provider_write",
+    }
+)
+SUBMISSION_FENCE_VERSION: Final = "submission_fence_v1"
+SUBMISSION_FENCE_SHA256: Final = canonical_sha256(
+    {
+        "version": SUBMISSION_FENCE_VERSION,
+        "quote_contract_sha256": QUOTE_CONTRACT_SHA256,
+        "identity": "intent_scoped_client_order_id_plus_exact_quantity_plus_q1_evidence",
+        "provider_write_rule": "q2_accepts_same_fenced_quantity_then_one_write",
+    }
+)
 
 QuoteStage = Literal["Q1", "Q2"]
 ExecutionSide = Literal["buy", "sell"]
@@ -275,6 +298,10 @@ __all__ = [
     "MAX_FUTURE_SKEW_NS",
     "MAX_RECEIVE_AGE_NS",
     "MAX_SOURCE_LATENCY_NS",
+    "QUOTE_CONTRACT_SHA256",
+    "QUOTE_CONTRACT_VERSION",
+    "SUBMISSION_FENCE_SHA256",
+    "SUBMISSION_FENCE_VERSION",
     "EntryQuoteIntent",
     "ExecutionQuote",
     "ExecutionQuoteAuditV1",

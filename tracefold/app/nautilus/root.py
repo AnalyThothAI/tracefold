@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import signal
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
 from tracefold.app.repository_session import repositories
+from tracefold.app.trading_bindings import inspect_binding_credentials
 from tracefold.integrations.nautilus import (
     NAUTILUS_RELEASE,
     build_node_config,
@@ -47,6 +49,13 @@ from tracefold.integrations.nautilus.strategy import TracefoldNautilusStrategy
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
+from tracefold.trading import (
+    BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+    PROTECTION_CONTRACT_SHA256,
+    QUOTE_CONTRACT_SHA256,
+    ExecutionBindingV1,
+    canonical_sha256,
+)
 from tracefold.trading.intent import INTENT_POLICY_SHA256
 
 from .database import NAUTILUS_POLL_SECONDS, NautilusDatabaseBridge
@@ -59,11 +68,16 @@ _BOOTSTRAP_CAPABILITY_IDENTITY = "bootstrap-zero-claims-v1"
 
 
 def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> None:
-    """Build and run the capability-governed Binance Demo node until shutdown."""
+    """Build and run the capability-governed Binance mainnet node until shutdown."""
 
     api_key, api_secret = _read_credentials(settings)
     with repositories(settings, role="nautilus") as repos:
-        capability_snapshot = repos.trading.active_execution_capability_snapshot()
+        capability_snapshot = repos.trading.active_execution_capability_snapshot(binding="BINANCE_USDM")
+        binding_runtime = repos.trading.binding_runtime(
+            binding="BINANCE_USDM",
+            now_ms=int(time.time() * 1_000),
+        )
+        active_execution_binding = repos.trading.active_execution_binding(binding="BINANCE_USDM")
         if bootstrap_zero_claims:
             runtime = repos.trading.nautilus_runtime_state()
             if runtime is None or runtime.get("control") != "PAUSED":
@@ -71,9 +85,15 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             if repos.trading.active_intent() is not None:
                 raise RuntimeError("nautilus_bootstrap_requires_no_active_intent")
     capability_snapshot_sha256 = None if capability_snapshot is None else capability_snapshot.snapshot_sha256
+    pending_execution_binding = _pending_execution_binding(
+        settings=settings,
+        runtime=binding_runtime,
+        capability_snapshot=capability_snapshot,
+        active=active_execution_binding,
+    )
     bootstrap_mode = capability_snapshot is None or bootstrap_zero_claims
     if capability_snapshot is not None and not bootstrap_zero_claims:
-        capabilities = capability_snapshot.included
+        capabilities = {row.instrument_id: row for row in capability_snapshot.included.values()}
         capability_identity = capability_snapshot.snapshot_sha256
     else:
         capabilities = {}
@@ -95,6 +115,8 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
         bridge = NautilusDatabaseBridge(
             settings,
             queues,
+            binding="BINANCE_USDM",
+            pending_execution_binding=pending_execution_binding,
             capability_snapshot_sha256=capability_snapshot_sha256,
         )
         strategy = TracefoldNautilusStrategy(
@@ -299,11 +321,11 @@ def _read_credentials(settings: Settings) -> tuple[str, str]:
 def _engine_identity(settings: Settings, capability_snapshot_sha256: str) -> str:
     identity = runtime_identity()
     config_payload = {
-        "version": "nautilus_binance_demo_config_v1",
+        "version": "nautilus_binance_mainnet_config_v1",
         "release": NAUTILUS_RELEASE.version,
         "capability_snapshot_sha256": capability_snapshot_sha256,
         "poll_seconds": str(NAUTILUS_POLL_SECONDS),
-        "environment": "BINANCE_DEMO_USDT_FUTURES",
+        "environment": "BINANCE_LIVE_USDT_FUTURES",
         "cache": "memory",
         "reconciliation": True,
         "reconciliation_scope": "dedicated_account",
@@ -321,6 +343,53 @@ def _engine_identity(settings: Settings, capability_snapshot_sha256: str) -> str
         f"config@{config_sha256};"
         f"intent-policy@{INTENT_POLICY_SHA256}"
     )
+
+
+def _pending_execution_binding(
+    *,
+    settings: Settings,
+    runtime: Any,
+    capability_snapshot: Any,
+    active: ExecutionBindingV1 | None,
+) -> ExecutionBindingV1 | None:
+    if runtime is None or capability_snapshot is None:
+        return None
+    credential = next(fact for fact in inspect_binding_credentials(settings) if fact.binding == "BINANCE_USDM")
+    if (
+        credential.state != "configured"
+        or credential.fingerprint is None
+        or runtime.credential_fingerprint != credential.fingerprint
+        or runtime.account_generation < 1
+        or runtime.catalog_snapshot_sha256 != capability_snapshot.catalog_snapshot_sha256
+    ):
+        return None
+    value = ExecutionBindingV1(
+        binding="BINANCE_USDM",
+        venue="binance.usdm",
+        account_identity_sha256=canonical_sha256(
+            {
+                "identity_version": "credential_scoped_account_v1",
+                "binding": "BINANCE_USDM",
+                "credential_fingerprint": credential.fingerprint,
+            }
+        ),
+        account_generation=runtime.account_generation,
+        credential_fingerprint=credential.fingerprint,
+        catalog_snapshot_sha256=capability_snapshot.catalog_snapshot_sha256,
+        capability_snapshot_sha256=capability_snapshot.snapshot_sha256,
+        adapter_contract_sha256=BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+        quote_contract_sha256=QUOTE_CONTRACT_SHA256,
+        protection_contract_sha256=PROTECTION_CONTRACT_SHA256,
+        client_runtime_identity=(
+            f"nautilus-trader=={NAUTILUS_RELEASE.version};wheel={installed_nautilus_wheel_identity()}"
+        ),
+        created_at_ms=int(time.time() * 1_000),
+    )
+    if active is not None and active.model_dump(exclude={"created_at_ms"}) == value.model_dump(
+        exclude={"created_at_ms"}
+    ):
+        return None
+    return value
 
 
 def _schedule_venue_flat_proof(
@@ -432,7 +501,7 @@ async def _account_wide_venue_flat_report(
     node: TradingNode,
     request: VenueFlatProofRequested,
 ) -> tuple[int, bool]:
-    """Query one public client for every position and open order in the Demo account."""
+    """Query one public client for every position and open order in the bound account."""
 
     instrument_id = InstrumentId.from_str(request.instrument_id)
     closing_order = node.cache.order(ClientOrderId(request.closing_client_order_id))

@@ -100,7 +100,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0330`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0331`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -116,7 +116,8 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    routes retain the full venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
-   `execution_environment=BINANCE_USDM_DEMO`, exact instrument, current
+   each configured binding's exact account generation, catalog, capability and
+   execution binding; current
    heartbeat, `engine_ready=true`, and `unexpected_exposure=false`.
 7. Set control to `RUNNING`. The capital lane can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
@@ -818,13 +819,14 @@ second number to disagree with it.
 Start from `uv run tracefold trading status`:
 
 - `candidate_counts_24h` / `candidate_counts_7d` — how many source frames the
-  lane saw and what happened to them, by `DEFERRED | REJECTED | RESEARCH_ONLY |
-  CASE_CREATED | EXPIRED`. Counted on the frame's own observation time, so a
+  lane saw and what happened to them, by `DEFERRED | REJECTED | CASE_CREATED |
+  EXPIRED` for current writers. Counted on the frame's own observation time, so a
   runner restart that re-reads a backlog cannot move yesterday's frames into
-  today. `RESEARCH_ONLY` is a Hyperliquid frame: a real market fact this lane may
-  study and never trade, and not a refusal.
+  today. `RESEARCH_ONLY` can still appear while the 90-day ledger retains rows
+  written by the retired single-venue contract; current Hyperliquid frames use
+  their native binding.
 - `candidate_reasons_24h` — the same population by `stage:reason`. The stages run
-  `source -> venue -> eligibility -> capability -> market_context -> freeze`
+  `source -> venue -> eligibility -> catalog -> market_context -> freeze`
   (`routing` still appears on rows written before #331), and the reason
   vocabulary is closed; anything outside it is a bug, not a new rule.
 - `latest_source_at_ms` and `latest_gate_eligible_at_ms` sit on either side of

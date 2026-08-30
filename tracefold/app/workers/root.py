@@ -193,6 +193,7 @@ async def run_workers(settings: Settings) -> None:
                 news_pipeline=components.news_pipeline,
                 capital_lane=components.capital_lane,
                 venue_catalog=components.venue_catalog,
+                execution_capability_compiler=components.execution_capability_compiler,
                 telemetry=components.telemetry,
             ):
                 business_tasks.append(

@@ -10,9 +10,8 @@ deterministic stages is reported as `pending_market_context`, with its measureme
 operator can see the population the price rules would have judged rather than a number this module
 invented for them.
 
-**Both venues are in scope.** A Hyperliquid frame is `RESEARCH_ONLY` for capital and a perfectly good
-research subject; the split is recorded per fact, and nothing this module produces can be consumed by
-the live Intent writer.
+**Both closed venues are source-native.** Binance and Hyperliquid observations run the same rulebook
+while retaining their venue identity; an unresolved venue stays visible and cannot be rerouted.
 
 **It never proposes a threshold.** Survivor counts per rule are the point: they say which condition is
 binding. Reading a better number off the same seven days that produced the counts is how a lane ends up
@@ -230,8 +229,7 @@ def replay_oi_facts(
             continue
 
         venue = admit_venue(parsed)
-        # `routable` means "this venue may carry live capital". A `RESEARCH_ONLY` frame is still
-        # replayed in full; what it can never do is produce something the live Intent writer consumes.
+        # `routable` means the source names one of the two closed production bindings.
         routable = venue is None
         if meets_target_template(parsed, config=policy.config):
             report.target_cohort.append(_outcome(parsed, stage="target", reason="template", routable=routable))
@@ -240,13 +238,7 @@ def replay_oi_facts(
 
         # Same order as the lane: venue, then eligibility. `now_ms` is the fact's own observation time
         # so the freshness rule is satisfied by construction and cannot mask the rules under test.
-        #
-        # `research_only_venue` is the one venue answer that must not end the replay — a Hyperliquid
-        # frame is a real market fact this lane studies — but it must not skip eligibility either. When
-        # it did (`venue or admit_trigger(...)` short-circuits), the research cohort was scored under a
-        # laxer rulebook than the routable one: no OI-value floor and no blacklist. The two
-        # cohorts then answered different questions and the comparison between them meant nothing.
-        refused = None if venue is None or venue.reason == "research_only_venue" else venue
+        refused = venue
         if refused is None:
             refused = admit_trigger(parsed, now_ms=parsed.observed_at_ms, config=admission, blacklist=alpha_blacklist)
         if refused is not None:

@@ -1,0 +1,45 @@
+{
+  "adapter_contract_sha256": {
+    "BINANCE_USDM": "4065fecbc07203d4e10366ed31672566367c30c483481f6ac2f28067ba96c696",
+    "HYPERLIQUID_PERP": "a8dedd02203c0b8f5b8c52a7d05abbcd653a68320cfc3f4e70428f134dea6377"
+  },
+  "economic_leg_identity": "economic_leg_v1",
+  "economic_lifecycle_identity": "economic_lifecycle_v1",
+  "exact_execution_values": {
+    "bindings": [
+      "BINANCE_USDM",
+      "HYPERLIQUID_PERP"
+    ],
+    "global_active_lifecycle_ceiling": 1,
+    "leverage_ceiling": "1",
+    "max_entry_drift_bps": 25,
+    "max_holding_ms": 180000,
+    "max_spread_bps": 30,
+    "quantity_rule": "floor_to_binding_increment(target_notional/fresh_side_price)",
+    "side": "long",
+    "source_native": true,
+    "stop_loss_bps": 200,
+    "target_notional_ceiling": "10",
+    "ttl_ms": 60000,
+    "version": "trade_intent_policy_v4"
+  },
+  "execution_binding_schema_sha256": "2c2af4433061e7bdb55cb3cde27e65d96b4ae2a9137e38a188e0f10f5e7e4cdb",
+  "execution_capability_schema_sha256": "3ebd73205f9139e52d2c3884a1189e3a546a6406e8209fba91c8d92bf84fae00",
+  "execution_policy_sha256": "4fd031f8c52f761661ad3fa80e0965abe5531c36d10f9713baba4306d4436aa3",
+  "execution_policy_version": "trade_execution_policy_v1",
+  "intent_policy_sha256": "3dd0c0acaf97b8dbeada593625e8709802634b69fc36133fadfd8614a90d3c09",
+  "protection_contract_sha256": "4bc9eeea64bab2bf6754fec11981336b56470ee17bf2463abc2a7e1e181a023d",
+  "protection_contract_version": "native_reduce_only_protection_v1",
+  "quote_contract_sha256": "fe4c24d0043e20237c46ca2003da56c70c373e31906276a69303f210850c571c",
+  "quote_contract_version": "execution_quote_contract_v1",
+  "receipt_sha256": "870e1916cb1bc63dab8db9117869a7c1616c06246e3c4508006aae2a32879c95",
+  "receipt_version": "execution_policy_contract_receipt_v3",
+  "source_native_routing": {
+    "BINANCE_USDM": "binance.usdm",
+    "HYPERLIQUID_PERP": "hyperliquid.perp"
+  },
+  "submission_fence_sha256": "3e5ab6d4b63992ae17a8fb922b4c01873714e1a22135525e9787cb200adb8995",
+  "submission_fence_version": "submission_fence_v1",
+  "terminal": "EXECUTION_POLICY_CONTRACT_V3_SEALED",
+  "trade_intent_schema_sha256": "1d98ffce66709511b69ead11aefd33e004378046af1792381c44346192f38755"
+}

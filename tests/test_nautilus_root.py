@@ -81,11 +81,15 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
             supplied_settings: Settings,
             queues: object,
             *,
+            binding: str,
+            pending_execution_binding: object | None = None,
             capability_snapshot_sha256: str | None = "not-passed",
         ) -> None:
             calls.append("database")
             captured["bridge_settings"] = supplied_settings
             captured["queues"] = queues
+            captured["bridge_binding"] = binding
+            captured["pending_execution_binding"] = pending_execution_binding
             captured["bridge_capability_snapshot_sha256"] = capability_snapshot_sha256
 
         def start(self) -> None:
@@ -140,8 +144,12 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     )
     monkeypatch.setattr(root, "_install_signal_handlers", install_signal_handlers)
     frozen_snapshot = SimpleNamespace(
-        included={"SOLUSDT-PERP.BINANCE": object(), "BTCUSDT-PERP.BINANCE": object()},
+        included={
+            "sol": SimpleNamespace(instrument_id="SOLUSDT-PERP.BINANCE"),
+            "btc": SimpleNamespace(instrument_id="BTCUSDT-PERP.BINANCE"),
+        },
         snapshot_sha256="c" * 64,
+        catalog_snapshot_sha256="d" * 64,
     )
     capability_snapshot = None if snapshot_missing else frozen_snapshot
 
@@ -149,7 +157,9 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
             trading=SimpleNamespace(
-                active_execution_capability_snapshot=lambda: capability_snapshot,
+                active_execution_capability_snapshot=lambda *, binding: capability_snapshot,
+                binding_runtime=lambda *, binding, now_ms: None,
+                active_execution_binding=lambda *, binding: None,
                 nautilus_runtime_state=lambda: {"control": "PAUSED"},
                 active_intent=lambda: None,
             )
@@ -178,6 +188,8 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
         "instrument_ids": expected_instruments,
     }
     assert captured["bridge_settings"] is settings
+    assert captured["bridge_binding"] == "BINANCE_USDM"
+    assert captured["pending_execution_binding"] is None
     assert captured["bridge_capability_snapshot_sha256"] == (None if snapshot_missing else "c" * 64)
     data_name, data_factory = captured["data_factory"]  # type: ignore[misc]
     assert data_name == root.BINANCE
@@ -187,7 +199,11 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     assert isinstance(strategy_args, dict)
     assert strategy_args["queues"] is captured["queues"]
     assert strategy_args["instrument_ids"] == captured["node_config_args"]["instrument_ids"]
-    assert strategy_args["capabilities"] == ({} if snapshot_missing or forced_bootstrap else frozen_snapshot.included)
+    assert strategy_args["capabilities"] == (
+        {}
+        if snapshot_missing or forced_bootstrap
+        else {row.instrument_id: row for row in frozen_snapshot.included.values()}
+    )
     assert callable(strategy_args["request_venue_flat"])
     assert callable(strategy_args["request_startup_account_reconciliation"])
     assert captured["readiness"].__self__.__class__ is FakeBridge  # type: ignore[union-attr]
@@ -296,7 +312,12 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
             trading=SimpleNamespace(
-                active_execution_capability_snapshot=lambda: SimpleNamespace(snapshot_sha256="c" * 64),
+                active_execution_capability_snapshot=lambda *, binding: SimpleNamespace(
+                    snapshot_sha256="c" * 64,
+                    catalog_snapshot_sha256="d" * 64,
+                ),
+                binding_runtime=lambda *, binding, now_ms: None,
+                active_execution_binding=lambda *, binding: None,
                 nautilus_runtime_state=lambda: runtime,
                 active_intent=lambda: active_intent,
             )
