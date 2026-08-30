@@ -187,8 +187,7 @@ async def run_workers(settings: Settings) -> None:
             raise _FreshRuntimeRowExists("workers_runtime_fresh_row_exists")
 
         components = await _wire_components(settings=settings, db=db, finite=finite, telemetry=telemetry)
-        if components.news_pipeline is not None:
-            probe_state.runtime_manifest_sha = str(components.news_pipeline.triage.runtime_manifest["manifest_sha"])
+        probe_state.runtime_manifest_sha = components.runtime_manifest_sha
         server = _probe_server(probe_state=probe_state, telemetry=telemetry)
 
         async with asyncio.TaskGroup() as group:
