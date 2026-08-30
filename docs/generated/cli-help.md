@@ -331,10 +331,10 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-evaluate,optimize,run,freeze} ...
+                               {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-shadow,taxonomy-evaluate,optimize,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-evaluate,optimize,run,freeze}
+  {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-shadow,taxonomy-evaluate,optimize,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
     baseline            score the stable Program over accepted reviews (no
@@ -343,6 +343,8 @@ positional arguments:
                         Gold (writes a file, never the DB)
     taxonomy-register   register one frozen taxonomy shadow candidate before
                         opening its future holdout
+    taxonomy-shadow     run bounded taxonomy shadow cases and append terminal
+                        observations
     taxonomy-evaluate   seal a news_taxonomy_v1 evaluation over frozen
                         Gold/shadow cases
     optimize            run the one bounded GEPA optimization over a frozen
@@ -441,13 +443,23 @@ options:
 
 ```
 usage: tracefold news learning taxonomy-register [-h]
-                                                 --taxonomy-program-sha TAXONOMY_PROGRAM_SHA
-                                                 --taxonomy-model-binding-sha TAXONOMY_MODEL_BINDING_SHA
 
 options:
-  -h, --help            show this help message and exit
-  --taxonomy-program-sha TAXONOMY_PROGRAM_SHA
-  --taxonomy-model-binding-sha TAXONOMY_MODEL_BINDING_SHA
+  -h, --help  show this help message and exit
+
+```
+
+## `news learning taxonomy-shadow`
+
+```
+usage: tracefold news learning taxonomy-shadow [-h] --file FILE
+                                               [--limit LIMIT] --out OUT
+
+options:
+  -h, --help     show this help message and exit
+  --file FILE    JSON/YAML mapping with a cases array
+  --limit LIMIT
+  --out OUT      write the shadow artifact receipt JSON
 
 ```
 

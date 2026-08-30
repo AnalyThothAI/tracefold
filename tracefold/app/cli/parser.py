@@ -216,12 +216,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
-    learning_taxonomy_register = learning_subcommands.add_parser(
+    learning_subcommands.add_parser(
         "taxonomy-register",
         help="register one frozen taxonomy shadow candidate before opening its future holdout",
     )
-    learning_taxonomy_register.add_argument("--taxonomy-program-sha", required=True)
-    learning_taxonomy_register.add_argument("--taxonomy-model-binding-sha", required=True)
+    learning_taxonomy_shadow = learning_subcommands.add_parser(
+        "taxonomy-shadow",
+        help="run bounded taxonomy shadow cases and append terminal observations",
+    )
+    learning_taxonomy_shadow.add_argument("--file", required=True, help="JSON/YAML mapping with a cases array")
+    learning_taxonomy_shadow.add_argument("--limit", type=_positive_int, default=50)
+    learning_taxonomy_shadow.add_argument("--out", required=True, help="write the shadow artifact receipt JSON")
     learning_taxonomy = learning_subcommands.add_parser(
         "taxonomy-evaluate",
         help="seal a news_taxonomy_v1 evaluation over frozen Gold/shadow cases",

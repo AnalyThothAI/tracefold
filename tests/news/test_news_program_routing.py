@@ -277,6 +277,23 @@ def test_provider_failure_falls_back_and_restarts_from_event_semantics() -> None
     assert judgment.fallback_from == "news_program_lm_server"
 
 
+@pytest.mark.parametrize(
+    "error",
+    [AssertionError("assertion defect"), RuntimeError("runtime defect"), MemoryError("memory defect")],
+)
+def test_unknown_program_exception_propagates_without_fallback(error: BaseException) -> None:
+    artifact = build_code_owned_program_artifact()
+    primary = _route(artifact, route="primary", semantics=[error], cards=[])
+    fallback = _route(artifact, route="fallback", semantics=[_semantics()], cards=[_card()])
+    judge = RoutedSemanticJudge(NativeNewsProgram(artifact), primary=primary, fallback=fallback)
+
+    with pytest.raises(type(error)) as captured:
+        asyncio.run(judge.judge(_context()))
+
+    assert captured.value is error
+    assert fallback.event_semantics._delegate.requests == []
+
+
 def test_domain_invalid_semantics_fail_closed_without_novelty_default() -> None:
     artifact = build_code_owned_program_artifact()
     judge = RoutedSemanticJudge(

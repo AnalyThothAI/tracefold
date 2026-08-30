@@ -67,7 +67,8 @@ def test_the_seed_carries_the_reviewed_knowledge_rather_than_regenerating_it() -
 
     for marker in (
         "## news_taxonomy_v1",
-        "Code adds source_authority from provenance",
+        "Code adds source_authority only from the exact structured",
+        "strategy/provenance routing IDs confer no authority",
         "2: clearly tradable",
         "A product state change is magnitude 2, not a milestone",
         "a. The text says a level was crossed",

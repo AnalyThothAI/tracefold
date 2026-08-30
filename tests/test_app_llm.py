@@ -301,6 +301,8 @@ def test_unconfigured_news_program_has_a_stable_empty_runtime_identity() -> None
     assert composition.program_configured is False
     assert composition.semantic_judge(load_stable_program_artifact()) is None
     assert composition.progression_verifier() is None
+    with pytest.raises(ValueError, match="news_taxonomy_shadow_model_not_configured"):
+        composition.taxonomy_shadow_program()
     assert composition.secret_free_slot_identities() == {
         "event_semantics.primary": None,
         "reader_card.primary": None,
@@ -391,6 +393,42 @@ def test_news_runtime_composes_progression_review_from_the_event_model_endpoint(
     assert created[0]["model"] == "openai/triage-model"
     assert created[0]["max_tokens"] == 512
     assert created[0]["timeout"] == 12.0
+
+
+def test_news_runtime_composes_bounded_taxonomy_shadow_from_the_event_model_endpoint() -> None:
+    created: list[dict[str, Any]] = []
+
+    def scripted_factory(model: str, **kwargs: Any) -> ScriptedLM:
+        created.append({"model": model, **kwargs})
+        return ScriptedLM([], model=model)
+
+    settings = Settings.model_validate(
+        {
+            "llm": {
+                "api_key": "event-key",
+                "base_url": "https://triage.test/v1",
+                "news_triage_model": "triage-model",
+            }
+        }
+    )
+
+    program = learning_runtime.compose_news_program_runtime(settings).taxonomy_shadow_program(lm_type=scripted_factory)
+
+    assert program.model_binding == "taxonomy-shadow-v2"
+    assert len(program.shadow_program_sha256) == 64
+    assert len(program.model_binding_sha256) == 64
+    assert created == [
+        {
+            "model": "openai/triage-model",
+            "api_key": "event-key",
+            "api_base": "https://triage.test/v1",
+            "timeout": 20.0,
+            "max_tokens": 800,
+            "cache": False,
+            "num_retries": 0,
+            "temperature": 0.0,
+        }
+    ]
 
 
 def test_invalid_partial_news_program_configuration_keeps_the_empty_runtime_identity() -> None:

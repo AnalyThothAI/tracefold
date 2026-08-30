@@ -14,12 +14,15 @@ Schema deployment is not evidence that the classifier passed those gates.
 - Taxonomy version: `news_taxonomy_v1`.
 - IPTC Media Topics snapshot: `2026-01-05`, 35 reviewed qcodes.
 - Codebook SHA: `6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac`.
+- Source-authority classifier: `news_source_authority_v2`, registry SHA
+  `bf092263462f93c58f58adfb7e6fa02037dbdd83326fdc516690501773b55af8`.
 - Production Program: `news_semantic_program_v8`, Program SHA
-  `2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+  `404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc`.
 - Review contract: `news_review_v6`.
 - The model emits `subject_codes`, `event_family`, `change_state`, and
-  `assertion_status`. Code derives `source_authority` from structured source and
-  provenance. The exact allowlists live in `tracefold.news.taxonomy`; prose is
+  `assertion_status`. Code derives `source_authority` only from the structured
+  reporting-source field. Strategy/provenance routing IDs carry no source
+  authority. The exact allowlists live in `tracefold.news.taxonomy`; prose is
   not a second editable copy.
 
 The upstream references are [IPTC Media Topics](https://iptc.org/standards/media-topics/),
@@ -85,6 +88,14 @@ the underlying financial, product, corporate, or regulatory event.
 - `unknown`: no exact allowlist match. Fuzzy names and fan accounts never
   inherit authority from a substring.
 
+The classifier accepts only an exact normalized source name, an exact `@handle`,
+or the exact hostname returned by the standard HTTP(S) URL parser. It never
+splits arbitrary source text or consults strategy/provenance routing IDs. Values
+such as `fan:reuters`, `fake|sec`,
+`notreuters.com`, userinfo URLs, suffixes and unregistered subdomains therefore
+remain `unknown`. The classifier version and registry address are part of the
+Program execution envelope.
+
 ## Persistence and readers
 
 Model-origin `EditorialEnvelope.v2` requires a complete taxonomy and hashes it
@@ -111,14 +122,25 @@ critical cases require a different adjudicator before release eligibility.
 Connected fact clusters are the independent sample; provider duplicates fold to
 one representative.
 
-`TaxonomyShadowProgramV1` is a content-addressed, one-Predictor offline program.
+`TaxonomyShadowProgramV2` is a content-addressed, one-Predictor offline program.
 It uses the production-bounded evidence renderer and exact model identity, has
 `release_authority=false`, and can append only shadow/evaluation artifacts to
 the existing learning ledger. It cannot write an Event, verdict, card,
 delivery, canary, promotion, or Trading record.
 
-Before opening a future holdout, run `tracefold news learning taxonomy-register
---taxonomy-program-sha SHA --taxonomy-model-binding-sha SHA`. The command
+Each eligible case appends one terminal observation: `success`,
+`schema_invalid`, `provider_failure`, or `budget_deadline_failure`. The stock
+JSONAdapter may make one format-fallback call, so an observation contains an
+ordered one-or-two-call attempt ledger. Every physical attempt carries its
+request, invocation, terminal disposition and exact `RecordedLM` recording;
+first-invalid/second-success is replayable rather than discarded. Shadow,
+Evaluation and Release live in separate owner modules, with no forwarding
+compatibility surface.
+
+Before opening a future holdout, run `tracefold news learning
+taxonomy-register`. The command constructs the current Shadow Program from the
+operator-owned model configuration and computes its Program/model-binding
+addresses; those identities are not operator input. The command then
 derives the tested Git SHA from the content-addressed Workers deployment
 receipt already stored in PostgreSQL and also binds its active bundle, runtime
 manifest, image digest, candidate set, registration time, and runtime revision.
@@ -131,6 +153,13 @@ and appends a content-addressed `candidate_registration` containing the exact
 production Program/envelope/runtime/policy, taxonomy/codebook/Review/metric,
 shadow Program and model-binding identities. The model-binding SHA is over the
 shadow observation's exact `{model_identity, model_binding}` object.
+
+Run `tracefold news learning taxonomy-shadow --file CONTEXTS --limit N --out
+RECEIPTS` with that registration SHA and a bounded `cases` array of exact
+`TriageContext` documents. Registration/deployment verification occurs before
+and after model execution, while provider I/O occurs outside the PostgreSQL
+transaction. The final transaction writes only content-addressed
+`shadow_observation` learning artifacts parented by the registration.
 
 Then run `tracefold news learning taxonomy-evaluate --file CASES --out REPORT`
 over the frozen case document. The document references that registration SHA,
@@ -146,18 +175,21 @@ derives each outcome from those counts, rehashes the subdocument, and joins its
 release evidence, evaluation report, candidate, and dataset; a generic report
 PASS or file-declared PASS cannot stand in for a named gate. Case IDs, timing,
 slices, readiness roles and other denominators are projected from durable rows
-rather than trusted from the file. The verified Gold ledger root and shadow
-artifact addresses enter the population/split roots. Missing or non-PASS
-regression evidence prevents an overall PASS.
+rather than trusted from the file. The verified Gold ledger root, shadow
+artifact addresses and complete terminal/attempt population enter the
+population/split roots. Missing or non-PASS regression evidence prevents an
+overall PASS.
 
 `TaxonomyEvaluationReportV1` records those identities, confusion matrices,
 per-class and multilabel metrics, five-axis abstention risk-coverage,
 language/source/audience/scope slices, reviewer agreement, adjudication rate,
 absolute current quality gates, exact Stable/Candidate regression receipts and
-every data-readiness denominator. An unknown split, missing/mismatched durable candidate
-registration, forged Gold/shadow receipt, or holdout item at/before registration
-is rejected. Any incomplete denominator
-makes the quality gates and overall result `UNKNOWN`; only complete development
+every data-readiness denominator. An unknown split, missing/mismatched durable
+candidate registration, forged Gold receipt, or holdout item at/before
+registration is rejected. A missing or malformed Shadow observation, attempt,
+or recording remains in the eligible population and makes the schema and
+terminal gates plus overall result `UNKNOWN`; a fully observed invalid attempt
+is counted rather than coerced to zero. Only complete development
 and at least 24-hour post-registration future holdout evidence can produce PASS
 or FAIL.
 

@@ -14,15 +14,18 @@ from tracefold.news.learning.metric import (
 )
 from tracefold.news.learning.profile import TRUSTED_ROOT_SHA
 from tracefold.news.learning.taxonomy import (
-    TAXONOMY_EVALUATION_SCHEMA,
     TaxonomyCandidateRegistrationV1,
-    TaxonomyEvaluationContextV1,
-    build_taxonomy_evaluation_report,
     taxonomy_code_identity,
     verify_taxonomy_active_deployment,
     verify_taxonomy_candidate_registration,
     verify_taxonomy_regression_gates,
 )
+from tracefold.news.learning.taxonomy_evaluation import (
+    TAXONOMY_EVALUATION_SCHEMA,
+    TaxonomyEvaluationContextV1,
+    build_taxonomy_evaluation_report,
+)
+from tracefold.news.learning.taxonomy_shadow import TaxonomyShadowPopulationV1
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
@@ -273,6 +276,20 @@ def test_taxonomy_evaluation_appends_through_the_existing_learning_ledger() -> N
                     name: _gate_receipt(name, registration)
                     for name in ("production_action", "asset_grounding", "novelty", "trade_relevance")
                 },
+                shadow_population=TaxonomyShadowPopulationV1(
+                    eligible_case_n=1,
+                    observation_n=1,
+                    success_n=1,
+                    schema_invalid_n=0,
+                    provider_failure_n=0,
+                    budget_deadline_failure_n=0,
+                    missing_observation_n=0,
+                    invalid_observation_n=0,
+                    physical_attempt_n=1,
+                    recorded_attempt_n=1,
+                    schema_invalid_attempt_n=0,
+                    provider_failure_attempt_n=0,
+                ),
             ),
         )
         repos = repositories_for_connection(conn)

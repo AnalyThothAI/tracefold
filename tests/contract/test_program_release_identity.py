@@ -8,20 +8,25 @@ from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.metric import METRIC_ID
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
-from tracefold.news.program.identity import _material_symbol_ast_sha, compute_execution_identity, execution_envelope
+from tracefold.news.program.identity import (
+    _material_module_ast_sha,
+    _material_symbol_ast_sha,
+    compute_execution_identity,
+    execution_envelope,
+)
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "4d2080ec2b51f230a14509aad493aebdbaadd60329f841fa418134fc3b687702"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "2a3d7306a902b4f687c177bbb491dae6c60fb7ee67b188a7d597f84d805b228f"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9ac97cfde86426cc6be7c96d23e48d8ccd963b16790fe61ecea2c098af235f4e"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "2ef4c11bc55f2a425956ea40c2368fd6affa6f70be0810b469ebd5b06a1b3b71"
 
-NEWS_STABLE_PROGRAM_SHA256 = "2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71"
+NEWS_STABLE_PROGRAM_SHA256 = "404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -124,6 +129,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "lm.AuditedConfiguredLM",
         "lm.LMCallLedger",
         "lm.LMCallReceipt",
+        "lm.LMDelegateProgramError",
         "lm.RecordedLM",
         "lm.RuntimeModelIdentity",
         "lm._LedgerParseCallback",
@@ -161,7 +167,7 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "module._reader_card_semantic_view",
         "module._rejected",
         "module._relevance_normalizations",
-        "routing.RoutedSemanticJudge",
+        "routing.__module__",
         "signatures.EventSemantics",
         "signatures.ReaderCard",
         "taxonomy.ModelTaxonomyV1",
@@ -187,6 +193,13 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
         "trade_affected_market_order",
         "taxonomy",
     }
+    assert set(envelope["assembly"]["taxonomy"]) == {
+        "codebook_sha256",
+        "subject_codes",
+        "source_authority_classifier_version",
+        "source_authority_registry_sha256",
+        "source_authority_golden",
+    }
     assert set(envelope["route"]) == {
         "model_binding_slots",
         "order",
@@ -209,6 +222,44 @@ def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_
     expected = _material_symbol_ast_sha(base, module="fixture", symbol="material")
     assert _material_symbol_ast_sha(prose_and_unrelated, module="fixture", symbol="material") == expected
     assert _material_symbol_ast_sha(behavior, module="fixture", symbol="material") != expected
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        ("event_semantics: object", "event_semantics: str"),
+        ("self.retryable = retryable", "self.retryable = False"),
+        ("except Exception as exc:", "except RuntimeError as exc:"),
+        ("self._primary_failures += 1", "self._primary_failures += 2"),
+    ],
+)
+def test_routing_owner_module_identity_moves_for_transitive_behavior(mutation: tuple[str, str]) -> None:
+    source = """
+class RouteLMs:
+    event_semantics: object
+
+class _RouteFailure(Exception):
+    def __init__(self, retryable):
+        self.retryable = retryable
+
+class RoutedSemanticJudge:
+    def run(self):
+        try:
+            self.work()
+        except Exception as exc:
+            raise _RouteFailure(True) from exc
+
+    def breaker(self):
+        self._primary_failures += 1
+"""
+    before, after = mutation
+    mutated = source.replace(before, after)
+
+    assert mutated != source
+    assert _material_module_ast_sha(mutated, module="routing") != _material_module_ast_sha(
+        source,
+        module="routing",
+    )
 
 
 @pytest.mark.parametrize(
@@ -270,6 +321,10 @@ def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_
             id="restatement_index_rule",
         ),
         pytest.param(lambda e: e["assembly"]["trade_channel_order"].reverse(), id="trade_channel_order"),
+        pytest.param(
+            lambda e: e["assembly"]["taxonomy"].__setitem__("source_authority_registry_sha256", "0" * 64),
+            id="source_authority_registry",
+        ),
         # Found one level up from `_assemble`: this decides what is stored.
         pytest.param(
             lambda e: e["assembly"]["normalize_restates"].__setitem__("progression|restates=0", 0),

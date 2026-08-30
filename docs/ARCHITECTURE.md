@@ -366,6 +366,9 @@ tracefold.news
     objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
     optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
     evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
+    taxonomy_shadow.py  bounded 0-2-call taxonomy execution with ordered record/replay observations
+    taxonomy_evaluation.py  taxonomy metrics, complete-population denominators, and quality gates
+    taxonomy.py       taxonomy Gold/registration/deployment/release evidence verification only
     ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
@@ -954,8 +957,9 @@ intent `reader_value` (`escalate|realtime|background|none`). It has no separate
 model-authored `decision` or `actionable` field. Issue #117 also makes it emit
 the four model-owned axes of `news_taxonomy_v1`: at most three pinned IPTC
 subject qcodes, event family, change state and assertion status. The assembler
-derives the fifth axis, source authority, from structured provenance; the model
-cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
+derives the fifth axis, source authority, only from the exact structured
+reporting-source identity; strategy/provenance routing IDs confer no authority
+and the model cannot claim it. Taxonomy is persisted in `EditorialEnvelope.v2` but is not an
 input to Gate, `decide()`, ReaderCard, Delivery or Trading.
 For `new_fact` and `progression`, the normalizer discards any stray non-negative
 `restates` index and records the raw and normalized values on the originating
@@ -981,7 +985,7 @@ stack, with the code-owned seed text in `tracefold/news/program/seed.py`. Issue
 holds `schema_version` `news_program_strategy_artifact_v1` and one instruction
 per Predictor, and `program_sha256` is the canonical hash of exactly those
 three values. The stable root is
-`2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+`404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc`.
 Issue #117 changes the EventSemantics instruction and typed output while
 preserving the same two-Predictor graph and exact two-call common-success path.
 

@@ -21,6 +21,14 @@ from .signatures import EventSemantics, EventSemanticsSignature, ReaderCard, Rea
 type CandidateGuard = Callable[[str, str], str | None]
 
 
+class ProgramOutputError(ValueError):
+    """A declared model-output/domain rejection that routing may degrade."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
 class NativeProgramResult(dspy.Prediction):  # type: ignore[misc]
     """DSPy-compatible output consumed by both GEPA metrics and production routing."""
 
@@ -125,7 +133,7 @@ def _normalize_and_validate_semantics(
     except ValueError as exc:
         code = str(exc) if str(exc).startswith("news_program_") else "news_program_domain_validation_error"
         mark_active_domain_failure(code)
-        raise
+        raise ProgramOutputError(code) from exc
 
 
 def _assemble(
@@ -174,7 +182,7 @@ def _assemble(
     except ValueError as exc:
         code = str(exc) if str(exc).startswith("news_program_") else "news_program_domain_validation_error"
         mark_active_domain_failure(code)
-        raise
+        raise ProgramOutputError(code) from exc
 
 
 def _rejected(code: str) -> NativeProgramResult:
@@ -313,4 +321,4 @@ class NativeNewsProgram(dspy.Module):  # type: ignore[misc]
         )
 
 
-__all__ = ["CandidateGuard", "NativeNewsProgram", "NativeProgramResult"]
+__all__ = ["CandidateGuard", "NativeNewsProgram", "NativeProgramResult", "ProgramOutputError"]

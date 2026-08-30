@@ -842,10 +842,17 @@ those quality denominators exist, by operator sequencing decision. New ordinary
 News judgments therefore carry taxonomy immediately, while taxonomy quality
 stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
 registration derives its exact Git/image/bundle identity from the active
-Workers deployment receipt. `taxonomy-evaluate` then accepts only that
+Workers deployment receipt and computes the Shadow Program/model binding from
+operator configuration. Run bounded `taxonomy-shadow --file CONTEXTS --limit N
+--out RECEIPTS` batches next; each case records success, schema invalid,
+provider failure, or budget/deadline failure, with one or two ordered replayable
+physical attempts. Provider I/O is outside the database transaction, and the
+command writes only append-only learning artifacts. `taxonomy-evaluate` then accepts only that
 PostgreSQL-clock registration, database-verified current regression evidence,
 accepted Review v6 Gold and replayable shadow artifacts, and still requires
-complete development and post-registration holdout denominators. Do not use taxonomy to alter Gate,
+complete observation/attempt/recording, development and post-registration
+holdout denominators. Missing Shadow evidence is `UNKNOWN`, never an empty-set
+PASS. Do not use taxonomy to alter Gate,
 delivery or Trading, and do not describe schema deployment as a model-quality PASS.
 The immediate cost is the normal 1 -> 2 provider-call increase. The intended
 future benefit is per-Predictor feedback, demonstrations, routing and

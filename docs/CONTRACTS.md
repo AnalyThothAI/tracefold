@@ -641,7 +641,8 @@ The sibling `news_taxonomy_v1` is a fact projection, not delivery intent:
 - `change_state`: `announced|scheduled|effective|reported|updated|delayed|cancelled|recalled|unknown`;
 - `assertion_status`: `confirmed|claimed|rumor|conflicted|unknown`;
 - `source_authority`: `regulatory_filing|issuer_first_party|reputable_secondary|unknown`,
-  derived by code from structured source/provenance and absent from model output.
+  derived by code only from the structured reporting-source identity and absent
+  from model output; strategy/provenance routing IDs never confer authority.
 
 `other` and `unknown` are valid abstentions. Unknown qcodes, more than three
 qcodes, and a pinned parent together with one of its pinned descendants fail
@@ -710,7 +711,7 @@ image as `<program_sha256>.json` and selected by the code-owned registry. Since
 than an advisory appended to a rendered stack, and the reviewed seed text lives
 in `tracefold/news/program/seed.py`; #314 removed the `factory_id` field, since
 code identity is computed rather than declared. The stable root is
-`2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71`.
+`404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc`.
 That SHA is behavior identity only: it holds no parent lineage, optimization
 cost, trajectory or teacher endpoint, so two runs that reach the same two
 instructions produce the same Program. Lineage belongs to the candidate's
@@ -1451,18 +1452,28 @@ dataset or metric-v4 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `taxonomy-register`, `taxonomy-evaluate`, `optimize`, `freeze` — and none of them can ship anything.
+`draft-reviews`, `taxonomy-register`, `taxonomy-shadow`, `taxonomy-evaluate`,
+`optimize`, `freeze` — and none of them can ship anything.
 `taxonomy-register` seals the exact tested code, taxonomy shadow Program/model
 binding and active production identities at a PostgreSQL-clock timestamp before
 the future holdout opens. `tested_git_sha` is derived from the current
 content-addressed Workers deployment receipt, never accepted as operator input;
-an unversioned image/revision or mismatched active bundle is rejected.
+the Shadow Program/model binding is computed from current operator
+configuration, never accepted as operator input, and an unversioned
+image/revision or mismatched active bundle is rejected.
+`taxonomy-shadow --file CONTEXTS --limit N --out RECEIPTS` executes a bounded
+array of exact `TriageContext` cases outside a database transaction, revalidates
+the registration before its final append, and writes only `shadow_observation`
+learning artifacts. Each observation owns one or two ordered physical-call
+recordings and one explicit terminal outcome.
 `taxonomy-evaluate --file CASES --out REPORT` seals a cluster-deduplicated
 `TaxonomyEvaluationReportV1` and writes it through the existing append-only
 learning artifact ledger. The command accepts only database-verified Review v6
 Gold and exact replayable `shadow_observation` artifacts under that durable
 registration; it reports every preregistered denominator and gate. Insufficient
-development or future holdout evidence forces `UNKNOWN`. The four existing
+observation/attempt/recording, development or future holdout evidence forces
+`UNKNOWN`; a fully recorded schema-invalid attempt enters the invalid count
+instead of disappearing. The four existing
 regression gates are re-read from PostgreSQL release evidence and must bind one
 exact current candidate, dataset and metric; a file cannot declare their
 outcomes.
