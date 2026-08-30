@@ -25,11 +25,8 @@ def _sha(value: Any) -> str:
 
 
 def _call_cost_microusd(call: Mapping[str, Any]) -> int | None:
-    if call.get("provider_cost_microusd") is not None:
-        return int(call["provider_cost_microusd"])
-    if call.get("provider_cost_usd") is not None:
-        return round(float(call["provider_cost_usd"]) * 1_000_000)
-    return None
+    value = call.get("provider_cost_microusd")
+    return int(value) if value is not None else None
 
 
 def _program_metric(observation: Mapping[str, Any]) -> dict[str, int | None]:
@@ -41,8 +38,6 @@ def _program_metric(observation: Mapping[str, Any]) -> dict[str, int | None]:
     if total_tokens is None and (input_tokens is not None or output_tokens is not None):
         total_tokens = int(input_tokens or 0) + int(output_tokens or 0)
     cost_microusd = usage.get("provider_cost_microusd")
-    if cost_microusd is None and usage.get("provider_cost_usd") is not None:
-        cost_microusd = round(float(usage["provider_cost_usd"]) * 1_000_000)
     trace_entry_count = usage.get("call_count")
     physical_call_count = usage.get("physical_call_count")
     if physical_call_count is None:
@@ -161,7 +156,7 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
 
     trace = dict(row.get("trace") or {})
     verdict = dict(row.get("verdict") or {}) if row.get("verdict") else None
-    editorial = dict(row.get("editorial") or {}) if row.get("editorial") else None
+    editorial = dict(row.get("model_editorial") or {}) if row.get("model_editorial") else None
     error_code = str(row.get("verdict_error_code") or "") or None
     if verdict is None:
         error_code = error_code or "assigned_without_verdict"
@@ -259,13 +254,10 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
             verdict=TriageVerdict.model_validate(verdict),
             editorial=EditorialEnvelope.model_validate(editorial),
         )
-        if str(row.get("scored_judgment_sha256") or "") != scored.scored_judgment_sha256:
+        if str(row.get("judgment_sha256") or "") != scored.scored_judgment_sha256:
             raise ValueError("news_learning_observed_scored_judgment_identity_mismatch")
         scored_judgment = scored.model_dump(mode="json")
     provider_cost_microusd = trace.get("provider_cost_microusd")
-    if provider_cost_microusd is None and trace.get("provider_cost_usd") is not None:
-        # Historical prompt-era trace compatibility is read-only audit input.
-        provider_cost_microusd = round(float(trace["provider_cost_usd"]) * 1_000_000)
     usage = {
         "wall_latency_ms": trace.get("latency_ms"),
         "call_count": trace.get("model_attempts"),
@@ -277,8 +269,8 @@ def _observed_production_output(row: Mapping[str, Any]) -> dict[str, Any]:
         "provider_cost_microusd": provider_cost_microusd,
     }
     program = {
-        "program_version": row.get("program_version") or trace.get("program_version"),
-        "program_sha256": row.get("program_sha256") or trace.get("program_sha256"),
+        "program_version": row.get("program_version"),
+        "program_sha256": row.get("program_sha256"),
         "trace": program_trace,
         "calls": calls,
         "executions": executions,

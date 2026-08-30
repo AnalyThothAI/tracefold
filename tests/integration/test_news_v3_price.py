@@ -7,12 +7,13 @@ retention cascade, and the shape of the bounded review aggregates over the actua
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any
 
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.delivery import _quote_line
 from tracefold.news.market_review.instruments import Instrument
 from tracefold.news.market_review.pricing import (
@@ -21,6 +22,9 @@ from tracefold.news.market_review.pricing import (
     REACTION_METRIC_VERSION,
     Quote,
 )
+from tracefold.news.models import TriageVerdict
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
+from tracefold.news.triage_rules import DecisionResult, DegradedJudgment
 
 pytestmark = pytest.mark.integration
 
@@ -77,7 +81,6 @@ def _event(
     delivered: bool = True,
     degraded: bool = False,
     magnitude: int = 2,
-    event_type: str = "listing",
     ingest_mode: str = "live",
     admission: str = "candidate",
     event_kind: str = "news",
@@ -95,11 +98,15 @@ def _event(
     conn.execute(
         """
         INSERT INTO news_events (
-          event_id, leader_item_id, family, event_kind, comparison_fingerprint, comparison_title, leader_title,
-          focus_fact_id,
+          event_id, leader_item_id, dedupe_family, event_kind, comparison_fingerprint, comparison_title, leader_title,
+          focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start, focus_span_end,
           opened_at_ms, last_member_at_ms, expires_at_ms, admission, storyline_key, ingest_mode,
           created_at_ms, updated_at_ms
-        ) VALUES (%s, %s, 'general', %s, %s, 'c', 'leader headline', %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ) VALUES (
+          %s, %s, 'general', %s, %s, 'c', 'leader headline', %s,
+          'leader headline', '', 'whole_item', 0, 15,
+          %s, %s, %s, %s, %s, %s, %s, %s
+        )
         """,
         (
             event_id,
@@ -122,20 +129,84 @@ def _event(
             "INSERT INTO news_event_assets (symbol, event_id, market_type, opened_at_ms) VALUES (%s, %s, NULL, %s)",
             (symbol, event_id, opened_at_ms),
         )
-    verdict = {
-        "direction": direction,
-        "magnitude": magnitude,
-        "event_type": event_type,
-        "assets": [{"symbol": symbol, "role": "primary"} for symbol in symbols],
+    repos = repositories_for_connection(conn)
+    evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=opened_at_ms)
+    verdict = TriageVerdict(
+        novelty="new_fact",
+        assets=[{"symbol": symbol, "role": "primary"} for symbol in symbols],
+        direction=direction,
+        scope="single_name",
+        magnitude=magnitude,
+        confidence=1.0,
+        headline_zh="价格复盘测试",
+    )
+    decision_result = DecisionResult(
+        final=decision,
+        override_rule="recorded_fixture",
+        throttled_by=None,
+        rule_baseline=decision,
+    )
+    if degraded:
+        judgment = DegradedJudgment(
+            verdict=verdict,
+            decision=decision_result,
+            error_code="news_semantic_program_unconfigured",
+        )
+        origin = "degraded"
+        judgment_sha256 = judgment.judgment_sha256
+        model_editorial = None
+        model = None
+        error_code = judgment.error_code
+        trace_extra = {"judgment": judgment.judgment_atom}
+    else:
+        judgment = scored_judgment(verdict)
+        origin = "model"
+        judgment_sha256 = judgment.scored_judgment_sha256
+        model_editorial = judgment.editorial.model_dump(mode="json")
+        model = "test"
+        error_code = None
+        trace_extra = {"editorial_sha256": judgment.editorial.editorial_sha256}
+    runtime_manifest_sha = "b" * 64
+    program_sha256 = "a" * 64
+    trace = {
+        **trace_extra,
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": origin,
+        "judgment_sha256": judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": program_sha256,
+        "told": [],
+        "told_count": 0,
     }
-    conn.execute(
-        """
-        INSERT INTO news_verdicts (
-          event_id, stage, policy_version, rule_baseline_decision, final_decision, verdict, degraded,
-          created_at_ms
-        ) VALUES (%s, 'triage', 'v6', %s, %s, %s::jsonb, %s, %s)
-        """,
-        (event_id, decision, decision, _json(verdict), degraded, opened_at_ms),
+    repos.news.insert_verdict(
+        event_id=event_id,
+        stage="triage",
+        policy_version="news_triage_policy_v11",
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin=origin,
+        rule_baseline_decision=decision_result.rule_baseline,
+        final_decision=decision_result.final,
+        override_rule=decision_result.override_rule,
+        throttled_by=decision_result.throttled_by,
+        verdict=verdict.model_dump(mode="json"),
+        model_editorial=model_editorial,
+        judgment_sha256=judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
+        model=model,
+        program_version=SEMANTIC_PROGRAM_VERSION,
+        program_sha256=program_sha256,
+        degraded=degraded,
+        error_code=error_code,
+        trace=trace,
+        evidence_version=int(evidence["evidence_version"]),
+        evidence_sha256=str(evidence["evidence_sha256"]),
+        focus_fact_id=str(evidence["focus_fact_id"]),
+        now_ms=opened_at_ms,
     )
     if delivered:
         conn.execute(
@@ -147,12 +218,6 @@ def _event(
             (event_id, opened_at_ms, opened_at_ms, opened_at_ms),
         )
     conn.commit()
-
-
-def _json(value: Any) -> str:
-    import json
-
-    return json.dumps(value, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------- resolution

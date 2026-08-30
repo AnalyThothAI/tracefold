@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import ArmManifest
 from tracefold.news.learning.evaluate import CandidateEvaluator
@@ -22,7 +24,7 @@ from tracefold.news.told_context import TOLD_SELECTOR_SHA256
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 NOW_MS = 2_000_000_000_000
-FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v1.json"
+FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_reader_history_v2.json"
 DISCOVERY = (
     Path(__file__).resolve().parents[2] / "docs" / "research" / "news-reader-history-48h-snapshot-2026-08-24.json"
 )
@@ -47,7 +49,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
     evaluator = CandidateEvaluator(
         _Connection(),
         stable=ArmManifest(
-            program_version="news_semantic_program_v5",
+            program_version="news_semantic_program_v8",
             program_sha256="a" * 64,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             runtime_model_bindings_sha256="b" * 64,
@@ -65,8 +67,9 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
             magnitude=2,
             direction="bearish",
             headline_zh="recent",
+            why_zh="recent why",
             comparison_fingerprint="recent",
-            family="general",
+            dedupe_family="general",
             grounded_assets=("9988",),
             canonical_assets=("BABA",),
         ),
@@ -77,8 +80,9 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
             magnitude=2,
             direction="bearish",
             headline_zh="targeted",
+            why_zh="targeted why",
             comparison_fingerprint="same",
-            family="general",
+            dedupe_family="general",
             grounded_assets=("9988",),
             canonical_assets=("BABA",),
         ),
@@ -91,7 +95,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
         "leader_title": "same fact",
         "leader_description": "",
         "leader_published_at_ms": NOW_MS,
-        "family": "general",
+        "dedupe_family": "general",
         "comparison_title": "same fact",
         "comparison_fingerprint": "same",
         "storyline_key": "asset:BABA",
@@ -109,7 +113,7 @@ def test_evaluator_and_production_contexts_share_targeted_history_while_policy_s
     online_history = build_reader_history(
         [receipt.as_told_row() for receipt in receipts],
         now_ms=NOW_MS,
-        family="general",
+        dedupe_family="general",
         comparison_fingerprint="same",
         canonical_assets=("BABA",),
     )
@@ -136,14 +140,14 @@ def _row(
         "storyline_key": "asset:BABA",
         "comparison_title": event_id,
         "comparison_fingerprint": fingerprint,
-        "family": "general",
+        "dedupe_family": "general",
         "grounded_assets": list(canonical_assets),
         "canonical_assets": list(canonical_assets),
         "assets": list(canonical_assets),
-        "event_type": "filing",
         "magnitude": 2,
         "direction": "bearish",
         "headline_zh": event_id,
+        "why_zh": f"why {event_id}",
     }
 
 
@@ -265,18 +269,31 @@ def test_reader_history_preserves_an_explicit_empty_canonical_asset_projection()
     assert history.targeted_told_rows == ()
 
 
-def test_reader_history_exact_fingerprint_uses_the_same_family_as_postgres() -> None:
+def test_reader_history_rejects_an_incomplete_current_projection() -> None:
+    prior = _row("incomplete", NOW_MS - 1)
+    del prior["canonical_assets"]
+
+    with pytest.raises(ValueError, match="news_reader_history_fields_missing:canonical_assets"):
+        build_reader_history(
+            (prior,),
+            now_ms=NOW_MS,
+            comparison_fingerprint="current-fingerprint",
+            canonical_assets=(),
+        )
+
+
+def test_reader_history_exact_fingerprint_uses_the_same_dedupe_family_as_postgres() -> None:
     prior = _row(
         "other-family",
         NOW_MS - RECENT_HISTORY_WINDOW_MS - 1,
         fingerprint="same",
     )
-    prior["family"] = "filing"
+    prior["dedupe_family"] = "filing"
 
     history = build_reader_history(
         (prior,),
         now_ms=NOW_MS,
-        family="general",
+        dedupe_family="general",
         comparison_fingerprint="same",
         canonical_assets=(),
     )
@@ -292,7 +309,7 @@ def test_reader_history_frozen_cases_keep_target_availability_and_semantic_expec
         history = build_reader_history(
             case["prior_rows"],
             now_ms=case["now_ms"],
-            family=case["current"].get("family", "general"),
+            dedupe_family=case["current"]["dedupe_family"],
             comparison_fingerprint=case["current"]["comparison_fingerprint"],
             canonical_assets=case["current"]["canonical_assets"],
             include_targeted=case.get("include_targeted", True),

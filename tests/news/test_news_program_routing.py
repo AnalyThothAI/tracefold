@@ -15,13 +15,13 @@ from tracefold.news.program.contracts import ProgramCallTrace, ProgramTrace, Sem
 from tracefold.news.program.lm import AuditedConfiguredLM, RuntimeModelIdentity, ScriptedLM
 from tracefold.news.program.module import NativeNewsProgram
 from tracefold.news.program.routing import RoutedSemanticJudge, RouteLMs
+from tracefold.news.program.runtime import PROGRAM_VERSION
 
 
 def _semantics(**updates: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "listing",
         "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",
@@ -56,7 +56,7 @@ def _context() -> TriageContext:
     return TriageContext.from_card(
         {
             "event_id": "event-1",
-            "evidence_version": 1,
+            "evidence_version": 3,
             "evidence_sha256": "a" * 64,
             "focus_fact_id": "fact-1",
             "reporting_origin": "wire",
@@ -66,7 +66,7 @@ def _context() -> TriageContext:
             "leader_description": "Trading starts tomorrow.",
             "opened_at_ms": 1_000_000,
             "member_count": 1,
-            "family": "listing",
+            "dedupe_family": "listing",
             "provider_metadata": {"coins": [{"symbol": "BTC", "grade": "A"}]},
             "queue_priority": "normal",
             "asset_class": "crypto",
@@ -141,7 +141,7 @@ def test_route_composition_rejects_unwrapped_base_lm_that_cannot_audit_calls() -
         )
 
 
-def test_native_v6_trace_rejects_unaddressed_or_unsettled_physical_call() -> None:
+def test_every_trace_rejects_unaddressed_or_unsettled_physical_call() -> None:
     incomplete = ProgramCallTrace(
         predictor="event_semantics",
         route="primary",
@@ -154,21 +154,78 @@ def test_native_v6_trace_rejects_unaddressed_or_unsettled_physical_call() -> Non
 
     with pytest.raises(ValueError, match="news_program_native_call_audit_incomplete"):
         ProgramTrace(
-            program_version="news_semantic_program_v6",
+            program_version=PROGRAM_VERSION,
             program_sha256="c" * 64,
             context_sha256="d" * 64,
             envelope_sha256="e" * 64,
             calls=(incomplete,),
         )
 
-    historical = ProgramTrace(
-        program_version="news_semantic_program_v5",
-        program_sha256="c" * 64,
-        context_sha256="d" * 64,
-        envelope_sha256="e" * 64,
-        calls=(incomplete,),
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid"),
+    (
+        ("program_version", "retired-program"),
+        ("program_sha256", ""),
+        ("context_sha256", "not-a-sha"),
+    ),
+)
+def test_program_trace_rejects_retired_or_unaddressed_identity(field_name: str, invalid: str) -> None:
+    values = {
+        "program_version": PROGRAM_VERSION,
+        "program_sha256": "c" * 64,
+        "context_sha256": "d" * 64,
+        "envelope_sha256": "e" * 64,
+    }
+    values[field_name] = invalid
+
+    with pytest.raises(ValueError):
+        ProgramTrace.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    ("trace_field", "judgment_field"),
+    (
+        ("event_semantics_sha256", None),
+        ("reader_card_sha256", None),
+        ("answering_route", None),
+        (None, "answering_model"),
+    ),
+)
+def test_successful_judgment_requires_complete_answer_identity(
+    trace_field: str | None, judgment_field: str | None
+) -> None:
+    artifact = build_code_owned_program_artifact()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
     )
-    assert historical.calls == (incomplete,)
+    judgment = asyncio.run(judge.judge(_context()))
+    payload = judgment.model_dump(mode="json")
+    if trace_field is not None:
+        payload["trace"][trace_field] = None
+    if judgment_field is not None:
+        payload[judgment_field] = None
+
+    with pytest.raises(ValueError, match="news_program_judgment_trace_identity_mismatch"):
+        type(judgment).model_validate(payload)
+
+
+@pytest.mark.parametrize(("answering_route", "fallback_from"), (("fallback", None), ("primary", "failure")))
+def test_successful_judgment_route_matches_fallback_cause(answering_route: str, fallback_from: str | None) -> None:
+    artifact = build_code_owned_program_artifact()
+    judge = RoutedSemanticJudge(
+        NativeNewsProgram(artifact),
+        primary=_route(artifact, route="primary", semantics=[_semantics()], cards=[_card()]),
+    )
+    judgment = asyncio.run(judge.judge(_context()))
+    payload = judgment.model_dump(mode="json")
+    payload["fallback_from"] = fallback_from
+    payload["trace"]["fallback_from"] = fallback_from
+    payload["trace"]["answering_route"] = answering_route
+
+    with pytest.raises(ValueError, match="news_program_judgment_trace_identity_mismatch"):
+        type(judgment).model_validate(payload)
 
 
 def test_stock_json_adapter_format_fallback_is_audited_and_route_stays_bounded() -> None:
@@ -239,7 +296,6 @@ def test_domain_invalid_semantics_fail_closed_without_novelty_default() -> None:
     assert caught.value.output_failure is True
     assert caught.value.attempts == 1
     assert caught.value.partial_trace is not None
-    assert caught.value.partial_trace.novelty_defaulted is False
     assert caught.value.partial_trace.calls[0].terminal_disposition == "domain_validation_error"
 
 

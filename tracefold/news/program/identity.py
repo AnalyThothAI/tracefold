@@ -19,7 +19,7 @@ from typing import Any, Final
 
 from ..artifact_identity import canonical_json, canonical_sha
 from ..taxonomy import IPTC_CODEBOOK_SHA256, IPTC_SUBJECT_CODES, source_authority_from_evidence
-from .assembly import READER_VALUE_DECISION, is_actionable, normalize_restates, restatement_index_error
+from .assembly import normalize_restates, restatement_index_error
 from .contracts import TRADE_AFFECTED_MARKET_ORDER, TRADE_CHANNEL_ORDER, TriageContext
 from .lm import (
     LM_REQUEST_IDENTITY_SCHEMA,
@@ -48,7 +48,7 @@ from .runtime import (
 )
 from .signatures import EventSemantics, EventSemanticsSignature, ReaderCardSignature
 
-EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v2"
+EXECUTION_IDENTITY_SCHEMA: Final[str] = "tracefold.news.program.execution_envelope.v3"
 
 _GOLDEN_MODEL: Final[str] = "openai/tracefold-execution-identity"
 _GOLDEN_INSTRUCTION: Final[str] = "<golden-instruction>"
@@ -66,7 +66,6 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
         "semantics": {
             "novelty": "new_fact",
             "restates": -1,
-            "event_type": "noise",
             "assets": [],
             "direction": "neutral",
             "scope": "single_name",
@@ -94,7 +93,7 @@ _GOLDEN_OUTPUTS: Final[dict[PredictorName, dict[str, Any]]] = {
 }
 _MATERIAL_IMPLEMENTATION_SYMBOLS: Final[dict[str, tuple[str, ...]]] = {
     "artifact.py": ("render_model_evidence_json",),
-    "assembly.py": ("decision_for", "is_actionable", "normalize_restates", "restatement_index_error"),
+    "assembly.py": ("normalize_restates", "restatement_index_error"),
     "contracts.py": (
         "EditorialEnvelope",
         "ProgramTrace",
@@ -172,7 +171,7 @@ def _golden_inputs(predictor: PredictorName) -> dict[str, str]:
             "leader_description": "Golden evidence",
             "opened_at_ms": 1_000,
             "member_count": 1,
-            "family": "general",
+            "dedupe_family": "general",
             "provider_metadata": {},
             "queue_priority": "normal",
             "asset_class": "none",
@@ -234,7 +233,6 @@ _GOLDEN_REQUESTS: Final[dict[PredictorName, dict[str, dict[str, Any]]]] = {
 }
 
 _NOVELTIES: Final[tuple[str, ...]] = ("new_fact", "progression", "restatement")
-_TRADABILITIES: Final[tuple[str, ...]] = ("direct", "second_order", "contextual", "none")
 
 
 def _assembly_surface() -> dict[str, Any]:
@@ -242,17 +240,6 @@ def _assembly_surface() -> dict[str, Any]:
         "normalization_capture": {
             "source": "typed_event_semantics_pre_validation_code_order",
             "fields": ["channels", "affected_markets", "restates"],
-        },
-        "reader_value_decision": dict(READER_VALUE_DECISION),
-        "actionable": {
-            f"{tradability}|channels={int(channels)}|markets={int(markets)}": is_actionable(
-                tradability=tradability,  # type: ignore[arg-type]
-                has_channels=channels,
-                has_affected_markets=markets,
-            )
-            for tradability in _TRADABILITIES
-            for channels in (False, True)
-            for markets in (False, True)
         },
         "restatement_index": {
             f"{novelty}|restates={restates}|told={told}": restatement_index_error(

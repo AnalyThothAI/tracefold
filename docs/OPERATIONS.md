@@ -100,7 +100,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260829_0329`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0330`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -507,11 +507,11 @@ historical verdict/delivery ledger; a durable sent receipt still projects as
 delivered even though the current admission is the named hold. Current
 `event_kind` stops any pre-cut queued Triage or Delivery message, so an old push
 verdict with no delivery becomes held rather than permanently pending.
-Pre-cut deterministic rows lacking durable typed success evidence read
-`source_contract_unverified`; they remain an honest historical parsed gap until
-current Admission or an already queued deterministic Triage run settles that
-same Event with the strict parser. The OI signal row used during migration is a
-derived read-model row, not an alternate material truth.
+Pre-cut deterministic rows lacking durable typed success evidence retain the
+historical `source_contract_unverified` value only in archive rows. Current
+Admission and Triage neither read nor settle those Events. The OI signal row
+used during migration is a derived read-model row, not an alternate material
+truth.
 
 Broker: RabbitMQ 4 (`rabbitmq:4-management` in compose; `news.broker.url` is
 the AMQP URL, `news.broker.name_prefix` prefixes every exchange/queue).
@@ -551,10 +551,9 @@ Adapter runs the code-owned Program
 deterministic assembler`. The normalizer changes a stray non-negative
 `restates` value on `new_fact`/`progression` to `-1`, records both values on the
 EventSemantics trace, canonicalizes the nested `TradeRelevanceV1` sets, and
-spends no provider call. ReaderCard.v2
-produces only `headline_zh` and `why_zh`; the assembler retains public
-`title_zh=""` as a
-compatibility sentinel. Both Predictor payloads exclude queue priority,
+spends no provider call. ReaderCard.v2 produces only `headline_zh` and
+`why_zh`; the assembled Verdict has no second title or action projection. Both
+Predictor payloads exclude queue priority,
 provider score, Gate macro lexicon, queue lag and watchlist; ReaderCard receives
 only its reduced semantic view and never ToldContext or delivery intent. A
 successful primary route makes exactly two serial provider calls. JSONAdapter
@@ -761,10 +760,9 @@ Diagnose News in this order:
    `dropped_by_rule.restatement` in `/api/news/status.pipeline` counts the
    duplicates the reader was spared; `pipeline.reasked_24h` counts Events whose
    full Program was executed again because a card landed while it was thinking
-   (expect a handful per day; a surge means same-key floods);
-   `pipeline.novelty_defaulted_24h` remains a historical-series diagnostic.
-   Native Program v7 fails closed on missing `novelty` or taxonomy, so new v7 rows must not
-   increment it; a nonzero current-cohort value is an identity or audit defect.
+   (expect a handful per day; a surge means same-key floods). Program v8 fails
+   closed on missing `novelty` or taxonomy. Pre-current trace diagnostics are
+   archive-only and do not appear in the current status contract.
 8. `tracefold news replay <hits.json> [--gate-policy open|strict]`: reproduce
    Deduper+Gate on a saved provider payload without broker or model.
 
@@ -775,7 +773,7 @@ created_at_ms DESC LIMIT 1) SELECT e.epoch_id, e.starts_at_ms FROM
 news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
 newest agent *before* the join, not after: joining the whole appointment history
 and then taking one row reports the previous deployment's epoch when the current
-agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v5` rows from that
+agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
 epoch, bound to that exact bundle, enter metric v6, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
@@ -789,7 +787,7 @@ stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
 registration derives its exact Git/image/bundle identity from the active
 Workers deployment receipt. `taxonomy-evaluate` then accepts only that
 PostgreSQL-clock registration, database-verified current regression evidence,
-accepted Review v5 Gold and replayable shadow artifacts, and still requires
+accepted Review v6 Gold and replayable shadow artifacts, and still requires
 complete development and post-registration holdout denominators. Do not use taxonomy to alter Gate,
 delivery or Trading, and do not describe schema deployment as a model-quality PASS.
 The immediate cost is the normal 1 -> 2 provider-call increase. The intended

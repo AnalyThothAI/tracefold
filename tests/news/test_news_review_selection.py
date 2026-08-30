@@ -35,7 +35,7 @@ def _row(
 ) -> dict[str, Any]:
     return {
         "verdict": {"scope": scope},
-        "editorial": {
+        "model_editorial": {
             "editorial_origin": editorial_origin,
             "relevance": relevance,
         },

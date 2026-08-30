@@ -6,13 +6,12 @@ single-character tickers (`S`, `4`) and the prose sentence about open interest t
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 
-from tests.support.news_judgment import scored_judgment
 from tracefold.news.oi_signals import (
     DEFAULT_OI_POLICY,
+    PROGRAM_VERSION,
+    READER_CONTRACT_VERSION,
     OiPolicy,
     OiSignal,
     evaluate_oi,
@@ -20,12 +19,7 @@ from tracefold.news.oi_signals import (
     oi_parse_failure,
     parse_oi_signal,
 )
-from tracefold.news.similarity import similarity
 from tracefold.news.storage.feed import OI_FILTERS, OI_OUTCOMES, _oi_summary
-from tracefold.news.triage_rules import DEFAULT_POLICY, GateFacts, storyline_status
-from tracefold.news.triage_rules import decide as production_decide
-
-DEFAULT_POLICY_SIMILARITY = DEFAULT_POLICY.similarity_max
 
 FRAME = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
 
@@ -113,14 +107,14 @@ def test_a_provider_number_that_cannot_fit_the_ledger_is_not_a_signal() -> None:
 def test_rank_counts_only_eligible_signals_in_the_sliding_window() -> None:
     first = evaluate_oi(_signal(), earlier_eligible_count=0)
     assert (first.rule, first.rank_in_window) == ("opening_move_with_whale_concentration", 1)
-    assert first.verdict.decision == "push"
+    assert first.decision.final == "push"
 
     second = evaluate_oi(_signal(), earlier_eligible_count=1)
-    assert second.verdict.decision == "push" and second.rank_in_window == 2
+    assert second.decision.final == "push" and second.rank_in_window == 2
 
     third = evaluate_oi(_signal(), earlier_eligible_count=2)
     assert third.rule == "beyond_window_rank" and third.rank_in_window == 3
-    assert third.verdict.decision == "drop"
+    assert third.decision.final == "drop"
 
 
 def test_ineligible_frames_between_eligible_signals_do_not_consume_rank() -> None:
@@ -128,7 +122,7 @@ def test_ineligible_frames_between_eligible_signals_do_not_consume_rank() -> Non
     outcomes: list[tuple[int, str]] = []
     for ratio_bps in (4_000, 9_100, 6_000, 9_200):
         judgment = evaluate_oi(_signal(whale_oi_ratio_bps=ratio_bps), earlier_eligible_count=eligible_count)
-        outcomes.append((judgment.rank_in_window, judgment.verdict.decision))
+        outcomes.append((judgment.rank_in_window, judgment.decision.final))
         eligible_count += int(judgment.rule == "opening_move_with_whale_concentration")
 
     assert outcomes == [(1, "drop"), (1, "push"), (2, "drop"), (2, "push")]
@@ -136,52 +130,34 @@ def test_ineligible_frames_between_eligible_signals_do_not_consume_rank() -> Non
 
 def test_whale_concentration_is_a_strict_threshold() -> None:
     at_threshold = evaluate_oi(_signal(whale_oi_ratio_bps=8_000), earlier_eligible_count=0)
-    assert at_threshold.rule == "whale_ratio_below_threshold" and at_threshold.verdict.decision == "drop"
+    assert at_threshold.rule == "whale_ratio_below_threshold" and at_threshold.decision.final == "drop"
     just_over = evaluate_oi(_signal(whale_oi_ratio_bps=8_001), earlier_eligible_count=0)
-    assert (just_over.rank_in_window, just_over.verdict.decision) == (1, "push")
+    assert (just_over.rank_in_window, just_over.decision.final) == (1, "push")
 
 
 def test_every_threshold_is_operator_owned() -> None:
     quiet = _signal(whale_oi_ratio_bps=3_000)
-    assert evaluate_oi(quiet, earlier_eligible_count=0).verdict.decision == "drop"
+    assert evaluate_oi(quiet, earlier_eligible_count=0).decision.final == "drop"
     loud = evaluate_oi(quiet, earlier_eligible_count=0, policy=OiPolicy(whale_oi_ratio_above_bps=0))
-    assert loud.verdict.decision == "push"
-    assert evaluate_oi(_signal(), earlier_eligible_count=4).verdict.decision == "drop"
+    assert loud.decision.final == "push"
+    assert evaluate_oi(_signal(), earlier_eligible_count=4).decision.final == "drop"
     wide = evaluate_oi(_signal(), earlier_eligible_count=4, policy=OiPolicy(max_rank_in_window=9))
-    assert wide.verdict.decision == "push"
+    assert wide.decision.final == "push"
 
 
-_FACTS = GateFacts(
-    grounded_assets=(),
-    watchlist_symbols=frozenset(),
-    admission="telemetry_deterministic",
-)
-
-
-def decide(verdict: object, facts: GateFacts, status: object) -> object:
-    origin = "telemetry_deterministic" if facts.admission == "telemetry_deterministic" else "model"
-    return production_decide(
-        scored_judgment(verdict, editorial_origin=origin),  # type: ignore[arg-type]
-        facts,
-        status,  # type: ignore[arg-type]
+def test_oi_judgment_is_the_only_action_authority() -> None:
+    qualifying = evaluate_oi(_signal(), earlier_eligible_count=0)
+    assert (qualifying.decision.final, qualifying.decision.override_rule) == (
+        "push",
+        "opening_move_with_whale_concentration",
     )
-
-
-def test_the_verdict_reaches_the_intended_answer_through_decide_unchanged() -> None:
-    """The point of speaking `TriageVerdict` instead of a private decision type.
-
-    A qualifying frame has to arrive at `push` through an ordinary rule, and a rejected one has to be
-    retain its arithmetic push/drop intent under the deterministic admission. If either stopped being true,
-    this lane would need its own decision plane, which is exactly what it exists not to have.
-    """
-
-    qualifying = evaluate_oi(_signal(), earlier_eligible_count=0).verdict
-    pushed = decide(qualifying, _FACTS, None)
-    assert (pushed.final, pushed.override_rule) == ("push", "telemetry_deterministic")
-
-    rejected = evaluate_oi(_signal(whale_oi_ratio_bps=3_000), earlier_eligible_count=0).verdict
-    held = decide(rejected, _FACTS, None)
-    assert (held.final, held.override_rule) == ("drop", "telemetry_deterministic")
+    rejected = evaluate_oi(_signal(whale_oi_ratio_bps=3_000), earlier_eligible_count=0)
+    assert (rejected.decision.final, rejected.decision.override_rule) == (
+        "drop",
+        "whale_ratio_below_threshold",
+    )
+    assert {"event_type", "actionable", "decision", "title_zh"}.isdisjoint(qualifying.verdict.model_dump(mode="json"))
+    assert qualifying.judgment_sha256 == evaluate_oi(_signal(), earlier_eligible_count=0).judgment_sha256
 
 
 def test_reader_text_carries_the_numbers_and_the_position_in_the_run() -> None:
@@ -230,62 +206,30 @@ def test_reader_title_is_bounded_at_the_bigint_storage_limit() -> None:
 
 
 def test_repeats_are_bounded_by_the_rank_ceiling_not_by_content_similarity() -> None:
-    """The rank ceiling *is* this lane's duplicate protection, and running the content check as well
-    would silently halve it.
+    """The lane owns its rank bound; generic content policy is not a second authority."""
 
-    Every telemetry headline is one template, so bigram similarity reads unrelated frames as repeats:
-    two symbols score 0.33 and two frames for one symbol score 0.41, both above the 0.25 threshold.
-    `WINDOW_MS` and `TOLD_WINDOW_MS` are both 4 h, so a rank-2 frame is *always* inside its rank-1
-    sibling's ledger — "the first two per symbol" would have shipped as "one per symbol", and the
-    40-a-day measurement would not have held.
-
-    An earlier version of this test asserted the throttle instead, from a fixture that happened to
-    agree with it. Two frames for one symbol are two different observations, and the reader asked for
-    the opening ones by count.
-    """
-
-    facts = replace(_FACTS, grounded_assets=())
-    first = evaluate_oi(_signal(symbol="BTC"), earlier_eligible_count=0).verdict
-    told = [{"dir": "bullish", "headline_zh": first.headline_zh, "assets": [{"symbol": "BTC", "role": "primary"}]}]
-    status = storyline_status("asset:BTC", told=told)
-
-    other_symbol = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_eligible_count=0).verdict
-    assert similarity(first.headline_zh, other_symbol.headline_zh) >= DEFAULT_POLICY_SIMILARITY
-    assert decide(other_symbol, facts, status).final == "push"
-
+    first = evaluate_oi(_signal(symbol="BTC"), earlier_eligible_count=0)
     second = evaluate_oi(_signal(symbol="BTC", oi_change_bps=620), earlier_eligible_count=1)
-    assert similarity(first.headline_zh, second.verdict.headline_zh) >= DEFAULT_POLICY_SIMILARITY
-    assert second.rank_in_window == 2
-    assert decide(second.verdict, facts, status).final == "push", "the reader asked for the first two"
-
     third = evaluate_oi(_signal(symbol="BTC", oi_change_bps=700), earlier_eligible_count=2)
-    held = decide(third.verdict, facts, status)
-    assert third.rank_in_window == 3
-    assert held.final == "drop" and held.override_rule == "telemetry_deterministic", (
-        "the arithmetic rank ceiling is what stops the run"
+    assert [(first.rank_in_window, first.decision.final), (second.rank_in_window, second.decision.final)] == [
+        (1, "push"),
+        (2, "push"),
+    ]
+    assert (third.rank_in_window, third.decision.final, third.decision.override_rule) == (
+        3,
+        "drop",
+        "beyond_window_rank",
     )
 
 
-def test_only_the_gate_admission_earns_the_exemption() -> None:
-    """A frame that merely looks like telemetry gets no exemption: the admission is Gate-derived from
-    the provider's strategy id, and the text is not evidence of anything."""
-
-    first = evaluate_oi(_signal(symbol="BTC"), earlier_eligible_count=0).verdict
-    second = evaluate_oi(_signal(symbol="ETH", oi_change_bps=451), earlier_eligible_count=0).verdict
-    told = [{"dir": "bullish", "headline_zh": first.headline_zh, "assets": [{"symbol": "BTC", "role": "primary"}]}]
-    status = storyline_status("asset:BTC", told=told)
-    unadmitted = replace(_FACTS, admission="candidate", grounded_assets=())
-    assert decide(second, unadmitted, status).final == "throttled"
-
-
 def test_default_policy_keeps_the_shipped_thresholds() -> None:
-
     assert DEFAULT_OI_POLICY.as_dict() == {
         "window_ms": 4 * 3_600_000,
         "max_rank_in_window": 2,
         "whale_oi_ratio_above_bps": 8_000,
         "oi_change_at_least_bps": 0,
     }
+    assert (PROGRAM_VERSION, READER_CONTRACT_VERSION) == ("news_oi_signal_v2", "oi_card_v3")
 
 
 # ---------------------------------------------------------------- #207: what the 持仓异动 monitor reads
@@ -300,9 +244,13 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
     """
 
     judgment = evaluate_oi(_signal(), earlier_eligible_count=0)
-    summary = _oi_summary(oi_judgment_trace(judgment, policy=DEFAULT_OI_POLICY))
+    summary = _oi_summary(
+        judgment.judgment_atom,
+        oi_judgment_trace(judgment, policy=DEFAULT_OI_POLICY),
+    )
 
     assert summary is not None
+    assert judgment.signal is not None
     assert summary["parsed"] is True
     assert summary["rule"] == "opening_move_with_whale_concentration"
     # The frame's parsed subject comes from the judgment trace. Public `assets` is a later projection of the
@@ -324,9 +272,11 @@ def test_the_feed_folds_the_judge_trace_back_without_reparsing_the_title() -> No
 
 
 def test_an_unparseable_frame_folds_to_its_failure_shape_and_no_measurements() -> None:
-    _, trace = oi_parse_failure("PENGU OI Rise 3.4%, OI Value --", provider_source="x")
-    summary = _oi_summary(trace)
+    judgment, trace = oi_parse_failure("PENGU OI Rise 3.4%, OI Value --", provider_source="x")
+    summary = _oi_summary(judgment.judgment_atom, trace)
 
+    assert judgment.signal is None
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("drop", "oi_parse_failed")
     assert summary is not None
     assert summary["parsed"] is False
     assert summary["rule"] == "oi_parse_failed"
@@ -342,7 +292,7 @@ def test_an_unparseable_frame_folds_to_its_failure_shape_and_no_measurements() -
 
 
 def test_a_row_from_any_other_admission_carries_no_oi_block() -> None:
-    assert _oi_summary(None) is None
+    assert _oi_summary(None, None) is None
 
 
 def test_the_feed_oi_filter_groups_exactly_the_rules_the_judge_can_write() -> None:

@@ -19,10 +19,10 @@ class Receipt:
     magnitude: int
     direction: str
     headline_zh: str
+    why_zh: str
     comparison_title: str = ""
     comparison_fingerprint: str = ""
-    family: str = "general"
-    event_type: str = ""
+    dedupe_family: str = "general"
     grounded_assets: tuple[str, ...] = ()
     assets: tuple[str, ...] = ()
     canonical_assets: tuple[str, ...] = ()
@@ -34,11 +34,11 @@ class Receipt:
             "storyline_key": self.storyline_key,
             "comparison_title": self.comparison_title,
             "comparison_fingerprint": self.comparison_fingerprint,
-            "family": self.family,
-            "event_type": self.event_type,
+            "dedupe_family": self.dedupe_family,
             "magnitude": self.magnitude,
             "direction": self.direction,
             "headline_zh": self.headline_zh,
+            "why_zh": self.why_zh,
             "grounded_assets": list(self.grounded_assets),
             "assets": list(self.assets),
             "canonical_assets": list(self.canonical_assets),
@@ -89,7 +89,7 @@ class EvaluationReaderHistory:
         return build_reader_history(
             [receipt.as_told_row() for receipt in state.receipts],
             now_ms=int(case["opened_at_ms"]),
-            family=str(event.get("family") or "general"),
+            dedupe_family=str(event.get("dedupe_family") or "general"),
             comparison_fingerprint=str(event.get("comparison_fingerprint") or ""),
             canonical_assets=self.canonical_assets(grounded),
         )
@@ -99,7 +99,6 @@ class EvaluationReaderHistory:
         *,
         from_ms: int,
         epoch_started_at_ms: int,
-        cohort: bool,
         program_version: str,
         program_sha256: str,
         bundle_sha: str,
@@ -111,12 +110,12 @@ class EvaluationReaderHistory:
             SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key,
                    COALESCE(e.comparison_title, '') AS comparison_title,
                    COALESCE(e.comparison_fingerprint, '') AS comparison_fingerprint,
-                   COALESCE(e.family, 'general') AS family,
-                   COALESCE(v.verdict ->> 'event_type', '') AS event_type,
+                   COALESCE(e.dedupe_family, 'general') AS dedupe_family,
                    COALESCE((v.verdict ->> 'magnitude')::int, 0) AS magnitude,
                    COALESCE(v.verdict ->> 'direction', 'unclear') AS direction,
                    COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh', '')
                      AS headline_zh,
+                   v.verdict ->> 'why_zh' AS why_zh,
                    COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
                    COALESCE(
                      (SELECT jsonb_agg(asset ->> 'symbol')
@@ -133,31 +132,36 @@ class EvaluationReaderHistory:
                      '[]'::jsonb
                    ) AS canonical_assets
               FROM news_deliveries d
-              JOIN news_events e ON e.event_id = d.event_id
+              JOIN news_current_events_v1 e ON e.event_id = d.event_id
               JOIN LATERAL (
                 SELECT candidate.*
                   FROM (
                     SELECT scoped.* FROM news_verdicts scoped
                      WHERE scoped.event_id = e.event_id
                        AND scoped.stage = 'triage'
+                       AND scoped.judgment_contract_version = 'news_judgment_v2'
                        AND scoped.final_decision IN ('push', 'escalate')
                      OFFSET 0
                   ) candidate
                  ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
                  LIMIT 1
               ) v ON true
+              JOIN LATERAL (
+                SELECT evidence.* FROM news_event_evidence_snapshots evidence
+                 WHERE evidence.event_id = e.event_id
+                 ORDER BY evidence.evidence_version DESC LIMIT 1
+              ) evidence
+                ON evidence.provenance = 'observed'
+               AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
              WHERE d.kind = 'first' AND d.state = 'sent'
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
-               AND (%s IS FALSE OR (
-                     v.program_version = %s AND v.program_sha256 = %s
-                     AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
-                   ))
+               AND v.program_version = %s AND v.program_sha256 = %s
+               AND v.trace #>> '{agent_assignment,bundle_sha}' = %s
              ORDER BY d.settled_at_ms, v.event_id
             """,
             (
                 max(epoch_started_at_ms, from_ms - TARGETED_HISTORY_WINDOW_MS),
                 from_ms,
-                cohort,
                 program_version,
                 program_sha256,
                 bundle_sha,
@@ -174,10 +178,10 @@ def receipt_from_output(*, event_id: str, at_ms: int, output: Mapping[str, Any],
         magnitude=int(verdict.get("magnitude") or 0),
         direction=str(verdict.get("direction") or "unclear"),
         headline_zh=str(verdict.get("headline_zh") or ""),
+        why_zh=str(verdict.get("why_zh") or ""),
         comparison_title=str(output.get("comparison_title") or ""),
         comparison_fingerprint=str(output.get("comparison_fingerprint") or ""),
-        family=str(output.get("family") or "general"),
-        event_type=str(verdict.get("event_type") or ""),
+        dedupe_family=str(output.get("dedupe_family") or "general"),
         grounded_assets=tuple(str(value) for value in output.get("grounded_assets") or ()),
         assets=tuple(
             str(asset.get("symbol") or "") for asset in verdict.get("assets") or () if isinstance(asset, Mapping)

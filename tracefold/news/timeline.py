@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .models import display_title
 from .outcome import (
     Outcome,
     admission_zh,
@@ -19,13 +18,13 @@ from .outcome import (
     direction_zh,
     error_code_zh,
     event_outcome,
-    event_type_zh,
     magnitude_zh,
     override_rule_zh,
     scope_zh,
     storyline_key_zh,
     throttled_by_zh,
 )
+from .taxonomy import event_family_zh
 
 
 def _latest_triage(verdicts: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
@@ -157,6 +156,9 @@ def event_timeline(
 
     if latest is not None:
         verdict = dict(latest.get("verdict") or {})
+        model_editorial = latest.get("model_editorial") if isinstance(latest.get("model_editorial"), Mapping) else None
+        taxonomy = model_editorial.get("taxonomy") if model_editorial is not None else None
+        relevance = model_editorial.get("relevance") if model_editorial is not None else None
         degraded = bool(latest.get("degraded"))
         if degraded:
             triage_summary = "模型不可用：" + (error_code_zh(latest.get("error_code")) or "未知原因") + "，按规则兜底"
@@ -165,12 +167,9 @@ def event_timeline(
             facts_bits = [
                 direction_zh(verdict.get("direction")),
                 magnitude_zh(verdict.get("magnitude")),
-                event_type_zh(verdict.get("event_type")),
+                event_family_zh(taxonomy.get("event_family")) if isinstance(taxonomy, Mapping) else "",
             ]
             bits.append(" / ".join(b for b in facts_bits if b))
-            model_decision = latest.get("model_decision")
-            if model_decision:
-                bits.append("模型建议：" + decision_zh(model_decision))
             triage_summary = " · ".join(b for b in bits if b)
         steps.append(
             {
@@ -182,22 +181,22 @@ def event_timeline(
                     "degraded": degraded,
                     "error_code": latest.get("error_code"),
                     "model": latest.get("model"),
-                    "model_decision": latest.get("model_decision"),
-                    "event_type": verdict.get("event_type"),
+                    "judgment_origin": latest.get("judgment_origin"),
+                    "judgment_contract_version": latest.get("judgment_contract_version"),
+                    "event_kind": event.get("event_kind"),
+                    "taxonomy": taxonomy,
+                    "relevance": relevance,
                     "direction": verdict.get("direction"),
                     "magnitude": verdict.get("magnitude"),
                     "scope": verdict.get("scope"),
                     "scope_zh": scope_zh(verdict.get("scope")),
-                    "actionable": verdict.get("actionable"),
                     "confidence": verdict.get("confidence"),
                     "assets": verdict.get("assets"),
                     "headline_zh": verdict.get("headline_zh"),
-                    "title_zh": display_title(verdict),
                     "why_zh": verdict.get("why_zh"),
                     "audience": verdict.get("audience"),
                     "program_version": latest.get("program_version"),
                     "program_sha256": latest.get("program_sha256"),
-                    "prompt_version": latest.get("prompt_version"),
                     "policy_version": latest.get("policy_version"),
                     "latency_ms": (latest.get("trace") or {}).get("latency_ms"),
                 },

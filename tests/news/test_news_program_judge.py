@@ -405,8 +405,8 @@ def test_judge_rejects_a_role_binding_that_does_not_match_its_own_ceiling() -> N
 def test_metric_receipt_pins_the_judge_identity() -> None:
     """Two runs judged by different models are not comparable, so the ruler names itself."""
 
-    plain = metric_receipt(bind_metric(None), review_rubric_version="news_review_v4")
-    judged = metric_receipt(bind_metric(_judge()), review_rubric_version="news_review_v4")
+    plain = metric_receipt(bind_metric(None), review_rubric_version="news_review_v6")
+    judged = metric_receipt(bind_metric(_judge()), review_rubric_version="news_review_v6")
     assert plain["semantic_judge"] is None
     assert judged["semantic_judge"]["judge_id"] == JUDGE_ID
     assert judged["semantic_judge"]["model"] == "scripted/judge"

@@ -1,25 +1,23 @@
 import {
-  NEWS_FEED_DECISIONS,
   NEWS_FEED_DEFAULT_HOURS,
-  NEWS_FEED_CHANNELS,
   NEWS_FEED_DIRECTIONS,
+  NEWS_FEED_FINAL_DECISIONS,
   NEWS_FEED_HOURS,
   NEWS_FEED_OUTCOMES,
-  type NewsFeedDecision,
+  NEWS_EVENT_KINDS,
   type NewsFeedFilters,
-  type NewsFeedChannel,
   type NewsFeedDirection,
   type NewsFeedOutcome,
+  type NewsEventKind,
 } from "../api/newsQueries";
 
 /**
  * The feed's shareable state, parsed from and written back to the URL. Every value here mirrors a server
- * parameter exactly; unknown values are dropped rather than forwarded, so a stale bookmark degrades to the
- * default window instead of a 4xx.
+ * parameter exactly. The browser normalizes the bounded controls it renders; taxonomy codes stay opaque and
+ * the server remains their sole vocabulary authority.
  */
 export type FeedFilterChanges = Partial<Omit<NewsFeedFilters, "q">> & { q?: string | null };
 
-export const KNOWN_FAMILIES = ["market_telemetry", "filing", "disaster", "general"] as const;
 export const KNOWN_ADMISSIONS = [
   "candidate",
   "listing_deterministic",
@@ -29,13 +27,6 @@ export const KNOWN_ADMISSIONS = [
   "suppressed_pr_template",
 ] as const;
 
-// Power-user filter copy for the raw enums the feed still accepts (URL-owned; the API validates them).
-export const FAMILY_FILTER_LABELS: Record<string, string> = {
-  market_telemetry: "盘口数据",
-  filing: "公告/申报",
-  disaster: "灾害",
-  general: "综合",
-};
 export const ADMISSION_FILTER_LABELS: Record<string, string> = {
   candidate: "已送审",
   listing_deterministic: "上币/下币公告",
@@ -44,23 +35,19 @@ export const ADMISSION_FILTER_LABELS: Record<string, string> = {
   suppressed_low_signal: "低分噪音（未送审）",
   suppressed_pr_template: "律所模板（未送审）",
 };
-export const DECISION_FILTER_LABELS: Record<NewsFeedDecision, string> = {
-  push: "推送",
-  escalate: "重点推送",
-  drop: "不推",
-  throttled: "重复拦截",
-  degraded: "降级",
-};
-
 export function parseFeedFilters(searchParams: URLSearchParams): NewsFeedFilters {
   return {
     admission: searchParams.get("admission") || null,
-    decision: parseDecision(searchParams.get("decision")),
-    family: searchParams.get("family") || null,
+    eventFamilies: parseOpaqueList(searchParams.get("event_family")),
+    changeStates: parseOpaqueList(searchParams.get("change_state")),
+    assertionStatuses: parseOpaqueList(searchParams.get("assertion_status")),
+    sourceAuthorities: parseOpaqueList(searchParams.get("source_authority")),
+    subjectCodes: parseOpaqueList(searchParams.get("subject_code")),
+    finalDecisions: parseList(searchParams.get("final_decision"), NEWS_FEED_FINAL_DECISIONS),
+    eventKinds: parseList(searchParams.get("event_kind"), NEWS_EVENT_KINDS),
     hours: parseHours(searchParams.get("hours")),
     outcome: parseOutcome(searchParams.get("outcome")),
     directions: parseList(searchParams.get("direction"), NEWS_FEED_DIRECTIONS),
-    channels: parseList(searchParams.get("channel"), NEWS_FEED_CHANNELS),
     q: searchParams.get("q")?.trim() ?? "",
     symbol: normalizeSymbol(searchParams.get("symbol")),
   };
@@ -72,7 +59,7 @@ export function nextFeedParams(
   changes: FeedFilterChanges,
 ): URLSearchParams {
   const params = new URLSearchParams();
-  for (const name of ["q", "family", "admission", "decision", "symbol"] as const) {
+  for (const name of ["q", "admission", "symbol"] as const) {
     const value = changes[name] === undefined ? filters[name] : changes[name];
     if (value) params.set(name, String(value));
     else params.delete(name);
@@ -82,26 +69,42 @@ export function nextFeedParams(
   const hours = changes.hours === undefined ? filters.hours : changes.hours;
   params.set("hours", String(hours ?? NEWS_FEED_DEFAULT_HOURS));
   const directions = changes.directions === undefined ? filters.directions : changes.directions;
-  const channels = changes.channels === undefined ? filters.channels : changes.channels;
   if (directions.length) params.set("direction", directions.join(","));
-  if (channels.length) params.set("channel", channels.join(","));
+  for (const [name, values] of filterLists(filters, changes)) {
+    if (values.length) params.set(name, values.join(","));
+  }
   return params;
+}
+
+function filterLists(
+  filters: NewsFeedFilters,
+  changes: FeedFilterChanges,
+): Array<[string, readonly string[]]> {
+  return [
+    ["event_family", changes.eventFamilies ?? filters.eventFamilies],
+    ["change_state", changes.changeStates ?? filters.changeStates],
+    ["assertion_status", changes.assertionStatuses ?? filters.assertionStatuses],
+    ["source_authority", changes.sourceAuthorities ?? filters.sourceAuthorities],
+    ["subject_code", changes.subjectCodes ?? filters.subjectCodes],
+    ["final_decision", changes.finalDecisions ?? filters.finalDecisions],
+    ["event_kind", changes.eventKinds ?? filters.eventKinds],
+  ];
 }
 
 export function hasAdvancedFilters(filters: NewsFeedFilters): boolean {
   return Boolean(
     filters.q ||
-    filters.family ||
     filters.admission ||
-    filters.decision ||
     filters.symbol ||
-    filters.directions.length ||
-    filters.channels.length,
+    filters.eventFamilies.length ||
+    filters.changeStates.length ||
+    filters.assertionStatuses.length ||
+    filters.sourceAuthorities.length ||
+    filters.subjectCodes.length ||
+    filters.finalDecisions.length ||
+    filters.eventKinds.length ||
+    filters.directions.length,
   );
-}
-
-export function parseDecision(value: string | null): NewsFeedDecision | null {
-  return NEWS_FEED_DECISIONS.find((candidate) => candidate === value) ?? null;
 }
 
 export function parseOutcome(value: string | null): NewsFeedOutcome | null {
@@ -124,7 +127,15 @@ function parseList<T extends string>(value: string | null, allowed: readonly T[]
   return allowed.filter((item) => selected.has(item));
 }
 
-export function toggleFilterValue<T extends NewsFeedDirection | NewsFeedChannel>(
+function parseOpaqueList(value: string | null): string[] {
+  if (!value) return [];
+  const selected = value.split(",");
+  return selected.some((item) => !item) || new Set(selected).size !== selected.length
+    ? []
+    : selected.sort();
+}
+
+export function toggleFilterValue<T extends NewsFeedDirection | NewsEventKind>(
   selected: readonly T[],
   value: T,
   order: readonly T[],

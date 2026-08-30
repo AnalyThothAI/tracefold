@@ -11,8 +11,7 @@ import "./newsFunnel.css";
  * Where the last 24 hours went, above the feed. Every figure is either a `funnel_24h` field or the difference
  * between two of them — the browser reports where the Events went, it does not decide it.
  *
- * Five approved stages and no bar. `parsed` can equal `received`: every persisted Event has completed the
- * provider parser. The other three figures are the real Gate, judgment and delivery ledgers.
+ * Four durable stages and no bar: Event intake, Gate admission, judgment and delivery.
  */
 export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
   const funnel = status?.funnel_24h;
@@ -48,7 +47,7 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
       title="Last 24h"
       titleStyle="eyebrow"
     >
-      <MetricRow columns={5} label="24 小时漏斗">
+      <MetricRow columns={4} label="24 小时漏斗">
         {funnelTiles(funnel).map((tile) => (
           <Metric
             caption={tile.caption}
@@ -67,7 +66,7 @@ export function NewsFunnelCard({ status }: { status?: NewsStatus }) {
 }
 
 function funnelTiles(funnel: NewsFunnel) {
-  const gated = Math.max(0, funnel.parsed - funnel.admitted);
+  const gated = Math.max(0, funnel.received - funnel.admitted);
   const unjudged = Math.max(0, funnel.admitted - funnel.triaged);
   return [
     {
@@ -78,15 +77,6 @@ function funnelTiles(funnel: NewsFunnel) {
       to: `${newsPath()}?outcome=all&hours=24`,
       tone: "plain" as const,
       value: funnel.received,
-    },
-    {
-      caption: "已解析",
-      eyebrow: "PARSED",
-      note: percent(funnel.parsed, funnel.received),
-      title: "已完成解析并形成 Event 的记录",
-      to: null,
-      tone: "plain" as const,
-      value: funnel.parsed,
     },
     {
       caption: "过门禁",

@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import Field
 
+from tracefold.news import IPTCCodebookSha, NewsTaxonomyV1, TradeRelevanceV1
+
 from .common import ExactApiSchema
 
 
@@ -28,22 +30,22 @@ class NewsOutcomeData(ExactApiSchema):
 
 
 class NewsTriageAssetData(ExactApiSchema):
-    symbol: str
-    role: str
+    symbol: str = Field(min_length=1, max_length=16)
+    market_type: str | None = Field(default=None, max_length=16)
+    role: Literal["primary", "mentioned"]
 
 
-class NewsTaxonomyData(ExactApiSchema):
+class NewsTradeRelevanceData(TradeRelevanceV1):
+    """The current typed market-relevance judgment; no free-form compatibility payload crosses HTTP."""
+
+
+class NewsTaxonomyData(NewsTaxonomyV1):
     taxonomy_version: Literal["news_taxonomy_v1"]
-    codebook_sha256: str
-    subject_codes: list[str] = Field(default_factory=list, max_length=3)
+    codebook_sha256: IPTCCodebookSha
     subject_labels_zh: list[str] = Field(default_factory=list, max_length=3)
-    event_family: str
     event_family_zh: str
-    change_state: str
     change_state_zh: str
-    source_authority: str
     source_authority_zh: str
-    assertion_status: str
     assertion_status_zh: str
 
 
@@ -73,33 +75,28 @@ class NewsTriageSummaryData(ExactApiSchema):
     """The reader-facing view of one Triage verdict. Every `*_zh` is server-owned copy; the raw enum stays
     beside it so the browser can map it to a visual tone without owning a vocabulary table."""
 
-    final_decision: str
+    final_decision: Literal["push", "escalate", "drop", "throttled"]
     override_rule: str | None = None
     throttled_by: str | None = None
     degraded: bool = False
     error_code: str | None = None
     direction: str | None = None
     magnitude: int | None = None
-    event_type: str | None = None
     taxonomy: NewsTaxonomyData | None = None
+    relevance: NewsTradeRelevanceData | None = None
     scope: str | None = None
     novelty: str | None = None
     audience: str | None = None
     confidence: float | None = None
-    actionable: bool | None = None
-    model_decision: str | None = None
     headline_zh: str | None = None
-    title_zh: str | None = None
     why_zh: str | None = None
     assets: list[NewsTriageAssetData] = Field(default_factory=list)
     direction_zh: str = ""
     magnitude_zh: str = ""
-    event_type_zh: str = ""
     scope_zh: str = ""
     novelty_zh: str = ""
     audience_zh: str = ""
     decision_zh: str = ""
-    model_decision_zh: str = ""
 
 
 class NewsDeliverySummaryData(ExactApiSchema):
@@ -114,6 +111,7 @@ __all__ = [
     "NewsOutcomeData",
     "NewsSymbolNormalizationData",
     "NewsTaxonomyData",
+    "NewsTradeRelevanceData",
     "NewsTriageAssetData",
     "NewsTriageSummaryData",
 ]

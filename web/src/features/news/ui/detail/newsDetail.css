@@ -75,13 +75,6 @@
     text-wrap: pretty;
   }
 
-  .news-detail-translated {
-    margin: 0;
-    color: var(--text-muted);
-    font-size: var(--font-size-meta);
-    line-height: 1.5;
-  }
-
   .news-detail-verdict {
     display: flex;
     flex-wrap: wrap;

@@ -1,18 +1,24 @@
 {
-  "schema": "tracefold.news.reader_history_fixture.v1",
+  "schema": "tracefold.news.reader_history_fixture.v2",
   "cases": [
     {
       "case_id": "alibaba_overnight_restatement",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "alibaba-current", "canonical_assets": ["BABA"]},
+      "current": {"dedupe_family": "general", "comparison_fingerprint": "alibaba-current", "canonical_assets": ["BABA"]},
       "prior_rows": [
         {
           "event_id": "alibaba-prior",
           "at_ms": 1999978400000,
+          "storyline_key": "issuer:baba:placement",
+          "comparison_title": "Alibaba announces a Hong Kong share placement",
+          "dedupe_family": "general",
           "comparison_fingerprint": "alibaba-prior-fingerprint",
           "canonical_assets": ["BABA"],
           "grounded_assets": ["9988"],
+          "assets": ["BABA"],
           "headline_zh": "阿里巴巴宣布香港配股融资",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "bearish"
         }
       ],
@@ -21,14 +27,21 @@
     {
       "case_id": "ordinary_24h_restatement",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "same-normalized-fact", "canonical_assets": []},
+      "current": {"dedupe_family": "general", "comparison_fingerprint": "same-normalized-fact", "canonical_assets": []},
       "prior_rows": [
         {
           "event_id": "ordinary-prior",
           "at_ms": 1999913600000,
+          "storyline_key": "regulator:decision",
+          "comparison_title": "Regulator publishes the same decision",
+          "dedupe_family": "general",
           "comparison_fingerprint": "same-normalized-fact",
           "canonical_assets": [],
+          "grounded_assets": [],
+          "assets": [],
           "headline_zh": "监管机构公布同一项决定",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "neutral"
         }
       ],
@@ -37,14 +50,21 @@
     {
       "case_id": "material_progression",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "progression-current", "canonical_assets": ["ETH"]},
+      "current": {"dedupe_family": "general", "comparison_fingerprint": "progression-current", "canonical_assets": ["ETH"]},
       "prior_rows": [
         {
           "event_id": "progression-prior",
           "at_ms": 1999978400000,
+          "storyline_key": "protocol:upgrade",
+          "comparison_title": "Protocol announces an upgrade plan",
+          "dedupe_family": "general",
           "comparison_fingerprint": "progression-prior",
           "canonical_assets": ["ETH"],
+          "grounded_assets": ["ETH"],
+          "assets": ["ETH"],
           "headline_zh": "协议宣布升级计划",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -53,14 +73,21 @@
     {
       "case_id": "same_asset_new_fact",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "new-fact-current", "canonical_assets": ["BABA"]},
+      "current": {"dedupe_family": "general", "comparison_fingerprint": "new-fact-current", "canonical_assets": ["BABA"]},
       "prior_rows": [
         {
           "event_id": "same-asset-prior",
           "at_ms": 1999978400000,
+          "storyline_key": "issuer:baba:earnings",
+          "comparison_title": "Alibaba reports quarterly earnings",
+          "dedupe_family": "general",
           "comparison_fingerprint": "earnings-prior",
           "canonical_assets": ["BABA"],
+          "grounded_assets": ["BABA"],
+          "assets": ["BABA"],
           "headline_zh": "阿里巴巴公布季度业绩",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -69,14 +96,21 @@
     {
       "case_id": "direction_reversal",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "reversal-current", "canonical_assets": ["BTC"]},
+      "current": {"dedupe_family": "general", "comparison_fingerprint": "reversal-current", "canonical_assets": ["BTC"]},
       "prior_rows": [
         {
           "event_id": "reversal-prior",
           "at_ms": 1999978400000,
+          "storyline_key": "btc:etf-flows",
+          "comparison_title": "Bitcoin ETFs record net inflows",
+          "dedupe_family": "general",
           "comparison_fingerprint": "reversal-prior",
           "canonical_assets": ["BTC"],
+          "grounded_assets": ["BTC"],
+          "assets": ["BTC"],
           "headline_zh": "比特币 ETF 录得净流入",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "bullish"
         }
       ],
@@ -85,15 +119,22 @@
     {
       "case_id": "telemetry_control",
       "now_ms": 2000000000000,
-      "current": {"comparison_fingerprint": "oi-current", "canonical_assets": ["SOL"]},
+      "current": {"dedupe_family": "market_telemetry", "comparison_fingerprint": "oi-current", "canonical_assets": ["SOL"]},
       "include_targeted": false,
       "prior_rows": [
         {
           "event_id": "telemetry-prior",
           "at_ms": 1999978400000,
+          "storyline_key": "asset:SOL",
+          "comparison_title": "SOL open interest moves",
+          "dedupe_family": "market_telemetry",
           "comparison_fingerprint": "oi-current",
           "canonical_assets": ["SOL"],
+          "grounded_assets": ["SOL"],
+          "assets": ["SOL"],
           "headline_zh": "SOL 持仓量异动",
+          "why_zh": "已有读者收据",
+          "magnitude": 2,
           "direction": "bullish"
         }
       ],

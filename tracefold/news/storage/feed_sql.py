@@ -22,7 +22,7 @@ OUTCOME_GROUP_SQL: Final = {
 }
 # Both feed laterals expose the judged OI rule under this alias. The page and count builders must spell it
 # identically because downstream filters append a predicate over ``t.oi_rule`` to either statement.
-OI_RULE_SQL: Final = "v.trace -> 'oi_signal' ->> 'rule' AS oi_rule"
+OI_RULE_SQL: Final = "v.trace #>> '{judgment,rule}' AS oi_rule"
 ASSET_SEARCH_PREDICATE: Final = (
     "EXISTS (SELECT 1 FROM news_event_assets a WHERE a.event_id = e.event_id AND a.symbol = ANY(%s))"
 )
@@ -37,7 +37,7 @@ def feed_page_sql(where_sql: str) -> str:
     """
 
     return f"""
-        SELECT e.event_id, e.family, e.event_kind, e.source_contract_reason, e.leader_title,
+        SELECT e.event_id, e.event_kind, e.source_contract_reason, e.leader_title,
                e.opened_at_ms, e.last_member_at_ms, e.member_count,
                e.admission, e.provider_score_max, e.engine_type, e.asset_class, e.grounded_assets,
                e.watchlist_hits, e.storyline_key, e.context_line, e.published_at_ms, e.ingest_mode,
@@ -45,16 +45,26 @@ def feed_page_sql(where_sql: str) -> str:
                t.final_decision, t.override_rule, t.throttled_by, t.degraded AS triage_degraded,
                t.error_code AS triage_error_code,
                t.verdict ->> 'direction' AS direction, (t.verdict ->> 'magnitude')::int AS magnitude,
-               t.verdict ->> 'event_type' AS event_type, t.verdict ->> 'headline_zh' AS headline_zh,
-               t.verdict ->> 'scope' AS scope, t.verdict ->> 'title_zh' AS title_zh,
-               t.model_decision, t.verdict AS triage_verdict, t.trace -> 'oi_signal' AS oi_signal,
+               t.verdict ->> 'headline_zh' AS headline_zh, t.verdict ->> 'scope' AS scope,
+               t.verdict AS triage_verdict, t.editorial AS model_editorial,
+               t.trace -> 'judgment' AS oi_judgment,
+               t.trace -> 'oi_signal' AS oi_metadata,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
-          FROM news_events e
+          FROM news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
+          JOIN LATERAL (
+            SELECT s.provenance, s.snapshot
+              FROM news_event_evidence_snapshots s
+             WHERE s.event_id = e.event_id
+             ORDER BY s.evidence_version DESC LIMIT 1
+          ) current_evidence
+            ON current_evidence.provenance = 'observed'
+           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
           LEFT JOIN LATERAL (
             SELECT v.*, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
@@ -72,12 +82,21 @@ def feed_counts_sql(where_sql: str) -> str:
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
-          FROM news_events e
+          FROM news_current_events_v1 e
           JOIN news_items i ON i.item_id = e.leader_item_id
+          JOIN LATERAL (
+            SELECT s.provenance, s.snapshot
+              FROM news_event_evidence_snapshots s
+             WHERE s.event_id = e.event_id
+             ORDER BY s.evidence_version DESC LIMIT 1
+          ) current_evidence
+            ON current_evidence.provenance = 'observed'
+           AND current_evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
           LEFT JOIN LATERAL (
-            SELECT v.final_decision, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
+            SELECT v.final_decision, v.editorial, v.verdict ->> 'direction' AS direction, {OI_RULE_SQL}
               FROM news_verdicts v
              WHERE v.event_id = e.event_id AND v.stage = 'triage'
+               AND v.judgment_contract_version = 'news_judgment_v2'
              ORDER BY v.created_at_ms DESC LIMIT 1
           ) t ON true
           LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'

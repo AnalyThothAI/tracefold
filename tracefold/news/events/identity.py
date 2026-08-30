@@ -20,7 +20,7 @@ NEWS_PUSH_ADMISSION_POLICY_VERSION: Final = "news_push_exact_atom_admission_v1"
 OPENNEWS_EXACT_ATOM_HORIZON_MS: Final = 12 * 60 * 60_000
 MAX_COMPARISON_CHARS: Final = 500
 
-EventFamily = Literal["market_telemetry", "filing", "disaster", "general"]
+DedupeFamily = Literal["market_telemetry", "filing", "disaster", "general"]
 
 _SOURCE_PREFIX_RE = re.compile(
     r"^(?:(?:just\s+in|breaking|update|exclusive|alert|urgent|developing|wsj|reuters|ap|bbc|cnn|cnbc|coindesk)\s*[:|\-–—]\s*)+",
@@ -81,19 +81,19 @@ _TRADITIONAL_TO_SIMPLIFIED = str.maketrans(
 class NewsExactAtomIdentity:
     comparison_title: str
     comparison_fingerprint: str
-    event_family: EventFamily
+    dedupe_family: DedupeFamily
     duplicate_window_ms: int
     identity_version: str = EXACT_ATOM_IDENTITY_VERSION
 
 
 def describe_exact_atom(title: str) -> NewsExactAtomIdentity:
     comparison = comparison_title(title)
-    family = event_family(comparison)
+    family_name = dedupe_family(comparison)
     return NewsExactAtomIdentity(
         comparison_title=comparison,
         comparison_fingerprint=hashlib.sha256(comparison.encode("utf-8")).hexdigest(),
-        event_family=family,
-        duplicate_window_ms=min(event_window_ms(family), OPENNEWS_EXACT_ATOM_HORIZON_MS),
+        dedupe_family=family_name,
+        duplicate_window_ms=min(dedupe_window_ms(family_name), OPENNEWS_EXACT_ATOM_HORIZON_MS),
     )
 
 
@@ -109,7 +109,7 @@ def comparison_title(title: str) -> str:
     return _SPACE_RE.sub(" ", value).strip()[:MAX_COMPARISON_CHARS]
 
 
-def event_family(comparison: str) -> EventFamily:
+def dedupe_family(comparison: str) -> DedupeFamily:
     if re.search(r"\b(?:oi|open interest|whale oi ratio)\b", comparison):
         return "market_telemetry"
     if re.search(
@@ -122,13 +122,13 @@ def event_family(comparison: str) -> EventFamily:
     return "general"
 
 
-def event_window_ms(family: EventFamily) -> int:
+def dedupe_window_ms(dedupe_family: DedupeFamily) -> int:
     return {
         "market_telemetry": 2 * 60 * 60_000,
         "filing": 72 * 60 * 60_000,
         "disaster": 6 * 60 * 60_000,
         "general": 12 * 60 * 60_000,
-    }[family]
+    }[dedupe_family]
 
 
 def decimal_text(value: Decimal) -> str:
@@ -171,11 +171,11 @@ def _currency_kind(symbol: str | None) -> str | None:
 __all__ = [
     "EXACT_ATOM_IDENTITY_VERSION",
     "NEWS_PUSH_ADMISSION_POLICY_VERSION",
-    "EventFamily",
+    "DedupeFamily",
     "NewsExactAtomIdentity",
     "comparison_title",
     "decimal_text",
+    "dedupe_family",
+    "dedupe_window_ms",
     "describe_exact_atom",
-    "event_family",
-    "event_window_ms",
 ]

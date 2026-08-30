@@ -97,7 +97,7 @@ def _case(**overrides: Any) -> dict[str, Any]:
                 }
             ],
         },
-        "manifest_version": "trading_manifest_v8",
+        "manifest_version": "trading_manifest_v9",
         "provider_symbol": "HYPEUSDT",
         "mark_price": "0.0950",
         "pre_move_bps": 731,

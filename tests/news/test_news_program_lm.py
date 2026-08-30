@@ -22,6 +22,7 @@ from tracefold.news.program.lm import (
     lm_request_sha256,
     program_json_adapter,
 )
+from tracefold.news.program.runtime import PROGRAM_VERSION
 
 _SHA = "a" * 64
 
@@ -88,7 +89,7 @@ def _recorded_lm(
 def test_native_json_adapter_capability_modes_are_one_public_typed_seam(mode: str, expected: str) -> None:
     lm, delegate, ledger = _audited([{"answer": {"value": 42}}], mode=mode)
 
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         prediction = _predict(lm)
 
     assert prediction.answer == _Answer(value=42)
@@ -106,7 +107,7 @@ def test_native_json_adapter_capability_modes_are_one_public_typed_seam(mode: st
 def test_schema_parse_fallback_records_two_physical_terminal_calls() -> None:
     lm, delegate, ledger = _audited(["not-json", {"answer": {"value": 42}}])
 
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         prediction = _predict(lm)
 
     assert prediction.answer.value == 42
@@ -132,7 +133,7 @@ def test_external_admission_refuses_second_format_attempt_before_receipt_or_prov
     ledger = LMCallLedger(before_call=before_call)
     lm, delegate, _ = _audited(["not-json", {"answer": {"value": 42}}], ledger=ledger)
 
-    with pytest.raises(dspy.LMConfigurationError), ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(dspy.LMConfigurationError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     assert admitted == 1
@@ -145,7 +146,7 @@ def test_provider_error_does_not_trigger_json_fallback_and_scrubs_secret() -> No
     secret = "sk-abcdefghijklmnopqrstu"
     lm, delegate, ledger = _audited([dspy.LMServerError(f"provider echoed {secret}", status=503, code="unavailable")])
 
-    with pytest.raises(dspy.LMServerError), ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(dspy.LMServerError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     assert len(delegate.requests) == 1
@@ -168,7 +169,7 @@ def test_provider_error_public_exception_and_recording_are_fully_sanitized() -> 
     )
     lm, _, ledger = _audited([error])
 
-    with pytest.raises(dspy.LMAuthError) as captured, ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(dspy.LMAuthError) as captured, ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     public = captured.value
@@ -188,7 +189,7 @@ def test_unexpected_exception_suppresses_secret_bearing_cause() -> None:
     secret = "sk-abcdefghijklmnopqrstu"
     lm, _, ledger = _audited([RuntimeError(f"failed with {secret}")])
 
-    with pytest.raises(dspy.LMUnexpectedError) as captured, ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(dspy.LMUnexpectedError) as captured, ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     assert secret not in "".join(traceback.format_exception(captured.value))
@@ -199,7 +200,7 @@ def test_unexpected_exception_suppresses_secret_bearing_cause() -> None:
 def test_scope_reconciles_non_exception_base_exception_as_abandoned_provider_call() -> None:
     lm, _, ledger = _audited([KeyboardInterrupt()])
 
-    with pytest.raises(KeyboardInterrupt), ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(KeyboardInterrupt), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     assert len(ledger.receipts) == 1
@@ -210,7 +211,7 @@ def test_scope_reconciles_non_exception_base_exception_as_abandoned_provider_cal
 def test_domain_failure_reclassifies_latest_success_without_synthetic_call() -> None:
     lm, _, ledger = _audited([{"answer": {"value": 42}}])
 
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
         changed = ledger.domain_failure("news_program_answer_domain_invalid")
 
@@ -223,7 +224,7 @@ def test_domain_failure_reclassifies_latest_success_without_synthetic_call() -> 
 def test_late_completion_reclassifies_latest_success_without_synthetic_call() -> None:
     lm, _, ledger = _audited([{"answer": {"value": 42}}])
 
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
         changed = ledger.late_completion()
 
@@ -247,7 +248,7 @@ def test_receipt_converts_to_program_call_trace_with_physical_usage() -> None:
     )
     lm, _, ledger = _audited([response])
 
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     trace = ledger.receipts[0].to_program_call_trace()
@@ -263,7 +264,7 @@ def test_receipt_converts_to_program_call_trace_with_physical_usage() -> None:
 
 def test_recorded_lm_replays_exact_success_and_never_falls_through() -> None:
     lm, delegate, ledger = _audited([{"answer": {"value": 42}}])
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
     receipt = ledger.receipts[0]
     assert receipt.recording is not None
@@ -316,7 +317,7 @@ def test_request_and_invocation_addresses_bind_endpoint_and_predictor_slot() -> 
             model_binding=binding,
             ledger=ledger,
         )
-        with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+        with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
             _predict(lm)
         receipt = ledger.receipts[0]
         assert receipt.recording is not None
@@ -341,7 +342,7 @@ def test_request_and_invocation_addresses_bind_endpoint_and_predictor_slot() -> 
 
 def test_recorded_lm_rejects_legacy_identity_and_malformed_typed_terminal() -> None:
     lm, delegate, ledger = _audited([{"answer": {"value": 42}}])
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
     receipt = ledger.receipts[0]
     assert receipt.recording is not None
@@ -375,7 +376,7 @@ def test_recorded_lm_rejects_legacy_identity_and_malformed_typed_terminal() -> N
 )
 def test_recorded_lm_replays_safe_provider_error(error: dspy.LMError) -> None:
     lm, delegate, ledger = _audited([error])
-    with pytest.raises(type(error)), ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(type(error)), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
     receipt = ledger.receipts[0]
     assert receipt.recording is not None
@@ -390,7 +391,7 @@ def test_recorded_lm_replays_safe_provider_error(error: dspy.LMError) -> None:
 
 def test_recorded_lm_preserves_schema_invalid_fallback_sequence() -> None:
     lm, delegate, ledger = _audited(["not-json", {"answer": {"value": 42}}])
-    with ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
     recordings = {
         receipt.request_sha256: receipt.recording for receipt in ledger.receipts if receipt.recording is not None
@@ -408,7 +409,7 @@ def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
     response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
     lm, delegate, ledger = _audited([response])
 
-    with pytest.raises(LMOutputTruncatedError), ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(LMOutputTruncatedError), ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(lm)
 
     receipt = ledger.receipts[0]
@@ -432,7 +433,7 @@ def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
         model_binding="primary",
         ledger=replay_ledger,
     )
-    with pytest.raises(LMOutputTruncatedError), replay_ledger.scope(LMCallContext("news_program_v6", _SHA, _SHA)):
+    with pytest.raises(LMOutputTruncatedError), replay_ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, _SHA)):
         _predict(audited_replay)
     assert len(replay.requests) == 1
     assert replay_ledger.receipts[0].terminal_disposition == "provider_success"
@@ -481,7 +482,7 @@ def test_contextvars_isolate_concurrent_judgments() -> None:
     async def run(value: int) -> tuple[int, str]:
         lm, _, ledger = _audited([{"answer": {"value": value}}])
         with (
-            ledger.scope(LMCallContext("news_program_v6", _SHA, str(value) * 64)),
+            ledger.scope(LMCallContext(PROGRAM_VERSION, _SHA, str(value) * 64)),
             dspy.context(adapter=program_json_adapter()),
         ):
             prediction = await dspy.Predict(_AnswerSignature).acall(question="value?", lm=lm)

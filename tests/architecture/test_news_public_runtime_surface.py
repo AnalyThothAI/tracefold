@@ -13,9 +13,14 @@ SRC = ROOT / "tracefold"
 NEWS_ROOT = SRC / "news"
 
 PUBLIC_NEWS_INTERFACE = {
+    "ASSERTION_STATUSES",
+    "CHANGE_STATES",
+    "EVENT_FAMILIES",
     "EVENT_KINDS",
     "EditorialEnvelope",
     "EventKind",
+    "IPTCCodebookSha",
+    "IPTC_SUBJECT_CODES",
     "ModelTaxonomyV1",
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
@@ -28,6 +33,7 @@ PUBLIC_NEWS_INTERFACE = {
     "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "REQUIRED_TRADABILITY_VENUES",
+    "SOURCE_AUTHORITIES",
     "TRADABILITY_REVIEW_TIMEOUT_SECONDS",
     "ProgramTrace",
     "ProgramUsage",

@@ -20,11 +20,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_feed_events",
             sql="""
                 SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission, e.queue_priority, t.final_decision
-                  FROM news_events e
+                  FROM news_current_events_v1 e
                   JOIN news_items i ON i.item_id = e.leader_item_id
                   LEFT JOIN LATERAL (
                     SELECT final_decision FROM news_verdicts v
                      WHERE v.event_id = e.event_id AND v.stage = 'triage'
+                       AND v.judgment_contract_version = 'news_judgment_v2'
                      ORDER BY v.created_at_ms DESC LIMIT 1
                   ) t ON true
                  WHERE e.ingest_mode IN ('live', 'recovery')
@@ -94,35 +95,42 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_event_detail",
             sql=(
-                "SELECT e.*, i.description FROM news_events e"
+                "SELECT e.*, i.description FROM news_current_events_v1 e"
                 " JOIN news_items i ON i.item_id = e.leader_item_id WHERE e.event_id = %s"
             ),
             params=("event",),
         ),
         ReadQuerySpec(
             name="news_event_asset_projection",
-            sql="SELECT event_id, array_agg(symbol ORDER BY symbol) AS symbols FROM news_event_assets"
-            " WHERE event_id = ANY(%s) GROUP BY event_id",
+            sql="SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols"
+            " FROM news_event_assets asset"
+            " JOIN news_current_events_v1 event ON event.event_id = asset.event_id"
+            " WHERE asset.event_id = ANY(%s) GROUP BY asset.event_id",
             params=(["event"],),
         ),
         ReadQuerySpec(
             name="news_event_members",
             sql="""
                 SELECT m.item_id, m.match_kind, i.title FROM news_event_members m
-                  JOIN news_items i ON i.item_id = m.item_id WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
+                  JOIN news_current_events_v1 event ON event.event_id = m.event_id
+                  JOIN news_items i ON i.item_id = m.item_id
+                 WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
             """,
             params=("event",),
         ),
         ReadQuerySpec(
             name="news_event_verdicts",
-            sql="SELECT * FROM news_verdicts WHERE event_id = %s ORDER BY created_at_ms",
+            sql="SELECT * FROM news_verdicts WHERE event_id = %s "
+            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms",
             params=("event",),
         ),
         ReadQuerySpec(
             name="news_storyline_status",
             sql="""
-                SELECT count(*) AS pushed FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
+                SELECT count(*) AS pushed
+                  FROM news_verdicts v JOIN news_current_events_v1 e ON e.event_id = v.event_id
                  WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
+                   AND v.judgment_contract_version = 'news_judgment_v2'
                    AND e.storyline_key = %s AND v.created_at_ms >= %s
             """,
             params=("theme:rates", day_ago),
@@ -133,7 +141,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 SELECT DISTINCT b.event_id FROM news_event_bands b
                   JOIN unnest(%s::smallint[], %s::text[]) AS q(band_index, band_key)
                     ON q.band_index = b.band_index AND q.band_key = b.band_key
-                 WHERE b.family = %s AND b.expires_at_ms > %s
+                 WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
             """,
             params=([0, 1], ["a", "b"], "general", now_ms),
         ),
@@ -150,12 +158,15 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ),
         ReadQuerySpec(
             name="news_status_pipeline_24h",
-            sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' AND created_at_ms >= %s",
+            sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' "
+            "AND judgment_contract_version = 'news_judgment_v2' AND created_at_ms >= %s",
             params=(day_ago,),
         ),
         ReadQuerySpec(
             name="news_status_delivery_1h",
-            sql="SELECT count(*) AS n FROM news_deliveries WHERE state = 'sent' AND settled_at_ms >= %s",
+            sql="SELECT count(*) AS n FROM news_deliveries delivery"
+            " JOIN news_current_events_v1 event ON event.event_id = delivery.event_id"
+            " WHERE delivery.state = 'sent' AND delivery.settled_at_ms >= %s",
             params=(hour_ago,),
         ),
         ReadQuerySpec(
@@ -167,10 +178,11 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         # #179: the eligible-rank count runs on every parsed telemetry frame.
         ReadQuerySpec(
             name="news_signal_history",
-            sql="SELECT count(*)::int AS n FROM news_oi_signals "
-            "WHERE metric_version = 'oi_signal_v1' AND symbol = 'BTC' "
-            "AND observed_at_ms > 0 AND observed_at_ms < 1 AND event_id <> '' "
-            "AND whale_oi_ratio_bps > 8000 AND abs(oi_change_bps) >= 0",
+            sql="SELECT count(*)::int AS n FROM news_oi_signals signal "
+            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "WHERE signal.metric_version = 'oi_signal_v1' AND signal.symbol = 'BTC' "
+            "AND signal.observed_at_ms > 0 AND signal.observed_at_ms < 1 AND signal.event_id <> '' "
+            "AND signal.whale_oi_ratio_bps > 8000 AND abs(signal.oi_change_bps) >= 0",
         ),
         ReadQuerySpec(
             name="news_quote_snapshot_read",
@@ -201,7 +213,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="""
                 SELECT a.event_id, a.symbol, a.opened_at_ms
                   FROM news_event_assets a
-                  JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+                  JOIN news_current_events_v1 e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
                   LEFT JOIN news_event_reactions r
                     ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
                  WHERE a.opened_at_ms <= %s
@@ -214,8 +226,10 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_reaction_attach",
             sql=(
-                "SELECT event_id, symbol, return_1h_bps, return_4h_bps, state FROM news_event_reactions"
-                " WHERE event_id = ANY(%s) AND metric_version = %s"
+                "SELECT reaction.event_id, reaction.symbol, reaction.return_1h_bps, reaction.return_4h_bps,"
+                " reaction.state FROM news_event_reactions reaction"
+                " JOIN news_current_events_v1 event ON event.event_id = reaction.event_id"
+                " WHERE reaction.event_id = ANY(%s) AND reaction.metric_version = %s"
             ),
             params=(["event"], REACTION_METRIC_VERSION),
         ),

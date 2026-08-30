@@ -15,13 +15,13 @@ from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 # The one pin over code-owned Program behavior (#314). It is a named constant and not a bare literal
 # inside an assertion on purpose: `rg NEWS_EXECUTION_ENVELOPE_SHA256` has to find every place that claims
 # to know this value, which is the rule an anonymous `== 8` broke on the last identity bump.
-NEWS_EXECUTION_ENVELOPE_SHA256 = "4775cab09894b693fe825afdaec2b27aa2b76b2f206d9412bc790aea4935d90d"
+NEWS_EXECUTION_ENVELOPE_SHA256 = "4d2080ec2b51f230a14509aad493aebdbaadd60329f841fa418134fc3b687702"
 
 # The prompt bytes the provider is sent, pinned separately because they have a separate author: a human
 # edits `seed.py` and GEPA proposes a replacement, and both move this without touching the envelope.
-NEWS_PREDICTOR_INSTRUCTION_SHA256 = "a793a153ff68d07e72b4af20eec631ad7bed1c9c347fd435ec73b61da5fcc8e7"
+NEWS_PREDICTOR_INSTRUCTION_SHA256 = "9ac97cfde86426cc6be7c96d23e48d8ccd963b16790fe61ecea2c098af235f4e"
 
-NEWS_STABLE_PROGRAM_SHA256 = "0cabb7c74daa023e30a6433d33425d9d73082c2bd91f9eb1bd1c2c43d6b30d24"
+NEWS_STABLE_PROGRAM_SHA256 = "2857303530b684323ded02df055a83575261eb0c46e5a44671e8d2ee1a18ac71"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -56,9 +56,9 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "metric_id": METRIC_ID,
         "program_sha256": load_stable_program_artifact().program_sha256,
     } == {
-        "program_version": "news_semantic_program_v7",
-        "policy_version": "news_triage_policy_v10",
-        "review_rubric_version": "news_review_v5",
+        "program_version": "news_semantic_program_v8",
+        "policy_version": "news_triage_policy_v11",
+        "review_rubric_version": "news_review_v6",
         "metric_id": "tracefold.news.production_action_trade_relevance_v6",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
@@ -113,8 +113,6 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
     assert set(envelope["signatures"]) == {"event_semantics", "reader_card"}
     assert set(envelope["implementation_ast_sha256"]) == {
         "artifact.render_model_evidence_json",
-        "assembly.decision_for",
-        "assembly.is_actionable",
         "assembly.normalize_restates",
         "assembly.restatement_index_error",
         "contracts.EditorialEnvelope",
@@ -183,8 +181,6 @@ def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> Non
                 assert path["format_fallback"]["config"]["response_format"] == {"type": "json_object"}
     assert set(envelope["assembly"]) == {
         "normalization_capture",
-        "reader_value_decision",
-        "actionable",
         "restatement_index",
         "normalize_restates",
         "trade_channel_order",
@@ -268,17 +264,6 @@ def test_material_ast_identity_ignores_prose_and_unrelated_symbols_but_moves_on_
         pytest.param(
             lambda e: e["model_visible_input"]["reader_card"]["schema"].__setitem__("title", "Other"),
             id="model_visible_schema",
-        ),
-        # The #314 review's finding: these decide the verdict after the model answers, and nothing else in
-        # the bundle moves when they change. Flipping one background judgment to a delivery must not be
-        # invisible.
-        pytest.param(
-            lambda e: e["assembly"]["reader_value_decision"].__setitem__("background", "push"),
-            id="reader_value_decision_map",
-        ),
-        pytest.param(
-            lambda e: e["assembly"]["actionable"].__setitem__("contextual|channels=1|markets=1", True),
-            id="actionable_rule",
         ),
         pytest.param(
             lambda e: e["assembly"]["restatement_index"].__setitem__("restatement|restates=0|told=0", None),

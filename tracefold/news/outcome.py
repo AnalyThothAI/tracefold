@@ -8,7 +8,6 @@ renders a bare key.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -67,19 +66,18 @@ ADMISSION_ZH: Final[dict[str, str]] = {
     "suppressed_low_signal": "低分社媒/盘口噪音，规则直接拦截",
     "unsupported_market_contract": "市场/钱包数据合同未支持，安全落库但不送审",
     "recovery": "断线期间补抄的旧闻，仅用于去重与历史",
-    # Retired Gate admissions (pre-#53) still present on historical Events.
-    "suppressed_ungrounded": "无关联资产，旧规则拦截（已退役）",
-    "suppressed_ungrounded_meme": "无关联资产的社媒，旧规则拦截（已退役）",
 }
 
 OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "degraded_listing_objective": "模型不可用，上币/下币客观规则兜底推送",
-    "degraded_telemetry_objective": "模型不可用，持仓异动客观规则兜底推送",
     "degraded_watchlist_objective": "模型不可用，关注列表客观规则兜底推送",
     "degraded_no_objective_guard": "模型不可用且未命中客观推送条件",
     "listing_deterministic": "上币/下币公告按客观规则推送",
-    "telemetry_deterministic": "持仓异动按客观规则判断",
-    "liquidation_deterministic": "强平事实按客观规则解析",
+    "opening_move_with_whale_concentration": "持仓异动达到开场次序与鲸鱼集中度标准",
+    "whale_ratio_below_threshold": "鲸鱼持仓占比未达阈值",
+    "oi_change_below_threshold": "持仓变化未达阈值",
+    "beyond_window_rank": "已超出窗口内可推送次序",
+    "liquidation_fact_only": "已发生强平事实，不推断后续方向",
     "oi_parse_failed": "持仓异动供应商格式无法解析，已安全拦截",
     "liquidation_parse_failed": "强平供应商格式无法解析，已安全拦截",
     "watchlist_objective_guard": "命中关注列表客观条件",
@@ -88,33 +86,14 @@ OVERRIDE_RULE_ZH: Final[dict[str, str]] = {
     "trade_relevance_inconsistent": "交易相关性字段不一致，未达推送标准",
     "reader_value_background": "仅有背景价值，不实时推送",
     "reader_value_none": "无读者价值，不推送",
-    "noise": "模型判定为噪音",
-    "unclear_direction": "方向不明，未达推送标准",
-    "below_threshold": "影响不够，未达推送标准",
-    "model_push_actionable": "模型判断值得推送",
-    "unclear_but_clear_event": "方向不明但事件明确",
-    "watchlist": "命中关注列表",
-    "magnitude3": "重大事件",
-    "high_priority_push": "高优先级来源，模型建议推送",
     "stale_source_artifact": "来源推文本身已过时，按旧闻扣下",
-    "contested_high_priority": "高优先级来源，模型判断有分歧，按召回优先推送",
-    "fail_closed_fallback": "模型不可用，按规则兜底",
     "restatement": "重复：读者已收到同一事实",
-    "distinct_bypass": "与读者刚收到的卡片都不同，放行",
-    # Retired rules (policy v1-v4 / Analyst lane) still present on historical verdicts.
-    "novel_bypass": "新进展放行：模型自报是新事实（旧规则）",
-    "magnitude2_actionable": "影响明显且可操作（旧规则）",
-    "verify_failed": "分析结果未通过校验（已退役）",
 }
 
 ERROR_CODE_ZH: Final[dict[str, str]] = {
     "oi_parse_failed": "持仓异动供应商格式无法解析",
     "liquidation_parse_failed": "强平供应商格式无法解析",
-    "news_triage_timeout": "模型超时",
-    "news_triage_output_truncated": "模型输出被截断",
-    "news_triage_output_invalid": "模型输出格式错误",
     "news_triage_circuit_open": "模型熔断中（连续失败后暂停调用）",
-    "news_triage_model_unconfigured": "未配置模型",
     "news_semantic_program_unconfigured": "未配置语义程序",
     "news_semantic_program_identity_mismatch": "语义程序身份校验失败",
     "news_canary_artifact_missing": "候选语义程序制品缺失",
@@ -155,31 +134,11 @@ THEME_ZH: Final[dict[str, str]] = {
     "us_macro_data": "美国宏观数据",
 }
 
-FAMILY_ZH: Final[dict[str, str]] = {
+DEDUPE_FAMILY_ZH: Final[dict[str, str]] = {
     "general": "综合",
     "filing": "公告/申报",
     "market_telemetry": "盘口数据",
     "disaster": "灾害",
-}
-
-EVENT_TYPE_ZH: Final[dict[str, str]] = {
-    "listing": "上币",
-    "delisting": "下币",
-    "filing": "申报/公告",
-    "regulation": "监管",
-    "hack": "黑客攻击",
-    "exploit": "漏洞利用",
-    "partnership": "合作",
-    "funding": "融资",
-    "macro": "宏观",
-    "rates": "利率",
-    "oi_spike": "持仓异动",
-    "liquidation": "清算",
-    "whale": "巨鲸动向",
-    "earnings": "财报",
-    "product": "产品",
-    "rumor": "传闻",
-    "noise": "噪音",
 }
 
 DIRECTION_ZH: Final[dict[str, str]] = {
@@ -202,14 +161,9 @@ DECISION_ZH: Final[dict[str, str]] = {
     "degraded": "降级",
 }
 
-# Policy v7 only writes `:seen`; cap/hard shapes remain here so historical
-# verdicts stay intelligible after the hard cut.
 _SEEN_SUFFIX: Final = ":seen"
 # #154. Constant rather than per-age so the top-10 `throttled_by_key` map keeps one bucket for the rule.
 _STALE_ARTIFACT_KEY: Final = STALE_SOURCE_KEY
-_THROTTLE_ASSET_RE = re.compile(r"^storyline:asset:(?P<symbol>[^:]+)(?::hard(?P<hard>\d+))?$")
-_THROTTLE_THEME_RE = re.compile(r"^storyline:theme:(?P<theme>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
-_THROTTLE_FAMILY_RE = re.compile(r"^storyline:macro:(?P<family>[^:]+)(?::(?:cap(?P<cap>\d+)|hard(?P<hard>\d+)))?$")
 
 
 def admission_zh(admission: str | None) -> str:
@@ -226,14 +180,6 @@ def error_code_zh(code: str | None) -> str:
         return ""
     if text in ERROR_CODE_ZH:
         return ERROR_CODE_ZH[text]
-    if text.startswith("news_triage_model_failed:"):
-        return f"模型调用失败（{text.split(':', 1)[1]}）"
-    if text.startswith("news_program_transport_"):
-        return f"语义程序调用失败（{text.removeprefix('news_program_transport_')}）"
-    if text.startswith("news_program_dspy_output_") or (text.startswith("news_program_") and text.endswith("_invalid")):
-        return "语义程序输出格式错误"
-    if text.startswith("news_analyst_"):
-        return "分析模型失败（已退役通道）"
     return text
 
 
@@ -260,8 +206,8 @@ def storyline_key_zh(key: str | None) -> str:
         theme = text.removeprefix("theme:")
         return THEME_ZH.get(theme, theme)
     if text.startswith("macro:"):
-        family = text.removeprefix("macro:")
-        return FAMILY_ZH.get(family, family)
+        dedupe_family = text.removeprefix("macro:")
+        return DEDUPE_FAMILY_ZH.get(dedupe_family, dedupe_family)
     return text
 
 
@@ -269,35 +215,11 @@ def throttled_by_zh(key: str | None) -> str:
     text = str(key or "")
     if not text:
         return ""
-    if text == "hourly_cap":
-        return "已达每小时推送上限"
     if text == _STALE_ARTIFACT_KEY:
         return "旧闻：这条推文在 provider 推送时就已过时"
     if text.endswith(_SEEN_SUFFIX):
         return "重复：读者刚收到过内容高度相近的卡片"
-    if (m := _THROTTLE_ASSET_RE.match(text)) is not None:
-        if m.group("hard"):
-            return f"{m.group('symbol')} 2 小时内已推 {m.group('hard')} 条，达到防洪上限"
-        return f"{m.group('symbol')} 同一话题在节流窗口内已推过同等或更重要的消息"
-    if (m := _THROTTLE_THEME_RE.match(text)) is not None:
-        theme = THEME_ZH.get(m.group("theme"), m.group("theme"))
-        return _window_cap_zh(f"「{theme}」话题", cap=m.group("cap"), hard=m.group("hard"))
-    if (m := _THROTTLE_FAMILY_RE.match(text)) is not None:
-        family = FAMILY_ZH.get(m.group("family"), m.group("family"))
-        return _window_cap_zh(f"「{family}」类", cap=m.group("cap"), hard=m.group("hard"))
     return text
-
-
-def _window_cap_zh(subject: str, *, cap: str | None, hard: str | None) -> str:
-    if hard:
-        return f"{subject} 4 小时内已推 {hard} 条，达到防洪上限"
-    if cap:
-        return f"{subject} 4 小时内已推 {cap} 条"
-    return f"{subject} 4 小时内已推过更重要的消息"
-
-
-def event_type_zh(value: str | None) -> str:
-    return EVENT_TYPE_ZH.get(str(value or ""), str(value or ""))
 
 
 def direction_zh(value: str | None) -> str:
@@ -313,10 +235,6 @@ def magnitude_zh(value: int | None) -> str:
 
 def scope_zh(value: str | None) -> str:
     return SCOPE_ZH.get(str(value or ""), str(value or ""))
-
-
-def family_zh(value: str | None) -> str:
-    return FAMILY_ZH.get(str(value or ""), str(value or ""))
 
 
 def decision_zh(value: str | None) -> str:
@@ -410,11 +328,10 @@ __all__ = [
     "ADMISSION_ZH",
     "AUDIENCE_ZH",
     "DECISION_ZH",
+    "DEDUPE_FAMILY_ZH",
     "DELIVERY_ERROR_ZH",
     "DIRECTION_ZH",
     "ERROR_CODE_ZH",
-    "EVENT_TYPE_ZH",
-    "FAMILY_ZH",
     "INCIDENT_CAUSE_ZH",
     "MAGNITUDE_ZH",
     "NOVELTY_ZH",
@@ -433,8 +350,6 @@ __all__ = [
     "direction_zh",
     "error_code_zh",
     "event_outcome",
-    "event_type_zh",
-    "family_zh",
     "incident_cause_zh",
     "magnitude_zh",
     "novelty_zh",

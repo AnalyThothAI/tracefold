@@ -162,7 +162,7 @@ def test_the_backfill_gives_already_judged_telemetry_events_the_assets_their_gat
         _upgrade("head")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0329"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0330"
         assert _assets(conn) == [
             ("liq-fact", "ETH", "perp", NOW - 2 * HOUR),
             ("oi-parsed", "TRUMP", "perp", NOW - 2 * HOUR),
@@ -177,9 +177,9 @@ def test_the_backfill_gives_already_judged_telemetry_events_the_assets_their_gat
             repos.news.record_event_assets(event_id="oi-prefixed", assets=[("XYZ-UNITREE", "perp")])
         assert len(_assets(conn)) == 3
 
-        # The whole point: the Reaction planner can now see them.
+        # The historical assets remain byte-for-byte audit evidence, but their pre-cut Events are archive-only.
         due = repos.price.due_reactions(now_ms=NOW, limit=100)
-        assert {row["event_id"] for row in due} == {"liq-fact", "oi-parsed", "oi-prefixed"}
+        assert due == []
     finally:
         if conn is not None:
             conn.close()

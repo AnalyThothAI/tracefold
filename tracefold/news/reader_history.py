@@ -14,7 +14,7 @@ TARGETED_HISTORY_WINDOW_MS: Final = 48 * 3_600_000
 RECENT_HISTORY_MAX: Final = 128
 TARGETED_EXACT_MAX: Final = 8
 TARGETED_ASSET_MAX: Final = 24
-READER_HISTORY_ID: Final = "news_reader_history_v1"
+READER_HISTORY_ID: Final = "news_reader_history_v2"
 READER_HISTORY_CONTRACT: Final = {
     "reader_history": READER_HISTORY_ID,
     "truth": {
@@ -33,7 +33,7 @@ READER_HISTORY_CONTRACT: Final = {
         "canonical_asset_overlap": TARGETED_ASSET_MAX,
     },
     "targeted_reasons": {
-        "exact_fingerprint": ["family", "comparison_fingerprint"],
+        "exact_fingerprint": ["dedupe_family", "comparison_fingerprint"],
         "canonical_asset_overlap": ["news_event_assets", "news_symbol_aliases.base_symbol"],
     },
     "projection": [
@@ -42,14 +42,14 @@ READER_HISTORY_CONTRACT: Final = {
         "storyline_key",
         "comparison_title",
         "comparison_fingerprint",
-        "family",
+        "dedupe_family",
         "grounded_assets",
         "assets",
         "canonical_assets",
-        "event_type",
         "magnitude",
         "direction",
         "headline_zh",
+        "why_zh",
     ],
     "dedup": "event_id_exact_first",
     "ordering": "reason_then_sent_desc_event_id",
@@ -58,6 +58,26 @@ READER_HISTORY_SHA256: Final = canonical_sha(READER_HISTORY_CONTRACT)
 
 HistoryScope = Literal["recent", "targeted"]
 HistoryReason = Literal["recent", "exact_fingerprint", "canonical_asset_overlap"]
+
+_READER_HISTORY_ROW_FIELDS: Final = frozenset(
+    {
+        "event_id",
+        "at_ms",
+        "storyline_key",
+        "comparison_title",
+        "comparison_fingerprint",
+        "dedupe_family",
+        "grounded_assets",
+        "assets",
+        "canonical_assets",
+        "magnitude",
+        "direction",
+        "headline_zh",
+        "why_zh",
+        "history_scope",
+        "retrieval_reason",
+    }
+)
 
 
 def news_retrieval_sha256(*, told_selector_sha256: str) -> str:
@@ -78,14 +98,14 @@ class ReaderHistoryRow:
     storyline_key: str
     comparison_title: str
     comparison_fingerprint: str
-    family: str
+    dedupe_family: str
     grounded_assets: tuple[str, ...]
     assets: tuple[str, ...]
     canonical_assets: tuple[str, ...]
-    event_type: str
     magnitude: int
     direction: str
     headline_zh: str
+    why_zh: str
     scope: HistoryScope = "recent"
     reason: HistoryReason = "recent"
 
@@ -96,14 +116,14 @@ class ReaderHistoryRow:
             "storyline_key": self.storyline_key,
             "comparison_title": self.comparison_title,
             "comparison_fingerprint": self.comparison_fingerprint,
-            "family": self.family,
+            "dedupe_family": self.dedupe_family,
             "grounded_assets": list(self.grounded_assets),
             "assets": list(self.assets),
             "canonical_assets": list(self.canonical_assets),
-            "event_type": self.event_type,
             "magnitude": self.magnitude,
             "direction": self.direction,
             "headline_zh": self.headline_zh,
+            "why_zh": self.why_zh,
             "history_scope": self.scope,
             "retrieval_reason": self.reason,
         }
@@ -129,7 +149,7 @@ def build_reader_history(
     rows: Sequence[Mapping[str, Any] | ReaderHistoryRow],
     *,
     now_ms: int,
-    family: str = "general",
+    dedupe_family: str = "general",
     comparison_fingerprint: str,
     canonical_assets: Sequence[str],
     include_targeted: bool = True,
@@ -140,7 +160,11 @@ def build_reader_history(
     recent_cutoff, target_cutoff = _history_cutoffs(now_ms)
     current_assets = frozenset(base_symbol(str(symbol)) for symbol in canonical_assets if symbol)
     targeted = [row for row in converted if _is_targeted(row, recent_cutoff, target_cutoff)]
-    exact = [row for row in targeted if row.family == family and row.comparison_fingerprint == comparison_fingerprint]
+    exact = [
+        row
+        for row in targeted
+        if row.dedupe_family == dedupe_family and row.comparison_fingerprint == comparison_fingerprint
+    ]
     exact_ids = {row.event_id for row in exact}
     asset = [
         row for row in targeted if row.event_id not in exact_ids and current_assets.intersection(row.canonical_assets)
@@ -212,28 +236,34 @@ def _is_targeted(row: ReaderHistoryRow, recent_cutoff: int, target_cutoff: int) 
 
 
 def _history_row(row: Mapping[str, Any]) -> ReaderHistoryRow:
+    unexpected = set(row).difference(_READER_HISTORY_ROW_FIELDS)
+    if unexpected:
+        raise ValueError(f"news_reader_history_fields_unexpected:{','.join(sorted(unexpected))}")
+    required = _READER_HISTORY_ROW_FIELDS.difference({"history_scope", "retrieval_reason"})
+    missing = required.difference(row)
+    if missing:
+        raise ValueError(f"news_reader_history_fields_missing:{','.join(sorted(missing))}")
     assets = tuple(
         str(value.get("symbol") if isinstance(value, Mapping) else value)
-        for value in row.get("assets") or ()
+        for value in row["assets"] or ()
         if value and (not isinstance(value, Mapping) or value.get("symbol"))
     )
-    grounded = tuple(str(value) for value in row.get("grounded_assets") or () if value)
-    canonical_values = row.get("canonical_assets") if "canonical_assets" in row else (*grounded, *assets)
-    canonical = tuple(sorted({base_symbol(str(value)) for value in canonical_values or () if value}))
+    grounded = tuple(str(value) for value in row["grounded_assets"] or () if value)
+    canonical = tuple(sorted({base_symbol(str(value)) for value in row["canonical_assets"] or () if value}))
     return ReaderHistoryRow(
-        event_id=str(row.get("event_id") or ""),
-        at_ms=int(row.get("at_ms") or 0),
-        storyline_key=str(row.get("storyline_key") or ""),
-        comparison_title=str(row.get("comparison_title") or ""),
-        comparison_fingerprint=str(row.get("comparison_fingerprint") or ""),
-        family=str(row.get("family") or "general"),
+        event_id=str(row["event_id"]),
+        at_ms=int(row["at_ms"]),
+        storyline_key=str(row["storyline_key"]),
+        comparison_title=str(row["comparison_title"]),
+        comparison_fingerprint=str(row["comparison_fingerprint"]),
+        dedupe_family=str(row["dedupe_family"]),
         grounded_assets=grounded,
         assets=assets,
         canonical_assets=canonical,
-        event_type=str(row.get("event_type") or ""),
-        magnitude=int(row.get("magnitude") or 0),
-        direction=str(row.get("direction") or "unclear"),
-        headline_zh=str(row.get("headline_zh") or ""),
+        magnitude=int(row["magnitude"]),
+        direction=str(row["direction"]),
+        headline_zh=str(row["headline_zh"]),
+        why_zh=str(row["why_zh"]),
     )
 
 

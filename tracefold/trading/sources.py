@@ -78,6 +78,13 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     if direction not in ("rise", "fall"):
         return SourceRejected(rule="oi_direction_unknown", symbol=symbol)
 
+    try:
+        source_rule = row["source_rule"]
+    except KeyError:
+        return SourceRejected(rule="source_rule_missing", symbol=symbol)
+    if not isinstance(source_rule, str) or not source_rule.strip():
+        return SourceRejected(rule="source_rule_missing", symbol=symbol)
+
     venue = str(row.get("venue") or "").strip().lower()
     try:
         return OiTradeCandidate(
@@ -93,7 +100,7 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
             whale_oi_ratio_bps=_int(row.get("whale_oi_ratio_bps"), 0) or 0,
             rank_in_window=rank,
             final_decision=str(row.get("final_decision") or ""),
-            source_rule=str(row.get("source_rule") or ""),
+            source_rule=source_rule,
             metric_version=str(row.get("metric_version") or ""),
             # Carried, never defaulted. A frame whose measurement window the provider contract could
             # not prove reaches the policy as `None`, and the policy refuses it by name (#265).
@@ -106,9 +113,9 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
             program_version=str(row.get("program_version") or ""),
             program_sha256=str(row.get("program_sha256") or ""),
             policy_version=str(row.get("policy_version") or ""),
-            editorial_origin=str(row.get("editorial_origin") or ""),
-            editorial_sha256=str(row.get("editorial_sha256") or ""),
-            scored_judgment_sha256=str(row.get("scored_judgment_sha256") or ""),
+            judgment_contract_version=str(row.get("judgment_contract_version") or ""),
+            judgment_origin=str(row.get("judgment_origin") or ""),
+            judgment_sha256=str(row.get("judgment_sha256") or ""),
             runtime_manifest_sha=str(row.get("runtime_manifest_sha") or ""),
         )
     except ValidationError:

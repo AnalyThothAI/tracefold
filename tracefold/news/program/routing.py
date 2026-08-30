@@ -418,7 +418,6 @@ class RoutedSemanticJudge:
             editorial_sha256=editorial.editorial_sha256,
             answering_route=route,
             fallback_from=fallback_from,
-            novelty_defaulted=False,
             calls=tuple(calls),
         )
         return SemanticJudgment(
@@ -449,7 +448,6 @@ class RoutedSemanticJudge:
             context_sha256=context_sha,
             envelope_sha256=EXECUTION_ENVELOPE_SHA256,
             fallback_from=primary_failure.code if primary_failure is not None else None,
-            novelty_defaulted=False,
             calls=tuple(calls),
         )
         return SemanticJudgeError(

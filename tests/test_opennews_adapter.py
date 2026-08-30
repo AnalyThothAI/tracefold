@@ -152,7 +152,7 @@ def test_market_strategy_is_normalized_before_the_exact_source_classifier() -> N
         ],
     }
     contract = classify_source_contract(event.provider_metadata)
-    assert (contract.family, contract.event_kind, contract.reason) == ("oi_v1", "oi", None)
+    assert (contract.source_contract_family, contract.event_kind, contract.reason) == ("oi_v1", "oi", None)
 
 
 def test_official_strategy_history_adapter_uses_exact_authenticated_endpoints() -> None:

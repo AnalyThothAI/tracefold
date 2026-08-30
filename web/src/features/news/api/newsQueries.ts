@@ -52,23 +52,20 @@ export type NewsOiWindowSymbol = NewsSchemas["NewsOiWindowSymbolData"];
 export type NewsSymbol = NewsSchemas["NewsSymbolData"];
 export type NewsSymbolContract = NewsSchemas["NewsSymbolContractData"];
 
-export type NewsFeedDecision = "push" | "escalate" | "drop" | "throttled" | "degraded";
 export type NewsFeedOutcome = NewsOutcomeGroup;
 export type NewsFeedDirection = "bullish" | "bearish" | "neutral";
-export type NewsFeedChannel = NewsEventKind;
+export type NewsFeedFinalDecision = "push" | "escalate" | "drop" | "throttled";
 export const NEWS_FEED_OUTCOMES: readonly NewsFeedOutcome[] = ["pushed", "held", "pending"];
 export const NEWS_FEED_DIRECTIONS: readonly NewsFeedDirection[] = ["bullish", "bearish", "neutral"];
-export const NEWS_FEED_CHANNELS: readonly NewsFeedChannel[] = NEWS_EVENT_KINDS;
 /** The three windows in the approved Event-feed visual. */
 export const NEWS_FEED_HOURS: readonly number[] = [1, 24, 168];
 export const NEWS_FEED_DEFAULT_HOURS = 24;
 
-export const NEWS_FEED_DECISIONS: readonly NewsFeedDecision[] = [
+export const NEWS_FEED_FINAL_DECISIONS: readonly NewsFeedFinalDecision[] = [
   "push",
   "escalate",
   "drop",
   "throttled",
-  "degraded",
 ];
 export const NEWS_FEED_PAGE_SIZE = 25;
 export const NEWS_FEED_REFETCH_MS = 3_000;
@@ -86,12 +83,16 @@ export const NEWS_QUOTES_SYMBOL_MAX = 100;
 
 export type NewsFeedFilters = {
   admission: string | null;
-  decision: NewsFeedDecision | null;
-  family: string | null;
+  eventFamilies: string[];
+  changeStates: string[];
+  assertionStatuses: string[];
+  sourceAuthorities: string[];
+  subjectCodes: string[];
+  finalDecisions: NewsFeedFinalDecision[];
+  eventKinds: NewsEventKind[];
   hours: number | null;
   outcome: NewsFeedOutcome | null;
   directions: NewsFeedDirection[];
-  channels: NewsFeedChannel[];
   q: string;
   symbol: string | null;
 };
@@ -100,7 +101,7 @@ export type NewsFeedFilters = {
  * The 持仓异动 monitor's tabs (#207). `全部` is the absence of the filter, so it is not a server value.
  *
  * The other three are the server's own grouping of the judge's rule names — `pushed` is the one qualifying
- * rule, `withheld` the three threshold rules, `parse_failed` the provider-contract failure. `decision`
+ * rule, `withheld` the three threshold rules, `parse_failed` the provider-contract failure. `final_decision`
  * cannot express the split: a frame held by a threshold and one whose template stopped parsing are both
  * `drop`, and both carry `override_rule = telemetry_deterministic`.
  */
@@ -119,27 +120,35 @@ const fetchNewsFeed = async (token: string, filters: NewsFeedFilters, cursor: st
     await getApi<NewsFeed>("/api/news/feed", {
       etagKey: `news-feed:${JSON.stringify([
         filters.q,
-        filters.family,
+        filters.eventFamilies.join(","),
+        filters.changeStates.join(","),
+        filters.assertionStatuses.join(","),
+        filters.sourceAuthorities.join(","),
+        filters.subjectCodes.join(","),
+        filters.finalDecisions.join(","),
+        filters.eventKinds.join(","),
         filters.admission,
-        filters.decision,
         filters.symbol,
         filters.outcome,
         filters.hours,
         filters.directions.join(","),
-        filters.channels.join(","),
         cursor ?? "first",
       ])}`,
       params: {
         admission: filters.admission,
+        assertion_status: filters.assertionStatuses.join(",") || null,
+        change_state: filters.changeStates.join(",") || null,
         cursor,
-        decision: filters.decision,
         direction: filters.directions.join(",") || null,
-        family: filters.family,
+        event_family: filters.eventFamilies.join(",") || null,
+        event_kind: filters.eventKinds.join(",") || null,
+        final_decision: filters.finalDecisions.join(",") || null,
         hours: filters.hours ?? undefined,
         limit: NEWS_FEED_PAGE_SIZE,
         outcome: filters.outcome,
         q: filters.q,
-        channel: filters.channels.join(",") || null,
+        source_authority: filters.sourceAuthorities.join(",") || null,
+        subject_code: filters.subjectCodes.join(",") || null,
         symbol: filters.symbol,
       },
       token,

@@ -13,13 +13,14 @@ from tracefold.news.learning.profile import _PROFILE
 from tracefold.news.models import TriageVerdict
 from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
+from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 
 def test_arm_manifest_identity_is_program_native() -> None:
     policy = DEFAULT_POLICY.as_dict()
     arm = ArmManifest(
-        program_version="news_semantic_program_v5",
+        program_version=PROGRAM_VERSION,
         program_sha256="a" * 64,
         envelope_sha256="d" * 64,
         runtime_model_bindings_sha256="c" * 64,
@@ -285,56 +286,6 @@ def test_observed_program_selected_trace_and_verdict_fail_closed() -> None:
         )
 
 
-def test_observed_degraded_program_keeps_unselected_failed_execution_audit() -> None:
-    context = {"event_id": "event-degraded", "phase": "stale_reask"}
-    context_sha = _sha(context)
-    failed_call = {
-        "predictor": "event_semantics",
-        "route": "primary",
-        "attempt": 1,
-        "physical_provider_call": True,
-        "error_code": "provider_unavailable",
-    }
-    execution = {
-        "execution_index": 0,
-        "phase": "stale_reask",
-        "status": "failed",
-        "context_sha256": context_sha,
-        "context": context,
-        "trace": {"context_sha256": context_sha, "calls": [failed_call]},
-        "usage": {"call_count": 1, "physical_call_count": 1},
-        "recording_call_indices": [0],
-    }
-    row = {
-        **_observed_judgment_fields(_verdict(), origin="degraded_unavailable"),
-        "degraded": True,
-        "verdict_error_code": "provider_unavailable",
-        "trace": {
-            "program_executions": [execution],
-            "model_attempts": 1,
-            "physical_model_attempts": 1,
-        },
-    }
-
-    observed = candidate_evaluator_module._observed_production_output(row)
-
-    program = observed["program"][0]
-    assert program["trace"] == {}
-    assert program["executions"] == [execution]
-    assert program["usage"]["call_count"] == 1
-    assert program["usage"]["physical_call_count"] == 1
-    assert program["calls"] == [
-        {
-            **failed_call,
-            "execution_index": 0,
-            "execution_phase": "stale_reask",
-            "execution_status": "failed",
-            "execution_context_sha256": context_sha,
-            "recording_call_index": 0,
-        }
-    ]
-
-
 def test_observed_non_degraded_program_requires_a_selected_execution() -> None:
     context = {"event_id": "event-nondegraded", "phase": "initial"}
     context_sha = _sha(context)
@@ -499,22 +450,18 @@ def _verdict() -> dict[str, object]:
     return {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "macro",
         "assets": [],
         "direction": "bullish",
         "scope": "sector",
         "magnitude": 2,
-        "actionable": True,
         "confidence": 0.8,
-        "decision": "push",
         "audience": "us_equity",
         "headline_zh": "DRAM 合约价续涨",
-        "title_zh": "",
         "why_zh": "行业价格继续改善，但持续性仍需后续数据确认。",
     }
 
 
-def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "model") -> dict[str, object]:
+def _observed_judgment_fields(verdict: dict[str, object]) -> dict[str, object]:
     relevance = TradeRelevanceV1(
         impact_breadth="sector",
         tradability="direct",
@@ -524,19 +471,15 @@ def _observed_judgment_fields(verdict: dict[str, object], *, origin: str = "mode
         affected_markets=("us_equity_broad",),
         reader_value="realtime",
     )
-    editorial = (
-        EditorialEnvelope.issue(editorial_origin="model", relevance=relevance, taxonomy=news_taxonomy())
-        if origin == "model"
-        else EditorialEnvelope.issue(editorial_origin="degraded_unavailable", relevance=None)
-    )
+    editorial = EditorialEnvelope.issue(relevance=relevance, taxonomy=news_taxonomy())
     scored = ScoredJudgment.issue(
         verdict=TriageVerdict.model_validate(verdict),
         editorial=editorial,
     )
     return {
         "verdict": verdict,
-        "editorial": editorial.model_dump(mode="json"),
-        "scored_judgment_sha256": scored.scored_judgment_sha256,
+        "model_editorial": editorial.model_dump(mode="json"),
+        "judgment_sha256": scored.scored_judgment_sha256,
     }
 
 

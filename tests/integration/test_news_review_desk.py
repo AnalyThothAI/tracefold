@@ -4,7 +4,7 @@ import json
 import uuid
 
 import pytest
-from psycopg.errors import InsufficientPrivilege, RaiseException
+from psycopg.errors import CheckViolation, InsufficientPrivilege, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import news_taxonomy
@@ -12,10 +12,15 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.news.learning.taxonomy import verify_taxonomy_gold_receipts
-from tracefold.news.models import TriageVerdict
+from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
-from tracefold.news.program.contracts import EditorialEnvelope, ScoredJudgment, TradeRelevanceV1
+from tracefold.news.program.contracts import (
+    JUDGMENT_CONTRACT_VERSION,
+    EditorialEnvelope,
+    ScoredJudgment,
+    TradeRelevanceV1,
+)
 from tracefold.news.program.identity import EXECUTION_ENVELOPE_SHA256
 from tracefold.news.program.runtime import PROGRAM_SCHEMA_VERSION, PROGRAM_VERSION
 from tracefold.news.review.desk import (
@@ -69,7 +74,7 @@ def _open_event(
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
     bundle_sha: str = ACTIVE_BUNDLE,
-    program_sha256: str = "d" * 64,
+    program_sha256: str = "b" * 64,
     relevance_overrides: dict[str, object] | None = None,
 ) -> str:
     repos = repositories_for_connection(conn)
@@ -103,17 +108,13 @@ def _open_event(
             {
                 "novelty": "new_fact",
                 "restates": -1,
-                "event_type": "regulation",
                 "assets": [],
                 "direction": "bullish",
                 "scope": "sector",
                 "magnitude": 2,
-                "actionable": True,
                 "confidence": 0.7,
-                "decision": "push",
                 "audience": "us_equity",
                 "headline_zh": "DRAM 合约价继续上涨",
-                "title_zh": "",
                 "why_zh": "存储厂商议价能力改善，但持续性仍需后续数据确认。",
             }
         )
@@ -128,7 +129,6 @@ def _open_event(
         }
         relevance.update(relevance_overrides or {})
         editorial = EditorialEnvelope.issue(
-            editorial_origin="model",
             relevance=TradeRelevanceV1.model_validate(relevance),
             taxonomy=news_taxonomy(
                 event_family="regulatory_legal",
@@ -141,18 +141,19 @@ def _open_event(
         assert repos.news.insert_verdict(
             event_id=opened.event_id,
             stage="triage",
-            policy_version="news_triage_policy_v10",
-            model_decision="push",
+            policy_version=TRIAGE_POLICY_VERSION,
+            judgment_contract_version=JUDGMENT_CONTRACT_VERSION,
+            judgment_origin="model",
             rule_baseline_decision="drop",
             final_decision="push",
             override_rule="trade_relevance_realtime",
             throttled_by=None,
             verdict=verdict.model_dump(mode="json"),
-            editorial=editorial.model_dump(mode="json"),
-            scored_judgment_sha256=judgment.scored_judgment_sha256,
+            model_editorial=editorial.model_dump(mode="json"),
+            judgment_sha256=judgment.scored_judgment_sha256,
             runtime_manifest_sha="a" * 64,
             model="test-model",
-            program_version="news_semantic_program_test",
+            program_version=PROGRAM_VERSION,
             program_sha256=program_sha256,
             degraded=False,
             error_code=None,
@@ -162,6 +163,19 @@ def _open_event(
                 "schema_sha256": "c" * 64,
                 "policy": {"push_magnitude": 1},
                 "gate_policy_version": "v4",
+                "judgment_contract_version": JUDGMENT_CONTRACT_VERSION,
+                "judgment_origin": "model",
+                "judgment_sha256": judgment.scored_judgment_sha256,
+                "verdict_sha256": judgment.verdict_sha256,
+                "editorial_sha256": editorial.editorial_sha256,
+                "runtime_manifest_sha": "a" * 64,
+                "program_version": PROGRAM_VERSION,
+                "program_sha256": program_sha256,
+                "evidence_version": int(evidence["evidence_version"]),
+                "evidence_sha256": str(evidence["evidence_sha256"]),
+                "focus_fact_id": str(evidence["focus_fact_id"]),
+                "told": [],
+                "told_count": 0,
                 "agent_assignment": {"bundle_sha": bundle_sha},
             },
             evidence_version=int(evidence["evidence_version"]),
@@ -271,7 +285,7 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
     evidence = desk.evidence(ref, principal=PRINCIPAL)
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
-    assert evidence["agent"]["cohort"] == "news_semantic_program_test/news_triage_policy_v10/test-model"
+    assert evidence["agent"]["cohort"] == f"{PROGRAM_VERSION}/{TRIAGE_POLICY_VERSION}/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
     cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
@@ -460,7 +474,7 @@ def test_critical_taxonomy_requires_independent_adjudication(conn) -> None:
         "gold_receipt": {
             "review_id": second["receipt"]["review_id"],
             "acceptance_id": second["receipt"]["acceptance_id"],
-            "rubric_version": "news_review_v5",
+            "rubric_version": "news_review_v6",
             "reviewer": "reviewer-b",
             "accepted_at_ms": accepted_at_ms,
             "release_eligible": True,
@@ -535,9 +549,6 @@ def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
     by_cohort = {row["cohort"]: row for row in coverage["cohorts"]}
     assert set(by_cohort) == {first_bundle}
     assert by_cohort[first_bundle]["agent"]["bundle_sha"] == first_bundle
-    assert {row["legacy_cohort"] for row in coverage["cohorts"]} == {
-        "news_semantic_program_test/news_triage_policy_v10/test-model"
-    }
     assert coverage["funnel"]["total"] == 1
     assert coverage["funnel"]["accepted"] == 1
     eligibility = conn.execute(
@@ -688,9 +699,9 @@ def test_market_view_defaults_to_latest_homogeneous_cohort_and_hides_sparse_fami
     )
     market = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(view="market"), principal=PRINCIPAL)
     assert market["status"] == "ready"
-    assert market["reaction"]["meta"]["cohort"] == ("news_semantic_program_test/news_triage_policy_v10/test-model")
+    assert market["reaction"]["meta"]["cohort"] == f"{PROGRAM_VERSION}/{TRIAGE_POLICY_VERSION}/test-model"
     assert market["reaction"]["meta"]["cohort_sha256"] == ACTIVE_BUNDLE
-    assert market["reaction"]["meta"]["program_sha256"] == "d" * 64
+    assert market["reaction"]["meta"]["program_sha256"] == "b" * 64
     assert market["reaction"]["coverage"][0]["eligible_n"] == 1
     assert market["reaction"]["event_families"] == []
     assert "不是新闻因果" in market["disclaimer_zh"]
@@ -733,54 +744,6 @@ def test_high_reaction_held_case_is_discovery_only_and_not_release_truth(conn) -
     assert {row["review_kind"]: row["release_eligible"] for row in rows} == {
         "judgment": False,
         "acceptance": False,
-    }
-
-
-def test_legacy_reconstructed_evidence_stays_discovery_only_after_review(conn) -> None:
-    event_id = _open_event(conn)
-    conn.execute(
-        """
-        INSERT INTO news_event_evidence_snapshots (
-          event_id, evidence_version, focus_fact_id, evidence_sha256,
-          provenance, release_eligible, snapshot, created_at_ms
-        )
-        SELECT event_id, evidence_version + 1, focus_fact_id, %s,
-               'legacy_reconstructed', false,
-               snapshot || '{"provenance":"legacy_reconstructed"}'::jsonb,
-               %s
-          FROM news_event_evidence_snapshots
-         WHERE event_id = %s
-         ORDER BY evidence_version DESC
-         LIMIT 1
-        """,
-        ("f" * 64, NOW, event_id),
-    )
-    conn.commit()
-
-    desk = ReviewDesk(conn, now_ms=NOW)
-    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
-    assert task["evidence_ready"] is False
-    evidence = desk.evidence(
-        TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-        principal=PRINCIPAL,
-    )
-    assert evidence["evidence"]["provenance"] == "legacy_reconstructed"
-    with repositories_for_connection(conn).transaction():
-        receipt = desk.submit(
-            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            _rubric(),
-            principal=PRINCIPAL,
-            idempotency_key=str(uuid.uuid4()),
-        )
-
-    rows = conn.execute(
-        "SELECT review_kind, release_eligible FROM news_reviews "
-        "WHERE review_id = %s OR accepts_review_id = %s ORDER BY review_kind",
-        (receipt["receipt"]["review_id"], receipt["receipt"]["review_id"]),
-    ).fetchall()
-    assert {row["review_kind"]: row["release_eligible"] for row in rows} == {
-        "acceptance": False,
-        "judgment": False,
     }
 
 
@@ -834,7 +797,7 @@ def test_acceptance_is_bound_to_exact_task_version(conn) -> None:
     assert changed["accepted_review"] is None
 
 
-def test_stronger_evidence_creates_a_new_pending_review_task(conn) -> None:
+def test_unjudged_new_evidence_is_not_projected_as_a_current_review_task(conn) -> None:
     event_id = _open_event(conn)
     desk = ReviewDesk(conn, now_ms=NOW)
     first = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
@@ -855,12 +818,7 @@ def test_stronger_evidence_creates_a_new_pending_review_task(conn) -> None:
         evidence = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 1)
     assert evidence["evidence_version"] == 2
 
-    second = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
-    assert second["evidence_version"] == 2
-    assert second["verdict_evidence_version"] == 1
-    assert second["task_id"] != first["task_id"]
-    assert second["review_status"] == "pending"
-    assert second["accepted_review"] is None
+    assert desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"] == []
 
 
 def test_delivery_terminal_error_code_distinguishes_unknown_from_known_failure(conn) -> None:
@@ -903,7 +861,7 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
         title="Federal Reserve unexpectedly cuts its policy rate by 50 basis points",
         relevance_overrides={"impact_breadth": "regional"},
     )
-    ranked_legacy = _open_event(
+    delivery_failed = _open_event(
         conn,
         delivered=False,
         hit_id=112102,
@@ -930,20 +888,18 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
             (
                 newest,
                 queue_now - 100,
-                ranked_legacy,
+                delivery_failed,
                 queue_now - 200,
                 queue_now - 3_600_000 + 30_000,
-                [newest, ranked_legacy, oldest],
+                [newest, delivery_failed, oldest],
             ),
         )
-        # Reproduce the old mixed-order failure: this row uses the legacy rank-0 delivery stratum while
-        # its neighbours use active Review-v4 relevance strata (which the retired rank table treated as 99).
-        conn.execute("UPDATE news_verdicts SET editorial = '{}'::jsonb WHERE event_id = %s", (ranked_legacy,))
         assert (
-            repos.news.begin_delivery(event_id=ranked_legacy, kind="first", card={}, now_ms=queue_now - 1_000) == "new"
+            repos.news.begin_delivery(event_id=delivery_failed, kind="first", card={}, now_ms=queue_now - 1_000)
+            == "new"
         )
         assert repos.news.settle_delivery(
-            event_id=ranked_legacy,
+            event_id=delivery_failed,
             kind="first",
             state="terminal",
             receipt=None,
@@ -958,7 +914,7 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
     )
     tasks = [*first["tasks"], *second["tasks"]]
 
-    assert [task["event_id"] for task in tasks] == [newest, ranked_legacy, oldest]
+    assert [task["event_id"] for task in tasks] == [newest, delivery_failed, oldest]
     assert len({task["task_id"] for task in tasks}) == 3
 
     task_by_event = {task["event_id"]: task for task in tasks}
@@ -977,7 +933,7 @@ def test_event_queue_cursor_matches_return_order_and_pins_the_window(conn) -> No
         pending_query.model_copy(update={"cursor": pending_first["next_cursor"]}), principal=PRINCIPAL
     )
     assert [task["event_id"] for task in [*pending_first["tasks"], *pending_second["tasks"]]] == [
-        ranked_legacy,
+        delivery_failed,
         oldest,
     ]
     accepted = ReviewDesk(conn, now_ms=queue_now).open(
@@ -1010,17 +966,21 @@ def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(co
                NULL::text AS verdict_error_code,
                NULL::text AS override_rule,
                NULL::text AS throttled_by,
-               jsonb_build_object('headline_zh', i::text, 'why_zh', 'x', 'scope', 'macro') AS verdict,
+               jsonb_build_object(
+                   'novelty', 'new_fact', 'restates', -1, 'assets', '[]'::jsonb,
+                   'direction', 'neutral', 'scope', 'macro', 'magnitude', 0,
+                   'confidence', 1.0, 'audience', 'none',
+                   'headline_zh', i::text, 'why_zh', 'x'
+               ) AS verdict,
                jsonb_build_object('agent_assignment', jsonb_build_object('bundle_sha', '{ACTIVE_BUNDLE}')) AS trace,
-               ''::text AS prompt_version,
-               'news_triage_policy_v10'::text AS policy_version,
+               '{TRIAGE_POLICY_VERSION}'::text AS policy_version,
                'model'::text AS model,
                NULL::text AS delivery_state,
                NULL::jsonb AS delivery_card,
                NULL::bigint AS settled_at_ms,
                NULL::text AS delivery_error_code,
                NULL::integer AS max_abs_return_1h_bps,
-               'news_semantic_program_v5'::text AS program_version,
+               '{PROGRAM_VERSION}'::text AS program_version,
                repeat('b', 64) AS program_sha256,
                jsonb_build_object(
                    'editorial_origin', 'model',
@@ -1037,9 +997,12 @@ def test_event_queue_scans_sparse_strata_past_two_thousand_real_postgres_rows(co
                            'reader_value', 'escalate'
                        )
                    END
-               ) AS editorial,
-               repeat('c', 64) AS scored_judgment_sha256,
-               repeat('d', 64) AS runtime_manifest_sha
+               ) AS model_editorial,
+               '{JUDGMENT_CONTRACT_VERSION}'::text AS judgment_contract_version,
+               'model'::text AS judgment_origin,
+               repeat('c', 64) AS judgment_sha256,
+               repeat('d', 64) AS runtime_manifest_sha,
+               'news'::text AS event_kind
           FROM generate_series(1, 5000) AS series(i)
         """
     )
@@ -1527,41 +1490,50 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
     assert direct["evidence_disposition"] == "audit_only"
     assert direct["review_status"] == "audit_only"
 
-    judgment_id, acceptance_id = "9" * 64, "a" * 64
-    conn.execute(
-        """
-        INSERT INTO news_reviews (
-          review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
-          rubric_version, reader_contract_version, reviewer, payload, accepts_review_id,
-          release_eligible, created_at_ms
-        ) VALUES
-          (%s, 'judgment', 'pairwise', %s, %s, %s,
-           'news_review_v2', 'reader_contract_v2', 'historical-reviewer', %s::jsonb, NULL, true, %s),
-          (%s, 'acceptance', 'pairwise', %s, %s, %s,
-           'news_review_v2', 'reader_contract_v2', 'historical-reviewer', '{}'::jsonb, %s, true, %s)
-        """,
-        (
-            judgment_id,
-            old_task_id,
-            direct["task_version"],
-            f"{old_run_sha}:{old_case_id}",
-            json.dumps({"preference": "A"}),
-            NOW - 1,
-            acceptance_id,
-            old_task_id,
-            direct["task_version"],
-            f"{old_run_sha}:{old_case_id}",
-            judgment_id,
-            NOW,
-        ),
-    )
+    with pytest.raises(CheckViolation, match="news_review_current_task_source_missing"):
+        conn.execute(
+            """
+            INSERT INTO news_reviews (
+              review_id, review_kind, subject_kind, task_id, task_version, pairwise_case_id,
+              rubric_version, reader_contract_version, reviewer, selection, payload, accepts_review_id,
+              release_eligible, created_at_ms
+            ) VALUES
+              (%s, 'judgment', 'pairwise', %s, %s, %s,
+               'news_review_v6', 'reader_contract_v2', 'audit-reviewer', %s::jsonb, %s::jsonb, NULL, true, %s),
+              (%s, 'acceptance', 'pairwise', %s, %s, %s,
+               'news_review_v6', 'reader_contract_v2', 'audit-reviewer', '{}'::jsonb, '{}'::jsonb, %s, true, %s)
+            """,
+            (
+                "9" * 64,
+                old_task_id,
+                direct["task_version"],
+                f"{old_run_sha}:{old_case_id}",
+                json.dumps(direct["selection"]),
+                json.dumps(
+                    {
+                        "kind": "blind_pairwise",
+                        "preference": "A",
+                        "critical_errors": [],
+                        "evidence_refs": [],
+                        "note": "",
+                    }
+                ),
+                NOW - 1,
+                "a" * 64,
+                old_task_id,
+                direct["task_version"],
+                f"{old_run_sha}:{old_case_id}",
+                "9" * 64,
+                NOW,
+            ),
+        )
     assert desk.open(DeskQuery(mode="pairwise", status="accepted"), principal=PRINCIPAL)["tasks"] == []
     historical = {
         task["task_id"]: task
         for task in desk.open(DeskQuery(mode="pairwise", status="all"), principal=PRINCIPAL)["tasks"]
     }[old_task_id]
     assert historical["review_status"] == "audit_only"
-    assert historical["accepted_review"]["review_id"] == judgment_id
+    assert historical["accepted_review"] is None
 
     old_ref = TaskRef(task_id=old_task_id, task_version=direct["task_version"])
     with (
@@ -1579,7 +1551,7 @@ def test_superseded_epoch_pairwise_task_is_visible_only_as_read_only_audit_histo
             "SELECT count(*) AS n FROM news_reviews WHERE pairwise_case_id = %s",
             (f"{old_run_sha}:{old_case_id}",),
         ).fetchone()["n"]
-        == 2
+        == 0
     )
 
 

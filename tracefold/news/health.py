@@ -135,8 +135,8 @@ def model_health(
         return HealthItem("bad", "模型熔断中", "连续调用失败后暂停调用；此期间所有事件按规则兜底")
     # The model's own denominator, not the funnel's: a deterministic telemetry judgment is never
     # degraded, so counting ~190 of them a day here would dilute the share and make the model look
-    # healthier than it is (#137). `triage_24h` stays inclusive because the funnel is the reader's view.
-    total = int(pipeline.get("model_triage_24h") or pipeline.get("triage_24h") or 0)
+    # healthier than it is (#137).
+    total = int(pipeline.get("model_triage_24h") or 0)
     degraded = int(pipeline.get("triage_degraded_24h") or 0)
     by_code = dict(pipeline.get("triage_degraded_by_code_24h") or {})
     ranked = sorted(by_code.items(), key=lambda kv: -kv[1])
@@ -194,13 +194,10 @@ def status_health(
     }
     overall = _worst(*(item.level for item in items.values()))
     funnel = {
-        "received": int(pipeline.get("funnel_received_24h", pipeline.get("events_24h")) or 0),
-        # Every persisted Event has completed the provider parser; standard-news parse failures never become
-        # Events. Keeping this explicit makes the visual contract truthful even when the two counts match.
-        "parsed": int(pipeline.get("funnel_parsed_24h", pipeline.get("events_24h")) or 0),
-        "admitted": int(pipeline.get("funnel_admitted_24h", pipeline.get("admitted_24h")) or 0),
+        "received": int(pipeline.get("funnel_received_24h") or 0),
+        "admitted": int(pipeline.get("funnel_admitted_24h") or 0),
         "candidates": int(pipeline.get("candidates_24h") or 0),
-        "triaged": int(pipeline.get("funnel_triaged_24h", pipeline.get("triage_24h")) or 0),
+        "triaged": int(pipeline.get("funnel_triaged_24h") or 0),
         # #87: between "sent to the model" and "decided", the reader wants to know how many Events named an
         # asset that actually exists on a venue. It is a property of the same Events, not a separate stage.
         # `tagged` travels with it because it is the only population `grounded` can honestly be compared
@@ -208,7 +205,7 @@ def status_health(
         "tagged": int(pipeline.get("tagged_24h") or 0),
         "grounded": int(pipeline.get("grounded_24h") or 0),
         "decided_push": int(pipeline.get("decided_push_24h") or 0),
-        "delivered": int(pipeline.get("funnel_delivered_24h", delivery.get("sent_24h")) or 0),
+        "delivered": int(pipeline.get("funnel_delivered_24h") or 0),
         "received_1h": int(pipeline.get("events_1h") or 0),
         "delivered_1h": int(delivery.get("sent_1h") or 0),
     }

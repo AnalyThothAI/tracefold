@@ -794,7 +794,7 @@ class CandidateEvaluator:
             scope=verdict.scope,
             verdict_primaries=primaries,
             grounded_assets=grounded,
-            family=str(event.get("family") or "general"),
+            dedupe_family=str(event.get("dedupe_family") or "general"),
         )
         decision = production_decision(
             judgment,
@@ -811,7 +811,7 @@ class CandidateEvaluator:
             "storyline_key": storyline,
             "comparison_title": str(event.get("comparison_title") or ""),
             "comparison_fingerprint": str(event.get("comparison_fingerprint") or ""),
-            "family": str(event.get("family") or "general"),
+            "dedupe_family": str(event.get("dedupe_family") or "general"),
             "grounded_assets": list(grounded),
             "canonical_assets": list(self._history.canonical_assets(grounded)),
             "delivered": delivered,

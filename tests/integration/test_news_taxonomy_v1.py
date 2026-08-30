@@ -14,6 +14,7 @@ from tracefold.news.learning.metric import (
 )
 from tracefold.news.learning.profile import TRUSTED_ROOT_SHA
 from tracefold.news.learning.taxonomy import (
+    TAXONOMY_EVALUATION_SCHEMA,
     TaxonomyCandidateRegistrationV1,
     TaxonomyEvaluationContextV1,
     build_taxonomy_evaluation_report,
@@ -223,7 +224,7 @@ def test_taxonomy_evaluation_appends_through_the_existing_learning_ledger() -> N
         )
         registration = TaxonomyCandidateRegistrationV1(
             tested_git_sha="a" * 40,
-            program_version="news_semantic_program_v7",
+            program_version=PROGRAM_VERSION,
             program_sha256="1" * 64,
             stable_bundle_sha256="9" * 64,
             runtime_manifest_sha256="7" * 64,
@@ -232,7 +233,7 @@ def test_taxonomy_evaluation_appends_through_the_existing_learning_ledger() -> N
             envelope_sha256="2" * 64,
             metric_id="tracefold.news.production_action_trade_relevance_v6",
             metric_sha256="6" * 64,
-            policy_version="news_triage_policy_v10",
+            policy_version=TRIAGE_POLICY_VERSION,
             policy_sha256="c" * 64,
             runtime_model_bindings_sha256="b" * 64,
             taxonomy_program_sha256="e" * 64,
@@ -257,7 +258,7 @@ def test_taxonomy_evaluation_appends_through_the_existing_learning_ledger() -> N
                                 "review_id": canonical_sha({"case_id": "taxonomy-case-1"}),
                             }
                         ),
-                        "rubric_version": "news_review_v5",
+                        "rubric_version": REVIEW_RUBRIC_VERSION,
                         "reviewer": "taxonomy-integration-reviewer",
                         "accepted_at_ms": 1,
                         "release_eligible": True,
@@ -289,7 +290,7 @@ def test_taxonomy_evaluation_appends_through_the_existing_learning_ledger() -> N
             (artifact_sha,),
         ).fetchone()
         assert row["kind"] == "evaluation_report"
-        assert row["payload"]["schema_id"] == "tracefold.news.taxonomy_evaluation_report.v1"
+        assert row["payload"]["schema_id"] == TAXONOMY_EVALUATION_SCHEMA
         assert row["payload"]["outcome"] == "UNKNOWN"
         assert row["created_by"] == "taxonomy-integration-test"
     finally:

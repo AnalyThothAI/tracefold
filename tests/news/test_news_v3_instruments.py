@@ -126,7 +126,7 @@ def test_storyline_key_buckets_one_issuer_together() -> None:
             headline_zh="SK海力士回购",
             scope="single_name",
             primary_assets=[symbol],
-            family="general",
+            dedupe_family="general",
         )
 
     # The 2026-08-19 failure: one 40T KRW buyback shipped nine cards because the symbol alternated.
@@ -143,7 +143,7 @@ def test_final_storyline_key_resolves_aliases_on_both_sides() -> None:
             scope="single_name",
             verdict_primaries=["SKHX"],
             grounded_assets=["XYZ-SKHY"],
-            family="general",
+            dedupe_family="general",
         )
         == "asset:SKHY"
     )

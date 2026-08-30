@@ -22,17 +22,13 @@ _NO_OBJECTIVE_GUARD = GateFacts(
 def _verdict(**overrides: Any) -> TriageVerdict:
     values: dict[str, Any] = {
         "novelty": "new_fact",
-        "event_type": "macro",
         "assets": [],
         "direction": "neutral",
         "scope": "macro",
         "magnitude": 2,
-        "actionable": False,
         "confidence": 0.9,
-        "decision": "drop",
         "audience": "macro",
         "headline_zh": "固定产品回归案例",
-        "title_zh": "",
         "why_zh": "",
     }
     values.update(overrides)
@@ -52,7 +48,7 @@ def _context(*, provider_score: int = 0, queue_priority: str = "normal") -> Tria
     return TriageContext.from_card(
         {
             "event_id": "issue-160-product-case",
-            "evidence_version": 1,
+            "evidence_version": 3,
             "evidence_sha256": "a" * 64,
             "focus_fact_id": "fact-160",
             "reporting_origin": "official",
@@ -60,7 +56,7 @@ def _context(*, provider_score: int = 0, queue_priority: str = "normal") -> Tria
             "leader_title": "Local official repeats an in-line statement",
             "leader_description": "No new priced transmission was reported.",
             "opened_at_ms": 1_000_000,
-            "family": "general",
+            "dedupe_family": "general",
             "provider_score_max": provider_score,
             "queue_priority": queue_priority,
             "asset_class": "macro",
@@ -96,7 +92,6 @@ def test_provider_score_95_local_contextual_color_only_is_held() -> None:
     )
     judgment = scored_judgment(
         _verdict(
-            event_type="regulation",
             scope="single_name",
             magnitude=3,
             headline_zh="地方官员重复既有表态",
@@ -150,11 +145,8 @@ def test_queue_high_or_macro_scope_does_not_create_reader_urgency() -> None:
 def test_unexpected_fed_cut_with_rates_and_liquidity_escalates() -> None:
     judgment = scored_judgment(
         _verdict(
-            event_type="rates",
             direction="bullish",
             magnitude=3,
-            actionable=True,
-            decision="escalate",
             headline_zh="美联储意外降息",
         ),
         relevance=trade_relevance(
@@ -184,8 +176,6 @@ def test_official_hormuz_closure_with_energy_and_risk_escalates() -> None:
         _verdict(
             direction="bearish",
             magnitude=3,
-            actionable=True,
-            decision="escalate",
             headline_zh="霍尔木兹海峡正式关闭",
         ),
         relevance=trade_relevance(
@@ -215,8 +205,6 @@ def test_regional_port_supply_state_change_is_realtime() -> None:
         _verdict(
             scope="sector",
             magnitude=2,
-            actionable=True,
-            decision="push",
             headline_zh="地区港口停运中断商品供应",
         ),
         relevance=trade_relevance(
@@ -249,13 +237,10 @@ def test_material_local_regulation_for_us_listed_single_name_is_realtime() -> No
     )
     judgment = scored_judgment(
         _verdict(
-            event_type="regulation",
             assets=[TriageAsset(symbol="UWMC", role="primary", market_type="us_equity")],
             direction="bearish",
             scope="single_name",
             magnitude=2,
-            actionable=True,
-            decision="push",
             audience="us_equity",
             headline_zh="地方监管新规直接改变 UWMC 业务",
         ),

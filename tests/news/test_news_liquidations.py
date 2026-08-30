@@ -7,10 +7,13 @@ import pytest
 from tracefold.news.events.gate import GateInput, evaluate_gate
 from tracefold.news.liquidations import (
     ADMISSION_POLICY_VERSION,
+    PROGRAM_VERSION,
+    READER_CONTRACT_VERSION,
     TRIAGE_POLICY_VERSION,
+    judge,
+    parse_failure,
     parse_liquidation,
     program_sha256,
-    verdict,
 )
 from tracefold.news.source_contracts import classify_source_contract, source_contract_admission
 
@@ -93,21 +96,34 @@ def test_unknown_venue_or_timestamp_order_fails_closed() -> None:
     )
 
 
-def test_reader_verdict_stays_direction_neutral_and_non_actionable() -> None:
+def test_reader_judgment_stays_direction_neutral_and_owns_one_action() -> None:
     fact = _parse("SPCX Large Short Liquidation 202.71K at $137.01")
     assert fact is not None
-    judgment = verdict(fact)
-    assert judgment.event_type == "liquidation"
-    assert judgment.direction == "neutral"
-    assert judgment.actionable is False
-    assert "不代表后续方向" in judgment.why_zh
+    judgment = judge(fact)
+    assert judgment.verdict.direction == "neutral"
+    assert "不代表后续方向" in judgment.verdict.why_zh
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("push", "liquidation_fact_only")
+    assert {"event_type", "actionable", "decision", "title_zh"}.isdisjoint(judgment.verdict.model_dump(mode="json"))
+    assert judgment.judgment_sha256 == judge(fact).judgment_sha256
+
+
+def test_parse_failure_is_a_typed_fail_closed_judgment() -> None:
+    judgment, failure = parse_failure("bad liquidation", provider_source="binance")
+    assert judgment.fact is None
+    assert (judgment.decision.final, judgment.decision.override_rule) == ("drop", "liquidation_parse_failed")
+    assert judgment.rule == "liquidation_parse_failed"
+    assert "rule" not in failure
 
 
 def test_program_identity_is_stable() -> None:
     assert program_sha256() == program_sha256()
     assert len(program_sha256()) == 64
     assert ADMISSION_POLICY_VERSION == "news_liquidation_admission_v1"
-    assert TRIAGE_POLICY_VERSION == "news_liquidation_policy_v1"
+    assert (PROGRAM_VERSION, READER_CONTRACT_VERSION, TRIAGE_POLICY_VERSION) == (
+        "news_liquidation_fact_v2",
+        "liquidation_card_v2",
+        "news_liquidation_policy_v2",
+    )
 
 
 def test_liquidation_admission_is_composed_after_unchanged_generic_gate_policy() -> None:

@@ -134,7 +134,6 @@ def test_configured_provider_capability_shapes_the_actual_native_dspy_request(
     valid_semantics = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "listing",
         "assets": [],
         "direction": "bullish",
         "scope": "single_name",
@@ -598,7 +597,6 @@ def test_dedicated_reader_endpoint_produces_exact_two_model_trace() -> None:
     semantics = {
         "novelty": "new_fact",
         "restates": -1,
-        "event_type": "listing",
         "assets": [{"symbol": "BTC", "market_type": "spot", "role": "primary"}],
         "direction": "bullish",
         "scope": "single_name",

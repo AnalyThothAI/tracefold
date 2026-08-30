@@ -25,7 +25,6 @@ from tracefold.news.taxonomy import (
     IPTC_CODEBOOK_SHA256,
     ModelTaxonomyV1,
     NewsTaxonomyV1,
-    project_legacy_event_type,
     source_authority,
 )
 from tracefold.news.triage_rules import GateFacts, decide
@@ -57,7 +56,6 @@ def test_taxonomy_critical_predicate_is_shared_by_review_and_evaluation() -> Non
     assert taxonomy_requires_independent_adjudication(
         _taxonomy(event_family="financial_results", assertion_status="claimed")
     )
-    assert taxonomy_requires_independent_adjudication(ordinary, legacy_event_type="filing")
     assert taxonomy_requires_independent_adjudication(
         ordinary,
         draft_taxonomy=_taxonomy(event_family="regulatory_legal", change_state="effective"),
@@ -69,7 +67,7 @@ def _gold_receipt(case_id: str) -> dict[str, object]:
     return {
         "review_id": review_id,
         "acceptance_id": canonical_sha({"kind": "acceptance", "review_id": review_id}),
-        "rubric_version": "news_review_v5",
+        "rubric_version": "news_review_v6",
         "reviewer": "taxonomy-test-reviewer",
         "accepted_at_ms": 1,
         "release_eligible": True,
@@ -79,7 +77,7 @@ def _gold_receipt(case_id: str) -> dict[str, object]:
 def _evaluation_context() -> TaxonomyEvaluationContextV1:
     registration = TaxonomyCandidateRegistrationV1(
         tested_git_sha="a" * 40,
-        program_version="news_semantic_program_v7",
+        program_version="news_semantic_program_v8",
         program_sha256="1" * 64,
         stable_bundle_sha256="9" * 64,
         runtime_manifest_sha256="7" * 64,
@@ -88,7 +86,7 @@ def _evaluation_context() -> TaxonomyEvaluationContextV1:
         envelope_sha256="2" * 64,
         metric_id="tracefold.news.production_action_trade_relevance_v6",
         metric_sha256="6" * 64,
-        policy_version="news_triage_policy_v10",
+        policy_version="news_triage_policy_v11",
         policy_sha256="c" * 64,
         runtime_model_bindings_sha256="b" * 64,
         taxonomy_program_sha256="e" * 64,
@@ -158,7 +156,6 @@ def _judgment(taxonomy: NewsTaxonomyV1) -> ScoredJudgment:
         verdict=TriageVerdict(
             novelty="new_fact",
             restates=-1,
-            event_type="listing",
             assets=(),
             direction="neutral",
             scope="single_name",
@@ -166,12 +163,9 @@ def _judgment(taxonomy: NewsTaxonomyV1) -> ScoredJudgment:
             confidence=0.8,
             headline_zh="某交易所开放新市场",
             why_zh="新增市场改变可交易入口。",
-            actionable=True,
-            decision="push",
             audience="crypto",
         ),
         editorial=EditorialEnvelope.issue(
-            editorial_origin="model",
             relevance=relevance,
             taxonomy=taxonomy,
         ),
@@ -192,7 +186,7 @@ def _shadow_context() -> TriageContext:
             "leader_description": "The exchange announced the opening.",
             "opened_at_ms": 1_000_000,
             "member_count": 1,
-            "family": "listing",
+            "dedupe_family": "listing",
             "provider_score_max": 90,
             "provider_metadata": {},
             "queue_priority": "normal",
@@ -239,14 +233,6 @@ def test_source_authority_is_exact_code_owned_provenance(
     expected: str,
 ) -> None:
     assert source_authority(sources) == expected
-
-
-def test_legacy_projection_abstains_on_mixed_axes() -> None:
-    assert project_legacy_event_type("listing").event_family == "market_access"
-    assert project_legacy_event_type("filing").event_family == "unknown"
-    rumor = project_legacy_event_type("rumor")
-    assert rumor.event_family == "unknown"
-    assert rumor.assertion_status == "rumor"
 
 
 def test_taxonomy_has_no_delivery_authority() -> None:
@@ -340,7 +326,6 @@ def test_underpowered_evaluation_is_unknown_and_clusters_provider_duplicates() -
             "language": "en",
             "source_slice": "wire",
             "audience": "crypto",
-            "legacy_event_type": "listing",
             "gold": gold.model_dump(mode="json"),
             "prediction": gold.model_dump(mode="json"),
             "gold_receipt": _gold_receipt("provider-a"),
@@ -353,7 +338,6 @@ def test_underpowered_evaluation_is_unknown_and_clusters_provider_duplicates() -
             "language": "en",
             "source_slice": "wire",
             "audience": "crypto",
-            "legacy_event_type": "listing",
             "gold": gold.model_dump(mode="json"),
             "prediction": gold.model_dump(mode="json"),
             "gold_receipt": _gold_receipt("provider-b"),
@@ -511,7 +495,6 @@ def test_preregistered_denominators_can_produce_pass_only_with_future_holdout() 
                 "language": "zh" if index % 2 else "en",
                 "audience": "macro" if "macro" in family or "geopolitical" in family else "us_equity",
                 "scope": "macro" if "macro" in family or "geopolitical" in family else "single_name",
-                "legacy_event_type": "filing",
                 "gold": taxonomy,
                 "prediction": taxonomy,
                 "gold_receipt": _gold_receipt(f"development-{index}"),
@@ -541,7 +524,6 @@ def test_preregistered_denominators_can_produce_pass_only_with_future_holdout() 
                 "language": "zh" if index % 2 else "en",
                 "audience": "macro" if "macro" in family or "geopolitical" in family else "us_equity",
                 "scope": "macro" if "macro" in family or "geopolitical" in family else "single_name",
-                "legacy_event_type": "filing",
                 "gold": taxonomy,
                 "prediction": taxonomy,
                 "gold_receipt": _gold_receipt(f"holdout-{index}"),

@@ -80,10 +80,10 @@ def storyline_key(
     headline_zh: str,
     scope: str,
     primary_assets: Sequence[str],
-    family: str,
+    dedupe_family: str,
     aliases: Mapping[str, str] | None = None,
 ) -> str:
-    """Asset-level key when a non-CL primary asset exists and scope is not macro; else theme; else family.
+    """Asset-level key when a non-CL primary asset exists and scope is not macro; else theme; else dedupe family.
 
     Called twice per Event: before Triage with the Gate's grounded assets (preliminary key, status bar only) and
     after Triage with the verdict's primary assets and scope (final key, written back to the Event and used by
@@ -102,10 +102,12 @@ def storyline_key(
     for name, pattern in THEMES:
         if pattern.search(text):
             return f"theme:{name}"
-    return f"macro:{family}"
+    return f"macro:{dedupe_family}"
 
 
-def preliminary_storyline_key(*, title: str, grounded_assets: Sequence[str], asset_class: str, family: str) -> str:
+def preliminary_storyline_key(
+    *, title: str, grounded_assets: Sequence[str], asset_class: str, dedupe_family: str
+) -> str:
     """Key computed before Triage (status bar only). Theme first: a geopolitical or macro headline the provider
     tagged with BTC/CL as *affected* assets belongs to its theme until Triage names a primary; the final key
     (``final_storyline_key``) then follows the verdict."""
@@ -115,7 +117,13 @@ def preliminary_storyline_key(*, title: str, grounded_assets: Sequence[str], ass
         if pattern.search(text):
             return f"theme:{name}"
     scope = "macro" if asset_class in {"macro", "none"} else "single_name"
-    return storyline_key(title=title, headline_zh="", scope=scope, primary_assets=grounded_assets, family=family)
+    return storyline_key(
+        title=title,
+        headline_zh="",
+        scope=scope,
+        primary_assets=grounded_assets,
+        dedupe_family=dedupe_family,
+    )
 
 
 def final_storyline_key(
@@ -125,13 +133,13 @@ def final_storyline_key(
     scope: str,
     verdict_primaries: Sequence[str],
     grounded_assets: Sequence[str],
-    family: str,
+    dedupe_family: str,
     aliases: Mapping[str, str] | None = None,
     degraded: bool = False,
 ) -> str:
     """Key computed after Triage. Grounded verdict primaries win; then a theme; then the model's own primaries
     even when the provider did not tag them; then a grounded tag that the text actually names; then
-    ``macro:<family>``. ``aliases`` resolves symbols to one issuer first (#75); the last two steps are #100.
+    ``macro:<dedupe_family>``. ``aliases`` resolves symbols to one issuer first (#75); the last two steps are #100.
 
     ``degraded`` marks a rule-baseline verdict, whose ``assets`` are empty by construction (see
     ``triage_rules.fallback_verdict``). "The model named no primary" is evidence only when a model actually
@@ -148,11 +156,16 @@ def final_storyline_key(
             headline_zh=headline_zh,
             scope=scope,
             primary_assets=primaries,
-            family=family,
+            dedupe_family=dedupe_family,
             aliases=aliases,
         )
     themed = storyline_key(
-        title=title, headline_zh=headline_zh, scope="macro", primary_assets=(), family=family, aliases=aliases
+        title=title,
+        headline_zh=headline_zh,
+        scope="macro",
+        primary_assets=(),
+        dedupe_family=dedupe_family,
+        aliases=aliases,
     )
     if themed.startswith("theme:"):
         return themed
@@ -171,12 +184,12 @@ def final_storyline_key(
             headline_zh=headline_zh,
             scope="single_name",
             primary_assets=named,
-            family=family,
+            dedupe_family=dedupe_family,
             aliases=aliases,
         )
     # A model that answered and still named nothing is saying the headline has no tradable subject, so a provider
     # tag is only a storyline when the text is actually about it — the symbol appearing as its own token is the
-    # cheap evidence for that. Everything else is the family bucket: `asset:BTC` was collecting Polish jets
+    # cheap evidence for that. Everything else is the dedupe-family bucket: `asset:BTC` was collecting Polish jets
     # scrambling and a lending protocol being drained, which polluted duplicate evidence for real BTC cards. A
     # false negative here costs a coarser group; a false positive contaminates another card's comparison set. A
     # degraded verdict is exempt: it has no `assets` to begin with, and "NVIDIA to invest $100bn" never spells
@@ -191,7 +204,7 @@ def final_storyline_key(
             headline_zh=headline_zh,
             scope="single_name",
             primary_assets=fallback,
-            family=family,
+            dedupe_family=dedupe_family,
             aliases=aliases,
         )
     return themed

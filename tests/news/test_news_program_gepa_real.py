@@ -34,6 +34,7 @@ from tracefold.news.program.artifact import (
 )
 from tracefold.news.program.contracts import TriageContext
 from tracefold.news.program.lm import LMCallLedger
+from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
 
 
 def _frozen_policy_projection() -> dict[str, object]:
@@ -58,7 +59,6 @@ def _frozen_policy_projection() -> dict[str, object]:
 _SEMANTICS = {
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "product",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
@@ -195,7 +195,7 @@ def _episode(
         "leader_description": "",
         "leader_url": f"https://example.invalid/{index}",
         "reporting_origin": "wire",
-        "family": "general",
+        "dedupe_family": "general",
         "admission": "candidate",
         "queue_priority": "normal",
         "asset_class": "equity_or_commodity",
@@ -249,15 +249,12 @@ def _episode(
                 **{key: value for key, value in _SEMANTICS.items() if key not in {"relevance", "taxonomy"}},
                 **_CARD,
                 "magnitude": production_magnitude,
-                "actionable": True,
-                "decision": "push",
-                "title_zh": "",
             },
             relevance=trade_relevance(reader_value=reader_value),
         ),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
-            "storyline": {"title": f"Tesla ships product {index}", "family": "general"},
+            "storyline": {"title": f"Tesla ships product {index}", "dedupe_family": "general"},
             "seen": [],
             **_frozen_policy_projection(),
         },
@@ -337,7 +334,7 @@ def _optimize_real(
             episode_count=len(episodes),
             learning_epoch="bundle_00000000",
             learning_epoch_started_at_ms=1,
-            review_rubric_version="news_review_v4",
+            review_rubric_version=REVIEW_RUBRIC_VERSION,
         ),
         episodes=episodes,
         target_runtime_manifest_sha256="a" * 64,

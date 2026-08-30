@@ -13,12 +13,15 @@ from psycopg.errors import CheckViolation, RaiseException
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
+from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
-from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_source_contract
+from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
+from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_parse_failure, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
+from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
 from tracefold.news.search import compile_news_search
-from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, storyline_status
+from tracefold.news.triage_rules import DecidePolicy, GateFacts, decide, fallback_verdict, storyline_status
 
 pytestmark = pytest.mark.integration
 
@@ -28,6 +31,7 @@ NEWS_TABLES = {
     "news_opennews_incidents",
     "news_items",
     "news_events",
+    "news_current_events_v1",
     "news_event_members",
     "news_event_bands",
     "news_event_assets",
@@ -151,14 +155,11 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     now_ms = int(row["opened_at_ms"]) + 60_000
     verdict = TriageVerdict(
         novelty="new_fact",
-        event_type="macro",
         assets=[],
         direction="bullish",
         scope="macro",
         magnitude=2,
-        actionable=True,
         confidence=0.7,
-        decision="push",
         headline_zh="测试",
         why_zh="",
     )
@@ -173,26 +174,43 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     assert first.final == "push"
     evidence = repos.news.latest_evidence_snapshot(row["event_id"])
     assert evidence is not None
+    runtime_manifest_sha = "b" * 64
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+    }
     with repos.transaction():
         inserted = repos.news.insert_verdict(
             event_id=row["event_id"],
             stage="triage",
             policy_version=TRIAGE_POLICY_VERSION,
-            model_decision="push",
+            judgment_contract_version=judgment.judgment_contract_version,
+            judgment_origin="model",
             rule_baseline_decision=first.rule_baseline,
             final_decision=first.final,
             override_rule=first.override_rule,
             throttled_by=None,
             verdict=verdict.model_dump(),
-            editorial=judgment.editorial.model_dump(mode="json"),
-            scored_judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha="b" * 64,
+            model_editorial=judgment.editorial.model_dump(mode="json"),
+            judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha=runtime_manifest_sha,
             model="test",
-            program_version="news_semantic_program_test",
+            program_version=SEMANTIC_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=False,
             error_code=None,
-            trace={"latency_ms": 5},
+            trace={**trace, "latency_ms": 5},
             evidence_version=int(evidence["evidence_version"]),
             evidence_sha256=str(evidence["evidence_sha256"]),
             focus_fact_id=str(evidence["focus_fact_id"]),
@@ -203,21 +221,22 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
             event_id=row["event_id"],
             stage="triage",
             policy_version=TRIAGE_POLICY_VERSION,
-            model_decision="push",
+            judgment_contract_version=judgment.judgment_contract_version,
+            judgment_origin="model",
             rule_baseline_decision=first.rule_baseline,
             final_decision=first.final,
             override_rule=first.override_rule,
             throttled_by=None,
             verdict=verdict.model_dump(),
-            editorial=judgment.editorial.model_dump(mode="json"),
-            scored_judgment_sha256=judgment.scored_judgment_sha256,
-            runtime_manifest_sha="b" * 64,
+            model_editorial=judgment.editorial.model_dump(mode="json"),
+            judgment_sha256=judgment.scored_judgment_sha256,
+            runtime_manifest_sha=runtime_manifest_sha,
             model="test",
-            program_version="news_semantic_program_test",
+            program_version=SEMANTIC_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=False,
             error_code=None,
-            trace={},
+            trace=trace,
             evidence_version=int(evidence["evidence_version"]),
             evidence_sha256=str(evidence["evidence_sha256"]),
             focus_fact_id=str(evidence["focus_fact_id"]),
@@ -281,14 +300,14 @@ def test_reader_ledger_and_verdict_idempotency(conn) -> None:
     assert told[0]["headline_zh"] == "测试" and told[0]["magnitude"] == 2 and told[0]["direction"] == "bullish"
     assert told[0]["storyline_key"] == row["storyline_key"] and told[0]["at_ms"] == now_ms + 20
     # The projection is the selector's input contract: everything it ranks on comes from this one query.
-    assert told[0]["comparison_title"] and told[0]["event_type"] == "macro"
+    assert told[0]["comparison_title"] and told[0]["dedupe_family"] == "general"
     assert list(told[0]["grounded_assets"]) == list(row["grounded_assets"])
     with repos.transaction():
         conn.execute("DELETE FROM news_deliveries WHERE event_id = %s", (row["event_id"],))
     # A grounded restatement of that card drops, and the storyline lock is a plain transaction-scoped advisory lock.
     told_status = storyline_status(
         row["storyline_key"],
-        told=[{"i": 0, "dir": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
+        told=[{"i": 0, "direction": t["direction"], "headline_zh": t["headline_zh"]} for t in told],
     )
     restated_judgment = scored_judgment(verdict.model_copy(update={"novelty": "restatement", "restates": 0}))
     restated = decide(restated_judgment, facts, told_status)
@@ -430,9 +449,14 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     detail = repos.news.event_detail(event_id)
     assert detail is not None and detail["deliveries"][0]["state"] == "sent"
     feed = repos.news.list_feed(
-        family=None,
+        event_family=None,
+        change_state=None,
+        assertion_status=None,
+        source_authority=None,
+        subject_code=None,
         admission=None,
-        decision=None,
+        final_decision=None,
+        event_kind=None,
         search=None,
         limit=100,
         cursor=None,
@@ -446,9 +470,14 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
 
     def _feed(**over):
         base = dict(
-            family=None,
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
             admission=None,
-            decision=None,
+            final_decision=None,
+            event_kind=None,
             search=None,
             limit=10_000,
             cursor=None,
@@ -595,41 +624,54 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
     sent_event, ambiguous_event = str(candidates[0]["event_id"]), str(candidates[1]["event_id"])
     evidence = repos.news.latest_evidence_snapshot(sent_event)
     assert evidence is not None
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        event_type="macro",
-        assets=[],
-        direction="unclear",
-        scope="macro",
-        magnitude=2,
-        actionable=True,
-        confidence=0.0,
-        decision="push",
-        headline_zh="模型占位文字",
-        why_zh="",
+    degraded_judgment = fallback_verdict(
+        GateFacts(
+            grounded_assets=("BTC",),
+            watchlist_symbols=frozenset({"BTC"}),
+            admission="candidate",
+        ),
+        error_code="news_program_route_deadline",
+        title="模型占位文字",
     )
-    degraded_judgment = scored_judgment(verdict, editorial_origin="degraded_unavailable")
+    verdict = degraded_judgment.verdict
+    runtime_manifest_sha = "b" * 64
+    trace = {
+        "judgment_contract_version": degraded_judgment.judgment_contract_version,
+        "judgment_origin": "degraded",
+        "judgment_sha256": degraded_judgment.judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "a" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+        "judgment": degraded_judgment.judgment_atom,
+    }
     degraded_card = {"header": {"title": {"tag": "plain_text", "content": "实际降级卡片"}}}
     with repos.transaction():
         assert repos.news.insert_verdict(
             event_id=sent_event,
             stage="triage",
-            policy_version="news_triage_policy_receipt_test",
-            model_decision=None,
-            rule_baseline_decision="push",
-            final_decision="push",
-            override_rule="rule_baseline",
-            throttled_by=None,
+            policy_version=TRIAGE_POLICY_VERSION,
+            judgment_contract_version=degraded_judgment.judgment_contract_version,
+            judgment_origin="degraded",
+            rule_baseline_decision=degraded_judgment.decision.rule_baseline,
+            final_decision=degraded_judgment.decision.final,
+            override_rule=degraded_judgment.decision.override_rule,
+            throttled_by=degraded_judgment.decision.throttled_by,
             verdict=verdict.model_dump(),
-            editorial=degraded_judgment.editorial.model_dump(mode="json"),
-            scored_judgment_sha256=degraded_judgment.scored_judgment_sha256,
-            runtime_manifest_sha="b" * 64,
+            model_editorial=None,
+            judgment_sha256=degraded_judgment.judgment_sha256,
+            runtime_manifest_sha=runtime_manifest_sha,
             model=None,
-            program_version="news_semantic_program_test",
+            program_version=SEMANTIC_PROGRAM_VERSION,
             program_sha256="a" * 64,
             degraded=True,
-            error_code="news_triage_timeout",
-            trace={},
+            error_code="news_program_route_deadline",
+            trace=trace,
             evidence_version=int(evidence["evidence_version"]),
             evidence_sha256=str(evidence["evidence_sha256"]),
             focus_fact_id=str(evidence["focus_fact_id"]),
@@ -757,40 +799,56 @@ def _insert_test_verdict(
 ) -> None:
     verdict = TriageVerdict(
         novelty="new_fact",
-        event_type="macro" if final_decision == "push" else "noise",
         assets=[],
         direction=direction,
         scope="single_name",
         magnitude=1,
-        actionable=final_decision == "push",
         confidence=0.5,
-        decision=final_decision,
         headline_zh="筛选测试",
         why_zh="",
     )
-    judgment = scored_judgment(verdict, editorial_origin="model")
+    judgment = scored_judgment(verdict)
+    evidence = repos.news.latest_evidence_snapshot(event_id)
+    assert evidence is not None
+    runtime_manifest_sha = "c" * 64
+    trace = {
+        "judgment_contract_version": judgment.judgment_contract_version,
+        "judgment_origin": "model",
+        "judgment_sha256": judgment.scored_judgment_sha256,
+        "verdict_sha256": canonical_sha(verdict.model_dump(mode="json")),
+        "editorial_sha256": judgment.editorial.editorial_sha256,
+        "runtime_manifest_sha": runtime_manifest_sha,
+        "program_version": SEMANTIC_PROGRAM_VERSION,
+        "program_sha256": "d" * 64,
+        "evidence_version": int(evidence["evidence_version"]),
+        "evidence_sha256": str(evidence["evidence_sha256"]),
+        "focus_fact_id": str(evidence["focus_fact_id"]),
+        "told": [],
+        "told_count": 0,
+    }
     assert repos.news.insert_verdict(
         event_id=event_id,
         stage="triage",
         policy_version=TRIAGE_POLICY_VERSION,
-        model_decision=final_decision,
+        judgment_contract_version=judgment.judgment_contract_version,
+        judgment_origin="model",
         rule_baseline_decision=final_decision,
         final_decision=final_decision,
-        override_rule="model_push_actionable" if final_decision == "push" else "noise",
+        override_rule="trade_relevance_realtime" if final_decision == "push" else "reader_value_none",
         throttled_by=None,
         verdict=verdict.model_dump(),
-        editorial=judgment.editorial.model_dump(mode="json"),
-        scored_judgment_sha256=judgment.scored_judgment_sha256,
-        runtime_manifest_sha="c" * 64,
+        model_editorial=judgment.editorial.model_dump(mode="json"),
+        judgment_sha256=judgment.scored_judgment_sha256,
+        runtime_manifest_sha=runtime_manifest_sha,
         model="test",
-        program_version="test",
+        program_version=SEMANTIC_PROGRAM_VERSION,
         program_sha256="d" * 64,
         degraded=False,
         error_code=None,
-        trace={},
-        evidence_version=1,
-        evidence_sha256="e" * 64,
-        focus_fact_id="f" * 64,
+        trace=trace,
+        evidence_version=int(evidence["evidence_version"]),
+        evidence_sha256=str(evidence["evidence_sha256"]),
+        focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=now_ms,
     )
 
@@ -857,7 +915,7 @@ def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
     )
 
     assert earlier_eligible_count == 0
-    assert (judgment.rank_in_window, judgment.verdict.decision) == (1, "push")
+    assert (judgment.rank_in_window, judgment.decision.final) == (1, "push")
     assert conn.execute(
         "SELECT count(*) AS n FROM news_oi_signals WHERE metric_version = 'oi_issue_179_repro'"
     ).fetchone()["n"] == len(rows), "every parsed frame remains auditable"
@@ -916,7 +974,7 @@ def test_same_symbol_concurrency_serializes_eligible_rank_and_caps_pushes(conn) 
                     rank_in_window=judgment.rank_in_window,
                     now_ms=observed_at_ms,
                 )
-            return judgment.verdict.decision
+            return judgment.decision.final
         finally:
             connection.close()
 
@@ -1058,7 +1116,7 @@ def test_same_provider_fact_keeps_one_event_per_kind_in_either_strategy_order(
         == "source_contract_drift"
     )
     ids = {row["event_kind"]: row["event_id"] for row in rows}
-    assert ids["news"] == item_id
+    assert ids["news"] != item_id
     assert len(set(ids.values())) == 3
     oi_card = repos.news.event_card(ids["oi"])
     assert oi_card is not None
@@ -1485,7 +1543,7 @@ def test_the_same_source_artifact_joins_one_event_across_url_spellings_and_windo
     """#154, the three cases measured over 30 days of production.
 
     The text-derived path cannot reach any of them: `What a coincidence!` scores below the three-token
-    `shareable` floor so no fingerprint lookup ever runs, and the other two arrive after the 12 h family window
+    `shareable` floor so no fingerprint lookup ever runs, and the other two arrive after the 12 h dedupe window
     has closed. All three are the same tweet.
     """
 
@@ -1842,20 +1900,7 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
         titles=("Zeta OI Rise 4.55 percent", "Eta publishes an unrelated update"),
         hour=11,
     )
-    verdict = TriageVerdict(
-        novelty="new_fact",
-        event_type="oi_spike",
-        assets=[],
-        direction="bullish",
-        scope="single_name",
-        magnitude=1,
-        actionable=False,
-        confidence=0.5,
-        decision="drop",
-        headline_zh="测试帧",
-        why_zh="",
-    )
-    judgment = scored_judgment(verdict, editorial_origin="telemetry_deterministic")
+    judgment, lane_trace = oi_parse_failure("Zeta OI invalid frame", provider_source="opennews")
     with repos.transaction():
         conn.execute(
             "UPDATE news_events SET admission = 'telemetry_deterministic' WHERE event_id = %s",
@@ -1863,35 +1908,60 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
         )
         # The same trace key on both rows: the filter must separate them by lane, not by what the trace holds.
         for offset, event_id in enumerate((telemetry_id, other_id)):
+            evidence = repos.news.latest_evidence_snapshot(event_id)
+            assert evidence is not None
+            runtime_manifest_sha = "c" * 64
+            trace = {
+                "oi_signal": lane_trace,
+                "judgment": judgment.judgment_atom,
+                "judgment_contract_version": judgment.judgment_contract_version,
+                "judgment_origin": "oi",
+                "judgment_sha256": judgment.judgment_sha256,
+                "verdict_sha256": canonical_sha(judgment.verdict.model_dump(mode="json")),
+                "runtime_manifest_sha": runtime_manifest_sha,
+                "program_version": OI_PROGRAM_VERSION,
+                "program_sha256": "d" * 64,
+                "evidence_version": int(evidence["evidence_version"]),
+                "evidence_sha256": str(evidence["evidence_sha256"]),
+                "focus_fact_id": str(evidence["focus_fact_id"]),
+                "told": [],
+                "told_count": 0,
+            }
             repos.news.insert_verdict(
                 event_id=event_id,
                 stage="triage",
                 policy_version=TRIAGE_POLICY_VERSION,
-                model_decision=None,
-                rule_baseline_decision="drop",
-                final_decision="drop",
-                override_rule="telemetry_deterministic",
-                throttled_by=None,
-                verdict=verdict.model_dump(),
-                editorial=judgment.editorial.model_dump(mode="json"),
-                scored_judgment_sha256=judgment.scored_judgment_sha256,
-                runtime_manifest_sha="c" * 64,
+                judgment_contract_version=judgment.judgment_contract_version,
+                judgment_origin="oi",
+                rule_baseline_decision=judgment.decision.rule_baseline,
+                final_decision=judgment.decision.final,
+                override_rule=judgment.decision.override_rule,
+                throttled_by=judgment.decision.throttled_by,
+                verdict=judgment.verdict.model_dump(mode="json"),
+                model_editorial=None,
+                judgment_sha256=judgment.judgment_sha256,
+                runtime_manifest_sha=runtime_manifest_sha,
                 model=None,
-                program_version="news_oi_signal_v1",
+                program_version=OI_PROGRAM_VERSION,
                 program_sha256="d" * 64,
                 degraded=False,
-                error_code=None,
-                trace={"oi_signal": {"parsed": False, "rule": "oi_parse_failed", "symbol": "ZETA"}},
-                evidence_version=1,
-                evidence_sha256="e" * 64,
-                focus_fact_id="f" * 64,
+                error_code="oi_parse_failed",
+                trace=trace,
+                evidence_version=int(evidence["evidence_version"]),
+                evidence_sha256=str(evidence["evidence_sha256"]),
+                focus_fact_id=str(evidence["focus_fact_id"]),
                 now_ms=1_790_000_000_000 + offset,
             )
 
     served = repos.news.list_feed(
-        family=None,
+        event_family=None,
+        change_state=None,
+        assertion_status=None,
+        source_authority=None,
+        subject_code=None,
         admission=None,
-        decision=None,
+        final_decision=None,
+        event_kind=None,
         search=None,
         limit=10_000,
         cursor=None,
@@ -1903,7 +1973,7 @@ def test_the_oi_filter_only_reaches_the_lane_that_can_write_the_key(conn) -> Non
     conn.commit()
 
 
-def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query(conn) -> None:
+def test_feed_direction_and_event_kind_filters_compose_over_the_authoritative_query(conn) -> None:
     repos = repositories_for_connection(conn)
     sentinel = "direction-channel-filter-sentinel"
     bullish_id, bearish_oi_id = _admit_test_events(
@@ -1930,25 +2000,31 @@ def test_feed_direction_and_channel_filters_compose_over_the_authoritative_query
             )
 
     def ids(**filters):
-        page = repos.news.list_feed(
-            family=None,
+        params = dict(
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
             admission=None,
-            decision=None,
+            final_decision=None,
+            event_kind=None,
             # The integration database is intentionally shared across this module. Scope the assertion to
             # this test's Events so unrelated, valid verdicts cannot make an exact-set assertion flaky.
             search=compile_news_search(q=sentinel, symbol=None, instruments=repos.instruments),
             limit=10,
             cursor=None,
-            **filters,
         )
+        params.update(filters)
+        page = repos.news.list_feed(**params)
         return {event["event_id"] for event in page["events"]}
 
     assert ids(directions=("bullish",)) == {bullish_id}
     assert ids(directions=("bearish",)) == {bearish_oi_id}
-    assert ids(channels=("news",)) == {bullish_id}
-    assert ids(channels=("oi",)) == {bearish_oi_id}
-    assert ids(channels=("news", "oi")) == {bullish_id, bearish_oi_id}
-    assert ids(directions=("bullish",), channels=("oi",)) == set()
+    assert ids(event_kind=("news",)) == {bullish_id}
+    assert ids(event_kind=("oi",)) == {bearish_oi_id}
+    assert ids(event_kind=("news", "oi")) == {bullish_id, bearish_oi_id}
+    assert ids(directions=("bullish",), event_kind=("oi",)) == set()
     conn.commit()
 
 
@@ -2009,14 +2085,12 @@ def test_event_feed_funnel_tracks_one_opened_event_cohort_across_durable_stages(
         key: pipeline[key]
         for key in (
             "funnel_received_24h",
-            "funnel_parsed_24h",
             "funnel_admitted_24h",
             "funnel_triaged_24h",
             "funnel_delivered_24h",
         )
     } == {
         "funnel_received_24h": 1,
-        "funnel_parsed_24h": 1,
         "funnel_admitted_24h": 1,
         "funnel_triaged_24h": 1,
         "funnel_delivered_24h": 1,
@@ -2055,9 +2129,14 @@ def test_the_symbol_filter_names_an_identity_rather_than_one_spelling(conn) -> N
 
     def _served(symbol: str) -> set[str]:
         page = repos.news.list_feed(
-            family=None,
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
             admission=None,
-            decision=None,
+            final_decision=None,
+            event_kind=None,
             search=compile_news_search(q=None, symbol=symbol, instruments=repos.instruments),
             limit=10_000,
             cursor=None,
@@ -2127,9 +2206,14 @@ def test_feed_search_hard_cuts_asset_identity_from_full_text(conn) -> None:
         cursor: str | None = None,
     ):
         return repos.news.list_feed(
-            family=None,
+            event_family=None,
+            change_state=None,
+            assertion_status=None,
+            source_authority=None,
+            subject_code=None,
             admission=None,
-            decision=None,
+            final_decision=None,
+            event_kind=None,
             search=compile_news_search(q=q, symbol=symbol, instruments=repos.instruments),
             limit=limit,
             cursor=cursor,

@@ -11,7 +11,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
 from ..events.gate import GateInput, evaluate_gate
-from ..events.identity import event_family, event_window_ms
+from ..events.identity import dedupe_family, dedupe_window_ms
 from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
 from ..events.titles import extract_title
@@ -51,9 +51,9 @@ def replay_hits(
         title = extracted.title or (event.entry.title or "")
         published = int(event.entry.published_at_ms or 0)
         reason = contract.reason
-        if contract.family == "oi_v1" and parse_oi_signal(title) is None:
+        if contract.source_contract_family == "oi_v1" and parse_oi_signal(title) is None:
             reason = "source_contract_drift"
-        elif contract.family == "liquidation_v1":
+        elif contract.source_contract_family == "liquidation_v1":
             parsed = parse_liquidation(
                 title,
                 item_id=event.provider_record_id,
@@ -77,7 +77,7 @@ def replay_hits(
         if event.provider_record_id not in seen_items:
             seen_items.add(event.provider_record_id)
             counts["items"] += 1
-        family = event_family(extracted.comparison)
+        dedupe_family_name = dedupe_family(extracted.comparison)
         fingerprint = hashlib.sha256(extracted.comparison.encode()).hexdigest()
         metadata = event.provider_metadata
         coins = tuple(c for c in (metadata.get("coins") or []) if isinstance(c, Mapping))
@@ -97,9 +97,9 @@ def replay_hits(
         )
         admission = source_contract_admission(contract, generic_admission=gate.admission, ingest_mode="live")
         tokens = comparison_tokens(extracted.comparison)
-        window = event_window_ms(family)
+        window = dedupe_window_ms(dedupe_family_name)
         if len(tokens) >= 3:
-            exact = fp_index.get((family, fingerprint, contract.event_kind, contract_reason))
+            exact = fp_index.get((dedupe_family_name, fingerprint, contract.event_kind, contract_reason))
             if exact is not None and events[exact]["opened_at_ms"] + window > published:
                 events[exact]["members"] += 1
                 counts["exact_members"] += 1
@@ -110,7 +110,7 @@ def replay_hits(
             candidate_ids: set[int] = set()
             if contract.event_kind not in {"oi", "liquidation"}:
                 for i, key in enumerate(keys):
-                    candidate_ids.update(band_index[(i, key, family, contract.event_kind, contract_reason)])
+                    candidate_ids.update(band_index[(i, key, dedupe_family_name, contract.event_kind, contract_reason)])
                 for idx in candidate_ids:
                     cand = events[idx]
                     if cand["opened_at_ms"] + window <= published:
@@ -128,7 +128,7 @@ def replay_hits(
         events.append(
             {
                 "title": title,
-                "family": family,
+                "dedupe_family": dedupe_family_name,
                 "opened_at_ms": published,
                 "tokens": tokens,
                 "facts": _strong_facts(title, gate.grounded_assets),
@@ -140,14 +140,17 @@ def replay_hits(
                 "asset_class": gate.asset_class,
                 "grounded_assets": gate.grounded_assets,
                 "storyline_key": preliminary_storyline_key(
-                    title=title, grounded_assets=gate.strong_assets, asset_class=gate.asset_class, family=family
+                    title=title,
+                    grounded_assets=gate.strong_assets,
+                    asset_class=gate.asset_class,
+                    dedupe_family=dedupe_family_name,
                 ),
             }
         )
         if len(tokens) >= 3:
-            fp_index[(family, fingerprint, contract.event_kind, contract_reason)] = idx
+            fp_index[(dedupe_family_name, fingerprint, contract.event_kind, contract_reason)] = idx
             for i, key in enumerate(keys):
-                band_index[(i, key, family, contract.event_kind, contract_reason)].append(idx)
+                band_index[(i, key, dedupe_family_name, contract.event_kind, contract_reason)].append(idx)
         counts["events"] += 1
         counts[f"admission:{admission}"] += 1
     candidates = [e for e in events if e["admission"] == "candidate"]

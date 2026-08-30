@@ -37,7 +37,6 @@ from tracefold.news.triage_rules import DEFAULT_POLICY
 _SEMANTICS: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "product",
     "assets": [{"symbol": "TSLA", "market_type": "spot", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
@@ -57,9 +56,6 @@ _CARD: dict[str, Any] = {"headline_zh": "特斯拉承诺新增产线", "why_zh":
 _VERDICT: dict[str, Any] = {
     **{key: value for key, value in _SEMANTICS.items() if key not in {"relevance", "taxonomy"}},
     **_CARD,
-    "actionable": True,
-    "decision": "push",
-    "title_zh": "",
 }
 
 
@@ -75,7 +71,7 @@ def _context(index: int, *, title: str | None = None) -> TriageContext:
             "leader_description": "",
             "leader_url": "https://example.invalid/1",
             "reporting_origin": "wire",
-            "family": "general",
+            "dedupe_family": "general",
             "admission": "candidate",
             "queue_priority": "normal",
             "asset_class": "equity_or_commodity",
@@ -121,7 +117,7 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
         ),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},
-            "storyline": {"title": "Tesla", "family": "general"},
+            "storyline": {"title": "Tesla", "dedupe_family": "general"},
             "seen": [],
             "policy_version": TRIAGE_POLICY_VERSION,
             "policy_values": values,

@@ -71,6 +71,69 @@ def postgres_settings_storage() -> dict[str, Any]:
     }
 
 
+def seed_current_news_evidence(conn: Any) -> None:
+    """Bulk-create exact v3 evidence for current Event fixtures that do not exercise admission."""
+
+    conn.execute(
+        """
+        WITH snapshots AS (
+          SELECT event.event_id,
+                 event.focus_fact_id,
+                 event.created_at_ms,
+                 jsonb_build_object(
+                   'schema_version', 'news_event_evidence_v3',
+                   'event_id', event.event_id,
+                   'focus_fact', jsonb_build_object(
+                     'fact_id', event.focus_fact_id,
+                     'text', event.focus_fact_text,
+                     'context', event.focus_fact_context,
+                     'method', event.focus_fact_method,
+                     'span_start', event.focus_span_start,
+                     'span_end', event.focus_span_end
+                   ),
+                   'card',
+                     (to_jsonb(event) - ARRAY[
+                       'leader_title', 'context_line', 'search_doc', 'published_at_ms', 'followup_of',
+                       'created_at_ms', 'updated_at_ms', 'focus_fact_text', 'focus_fact_context',
+                       'focus_fact_method', 'focus_span_start', 'focus_span_end',
+                       'current_contract_archive_only'
+                     ]::text[])
+                     || jsonb_build_object(
+                       'leader_url', item.canonical_url,
+                       'reporting_origin', item.reporting_origin,
+                       'provider_metadata', item.provider_metadata,
+                       'provenance', item.provenance,
+                       'leader_published_at_ms', item.published_at_ms,
+                       'raw_first_line', item.raw_first_line,
+                       'leader_title', event.focus_fact_text,
+                       'leader_description', event.focus_fact_context
+                     ),
+                   'members', '[]'::jsonb,
+                   'provenance', 'observed'
+                 ) AS snapshot
+            FROM news_current_events_v1 event
+            JOIN news_items item ON item.item_id = event.leader_item_id
+           WHERE NOT EXISTS (
+             SELECT 1 FROM news_event_evidence_snapshots evidence
+              WHERE evidence.event_id = event.event_id
+           )
+        ), addressed AS (
+          SELECT *, encode(digest(
+                   convert_to(news_canonical_jsonb(snapshot), 'UTF8'), 'sha256'
+                 ), 'hex') AS evidence_sha256
+            FROM snapshots
+        )
+        INSERT INTO news_event_evidence_snapshots (
+          event_id, evidence_version, focus_fact_id, evidence_sha256,
+          provenance, release_eligible, snapshot, created_at_ms
+        )
+        SELECT event_id, 1, focus_fact_id, evidence_sha256,
+               'observed', true, snapshot, created_at_ms
+          FROM addressed
+        """
+    )
+
+
 def reset_postgres_schema(conn) -> None:
     if _read_only(conn):
         return

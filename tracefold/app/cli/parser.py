@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SHA",
         help=(
             "score the exact frozen development dataset instead of a moving window; "
-            "mutually exclusive with --from-ms/--to-ms/--all-cohorts"
+            "mutually exclusive with --from-ms/--to-ms"
         ),
     )
     # `live` is gone, not aliased. It answered two different questions under one name: the graph GEPA
@@ -187,11 +187,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     learning_baseline.add_argument(
-        "--all-cohorts",
-        action="store_true",
-        help="drop release-plane eligibility and score every accepted review in the window",
-    )
-    learning_baseline.add_argument(
         "--semantic-judge",
         default="",
         metavar="MODEL",
@@ -205,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     learning_baseline.add_argument("--out", default="", help="write the baseline report JSON")
     learning_draft = learning_subcommands.add_parser(
         "draft-reviews",
-        help="propose news_review_v5 rubrics with exact taxonomy Gold (writes a file, never the DB)",
+        help="propose news_review_v6 rubrics with exact taxonomy Gold (writes a file, never the DB)",
     )
     # The ReviewDesk queue is anchored at "now" and takes a look-back width, not an absolute window, so this
     # command takes the same shape rather than pretending to accept one: `--from-ms/--to-ms` looked like an

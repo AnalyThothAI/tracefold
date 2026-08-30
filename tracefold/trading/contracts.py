@@ -44,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 # version is not comparable with a Case frozen under another. v8 is #350's no-key hard cut: a Case
 # pins the credential-free public catalogue it resolved from, never an execution capability that
 # requires a configured binding and belongs to #355.
-TRADING_MANIFEST_VERSION: Final = "trading_manifest_v8"
+TRADING_MANIFEST_VERSION: Final = "trading_manifest_v9"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
 
@@ -125,7 +125,7 @@ class OiCandidateRow(TypedDict):
     # #264 the Gate decides whether the fact may trigger, and a reader policy change must not silently
     # open or close the capital lane.
     final_decision: str
-    source_rule: str | None
+    source_rule: str
     # What the provider proves about the measurement (#265). Nullable together; `None` means unproven.
     source_strategy_id: str | None
     source_contract_version: str | None
@@ -134,9 +134,9 @@ class OiCandidateRow(TypedDict):
     program_version: str
     program_sha256: str
     policy_version: str
-    editorial_origin: str
-    editorial_sha256: str
-    scored_judgment_sha256: str
+    judgment_contract_version: str
+    judgment_origin: str
+    judgment_sha256: str
     runtime_manifest_sha: str
     metric_version: str
     symbol: str
@@ -314,7 +314,7 @@ class OiTradeCandidate(_Frozen):
     # an admission rule, and pinning the reader's decision vocabulary here would turn a News policy change
     # into a Trading validation failure — the exact coupling #264 removes.
     final_decision: str
-    source_rule: str
+    source_rule: str = Field(min_length=1)
     metric_version: str
     # The provider's own measurement contract, frozen into the manifest so a Case is a claim about a
     # *specific* interval rather than about "OI rose". `None` means the interval could not be proven —
@@ -323,12 +323,12 @@ class OiTradeCandidate(_Frozen):
     source_contract_version: str | None = None
     measurement_window_ms: int | None = None
     learning_epoch: str = Field(min_length=1, max_length=64)
-    program_version: Literal["news_oi_signal_v1"]
+    program_version: Literal["news_oi_signal_v2"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    policy_version: Literal["news_triage_policy_v10"]
-    editorial_origin: Literal["telemetry_deterministic"]
-    editorial_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    scored_judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    policy_version: Literal["news_triage_policy_v11"]
+    judgment_contract_version: Literal["news_judgment_v2"]
+    judgment_origin: Literal["oi"]
+    judgment_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime_manifest_sha: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @property
@@ -420,7 +420,7 @@ class FrozenPolicyContext(_Frozen):
 class TradingCaseManifest(_Frozen):
     """The frozen, content-addressed input to one decision. Nothing later than `cutoff_ms` may enter."""
 
-    manifest_version: Literal["trading_manifest_v8"] = TRADING_MANIFEST_VERSION
+    manifest_version: Literal["trading_manifest_v9"] = TRADING_MANIFEST_VERSION
     primary_trigger: OiMarketTrigger
     contexts: FrozenPolicyContext
     policy_id: str

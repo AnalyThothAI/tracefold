@@ -154,9 +154,8 @@ function newsFeedData(prepended: string[] = [], empty = false) {
   });
   const row = (eventId: string, title: string) => ({
     ...event,
-    title_zh: null,
     // No Chinese headline on the mock rows, so the wire line is the row headline (distinct per row).
-    triage: event.triage ? { ...event.triage, headline_zh: null, title_zh: null } : null,
+    triage: event.triage ? { ...event.triage, headline_zh: null } : null,
     event_id: eventId,
     leader_title: title,
   });
@@ -211,8 +210,6 @@ function newsOiFeedData(oi: string | null) {
         assets: [{ role: "primary", symbol: "DOGE" }],
         direction: "bullish",
         direction_zh: "利多",
-        event_type: "noise",
-        event_type_zh: "噪音",
         final_decision: "drop",
         headline_zh: "▲ DOGE 持仓异动2.08%",
         override_rule: "telemetry_deterministic",
@@ -255,8 +252,6 @@ function newsOiFeedData(oi: string | null) {
         direction: "neutral",
         direction_zh: "中性",
         error_code: "oi_parse_failed",
-        event_type: "noise",
-        event_type_zh: "噪音",
         final_decision: "drop",
         headline_zh: "持仓异动帧无法解析",
         override_rule: "telemetry_deterministic",

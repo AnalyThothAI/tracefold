@@ -112,9 +112,32 @@ def _progression_review_candidates(
     if not isinstance(told, Sequence) or isinstance(told, str | bytes):
         return ()
     candidates: list[dict[str, Any]] = []
+    entry_fields = frozenset(
+        {
+            "i",
+            "event_id",
+            "at_ms",
+            "ago_min",
+            "storyline_key",
+            "comparison_title",
+            "comparison_fingerprint",
+            "symbols",
+            "magnitude",
+            "direction",
+            "headline_zh",
+            "why_zh",
+            "tier",
+            "similarity",
+            "history_scope",
+            "retrieval_reason",
+        }
+    )
     for fallback_i, entry in enumerate(told):
         if not isinstance(entry, Mapping):
             continue
+        unexpected = set(entry).difference(entry_fields)
+        if unexpected:
+            raise ValueError(f"news_progression_trace_fields_unexpected:{','.join(sorted(unexpected))}")
         headline = str(entry.get("headline_zh") or "").strip()
         if not headline:
             continue
@@ -130,7 +153,11 @@ def _progression_review_candidates(
             {
                 "i": candidate_i,
                 "event_id": str(entry.get("event_id") or "")[:128],
+                "storyline_key": str(entry.get("storyline_key") or "")[:160],
+                "comparison_title": str(entry.get("comparison_title") or "")[:600],
+                "comparison_fingerprint": str(entry.get("comparison_fingerprint") or "")[:128],
                 "headline_zh": headline[:120],
+                "why_zh": str(entry.get("why_zh") or "")[:320],
                 "tier": str(entry.get("tier") or "recency")[:32],
                 "similarity": similarity,
                 "ago_min": (
@@ -143,10 +170,9 @@ def _progression_review_candidates(
                     if isinstance(entry.get("at_ms"), int) and not isinstance(entry.get("at_ms"), bool)
                     else None
                 ),
-                "event_type": str(entry.get("event_type") or entry.get("type") or "")[:32],
-                "symbols": [str(value)[:32] for value in entry.get("symbols") or entry.get("sym") or ()][:6],
-                "magnitude": max(0, min(3, int(entry.get("magnitude") or entry.get("m") or 0))),
-                "direction": str(entry.get("direction") or entry.get("dir") or "")[:32],
+                "symbols": [str(value)[:32] for value in entry.get("symbols") or ()][:6],
+                "magnitude": max(0, min(3, int(entry.get("magnitude") or 0))),
+                "direction": str(entry.get("direction") or "")[:32],
             }
         )
         if len(candidates) >= _PROGRESSION_REVIEW_CANDIDATE_MAX:

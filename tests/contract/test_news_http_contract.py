@@ -15,6 +15,7 @@ from tracefold.app.http.schemas import feed as feed_schemas
 from tracefold.app.http.schemas import news_common as news_common_schemas
 from tracefold.app.http.schemas import status as status_schemas
 from tracefold.news.market_review.instruments import InstrumentSearchIdentity
+from tracefold.news.storage.feed import _triage_assets
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 
@@ -24,7 +25,6 @@ TOKEN = "contract-token"
 def _event(event_id: str = "ev-1") -> dict[str, Any]:
     return {
         "event_id": event_id,
-        "family": "general",
         "event_kind": "news",
         "source_contract_reason": None,
         "leader_title": "Copper surges toward record on LME",
@@ -66,15 +66,20 @@ class _FakeNewsRepository:
             raise ValueError("news_feed_cursor_invalid")
         search = kwargs.get("search")
         return {
-            "events": [{**event, "title_zh": "铜价冲击纪录", "outcome": _OUTCOME} for event in self.events],
+            "events": [{**event, "outcome": _OUTCOME} for event in self.events],
             "next_cursor": None,
             "counts": None
             if kwargs.get("cursor")
             else {"total": len(self.events), "pushed": 0, "held": 0, "pending": len(self.events)},
             "filters": {
-                "family": kwargs["family"],
+                "event_family": ",".join(kwargs.get("event_family") or ()) or None,
+                "change_state": ",".join(kwargs.get("change_state") or ()) or None,
+                "assertion_status": ",".join(kwargs.get("assertion_status") or ()) or None,
+                "source_authority": ",".join(kwargs.get("source_authority") or ()) or None,
+                "subject_code": ",".join(kwargs.get("subject_code") or ()) or None,
+                "final_decision": ",".join(kwargs.get("final_decision") or ()) or None,
+                "event_kind": ",".join(kwargs.get("event_kind") or ()) or None,
                 "admission": kwargs["admission"],
-                "decision": kwargs["decision"],
                 "symbol": search.symbol if search else None,
                 "q": search.q if search else None,
                 "limit": kwargs["limit"],
@@ -82,13 +87,14 @@ class _FakeNewsRepository:
                 "hours": kwargs.get("hours"),
                 "oi": kwargs.get("oi"),
                 "direction": ",".join(kwargs.get("directions") or ()) or None,
-                "channel": ",".join(kwargs.get("channels") or ()) or None,
             },
             "search": search.public_metadata() if search else None,
         }
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         self.calls.append(("event_detail", {"event_id": event_id}))
+        if event_id == "archive":
+            return {"archive_only": True}
         event = next((event for event in self.events if event["event_id"] == event_id), None)
         if event is None:
             return None
@@ -448,21 +454,24 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "resolved_symbols",
     }
     assert set(feed_schemas.NewsFeedFiltersData.model_fields) == {
-        "family",
+        "event_family",
+        "change_state",
+        "assertion_status",
+        "source_authority",
+        "subject_code",
+        "final_decision",
+        "event_kind",
         "admission",
-        "decision",
         "symbol",
         "q",
         "limit",
         "outcome",
         "hours",
-        # #207: the deterministic OI lane's outcome, which `decision` cannot express.
+        # #207: the deterministic OI lane's outcome, which `final_decision` cannot express.
         "oi",
         "direction",
-        "channel",
     }
     assert set(feed_schemas.NewsFeedEventData.model_fields) - set(event_schemas.NewsEventData.model_fields) == {
-        "title_zh",
         "outcome",
         "triage",
         "delivery",
@@ -470,6 +479,34 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "reaction",
         # #207: the deterministic OI judgment, read back from the trace it wrote; null on every other admission.
         "oi",
+    }
+    assert "family" not in event_schemas.NewsEventData.model_fields
+    assert set(news_common_schemas.NewsTriageSummaryData.model_fields).isdisjoint(
+        {"event_type", "event_type_zh", "actionable", "model_decision", "model_decision_zh", "title_zh"}
+    )
+    assert {"payload", "dimensions", "novelty"}.isdisjoint(event_schemas.NewsAcceptedReviewData.model_fields)
+    assert set(event_schemas.NewsVerdictData.model_fields) == {
+        "stage",
+        "policy_version",
+        "judgment_contract_version",
+        "judgment_origin",
+        "judgment_sha256",
+        "verdict",
+        "model_editorial",
+        "rule_baseline_decision",
+        "final_decision",
+        "override_rule",
+        "throttled_by",
+        "model",
+        "program_version",
+        "program_sha256",
+        "degraded",
+        "error_code",
+        "evidence_version",
+        "evidence_sha256",
+        "focus_fact_id",
+        "published_at_ms",
+        "created_at_ms",
     }
     assert set(status_schemas.NewsSourceContractStageCountsData.model_fields) == {
         "received",
@@ -485,9 +522,25 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
         "liquidation_v1",
         "unsupported_market",
     }
+    assert set(status_schemas.NewsDuplicatesWithheld24hData.model_fields) == {"all"}
+    with pytest.raises(ValueError):
+        status_schemas.NewsDuplicatesWithheld24hData.model_validate({"throttled": 1})
     assert {"source_classifier_version", "source_contracts_24h"} <= set(
         status_schemas.NewsPipelineStatusData.model_fields
     )
+    assert {"funnel_parsed_24h", "novelty_defaulted_24h"}.isdisjoint(status_schemas.NewsPipelineStatusData.model_fields)
+    assert set(status_schemas.NewsFunnelData.model_fields) == {
+        "received",
+        "admitted",
+        "candidates",
+        "triaged",
+        "tagged",
+        "grounded",
+        "decided_push",
+        "delivered",
+        "received_1h",
+        "delivered_1h",
+    }
     assert set(event_schemas.NewsEventDetailData.model_fields) == {
         "event",
         "outcome",
@@ -599,21 +652,113 @@ def test_news_schemas_are_exact_and_carry_no_retired_story_brief_surface() -> No
             ), name
 
 
+def test_current_verdict_schema_rejects_raw_and_cross_origin_payloads() -> None:
+    verdict = {
+        "novelty": "new_fact",
+        "restates": -1,
+        "assets": [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}],
+        "direction": "bullish",
+        "scope": "single_name",
+        "magnitude": 2,
+        "confidence": 0.9,
+        "audience": "crypto",
+        "headline_zh": "BTC 获得新的市场准入",
+        "why_zh": "准入状态发生变化",
+    }
+    model_editorial = {
+        "taxonomy": {
+            "taxonomy_version": "news_taxonomy_v1",
+            "codebook_sha256": "6f978685c1ffeb6615bfb5dc05eecb9004ebb6f7de8732602e2823d09a12daac",
+            "subject_codes": ["medtop:20000385"],
+            "subject_labels_zh": ["市场与交易所"],
+            "event_family": "market_access",
+            "event_family_zh": "市场准入",
+            "change_state": "effective",
+            "change_state_zh": "已生效",
+            "source_authority": "issuer_first_party",
+            "source_authority_zh": "发行方一手来源",
+            "assertion_status": "confirmed",
+            "assertion_status_zh": "已确认",
+        },
+        "relevance": {
+            "impact_breadth": "single_instrument",
+            "tradability": "direct",
+            "surprise": "unscheduled",
+            "development_delta": "state_change",
+            "channels": ["exchange_access"],
+            "affected_markets": ["single_asset"],
+            "reader_value": "realtime",
+        },
+    }
+    payload = {
+        "stage": "triage",
+        "policy_version": "news_triage_policy_v11",
+        "judgment_contract_version": "news_judgment_v2",
+        "judgment_origin": "model",
+        "judgment_sha256": "b" * 64,
+        "verdict": verdict,
+        "model_editorial": model_editorial,
+        "model": "model-v1",
+        "program_version": "news_semantic_program_v8",
+        "program_sha256": "d" * 64,
+        "rule_baseline_decision": "push",
+        "final_decision": "push",
+        "evidence_version": 1,
+        "evidence_sha256": "e" * 64,
+        "focus_fact_id": "fact",
+        "created_at_ms": 1,
+    }
+
+    validated = event_schemas.NewsVerdictData.model_validate(payload)
+    assert validated.judgment_origin == "model"
+    assert validated.verdict.assets[0].market_type == "crypto"
+    assert _triage_assets(verdict["assets"]) == [{"symbol": "BTC", "market_type": "crypto", "role": "primary"}]
+    with pytest.raises(KeyError):
+        _triage_assets([{"symbol": "BTC", "role": "primary"}])
+    deterministic = {**payload, "judgment_origin": "oi", "model": None, "model_editorial": None}
+    assert event_schemas.NewsVerdictData.model_validate(deterministic).judgment_origin == "oi"
+    with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):
+        event_schemas.NewsVerdictData.model_validate({**payload, "judgment_origin": "oi"})
+    with pytest.raises(ValueError, match="news_verdict_model_identity_origin_mismatch"):
+        event_schemas.NewsVerdictData.model_validate({**payload, "model_editorial": None})
+    with pytest.raises(ValueError):
+        event_schemas.NewsVerdictData.model_validate({**payload, "trace": {"raw": True}})
+    with pytest.raises(ValueError, match="news_verdict_degraded_origin_mismatch"):
+        event_schemas.NewsVerdictData.model_validate({**deterministic, "judgment_origin": "degraded"})
+    with pytest.raises(ValueError):
+        event_schemas.NewsEvidenceSnapshotData.model_validate(
+            {
+                "event_id": "ev",
+                "evidence_version": 1,
+                "focus_fact_id": "fact",
+                "evidence_sha256": "c" * 64,
+                "provenance": "legacy_reconstructed",
+                "release_eligible": False,
+                "created_at_ms": 1,
+            }
+        )
+
+
 def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) -> None:
     http, news = client
 
     response = http.get(
         "/api/news/feed",
-        params={"token": TOKEN, "family": "general", "limit": 5},
+        params={"token": TOKEN, "event_family": "other,financial_results", "limit": 5},
     )
 
     assert response.status_code == 200
     body = response.json()
     assert body["ok"] is True
     assert body["data"]["filters"] == {
-        "family": "general",
+        "event_family": "financial_results,other",
+        "change_state": None,
+        "assertion_status": None,
+        "source_authority": None,
+        "subject_code": None,
+        "final_decision": None,
+        "event_kind": None,
         "admission": None,
-        "decision": None,
         "symbol": None,
         "q": None,
         "limit": 5,
@@ -621,12 +766,11 @@ def test_feed_returns_validated_envelope_and_forwards_bounded_filters(client) ->
         "hours": None,
         "oi": None,
         "direction": None,
-        "channel": None,
     }
     assert body["data"]["events"][0]["event_id"] == "ev-1"
     assert "priority" not in body["data"]["events"][0]
     assert body["data"]["events"][0]["outcome"]["kind"] == "queued_publish"
-    assert body["data"]["events"][0]["title_zh"] == "铜价冲击纪录"
+    assert "title_zh" not in body["data"]["events"][0]
     # Raw provider/Gate evidence stays, while the durable Event-asset ledger is resolved beside it — so the
     # browser can strike through a symbol that names nothing without owning a symbol table.
     assert body["data"]["events"][0]["grounded_assets"] == ["COPPER", "XYZ-COPPER", "SPOT"]
@@ -711,7 +855,7 @@ def test_feed_records_zero_result_text_search_without_user_text_labels(client) -
     assert "private-query" not in metrics
 
 
-def test_feed_forwards_canonical_direction_and_channel_filters(client) -> None:
+def test_feed_forwards_all_current_filters_in_canonical_order(client) -> None:
     http, news = client
 
     response = http.get(
@@ -719,17 +863,35 @@ def test_feed_forwards_canonical_direction_and_channel_filters(client) -> None:
         params={
             "token": TOKEN,
             "direction": "neutral,bullish",
-            "channel": "unsupported_market,liquidation,oi,listing,news",
+            "event_family": "other,financial_results",
+            "change_state": "unknown,announced",
+            "assertion_status": "rumor,confirmed",
+            "source_authority": "unknown,issuer_first_party",
+            "subject_code": "medtop:16000000,medtop:04000000",
+            "final_decision": "throttled,push",
+            "event_kind": "unsupported_market,liquidation,oi,listing,news",
         },
     )
 
     assert response.status_code == 200
     forwarded = news.calls[0][1]
     assert forwarded["directions"] == ("bullish", "neutral")
-    assert forwarded["channels"] == ("news", "listing", "oi", "liquidation", "unsupported_market")
+    assert forwarded["event_family"] == ("financial_results", "other")
+    assert forwarded["change_state"] == ("announced", "unknown")
+    assert forwarded["assertion_status"] == ("confirmed", "rumor")
+    assert forwarded["source_authority"] == ("issuer_first_party", "unknown")
+    assert forwarded["subject_code"] == ("medtop:04000000", "medtop:16000000")
+    assert forwarded["final_decision"] == ("push", "throttled")
+    assert forwarded["event_kind"] == ("news", "listing", "oi", "liquidation", "unsupported_market")
     filters = response.json()["data"]["filters"]
     assert filters["direction"] == "bullish,neutral"
-    assert filters["channel"] == "news,listing,oi,liquidation,unsupported_market"
+    assert filters["event_family"] == "financial_results,other"
+    assert filters["change_state"] == "announced,unknown"
+    assert filters["assertion_status"] == "confirmed,rumor"
+    assert filters["source_authority"] == "issuer_first_party,unknown"
+    assert filters["subject_code"] == "medtop:04000000,medtop:16000000"
+    assert filters["final_decision"] == "push,throttled"
+    assert filters["event_kind"] == "news,listing,oi,liquidation,unsupported_market"
 
 
 @pytest.mark.parametrize("admission", ["liquidation_deterministic", "unsupported_market_contract"])
@@ -756,13 +918,21 @@ def test_feed_reports_tab_counts_on_the_first_page_only(client) -> None:
     ("params", "error", "field"),
     [
         ({"admission": "bogus"}, "news_feed_admission_invalid", "admission"),
-        ({"decision": "maybe"}, "news_feed_decision_invalid", "decision"),
+        ({"event_family": "general"}, "news_feed_event_family_invalid", "event_family"),
+        ({"change_state": "new"}, "news_feed_change_state_invalid", "change_state"),
+        ({"assertion_status": "maybe"}, "news_feed_assertion_status_invalid", "assertion_status"),
+        ({"source_authority": "blog"}, "news_feed_source_authority_invalid", "source_authority"),
+        ({"subject_code": "topic:1"}, "news_feed_subject_code_invalid", "subject_code"),
+        ({"final_decision": "maybe"}, "news_feed_final_decision_invalid", "final_decision"),
         # #207: the OI outcome is a closed set. An unknown value must not fall through to "no filter" —
         # that would serve the whole lane under a tab whose count says otherwise.
         ({"oi": "whale_ratio_below_threshold"}, "news_feed_oi_invalid", "oi"),
         ({"direction": "up"}, "news_feed_direction_invalid", "direction"),
         ({"direction": "bullish,bullish"}, "news_feed_direction_invalid", "direction"),
-        ({"channel": "social"}, "news_feed_channel_invalid", "channel"),
+        ({"event_kind": "social"}, "news_feed_event_kind_invalid", "event_kind"),
+        ({"family": "general"}, "unsupported_query_param", "family"),
+        ({"decision": "push"}, "unsupported_query_param", "decision"),
+        ({"channel": "news"}, "unsupported_query_param", "channel"),
         ({"cursor": "broken"}, "news_feed_cursor_invalid", "cursor"),
         ({"priority": "high"}, "unsupported_query_param", "priority"),
         ({"sort": "priority"}, "unsupported_query_param", "sort"),
@@ -833,7 +1003,7 @@ def test_status_counts_grounding_from_both_owners_without_either_reaching_across
     assert any(call[0] == "asset_usage_24h" for call in news.calls)
 
 
-def test_event_detail_returns_envelope_or_bounded_404(client) -> None:
+def test_event_detail_returns_current_envelope_or_explicit_archive_and_missing_states(client) -> None:
     http, _ = client
 
     found = http.get("/api/news/events/ev-1", params={"token": TOKEN})
@@ -841,6 +1011,10 @@ def test_event_detail_returns_envelope_or_bounded_404(client) -> None:
     assert found.json()["data"]["event"]["event_id"] == "ev-1"
     assert "priority" not in found.json()["data"]["event"]
     assert found.json()["data"]["members"] == []
+
+    archive = http.get("/api/news/events/archive", params={"token": TOKEN})
+    assert archive.status_code == 410
+    assert archive.json() == {"ok": False, "error": "news_event_archive_only"}
 
     missing = http.get("/api/news/events/ev-404", params={"token": TOKEN})
     assert missing.status_code == 404

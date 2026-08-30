@@ -51,13 +51,14 @@ from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.receiver import OpenNewsReceiver
 from tracefold.news.pipeline.recovery import RecoveryRunner
 from tracefold.news.pipeline.triage import TriageConsumer
+from tracefold.news.program.artifact import load_stable_program_artifact
+from tracefold.news.program.runtime import PROGRAM_VERSION
 
 pytestmark = pytest.mark.integration
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
-PROGRAM_VERSION = "news_semantic_program_crash_replay_v1"
-PROGRAM_SHA256 = "7" * 64
+PROGRAM_SHA256 = load_stable_program_artifact().program_sha256
 
 
 class BrokerUnavailable(RuntimeError):
@@ -411,26 +412,25 @@ class _RecordingSender:
 
 
 def _pushable_event(conn: Any, db: FaultInjectingDatabase, bus: RecordingBus) -> str:
-    """Drive a real frame through admission and Triage, then promote its verdict to a delivering one.
+    """Drive a real frame through admission and the current model/policy path to one delivering verdict.
 
     Everything the Deliverer reads — the Event card, its admission routing, the delivery timing, the
-    latest triage verdict — is written by the production consumers here. Only the decision itself is
-    forced: with no model configured Triage is fail-closed and reaches `drop`, and this module is
-    about the delivery window rather than about what a model would have said.
+    latest triage verdict and its DecisionResult — is written by the production consumers here.
     """
 
-    asyncio.run(_deduper(db, bus).handle(_raw_message(_one_hit())))
+    deduper = _deduper(db, bus)
+    asyncio.run(deduper.handle(_raw_message(_one_hit())))
     conn.commit()
     event_id = str(_events(conn)[0]["event_id"])
+    judge = _EvidenceMovingJudge(deduper, [])
     for message in bus.of_kind("event"):
-        asyncio.run(_triage(db, bus).handle(message))
+        asyncio.run(_triage(db, bus, judge=judge).handle(message))
     conn.commit()
-    updated = conn.execute(
-        "UPDATE news_verdicts SET final_decision = 'push' WHERE event_id = %s AND stage = 'triage'",
+    verdict = conn.execute(
+        "SELECT final_decision FROM news_verdicts WHERE event_id = %s AND stage = 'triage'",
         (event_id,),
-    )
-    conn.commit()
-    assert int(getattr(updated, "rowcount", 0) or 0) == 1, "Triage must have written exactly one verdict to promote"
+    ).fetchone()
+    assert verdict is not None and verdict["final_decision"] == "push"
     return event_id
 
 

@@ -42,9 +42,9 @@ from ..taxonomy import (
     source_authority_from_evidence,
 )
 
-REVIEW_RUBRIC_VERSION = "news_review_v5"
-# v2-v4 rows remain append-only audit history. Current datasets accept only
-# v5 because taxonomy denominators must never mix versions.
+REVIEW_RUBRIC_VERSION = "news_review_v6"
+# Earlier rows remain append-only audit history. Current datasets accept only
+# v6 because taxonomy denominators must never mix contracts.
 REVIEW_RUBRIC_VERSIONS: tuple[str, ...] = (REVIEW_RUBRIC_VERSION,)
 READER_CONTRACT_VERSION = "reader_contract_v2"
 # This is product truth, not prompt advice.  v2 is the operator-approved
@@ -63,7 +63,7 @@ READER_CONTRACT_TEXT = (
     "Market reaction: post-event price is discovery evidence, never reward, causality, or should-push truth.\n"
 )
 READER_CONTRACT_SHA256 = hashlib.sha256(READER_CONTRACT_TEXT.encode()).hexdigest()
-REVIEW_TASK_VERSION = "news_review_task_v1"
+REVIEW_TASK_VERSION = "news_review_task_v2"
 REVIEW_QUEUE_MAX = 100
 REVIEW_BODY_TEXT_MAX = 20_000
 REVIEW_HIGH_REACTION_DISCOVERY_BPS = 300
@@ -141,7 +141,6 @@ _TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = (
     "taxonomy_assertion_status",
 )
 _TAXONOMY_CRITICAL_FAMILIES = frozenset({"product_service_change", "financial_results", "guidance_outlook"})
-_TAXONOMY_COLLISION_EVENT_TYPES = frozenset({"filing", "partnership", "funding", "macro", "whale", "rumor", "noise"})
 
 _STRATUM_ZH = {
     "local_macro_false_interrupt": "局部宏观误打断",
@@ -306,7 +305,7 @@ class ExpectedAsset(BaseModel):
 
 
 class ExpectedCorrection(BaseModel):
-    """The reviewer's stated correct values — `news_review_v5` exact gold.
+    """The reviewer's stated correct values — `news_review_v6` exact gold.
 
     Without this the metric can only ask "did the candidate change the field the reviewer failed?", which
     scores a coin flip as highly as a repair. Every field is optional because a reviewer often knows one
@@ -731,7 +730,7 @@ class ReviewDesk:
             accepted = self._latest_accepted(virtual)
             reactions = PriceRepository(self._conn).event_reactions(event_id)
             trace = dict(row.get("trace") or {})
-            editorial = dict(row.get("editorial") or {})
+            editorial = dict(row.get("model_editorial") or {})
             return {
                 "task": _task_public(virtual, accepted=accepted),
                 "disclosure": {
@@ -1207,7 +1206,6 @@ class ReviewDesk:
                     "received": 0,
                     "reviewed": 0,
                     "accepted": 0,
-                    "legacy_cohort": _cohort(row),
                     "agent": agent_identity,
                 },
             )
@@ -2063,7 +2061,6 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
         "why_zh": verdict.get("why_zh") or "",
         "direction": verdict.get("direction"),
         "magnitude": verdict.get("magnitude"),
-        "actionable": verdict.get("actionable"),
         "final_decision": observation.get("final_decision"),
         "final_decision_zh": _review_decision_zh(observation.get("final_decision")),
         "error_code": observation.get("error_code"),
@@ -2072,7 +2069,7 @@ def _blind_output(observation: Mapping[str, Any]) -> dict[str, Any]:
 
 def _selection(row: Mapping[str, Any]) -> dict[str, Any]:
     verdict = dict(row.get("verdict") or {})
-    editorial = dict(row.get("editorial") or {})
+    editorial = dict(row.get("model_editorial") or {})
     relevance = (
         dict(editorial.get("relevance") or {}) if str(editorial.get("editorial_origin") or "") == "model" else {}
     )
@@ -2198,7 +2195,7 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
         dimensions.extend(["direction", "magnitude"])
     dimensions.append("timeliness")
     dimensions.extend(_TAXONOMY_DIMENSIONS)
-    editorial = dict(row.get("editorial") or {})
+    editorial = dict(row.get("model_editorial") or {})
     if editorial.get("editorial_origin") == "model" and editorial.get("relevance") is not None:
         dimensions.extend(
             [
@@ -2231,10 +2228,8 @@ def _taxonomy_review_requires_adjudication(
     submission: EventRubricSubmission,
     row: Mapping[str, Any],
 ) -> bool:
-    verdict = dict(row.get("verdict") or {})
     return taxonomy_requires_independent_adjudication(
         submission.taxonomy,
-        legacy_event_type=str(verdict.get("event_type") or ""),
         draft_taxonomy=submission.taxonomy_review.draft_taxonomy,
     )
 
@@ -2242,7 +2237,6 @@ def _taxonomy_review_requires_adjudication(
 def taxonomy_requires_independent_adjudication(
     taxonomy: NewsTaxonomyV1,
     *,
-    legacy_event_type: str = "",
     draft_taxonomy: NewsTaxonomyV1 | None = None,
 ) -> bool:
     """The one code-owned predicate for taxonomy-critical review and evaluation."""
@@ -2253,14 +2247,13 @@ def taxonomy_requires_independent_adjudication(
         or taxonomy.change_state == "unknown"
         or taxonomy.assertion_status in {"confirmed", "rumor", "unknown"}
         or taxonomy.source_authority == "unknown"
-        or legacy_event_type in _TAXONOMY_COLLISION_EVENT_TYPES
         or (draft_taxonomy is not None and draft_taxonomy != taxonomy)
     )
 
 
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
-    relevance = dict(dict(row.get("editorial") or {}).get("relevance") or {})
+    relevance = dict(dict(row.get("model_editorial") or {}).get("relevance") or {})
     final = str(row.get("final_decision") or "")
     rule = str(row.get("override_rule") or "")
     # The thresholds this verdict actually ran under, not today's defaults: a stored decision
@@ -2348,10 +2341,9 @@ def _review_public(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _cohort(row: Mapping[str, Any]) -> str:
-    generation_version = row.get("program_version") or row.get("prompt_version")
     return "/".join(
         [
-            str(generation_version or "no_generation"),
+            str(row.get("program_version") or "no_generation"),
             str(row.get("policy_version") or "no_policy"),
             str(row.get("model") or "no_model"),
         ]
@@ -2359,12 +2351,7 @@ def _cohort(row: Mapping[str, Any]) -> str:
 
 
 def _agent_identity(row: Mapping[str, Any]) -> dict[str, str]:
-    """The exact decision system behind one historical verdict.
-
-    New rows carry the content-addressed deployment bundle.  Older rows did
-    not; for those, hash every frozen component that is actually available
-    instead of pretending a prompt/policy/model display label is an Agent.
-    """
+    """The exact current decision system behind one verdict."""
 
     trace = dict(row.get("trace") or {})
     assignment = dict(trace.get("agent_assignment") or {})
@@ -2373,11 +2360,7 @@ def _agent_identity(row: Mapping[str, Any]) -> dict[str, str]:
     identity = {
         "bundle_sha": bundle_sha,
         "program_version": str(row.get("program_version") or ""),
-        "program_sha256": str(row.get("program_sha256") or trace.get("program_sha256") or ""),
-        # Kept only when explaining immutable Prompt-era audit rows.
-        "prompt_version": str(row.get("prompt_version") or ""),
-        "prompt_sha256": str(trace.get("prompt_sha256") or ""),
-        "schema_sha256": str(trace.get("schema_sha256") or ""),
+        "program_sha256": str(row.get("program_sha256") or ""),
         "policy_version": str(row.get("policy_version") or ""),
         "policy_sha256": _sha(policy) if policy else "",
         "model": str(row.get("model") or ""),
@@ -2569,9 +2552,9 @@ def review_read_statements(*, now_ms: int) -> tuple[ReviewReadStatement, ...]:
         now_ms=int(now_ms),
         cohort=MarketReviewCohort(
             bundle_sha256="0" * 64,
-            program_version="news_semantic_program_v6",
+            program_version="news_semantic_program_v8",
             program_sha256="1" * 64,
-            policy_version="news_triage_policy_v10",
+            policy_version="news_triage_policy_v11",
             model="audit-model",
         ),
     )

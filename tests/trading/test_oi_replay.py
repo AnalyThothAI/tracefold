@@ -29,7 +29,7 @@ def _row(**kwargs: Any) -> dict[str, Any]:
         "final_decision": "drop",
         "source_rule": "whale_ratio_below_threshold",
         "ingest_mode": "live",
-        "program_version": "news_oi_signal_v1",
+        "program_version": "news_oi_signal_v2",
         "metric_version": "oi_signal_v1",
         "source_strategy_id": "1019",
         "source_contract_version": "opennews_oi_source_v1",
@@ -46,10 +46,10 @@ def _row(**kwargs: Any) -> dict[str, Any]:
         "venue": "binance",
         "learning_epoch": "bundle_00000000",
         "program_sha256": "a" * 64,
-        "policy_version": "news_triage_policy_v10",
-        "editorial_origin": "telemetry_deterministic",
-        "editorial_sha256": "b" * 64,
-        "scored_judgment_sha256": "c" * 64,
+        "policy_version": "news_triage_policy_v11",
+        "judgment_contract_version": "news_judgment_v2",
+        "judgment_origin": "oi",
+        "judgment_sha256": "c" * 64,
         "runtime_manifest_sha": "d" * 64,
     }
     row.update(kwargs)
@@ -204,6 +204,17 @@ def test_coverage_is_left_to_the_caller_rather_than_reported_as_a_zero_nobody_me
     # STORJ was refused by the liquidity floor and is still routable — coverage is a different question.
     assert report.routable_symbols == {"TUT", "STORJ"}
     assert report.instrument_coverage == {}
+
+
+def test_current_projection_rejects_a_missing_judgment_rule() -> None:
+    from tracefold.trading.sources import SourceRejected, normalize_oi_source
+
+    missing = _row()
+    missing.pop("source_rule")
+
+    for row in (missing, _row(source_rule="")):
+        parsed = normalize_oi_source(row)  # type: ignore[arg-type]
+        assert parsed == SourceRejected(rule="source_rule_missing", symbol="TUT")
 
 
 def test_the_template_test_reads_only_the_three_conditions_it_names() -> None:

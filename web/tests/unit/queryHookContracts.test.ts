@@ -27,13 +27,17 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const baseFilters: NewsFeedFilters = {
   admission: null,
-  channels: [],
-  decision: null,
+  assertionStatuses: [],
+  changeStates: [],
   directions: [],
-  family: null,
+  eventFamilies: [],
+  eventKinds: [],
+  finalDecisions: [],
   hours: null,
   outcome: null,
   q: "",
+  sourceAuthorities: [],
+  subjectCodes: [],
   symbol: null,
 };
 

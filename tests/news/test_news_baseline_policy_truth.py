@@ -24,7 +24,7 @@ _CARD: dict[str, Any] = {
     "leader_title": "Issuer publishes a material update",
     "leader_description": "",
     "reporting_origin": "wire",
-    "family": "general",
+    "dedupe_family": "general",
     "admission": "candidate",
     "queue_priority": "normal",
     "asset_class": "equity_or_commodity",
@@ -43,19 +43,14 @@ _CARD: dict[str, Any] = {
 _VERDICT: dict[str, Any] = {
     "novelty": "new_fact",
     "restates": -1,
-    "event_type": "filing",
     "assets": [{"symbol": "TSLA", "role": "primary"}],
     "magnitude": 2,
     "direction": "bullish",
-    "actionable": True,
     "audience": "us_equity",
     "scope": "single_name",
-    # Compatibility intent is deliberately contrary to the relevance result.
-    "decision": "drop",
     "confidence": 0.9,
     "headline_zh": "发行人发布重大更新",
     "why_zh": "该更新改变盈利和现金流预期",
-    "title_zh": "",
 }
 
 
@@ -71,7 +66,7 @@ def _episode(
             "watchlist_symbols": ["TSLA"] if watchlist else [],
             "admission": "candidate",
         },
-        "storyline": {"title": "Issuer", "family": "general"},
+        "storyline": {"title": "Issuer", "dedupe_family": "general"},
         "seen": [],
     }
     if policy_values is not None:
@@ -133,8 +128,7 @@ def _action(
         ),
     ],
 )
-def test_trade_relevance_owns_action_not_compatibility_intent(relevance: dict[str, Any], expected: str) -> None:
-    assert _VERDICT["decision"] == "drop"
+def test_trade_relevance_owns_action(relevance: dict[str, Any], expected: str) -> None:
     assert _action(relevance=relevance) == expected
 
 

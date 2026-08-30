@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from tracefold.news import EventKind, SourceContractReason
 
@@ -11,8 +11,13 @@ from .news_common import (
     NewsAssetRefData,
     NewsOutcomeData,
     NewsSymbolNormalizationData,
+    NewsTaxonomyData,
+    NewsTradeRelevanceData,
+    NewsTriageAssetData,
     NewsTriageSummaryData,
 )
+
+_SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class NewsReactionSummaryData(ExactApiSchema):
@@ -63,7 +68,6 @@ class NewsEventReactionData(ExactApiSchema):
 
 class NewsEventData(ExactApiSchema):
     event_id: str
-    family: str
     event_kind: EventKind
     source_contract_reason: SourceContractReason | None
     leader_title: str
@@ -111,28 +115,55 @@ class NewsEventMemberData(ExactApiSchema):
     fact_text: str = ""
 
 
+class NewsPresentationVerdictData(ExactApiSchema):
+    novelty: Literal["new_fact", "progression", "restatement"]
+    restates: int = Field(ge=-1)
+    assets: list[NewsTriageAssetData] = Field(default_factory=list, max_length=8)
+    direction: Literal["bullish", "bearish", "neutral", "unclear"]
+    scope: Literal["macro", "sector", "single_name"]
+    magnitude: int = Field(ge=0, le=3)
+    confidence: float = Field(ge=0.0, le=1.0)
+    audience: Literal["crypto", "us_equity", "macro", "none"]
+    headline_zh: str = Field(min_length=1, max_length=60)
+    why_zh: str = Field(default="", max_length=140)
+
+
+class NewsModelEditorialData(ExactApiSchema):
+    taxonomy: NewsTaxonomyData
+    relevance: NewsTradeRelevanceData
+
+
 class NewsVerdictData(ExactApiSchema):
     stage: str
     policy_version: str
-    model_decision: str | None = None
-    rule_baseline_decision: str
-    final_decision: str
+    judgment_contract_version: Literal["news_judgment_v2"]
+    judgment_origin: Literal["model", "oi", "liquidation", "degraded"]
+    judgment_sha256: str = Field(pattern=_SHA256_PATTERN)
+    verdict: NewsPresentationVerdictData
+    model_editorial: NewsModelEditorialData | None = None
+    rule_baseline_decision: Literal["push", "escalate", "drop", "throttled"]
+    final_decision: Literal["push", "escalate", "drop", "throttled"]
     override_rule: str | None = None
     throttled_by: str | None = None
-    verdict: dict[str, Any] = Field(default_factory=dict)
-    editorial: dict[str, Any] | None = None
-    model: str | None = None
-    program_version: str | None = None
-    program_sha256: str | None = None
-    prompt_version: str | None = None
+    model: str | None = Field(default=None, min_length=1)
+    program_version: str = Field(min_length=1)
+    program_sha256: str = Field(pattern=_SHA256_PATTERN)
     degraded: bool = False
     error_code: str | None = None
-    trace: dict[str, Any] = Field(default_factory=dict)
-    evidence_version: int | None = None
-    evidence_sha256: str | None = None
-    focus_fact_id: str | None = None
+    evidence_version: int = Field(ge=0)
+    evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+    focus_fact_id: str = Field(min_length=1)
     published_at_ms: int | None = None
     created_at_ms: int
+
+    @model_validator(mode="after")
+    def model_identity_matches_origin(self) -> NewsVerdictData:
+        is_model = self.judgment_origin == "model"
+        if is_model != (self.model_editorial is not None) or is_model != (self.model is not None):
+            raise ValueError("news_verdict_model_identity_origin_mismatch")
+        if (self.judgment_origin == "degraded") != self.degraded:
+            raise ValueError("news_verdict_degraded_origin_mismatch")
+        return self
 
 
 class NewsDeliveryData(ExactApiSchema):
@@ -151,13 +182,14 @@ class NewsDeliveryData(ExactApiSchema):
 
 
 class NewsEvidenceSnapshotData(ExactApiSchema):
+    """Current evidence identity only; raw evidence bytes remain in PostgreSQL audit storage."""
+
     event_id: str
     evidence_version: int
     focus_fact_id: str
     evidence_sha256: str
-    provenance: Literal["observed", "legacy_reconstructed"]
+    provenance: Literal["observed"]
     release_eligible: bool
-    snapshot: dict[str, Any] = Field(default_factory=dict)
     created_at_ms: int
 
 
@@ -170,13 +202,13 @@ class NewsReaderReceiptData(ExactApiSchema):
 
 
 class NewsAcceptedReviewData(ExactApiSchema):
+    """Typed current Review summary; the stored submission payload is audit-only."""
+
     review_id: str
-    subject_kind: Literal["event", "external_miss", "pairwise", "legacy_label"]
+    subject_kind: Literal["event", "external_miss", "pairwise"]
     event_id: str | None = None
     external_snapshot_id: str | None = None
     should_push: Literal["must_push", "should_push", "should_hold", "must_hold", "uncertain"] | None = None
-    dimensions: dict[str, str] = Field(default_factory=dict)
-    novelty: dict[str, Any] = Field(default_factory=dict)
     first_bad_owner: str | None = None
     evidence_refs: list[str] = Field(default_factory=list)
     expected_correction: str = ""
@@ -186,7 +218,6 @@ class NewsAcceptedReviewData(ExactApiSchema):
     rubric_version: str
     reader_contract_version: str
     pairwise_case_id: str | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class NewsEventReviewSummaryData(ExactApiSchema):
@@ -266,6 +297,8 @@ __all__ = [
     "NewsEventReactionData",
     "NewsEventReviewSummaryData",
     "NewsEvidenceSnapshotData",
+    "NewsModelEditorialData",
+    "NewsPresentationVerdictData",
     "NewsQuoteData",
     "NewsQuotesData",
     "NewsReactionSummaryData",

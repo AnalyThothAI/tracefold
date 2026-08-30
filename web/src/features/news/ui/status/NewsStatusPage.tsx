@@ -383,13 +383,9 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
             v={String(status.pipeline.telemetry_parse_failed_24h)}
           />
           <KeyValueRow k="telemetry_push_24h" v={String(status.pipeline.telemetry_push_24h)} />
-          {/* `all` is policy v7's content comparison path. `throttled` only
-              decodes pre-v7 historical rows that lacked an explicit scope. */}
           <KeyValueRow
             k="duplicates_withheld_24h"
-            v={`${status.pipeline.duplicates_withheld_24h?.throttled ?? 0} 历史记录 · ${
-              status.pipeline.duplicates_withheld_24h?.all ?? 0
-            } 全量比对`}
+            v={`${status.pipeline.duplicates_withheld_24h?.all ?? 0} 全量比对`}
           />
           <KeyValueRow
             k="reviewed_should_push_24h"

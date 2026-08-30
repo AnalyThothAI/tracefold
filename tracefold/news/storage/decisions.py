@@ -20,11 +20,11 @@ from .sql_values import _dumps
 _STORYLINE_LOCK_NAMESPACE = 0x4E455753  # 'NEWS', distinct from App session-lock namespaces.
 _READER_HISTORY_PROJECTION = """
     SELECT v.event_id, d.settled_at_ms AS at_ms, e.storyline_key, e.comparison_title,
-           e.comparison_fingerprint, e.family,
-           v.verdict ->> 'event_type' AS event_type,
+           e.comparison_fingerprint, e.dedupe_family,
            (v.verdict ->> 'magnitude')::int AS magnitude,
            v.verdict ->> 'direction' AS direction,
            COALESCE(NULLIF(d.card #>> '{header,title,content}', ''), v.verdict ->> 'headline_zh') AS headline_zh,
+           v.verdict ->> 'why_zh' AS why_zh,
            COALESCE(e.grounded_assets, '[]'::jsonb) AS grounded_assets,
            COALESCE(v.verdict -> 'assets', '[]'::jsonb) AS assets,
            COALESCE(
@@ -35,7 +35,7 @@ _READER_HISTORY_PROJECTION = """
                        WHERE ea.event_id = e.event_id) bases),
              '[]'::jsonb
            ) AS canonical_assets
-      FROM news_events e
+      FROM news_current_events_v1 e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
                             AND d.delete_state IS DISTINCT FROM 'deleted'
       JOIN LATERAL (
@@ -46,12 +46,19 @@ _READER_HISTORY_PROJECTION = """
             SELECT scoped.* FROM news_verdicts scoped
              WHERE scoped.event_id = e.event_id
                AND scoped.stage = 'triage'
+               AND scoped.judgment_contract_version = 'news_judgment_v2'
                AND scoped.final_decision IN ('push', 'escalate')
              OFFSET 0
           ) candidate
          ORDER BY candidate.created_at_ms DESC, candidate.policy_version DESC
          LIMIT 1
       ) v ON true
+      JOIN news_event_evidence_snapshots evidence
+        ON evidence.event_id = v.event_id
+       AND evidence.evidence_version = v.evidence_version
+       AND evidence.evidence_sha256 = v.evidence_sha256
+       AND evidence.provenance = 'observed'
+       AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
 """
 
 
@@ -75,13 +82,13 @@ class DecisionStorage:
 
         exact = self.conn.execute(
             "WITH current_event AS ("
-            " SELECT family, comparison_fingerprint FROM news_events WHERE event_id = %s"
+            " SELECT dedupe_family, comparison_fingerprint FROM news_current_events_v1 WHERE event_id = %s"
             ") "
             + _READER_HISTORY_PROJECTION
             + """
              CROSS JOIN current_event current
              WHERE e.event_id <> %s
-               AND e.family = current.family
+               AND e.dedupe_family = current.dedupe_family
                AND e.comparison_fingerprint = current.comparison_fingerprint
                AND d.settled_at_ms >= %s AND d.settled_at_ms < %s
              ORDER BY d.settled_at_ms DESC, v.event_id LIMIT %s
@@ -97,8 +104,8 @@ class DecisionStorage:
         asset = self.conn.execute(
             """
             WITH current_event AS (
-              SELECT event_id, family, comparison_fingerprint
-                FROM news_events WHERE event_id = %s
+              SELECT event_id, dedupe_family, comparison_fingerprint
+                FROM news_current_events_v1 WHERE event_id = %s
             ), current_bases AS (
               SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
                 FROM current_event current
@@ -115,7 +122,7 @@ class DecisionStorage:
              CROSS JOIN current_event current
              WHERE e.event_id <> current.event_id
                AND NOT (
-                 e.family = current.family
+                 e.dedupe_family = current.dedupe_family
                  AND e.comparison_fingerprint = current.comparison_fingerprint
                )
                -- The targeted band asks "what *story* about this asset has the reader already been
@@ -174,10 +181,11 @@ class DecisionStorage:
         """
 
         row = self.conn.execute(
-            "SELECT count(*)::int AS n FROM news_oi_signals "
-            "WHERE metric_version = %s AND symbol = %s "
-            "AND observed_at_ms > %s AND observed_at_ms <= %s AND event_id <> %s "
-            "AND whale_oi_ratio_bps > %s AND abs(oi_change_bps) >= %s",
+            "SELECT count(*)::int AS n FROM news_oi_signals signal "
+            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "WHERE signal.metric_version = %s AND signal.symbol = %s "
+            "AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s AND signal.event_id <> %s "
+            "AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s",
             (
                 metric_version,
                 symbol,
@@ -194,10 +202,13 @@ class DecisionStorage:
         """The code-verified OI row that may ground its deterministic reader card."""
 
         row = self.conn.execute(
-            "SELECT event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd, "
-            "whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, "
-            "source_strategy_id, source_contract_version, measurement_window_ms "
-            "FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
+            "SELECT signal.event_id, signal.metric_version, signal.symbol, signal.direction, "
+            "signal.oi_change_bps, signal.oi_value_usd, signal.whale_long_profit_bps, "
+            "signal.whale_oi_ratio_bps, signal.observed_at_ms, signal.rank_in_window, "
+            "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms "
+            "FROM news_oi_signals signal "
+            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "WHERE signal.event_id = %s AND signal.metric_version = %s",
             (event_id, metric_version),
         ).fetchone()
         return dict(row) if row is not None else None
@@ -358,14 +369,15 @@ class DecisionStorage:
         event_id: str,
         stage: str,
         policy_version: str,
-        model_decision: str | None,
+        judgment_contract_version: str,
+        judgment_origin: str,
         rule_baseline_decision: str,
         final_decision: str,
         override_rule: str | None,
         throttled_by: str | None,
         verdict: Mapping[str, Any],
-        editorial: Mapping[str, Any],
-        scored_judgment_sha256: str,
+        model_editorial: Mapping[str, Any] | None,
+        judgment_sha256: str,
         runtime_manifest_sha: str,
         model: str | None,
         program_version: str,
@@ -381,11 +393,12 @@ class DecisionStorage:
         cursor = self.conn.execute(
             """
             INSERT INTO news_verdicts (
-              event_id, stage, policy_version, model_decision, rule_baseline_decision, final_decision, override_rule,
+              event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+              rule_baseline_decision, final_decision, override_rule,
               throttled_by, verdict, editorial, scored_judgment_sha256, runtime_manifest_sha,
               model, program_version, program_sha256, degraded, error_code, trace, created_at_ms,
               evidence_version, evidence_sha256, focus_fact_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s,
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s, %s,
                       %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
@@ -393,14 +406,15 @@ class DecisionStorage:
                 event_id,
                 stage,
                 policy_version,
-                model_decision,
+                judgment_contract_version,
+                judgment_origin,
                 rule_baseline_decision,
                 final_decision,
                 override_rule,
                 throttled_by,
                 _dumps(dict(verdict)),
-                _dumps(dict(editorial)),
-                scored_judgment_sha256,
+                _dumps(dict(model_editorial)) if model_editorial is not None else None,
+                judgment_sha256,
                 runtime_manifest_sha,
                 model,
                 program_version,
@@ -418,14 +432,16 @@ class DecisionStorage:
 
     def get_verdict(self, *, event_id: str, stage: str, policy_version: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s AND policy_version = %s",
+            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s AND policy_version = %s "
+            "AND judgment_contract_version = 'news_judgment_v2'",
             (event_id, stage, policy_version),
         ).fetchone()
         return dict(row) if row else None
 
     def latest_verdict(self, *, event_id: str, stage: str) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s ORDER BY created_at_ms DESC LIMIT 1",
+            "SELECT * FROM news_verdicts WHERE event_id = %s AND stage = %s "
+            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms DESC LIMIT 1",
             (event_id, stage),
         ).fetchone()
         return dict(row) if row else None
@@ -435,6 +451,7 @@ class DecisionStorage:
             """
             UPDATE news_verdicts SET published_at_ms = COALESCE(published_at_ms, %s)
              WHERE event_id = %s AND stage = %s AND policy_version = %s
+               AND judgment_contract_version = 'news_judgment_v2'
             """,
             (int(now_ms), event_id, stage, policy_version),
         )
