@@ -126,11 +126,13 @@ def capital_evidence_fixture(
     )
     statistics = FutureStatisticalProtocolV1(
         future_start_ms=4,
-        future_end_ms=5,
-        capture_cutoff_ms=5,
+        future_end_ms=300_004,
+        capture_cutoff_ms=300_004,
+        capture_interval_ms=300_000,
+        maximum_capture_lag_ms=300_000,
         max_horizon_ms=1,
         data_finalization_lag_ms=1,
-        drain_cutoff_ms=7,
+        drain_cutoff_ms=300_006,
         secondary_diagnostics=("concentration",),
         stressed_hurdle_bps="0",
         confidence_level_bps=9_500,
@@ -165,6 +167,7 @@ def capital_evidence_fixture(
         point_in_time_catalog_sha256="d" * 64,
         eligible_universe_sha256="e" * 64,
         selection_program_sha256=candidate_selection_program_sha256(),
+        selection_evidence_sha256="9" * 64,
         policy_id="source_native_oi_smart_money_long_v3",
         policy_config_sha256=policy_config_sha256,
         execution_contract_receipt_sha256="c" * 64,
@@ -212,7 +215,7 @@ def capital_evidence_fixture(
         future_capture_sha256="6" * 64,
         future_drain_sha256="7" * 64,
         evaluator_program_sha256=candidate.evaluator_program_sha256,
-        evaluated_at_ms=7,
+        evaluated_at_ms=300_006,
         metrics=metrics,
         reasons=("confidence_lower_bound_above_hurdle",),
     )
@@ -225,7 +228,7 @@ def capital_evidence_fixture(
         report_sha256=result.report_sha256,
         artifact_sha256=result.report_sha256,
         artifact_path="test-evidence/future-result.json",
-        created_at_ms=7,
+        created_at_ms=300_006,
     )
     return corpus, candidate_receipt, candidate, result_receipt, result
 
@@ -253,7 +256,7 @@ def append_capital_evidence_fixture(
         capture_sha256=result.future_capture_sha256,
         artifact_sha256=result.future_capture_sha256,
         artifact_path="test-evidence/future-capture.json",
-        created_at_ms=5,
+        created_at_ms=300_004,
     )
     trading.append_future_capture_receipt(capture_receipt)
     trading.append_future_drain_receipt(
@@ -267,7 +270,7 @@ def append_capital_evidence_fixture(
             drain_sha256=result.future_drain_sha256,
             artifact_sha256=result.future_drain_sha256,
             artifact_path="test-evidence/future-drain.json",
-            created_at_ms=6,
+            created_at_ms=300_005,
         )
     )
     trading.append_future_holdout_result_receipt(result_receipt, result)

@@ -57,9 +57,9 @@ def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
                 """
                 INSERT INTO workers_runtime(
                   singleton_key, runtime_id, runtime_version, lifecycle_state,
-                  started_at_ms, heartbeat_at_ms, fatal_code
+                  started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
                 )
-                VALUES (true, %s, 'test', 'starting', 1, 1, NULL)
+                VALUES (true, %s, 'test', 'starting', 1, 1, NULL, 'test-release', 'sha256:test')
                 """,
                 (RUNTIME_ID,),
             )
@@ -70,9 +70,9 @@ def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
             """
             INSERT INTO workers_runtime(
               singleton_key, runtime_id, runtime_version, lifecycle_state,
-              started_at_ms, heartbeat_at_ms, fatal_code
+              started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
             )
-            VALUES (true, %s, 'test', 'starting', 1, 1, NULL)
+            VALUES (true, %s, 'test', 'starting', 1, 1, NULL, 'test-release', 'sha256:test')
             """,
             (RUNTIME_ID,),
         )
@@ -182,6 +182,8 @@ def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(
             assert repository.begin(
                 runtime_id=RUNTIME_ID,
                 runtime_version="v2",
+                runtime_revision="test-release",
+                image_digest="sha256:test",
                 started_at_ms=1_000,
                 now_ms=1_000,
             )
@@ -321,6 +323,8 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             assert repository.begin(
                 runtime_id=RUNTIME_ID,
                 runtime_version="v2",
+                runtime_revision="test-release",
+                image_digest="sha256:test",
                 started_at_ms=1_000,
                 now_ms=1_000,
             )
@@ -328,6 +332,8 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             assert not repository.begin(
                 runtime_id=SECOND_RUNTIME_ID,
                 runtime_version="v2",
+                runtime_revision="test-release",
+                image_digest="sha256:test",
                 started_at_ms=1_500,
                 now_ms=1_500,
             )
@@ -342,6 +348,8 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             assert repository.begin(
                 runtime_id=SECOND_RUNTIME_ID,
                 runtime_version="v2",
+                runtime_revision="test-release",
+                image_digest="sha256:test",
                 started_at_ms=2_001,
                 now_ms=2_001,
             )
@@ -354,6 +362,8 @@ def test_terminal_runtime_rows_allow_immediate_takeover(
             assert repository.begin(
                 runtime_id=RUNTIME_ID,
                 runtime_version="v2",
+                runtime_revision="test-release",
+                image_digest="sha256:test",
                 started_at_ms=2_003,
                 now_ms=2_003,
             )

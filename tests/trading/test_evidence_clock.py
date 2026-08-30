@@ -22,6 +22,7 @@ from tracefold.trading.evidence_clock import (
     EvidenceCaptureSpecV1,
     EvidenceDrainArtifactV1,
     FundingRateV1,
+    FutureCaptureBatchV1,
     FutureStatisticalProtocolV1,
     NoCandidateV1,
     PointInTimeCatalogRowV1,
@@ -258,7 +259,7 @@ def test_drain_marks_a_middle_bar_gap_missing_instead_of_evaluating_partial_hist
 def test_capture_and_drain_reject_clock_or_payload_identity_tampering() -> None:
     capture = _capture()
     capture_payload = capture.model_dump(mode="json")
-    capture_payload["sources"][0]["available_at_ms"] += 1
+    capture_payload["sources"][0]["available_at_ms"] = capture.spec.captured_at_ms + 1
     with pytest.raises(ValueError, match="evidence_capture_availability_clock_mismatch"):
         EvidenceCaptureArtifactV1.model_validate(capture_payload)
 
@@ -276,6 +277,44 @@ def test_capture_and_drain_reject_clock_or_payload_identity_tampering() -> None:
     drain_payload["rows"][0]["bars_input"]["value_sha256"] = "0" * 64
     with pytest.raises(ValueError, match="evidence_drain_bar_identity_invalid"):
         EvidenceDrainArtifactV1.model_validate(drain_payload)
+
+
+def test_future_capture_batch_records_schedule_and_collection_health() -> None:
+    capture = _capture()
+    source = capture.sources[0]
+    batch = FutureCaptureBatchV1(
+        binding="BINANCE_USDM",
+        candidate_receipt_sha256="1" * 64,
+        protocol_sha256="2" * 64,
+        batch_start_ms=NOW - 1,
+        batch_end_ms=NOW + 2,
+        captured_at_ms=NOW + 10,
+        capture_lag_ms=8,
+        sources=(source,),
+        source_count=1,
+        late_source_count=0,
+        catalog_missing_count=0,
+    )
+
+    payload = batch.model_dump(mode="json")
+    payload["late_source_count"] = 1
+    with pytest.raises(ValueError, match="evidence_future_batch_health_invalid"):
+        FutureCaptureBatchV1.model_validate(payload)
+
+
+def test_public_evidence_handler_uses_database_clock_for_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = SimpleNamespace(evidence_command="verify")
+    monkeypatch.setattr(evidence_cli, "_database_now_ms", lambda _settings: NOW + 99)
+    monkeypatch.setattr(
+        evidence_cli,
+        "_verify",
+        lambda _settings, _args, *, now_ms: (0, {"ok": True, "data": {"verified_at_ms": now_ms}}),
+    )
+
+    code, answer = evidence_cli.handle_trading_evidence(SimpleNamespace(), args, now_ms=1)
+
+    assert code == 0
+    assert answer["data"]["verified_at_ms"] == NOW + 99
 
 
 def test_future_partition_refuses_discovery_overlap_and_premature_unblind() -> None:
@@ -384,7 +423,8 @@ def test_candidate_registration_rejects_an_unknown_selection_program(monkeypatch
         sealed_corpus_sha256=corpus_sha256,
         corpus_artifact_sha256=corpus_sha256,
         selection_program_sha256="5" * 64,
-        reason="finite search selected no candidate",
+        selection_evidence_sha256="6" * 64,
+        reason="no_complete_directional_discovery_episode",
         decided_at_ms=NOW + 1,
         decided_by="test-operator",
     )
@@ -442,6 +482,8 @@ def _candidate(corpus_sha256: str, evaluator_sha256: str) -> tuple[CandidateLock
         future_start_ms=NOW + 10_000,
         future_end_ms=NOW + 20_000,
         capture_cutoff_ms=NOW + 20_000,
+        capture_interval_ms=300_000,
+        maximum_capture_lag_ms=300_000,
         max_horizon_ms=14_400_000,
         data_finalization_lag_ms=2_100_000,
         drain_cutoff_ms=NOW + 16_520_000,
@@ -472,6 +514,7 @@ def _candidate(corpus_sha256: str, evaluator_sha256: str) -> tuple[CandidateLock
             point_in_time_catalog_sha256="6" * 64,
             eligible_universe_sha256="7" * 64,
             selection_program_sha256=candidate_selection_program_sha256(),
+            selection_evidence_sha256="8" * 64,
             policy_id="source_native_oi_smart_money_long_v3",
             policy_config_sha256=CapitalPolicy().config_digest,
             execution_contract_receipt_sha256=contract.receipt_sha256,

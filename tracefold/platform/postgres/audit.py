@@ -101,6 +101,7 @@ TRADING_TABLES = (
     "trading_capital_risk_reservation_state",
     "trading_capital_risk_events",
     "trading_evidence_clock_receipts",
+    "trading_evidence_future_capture_batches",
     "trading_nautilus_runtime_starts",
 )
 

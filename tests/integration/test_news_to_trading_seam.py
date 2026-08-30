@@ -258,6 +258,7 @@ def test_the_mapper_carries_every_projected_oi_field_across_the_sibling_boundary
         start_observed_at_ms=observed_at_ms,
         end_observed_at_ms=observed_at_ms + 1,
         known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]),
+        available_at_or_before_ms=int(signal["available_at_ms"]),
     )
     assert [row["event_id"] for row in evidence_rows] == [event_id]
     assert (
@@ -265,7 +266,18 @@ def test_the_mapper_carries_every_projected_oi_field_across_the_sibling_boundary
             metric_version=OI_METRIC_VERSION,
             start_observed_at_ms=observed_at_ms,
             end_observed_at_ms=observed_at_ms + 1,
+            known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]),
+            available_at_or_before_ms=int(signal["available_at_ms"]) - 1,
+        )
+        == []
+    )
+    assert (
+        repos.news.trade_evidence_oi_rows(
+            metric_version=OI_METRIC_VERSION,
+            start_observed_at_ms=observed_at_ms,
+            end_observed_at_ms=observed_at_ms + 1,
             known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]) - 1,
+            available_at_or_before_ms=int(signal["available_at_ms"]),
         )
         == []
     )

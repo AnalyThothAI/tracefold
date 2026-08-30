@@ -72,23 +72,36 @@ trading evidence capture --partition discovery ...
 trading evidence drain --capture ... --max-horizon-ms ... --finalization-lag-ms ... --cost-model ...
 trading evidence corpus-seal --capture ... --drain ...
 trading evidence candidate-register --file ...
-trading evidence capture --partition future ... --candidate ... --candidate-receipt ...
+trading evidence capture --partition future ... --candidate ... --candidate-receipt ...  # repeat each locked interval
 trading evidence drain --capture ... --candidate ... --candidate-receipt ...
 trading evidence future-unblind --capture ... --drain ... --candidate ... --candidate-receipt ...
 ```
 
 Capture and drain are not one command: the first cannot see outcome bars or
-funding. The first complete future capture transaction appends
-`FUTURE_CAPTURE_SEALED`; later source-population variants cannot replace it. The
-second refuses all future provider I/O before the locked drain cutoff or under a
+funding. Future capture is periodic, not one post-window query. Run it at every
+candidate-locked `capture_interval_ms`. Each call appends only the next contiguous
+batch and reports `capture_lag_ms`, `late_source_count`, and
+`catalog_missing_count`; PostgreSQL rejects a gap, overlap, wrong binding, late call
+beyond `maximum_capture_lag_ms`, or changed candidate. The last batch seals the one
+`FUTURE_CAPTURE_SEALED`; later source-population variants cannot replace it. A missed
+deadline fails closed and requires a new preregistered future protocol, not a backfill.
+The second refuses all future provider I/O before the locked drain cutoff or under a
 different candidate receipt/cost/horizon. The first successful future drain
 transaction appends `FUTURE_DRAIN_SEALED`; a second drain cannot replace it, and
 unblind accepts only its exact capture and drain artifacts. During the blind period inspect collection
-health only. Do not calculate candidate PnL, cohort profitability, hurdle
+health only: batch continuity, schedule lag, raw source counts, late availability,
+catalog coverage, and provider availability. Do not calculate candidate PnL, cohort profitability, hurdle
 distance, or extend/stop the window based on results. Provider outage,
 source-wide missingness, catalog reset/delist, correction, missing bars or
 funding, protection drift, and clock violations use the locked incident map;
 they are never adjudicated after unblind.
+
+All public evidence transitions use PostgreSQL `clock_timestamp`; the caller's wall
+clock is not preregistration evidence. Candidate registration re-runs the code-owned
+finite selector over the sealed corpus and refuses a hand-authored terminal or eligible
+population. The News handoff fields are the source Item/venue/availability/learning
+epoch frozen when the OI ledger row was inserted, not reconstructed from current Event
+or deployment state.
 
 Before any human grant review, run `trading evidence verify --receipt SHA` on
 the exact `PROMOTE` result. Promotion then follows #376's separate immutable
@@ -111,12 +124,18 @@ receipts, and one exact seven-day window with nonzero minimum activity. Run
 must be an annotated signature-verifiable Git tag resolving to the declared
 commit and tree; the release file must enumerate the exact canary Intent set
 and one protected-to-recovered Nautilus restart receipt. A green
-CI run or a mathematically conserved empty window is not acceptance. At
+CI run or a mathematically conserved empty window is not acceptance. At window
+start, Workers must already report the declared commit and image; its durable
+heartbeat must cover the end, and every Admission plus Intent authority chain in
+the window must name that same release. Deploying another release invalidates
+the window. At
 rollback, pause Capital, revoke/expire every grant, reconcile every enabled
 venue flat, drain active risk/Intent obligations, then run
 `trading evidence verify --rollback FILE`. Keep the observer/Decision path
 running; do not revive a terminal Intent or infer a flat account from local
-state.
+state. The rollback receipt names and re-hashes the exact release-candidate
+artifact, covers its exact binding/grant scope, and cannot predate that release
+window's drain cutoff.
 
 These commands implement the clock and verification mechanism. Until the
 calendar window, human approval, venue receipts, fixed seven-day accounting,

@@ -10,6 +10,7 @@ from ..evidence_clock import (
     CandidateDecisionV1,
     CandidateLockedV1,
     DiscoveryCorpusReceiptV1,
+    FutureCaptureBatchV1,
     FutureCaptureReceiptV1,
     FutureDrainReceiptV1,
     FutureHoldoutResultReceiptV1,
@@ -53,6 +54,50 @@ class EvidenceStorage:
         if persisted is None or persisted["payload"] != payload:
             raise RuntimeError("nautilus_runtime_start_identity_conflict")
         return inserted is not None
+
+    def append_future_capture_batch(self, value: FutureCaptureBatchV1) -> bool:
+        payload = value.model_dump(mode="json")
+        inserted = self.conn.execute(
+            """
+            INSERT INTO trading_evidence_future_capture_batches (
+              protocol_sha256, batch_start_ms, batch_end_ms, captured_at_ms,
+              capture_lag_ms, batch_sha256, candidate_receipt_sha256, binding,
+              source_count, late_source_count, catalog_missing_count, payload
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            ON CONFLICT (protocol_sha256, batch_start_ms) DO NOTHING
+            RETURNING batch_sha256
+            """,
+            (
+                value.protocol_sha256,
+                value.batch_start_ms,
+                value.batch_end_ms,
+                value.captured_at_ms,
+                value.capture_lag_ms,
+                value.batch_sha256,
+                value.candidate_receipt_sha256,
+                value.binding,
+                value.source_count,
+                value.late_source_count,
+                value.catalog_missing_count,
+                _dumps(payload),
+            ),
+        ).fetchone()
+        persisted = self.conn.execute(
+            "SELECT payload FROM trading_evidence_future_capture_batches "
+            "WHERE protocol_sha256 = %s AND batch_start_ms = %s",
+            (value.protocol_sha256, value.batch_start_ms),
+        ).fetchone()
+        if persisted is None or persisted["payload"] != payload:
+            raise RuntimeError("evidence_future_capture_batch_identity_conflict")
+        return inserted is not None
+
+    def future_capture_batches(self, protocol_sha256: str) -> tuple[FutureCaptureBatchV1, ...]:
+        rows = self.conn.execute(
+            "SELECT payload FROM trading_evidence_future_capture_batches "
+            "WHERE protocol_sha256 = %s ORDER BY batch_start_ms",
+            (protocol_sha256,),
+        ).fetchall()
+        return tuple(FutureCaptureBatchV1.model_validate(row["payload"]) for row in rows)
 
     def append_discovery_corpus_receipt(self, value: DiscoveryCorpusReceiptV1) -> bool:
         payload = self._payload(

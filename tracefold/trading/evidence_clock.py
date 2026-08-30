@@ -215,7 +215,7 @@ class EvidenceCaptureArtifactV1(_Frozen):
         if self.sources != ordered:
             raise ValueError("evidence_capture_not_canonical")
         for row in self.sources:
-            if row.available_at_ms != self.spec.captured_at_ms:
+            if row.available_at_ms > self.spec.captured_at_ms:
                 raise ValueError("evidence_capture_availability_clock_mismatch")
             if not self.spec.start_ms <= row.observed_at_ms < self.spec.end_ms:
                 raise ValueError("evidence_capture_source_outside_window")
@@ -229,6 +229,54 @@ class EvidenceCaptureArtifactV1(_Frozen):
 
     @property
     def capture_sha256(self) -> str:
+        return canonical_sha256(self.model_dump(mode="json"))
+
+
+class FutureCaptureBatchV1(_Frozen):
+    """One contiguous, append-only blind-period source batch."""
+
+    batch_version: Literal["future_capture_batch_v1"] = "future_capture_batch_v1"
+    binding: EvidenceBinding
+    candidate_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    protocol_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    batch_start_ms: int = Field(ge=0)
+    batch_end_ms: int = Field(gt=0)
+    captured_at_ms: int = Field(gt=0)
+    capture_lag_ms: int = Field(ge=0)
+    sources: tuple[CapturedSourceV1, ...]
+    source_count: int = Field(ge=0)
+    late_source_count: int = Field(ge=0)
+    catalog_missing_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> Self:
+        if not self.batch_start_ms < self.batch_end_ms <= self.captured_at_ms:
+            raise ValueError("evidence_future_batch_clock_invalid")
+        if self.capture_lag_ms != self.captured_at_ms - self.batch_end_ms:
+            raise ValueError("evidence_future_batch_lag_invalid")
+        if self.source_count != len(self.sources):
+            raise ValueError("evidence_future_batch_count_mismatch")
+        expected_late = sum(row.available_at_ms > self.batch_end_ms for row in self.sources)
+        expected_catalog_missing = sum(
+            row.provider_instrument_id is None or not row.catalog.rows for row in self.sources
+        )
+        if self.late_source_count != expected_late or self.catalog_missing_count != expected_catalog_missing:
+            raise ValueError("evidence_future_batch_health_invalid")
+        if self.sources != tuple(sorted(self.sources, key=lambda row: (row.observed_at_ms, row.source_identity))):
+            raise ValueError("evidence_future_batch_not_canonical")
+        if len({row.source_identity for row in self.sources}) != len(self.sources):
+            raise ValueError("evidence_future_batch_duplicate_source")
+        if any(
+            row.binding != self.binding
+            or not self.batch_start_ms <= row.observed_at_ms < self.batch_end_ms
+            or row.available_at_ms > self.captured_at_ms
+            for row in self.sources
+        ):
+            raise ValueError("evidence_future_batch_source_scope_invalid")
+        return self
+
+    @property
+    def batch_sha256(self) -> str:
         return canonical_sha256(self.model_dump(mode="json"))
 
 
@@ -599,6 +647,8 @@ class FutureStatisticalProtocolV1(_Frozen):
     future_start_ms: int = Field(gt=0)
     future_end_ms: int = Field(gt=0)
     capture_cutoff_ms: int = Field(gt=0)
+    capture_interval_ms: int = Field(gt=0)
+    maximum_capture_lag_ms: int = Field(ge=0)
     max_horizon_ms: int = Field(gt=0)
     bar_interval_ms: Literal[300_000] = EVIDENCE_BAR_INTERVAL_MS
     data_finalization_lag_ms: int = Field(ge=0)
@@ -645,6 +695,10 @@ class FutureStatisticalProtocolV1(_Frozen):
             raise ValueError("evidence_future_window_invalid")
         if self.capture_cutoff_ms != self.future_end_ms:
             raise ValueError("evidence_future_capture_cutoff_invalid")
+        if self.capture_interval_ms < self.bar_interval_ms:
+            raise ValueError("evidence_future_capture_interval_invalid")
+        if self.maximum_capture_lag_ms > self.capture_interval_ms:
+            raise ValueError("evidence_future_capture_lag_invalid")
         expected_drain = self.future_end_ms + self.max_horizon_ms + self.data_finalization_lag_ms
         if self.drain_cutoff_ms != expected_drain:
             raise ValueError("evidence_future_drain_cutoff_invalid")
@@ -686,6 +740,7 @@ class CandidateLockedV1(_Frozen):
     point_in_time_catalog_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     eligible_universe_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     selection_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    selection_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_id: str = Field(min_length=1, max_length=128)
     policy_config_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_contract_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -721,7 +776,8 @@ class NoCandidateV1(_Frozen):
     sealed_corpus_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     corpus_artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     selection_program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    reason: str = Field(min_length=1, max_length=256)
+    selection_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reason: Literal["no_complete_directional_discovery_episode"]
     decided_at_ms: int = Field(gt=0)
     decided_by: str = Field(min_length=1, max_length=128)
 
@@ -925,8 +981,41 @@ def candidate_selection_program_sha256() -> str:
             "bindings": ("BINANCE_USDM", "HYPERLIQUID_PERP"),
             "max_candidates_per_binding": 1,
             "inputs": "sealed_discovery_corpus_only",
+            "eligibility": "valid_feature_and_directional_closed_episode",
             "terminals": ("CANDIDATE_LOCKED", "NO_CANDIDATE"),
             "no_window_reuse": True,
+        }
+    )
+
+
+def candidate_selection_evidence_sha256(
+    corpus: DiscoveryCorpusArtifactV1,
+    binding: EvidenceBinding,
+) -> tuple[Literal["CANDIDATE_LOCKED", "NO_CANDIDATE"], str]:
+    """Run the only finite discovery selector and bind its exact input population."""
+
+    raw = {row.source_identity: row for row in corpus.raw_observations}
+    normalized = {row.source_identity: row for row in corpus.normalized_observations}
+    features = {row.source_identity: row for row in corpus.features}
+    episodes = {row.source_identity: row for row in corpus.episodes}
+    eligible = tuple(
+        source_id
+        for source_id in sorted(raw)
+        if raw[source_id].binding == binding
+        and normalized[source_id].disposition == "VALID"
+        and source_id in features
+        and episodes[source_id].decision == "DIRECTIONAL"
+        and episodes[source_id].execution == "CLOSED"
+    )
+    terminal: Literal["CANDIDATE_LOCKED", "NO_CANDIDATE"] = "CANDIDATE_LOCKED" if eligible else "NO_CANDIDATE"
+    return terminal, canonical_sha256(
+        {
+            "selection_program_sha256": candidate_selection_program_sha256(),
+            "sealed_corpus_sha256": corpus.corpus_sha256,
+            "binding": binding,
+            "eligible_universe_sha256": eligible_universe_sha256(corpus, binding),
+            "eligible_source_identities": eligible,
+            "terminal": terminal,
         }
     )
 
@@ -1002,6 +1091,7 @@ __all__ = [
     "EvidenceDrainArtifactV1",
     "EvidenceInputV1",
     "FundingRateV1",
+    "FutureCaptureBatchV1",
     "FutureCaptureReceiptV1",
     "FutureDrainReceiptV1",
     "FutureHoldoutMetricsV1",
@@ -1013,6 +1103,7 @@ __all__ = [
     "NormalizedEvidenceObservationV1",
     "PointInTimeCatalogRowV1",
     "PointInTimeCatalogV1",
+    "candidate_selection_evidence_sha256",
     "candidate_selection_program_sha256",
     "eligible_universe_sha256",
     "feature_contract_sha256",

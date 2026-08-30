@@ -243,7 +243,11 @@ class CaseLifecycle(RuleBasedStateMachine):
         case_id = uuid.uuid4().hex
         with self.repos.transaction():
             created = self.repos.trading.create_case(
-                case_id=case_id, manifest=manifest, admission=_admission(manifest), now_ms=self.clock
+                case_id=case_id,
+                manifest=manifest,
+                admission=_admission(manifest),
+                release_revision="test-release",
+                now_ms=self.clock,
             )
         if created:
             self.holders[case_id] = (None, 0)
@@ -534,7 +538,11 @@ def _walk_the_authority_matrix(
         run_id = uuid.uuid4().hex
         with repos.transaction():
             assert repos.trading.create_case(
-                case_id=case_id, manifest=manifest, admission=_admission(manifest), now_ms=NOW
+                case_id=case_id,
+                manifest=manifest,
+                admission=_admission(manifest),
+                release_revision="test-release",
+                now_ms=NOW,
             )
         with repos.transaction():
             claimed = repos.trading.claim_case(run_id=run_id, lease_ms=LEASE_MS, now_ms=NOW)

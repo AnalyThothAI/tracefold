@@ -428,7 +428,13 @@ def _pending_executable_case(
     manifest = manifest or _executable_manifest()
     repos = repositories_for_connection(connection)
     admission = _admission_row(manifest)
-    assert repos.trading.create_case(case_id=case_id, manifest=manifest, admission=admission, now_ms=NOW)
+    assert repos.trading.create_case(
+        case_id=case_id,
+        manifest=manifest,
+        admission=admission,
+        release_revision="test-release",
+        now_ms=NOW,
+    )
     connection.commit()
     return manifest
 

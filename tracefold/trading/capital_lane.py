@@ -497,6 +497,7 @@ class CapitalLane:
                 case_id=case_id,
                 manifest=manifest,
                 admission=self._admission_row(linked),
+                release_revision=self._release_revision,
                 now_ms=now,
             ),
             timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS,
@@ -643,7 +644,7 @@ class CapitalLane:
         def _write(repos: Any) -> None:
             trading = _trading(repos)
             for row in rows:
-                trading.record_gate_decision(now_ms=now, **row)
+                trading.record_gate_decision(now_ms=now, release_revision=self._release_revision, **row)
 
         await self._db.tx("trading_admission_write", _write, timeout_seconds=COLD_WRITE_TIMEOUT_SECONDS)
 

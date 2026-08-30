@@ -66,9 +66,19 @@ class VerificationStorage:
                  AND c.source_observed_at_ms < %(end)s
             ), intents AS (
               SELECT i.*, c.capital_disposition,
-                     risk.status AS risk_status, risk.settlement_known
+                     risk.status AS risk_status, risk.settlement_known,
+                     promotion.payload ->> 'approved_release' AS grant_release,
+                     daily.approved_release AS risk_release
                 FROM trading_intents i
                 JOIN cases c ON c.case_id = i.case_id
+                LEFT JOIN trading_capital_authorization_receipts auth
+                  ON auth.authorization_receipt_sha256 = i.capital_authorization_receipt_sha256
+                LEFT JOIN trading_capital_risk_reservations reservation
+                  ON reservation.reservation_sha256 = auth.reservation_sha256
+                LEFT JOIN trading_production_promotion_grants promotion
+                  ON promotion.grant_sha256 = reservation.grant_sha256
+                LEFT JOIN trading_daily_risk_policies daily
+                  ON daily.risk_policy_sha256 = reservation.risk_policy_sha256
                 LEFT JOIN trading_capital_risk_reservation_state risk ON risk.intent_id = i.intent_id
             ), per_case AS (
               SELECT c.case_id, c.capital_disposition, count(i.intent_id) AS intent_count
@@ -78,6 +88,8 @@ class VerificationStorage:
             )
             SELECT
               (SELECT count(*) FROM gates) AS source_count,
+              (SELECT count(*) FROM gates
+                WHERE release_revision <> %(git_commit)s) AS wrong_release_source_count,
               (SELECT count(DISTINCT source_key) FROM gates) AS unique_source_count,
               (SELECT count(*) FROM gates WHERE status = 'CASE_CREATED') AS admitted_source_count,
               (SELECT count(*) FROM gates WHERE status <> 'CASE_CREATED') AS rejected_or_deferred_source_count,
@@ -94,6 +106,9 @@ class VerificationStorage:
                 WHERE capital_disposition <> 'allowed' AND intent_count <> 0) AS blocked_case_intent_mismatch_count,
               (SELECT count(*) FROM intents) AS intent_count,
               (SELECT count(*) FROM intents WHERE intent_version <> 'trade_intent_v3') AS non_v3_intent_count,
+              (SELECT count(*) FROM intents
+                WHERE grant_release IS DISTINCT FROM %(release_tag)s
+                   OR risk_release IS DISTINCT FROM %(release_tag)s) AS intent_release_mismatch_count,
               (SELECT count(*) FROM intents WHERE execution_state <> 'TERMINAL') AS nonterminal_intent_count,
               (SELECT count(*) FROM intents
                 WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW'))
@@ -120,6 +135,8 @@ class VerificationStorage:
             {
                 "gate_version": spec.gate_version,
                 "gate_config": spec.gate_config_digest,
+                "git_commit": spec.git_commit_sha,
+                "release_tag": spec.release_tag,
                 "start": spec.start_ms,
                 "end": spec.end_ms,
             },
@@ -138,7 +155,15 @@ class VerificationStorage:
             """,
             (spec.start_ms, spec.end_ms),
         ).fetchall()
-        return {"counts": counts, "by_binding": [dict(item) for item in binding_rows]}
+        workers_runtime = self.conn.execute(
+            "SELECT runtime_revision, image_digest, lifecycle_state, started_at_ms, heartbeat_at_ms "
+            "FROM workers_runtime WHERE singleton_key"
+        ).fetchone()
+        return {
+            "counts": counts,
+            "by_binding": [dict(item) for item in binding_rows],
+            "workers_runtime": None if workers_runtime is None else dict(workers_runtime),
+        }
 
     def release_verification_snapshot(
         self,

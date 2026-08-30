@@ -45,7 +45,10 @@ from typing import Any, TypedDict
 # read and the instrument reads are what remains.
 # v10 (#369): OI carries its typed judgment identity directly.  The retired
 # synthetic Editorial envelope is neither read nor reconstructed.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v10"
+# v11 (#377): the OI ledger freezes its source Item, venue, availability clock and learning epoch at
+# insertion. Evidence capture no longer reconstructs an old frame from a mutable Event leader or the
+# currently active learning bundle.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v11"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -105,6 +108,7 @@ class OiTradeProjectionRow(TypedDict):
     whale_oi_ratio_bps: int
     rank_in_window: int
     observed_at_ms: int
+    source_available_at_ms: int
     ingest_mode: str
     # LEFT JOIN on the leader Item, then a JSON member: absent frames and untagged frames both read None.
     venue: str | None
@@ -186,8 +190,9 @@ class TradeProjectionStorage:
                    (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
                    (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
                    s.observed_at_ms,
-                   e.ingest_mode,
-                   i.provider_metadata ->> 'source' AS venue
+                   s.available_at_ms AS source_available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
+                   s.source_venue AS venue
               FROM news_verdicts v
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
@@ -204,8 +209,8 @@ class TradeProjectionStorage:
                AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
                      IS NOT DISTINCT FROM s.measurement_window_ms
+              JOIN news_items i ON i.item_id = s.source_item_id
               JOIN news_current_events_v1 e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
-              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
@@ -238,17 +243,18 @@ class TradeProjectionStorage:
         start_observed_at_ms: int,
         end_observed_at_ms: int,
         known_at_or_before_ms: int,
+        available_at_or_before_ms: int,
         limit: int = TRADE_PROJECTION_ROW_LIMIT,
     ) -> list[OiTradeProjectionRow]:
-        """Freeze the exact half-open source-event window known at one capture cutoff (#377)."""
+        """Freeze sources known by the batch end and durably available by its capture clock (#377)."""
 
         rows = self.conn.execute(
-            f"""
+            """
             SELECT v.event_id,
                    v.created_at_ms          AS verdict_created_at_ms,
                    v.final_decision,
-                   v.trace #>> '{{judgment,rule}}' AS source_rule,
-                   epoch.epoch_id           AS learning_epoch,
+                   v.trace #>> '{judgment,rule}' AS source_rule,
+                   s.learning_epoch,
                    v.program_version,
                    v.program_sha256,
                    v.policy_version,
@@ -260,20 +266,21 @@ class TradeProjectionStorage:
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
-                   v.trace #>> '{{judgment,signal,symbol}}' AS symbol,
-                   v.trace #>> '{{judgment,signal,direction}}' AS direction,
-                   (v.trace #>> '{{judgment,signal,oi_change_bps}}')::bigint AS oi_change_bps,
-                   (v.trace #>> '{{judgment,signal,oi_value_usd}}')::bigint AS oi_value_usd,
-                   (v.trace #>> '{{judgment,signal,whale_long_profit_bps}}')::bigint AS whale_long_profit_bps,
-                   (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
-                   (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
+                   v.trace #>> '{judgment,signal,symbol}' AS symbol,
+                   v.trace #>> '{judgment,signal,direction}' AS direction,
+                   (v.trace #>> '{judgment,signal,oi_change_bps}')::bigint AS oi_change_bps,
+                   (v.trace #>> '{judgment,signal,oi_value_usd}')::bigint AS oi_value_usd,
+                   (v.trace #>> '{judgment,signal,whale_long_profit_bps}')::bigint AS whale_long_profit_bps,
+                   (v.trace #>> '{judgment,signal,whale_oi_ratio_bps}')::bigint AS whale_oi_ratio_bps,
+                   (v.trace #>> '{judgment,rank_in_window}')::integer AS rank_in_window,
                    s.observed_at_ms,
-                   e.ingest_mode,
-                   i.provider_metadata ->> 'source' AS venue
+                   s.available_at_ms AS source_available_at_ms,
+                   i.first_ingest_mode AS ingest_mode,
+                   s.source_venue AS venue
               FROM news_verdicts v
               JOIN news_oi_signals s
                 ON s.event_id = v.event_id AND s.metric_version = %s
-               AND v.trace #> '{{judgment,signal}}' = jsonb_build_object(
+               AND v.trace #> '{judgment,signal}' = jsonb_build_object(
                      'symbol', s.symbol,
                      'direction', s.direction,
                      'oi_change_bps', s.oi_change_bps,
@@ -281,24 +288,23 @@ class TradeProjectionStorage:
                      'whale_long_profit_bps', s.whale_long_profit_bps,
                      'whale_oi_ratio_bps', s.whale_oi_ratio_bps
                    )
-               AND (v.trace #>> '{{judgment,rank_in_window}}')::integer = s.rank_in_window
-               AND v.trace #>> '{{oi_signal,source_strategy_id}}' IS NOT DISTINCT FROM s.source_strategy_id
-               AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
-               AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
+               AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
+               AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
+               AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
+               AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
                      IS NOT DISTINCT FROM s.measurement_window_ms
-              JOIN news_current_events_v1 e ON e.event_id = v.event_id{_CURRENT_EPOCH_JOIN}
-              LEFT JOIN news_items i ON i.item_id = e.leader_item_id
+              JOIN news_items i ON i.item_id = s.source_item_id
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
                AND v.program_version = 'news_oi_signal_v2'
                AND v.policy_version = 'news_triage_policy_v11'
                AND v.editorial IS NULL
-               AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
+               AND v.program_sha256 ~ '^[0-9a-f]{64}$'
                AND v.scored_judgment_sha256 IS NOT NULL
                AND v.runtime_manifest_sha IS NOT NULL
                AND v.degraded = false
-               AND e.ingest_mode = 'live'
+               AND s.available_at_ms <= %s
                AND s.observed_at_ms >= %s
                AND s.observed_at_ms < %s
                AND v.created_at_ms <= %s
@@ -307,6 +313,7 @@ class TradeProjectionStorage:
             """,
             (
                 metric_version,
+                int(available_at_or_before_ms),
                 int(start_observed_at_ms),
                 int(end_observed_at_ms),
                 int(known_at_or_before_ms),
@@ -463,6 +470,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
         rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
+        source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],
         venue=row["venue"],
     )

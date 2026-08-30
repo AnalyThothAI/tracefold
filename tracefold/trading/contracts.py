@@ -153,6 +153,7 @@ class OiCandidateRow(TypedDict):
     whale_oi_ratio_bps: int
     rank_in_window: int
     observed_at_ms: int
+    source_available_at_ms: int
     ingest_mode: str
     venue: str | None
 

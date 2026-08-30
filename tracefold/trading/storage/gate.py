@@ -56,6 +56,7 @@ class CandidateGateStorage:
         retryable: bool,
         evidence: Mapping[str, Any],
         case_id: str | None,
+        release_revision: str,
         now_ms: int,
     ) -> None:
         """Write or advance one admission decision. Re-evaluation never appends and never regresses.
@@ -85,8 +86,8 @@ class CandidateGateStorage:
             INSERT INTO trading_candidate_gate_decisions (
               source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
               source_observed_at_ms, status, stage, reason, retryable, evidence, case_id,
-              first_evaluated_at_ms, last_evaluated_at_ms, attempt_count
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, 1)
+              first_evaluated_at_ms, last_evaluated_at_ms, attempt_count, release_revision
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, 1, %s)
             ON CONFLICT (source_key, gate_version, gate_config_digest) DO UPDATE
                SET last_evaluated_at_ms = EXCLUDED.last_evaluated_at_ms,
                    attempt_count = trading_candidate_gate_decisions.attempt_count + 1,
@@ -105,7 +106,10 @@ class CandidateGateStorage:
                                    THEN EXCLUDED.evidence ELSE trading_candidate_gate_decisions.evidence END,
                    case_id = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
                                    AND NOT (EXCLUDED.status = 'EXPIRED' AND EXCLUDED.reason = 'trigger_stale')
-                                  THEN EXCLUDED.case_id ELSE trading_candidate_gate_decisions.case_id END
+                                  THEN EXCLUDED.case_id ELSE trading_candidate_gate_decisions.case_id END,
+                   release_revision = CASE WHEN trading_candidate_gate_decisions.status = 'DEFERRED'
+                                           THEN EXCLUDED.release_revision
+                                           ELSE trading_candidate_gate_decisions.release_revision END
             """,
             (
                 source_key,
@@ -122,6 +126,7 @@ class CandidateGateStorage:
                 case_id,
                 int(now_ms),
                 int(now_ms),
+                release_revision,
             ),
         )
 

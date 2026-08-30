@@ -982,9 +982,15 @@ reader/writer.
   `corpus-seal` evaluates a
   discovery partition without provider I/O. `candidate-register` appends
   exactly one `CANDIDATE_LOCKED` or `NO_CANDIDATE` receipt per
-  corpus/binding before the future start. The first post-window future `capture`
-  transaction freezes the fixed-cutoff population as the protocol's one
-  `FUTURE_CAPTURE_SEALED`. A future `drain` refuses provider I/O before the fixed
+  corpus/binding before the future start. Registration re-runs the code-owned
+  finite selector over the sealed corpus and binds the exact eligible source
+  identities and terminal; a supplied file cannot invent a candidate. All public
+  transition timestamps come from PostgreSQL. Future `capture` is a sequence of
+  contiguous append-only batches at the locked interval. Each batch persists its
+  exact sources plus capture lag, late-source count, and catalog-missing count;
+  PostgreSQL rejects gaps, overlaps, wrong binding/protocol, and calls beyond the
+  maximum lag. Only the complete chain freezes the fixed-cutoff population as the
+  protocol's one `FUTURE_CAPTURE_SEALED`. A future `drain` refuses provider I/O before the fixed
   cutoff, then transactionally commits that exact capture/drain pair as the one
   `FUTURE_DRAIN_SEALED` receipt for that protocol before exposing
   its labels. `future-unblind` accepts only that committed drain and PostgreSQL
@@ -1011,7 +1017,11 @@ reader/writer.
   Nautilus appends one immutable start fact per process generation, so the
   declared restart drill must show two exact release generations ordered after
   native protection and before authoritative flat. Release verification then
-  runs the same window accounting. Rollback mode requires Capital `PAUSED`, zero active
+  runs the same window accounting. The window also requires one exact Workers
+  commit/image runtime spanning its start through end and release-matching
+  Admission and Intent authority chains. Rollback mode re-hashes the named exact
+  release artifact and requires matching release binding/grant scope and
+  post-window ordering, Capital `PAUSED`, zero active
   Intent/risk, every named binding authoritatively flat with no active arm, and
   every named grant revoked or expired. Any unknown or missing link is a stable
   failed check and a nonzero exit; zero activity never verifies a release.

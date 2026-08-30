@@ -413,6 +413,10 @@
 | `source_strategy_id` | `TEXT` | True | `None` |
 | `source_contract_version` | `TEXT` | True | `None` |
 | `measurement_window_ms` | `BIGINT` | True | `None` |
+| `source_item_id` | `TEXT` | False | `None` |
+| `source_venue` | `TEXT` | True | `None` |
+| `available_at_ms` | `BIGINT` | False | `None` |
+| `learning_epoch` | `TEXT` | False | `None` |
 
 ## `news_opennews_incidents`
 
@@ -562,6 +566,7 @@
 | `first_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `last_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `1` |
+| `release_revision` | `TEXT` | False | `None` |
 
 ## `trading_capital_authorization_receipts`
 
@@ -677,6 +682,38 @@
 | `reason` | `TEXT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
 
+## `trading_evidence_clock_receipts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `receipt_sha256` | `TEXT` | False | `None` |
+| `receipt_kind` | `TEXT` | False | `None` |
+| `terminal` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | True | `None` |
+| `parent_receipt_sha256` | `TEXT` | True | `None` |
+| `artifact_sha256` | `TEXT` | False | `None` |
+| `corpus_sha256` | `TEXT` | False | `None` |
+| `protocol_sha256` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_evidence_future_capture_batches`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `protocol_sha256` | `TEXT` | False | `None` |
+| `batch_start_ms` | `BIGINT` | False | `None` |
+| `batch_end_ms` | `BIGINT` | False | `None` |
+| `captured_at_ms` | `BIGINT` | False | `None` |
+| `capture_lag_ms` | `BIGINT` | False | `None` |
+| `batch_sha256` | `TEXT` | False | `None` |
+| `candidate_receipt_sha256` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `source_count` | `INTEGER` | False | `None` |
+| `late_source_count` | `INTEGER` | False | `None` |
+| `catalog_missing_count` | `INTEGER` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
 ## `trading_execution_bindings`
 
 | Column | Type | Nullable | Default |
@@ -790,6 +827,20 @@
 | `risk_currency` | `TEXT` | True | `None` |
 | `funding_by_currency` | `JSONB` | True | `None` |
 
+## `trading_nautilus_runtime_starts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `start_sha256` | `TEXT` | False | `None` |
+| `runtime_id` | `UUID` | False | `None` |
+| `runtime_revision` | `TEXT` | False | `None` |
+| `image_digest` | `TEXT` | False | `None` |
+| `nautilus_version` | `TEXT` | False | `None` |
+| `nautilus_source_git_commit` | `TEXT` | False | `None` |
+| `nautilus_wheel_identity` | `TEXT` | False | `None` |
+| `started_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
 ## `trading_operator_arm_receipts`
 
 | Column | Type | Nullable | Default |
@@ -868,6 +919,8 @@
 | `expires_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `payload` | `JSONB` | False | `None` |
+| `sealed_corpus_sha256` | `TEXT` | False | `None` |
+| `locked_future_report_sha256` | `TEXT` | False | `None` |
 
 ## `trading_promotion_grant_revocations`
 
@@ -944,3 +997,5 @@
 | `started_at_ms` | `BIGINT` | False | `None` |
 | `heartbeat_at_ms` | `BIGINT` | False | `None` |
 | `fatal_code` | `TEXT` | True | `None` |
+| `runtime_revision` | `TEXT` | False | `None` |
+| `image_digest` | `TEXT` | False | `None` |

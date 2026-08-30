@@ -34,7 +34,7 @@ from tracefold.trading.contracts import (
 
 # The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
 # them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v10"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v11"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
@@ -70,6 +70,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
         rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
+        source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],
         venue=row["venue"],
     )

@@ -34,6 +34,72 @@ def upgrade() -> None:
         """
     )
 
+    # Freeze the source identity at OI-ledger insertion.  The old projection recovered these fields
+    # from a mutable Event leader and the currently active learning epoch, so an unrelated later
+    # merge, rollback, or deployment could rewrite a historical evidence population.
+    op.execute(
+        """
+        ALTER TABLE news_oi_signals
+          ADD COLUMN source_item_id TEXT,
+          ADD COLUMN source_venue TEXT,
+          ADD COLUMN available_at_ms BIGINT,
+          ADD COLUMN learning_epoch TEXT;
+        WITH frozen AS (
+          SELECT signal.event_id, signal.metric_version,
+                 (SELECT member.item_id
+                    FROM news_event_members member
+                   WHERE member.event_id = signal.event_id
+                   ORDER BY member.joined_at_ms, member.item_id
+                   LIMIT 1) AS source_item_id,
+                 COALESCE(
+                   (SELECT epoch.epoch_id
+                      FROM news_learning_epochs epoch
+                     WHERE epoch.starts_at_ms <= signal.created_at_ms
+                     ORDER BY epoch.starts_at_ms DESC, epoch.epoch_id
+                     LIMIT 1),
+                   'unproven'
+                 ) AS learning_epoch
+            FROM news_oi_signals signal
+        )
+        UPDATE news_oi_signals signal
+           SET source_item_id = frozen.source_item_id,
+               source_venue = item.provider_metadata ->> 'source',
+               available_at_ms = signal.created_at_ms,
+               learning_epoch = frozen.learning_epoch
+          FROM frozen
+          JOIN news_items item ON item.item_id = frozen.source_item_id
+         WHERE signal.event_id = frozen.event_id
+           AND signal.metric_version = frozen.metric_version;
+        ALTER TABLE news_oi_signals
+          ALTER COLUMN source_item_id SET NOT NULL,
+          ALTER COLUMN available_at_ms SET NOT NULL,
+          ALTER COLUMN learning_epoch SET NOT NULL,
+          ADD CONSTRAINT news_oi_signals_source_item_fk
+            FOREIGN KEY (source_item_id) REFERENCES news_items(item_id) ON DELETE CASCADE,
+          ADD CONSTRAINT news_oi_signals_available_clock_check
+            CHECK (available_at_ms >= observed_at_ms AND available_at_ms >= created_at_ms),
+          ADD CONSTRAINT news_oi_signals_learning_epoch_nonempty CHECK (learning_epoch <> '');
+        """
+    )
+    op.execute(
+        """
+        ALTER TABLE workers_runtime
+          ADD COLUMN runtime_revision TEXT,
+          ADD COLUMN image_digest TEXT;
+        UPDATE workers_runtime SET runtime_revision = 'UNVERSIONED', image_digest = 'UNVERSIONED';
+        ALTER TABLE workers_runtime
+          ALTER COLUMN runtime_revision SET NOT NULL,
+          ALTER COLUMN image_digest SET NOT NULL,
+          ADD CONSTRAINT workers_runtime_release_identity_nonempty
+            CHECK (runtime_revision <> '' AND image_digest <> '');
+        ALTER TABLE trading_candidate_gate_decisions ADD COLUMN release_revision TEXT;
+        UPDATE trading_candidate_gate_decisions SET release_revision = 'UNVERSIONED';
+        ALTER TABLE trading_candidate_gate_decisions
+          ALTER COLUMN release_revision SET NOT NULL,
+          ADD CONSTRAINT trading_candidate_gate_release_nonempty CHECK (release_revision <> '');
+        """
+    )
+
     op.execute(
         """
         CREATE TABLE trading_evidence_clock_receipts (
@@ -201,6 +267,115 @@ def upgrade() -> None:
 
     op.execute(
         """
+        CREATE TABLE trading_evidence_future_capture_batches (
+          protocol_sha256 TEXT NOT NULL,
+          batch_start_ms BIGINT NOT NULL,
+          batch_end_ms BIGINT NOT NULL,
+          captured_at_ms BIGINT NOT NULL,
+          capture_lag_ms BIGINT NOT NULL,
+          batch_sha256 TEXT NOT NULL UNIQUE,
+          candidate_receipt_sha256 TEXT NOT NULL
+            REFERENCES trading_evidence_clock_receipts(receipt_sha256) ON DELETE RESTRICT,
+          binding TEXT NOT NULL,
+          source_count INTEGER NOT NULL,
+          late_source_count INTEGER NOT NULL,
+          catalog_missing_count INTEGER NOT NULL,
+          payload JSONB NOT NULL,
+          PRIMARY KEY (protocol_sha256, batch_start_ms),
+          CONSTRAINT trading_future_batch_protocol_sha_check
+            CHECK (protocol_sha256 ~ '^[0-9a-f]{64}$'),
+          CONSTRAINT trading_future_batch_sha_check CHECK (batch_sha256 ~ '^[0-9a-f]{64}$'),
+          CONSTRAINT trading_future_batch_binding_check
+            CHECK (binding IN ('BINANCE_USDM', 'HYPERLIQUID_PERP')),
+          CONSTRAINT trading_future_batch_clock_check
+            CHECK (batch_start_ms >= 0 AND batch_end_ms > batch_start_ms
+              AND captured_at_ms >= batch_end_ms
+              AND capture_lag_ms = captured_at_ms - batch_end_ms),
+          CONSTRAINT trading_future_batch_count_check CHECK (
+            source_count >= 0 AND late_source_count >= 0 AND catalog_missing_count >= 0
+            AND late_source_count <= source_count AND catalog_missing_count <= source_count
+          ),
+          CONSTRAINT trading_future_batch_payload_check CHECK (
+            payload ->> 'batch_version' = 'future_capture_batch_v1'
+            AND payload ->> 'protocol_sha256' = protocol_sha256
+            AND payload ->> 'candidate_receipt_sha256' = candidate_receipt_sha256
+            AND payload ->> 'binding' = binding
+            AND (payload ->> 'batch_start_ms')::BIGINT = batch_start_ms
+            AND (payload ->> 'batch_end_ms')::BIGINT = batch_end_ms
+            AND (payload ->> 'captured_at_ms')::BIGINT = captured_at_ms
+            AND (payload ->> 'capture_lag_ms')::BIGINT = capture_lag_ms
+            AND (payload ->> 'source_count')::INTEGER = source_count
+            AND (payload ->> 'late_source_count')::INTEGER = late_source_count
+            AND (payload ->> 'catalog_missing_count')::INTEGER = catalog_missing_count
+            AND jsonb_array_length(payload -> 'sources') = source_count
+          )
+        )
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION validate_trading_future_capture_batch() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        DECLARE
+          candidate trading_evidence_clock_receipts%ROWTYPE;
+          future_start BIGINT;
+          future_end BIGINT;
+          capture_interval BIGINT;
+          maximum_lag BIGINT;
+          expected_start BIGINT;
+          expected_end BIGINT;
+        BEGIN
+          IF EXISTS (
+            SELECT 1 FROM trading_evidence_future_capture_batches existing
+             WHERE existing.protocol_sha256 = NEW.protocol_sha256
+               AND existing.batch_start_ms = NEW.batch_start_ms
+               AND existing.batch_sha256 = NEW.batch_sha256
+               AND existing.payload = NEW.payload
+          ) THEN
+            RETURN NEW;
+          END IF;
+          SELECT * INTO candidate
+            FROM trading_evidence_clock_receipts
+           WHERE receipt_sha256 = NEW.candidate_receipt_sha256
+           FOR UPDATE;
+          IF NOT FOUND OR candidate.receipt_kind <> 'CANDIDATE_DECISION'
+            OR candidate.terminal <> 'CANDIDATE_LOCKED'
+            OR candidate.protocol_sha256 <> NEW.protocol_sha256
+            OR candidate.binding <> NEW.binding
+          THEN
+            RAISE EXCEPTION 'trading_future_batch_candidate_invalid';
+          END IF;
+          future_start := (candidate.payload #>> '{evidence,statistics,future_start_ms}')::BIGINT;
+          future_end := (candidate.payload #>> '{evidence,statistics,future_end_ms}')::BIGINT;
+          capture_interval := (candidate.payload #>> '{evidence,statistics,capture_interval_ms}')::BIGINT;
+          maximum_lag := (candidate.payload #>> '{evidence,statistics,maximum_capture_lag_ms}')::BIGINT;
+          SELECT COALESCE(max(batch_end_ms), future_start) INTO expected_start
+            FROM trading_evidence_future_capture_batches
+           WHERE protocol_sha256 = NEW.protocol_sha256;
+          expected_end := least(expected_start + capture_interval, future_end);
+          IF NEW.batch_start_ms <> expected_start OR NEW.batch_end_ms <> expected_end
+            OR NEW.captured_at_ms > expected_end + maximum_lag
+          THEN
+            RAISE EXCEPTION 'trading_future_batch_clock_invalid';
+          END IF;
+          RETURN NEW;
+        END
+        $$
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER trg_trading_future_capture_batch BEFORE INSERT "
+        "ON trading_evidence_future_capture_batches FOR EACH ROW "
+        "EXECUTE FUNCTION validate_trading_future_capture_batch()"
+    )
+    op.execute(
+        "CREATE TRIGGER trg_trading_future_capture_batches_append_only BEFORE UPDATE OR DELETE "
+        "ON trading_evidence_future_capture_batches FOR EACH ROW "
+        "EXECUTE FUNCTION reject_trading_append_only_mutation()"
+    )
+
+    op.execute(
+        """
         CREATE TABLE trading_nautilus_runtime_starts (
           start_sha256 TEXT PRIMARY KEY,
           runtime_id UUID NOT NULL UNIQUE,
@@ -287,11 +462,16 @@ def upgrade() -> None:
         "EXECUTE FUNCTION validate_trading_promotion_future_evidence()"
     )
 
-    op.execute("REVOKE ALL ON trading_evidence_clock_receipts, trading_nautilus_runtime_starts FROM PUBLIC")
+    op.execute(
+        "REVOKE ALL ON trading_evidence_clock_receipts, trading_evidence_future_capture_batches, "
+        "trading_nautilus_runtime_starts FROM PUBLIC"
+    )
     for role in ("tracefold_serve", "tracefold_workers", "tracefold_nautilus"):
         op.execute(f"GRANT SELECT ON trading_evidence_clock_receipts TO {role}")
+        op.execute(f"GRANT SELECT ON trading_evidence_future_capture_batches TO {role}")
         op.execute(f"GRANT SELECT ON trading_nautilus_runtime_starts TO {role}")
     op.execute("GRANT INSERT ON trading_evidence_clock_receipts TO tracefold_workers")
+    op.execute("GRANT INSERT ON trading_evidence_future_capture_batches TO tracefold_workers")
     op.execute("GRANT INSERT ON trading_nautilus_runtime_starts TO tracefold_nautilus")
 
 

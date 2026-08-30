@@ -54,11 +54,13 @@ from tracefold.trading.evidence_clock import (
     EvidenceDrainArtifactV1,
     EvidenceIncident,
     FundingRateV1,
+    FutureCaptureBatchV1,
     FutureCaptureReceiptV1,
     FutureDrainReceiptV1,
     FutureHoldoutResultReceiptV1,
     FutureHoldoutResultV1,
     NoCandidateV1,
+    candidate_selection_evidence_sha256,
     candidate_selection_program_sha256,
     eligible_universe_sha256,
     feature_contract_sha256,
@@ -75,7 +77,14 @@ from tracefold.trading.evidence_verification import (
     FixedWindowAcceptanceV1,
     ProductionReleaseCandidateV1,
     ProductionRollbackReceiptV1,
+    case_verification_checks,
+    fixed_window_verification_checks,
+    release_verification_checks,
+    rollback_verification_checks,
     verification_report,
+)
+from tracefold.trading.evidence_verification import (
+    verification_check as _check,
 )
 from tracefold.trading.replay import DirectionalReplayPlan, ReplayBarV1, ReplayMarketSlice, parse_replay_sources
 from tracefold.trading.routing import resolve_instrument, signal_exchange_id
@@ -87,6 +96,7 @@ GIT_EXECUTABLE = "/usr/bin/git"
 def handle_trading_evidence(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
     action = str(getattr(args, "evidence_command", "") or "")
     try:
+        now_ms = _database_now_ms(settings)
         if action == "capture":
             return _capture(settings, args, now_ms=now_ms)
         if action == "drain":
@@ -111,6 +121,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     start_ms, end_ms = int(args.start_ms), int(args.end_ms)
     candidate: CandidateLockedV1 | None = None
     candidate_receipt: CandidateDecisionReceiptV1 | None = None
+    existing_batches: tuple[FutureCaptureBatchV1, ...] = ()
     if partition == "future":
         candidate, candidate_receipt = _load_candidate_pair(args)
         if (
@@ -123,18 +134,38 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         with repositories(settings, role="serve") as repos:
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_capture_already_sealed")
+            existing_batches = repos.trading.future_capture_batches(candidate.protocol_sha256)
     elif getattr(args, "candidate", "") or getattr(args, "candidate_receipt", ""):
         raise ValueError("evidence_discovery_candidate_forbidden")
     target_binding = None if candidate is None else candidate.binding
-    known_at_cutoff_ms = now_ms if candidate is None else candidate.statistics.capture_cutoff_ms
+    query_start_ms, query_end_ms = start_ms, end_ms
+    if candidate is not None and candidate_receipt is not None:
+        query_start_ms = existing_batches[-1].batch_end_ms if existing_batches else start_ms
+        if query_start_ms >= end_ms:
+            return _seal_future_capture_batches(
+                settings,
+                args,
+                candidate=candidate,
+                candidate_receipt=candidate_receipt,
+                batches=existing_batches,
+                now_ms=now_ms,
+            )
+        query_end_ms = min(query_start_ms + candidate.statistics.capture_interval_ms, end_ms)
+        if now_ms < query_end_ms:
+            raise ValueError("evidence_future_capture_batch_not_due")
+        if now_ms > query_end_ms + candidate.statistics.maximum_capture_lag_ms:
+            raise ValueError("evidence_future_capture_batch_late")
+    known_at_cutoff_ms = now_ms if candidate is None else query_end_ms
+    available_at_cutoff_ms = now_ms
     source_query_contract = canonical_sha256(
         {
             "projection": MAPPED_NEWS_PROJECTION_VERSION,
             "metric_version": NEWS_OI_METRIC_VERSION,
-            "query": "trade_evidence_oi_rows_v1",
-            "start_observed_at_ms": start_ms,
-            "end_observed_at_ms": end_ms,
+            "query": "trade_evidence_oi_rows_v2",
+            "start_observed_at_ms": query_start_ms,
+            "end_observed_at_ms": query_end_ms,
             "known_at_or_before_ms": known_at_cutoff_ms,
+            "available_at_or_before_ms": available_at_cutoff_ms,
             "target_binding": target_binding,
             "limit": EVIDENCE_ROW_LIMIT,
             "order": "observed_at_ms_event_id",
@@ -142,8 +173,8 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     )
     spec = EvidenceCaptureSpecV1(
         partition=cast(Any, partition),
-        start_ms=start_ms,
-        end_ms=end_ms,
+        start_ms=query_start_ms,
+        end_ms=query_end_ms,
         captured_at_ms=now_ms,
         target_binding=target_binding,
         source_query_contract_sha256=source_query_contract,
@@ -154,9 +185,10 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         rows = repos.news.trade_evidence_oi_rows(
             metric_version=NEWS_OI_METRIC_VERSION,
-            start_observed_at_ms=start_ms,
-            end_observed_at_ms=end_ms,
+            start_observed_at_ms=query_start_ms,
+            end_observed_at_ms=query_end_ms,
             known_at_or_before_ms=known_at_cutoff_ms,
+            available_at_or_before_ms=available_at_cutoff_ms,
             limit=EVIDENCE_ROW_LIMIT,
         )
         if len(rows) >= EVIDENCE_ROW_LIMIT:
@@ -171,37 +203,140 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         artifact = build_evidence_capture(mapped, spec=spec, instruments=instruments)
     root = Path(args.out).resolve()
     if candidate is not None and candidate_receipt is not None:
+        batch = FutureCaptureBatchV1(
+            binding=candidate.binding,
+            candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+            protocol_sha256=candidate.protocol_sha256,
+            batch_start_ms=query_start_ms,
+            batch_end_ms=query_end_ms,
+            captured_at_ms=now_ms,
+            capture_lag_ms=now_ms - query_end_ms,
+            sources=artifact.sources,
+            source_count=artifact.source_count,
+            late_source_count=sum(row.available_at_ms > query_end_ms for row in artifact.sources),
+            catalog_missing_count=sum(
+                row.provider_instrument_id is None or not row.catalog.rows for row in artifact.sources
+            ),
+        )
         with repositories(settings, role="workers") as repos, repos.transaction():
             advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
             repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_capture_already_sealed")
-            path, digest = publish_evidence_artifact(root, kind="capture", artifact=artifact)
-            if digest != artifact.capture_sha256:
-                raise RuntimeError("evidence_capture_artifact_identity_invalid")
-            receipt = FutureCaptureReceiptV1(
-                binding=candidate.binding,
-                candidate_receipt_sha256=candidate_receipt.receipt_sha256,
-                protocol_sha256=candidate.protocol_sha256,
-                sealed_corpus_sha256=candidate.sealed_corpus_sha256,
-                capture_sha256=artifact.capture_sha256,
-                artifact_sha256=digest,
-                artifact_path=str(path),
-                created_at_ms=now_ms,
-            )
-            receipt_path, _ = publish_evidence_artifact(root, kind="capture", artifact=receipt)
-            inserted = repos.trading.append_future_capture_receipt(receipt)
-        return 0, _receipt_answer(
-            receipt,
-            path,
-            receipt_path,
-            inserted=inserted,
-            source_count=artifact.source_count,
+            inserted = repos.trading.append_future_capture_batch(batch)
+        if query_end_ms < end_ms:
+            return 0, {
+                "ok": True,
+                "data": {
+                    "terminal": "FUTURE_CAPTURE_BATCH_APPENDED",
+                    "batch_sha256": batch.batch_sha256,
+                    "batch_start_ms": batch.batch_start_ms,
+                    "batch_end_ms": batch.batch_end_ms,
+                    "source_count": batch.source_count,
+                    "capture_lag_ms": batch.capture_lag_ms,
+                    "late_source_count": batch.late_source_count,
+                    "catalog_missing_count": batch.catalog_missing_count,
+                    "inserted": inserted,
+                    "next_batch_start_ms": query_end_ms,
+                },
+            }
+        with repositories(settings, role="serve") as repos:
+            batches = repos.trading.future_capture_batches(candidate.protocol_sha256)
+        return _seal_future_capture_batches(
+            settings,
+            args,
+            candidate=candidate,
+            candidate_receipt=candidate_receipt,
+            batches=batches,
+            now_ms=now_ms,
         )
     path, digest = publish_evidence_artifact(root, kind="capture", artifact=artifact)
     if digest != artifact.capture_sha256:
         raise RuntimeError("evidence_capture_artifact_identity_invalid")
     return 0, _artifact_answer("CAPTURED", path, digest, source_count=artifact.source_count)
+
+
+def _seal_future_capture_batches(
+    settings: Any,
+    args: Any,
+    *,
+    candidate: CandidateLockedV1,
+    candidate_receipt: CandidateDecisionReceiptV1,
+    batches: tuple[FutureCaptureBatchV1, ...],
+    now_ms: int,
+) -> tuple[int, dict[str, Any]]:
+    protocol = candidate.statistics
+    expected_start = protocol.future_start_ms
+    for batch in batches:
+        expected_end = min(expected_start + protocol.capture_interval_ms, protocol.future_end_ms)
+        if (
+            batch.protocol_sha256 != candidate.protocol_sha256
+            or batch.candidate_receipt_sha256 != candidate_receipt.receipt_sha256
+            or batch.binding != candidate.binding
+            or batch.batch_start_ms != expected_start
+            or batch.batch_end_ms != expected_end
+        ):
+            raise ValueError("evidence_future_capture_batch_chain_invalid")
+        expected_start = expected_end
+    if expected_start != protocol.future_end_ms:
+        raise ValueError("evidence_future_capture_batches_incomplete")
+    sources = tuple(
+        sorted(
+            (source for batch in batches for source in batch.sources),
+            key=lambda row: (row.observed_at_ms, row.source_identity),
+        )
+    )
+    if len({row.source_identity for row in sources}) != len(sources):
+        raise ValueError("evidence_future_capture_duplicate_source")
+    spec = EvidenceCaptureSpecV1(
+        partition="future",
+        start_ms=protocol.future_start_ms,
+        end_ms=protocol.future_end_ms,
+        captured_at_ms=now_ms,
+        target_binding=candidate.binding,
+        source_query_contract_sha256=canonical_sha256(
+            {
+                "projection": MAPPED_NEWS_PROJECTION_VERSION,
+                "query": "append_only_future_capture_batches_v1",
+                "batch_sha256s": tuple(batch.batch_sha256 for batch in batches),
+            }
+        ),
+        protocol_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_locked_at_ms=candidate_receipt.created_at_ms,
+    )
+    artifact = EvidenceCaptureArtifactV1(spec=spec, sources=sources, source_count=len(sources))
+    root = Path(args.out).resolve()
+    path, digest = publish_evidence_artifact(root, kind="capture", artifact=artifact)
+    if digest != artifact.capture_sha256:
+        raise RuntimeError("evidence_capture_artifact_identity_invalid")
+    receipt = FutureCaptureReceiptV1(
+        binding=candidate.binding,
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+        capture_sha256=artifact.capture_sha256,
+        artifact_sha256=digest,
+        artifact_path=str(path),
+        created_at_ms=now_ms,
+    )
+    receipt_path, _ = publish_evidence_artifact(root, kind="capture", artifact=receipt)
+    with repositories(settings, role="workers") as repos, repos.transaction():
+        advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
+        repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
+        if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
+            raise ValueError("evidence_future_capture_already_sealed")
+        inserted = repos.trading.append_future_capture_receipt(receipt)
+    return 0, _receipt_answer(
+        receipt,
+        path,
+        receipt_path,
+        inserted=inserted,
+        source_count=artifact.source_count,
+        batch_count=len(batches),
+        maximum_capture_lag_ms=max((batch.capture_lag_ms for batch in batches), default=0),
+        late_source_count=sum(batch.late_source_count for batch in batches),
+        catalog_missing_count=sum(batch.catalog_missing_count for batch in batches),
+    )
 
 
 def _drain(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any]]:
@@ -274,27 +409,27 @@ def _drain(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any
     if capture.spec.partition == "future":
         if candidate is None or candidate_receipt is None or capture_receipt is None:
             raise RuntimeError("evidence_future_candidate_required")
+        path, digest = publish_evidence_artifact(root, kind="drain", artifact=artifact)
+        if digest != artifact.drain_sha256:
+            raise RuntimeError("evidence_drain_artifact_identity_invalid")
+        receipt = FutureDrainReceiptV1(
+            binding=candidate.binding,
+            candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+            capture_receipt_sha256=capture_receipt.receipt_sha256,
+            protocol_sha256=candidate.protocol_sha256,
+            sealed_corpus_sha256=candidate.sealed_corpus_sha256,
+            capture_sha256=capture.capture_sha256,
+            drain_sha256=artifact.drain_sha256,
+            artifact_sha256=digest,
+            artifact_path=str(path),
+            created_at_ms=now_ms,
+        )
+        receipt_path, _ = publish_evidence_artifact(root, kind="drain", artifact=receipt)
         with repositories(settings, role="workers") as repos, repos.transaction():
             advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
             repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
             if repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_drain_already_sealed")
-            path, digest = publish_evidence_artifact(root, kind="drain", artifact=artifact)
-            if digest != artifact.drain_sha256:
-                raise RuntimeError("evidence_drain_artifact_identity_invalid")
-            receipt = FutureDrainReceiptV1(
-                binding=candidate.binding,
-                candidate_receipt_sha256=candidate_receipt.receipt_sha256,
-                capture_receipt_sha256=capture_receipt.receipt_sha256,
-                protocol_sha256=candidate.protocol_sha256,
-                sealed_corpus_sha256=candidate.sealed_corpus_sha256,
-                capture_sha256=capture.capture_sha256,
-                drain_sha256=artifact.drain_sha256,
-                artifact_sha256=digest,
-                artifact_path=str(path),
-                created_at_ms=now_ms,
-            )
-            receipt_path, _ = publish_evidence_artifact(root, kind="drain", artifact=receipt)
             inserted = repos.trading.append_future_drain_receipt(receipt)
         return 0, _receipt_answer(
             receipt,
@@ -393,53 +528,65 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         if candidate.execution.protection_contract_sha256 != contract.protection_contract_sha256
         else ()
     )
+    with repositories(settings, role="serve") as repos:
+        if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
+            raise ValueError("evidence_future_already_unblinded")
+        drain_row = repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256)
+    drain_receipt = _validated_future_drain_receipt(
+        drain_row,
+        candidate=candidate,
+        candidate_receipt=candidate_receipt,
+        capture_receipt=capture_receipt,
+        capture=capture,
+        drain=drain,
+        drain_path=Path(args.drain),
+        now_ms=now_ms,
+    )
+    result = unblind_future_holdout(
+        capture,
+        drain,
+        candidate=candidate,
+        candidate_receipt=candidate_receipt,
+        admission=config.admission,
+        policy=config.policy,
+        price_window=config.price_window,
+        target_notional=config.target_notional_usd,
+        run_episode=run_bar_episode,
+        evaluated_at_ms=now_ms,
+        external_incidents=incidents,
+    )
+    root = Path(args.out).resolve()
+    path, digest = publish_evidence_artifact(root, kind="future-result", artifact=result)
+    receipt = FutureHoldoutResultReceiptV1(
+        terminal=result.terminal,
+        binding=result.binding,
+        candidate_receipt_sha256=result.candidate_receipt_sha256,
+        protocol_sha256=result.protocol_sha256,
+        sealed_corpus_sha256=result.sealed_corpus_sha256,
+        report_sha256=result.report_sha256,
+        artifact_sha256=digest,
+        artifact_path=str(path),
+        created_at_ms=now_ms,
+    )
+    receipt_path, _ = publish_evidence_artifact(root, kind="future-result", artifact=receipt)
     with repositories(settings, role="workers") as repos, repos.transaction():
         advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
         repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
         if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
             raise ValueError("evidence_future_already_unblinded")
-        drain_row = repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256)
-        if drain_row is None:
-            raise ValueError("evidence_future_drain_receipt_missing")
-        drain_receipt = FutureDrainReceiptV1.model_validate(drain_row["payload"]["receipt"])
-        if (
-            drain_receipt.binding != candidate.binding
-            or drain_receipt.candidate_receipt_sha256 != candidate_receipt.receipt_sha256
-            or drain_receipt.capture_receipt_sha256 != capture_receipt.receipt_sha256
-            or drain_receipt.sealed_corpus_sha256 != candidate.sealed_corpus_sha256
-            or drain_receipt.capture_sha256 != capture.capture_sha256
-            or drain_receipt.drain_sha256 != drain.drain_sha256
-            or Path(drain_receipt.artifact_path).resolve() != Path(args.drain).resolve()
-            or now_ms <= drain_receipt.created_at_ms
-        ):
-            raise ValueError("evidence_future_drain_receipt_mismatch")
-        result = unblind_future_holdout(
-            capture,
-            drain,
+        locked_drain_row = repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256)
+        locked_drain_receipt = _validated_future_drain_receipt(
+            locked_drain_row,
             candidate=candidate,
             candidate_receipt=candidate_receipt,
-            admission=config.admission,
-            policy=config.policy,
-            price_window=config.price_window,
-            target_notional=config.target_notional_usd,
-            run_episode=run_bar_episode,
-            evaluated_at_ms=now_ms,
-            external_incidents=incidents,
+            capture_receipt=capture_receipt,
+            capture=capture,
+            drain=drain,
+            drain_path=Path(args.drain),
+            now_ms=now_ms,
         )
-        root = Path(args.out).resolve()
-        path, digest = publish_evidence_artifact(root, kind="future-result", artifact=result)
-        receipt = FutureHoldoutResultReceiptV1(
-            terminal=result.terminal,
-            binding=result.binding,
-            candidate_receipt_sha256=result.candidate_receipt_sha256,
-            protocol_sha256=result.protocol_sha256,
-            sealed_corpus_sha256=result.sealed_corpus_sha256,
-            report_sha256=result.report_sha256,
-            artifact_sha256=digest,
-            artifact_path=str(path),
-            created_at_ms=now_ms,
-        )
-        receipt_path, _ = publish_evidence_artifact(root, kind="future-result", artifact=receipt)
+        if locked_drain_receipt.receipt_sha256 != drain_receipt.receipt_sha256:
+            raise ValueError("evidence_future_drain_receipt_changed")
         inserted = repos.trading.append_future_holdout_result_receipt(receipt, result)
     return 0, _receipt_answer(receipt, path, receipt_path, inserted=inserted)
 
@@ -538,25 +685,7 @@ def _verify_case(settings: Any, case_id: str, *, now_ms: int) -> tuple[int, dict
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.case_verification_snapshot(case_id)
-    if snapshot is None:
-        checks = [_check("case_exists", False)]
-    else:
-        case = snapshot["case"]
-        intents = snapshot["intents"]
-        allowed = case["capital_disposition"] == "allowed"
-        intent_conserved = len(intents) == (1 if allowed else 0)
-        checks = [
-            _check("case_exists", True),
-            _check("case_exactly_one_admission_link", snapshot["gate_count"] == 1, count=snapshot["gate_count"]),
-            _check(
-                "case_policy_capital_disposition_complete",
-                case["policy_decision"] is not None and case["capital_disposition"] is not None,
-            ),
-            _check("case_intent_conservation", intent_conserved, intent_count=len(intents), capital_allowed=allowed),
-        ]
-        if intents:
-            intent = intents[0]
-            checks.extend(_intent_checks(intent))
+    checks = case_verification_checks(snapshot)
     return _verification_answer(verification_report(subject=f"case:{case_id}", verified_at_ms=now_ms, checks=checks))
 
 
@@ -569,7 +698,7 @@ def _verify_window(
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.fixed_window_verification_snapshot(spec)
-    checks = _window_checks(spec, snapshot, now_ms=now_ms)
+    checks = fixed_window_verification_checks(spec, snapshot, now_ms=now_ms)
     return _verification_answer(
         verification_report(subject=f"fixed-window:{spec.window_sha256}", verified_at_ms=now_ms, checks=checks),
         snapshot={"by_binding": snapshot["by_binding"]},
@@ -605,22 +734,6 @@ def _verify_release(
     wheel_identity = installed_nautilus_wheel_identity()
     wheel_sha = wheel_identity.rsplit("sha256:", 1)[-1] if "sha256:" in wheel_identity else None
     receipt_rows = {str(row["receipt_sha256"]): row for row in snapshot["receipts"]}
-    grant_rows = {str(row["grant_sha256"]): row for row in snapshot["grants"]}
-    risk_rows = {str(row["risk_policy_sha256"]): row for row in snapshot["risk_policies"]}
-    binding_rows = {str(row["binding"]): row for row in snapshot["bindings"]}
-    canary_rows = {str(row["intent_id"]): row for row in snapshot["canaries"]}
-    runtime_rows = {str(row["runtime_id"]): row for row in snapshot["runtime_starts"]}
-    corpus_artifacts = {
-        str(receipt_rows[digest]["artifact_sha256"])
-        for digest in release.corpus_receipt_sha256s
-        if digest in receipt_rows
-    }
-    future_artifacts = {
-        str(receipt_rows[digest]["artifact_sha256"])
-        for digest in release.future_result_receipt_sha256s
-        if digest in receipt_rows
-    }
-    release_bindings = {row.binding for row in release.bindings}
     receipt_chains_valid = all(
         _database_receipt_chain_valid(digest, receipt_rows, expected_kinds=("DISCOVERY_CORPUS",))
         for digest in release.corpus_receipt_sha256s
@@ -638,145 +751,29 @@ def _verify_release(
         )
         for digest in release.future_result_receipt_sha256s
     )
-    checks = [
-        _check("release_tag_signature_valid", signed_tag),
-        _check("release_tag_commit_identity", tag_commit == release.git_commit_sha),
-        _check("release_tag_tree_identity", tag_tree == release.git_tree_sha),
-        _check("release_migration_head", snapshot["migration_head"] == release.migration_head),
-        _check("release_runtime_revision", identity.runtime_revision == release.git_commit_sha),
-        _check("release_image_digest", identity.image_digest == release.oci_image_digest),
-        _check("release_openapi_identity", openapi_sha == release.openapi_sha256),
-        _check("release_web_assets_identity", web_sha == release.web_assets_sha256),
-        _check("release_nautilus_wheel_identity", wheel_sha == release.nautilus_wheel_sha256),
-        _check("release_nautilus_source_identity", NAUTILUS_RELEASE.git_commit == release.nautilus_source_git_commit),
-        _check(
-            "release_execution_contract_receipt",
-            contract.receipt_sha256 == release.execution_contract_receipt_sha256,
-        ),
-        _check(
-            "release_execution_policy_identity",
-            contract.execution_policy_sha256 == release.execution_policy_sha256,
-        ),
-        _check("release_quote_contract_identity", contract.quote_contract_sha256 == release.quote_contract_sha256),
-        _check(
-            "release_protection_contract_identity",
-            contract.protection_contract_sha256 == release.protection_contract_sha256,
-        ),
-        _check("release_policy_config_identity", config.policy.config_digest == release.policy_config_sha256),
-        _check("release_evidence_receipt_chains_valid", receipt_chains_valid),
-        _check(
-            "release_corpus_receipts_complete",
-            all(
-                digest in receipt_rows and receipt_rows[digest]["receipt_kind"] == "DISCOVERY_CORPUS"
-                for digest in release.corpus_receipt_sha256s
-            ),
-            expected=len(release.corpus_receipt_sha256s),
-        ),
-        _check(
-            "release_future_results_promote",
-            all(
-                digest in receipt_rows
-                and receipt_rows[digest]["receipt_kind"] == "FUTURE_RESULT"
-                and receipt_rows[digest]["terminal"] == "PROMOTE"
-                for digest in release.future_result_receipt_sha256s
-            ),
-            expected=len(release.future_result_receipt_sha256s),
-        ),
-        _check("release_promotion_grants_complete", set(grant_rows) == set(release.promotion_grant_sha256s)),
-        _check("release_risk_policies_complete", set(risk_rows) == set(release.risk_policy_sha256s)),
-        _check(
-            "release_risk_policies_target_release",
-            all(row["approved_release"] == release.release_tag for row in risk_rows.values()),
-        ),
-        _check(
-            "release_grant_evidence_chain",
-            all(
-                (payload := dict(row.get("payload") or {})).get("approved_release") == release.release_tag
-                and row["binding"] in release_bindings
-                and row["risk_policy_sha256"] in release.risk_policy_sha256s
-                and row["sealed_corpus_sha256"] in corpus_artifacts
-                and row["locked_future_report_sha256"] in future_artifacts
-                and payload.get("policy_config_sha256") == release.policy_config_sha256
-                and payload.get("execution_policy_sha256") == release.execution_policy_sha256
-                and payload.get("quote_contract_sha256") == release.quote_contract_sha256
-                and payload.get("protection_contract_sha256") == release.protection_contract_sha256
-                for row in grant_rows.values()
-            ),
-        ),
-        _check("release_canary_intents_complete", set(canary_rows) == set(release.canary_intent_ids)),
-        _check(
-            "release_canary_binding_coverage",
-            {str(row["binding"]) for row in canary_rows.values()} == release_bindings,
-        ),
-        _check(
-            "release_canary_authority_chain",
-            all(
-                row["grant_sha256"] in release.promotion_grant_sha256s
-                and row["risk_policy_sha256"] in release.risk_policy_sha256s
-                and row["sealed_corpus_sha256"] in corpus_artifacts
-                and row["locked_future_report_sha256"] in future_artifacts
-                for row in canary_rows.values()
-            ),
-        ),
-        _check(
-            "release_canaries_closed_flat",
-            all(_canary_closed_flat(row) for row in canary_rows.values()),
-        ),
-    ]
-    for binding in release.bindings:
-        row = binding_rows.get(binding.binding)
-        payload = {} if row is None else dict(row.get("execution_binding") or {})
-        checks.append(
-            _check(
-                f"release_binding_{binding.binding.lower()}",
-                row is not None
-                and row["catalog_snapshot_sha256"] == binding.catalog_snapshot_sha256
-                and row["capability_snapshot_sha256"] == binding.capability_snapshot_sha256
-                and row["execution_binding_sha256"] == binding.execution_binding_sha256
-                and int(row["account_generation"]) == binding.account_generation
-                and payload.get("account_identity_sha256") == binding.account_identity_sha256
-                and payload.get("adapter_contract_sha256") == binding.adapter_contract_sha256
-                and payload.get("quote_contract_sha256") == release.quote_contract_sha256
-                and payload.get("protection_contract_sha256") == release.protection_contract_sha256
-                and payload.get("client_runtime_identity") == binding.client_runtime_identity,
-            )
-        )
-    drill = release.restart_drill
-    protected_runtime = runtime_rows.get(str(drill.protected_runtime_id))
-    recovered_runtime = runtime_rows.get(str(drill.recovered_runtime_id))
-    drill_intent = canary_rows.get(drill.intent_id)
-    checks.extend(
-        [
-            _check(
-                "release_restart_runtime_receipts_complete",
-                set(runtime_rows) == {str(drill.protected_runtime_id), str(drill.recovered_runtime_id)},
-            ),
-            _check(
-                "release_restart_exact_runtime_identity",
-                all(
-                    row is not None
-                    and row["runtime_revision"] == release.git_commit_sha
-                    and row["image_digest"] == release.oci_image_digest
-                    and row["nautilus_source_git_commit"] == release.nautilus_source_git_commit
-                    and _wheel_sha256(str(row["nautilus_wheel_identity"])) == release.nautilus_wheel_sha256
-                    for row in (protected_runtime, recovered_runtime)
-                ),
-            ),
-            _check(
-                "release_restart_after_protection_before_flat",
-                drill_intent is not None
-                and protected_runtime is not None
-                and recovered_runtime is not None
-                and drill.binding == drill_intent["binding"]
-                and protected_runtime["started_at_ms"] <= drill_intent["protected_at_ms"]
-                and drill_intent["protected_at_ms"] <= drill.stopped_at_ms
-                and drill.stopped_at_ms < recovered_runtime["started_at_ms"]
-                and recovered_runtime["started_at_ms"] <= drill.reconciled_at_ms
-                and drill.reconciled_at_ms == drill_intent["flat_verified_at_ms"],
-            ),
-        ]
+    checks = release_verification_checks(
+        release,
+        snapshot,
+        window_snapshot,
+        {
+            "tag_signature_valid": signed_tag,
+            "tag_commit": tag_commit,
+            "tag_tree": tag_tree,
+            "runtime_revision": identity.runtime_revision,
+            "image_digest": identity.image_digest,
+            "openapi_sha256": openapi_sha,
+            "web_assets_sha256": web_sha,
+            "nautilus_wheel_sha256": wheel_sha,
+            "nautilus_source_git_commit": NAUTILUS_RELEASE.git_commit,
+            "execution_contract_receipt_sha256": contract.receipt_sha256,
+            "execution_policy_sha256": contract.execution_policy_sha256,
+            "quote_contract_sha256": contract.quote_contract_sha256,
+            "protection_contract_sha256": contract.protection_contract_sha256,
+            "policy_config_sha256": config.policy.config_digest,
+            "receipt_chains_valid": receipt_chains_valid,
+        },
+        now_ms=now_ms,
     )
-    checks.extend(_window_checks(release.acceptance_window, window_snapshot, now_ms=now_ms))
     return _verification_answer(
         verification_report(subject=f"release:{release.release_sha256}", verified_at_ms=now_ms, checks=checks),
         snapshot={"by_binding": window_snapshot["by_binding"]},
@@ -789,156 +786,19 @@ def _verify_rollback(
     *,
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
+    release = ProductionReleaseCandidateV1.model_validate(_mapping_file(receipt.release_candidate_artifact_path))
     with repositories(settings, role="serve") as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.rollback_verification_snapshot(receipt)
-    bindings = {str(row["binding"]): row for row in snapshot["bindings"]}
-    grants = {str(row["grant_sha256"]): row for row in snapshot["grants"]}
-    checks = [
-        _check("rollback_not_before_receipt", now_ms >= receipt.rolled_back_at_ms),
-        _check("rollback_capital_paused", snapshot["control"] == "PAUSED"),
-        _check("rollback_zero_active_intents", snapshot["active_intent_count"] == 0),
-        _check("rollback_zero_active_risk", snapshot["active_risk_count"] == 0),
-        _check(
-            "rollback_bindings_authoritatively_flat",
-            all(
-                binding in bindings
-                and bindings[binding]["account_state"] == "reconciled_flat"
-                and bindings[binding]["active_arm_receipt_sha256"] is None
-                for binding in receipt.bindings
-            ),
-        ),
-        _check(
-            "rollback_grants_revoked_or_expired",
-            all(
-                digest in grants
-                and (
-                    grants[digest]["expires_at_ms"] <= receipt.rolled_back_at_ms
-                    or (
-                        grants[digest]["revoked_at_ms"] is not None
-                        and grants[digest]["revoked_at_ms"] <= receipt.rolled_back_at_ms
-                    )
-                )
-                for digest in receipt.grant_sha256s
-            ),
-        ),
-    ]
+    checks = rollback_verification_checks(receipt, release, snapshot, now_ms=now_ms)
     return _verification_answer(
         verification_report(subject=f"rollback:{receipt.receipt_sha256}", verified_at_ms=now_ms, checks=checks)
     )
 
 
-def _window_checks(
-    spec: FixedWindowAcceptanceV1,
-    snapshot: dict[str, Any],
-    *,
-    now_ms: int,
-) -> list[EvidenceVerificationCheckV1]:
-    counts = snapshot["counts"]
-    return [
-        _check("window_drain_cutoff_reached", now_ms >= spec.drain_cutoff_ms),
-        _check(
-            "window_minimum_sources",
-            counts["source_count"] >= spec.minimum_source_count,
-            count=counts["source_count"],
-        ),
-        _check("window_minimum_cases", counts["case_count"] >= spec.minimum_case_count, count=counts["case_count"]),
-        _check(
-            "window_minimum_intents",
-            counts["intent_count"] >= spec.minimum_intent_count,
-            count=counts["intent_count"],
-        ),
-        _check(
-            "window_minimum_closed_flat",
-            counts["closed_flat_count"] >= spec.minimum_closed_flat_count,
-            count=counts["closed_flat_count"],
-        ),
-        _check("window_source_admission_unique", counts["source_count"] == counts["unique_source_count"]),
-        _check(
-            "window_source_disposition_conservation",
-            counts["source_count"] == counts["admitted_source_count"] + counts["rejected_or_deferred_source_count"],
-        ),
-        _check("window_admitted_source_case_conservation", counts["admitted_source_count"] == counts["case_count"]),
-        _check("window_gate_links_valid", counts["invalid_gate_link_count"] == 0),
-        _check("window_case_links_complete", counts["case_without_gate_count"] == 0),
-        _check("window_case_dispositions_complete", counts["case_disposition_missing_count"] == 0),
-        _check("window_allowed_case_intent_conservation", counts["allowed_case_intent_mismatch_count"] == 0),
-        _check("window_blocked_case_zero_intent", counts["blocked_case_intent_mismatch_count"] == 0),
-        _check("window_only_v3_intents", counts["non_v3_intent_count"] == 0),
-        _check("window_all_intents_terminal", counts["nonterminal_intent_count"] == 0),
-        _check("window_zero_unknown_exposure", counts["exposure_unknown_or_active_count"] == 0),
-        _check("window_zero_provider_write_before_fence", counts["provider_write_before_fence_count"] == 0),
-        _check("window_zero_unprotected_fill", counts["unprotected_fill_count"] == 0),
-        _check("window_closed_flat_proven", counts["closed_flat_proof_missing_count"] == 0),
-        _check("window_financial_accounting_complete", counts["financial_accounting_missing_count"] == 0),
-    ]
-
-
-def _intent_checks(intent: dict[str, Any]) -> list[EvidenceVerificationCheckV1]:
-    terminal = intent["execution_state"] == "TERMINAL"
-    closed_flat = intent["terminal_outcome"] == "CLOSED_FLAT"
-    return [
-        _check("intent_current_contract", intent["intent_version"] == "trade_intent_v3"),
-        _check("intent_terminal", terminal, execution_state=intent["execution_state"]),
-        _check(
-            "intent_zero_provider_write_before_fence",
-            intent["entry_submitted_at_ms"] is None
-            or (
-                intent["entry_fenced_at_ms"] is not None
-                and intent["entry_submitted_at_ms"] >= intent["entry_fenced_at_ms"]
-            ),
-        ),
-        _check(
-            "intent_no_unprotected_fill",
-            intent["opened_at_ms"] is None
-            or (intent["protected_at_ms"] is not None and intent["protection_order_id"] is not None),
-        ),
-        _check(
-            "intent_closed_flat_proof",
-            not closed_flat
-            or (
-                intent["closed_at_ms"] is not None
-                and intent["flat_verified_at_ms"] is not None
-                and intent["risk_status"] == "SETTLED"
-                and intent["settlement_known"] is True
-            ),
-        ),
-    ]
-
-
-def _check(code: str, passed: bool, **evidence: Any) -> EvidenceVerificationCheckV1:
-    return EvidenceVerificationCheckV1(code=code, passed=bool(passed), evidence=evidence)
-
-
 def _verification_answer(report: Any, **extra: Any) -> tuple[int, dict[str, Any]]:
     data = report.model_dump(mode="json") | {"report_sha256": report.report_sha256} | extra
     return (0 if report.terminal == "VERIFIED" else 1), {"ok": report.terminal == "VERIFIED", "data": data}
-
-
-def _canary_closed_flat(row: dict[str, Any]) -> bool:
-    return bool(
-        row["intent_version"] == "trade_intent_v3"
-        and row["execution_state"] == "TERMINAL"
-        and row["terminal_outcome"] == "CLOSED_FLAT"
-        and row["entry_fenced_at_ms"] is not None
-        and row["entry_submitted_at_ms"] is not None
-        and row["entry_submitted_at_ms"] >= row["entry_fenced_at_ms"]
-        and row["opened_at_ms"] is not None
-        and row["protected_at_ms"] is not None
-        and row["protection_order_id"] is not None
-        and row["closed_at_ms"] is not None
-        and row["flat_verified_at_ms"] is not None
-        and row["realized_pnl_amount"] is not None
-        and row["realized_pnl_currency"] is not None
-        and row["commissions_by_currency"] is not None
-        and row["funding_by_currency"] is not None
-        and row["risk_status"] == "SETTLED"
-        and row["settlement_known"] is True
-    )
-
-
-def _wheel_sha256(identity: str) -> str | None:
-    return identity.rsplit("sha256:", 1)[-1] if "sha256:" in identity else None
 
 
 def _database_receipt_chain_valid(
@@ -1315,6 +1175,46 @@ def _load_durable_future_capture_receipt(
     return receipt
 
 
+def _validated_future_drain_receipt(
+    row: dict[str, Any] | None,
+    *,
+    candidate: CandidateLockedV1,
+    candidate_receipt: CandidateDecisionReceiptV1,
+    capture_receipt: FutureCaptureReceiptV1,
+    capture: EvidenceCaptureArtifactV1,
+    drain: EvidenceDrainArtifactV1,
+    drain_path: Path,
+    now_ms: int,
+) -> FutureDrainReceiptV1:
+    if row is None:
+        raise ValueError("evidence_future_drain_receipt_missing")
+    receipt = FutureDrainReceiptV1.model_validate(row["payload"]["receipt"])
+    if (
+        receipt.binding != candidate.binding
+        or receipt.candidate_receipt_sha256 != candidate_receipt.receipt_sha256
+        or receipt.capture_receipt_sha256 != capture_receipt.receipt_sha256
+        or receipt.sealed_corpus_sha256 != candidate.sealed_corpus_sha256
+        or receipt.capture_sha256 != capture.capture_sha256
+        or receipt.drain_sha256 != drain.drain_sha256
+        or Path(receipt.artifact_path).resolve() != drain_path.resolve()
+        or now_ms <= receipt.created_at_ms
+    ):
+        raise ValueError("evidence_future_drain_receipt_mismatch")
+    return receipt
+
+
+def _database_now_ms(settings: Any) -> int:
+    """Use PostgreSQL's clock for every irreversible evidence transition."""
+
+    with repositories(settings, role="serve") as repos:
+        row = repos.conn.execute(
+            "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
+        ).fetchone()
+    if row is None or int(row["now_ms"]) <= 0:
+        raise RuntimeError("evidence_database_clock_unavailable")
+    return int(row["now_ms"])
+
+
 def _validate_candidate_registration(settings: Any, decision: CandidateDecisionV1) -> None:
     with repositories(settings, role="serve") as repos:
         row = repos.trading.evidence_clock_receipt_for_artifact(
@@ -1336,6 +1236,9 @@ def _validate_candidate_registration(settings: Any, decision: CandidateDecisionV
         raise ValueError("evidence_candidate_before_corpus_seal")
     if decision.selection_program_sha256 != candidate_selection_program_sha256():
         raise ValueError("evidence_candidate_selection_program_mismatch")
+    expected_terminal, expected_selection_sha = candidate_selection_evidence_sha256(corpus, decision.binding)
+    if decision.terminal != expected_terminal or decision.selection_evidence_sha256 != expected_selection_sha:
+        raise ValueError("evidence_candidate_selection_result_mismatch")
     if isinstance(decision, NoCandidateV1):
         return
 

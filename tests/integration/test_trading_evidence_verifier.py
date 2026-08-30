@@ -3,8 +3,11 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from psycopg import Error as PostgresError
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.trading_v3_fixtures import capital_evidence_fixture
+from tracefold.trading.evidence_clock import FutureCaptureBatchV1
 from tracefold.trading.evidence_verification import (
     FixedWindowAcceptanceV1,
     NautilusRuntimeStartV1,
@@ -33,6 +36,9 @@ def _window() -> FixedWindowAcceptanceV1:
         start_ms=START,
         end_ms=END,
         drain_cutoff_ms=END + 1,
+        release_tag="production-v3-rc1",
+        git_commit_sha="1" * 40,
+        oci_image_digest="tracefold@sha256:" + "3" * 64,
         gate_version="candidate_gate_v1",
         gate_config_digest="a" * 64,
         minimum_source_count=1,
@@ -52,10 +58,40 @@ def test_empty_fixed_window_snapshot_cannot_manufacture_operational_activity(con
     assert snapshot["by_binding"] == []
 
 
+def test_future_capture_batches_are_contiguous_and_append_only(conn: Any) -> None:
+    repository = TradingRepository(conn)
+    corpus, candidate_receipt, candidate, _, _ = capital_evidence_fixture()
+    batch = FutureCaptureBatchV1(
+        binding=candidate.binding,
+        candidate_receipt_sha256=candidate_receipt.receipt_sha256,
+        protocol_sha256=candidate.protocol_sha256,
+        batch_start_ms=candidate.statistics.future_start_ms,
+        batch_end_ms=candidate.statistics.future_end_ms,
+        captured_at_ms=candidate.statistics.future_end_ms,
+        capture_lag_ms=0,
+        sources=(),
+        source_count=0,
+        late_source_count=0,
+        catalog_missing_count=0,
+    )
+    with conn.transaction():
+        assert repository.append_discovery_corpus_receipt(corpus)
+        assert repository.append_candidate_decision_receipt(candidate_receipt, candidate)
+        assert repository.append_future_capture_batch(batch)
+        assert not repository.append_future_capture_batch(batch)
+
+    with pytest.raises(PostgresError, match="append_only"), conn.transaction():
+        conn.execute(
+            "UPDATE trading_evidence_future_capture_batches SET source_count = 1 WHERE protocol_sha256 = %s",
+            (candidate.protocol_sha256,),
+        )
+
+
 def test_rollback_snapshot_requires_real_flat_bindings_and_revoked_grants(conn: Any) -> None:
     unsigned: dict[str, object] = {
         "rollback_version": "production_v3_rollback_receipt_v1",
         "release_candidate_sha256": "1" * 64,
+        "release_candidate_artifact_path": "evidence/release.json",
         "bindings": ["BINANCE_USDM"],
         "grant_sha256s": ["2" * 64],
         "rolled_back_at_ms": START,

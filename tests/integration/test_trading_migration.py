@@ -1109,7 +1109,7 @@ def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
                     capture_sha256="8" * 64,
                     artifact_sha256="8" * 64,
                     artifact_path="test-evidence/second-future-capture.json",
-                    created_at_ms=5,
+                    created_at_ms=300_004,
                 )
             )
         with pytest.raises(UniqueViolation), conn.transaction():
@@ -1124,7 +1124,7 @@ def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
                     drain_sha256="9" * 64,
                     artifact_sha256="9" * 64,
                     artifact_path="test-evidence/second-future-drain.json",
-                    created_at_ms=6,
+                    created_at_ms=300_005,
                 )
             )
         candidate_row = conn.execute(

@@ -239,6 +239,8 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
             observed_at_ms=NOW,
             rank_in_window=judgment.rank_in_window,
             now_ms=NOW,
+            source_item_id="projection-oi-item",
+            source_venue="binance",
         )
         judgment_sha256 = judgment.judgment_sha256
         runtime_manifest_sha = "b" * 64

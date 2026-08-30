@@ -149,7 +149,7 @@ def build_evidence_capture(
                 provider_instrument_id=provider_instrument_id,
                 observed_at_ms=observed_at_ms,
                 known_at_ms=known_at_ms,
-                available_at_ms=spec.captured_at_ms,
+                available_at_ms=int(cast(Any, source.get("source_available_at_ms") or source["verdict_created_at_ms"])),
                 catalog=PointInTimeCatalogV1(
                     source_observed_at_ms=observed_at_ms,
                     rows=tuple(catalog_rows),
