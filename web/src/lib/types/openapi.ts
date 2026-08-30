@@ -2246,6 +2246,8 @@ export interface components {
         };
         /** TradingCapitalRuntimeData */
         TradingCapitalRuntimeData: {
+            /** Arm Epoch */
+            arm_epoch: number;
             /** Blacklist Revision */
             blacklist_revision: number;
             /**

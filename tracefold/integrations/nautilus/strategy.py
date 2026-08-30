@@ -1,4 +1,4 @@
-"""Nautilus adapter for capability-governed Binance USD-M Production V3 intents."""
+"""One Nautilus lifecycle coordinator for both closed Production V3 bindings."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ from decimal import Decimal
 from queue import Empty, Full
 from typing import Any
 
-from nautilus_trader.adapters.binance import BINANCE, BINANCE_VENUE
 from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.data import QuoteTick
 from nautilus_trader.model.enums import OrderSide, OrderStatus, OrderType, PositionSide, TriggerType
@@ -26,12 +25,23 @@ from tracefold.trading import (
     IntentReasonCode,
     SubmissionFenceV1,
     TradeIntent,
+    VenueBinding,
     deterministic_client_order_id,
     validate_entry_quote,
 )
 from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
 
 from .capabilities import instrument_matches_capability
+from .execution_adapter import (
+    AuthoritativeExecutionState,
+    AuthoritativeFill,
+    BoundedQuoteProbe,
+    ExecutionAdapter,
+    FlatReceipt,
+    ProtectionReceipt,
+    SubmitReceipt,
+    strategy_execution_adapters,
+)
 from .messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
@@ -94,7 +104,7 @@ class TracefoldNautilusStrategy(Strategy):
         instrument_ids: Sequence[InstrumentId],
         capabilities: Mapping[str, ExecutionInstrumentCapabilityV2],
         queues: StrategyQueues,
-        quote_stream_generation: Callable[[], int],
+        quote_stream_generation: Callable[[VenueBinding], int],
         request_venue_flat: Callable[[VenueFlatProofRequested], None],
         request_startup_account_reconciliation: Callable[[], None],
         config: StrategyConfig | None = None,
@@ -113,10 +123,12 @@ class TracefoldNautilusStrategy(Strategy):
         self._capabilities = dict(capabilities)
         self._queues = queues
         self._quote_stream_generation_authority = quote_stream_generation
-        if int(self._quote_stream_generation_authority()) < 0:
+        configured_bindings = {row.binding for row in capabilities.values()}
+        if any(int(self._quote_stream_generation_authority(binding)) < 0 for binding in configured_bindings):
             raise ValueError("nautilus_quote_stream_generation_invalid")
         self._request_venue_flat = request_venue_flat
         self._request_startup_account_reconciliation = request_startup_account_reconciliation
+        self._execution_adapters = strategy_execution_adapters(self)
         self._bootstrap_mode = not claims
         self._startup_account_reconciled = False
         self._startup_unexpected_exposure = False
@@ -133,8 +145,14 @@ class TracefoldNautilusStrategy(Strategy):
         self._latest_entry_quote: ExecutionQuote | None = None
         self._last_accepted_quote_ts_event_ns: int | None = None
         self._quote_wait_started_at_ns: int | None = None
-        self._quote_stream_generation = 0
-        self._quote_stream_connected = True
+        self._quote_stream_generations: dict[VenueBinding, int] = {
+            "BINANCE_USDM": 0,
+            "HYPERLIQUID_PERP": 0,
+        }
+        self._quote_stream_connected: dict[VenueBinding, bool] = {
+            "BINANCE_USDM": True,
+            "HYPERLIQUID_PERP": True,
+        }
         self._orders: dict[str, tuple[str, OrderLeg]] = {}
         self._position_id: PositionId | None = None
         self._position_quantity: Decimal | None = None
@@ -151,6 +169,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._close_order: Any = None
         self._terminal_close_ids: set[str] = set()
         self._local_close_observation: PositionClosedObserved | None = None
+        self._flat_opened_at_ms: int | None = None
         self._stop_id_at_close: str | None = None
         self._pending_flat_confirmation: VenueFlatConfirmed | None = None
         self._cancel_close_for_flat = False
@@ -179,7 +198,6 @@ class TracefoldNautilusStrategy(Strategy):
 
     def _readiness(self) -> ReadinessChanged:
         active_instrument = None if self._active_intent is None else self._instrument_id()
-        account = self.portfolio.account(venue=BINANCE_VENUE)
         expected_position_id = None if self._position_id is None else self._position_id.value
         unexpected_position = any(
             active_instrument is None
@@ -201,17 +219,24 @@ class TracefoldNautilusStrategy(Strategy):
         if self._bootstrap_mode:
             return ReadinessChanged(False, "capability_snapshot_missing", unexpected)
         instruments = {item: self.cache.instrument(item) for item in self._instrument_ids}
-        if account is None or any(instrument is None for instrument in instruments.values()):
+        accounts = {
+            binding: self.portfolio.account(venue=self._execution_adapters[binding].venue)
+            for binding in {row.binding for row in self._capabilities.values()}
+        }
+        if any(account is None for account in accounts.values()) or any(
+            instrument is None for instrument in instruments.values()
+        ):
             return ReadinessChanged(False, "account_or_instrument_missing", unexpected)
         if any(
             instrument is None or not instrument_matches_capability(instrument, self._capabilities[item.value])
             for item, instrument in instruments.items()
         ):
             return ReadinessChanged(False, "capability_snapshot_mismatch", unexpected)
-        if not hasattr(account, "leverage") or any(
-            account.leverage(item) != Decimal(1) for item in self._instrument_ids
-        ):
-            return ReadinessChanged(False, "leverage_not_one", unexpected)
+        for item in self._instrument_ids:
+            capability = self._capabilities[item.value]
+            account = accounts[capability.binding]
+            if account is None or not hasattr(account, "leverage") or account.leverage(item) != Decimal(1):
+                return ReadinessChanged(False, "leverage_not_one", unexpected)
         if unexpected:
             return ReadinessChanged(False, "external_exposure", True)
         return ReadinessChanged(True, "ready", False)
@@ -315,6 +340,15 @@ class TracefoldNautilusStrategy(Strategy):
             raise RuntimeError("nautilus_active_instrument_missing")
         return InstrumentId.from_str(self._active_intent.instrument_id)
 
+    def _execution_adapter(self, intent: TradeIntent | None = None) -> ExecutionAdapter:
+        selected = self._active_intent if intent is None else intent
+        if selected is None:
+            raise RuntimeError("nautilus_active_binding_missing")
+        return self._execution_adapters[selected.binding]
+
+    def _client_id(self) -> ClientId:
+        return self._execution_adapter().client_id
+
     def _adopt_intent(self, command: AdoptIntent) -> None:
         intent = command.intent
         outcome = command.outcome
@@ -376,7 +410,7 @@ class TracefoldNautilusStrategy(Strategy):
         intent = self._active_intent
         if (
             intent is None
-            or not self._quote_stream_connected
+            or not self._quote_stream_connected[intent.binding]
             or tick.instrument_id.value != intent.instrument_id
             or (self._active_outcome is not None and self._active_outcome.entry_fenced_at_ms is not None)
         ):
@@ -406,7 +440,7 @@ class TracefoldNautilusStrategy(Strategy):
             self._refuse_intent(intent, "runtime_not_ready")
             return None
         now_ns = int(self.clock.timestamp_ns())
-        quote = self._authoritative_entry_quote()
+        quote = self._execution_adapter(intent).probe_quote(intent.binding, intent.instrument_id).quote
         if quote is None:
             wait_started_at_ns = self._quote_wait_started_at_ns
             if wait_started_at_ns is not None and now_ns < min(
@@ -507,7 +541,7 @@ class TracefoldNautilusStrategy(Strategy):
         now_ns = int(self.clock.timestamp_ns())
         validation = validate_entry_quote(
             intent=intent,
-            quote=self._authoritative_entry_quote(),
+            quote=self._execution_adapter(intent).probe_quote(intent.binding, intent.instrument_id).quote,
             stage="Q2",
             now_ns=now_ns,
             last_accepted_ts_event_ns=q1.ts_event_ns,
@@ -577,6 +611,37 @@ class TracefoldNautilusStrategy(Strategy):
             )
             return
 
+        self._active_outcome = outcome
+        receipt = self._execution_adapter(intent).submit_entry(fence, outcome.entry_quote_q2)
+        self._emit(
+            EntrySubmitted(
+                intent_id=receipt.intent_id,
+                client_order_id=receipt.client_order_id,
+                submitted_at_ms=receipt.submitted_at_ms,
+            )
+        )
+
+    def execution_submit_entry(
+        self,
+        *,
+        binding: VenueBinding,
+        client_id: ClientId,
+        fence: SubmissionFenceV1,
+        q2: ExecutionQuoteSnapshotV1,
+    ) -> SubmitReceipt:
+        intent = self._active_intent
+        if (
+            intent is None
+            or intent.binding != binding
+            or fence.q1_evidence.intent_id != intent.intent_id
+            or q2.intent_id != intent.intent_id
+            or q2.stage != "Q2"
+            or q2.instrument_id != intent.instrument_id
+        ):
+            raise ValueError("nautilus_entry_adapter_scope_invalid")
+        expected_id = deterministic_client_order_id(intent.intent_id, "entry")
+        if fence.client_order_id != expected_id:
+            raise ValueError("nautilus_entry_adapter_identity_invalid")
         instrument_id = self._instrument_id()
         instrument = self.cache.instrument(instrument_id)
         if instrument is None:
@@ -589,33 +654,42 @@ class TracefoldNautilusStrategy(Strategy):
             client_order_id=ClientOrderId(expected_id),
         )
         self._orders[expected_id] = (intent.intent_id, "entry")
-        self._active_outcome = outcome
-        self.submit_order(entry, client_id=ClientId(BINANCE))
-        self._emit(
-            EntrySubmitted(
-                intent_id=intent.intent_id,
-                client_order_id=expected_id,
-                submitted_at_ms=int(self.clock.timestamp_ms()),
-            )
+        self.submit_order(entry, client_id=client_id)
+        return SubmitReceipt(
+            intent_id=intent.intent_id,
+            binding=binding,
+            client_order_id=expected_id,
+            submitted_at_ms=int(self.clock.timestamp_ms()),
         )
 
     def _change_quote_stream(self, command: QuoteStreamChanged) -> None:
-        if command.generation > self._authoritative_quote_generation():
+        if command.generation > self._authoritative_quote_generation(command.binding):
             raise ValueError("nautilus_quote_stream_generation_unowned")
-        if command.generation < self._quote_stream_generation:
+        previous_generation = self._quote_stream_generations[command.binding]
+        previous_connected = self._quote_stream_connected[command.binding]
+        if command.generation < previous_generation:
             raise ValueError("nautilus_quote_stream_generation_regressed")
-        if command.connected and command.generation == self._quote_stream_generation and self._quote_stream_connected:
+        if command.connected and command.generation == previous_generation and previous_connected:
             return
-        self._quote_stream_generation = command.generation
-        self._quote_stream_connected = command.connected
-        if self._latest_entry_quote is None or self._latest_entry_quote.stream_generation < command.generation:
+        self._quote_stream_generations[command.binding] = command.generation
+        self._quote_stream_connected[command.binding] = command.connected
+        intent = self._active_intent
+        if intent is None or intent.binding != command.binding:
+            return
+        if self._latest_entry_quote is None or self._latest_entry_quote.stream_generation <= command.generation:
             self._latest_entry_quote = None
         self._last_accepted_quote_ts_event_ns = None
-        if self._active_intent is not None and self._active_outcome is not None:
+        if self._active_outcome is not None:
             self._quote_wait_started_at_ns = int(self.clock.timestamp_ns())
 
-    def _authoritative_quote_generation(self) -> int:
-        generation = int(self._quote_stream_generation_authority())
+    def _authoritative_quote_generation(self, binding: VenueBinding | None = None) -> int:
+        selected = binding
+        if selected is None:
+            intent = self._active_intent
+            if intent is None:
+                raise RuntimeError("nautilus_active_binding_missing")
+            selected = intent.binding
+        generation = int(self._quote_stream_generation_authority(selected))
         if generation < 0:
             raise RuntimeError("nautilus_quote_stream_generation_invalid")
         return generation
@@ -625,6 +699,21 @@ class TracefoldNautilusStrategy(Strategy):
         if quote is None or quote.stream_generation != self._authoritative_quote_generation():
             return None
         return quote
+
+    def execution_probe_quote(
+        self,
+        *,
+        binding: VenueBinding,
+        instrument_id: str,
+    ) -> BoundedQuoteProbe:
+        intent = self._active_intent
+        if intent is None or intent.binding != binding or intent.instrument_id != instrument_id:
+            raise ValueError("nautilus_quote_probe_scope_invalid")
+        return BoundedQuoteProbe(
+            binding=binding,
+            instrument_id=instrument_id,
+            quote=self._authoritative_entry_quote(),
+        )
 
     def _finalize_fenced_no_submit(self, command: EntryNoSubmitFinalized) -> None:
         intent = self._active_intent
@@ -645,8 +734,22 @@ class TracefoldNautilusStrategy(Strategy):
 
     def _recover_fenced_intent(self, outcome: IntentOutcome) -> None:
         intent = self._active_intent
+        if intent is None or self._active_outcome != outcome:
+            raise ValueError("nautilus_fenced_recovery_scope_invalid")
+        self._execution_adapter(intent).query(intent)
+
+    def execution_query(
+        self,
+        *,
+        binding: VenueBinding,
+        client_id: ClientId,
+        intent: TradeIntent,
+    ) -> AuthoritativeExecutionState:
+        outcome = self._active_outcome
+        if outcome is None or intent != self._active_intent or intent.binding != binding:
+            raise ValueError("nautilus_fenced_entry_identity_missing")
         client_order_id = outcome.entry_client_order_id
-        if intent is None or client_order_id is None:
+        if client_order_id is None:
             raise ValueError("nautilus_fenced_entry_identity_missing")
         order = self.cache.order(ClientOrderId(client_order_id))
         if order is None:
@@ -664,7 +767,7 @@ class TracefoldNautilusStrategy(Strategy):
                     client_order_id=ClientOrderId(client_order_id),
                 )
                 self._orders[client_order_id] = (intent.intent_id, "entry")
-                self.query_order(order, client_id=ClientId(BINANCE))
+                self.query_order(order, client_id=client_id)
             else:
                 self._emit(
                     OrderOutcomeUnknown(
@@ -675,7 +778,7 @@ class TracefoldNautilusStrategy(Strategy):
                 )
         elif order.venue_order_id is not None:
             self._orders[client_order_id] = (intent.intent_id, "entry")
-            self.query_order(order, client_id=ClientId(BINANCE))
+            self.query_order(order, client_id=client_id)
         else:
             self._orders[client_order_id] = (intent.intent_id, "entry")
             self._emit(
@@ -707,7 +810,11 @@ class TracefoldNautilusStrategy(Strategy):
                     observed_at_ms=int(self.clock.timestamp_ms()),
                 )
             )
-            return
+            return AuthoritativeExecutionState(
+                intent_id=intent.intent_id,
+                binding=binding,
+                queried_at_ms=int(self.clock.timestamp_ms()),
+            )
 
         recovered_closed_position = None
         if (
@@ -796,7 +903,7 @@ class TracefoldNautilusStrategy(Strategy):
             if terminal_stop_after_close:
                 self._terminal_stop_ids.add(stop_client_order_id)
                 if stop.venue_order_id is not None:
-                    self.query_order(stop, client_id=ClientId(BINANCE))
+                    self.query_order(stop, client_id=client_id)
             elif not self._owned_stop_contract_matches(
                 stop.client_order_id,
                 expected_quantity=recovered_stop_quantity,
@@ -807,7 +914,7 @@ class TracefoldNautilusStrategy(Strategy):
                     observed_at_ms=int(self.clock.timestamp_ms()),
                 )
             else:
-                self.query_order(stop, client_id=ClientId(BINANCE))
+                self.query_order(stop, client_id=client_id)
                 recovered_trigger_price = self._stop_trigger_price
                 if recovered_trigger_price is None:
                     raise RuntimeError("nautilus_reconciled_stop_trigger_missing")
@@ -855,7 +962,7 @@ class TracefoldNautilusStrategy(Strategy):
                     )
                 )
             if close.venue_order_id is not None:
-                self.query_order(close, client_id=ClientId(BINANCE))
+                self.query_order(close, client_id=client_id)
             elif not close.is_closed:
                 self._emit(
                     OrderOutcomeUnknown(
@@ -876,6 +983,11 @@ class TracefoldNautilusStrategy(Strategy):
 
         if recovered_closed_position is not None:
             self._recover_closed_position(recovered_closed_position, close_client_order_id, stop_client_order_id)
+        return AuthoritativeExecutionState(
+            intent_id=intent.intent_id,
+            binding=binding,
+            queried_at_ms=int(self.clock.timestamp_ms()),
+        )
 
     def on_position_opened(self, event: Any) -> None:
         intent = self._active_intent
@@ -949,7 +1061,7 @@ class TracefoldNautilusStrategy(Strategy):
         if self._stop_cancel_pending:
             return
         self._stop_cancel_pending = True
-        self.cancel_order(self._stop_order, client_id=ClientId(BINANCE))
+        self.cancel_order(self._stop_order, client_id=self._client_id())
 
     def on_position_closed(self, event: Any) -> None:
         intent = self._active_intent
@@ -990,6 +1102,7 @@ class TracefoldNautilusStrategy(Strategy):
         ):
             self._terminal_close_ids.add(closing_client_order_id)
 
+        opened_at_ms = self._opened_at_ms
         self._position_quantity = local_quantity
         self._opened_at_ms = None
         self._pending_stop_quantity = None
@@ -1006,9 +1119,14 @@ class TracefoldNautilusStrategy(Strategy):
             realized_pnl_amount=None if pnl is None else pnl.as_decimal(),
             realized_pnl_currency=None if pnl is None else pnl.currency.code,
             commissions_by_currency=None if position is None else self._position_commissions(position),
+            funding_by_currency=None,
             closed_at_ms=int(event.ts_closed) // 1_000_000,
         )
-        self._record_close_observation(observation, stop_client_order_id=current_stop_id)
+        self._record_close_observation(
+            observation,
+            stop_client_order_id=current_stop_id,
+            opened_at_ms=opened_at_ms,
+        )
 
     def _recover_closed_position(self, position: Any, close_client_order_id: str, stop_client_order_id: str) -> None:
         intent = self._active_intent
@@ -1038,30 +1156,40 @@ class TracefoldNautilusStrategy(Strategy):
             realized_pnl_amount=None if pnl is None else pnl.as_decimal(),
             realized_pnl_currency=None if pnl is None else pnl.currency.code,
             commissions_by_currency=self._position_commissions(position),
+            funding_by_currency=None,
             closed_at_ms=int(position.ts_closed) // 1_000_000,
         )
-        self._record_close_observation(observation, stop_client_order_id=stop_client_order_id)
+        self._record_close_observation(
+            observation,
+            stop_client_order_id=stop_client_order_id,
+            opened_at_ms=int(position.ts_opened) // 1_000_000,
+        )
 
     def _record_close_observation(
         self,
         observation: PositionClosedObserved,
         *,
         stop_client_order_id: str | None,
+        opened_at_ms: int | None,
     ) -> None:
         self._local_close_observation = observation
+        self._flat_opened_at_ms = opened_at_ms
         self._stop_id_at_close = stop_client_order_id
         self._emit(observation)
         self._request_current_venue_flat_proof()
 
     def _request_current_venue_flat_proof(self) -> None:
+        intent = self._active_intent
         observation = self._local_close_observation
-        if observation is None:
+        if intent is None or observation is None:
             raise RuntimeError("nautilus_flat_observation_missing")
         request = VenueFlatProofRequested(
             intent_id=observation.intent_id,
             instrument_id=observation.instrument_id,
             account_id=observation.account_id,
             position_id=observation.position_id,
+            provider_instrument_id=intent.provider_instrument_id,
+            opened_at_ms=self._flat_opened_at_ms,
             closing_client_order_id=observation.closing_client_order_id,
             observed_at_ms=observation.closed_at_ms,
             owned_open_order_ids=tuple(sorted(self._orders)),
@@ -1370,7 +1498,7 @@ class TracefoldNautilusStrategy(Strategy):
                 return
             if not self._cancel_close_for_flat:
                 self._cancel_close_for_flat = True
-                self.cancel_order(self._close_order, client_id=ClientId(BINANCE))
+                self.cancel_order(self._close_order, client_id=self._client_id())
             return
 
         if stop_id is None or stop_id in self._terminal_stop_ids:
@@ -1391,7 +1519,7 @@ class TracefoldNautilusStrategy(Strategy):
             )
             return
         self._cancel_stop_for_flat = True
-        self.cancel_order(self._stop_order, client_id=ClientId(BINANCE))
+        self.cancel_order(self._stop_order, client_id=self._client_id())
 
     def _venue_flat_unproven(self, command: VenueFlatUnproven) -> None:
         intent = self._active_intent
@@ -1441,6 +1569,7 @@ class TracefoldNautilusStrategy(Strategy):
                 realized_pnl_amount=observation.realized_pnl_amount,
                 realized_pnl_currency=observation.realized_pnl_currency,
                 commissions_by_currency=observation.commissions_by_currency,
+                funding_by_currency=confirmation.funding_by_currency,
                 closed_at_ms=observation.closed_at_ms,
                 flat_verified_at_ms=confirmation.verified_at_ms,
             )
@@ -1468,6 +1597,7 @@ class TracefoldNautilusStrategy(Strategy):
         self._close_order = None
         self._terminal_close_ids.clear()
         self._local_close_observation = None
+        self._flat_opened_at_ms = None
         self._stop_id_at_close = None
         self._pending_flat_confirmation = None
         self._cancel_close_for_flat = False
@@ -1479,9 +1609,12 @@ class TracefoldNautilusStrategy(Strategy):
     def _position_commissions(position: Any) -> dict[str, str] | None:
         fills = position.events
         peak_quantity = position.peak_qty.as_decimal()
+        trade_ids = [fill.trade_id.value for fill in fills]
         if (
             not fills
-            or any(fill.commission is None or not fill.trade_id.value.isdigit() for fill in fills)
+            or any(fill.commission is None for fill in fills)
+            or any(not trade_id for trade_id in trade_ids)
+            or len(set(trade_ids)) != len(trade_ids)
             or sum(
                 (fill.last_qty.as_decimal() for fill in fills if fill.order_side == OrderSide.BUY),
                 Decimal(0),
@@ -1622,29 +1755,75 @@ class TracefoldNautilusStrategy(Strategy):
             "stop",
             previous_client_order_id=previous_client_order_id,
         )
+        fill = AuthoritativeFill(
+            position_id=position_id.value,
+            quantity=quantity,
+            avg_entry_price=avg_entry_price,
+            trigger_price=trigger_price,
+            client_order_id=client_order_id,
+            generation=generation,
+            previous_client_order_id=previous_client_order_id,
+            submitted_at_ms=submitted_at_ms,
+        )
+        receipt = self._execution_adapter(intent).ensure_protection(intent, fill)
+        self._stop_trigger_price = receipt.trigger_price
+        self._stop_generation = generation
+        self._emit(
+            StopSubmitted(
+                intent_id=receipt.intent_id,
+                client_order_id=receipt.client_order_id,
+                generation=generation,
+                previous_client_order_id=previous_client_order_id,
+                quantity=receipt.quantity,
+                submitted_at_ms=receipt.submitted_at_ms,
+            )
+        )
+
+    def execution_ensure_protection(
+        self,
+        *,
+        binding: VenueBinding,
+        client_id: ClientId,
+        intent: TradeIntent,
+        fill: AuthoritativeFill,
+    ) -> ProtectionReceipt:
+        position_id = self._position_id
+        instrument_id = self._instrument_id()
+        instrument = self.cache.instrument(instrument_id)
+        expected_id = deterministic_client_order_id(
+            intent.intent_id,
+            "stop",
+            previous_client_order_id=fill.previous_client_order_id,
+        )
+        if (
+            intent != self._active_intent
+            or intent.binding != binding
+            or position_id is None
+            or position_id.value != fill.position_id
+            or instrument is None
+            or fill.quantity <= 0
+            or fill.client_order_id != expected_id
+        ):
+            raise ValueError("nautilus_protection_adapter_scope_invalid")
         stop = self.order_factory.stop_market(
             instrument_id=instrument_id,
             order_side=OrderSide.SELL,
-            quantity=instrument.make_qty(quantity),
-            trigger_price=instrument.make_price(trigger_price),
+            quantity=instrument.make_qty(fill.quantity),
+            trigger_price=instrument.make_price(fill.trigger_price),
             trigger_type=TriggerType.MARK_PRICE,
             reduce_only=True,
-            client_order_id=ClientOrderId(client_order_id),
+            client_order_id=ClientOrderId(fill.client_order_id),
         )
         self._stop_order = stop
-        self._stop_trigger_price = trigger_price
-        self._stop_generation = generation
-        self._orders[client_order_id] = (intent.intent_id, "stop")
-        self.submit_order(stop, position_id=position_id, client_id=ClientId(BINANCE))
-        self._emit(
-            StopSubmitted(
-                intent_id=intent.intent_id,
-                client_order_id=client_order_id,
-                generation=generation,
-                previous_client_order_id=previous_client_order_id,
-                quantity=quantity,
-                submitted_at_ms=submitted_at_ms,
-            )
+        self._orders[fill.client_order_id] = (intent.intent_id, "stop")
+        self.submit_order(stop, position_id=position_id, client_id=client_id)
+        return ProtectionReceipt(
+            intent_id=intent.intent_id,
+            binding=binding,
+            client_order_id=fill.client_order_id,
+            quantity=fill.quantity,
+            trigger_price=fill.trigger_price,
+            submitted_at_ms=fill.submitted_at_ms,
         )
 
     def _submit_close(self) -> None:
@@ -1656,6 +1835,35 @@ class TracefoldNautilusStrategy(Strategy):
         client_order_id = deterministic_client_order_id(intent.intent_id, "close")
         if client_order_id in self._orders:
             return
+        receipt = self._execution_adapter(intent).close_and_reconcile(intent)
+        self._emit(
+            CloseSubmitted(
+                intent_id=receipt.intent_id,
+                client_order_id=receipt.client_order_id,
+                position_id=receipt.position_id,
+                quantity=receipt.quantity,
+                submitted_at_ms=receipt.submitted_at_ms,
+            )
+        )
+
+    def execution_close_and_reconcile(
+        self,
+        *,
+        binding: VenueBinding,
+        client_id: ClientId,
+        intent: TradeIntent,
+    ) -> FlatReceipt:
+        quantity = self._position_quantity
+        position_id = self._position_id
+        if (
+            intent != self._active_intent
+            or intent.binding != binding
+            or position_id is None
+            or quantity is None
+            or quantity <= 0
+        ):
+            raise ValueError("nautilus_close_adapter_scope_invalid")
+        client_order_id = deterministic_client_order_id(intent.intent_id, "close")
         instrument_id = self._instrument_id()
         instrument = self.cache.instrument(instrument_id)
         if instrument is None:
@@ -1669,15 +1877,14 @@ class TracefoldNautilusStrategy(Strategy):
         )
         self._close_order = close
         self._orders[client_order_id] = (intent.intent_id, "close")
-        self.submit_order(close, position_id=position_id, client_id=ClientId(BINANCE))
-        self._emit(
-            CloseSubmitted(
-                intent_id=intent.intent_id,
-                client_order_id=client_order_id,
-                position_id=position_id.value,
-                quantity=quantity,
-                submitted_at_ms=int(self.clock.timestamp_ms()),
-            )
+        self.submit_order(close, position_id=position_id, client_id=client_id)
+        return FlatReceipt(
+            intent_id=intent.intent_id,
+            binding=binding,
+            client_order_id=client_order_id,
+            position_id=position_id.value,
+            quantity=quantity,
+            submitted_at_ms=int(self.clock.timestamp_ms()),
         )
 
     def _enforce_max_holding(self) -> None:
@@ -1703,7 +1910,7 @@ class TracefoldNautilusStrategy(Strategy):
             self._orders[close_id] = (intent.intent_id, "close")
             if reconciled.is_closed and reconciled.venue_order_id is not None:
                 self._terminal_close_ids.add(close_id)
-            self.query_order(reconciled, client_id=ClientId(BINANCE))
+            self.query_order(reconciled, client_id=self._client_id())
             return
         self._submit_close()
 

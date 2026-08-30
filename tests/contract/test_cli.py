@@ -117,6 +117,18 @@ class CliTests(unittest.TestCase):
         self.assertEqual((parsed[6].news_command, parsed[6].review_command), ("review", "evidence"))
         self.assertEqual((parsed[6].task, parsed[6].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
 
+    def test_trading_authority_requires_explicit_artifacts_and_arm_set(self):
+        parser = build_parser()
+
+        policy = parser.parse_args(["trading", "authority", "risk-policy-install", "--file", "risk-policy.yaml"])
+        activate = parser.parse_args(["trading", "authority", "activate", "--arm", "a" * 64, "--arm", "b" * 64])
+
+        self.assertEqual((policy.trading_command, policy.authority_command), ("authority", "risk-policy-install"))
+        self.assertEqual(policy.file, "risk-policy.yaml")
+        self.assertEqual((activate.authority_command, activate.arm), ("activate", ["a" * 64, "b" * 64]))
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["trading", "control", "running"])
+
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
         with self.assertRaises(SystemExit):

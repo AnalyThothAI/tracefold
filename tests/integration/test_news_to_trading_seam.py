@@ -298,6 +298,7 @@ def test_a_news_oi_frame_becomes_one_blocked_case_with_a_policy_long_and_no_inte
         bars=_bars,
         oi_projection=news_oi_sources,
         news_generation=_running_generation(conn),
+        release_revision="test-release",
         clock=now_ms,
     )
 

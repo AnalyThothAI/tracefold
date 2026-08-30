@@ -834,6 +834,22 @@ def test_0327_preserves_a_nonterminal_intent_and_0329_refuses_to_orphan_it() -> 
 
         _upgrade("20260829_0327")
         conn = connect_postgres_test(read_only=False)
+        # This assertion owns the historical 0327 schema.  Current repository methods intentionally
+        # target head and must not grow compatibility branches for a migration-point test.
+        conn.execute(
+            "UPDATE trading_runtime_state SET control = 'PAUSED', updated_at_ms = %s WHERE id = 1",
+            (NOW + 1,),
+        )
+        conn.execute(
+            "UPDATE trading_binding_runtime SET credential_state = 'unconfigured', "
+            "credential_fingerprint = NULL, runtime_state = 'stopped', account_state = 'unknown', "
+            "heartbeat_at_ms = NULL, reason = 'recovery_blocked_credentials_missing', updated_at_ms = %s "
+            "WHERE binding = 'BINANCE_USDM'",
+            (NOW + 1,),
+        )
+        conn.commit()
+        runtime = conn.execute("SELECT reason FROM trading_binding_runtime WHERE binding = 'BINANCE_USDM'").fetchone()
+        assert runtime is not None and runtime["reason"] == "recovery_blocked_credentials_missing"
         assert (
             conn.execute("SELECT execution_state FROM trading_intents WHERE intent_id = %s", ("9" * 64,)).fetchone()[
                 "execution_state"
@@ -965,6 +981,42 @@ def test_0331_refuses_a_legacy_obligation_then_hard_cuts_to_production_v3() -> N
             ]
             == "trade_intent_v2"
         )
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0332_capital_authority_cutover_requires_paused_and_installs_attempt_day_ledger() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260830_0331")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match="trading_capital_authority_cutover_requires_paused"):
+            _upgrade("20260830_0332")
+
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
+        conn.commit()
+        conn.close()
+        conn = None
+        _upgrade("20260830_0332")
+
+        conn = connect_postgres_test(read_only=False)
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0332"
+        columns = {
+            row["column_name"]
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'trading_capital_risk_reservation_state'"
+            ).fetchall()
+        }
+        assert {"attempt_day_start_ms", "attempt_day_end_ms", "attempt_consumed"} <= columns
+        assert conn.execute("SELECT arm_epoch FROM trading_runtime_state WHERE id = 1").fetchone()["arm_epoch"] == 1
     finally:
         if conn is not None:
             conn.close()
@@ -1155,7 +1207,11 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
                 (snapshot.snapshot_sha256,),
             )
 
-        repos.mark_venue_catalog_unavailable(binding="BINANCE_USDM", reason="venue_timeout", now_ms=NOW + 1)
+        conn.execute(
+            "UPDATE trading_binding_runtime SET catalog_state = 'stale', reason = 'venue_timeout', "
+            "updated_at_ms = %s WHERE binding = 'BINANCE_USDM'",
+            (NOW + 1,),
+        )
         conn.commit()
         runtime = binding_runtime_0327(now_ms=NOW + 1)
         assert runtime is not None

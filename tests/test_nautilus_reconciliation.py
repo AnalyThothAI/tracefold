@@ -250,7 +250,7 @@ def test_active_startup_reconciles_every_complete_account_report(
         },
     )()
     queues = strategy_queues()
-    monkeypatch.setattr(root, "single_execution_client", lambda _engine: client)
+    monkeypatch.setattr(root, "execution_clients", lambda _engine: {"BINANCE_USDM": client})
     monkeypatch.setattr(root, "load_complete_account_reports", complete_reports)
 
     asyncio.run(

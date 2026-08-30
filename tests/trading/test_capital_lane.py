@@ -317,6 +317,7 @@ def _lane(
         bars=fetch,
         oi_projection=lambda repos, metric, after, until: repos.trading.rows,
         news_generation=EPOCH,
+        release_revision="test-release",
         clock=lambda: NOW,
     )
     return lane, db

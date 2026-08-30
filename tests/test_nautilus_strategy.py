@@ -75,6 +75,7 @@ from tracefold.trading import (
     ExecutionInstrumentCapabilityV2,
     IntentOutcome,
     TradeIntent,
+    VenueBinding,
     deterministic_client_order_id,
 )
 
@@ -178,7 +179,7 @@ class RecordingStrategy(TracefoldNautilusStrategy):
         *,
         queues: StrategyQueues,
         capability: ExecutionInstrumentCapabilityV2 | None = None,
-        quote_stream_generation: Callable[[], int] = lambda: 0,
+        quote_stream_generation: Callable[[VenueBinding], int] = lambda _binding: 0,
     ) -> None:
         self.flat_requests: list[VenueFlatProofRequested] = []
         super().__init__(
@@ -212,7 +213,7 @@ def _registered_strategy(
     with_quote: bool = True,
     startup_reconciled: bool = True,
     events: Queue[StrategyEvent] | None = None,
-    quote_stream_generation: Callable[[], int] = lambda: 0,
+    quote_stream_generation: Callable[[VenueBinding], int] = lambda _binding: 0,
 ) -> tuple[RecordingStrategy, StrategyQueues]:
     queues = StrategyQueues(
         commands=Queue(maxsize=queue_maxsize),
@@ -380,7 +381,7 @@ def test_strategy_config_claims_exact_snapshot_netting_instruments() -> None:
             instrument_ids=[SOLUSDT_PERP],
             capabilities={SOLUSDT_PERP.value: _capability()},
             queues=strategy_queues(),
-            quote_stream_generation=lambda: 0,
+            quote_stream_generation=lambda _binding: 0,
             request_venue_flat=lambda _request: None,
             request_startup_account_reconciliation=lambda: None,
             config=StrategyConfig(
@@ -412,7 +413,7 @@ def test_zero_claim_bootstrap_projects_fresh_zero_proof_but_never_claims_readine
         instrument_ids=[],
         capabilities={},
         queues=queues,
-        quote_stream_generation=lambda: 0,
+        quote_stream_generation=lambda _binding: 0,
         request_venue_flat=lambda _request: None,
         request_startup_account_reconciliation=lambda: requests.append(None),
     )
@@ -534,7 +535,7 @@ def test_reconnect_after_q2_commit_revokes_submission_before_the_provider_write(
     assert isinstance(q2, EntrySubmissionRequested)
     authorized = fenced.model_copy(update={"entry_quote_q2": q2.q2_evidence})
     queues.commands.put_nowait(EntrySubmissionGranted(outcome=authorized))
-    generation.reconnected()
+    generation.reconnected("BINANCE_USDM")
 
     strategy.on_timer(None)
 
@@ -587,12 +588,12 @@ def test_q2_quote_rejection_is_typed_and_never_submits(
 
 def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick() -> None:
     generation = {"value": 0}
-    strategy, queues = _registered_strategy(quote_stream_generation=lambda: generation["value"])
+    strategy, queues = _registered_strategy(quote_stream_generation=lambda _binding: generation["value"])
     intent = _intent()
     request = _adopt_and_request_fence(strategy, queues, intent)
 
     generation["value"] = 1
-    queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
+    queues.commands.put_nowait(QuoteStreamChanged(binding="BINANCE_USDM", connected=True, generation=1))
     strategy.on_timer(None)
     queues.commands.put_nowait(EntryFenceGranted(outcome=_fenced_outcome(intent, request)))
     strategy.on_timer(None)
@@ -603,11 +604,13 @@ def test_reconnect_invalidates_the_old_cache_and_requires_a_new_generation_tick(
     assert strategy.submitted == []
 
     fresh_generation = {"value": 0}
-    fresh_strategy, fresh_queues = _registered_strategy(quote_stream_generation=lambda: fresh_generation["value"])
+    fresh_strategy, fresh_queues = _registered_strategy(
+        quote_stream_generation=lambda _binding: fresh_generation["value"]
+    )
     fresh_intent = _intent(case_id="case-new-generation")
     fresh_queues.commands.put_nowait(AdoptIntent(intent=fresh_intent, outcome=_outcome(fresh_intent)))
     fresh_generation["value"] = 1
-    fresh_queues.commands.put_nowait(QuoteStreamChanged(connected=True, generation=1))
+    fresh_queues.commands.put_nowait(QuoteStreamChanged(binding="BINANCE_USDM", connected=True, generation=1))
     fresh_strategy.on_timer(None)
     _deliver_current_quote(fresh_strategy)
     fresh_request = fresh_queues.events.get_nowait()
@@ -707,10 +710,21 @@ def test_missing_active_intent_quote_terminalizes_after_the_bounded_wait() -> No
 def test_quote_stream_state_is_not_global_execution_readiness() -> None:
     strategy, queues = _registered_strategy()
 
-    queues.commands.put_nowait(QuoteStreamChanged(connected=False, generation=0))
+    queues.commands.put_nowait(QuoteStreamChanged(binding="BINANCE_USDM", connected=False, generation=0))
     strategy.on_timer(None)
 
     assert queues.events.empty()
+    assert strategy._readiness().ready is True
+
+
+def test_hyperliquid_gap_does_not_invalidate_an_active_binance_quote() -> None:
+    strategy, queues = _registered_strategy()
+    queues.commands.put_nowait(QuoteStreamChanged(binding="HYPERLIQUID_PERP", connected=False, generation=0))
+    strategy.on_timer(None)
+
+    request = _adopt_and_request_fence(strategy, queues, _intent(case_id="case-hl-gap"))
+
+    assert request.q1_evidence.stream_generation == 0
     assert strategy._readiness().ready is True
 
 
@@ -1030,6 +1044,7 @@ def test_projection_queue_overflow_retains_terminal_flat_after_lifecycle_cleanup
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 51,
+            funding_by_currency={},
         )
     )
     strategy.on_timer(None)
@@ -1054,6 +1069,7 @@ def test_projection_queue_overflow_retains_terminal_flat_after_lifecycle_cleanup
         commissions_by_currency=None,
         closed_at_ms=NOW_MS + 50,
         flat_verified_at_ms=NOW_MS + 51,
+        funding_by_currency={},
     )
 
 
@@ -1538,6 +1554,7 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 51,
+            funding_by_currency={},
             account_wide_zero=False,
         )
     )
@@ -1569,6 +1586,7 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 54,
+            funding_by_currency={},
             account_wide_zero=True,
         )
     )
@@ -1584,6 +1602,7 @@ def test_active_close_keeps_stop_until_venue_zero_then_retires_it_before_final_f
         commissions_by_currency=None,
         closed_at_ms=NOW_MS + 50,
         flat_verified_at_ms=NOW_MS + 54,
+        funding_by_currency={},
     )
 
 
@@ -1775,6 +1794,8 @@ def test_position_closed_callback_reports_observation_without_claiming_reconcile
             instrument_id=SOLUSDT_PERP.value,
             account_id="BINANCE-001",
             position_id=position_id.value,
+            provider_instrument_id=intent.provider_instrument_id,
+            opened_at_ms=NOW_MS + 10,
             closing_client_order_id=stop.client_order_id.value,
             observed_at_ms=NOW_MS + 50,
             owned_open_order_ids=tuple(
@@ -1796,6 +1817,7 @@ def test_position_closed_callback_reports_observation_without_claiming_reconcile
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 51,
+            funding_by_currency={},
         )
     )
     strategy.on_timer(None)
@@ -1818,6 +1840,7 @@ def test_position_closed_callback_reports_observation_without_claiming_reconcile
         commissions_by_currency=None,
         closed_at_ms=NOW_MS + 50,
         flat_verified_at_ms=NOW_MS + 51,
+        funding_by_currency={},
     )
     second = _intent(case_id="case-2")
     queues.commands.put_nowait(AdoptIntent(intent=second, outcome=_outcome(second)))
@@ -2072,7 +2095,7 @@ def test_open_protected_recovery_rebuilds_the_original_max_holding_deadline(
         (
             "de992c68-4aab-5c60-8c81-97c282891da4",
             "41aa1e12-47fe-5eeb-a1e4-79056efec6f3",
-            None,
+            {"USDT": "0.10"},
         ),
     ],
 )
@@ -2224,6 +2247,7 @@ def test_restart_finds_the_deterministic_close_before_deciding_to_submit_again(
             position_id=position_id.value,
             authoritative_quantity=Decimal(0),
             verified_at_ms=NOW_MS + 8,
+            funding_by_currency={},
         )
     )
     strategy.on_timer(None)

@@ -44,6 +44,7 @@ class TradingDecisionRuntimeData(ExactApiSchema):
 class TradingCapitalRuntimeData(ExactApiSchema):
     control: Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]
     blacklist_revision: int = Field(ge=0)
+    arm_epoch: int = Field(ge=1)
 
 
 class TradingBindingRuntimeData(ExactApiSchema):

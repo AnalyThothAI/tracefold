@@ -1,8 +1,29 @@
-"""Fail-closed account report loading for the pinned Binance futures client."""
+"""Fail-closed account report loading for both pinned execution clients."""
 
 from __future__ import annotations
 
 from typing import Any
+
+from nautilus_trader.execution.reports import OrderStatusReport, PositionStatusReport
+
+from tracefold.trading import VenueBinding
+
+
+def execution_clients(engine: Any) -> dict[VenueBinding, Any]:
+    """Return the exact zero/one/two-client closed graph or reject any other registry."""
+
+    client_ids = list(engine.registered_clients)
+    clients = engine._clients
+    if set(clients) != set(client_ids):
+        raise RuntimeError("nautilus_execution_client_ambiguous")
+    result: dict[VenueBinding, Any] = {}
+    venues = {"BINANCE": "BINANCE_USDM", "HYPERLIQUID": "HYPERLIQUID_PERP"}
+    for client in clients.values():
+        binding = venues.get(client.venue.value)
+        if binding is None or binding in result:
+            raise RuntimeError("nautilus_execution_client_ambiguous")
+        result[binding] = client
+    return result
 
 
 def single_execution_client(engine: Any) -> Any:
@@ -16,13 +37,17 @@ def single_execution_client(engine: Any) -> Any:
 
 
 async def load_complete_account_reports(client: Any) -> tuple[list[Any], list[Any]]:
-    """Return active positions and every regular/algo open order, or propagate failure.
+    """Return every active position/open order for one closed client, or propagate failure.
 
     Nautilus 1.231.0's public report methods translate Binance errors into empty or
     partial lists. The pinned internal report steps retain the same parsing while
     allowing provider errors to reach Tracefold's fail-closed reconciliation seam.
     """
 
+    if client.venue.value == "HYPERLIQUID":
+        return await _load_complete_hyperliquid_account_reports(client)
+    if client.venue.value != "BINANCE":
+        raise RuntimeError("nautilus_execution_client_unsupported")
     client._active_symbols_cache = None
     try:
         positions = await client._get_binance_position_status_reports()
@@ -43,4 +68,19 @@ async def load_complete_account_reports(client: Any) -> tuple[list[Any], list[An
     return list(positions), [*regular_reports, *algo_reports]
 
 
-__all__ = ["load_complete_account_reports", "single_execution_client"]
+async def _load_complete_hyperliquid_account_reports(client: Any) -> tuple[list[Any], list[Any]]:
+    """Use the raw Rust requests so provider errors cannot be translated into truthful-looking empties."""
+
+    positions = [
+        PositionStatusReport.from_pyo3(value)
+        for value in await client._client.request_position_status_reports(instrument_id=None)
+    ]
+    orders: list[OrderStatusReport] = []
+    for value in await client._client.request_order_status_reports(instrument_id=None):
+        report = OrderStatusReport.from_pyo3(value)
+        report.client_order_id = client._resolve_cloid(report.client_order_id)
+        orders.append(report)
+    return positions, orders
+
+
+__all__ = ["execution_clients", "load_complete_account_reports", "single_execution_client"]

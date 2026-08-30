@@ -792,10 +792,10 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,replay-oi,show,blacklist,control} ...
+                         {status,cases,replay-oi,show,blacklist,control,authority} ...
 
 positional arguments:
-  {status,cases,replay-oi,show,blacklist,control}
+  {status,cases,replay-oi,show,blacklist,control,authority}
     status              Decision, Capital, binding facts, and durable outcomes
     cases               list Trading cases newest first
     replay-oi           source-native BAR replay with an audited artifact and
@@ -804,6 +804,8 @@ positional arguments:
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying
     control             set the runtime control state
+    authority           install immutable human authority artifacts and
+                        explicitly re-arm
 
 options:
   -h, --help            show this help message and exit
@@ -887,13 +889,92 @@ options:
 ## `trading control`
 
 ```
-usage: tracefold trading control [-h] {running,close-only,paused}
+usage: tracefold trading control [-h] {close-only,paused}
 
 positional arguments:
-  {running,close-only,paused}
+  {close-only,paused}
+
+options:
+  -h, --help           show this help message and exit
+
+```
+
+## `trading authority`
+
+```
+usage: tracefold trading authority [-h]
+                                   {risk-policy-install,grant-install,grant-revoke,arm-install,activate} ...
+
+positional arguments:
+  {risk-policy-install,grant-install,grant-revoke,arm-install,activate}
+    risk-policy-install
+                        install one DailyRiskPolicyV1 JSON/YAML artifact
+    grant-install       install one ProductionPromotionGrantV1 JSON/YAML
+                        artifact
+    grant-revoke        append one ProductionPromotionGrantRevocationV1
+                        JSON/YAML artifact
+    arm-install         install one OperatorArmReceiptV1 JSON/YAML artifact
+                        while paused
+    activate            atomically activate the exact arm set for every
+                        configured binding
 
 options:
   -h, --help            show this help message and exit
+
+```
+
+## `trading authority risk-policy-install`
+
+```
+usage: tracefold trading authority risk-policy-install [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE
+
+```
+
+## `trading authority grant-install`
+
+```
+usage: tracefold trading authority grant-install [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE
+
+```
+
+## `trading authority grant-revoke`
+
+```
+usage: tracefold trading authority grant-revoke [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE
+
+```
+
+## `trading authority arm-install`
+
+```
+usage: tracefold trading authority arm-install [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE
+
+```
+
+## `trading authority activate`
+
+```
+usage: tracefold trading authority activate [-h] --arm ARM
+
+options:
+  -h, --help  show this help message and exit
+  --arm ARM   arm receipt SHA; repeat once per configured binding
 
 ```
 

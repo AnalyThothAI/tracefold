@@ -8,9 +8,9 @@ Two things live here that an example-based test cannot state. The first is a mod
 `settle_case` are two statements whose correctness is a property of *every* interleaving of workers,
 leases and clocks, not of the four orders someone thought to write down, so a Hypothesis
 `RuleBasedStateMachine` drives them against a real database and checks the invariants after every
-step. The second is a matrix: before #360 there is no authority combination that may emit capital,
-and "no combination" is a claim about the whole product of the authority dimensions rather than
-about the one an example picked.
+step. The second is a matrix: without a promotion grant there is no runtime-authority combination
+that may emit capital, and "no combination" is a claim about the whole product of the authority
+dimensions rather than about the one an example picked.
 
 Everything runs against real PostgreSQL because every invariant here is enforced by SQL — a state
 predicate in an `UPDATE ... WHERE`, a partial unique index, a `FOR UPDATE` — and a fake repository
@@ -36,6 +36,7 @@ from hypothesis.stateful import (
 )
 
 from tests.postgres_test_utils import connect_postgres_test
+from tests.trading_v3_fixtures import binance_binding, binance_capability
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading.admission import ADMISSION_VERSION
 from tracefold.trading.catalog import (
@@ -178,6 +179,8 @@ def _catalog(symbols: tuple[str, ...]) -> VenueInstrumentCatalogSnapshotV1:
 
 FROZEN_CATALOG = _catalog(("SOL", "DOGE", "ETH"))
 OTHER_CATALOG = _catalog(("SOL", "DOGE"))
+FROZEN_CAPABILITY = binance_capability(catalog=FROZEN_CATALOG, app_revision="authority-matrix")
+FROZEN_BINDING = binance_binding(catalog=FROZEN_CATALOG, capability=FROZEN_CAPABILITY)
 
 
 @pytest.fixture(scope="module")
@@ -188,6 +191,15 @@ def conn(postgres_module_clone_dsn: str):
     # is frozen against and the different one a mismatch points at have to be real rows.
     repos.trading.store_venue_catalog_snapshot(snapshot=FROZEN_CATALOG, now_ms=NOW)
     repos.trading.store_venue_catalog_snapshot(snapshot=OTHER_CATALOG, now_ms=NOW)
+    connection.execute(
+        "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', "
+        "credential_state = 'configured', credential_fingerprint = %s, account_generation = 1, "
+        "catalog_state = 'ready', catalog_snapshot_sha256 = %s, catalog_captured_at_ms = %s "
+        "WHERE binding = 'BINANCE_USDM'",
+        (FROZEN_BINDING.credential_fingerprint, FROZEN_CATALOG.snapshot_sha256, NOW),
+    )
+    assert repos.trading.append_and_activate_execution_capability_snapshot(FROZEN_CAPABILITY, created_at_ms=NOW)
+    assert repos.trading.append_and_activate_execution_binding(FROZEN_BINDING)
     connection.commit()
     yield connection
     connection.close()
@@ -404,7 +416,7 @@ def test_the_case_lifecycle_holds_under_any_sequence_of_workers_leases_and_clock
     assert observed["redecide_refused"] > 0, "the terminal-state refusal must be reachable"
 
 
-# ------------------------------------------------------------------ the pre-#360 authority matrix
+# ------------------------------------------------------------------ the no-grant authority matrix
 
 CONTROLS = ("RUNNING", "PAUSED", "CLOSE_ONLY")
 CREDENTIALS = ("unconfigured", "invalid", "configured")
@@ -433,6 +445,8 @@ def _expected_capital_reason(
         return "capital_paused"
     if control == "CLOSE_ONLY":
         return "capital_close_only"
+    if account_state == "exposure_present":
+        return "unexpected_exposure"
     if credential_state == "unconfigured":
         return "credentials_unconfigured"
     if credential_state == "invalid":
@@ -441,11 +455,9 @@ def _expected_capital_reason(
         return "catalog_mismatch"
     if catalog_state != "ready":
         return "catalog_stale"
-    if account_state == "exposure_present":
-        return "unexpected_exposure"
     if runtime_state != "ready" or account_state != "reconciled_flat":
         return "binding_unready"
-    return "promotion_authority_unavailable"
+    return "promotion_grant_absent"
 
 
 def _authority_permutations() -> list[dict[str, Any]]:
@@ -488,13 +500,14 @@ def _apply_authority(conn: Any, manifest: TradingCaseManifest, authority: dict[s
     conn.execute(
         """
         UPDATE trading_binding_runtime
-           SET credential_state = %s, credential_fingerprint = NULL, runtime_state = %s,
+           SET credential_state = %s, credential_fingerprint = %s, runtime_state = %s,
                account_state = %s, catalog_state = %s, catalog_snapshot_sha256 = %s,
                catalog_captured_at_ms = %s, updated_at_ms = %s
          WHERE binding = 'BINANCE_USDM'
         """,
         (
             authority["credential_state"],
+            FROZEN_BINDING.credential_fingerprint if authority["credential_state"] == "configured" else None,
             authority["runtime_state"],
             authority["account_state"],
             authority["catalog_state"],
@@ -534,6 +547,10 @@ def _walk_the_authority_matrix(
                 manifest=manifest,
                 policy_reason="policy_long",
                 policy_checks={"decision": "long"},
+                release_revision="test-release",
+                source_contract_sha256="1" * 64,
+                feature_contract_sha256="2" * 64,
+                target_notional=Decimal("7.5"),
                 now_ms=NOW,
             )
         conn.commit()
@@ -561,13 +578,12 @@ def _walk_the_authority_matrix(
             mismatches.append(f"{authority} -> {actual} (wanted {wanted})")
 
 
-def test_no_authority_combination_emits_capital_before_360(conn) -> None:
-    """Every point in the authority product reaches BLOCKED, a Policy LONG, one reason, and no Intent.
+def test_no_runtime_authority_combination_emits_capital_without_promotion_grant(conn) -> None:
+    """Every point in the no-grant authority product reaches BLOCKED with one exact reason.
 
-    #360 uniquely owns grant, arm, risk reservation and Intent creation, so before it lands there is
-    no branch here that may emit capital — not even a fully configured, ready, reconciled runtime,
-    which is the permutation an example-based test is least likely to include and the only one that
-    can prove the final `promotion_authority_unavailable` rung is reachable rather than dead.
+    No branch may emit capital without a promotion grant — not even a fully configured, ready,
+    reconciled runtime, which is the permutation an example-based test is least likely to include
+    and the only one that can prove the final `promotion_grant_absent` rung is reachable.
 
     One test rather than one per tuple: the work is a handful of statements each, and the per-case
     reporting overhead of eight hundred parametrizations is an order of magnitude more than the
@@ -601,7 +617,7 @@ def test_no_authority_combination_emits_capital_before_360(conn) -> None:
     assert int(conn.execute("SELECT count(*) AS n FROM trading_cases").fetchone()["n"]) == len(permutations)
     assert len(permutations) == 3 * 3 * 3 * 5 * 6
     # Every rung of the ladder is reachable, including the last one: a runtime with nothing wrong
-    # with it still emits no capital, which is the whole pre-#360 contract.
+    # with it still emits no capital, which is the whole no-grant contract.
     assert reasons_seen == {
         "capital_paused",
         "capital_close_only",
@@ -611,5 +627,5 @@ def test_no_authority_combination_emits_capital_before_360(conn) -> None:
         "catalog_stale",
         "unexpected_exposure",
         "binding_unready",
-        "promotion_authority_unavailable",
+        "promotion_grant_absent",
     }

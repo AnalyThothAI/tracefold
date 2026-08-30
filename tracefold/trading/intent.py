@@ -63,6 +63,7 @@ IntentReasonCode = (
         "entry_outcome_unknown",
         "protection_unproven",
         "close_outcome_unknown",
+        "settlement_unproven",
         "operator_intervention",
     ]
     | QuoteRejectionReason
@@ -71,6 +72,7 @@ ManualReviewReason = Literal[
     "entry_outcome_unknown",
     "protection_unproven",
     "close_outcome_unknown",
+    "settlement_unproven",
     "operator_intervention",
 ]
 RejectedReason = (
@@ -344,20 +346,23 @@ class IntentOutcome(BaseModel):
     realized_pnl_amount: Decimal | None = None
     realized_pnl_currency: str | None = None
     commissions_by_currency: dict[str, str] | None = None
+    # Signed provider cash flows: negative is paid, positive is received.  `None` means the
+    # lifecycle cannot prove complete funding accounting; `{}` is authoritative known-zero.
+    funding_by_currency: dict[str, str] | None = None
     updated_at_ms: int
 
-    @field_validator("commissions_by_currency")
+    @field_validator("commissions_by_currency", "funding_by_currency")
     @classmethod
-    def validate_commissions(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+    def validate_currency_amounts(cls, value: dict[str, str] | None) -> dict[str, str] | None:
         if value is None:
             return None
         if len(value) > 16:
-            raise ValueError("intent_commissions_too_many_currencies")
+            raise ValueError("intent_currency_amounts_too_many_currencies")
         for currency, amount in value.items():
             if not _CURRENCY_RE.fullmatch(currency):
-                raise ValueError("intent_commission_currency_invalid")
+                raise ValueError("intent_currency_amount_currency_invalid")
             if len(amount) > 64 or not _DECIMAL_STRING_RE.fullmatch(amount):
-                raise ValueError("intent_commission_amount_invalid")
+                raise ValueError("intent_currency_amount_invalid")
         return value
 
 

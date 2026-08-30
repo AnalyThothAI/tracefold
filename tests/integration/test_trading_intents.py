@@ -15,11 +15,23 @@ from psycopg import OperationalError
 from psycopg.errors import ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.trading_v3_fixtures import binance_binding, binance_capability, binance_catalog, trade_intent
+from tests.trading_v3_fixtures import (
+    binance_binding,
+    binance_capability,
+    binance_catalog,
+    capital_arm_fixture,
+    capital_bundle_fixture,
+    capital_grant_fixture,
+    capital_risk_policy_fixture,
+    trade_intent,
+)
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading import (
     BlacklistSnapshotV1,
+    DailyRiskPolicyV1,
     IntentOutcome,
+    OperatorArmReceiptV1,
+    ProductionPromotionGrantV1,
     ReplayReceiptV1,
     TradeIntent,
     deterministic_client_order_id,
@@ -126,6 +138,54 @@ def _intent(
     )
 
 
+def _insert_test_intent(repos: Any, intent: TradeIntent) -> bool:
+    """Seed the minimum test-only authority chain before exercising Intent lifecycle storage.
+
+    Production has no equivalent escape hatch: CapitalLane inserts the same facts through the typed
+    atomic bundle.  These lifecycle tests intentionally start at an already-authorized Intent, so the
+    fixture writes an explicit chain instead of weakening the production foreign key.
+    """
+
+    if repos.trading.intent(intent.intent_id) is not None:
+        return bool(repos.trading.insert_intent(intent))
+    policy = capital_risk_policy_fixture()
+    grant = capital_grant_fixture(
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
+    )
+    arm = capital_arm_fixture(
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
+    )
+    if repos.trading.daily_risk_policy(policy.risk_policy_sha256) is None:
+        repos.trading.append_daily_risk_policy(policy, created_at_ms=NOW)
+    if repos.trading.production_promotion_grant(grant.grant_sha256) is None:
+        repos.trading.append_production_promotion_grant(grant, created_at_ms=NOW)
+    if repos.trading.operator_arm_receipt(arm.arm_receipt_sha256) is None:
+        repos.trading.append_operator_arm_receipt(arm, created_at_ms=NOW)
+    repos.trading.conn.execute(
+        "UPDATE trading_binding_runtime SET active_arm_receipt_sha256 = %s WHERE binding = %s",
+        (arm.arm_receipt_sha256, intent.binding),
+    )
+    reservation, receipt = capital_bundle_fixture(
+        intent,
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
+    )
+    assert intent.capital_authorization_receipt_sha256 == receipt.authorization_receipt_sha256
+    return bool(
+        repos.trading.insert_authorized_intent_bundle(
+            reservation=reservation,
+            receipt=receipt,
+            intent=intent,
+            now_ms=intent.created_at_ms,
+        )
+    )
+
+
 def _allow_entry(connection: Any) -> None:
     connection.execute(
         """
@@ -185,7 +245,7 @@ def _reset_authority(connection: Any) -> None:
     connection.execute(
         """
         UPDATE trading_runtime_state
-           SET control = 'PAUSED', blacklist_revision = 0,
+           SET control = 'PAUSED', blacklist_revision = 0, arm_epoch = 1,
                active_capability_snapshot_sha256 = %s,
                active_capability_included_count = %s,
                nautilus_ready = false, nautilus_unexpected_exposure = false,
@@ -205,7 +265,7 @@ def _reset_authority(connection: Any) -> None:
                runtime_state = 'stopped', account_state = 'unknown',
                capability_state = 'ready', capability_snapshot_sha256 = %s,
                capability_compiled_at_ms = %s, capability_compile_error = NULL,
-               execution_binding_sha256 = %s,
+               execution_binding_sha256 = %s, active_arm_receipt_sha256 = NULL,
                heartbeat_at_ms = NULL, reason = 'credentials_unconfigured', updated_at_ms = %s
          WHERE binding = 'BINANCE_USDM'
         """,
@@ -400,8 +460,44 @@ def _capital_lane(connection: Any, *, fail_capital_settle: bool = False) -> Capi
         # The News generation this lane may advance a Case under (#314 review). It matches the epoch the
         # fixture manifests are frozen with; the superseded-generation test is where they disagree.
         news_generation=NEWS_GENERATION,
+        release_revision="test-release",
         clock=lambda: NOW + 1_000,
     )
+
+
+def _activate_lane_authority(connection: Any, lane: CapitalLane) -> tuple[str, str, str]:
+    repos = repositories_for_connection(connection)
+    _set_binance_binding_flat(connection)
+    policy = capital_risk_policy_fixture()
+    base_grant = capital_grant_fixture(
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
+    )
+    grant = base_grant.model_copy(
+        update={
+            "source_contract_sha256": lane.source_contract_sha256,
+            "feature_contract_sha256": lane.feature_contract_sha256,
+            "policy_config_sha256": CAPITAL_POLICY.config_digest,
+        }
+    )
+    base_arm = capital_arm_fixture(
+        catalog=CATALOG_SNAPSHOT,
+        capability=CAPABILITY_SNAPSHOT,
+        binding=EXECUTION_BINDING,
+    )
+    arm = base_arm.model_copy(
+        update={
+            "grant_sha256": grant.grant_sha256,
+            "risk_policy_sha256": policy.risk_policy_sha256,
+        }
+    )
+    repos.trading.append_daily_risk_policy(policy, created_at_ms=NOW)
+    repos.trading.append_production_promotion_grant(grant, created_at_ms=NOW)
+    repos.trading.append_operator_arm_receipt(arm, created_at_ms=NOW)
+    assert repos.trading.activate_operator_arms([arm.arm_receipt_sha256], now_ms=NOW + 500)
+    connection.commit()
+    return policy.risk_policy_sha256, grant.grant_sha256, arm.arm_receipt_sha256
 
 
 def _observe_close(
@@ -414,6 +510,7 @@ def _observe_close(
     realized_pnl_amount: Decimal | None = None,
     realized_pnl_currency: str | None = None,
     commissions_by_currency: dict[str, str] | None = None,
+    funding_by_currency: dict[str, str] | None = None,
 ) -> Any:
     observed = repos.trading.record_position_closed_observed(
         intent.intent_id,
@@ -428,12 +525,14 @@ def _observe_close(
         realized_pnl_currency=realized_pnl_currency,
         commissions_by_currency=commissions_by_currency,
         now_ms=closed_at_ms,
+        funding_by_currency=funding_by_currency,
     )
     assert observed is not None
     assert observed.execution_state == "IN_FLIGHT"
     assert observed.execution_phase == "EXIT"
     assert observed.flat_verified_at_ms is None
     assert observed.commissions_by_currency == commissions_by_currency
+    assert observed.funding_by_currency == funding_by_currency
     return observed
 
 
@@ -500,6 +599,103 @@ def test_no_key_lane_persists_long_and_capital_block_without_an_intent(conn: Any
     assert all(check["passed"] for check in checks)
     assert conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"] == 0
     assert conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"] == 0
+
+
+def test_lane_atomically_reserves_risk_authorizes_and_emits_v3_intent(conn: Any) -> None:
+    manifest = _pending_executable_case(conn)
+    lane = _capital_lane(conn)
+    risk_sha, grant_sha, arm_sha = _activate_lane_authority(conn, lane)
+
+    assert asyncio.run(lane._decide_one()) is CaseState.INTENT_EMITTED
+
+    case = conn.execute(
+        "SELECT state, policy_decision, capital_disposition, capital_reason "
+        "FROM trading_cases WHERE case_id = 'case-sol'"
+    ).fetchone()
+    assert dict(case) == {
+        "state": "INTENT_EMITTED",
+        "policy_decision": "long",
+        "capital_disposition": "allowed",
+        "capital_reason": "capital_authorized",
+    }
+    row = conn.execute(
+        """
+        SELECT intent.intent_version, intent.case_manifest_sha256,
+               intent.capital_authorization_receipt_sha256,
+               reservation.risk_policy_sha256, reservation.grant_sha256,
+               reservation.arm_receipt_sha256, state.status, state.attempt_consumed
+          FROM trading_intents intent
+          JOIN trading_capital_authorization_receipts receipt
+            ON receipt.authorization_receipt_sha256 = intent.capital_authorization_receipt_sha256
+          JOIN trading_capital_risk_reservations reservation
+            ON reservation.reservation_sha256 = receipt.reservation_sha256
+          JOIN trading_capital_risk_reservation_state state
+            ON state.intent_id = intent.intent_id
+        """
+    ).fetchone()
+    assert dict(row) == {
+        "intent_version": "trade_intent_v3",
+        "case_manifest_sha256": manifest.digest(),
+        "capital_authorization_receipt_sha256": row["capital_authorization_receipt_sha256"],
+        "risk_policy_sha256": risk_sha,
+        "grant_sha256": grant_sha,
+        "arm_receipt_sha256": arm_sha,
+        "status": "RESERVED",
+        "attempt_consumed": False,
+    }
+    assert len(str(row["capital_authorization_receipt_sha256"])) == 64
+
+
+def test_capital_console_projection_reads_exact_authority_and_pages_without_duplicates(conn: Any) -> None:
+    _case(conn, case_id="case-evidence-1")
+    repos = repositories_for_connection(conn)
+    first_intent = _intent(case_id="case-evidence-1", created_at_ms=NOW)
+    assert _insert_test_intent(repos, first_intent)
+    assert (
+        repos.trading.expire_unfenced_intent(
+            first_intent.intent_id,
+            now_ms=first_intent.valid_until_ms,
+        )
+        is not None
+    )
+    _case_without_reset(conn, case_id="case-evidence-2")
+    second_intent = _intent(
+        case_id="case-evidence-2",
+        case_manifest_sha256="3" * 64,
+        created_at_ms=NOW + 1,
+    )
+    assert _insert_test_intent(repos, second_intent)
+    conn.commit()
+
+    authorities = repos.trading.authority_projection()
+    binance = next(row for row in authorities if row["binding"] == "BINANCE_USDM")
+    arm = OperatorArmReceiptV1.model_validate(binance["arm_payload"])
+    grant = ProductionPromotionGrantV1.model_validate(binance["grant_payload"])
+    policy = DailyRiskPolicyV1.model_validate(binance["policy_payload"])
+    assert arm.arm_receipt_sha256 == binance["active_arm_receipt_sha256"]
+    assert arm.grant_sha256 == grant.grant_sha256
+    assert arm.risk_policy_sha256 == grant.risk_policy_sha256 == policy.risk_policy_sha256
+    assert binance["revocation_payload"] is None
+
+    first_page = repos.trading.console_capital_evidence(limit=1)
+    marker = (int(first_page[0]["updated_at_ms"]), str(first_page[0]["reservation_sha256"]))
+    second_page = repos.trading.console_capital_evidence(before=marker, limit=1)
+    assert first_page[0]["reservation_sha256"] != second_page[0]["reservation_sha256"]
+    assert {first_page[0]["intent_id"], second_page[0]["intent_id"]} == {
+        first_intent.intent_id,
+        second_intent.intent_id,
+    }
+
+    conn.execute("SET ROLE tracefold_serve")
+    try:
+        assert len(repos.trading.authority_projection()) == 2
+        assert {row["intent_id"] for row in repos.trading.console_capital_evidence(limit=10)} == {
+            first_intent.intent_id,
+            second_intent.intent_id,
+        }
+    finally:
+        conn.execute("RESET ROLE")
+        conn.commit()
 
 
 def test_running_capital_still_blocks_no_key_long_as_credentials_unconfigured(conn: Any) -> None:
@@ -735,9 +931,9 @@ def test_capability_activation_requires_paused_flat_and_no_nonterminal_intent(co
     assert not repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
 
     conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
-    assert repos.trading.insert_intent(_intent())
+    assert _insert_test_intent(repos, _intent())
     assert not repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
-    conn.execute("DELETE FROM trading_intents")
+    conn.execute("TRUNCATE trading_intents CASCADE")
 
     assert repos.trading.append_and_activate_execution_capability_snapshot(replacement, created_at_ms=NOW)
     runtime = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW)
@@ -783,9 +979,9 @@ def test_execution_binding_activation_is_atomic_with_current_generation_and_capa
     wrong_generation = candidate.model_copy(update={"account_generation": 2, "created_at_ms": NOW + 2})
 
     assert not repos.trading.append_and_activate_execution_binding(wrong_generation)
-    assert repos.trading.insert_intent(_intent())
+    assert _insert_test_intent(repos, _intent())
     assert not repos.trading.append_and_activate_execution_binding(candidate)
-    conn.execute("DELETE FROM trading_intents")
+    conn.execute("TRUNCATE trading_intents CASCADE")
     assert repos.trading.append_and_activate_execution_binding(candidate)
     assert repos.trading.active_execution_binding(binding="BINANCE_USDM") == candidate
     _reset_authority(conn)
@@ -837,7 +1033,7 @@ def test_trade_intent_round_trips_as_one_immutable_material_fact(conn: Any) -> N
     intent = _intent()
     repos = repositories_for_connection(conn)
 
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     conn.commit()
 
     stored = repos.trading.intent(intent.intent_id)
@@ -878,7 +1074,7 @@ def test_intent_case_manifest_identity_must_match_the_referenced_case(conn: Any)
     repos = repositories_for_connection(conn)
 
     with pytest.raises(ForeignKeyViolation):
-        repos.trading.insert_intent(_intent(case_manifest_sha256="3" * 64))
+        _insert_test_intent(repos, _intent(case_manifest_sha256="3" * 64))
     conn.rollback()
 
 
@@ -886,7 +1082,7 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false WHERE id = 1")
     conn.commit()
 
@@ -918,6 +1114,20 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     assert fenced.submission_fence_version == "submission_fence_v1"
     assert fenced.submission_quantity == Decimal("0.0001")
     assert fenced.entry_quote_q1 == _accepted_q1(intent, evaluated_at_ms=NOW + 2_000)
+    risk = conn.execute(
+        "SELECT status, current_planned_risk_amount, attempt_consumed, "
+        "attempt_day_start_ms, attempt_day_end_ms "
+        "FROM trading_capital_risk_reservation_state WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    day_start = ((NOW + 2_000) // 86_400_000) * 86_400_000
+    assert dict(risk) == {
+        "status": "FENCED",
+        "current_planned_risk_amount": Decimal("0.150000"),
+        "attempt_consumed": True,
+        "attempt_day_start_ms": day_start,
+        "attempt_day_end_ms": day_start + 86_400_000,
+    }
 
     # A duplicate scan or restart can read this projection, but cannot acquire a second submit fence.
     again = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 3_000)
@@ -931,7 +1141,7 @@ def test_q2_acceptance_preserves_the_fenced_quantity_before_submit(conn: Any) ->
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
@@ -975,7 +1185,7 @@ def test_reconnect_can_replace_an_unspent_q2_authorization_with_durable_no_submi
     _case(conn, case_id=case_id)
     intent = _intent(case_id=case_id)
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
@@ -1016,7 +1226,7 @@ def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
@@ -1049,6 +1259,17 @@ def test_q2_rejection_is_a_durable_fenced_no_submit_terminal(conn: Any) -> None:
     assert rejected.entry_quote_q2 == q2
     assert rejected.entry_submitted_at_ms is None
     assert repos.trading.active_intent() is None
+    risk = conn.execute(
+        "SELECT status, current_planned_risk_amount, attempt_consumed, attempt_day_start_ms "
+        "FROM trading_capital_risk_reservation_state WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    assert dict(risk) == {
+        "status": "RELEASED",
+        "current_planned_risk_amount": Decimal("0"),
+        "attempt_consumed": True,
+        "attempt_day_start_ms": (NOW // 86_400_000) * 86_400_000,
+    }
     assert (
         repos.trading.record_fenced_quote_no_submit(
             intent.intent_id,
@@ -1080,7 +1301,7 @@ def test_repository_rejects_quote_audit_that_does_not_match_the_durable_intent(
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     assert fenced is not None and fenced.entry_client_order_id is not None
@@ -1108,7 +1329,7 @@ def test_blacklist_change_after_emission_is_rechecked_and_frozen_at_the_entry_fe
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     repos.trading.blacklist_upsert(
         base_symbol="SOL",
         reason="operator",
@@ -1155,7 +1376,7 @@ def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> Non
     )
     intent = _intent(created_at_ms=db_now_ms - 1_000)
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     repos.trading.blacklist_upsert(
         base_symbol="SOL",
         reason="timed_operator_hold",
@@ -1188,7 +1409,7 @@ def test_two_database_transactions_competing_for_one_entry_fence_have_one_winner
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     conn.commit()
     barrier = Barrier(2)
@@ -1232,7 +1453,7 @@ def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any
     _case(conn)
     repos = repositories_for_connection(conn)
     first = _intent()
-    assert repos.trading.insert_intent(first) is True
+    assert _insert_test_intent(repos, first) is True
     _allow_entry(conn)
     assert _fence(repos, first, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
@@ -1257,6 +1478,10 @@ def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any
         position_id="position-1",
         avg_exit_price=Decimal("60001"),
         closed_at_ms=NOW + 4_000,
+        realized_pnl_amount=Decimal("0"),
+        realized_pnl_currency="USDT",
+        commissions_by_currency={},
+        funding_by_currency={},
     )
     assert repos.trading.record_closed_flat(
         first.intent_id,
@@ -1265,14 +1490,15 @@ def test_a_closed_thesis_frees_the_lane_for_another_entry_the_same_day(conn: Any
         avg_exit_price=Decimal("60001"),
         closed_at_ms=NOW + 4_000,
         flat_verified_at_ms=NOW + 4_000,
-        realized_pnl_amount=None,
-        realized_pnl_currency=None,
+        realized_pnl_amount=Decimal("0"),
+        realized_pnl_currency="USDT",
         commissions_by_currency={},
         now_ms=NOW + 4_000,
+        funding_by_currency={},
     )
     _case_without_reset(conn, case_id="case-intent-2")
     second = _intent(case_id="case-intent-2", case_manifest_sha256="3" * 64)
-    assert repos.trading.insert_intent(second) is True
+    assert _insert_test_intent(repos, second) is True
     conn.commit()
 
     granted = _fence(repos, second, engine_identity="nt-1", now_ms=NOW + 5_000)
@@ -1284,13 +1510,13 @@ def test_database_allows_only_one_nonterminal_intent_globally(conn: Any) -> None
     _case(conn, case_id="case-intent-1")
     first = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(first) is True
+    assert _insert_test_intent(repos, first) is True
     conn.commit()
 
     _case_without_reset(conn, case_id="case-intent-2")
     second = _intent(case_id="case-intent-2", case_manifest_sha256="3" * 64)
     with pytest.raises(UniqueViolation):
-        repos.trading.insert_intent(second)
+        _insert_test_intent(repos, second)
     conn.rollback()
 
 
@@ -1381,7 +1607,7 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     conn.commit()
 
@@ -1437,7 +1663,7 @@ def test_unfenced_expiry_is_terminal_and_releases_the_single_active_slot(conn: A
     _case(conn, case_id="case-intent-1")
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     conn.commit()
 
     expired = repos.trading.expire_unfenced_intent(intent.intent_id, now_ms=intent.valid_until_ms)
@@ -1450,9 +1676,19 @@ def test_unfenced_expiry_is_terminal_and_releases_the_single_active_slot(conn: A
         "intent_expired",
     )
     assert expired.entry_fenced_at_ms is None
+    risk = conn.execute(
+        "SELECT status, current_planned_risk_amount, attempt_consumed "
+        "FROM trading_capital_risk_reservation_state WHERE intent_id = %s",
+        (intent.intent_id,),
+    ).fetchone()
+    assert dict(risk) == {
+        "status": "RELEASED",
+        "current_planned_risk_amount": Decimal("0"),
+        "attempt_consumed": False,
+    }
 
     _case_without_reset(conn, case_id="case-intent-2")
-    assert repos.trading.insert_intent(_intent(case_id="case-intent-2", case_manifest_sha256="3" * 64)) is True
+    assert _insert_test_intent(repos, _intent(case_id="case-intent-2", case_manifest_sha256="3" * 64)) is True
     conn.commit()
 
 
@@ -1460,7 +1696,7 @@ def test_authoritative_refusal_before_submit_is_rejected_without_exposure(conn: 
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     conn.commit()
 
     rejected = repos.trading.record_rejected_without_exposure(
@@ -1481,11 +1717,41 @@ def test_authoritative_refusal_before_submit_is_rejected_without_exposure(conn: 
     assert rejected.entry_fenced_at_ms is None
 
 
+def test_fence_attempt_is_charged_to_its_utc_day_while_open_reservation_crosses_midnight(conn: Any) -> None:
+    boundary = (NOW // 86_400_000 + 1) * 86_400_000
+    created_at_ms = boundary - 1_000
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    intent = _intent(created_at_ms=created_at_ms)
+    assert _insert_test_intent(repos, intent)
+    _allow_entry(conn)
+
+    fence = _fence(repos, intent, engine_identity="nt-midnight", now_ms=boundary + 1_000)
+    assert fence.granted
+    risk = conn.execute(
+        """
+        SELECT reservation.risk_day_start_ms AS reservation_day_start_ms,
+               state.attempt_day_start_ms, state.attempt_day_end_ms, state.status
+          FROM trading_capital_risk_reservation_state state
+          JOIN trading_capital_risk_reservations reservation
+            ON reservation.reservation_sha256 = state.reservation_sha256
+         WHERE state.intent_id = %s
+        """,
+        (intent.intent_id,),
+    ).fetchone()
+    assert dict(risk) == {
+        "reservation_day_start_ms": boundary - 86_400_000,
+        "attempt_day_start_ms": boundary,
+        "attempt_day_end_ms": boundary + 86_400_000,
+        "status": "FENCED",
+    }
+
+
 def test_fenced_authoritative_rejection_requires_the_exact_entry_and_zero_exposure(conn: Any) -> None:
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).outcome
     conn.commit()
@@ -1519,7 +1785,7 @@ def test_unknown_entry_outcome_becomes_manual_review_and_never_a_rejection(conn:
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     conn.commit()
     assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
@@ -1542,7 +1808,7 @@ def test_manual_review_only_follows_a_fence_and_authoritative_facts_resume_autom
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     assert (
         repos.trading.mark_manual_review(
             intent.intent_id,
@@ -1578,7 +1844,7 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
     assert repos.trading.record_entry_fill(
@@ -1636,6 +1902,10 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
         position_id="position-1",
         avg_exit_price=Decimal("60010"),
         closed_at_ms=NOW + 2_200,
+        realized_pnl_amount=Decimal("0"),
+        realized_pnl_currency="USDT",
+        commissions_by_currency={},
+        funding_by_currency={},
     )
     closed = repos.trading.record_closed_flat(
         intent.intent_id,
@@ -1644,10 +1914,11 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
         avg_exit_price=Decimal("60010"),
         closed_at_ms=NOW + 2_200,
         flat_verified_at_ms=NOW + 2_300,
-        realized_pnl_amount=None,
-        realized_pnl_currency=None,
+        realized_pnl_amount=Decimal("0"),
+        realized_pnl_currency="USDT",
         commissions_by_currency={},
         now_ms=NOW + 2_300,
+        funding_by_currency={},
     )
     conn.commit()
     assert closed is not None
@@ -1662,7 +1933,7 @@ def test_nautilus_poll_and_runtime_heartbeat_share_the_business_row(conn: Any) -
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     repos.trading.set_nautilus_runtime(
         heartbeat_at_ms=NOW + 500,
         ready=True,
@@ -1691,7 +1962,7 @@ def test_the_case_projection_links_its_intent_without_joining_the_execution_life
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     conn.commit()
 
     rows = repos.trading.console_cases(since_ms=NOW - 1, limit=10)
@@ -1727,7 +1998,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     conn.commit()
 
@@ -1807,6 +2078,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
         realized_pnl_amount=Decimal("0.10"),
         realized_pnl_currency="USDT",
         commissions_by_currency={"USDT": "0.02"},
+        funding_by_currency={},
     )
     recovered_unknown = repos.trading.record_position_closed_observed(
         intent.intent_id,
@@ -1838,6 +2110,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
             realized_pnl_currency="USDT",
             commissions_by_currency=None,
             now_ms=NOW + 2_200,
+            funding_by_currency={},
         )
         is None
     )
@@ -1852,6 +2125,7 @@ def test_fake_execution_closes_the_five_state_demo_loop_without_a_second_entry(c
         realized_pnl_currency="USDT",
         commissions_by_currency=None,
         now_ms=NOW + 2_200,
+        funding_by_currency={},
     )
     conn.commit()
 
@@ -1872,7 +2146,7 @@ def test_position_change_uses_a_new_deterministic_stop_generation(conn: Any) -> 
     _case(conn)
     intent = _intent()
     repos = repositories_for_connection(conn)
-    assert repos.trading.insert_intent(intent) is True
+    assert _insert_test_intent(repos, intent) is True
     _allow_entry(conn)
     conn.commit()
     assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted

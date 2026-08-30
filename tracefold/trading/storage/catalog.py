@@ -62,7 +62,7 @@ class CatalogStorage:
                    runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
                    runtime.capability_state, runtime.capability_snapshot_sha256,
                    runtime.capability_compiled_at_ms, runtime.capability_compile_error,
-                   runtime.execution_binding_sha256,
+                   runtime.execution_binding_sha256, runtime.active_arm_receipt_sha256,
                    runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
               FROM trading_binding_runtime runtime
               LEFT JOIN trading_venue_catalog_snapshots snapshot
@@ -88,7 +88,7 @@ class CatalogStorage:
                    runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
                    runtime.capability_state, runtime.capability_snapshot_sha256,
                    runtime.capability_compiled_at_ms, runtime.capability_compile_error,
-                   runtime.execution_binding_sha256,
+                   runtime.execution_binding_sha256, runtime.active_arm_receipt_sha256,
                    runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
               FROM trading_binding_runtime runtime
               LEFT JOIN trading_venue_catalog_snapshots snapshot
@@ -120,12 +120,20 @@ class CatalogStorage:
             return False
         # Every Workers start re-projects credentials and is an activation boundary. A restart, a new
         # Key or a fingerprint change can therefore never inherit RUNNING capital from an old process.
-        capital = self.conn.execute(
-            "UPDATE trading_runtime_state SET control = 'PAUSED', updated_at_ms = %s WHERE id = 1 RETURNING id",
-            (int(now_ms),),
-        ).fetchone()
+        capital = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1 FOR UPDATE").fetchone()
         if capital is None:
             raise RuntimeError("trading_runtime_state_missing")
+        entering_paused = capital["control"] != "PAUSED"
+        self.conn.execute(
+            "UPDATE trading_runtime_state SET control = 'PAUSED', "
+            "arm_epoch = arm_epoch + CASE WHEN %s THEN 1 ELSE 0 END, updated_at_ms = %s WHERE id = 1",
+            (entering_paused, int(now_ms)),
+        )
+        if entering_paused:
+            self.conn.execute(
+                "UPDATE trading_binding_runtime SET active_arm_receipt_sha256 = NULL, updated_at_ms = %s",
+                (int(now_ms),),
+            )
         if credential_state == "unconfigured" and binding == "BINANCE_USDM":
             recovery = self.conn.execute(
                 "SELECT 1 FROM trading_intents "
@@ -146,6 +154,7 @@ class CatalogStorage:
                      WHEN (credential_state, credential_fingerprint)
                           IS DISTINCT FROM (%(credential_state)s, %(credential_fingerprint)s)
                      THEN NULL ELSE execution_binding_sha256 END,
+                   active_arm_receipt_sha256 = NULL,
                    runtime_state = %(runtime_state)s,
                    account_state = %(account_state)s,
                    heartbeat_at_ms = %(heartbeat)s,

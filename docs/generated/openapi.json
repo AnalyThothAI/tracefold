@@ -5218,6 +5218,11 @@
       "TradingCapitalRuntimeData": {
         "additionalProperties": false,
         "properties": {
+          "arm_epoch": {
+            "minimum": 1.0,
+            "title": "Arm Epoch",
+            "type": "integer"
+          },
           "blacklist_revision": {
             "minimum": 0.0,
             "title": "Blacklist Revision",
@@ -5235,7 +5240,8 @@
         },
         "required": [
           "control",
-          "blacklist_revision"
+          "blacklist_revision",
+          "arm_epoch"
         ],
         "title": "TradingCapitalRuntimeData",
         "type": "object"

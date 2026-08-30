@@ -76,7 +76,7 @@ def get_trading_status(request: Request) -> Response:
             updated_at_ms=now_ms,
         )
         capital = repos.trading.capital_runtime() or CapitalRuntimeV1(
-            control="PAUSED", blacklist_revision=0, updated_at_ms=now_ms
+            control="PAUSED", blacklist_revision=0, arm_epoch=1, updated_at_ms=now_ms
         )
         bindings = repos.trading.binding_runtime_rows(now_ms=now_ms)
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
@@ -94,6 +94,7 @@ def get_trading_status(request: Request) -> Response:
             "capital": {
                 "control": capital.control,
                 "blacklist_revision": capital.blacklist_revision,
+                "arm_epoch": capital.arm_epoch,
             },
             "bindings": [_binding_runtime(row) for row in bindings],
             "policy": {

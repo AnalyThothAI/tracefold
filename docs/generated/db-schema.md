@@ -541,6 +541,7 @@
 | `capability_compiled_at_ms` | `BIGINT` | True | `None` |
 | `capability_compile_error` | `TEXT` | True | `None` |
 | `execution_binding_sha256` | `TEXT` | True | `None` |
+| `active_arm_receipt_sha256` | `TEXT` | True | `None` |
 
 ## `trading_candidate_gate_decisions`
 
@@ -561,6 +562,65 @@
 | `first_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `last_evaluated_at_ms` | `BIGINT` | False | `None` |
 | `attempt_count` | `INTEGER` | False | `1` |
+
+## `trading_capital_authorization_receipts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `authorization_receipt_sha256` | `TEXT` | False | `None` |
+| `reservation_sha256` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_capital_risk_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_sha256` | `TEXT` | False | `None` |
+| `reservation_sha256` | `TEXT` | False | `None` |
+| `intent_id` | `TEXT` | False | `None` |
+| `event_kind` | `TEXT` | False | `None` |
+| `current_planned_risk_amount` | `NUMERIC` | False | `None` |
+| `attempt_consumed` | `BOOLEAN` | False | `None` |
+| `settlement_asset` | `TEXT` | True | `None` |
+| `realized_loss_amount` | `NUMERIC` | True | `None` |
+| `occurred_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_capital_risk_reservation_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `reservation_sha256` | `TEXT` | False | `None` |
+| `intent_id` | `TEXT` | False | `None` |
+| `status` | `TEXT` | False | `None` |
+| `current_planned_risk_amount` | `NUMERIC` | False | `None` |
+| `attempt_consumed` | `BOOLEAN` | False | `None` |
+| `attempt_day_start_ms` | `BIGINT` | True | `None` |
+| `attempt_day_end_ms` | `BIGINT` | True | `None` |
+| `settlement_known` | `BOOLEAN` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_capital_risk_reservations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `reservation_sha256` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `economic_lifecycle_id` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `settlement_asset` | `TEXT` | False | `None` |
+| `risk_policy_sha256` | `TEXT` | False | `None` |
+| `grant_sha256` | `TEXT` | False | `None` |
+| `arm_receipt_sha256` | `TEXT` | False | `None` |
+| `risk_day_start_ms` | `BIGINT` | False | `None` |
+| `risk_day_end_ms` | `BIGINT` | False | `None` |
+| `target_notional` | `NUMERIC` | False | `None` |
+| `planned_risk_amount` | `NUMERIC` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
 
 ## `trading_cases`
 
@@ -595,6 +655,17 @@
 | `policy_checks` | `JSONB` | True | `None` |
 | `capital_disposition` | `TEXT` | False | `None` |
 | `capital_reason` | `TEXT` | True | `None` |
+
+## `trading_daily_risk_policies`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `risk_policy_sha256` | `TEXT` | False | `None` |
+| `approved_release` | `TEXT` | False | `None` |
+| `effective_from_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
 
 ## `trading_decision_runtime`
 
@@ -717,6 +788,21 @@
 | `target_notional` | `NUMERIC` | True | `None` |
 | `max_risk_amount` | `NUMERIC` | True | `None` |
 | `risk_currency` | `TEXT` | True | `None` |
+| `funding_by_currency` | `JSONB` | True | `None` |
+
+## `trading_operator_arm_receipts`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `arm_receipt_sha256` | `TEXT` | False | `None` |
+| `arm_epoch` | `BIGINT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `grant_sha256` | `TEXT` | False | `None` |
+| `risk_policy_sha256` | `TEXT` | False | `None` |
+| `armed_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
 
 ## `trading_order_observations`
 
@@ -770,6 +856,29 @@
 | `max_holding_ms` | `BIGINT` | True | `None` |
 | `taker_fee_bps` | `INTEGER` | True | `None` |
 
+## `trading_production_promotion_grants`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `grant_sha256` | `TEXT` | False | `None` |
+| `binding` | `TEXT` | False | `None` |
+| `risk_policy_sha256` | `TEXT` | False | `None` |
+| `issued_at_ms` | `BIGINT` | False | `None` |
+| `review_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_promotion_grant_revocations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `revocation_sha256` | `TEXT` | False | `None` |
+| `grant_sha256` | `TEXT` | False | `None` |
+| `revoked_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
 ## `trading_replay_runs`
 
 | Column | Type | Nullable | Default |
@@ -800,6 +909,7 @@
 | `active_capability_included_count` | `INTEGER` | False | `0` |
 | `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
 | `blacklist_revision` | `BIGINT` | False | `0` |
+| `arm_epoch` | `BIGINT` | False | `1` |
 
 ## `trading_symbol_blacklist`
 

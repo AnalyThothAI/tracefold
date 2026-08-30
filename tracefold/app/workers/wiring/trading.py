@@ -32,6 +32,7 @@ from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliqu
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
+from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import InstrumentRef, VenueBinding
 from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
@@ -85,6 +86,7 @@ def _wire_capital_lane(
         # holds no News literal and reads no News table; this seam derives the label from the same
         # stable arm the News workers appoint, so the two cannot drift.
         news_generation=epoch_id_for_bundle(active_arm_manifest(settings).bundle_sha),
+        release_revision=runtime_identity().runtime_revision,
         telemetry=telemetry,
     )
 

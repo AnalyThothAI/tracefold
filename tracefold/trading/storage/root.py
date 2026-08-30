@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .authority import AuthorityStorage
 from .bindings import BindingStorage
 from .capabilities import CapabilityStorage
 from .cases import CaseStorage
@@ -18,6 +19,7 @@ from .replay import ReplayStorage
 
 class TradingRepository(
     ControlStorage,
+    AuthorityStorage,
     BindingStorage,
     CatalogStorage,
     CapabilityStorage,
