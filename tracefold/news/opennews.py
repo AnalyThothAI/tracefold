@@ -205,7 +205,7 @@ def parse_opennews_strategy_hits(
         if event is None or event.entry.published_at_ms is None:
             raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.HIT_CONTRACT_INVALID)
         if event.provider_record_id in provider_record_ids:
-            continue
+            raise OpenNewsHistoryError.invalid_payload(OpenNewsHistoryPayloadReason.HIT_CONTRACT_INVALID)
         provider_record_ids.add(event.provider_record_id)
         events.append(event)
     return OpenNewsStrategyHitPage(
