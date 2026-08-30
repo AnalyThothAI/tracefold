@@ -47,6 +47,11 @@ jobs:
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d
         with: {version: "${{ env.UV_VERSION }}", enable-cache: true, cache-dependency-glob: uv.lock}
       - run: uv sync --locked --group mutation
+      # The lane's own tests, including the ones that need the `mutation` group and are therefore
+      # marked `scheduled` and excluded from every required selection. They have to run somewhere,
+      # and this is the job where the group exists.
+      - name: Check the lane's own tests
+        run: uv run --no-sync python -m pytest -q -p no:cacheprovider tests/mutation -m ""
       - name: Prove the harness executes mutated code
         run: uv run --no-sync python scripts/mutation_sentinel.py
 

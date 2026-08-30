@@ -7,11 +7,12 @@ independent random sixths — roughly a third of the mutants executed by nobody,
 twice — and the earlier check missed it entirely because it sharded six *copies of one database*,
 where the job_ids happen to agree.
 
-So the fixture here is deliberately six separate `cosmic-ray init` runs. A test that copies one
+So the fixture here is deliberately one `cosmic-ray init` per shard. A test that copies one
 session cannot observe the bug it is meant to prevent.
 
-Requires the `mutation` dependency group, which the hermetic lane does not install; this runs in the
-mutation workflow's baseline step, where the group is present.
+Requires the `mutation` dependency group, which no required lane installs. Marked `scheduled` so
+the required selections exclude it outright rather than record a skip, and run by the mutation
+workflow's own test step, where the group is present.
 """
 
 from __future__ import annotations
@@ -22,9 +23,16 @@ from pathlib import Path
 
 import pytest
 
+# `scheduled` rather than `slow`, because the required lanes must not merely *skip* this. The
+# verification contract rejects a skipped test inside a required report — a skip is how a suite
+# quietly stops covering something — so a test that needs a non-default dependency group belongs
+# outside the required selections entirely rather than inside one and absent. The mutation
+# workflow, where the group is installed, is what runs it.
+pytestmark = pytest.mark.scheduled
+
 pytest.importorskip("cosmic_ray", reason="needs the `mutation` dependency group")
 
-from scripts.mutation_shard import _reserve
+from scripts.mutation_shard import _reserve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SHARDS = 3
@@ -54,18 +62,27 @@ def _reserved_keys(session: Path, *, shard: int, of: int) -> set[tuple[str, str,
         }
 
 
-@pytest.mark.slow
 def test_independently_initialised_shards_partition_the_population(tmp_path: Path) -> None:
     """Disjoint, complete, and balanced to within one — across separate `init` runs."""
 
     slices = []
-    population: set[tuple[str, str, int]] = set()
+    populations = []
     for shard in range(SHARDS):
         session = tmp_path / f"shard-{shard}.sqlite"
         _init(session)
         slices.append(_reserved_keys(session, shard=shard, of=SHARDS))
-        population |= _all_keys(session)
+        populations.append(_all_keys(session))
 
+    # Checked before the partition, because otherwise its failure is a set difference nobody can
+    # read. The shards can only partition a population they agree on, and the one way they disagree
+    # is a batch mutating the same modules while this runs — Cosmic Ray rewrites the source in
+    # place, so `init` at one moment and `init` a second later can genuinely see different code.
+    assert all(p == populations[0] for p in populations), (
+        "the inits disagreed about the mutant population, so there is nothing to partition. "
+        "A mutation batch rewriting these modules concurrently is the usual cause."
+    )
+
+    population = populations[0]
     union: set[tuple[str, str, int]] = set()
     for reserved in slices:
         assert not (union & reserved), "two shards reserved the same mutation site"
