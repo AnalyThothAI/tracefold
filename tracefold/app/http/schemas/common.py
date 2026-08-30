@@ -76,6 +76,13 @@ class WorkersRuntimeData(ExactApiSchema):
     )
 
 
+class ServeRuntimeData(ExactApiSchema):
+    runtime_id: str
+    runtime_revision: str
+    image_digest: str
+    started_at_ms: int
+
+
 class StatusRuntimeData(ExactApiSchema):
     ok: bool
     reasons: list[
@@ -92,6 +99,7 @@ class StatusRuntimeData(ExactApiSchema):
         ]
     ]
     db: StatusDatabaseData
+    serve_runtime: ServeRuntimeData
     workers_runtime: WorkersRuntimeData
 
 

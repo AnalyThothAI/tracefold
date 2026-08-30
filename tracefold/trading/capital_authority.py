@@ -100,7 +100,7 @@ class ProductionPromotionGrantV1(_Frozen):
     locked_future_result: Literal["PROMOTE"] = "PROMOTE"
     risk_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     approved_release: str = Field(min_length=1, max_length=128)
-    allowed_capability_entry_ids: tuple[str, ...] = Field(min_length=1)
+    allowed_capability_entry_ids: tuple[str, ...] = Field(min_length=1, max_length=1)
     max_target_notional: Decimal = Field(gt=0, le=TARGET_NOTIONAL_CEILING_USD)
     max_leverage: Literal[1] = 1
     approver: str = Field(min_length=1, max_length=128)

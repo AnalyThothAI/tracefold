@@ -201,6 +201,7 @@ def run_bar_episode(
                 "MISSING_MARKET_DATA",
                 "outside_bar_coverage",
                 entry_price=strategy.entry_price,
+                opened_at_ms=strategy.opened_at_ms,
                 quantity=entry_policy.quantity,
                 fees=strategy.fees,
             )
@@ -216,6 +217,8 @@ def run_bar_episode(
             strategy.exit_reason or "closed",
             entry_price=strategy.entry_price,
             exit_price=strategy.exit_price,
+            opened_at_ms=strategy.opened_at_ms,
+            closed_at_ms=strategy.closed_at_ms,
             quantity=entry_policy.quantity,
             gross_result=gross,
             fees=strategy.fees,

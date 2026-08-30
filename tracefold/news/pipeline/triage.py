@@ -814,6 +814,12 @@ class TriageConsumer:
                     earlier_eligible_count=earlier_eligible_count,
                     policy=self.oi_policy,
                 )
+                provider_metadata = card.get("provider_metadata")
+                source_venue = (
+                    str(provider_metadata.get("source") or "") or None
+                    if isinstance(provider_metadata, Mapping)
+                    else None
+                )
                 repos.news.insert_oi_signal(
                     event_id=event_id,
                     metric_version=oi_signals.METRIC_VERSION,
@@ -829,6 +835,8 @@ class TriageConsumer:
                     source_strategy_id=None if source is None else source.strategy_id,
                     source_contract_version=None if source is None else source.contract_version,
                     measurement_window_ms=None if source is None else source.measurement_window_ms,
+                    source_item_id=str(card["leader_item_id"]),
+                    source_venue=source_venue,
                 )
                 trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
                 return self._decide_and_persist(

@@ -4525,6 +4525,7 @@ _OI_TITLE = "TRUMP OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Wha
 def _oi_card(**overrides: Any) -> dict[str, Any]:
     card = _card(
         event_id="ev-oi",
+        leader_item_id="item-oi",
         event_kind="oi",
         leader_title=_OI_TITLE,
         admission="telemetry_deterministic",

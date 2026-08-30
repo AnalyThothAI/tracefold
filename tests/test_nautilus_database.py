@@ -210,6 +210,7 @@ def test_pending_intent_is_dispatched_once_only_when_control_and_engine_allow_en
 
     assert queues.commands.get_nowait() == AdoptIntent(intent=intent, outcome=outcome)
     assert queues.commands.empty()
+    repos.trading.append_nautilus_runtime_start.assert_called_once_with(bridge._runtime_start)
     assert repos.trading.set_binding_execution_runtime.call_count == 3
 
 

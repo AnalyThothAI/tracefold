@@ -231,6 +231,7 @@ class LaneStorage:
         case_id: str,
         manifest: TradingCaseManifest,
         admission: AdmissionRow,
+        release_revision: str,
         now_ms: int,
     ) -> bool:
         """Insert one immutable Case and its `CASE_CREATED` admission row, together or not at all.
@@ -277,7 +278,11 @@ class LaneStorage:
         )
         if int(getattr(cursor, "rowcount", 0) or 0) <= 0:
             return False
-        cast(Any, self).record_gate_decision(now_ms=now_ms, **{**admission, "case_id": case_id})
+        cast(Any, self).record_gate_decision(
+            now_ms=now_ms,
+            release_revision=release_revision,
+            **{**admission, "case_id": case_id},
+        )
         return True
 
     # ------------------------------------------------------------------ decide

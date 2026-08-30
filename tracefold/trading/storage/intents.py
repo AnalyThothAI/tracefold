@@ -1218,9 +1218,9 @@ class IntentStorage:
         outcome = self._outcome_update(
             f"""
             UPDATE trading_intents
-               SET execution_state = 'TERMINAL',
+               SET execution_state = 'IN_FLIGHT',
                    execution_phase = 'EXIT',
-                   terminal_outcome = 'CLOSED_FLAT',
+                   terminal_outcome = NULL,
                    reason_code = NULL,
                    avg_exit_price = %(exit_price)s,
                    closed_at_ms = %(closed)s,
@@ -1272,18 +1272,28 @@ class IntentStorage:
                 funding_by_currency=outcome.funding_by_currency,
                 now_ms=now_ms,
             )
-            if not settled:
-                outcome = self._outcome_update(
-                    f"""
-                    UPDATE trading_intents
-                       SET execution_state = 'MANUAL_REVIEW', terminal_outcome = NULL,
-                           reason_code = 'settlement_unproven', updated_at_ms = %(now)s
-                     WHERE intent_id = %(intent_id)s
-                       AND execution_state = 'TERMINAL' AND terminal_outcome = 'CLOSED_FLAT'
-                 RETURNING {_OUTCOME_COLUMNS}
-                    """,
-                    {"intent_id": intent_id, "now": int(now_ms)},
-                )
+            outcome = self._outcome_update(
+                f"""
+                UPDATE trading_intents
+                   SET execution_state = %(state)s,
+                       terminal_outcome = %(terminal)s,
+                       reason_code = %(reason)s,
+                       updated_at_ms = %(now)s
+                 WHERE intent_id = %(intent_id)s
+                   AND execution_state = 'IN_FLIGHT'
+                   AND execution_phase = 'EXIT'
+                   AND flat_verified_at_ms = %(flat)s
+             RETURNING {_OUTCOME_COLUMNS}
+                """,
+                {
+                    "intent_id": intent_id,
+                    "state": "TERMINAL" if settled else "MANUAL_REVIEW",
+                    "terminal": "CLOSED_FLAT" if settled else None,
+                    "reason": None if settled else "settlement_unproven",
+                    "flat": int(flat_verified_at_ms),
+                    "now": int(now_ms),
+                },
+            )
         return outcome
 
     def record_position_closed_observed(

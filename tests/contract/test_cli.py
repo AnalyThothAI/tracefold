@@ -129,6 +129,55 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["trading", "control", "running"])
 
+    def test_trading_evidence_clock_commands_expose_each_irreversible_stage(self):
+        parser = build_parser()
+
+        capture = parser.parse_args(
+            [
+                "trading",
+                "evidence",
+                "capture",
+                "--partition",
+                "future",
+                "--start-ms",
+                "10",
+                "--end-ms",
+                "20",
+                "--candidate",
+                "candidate.json",
+                "--candidate-receipt",
+                "candidate-receipt.json",
+                "--out",
+                "artifacts/evidence",
+            ]
+        )
+        drain = parser.parse_args(
+            [
+                "trading",
+                "evidence",
+                "drain",
+                "--capture",
+                "capture.json",
+                "--max-horizon-ms",
+                "14400000",
+                "--finalization-lag-ms",
+                "2100000",
+                "--cost-model",
+                "cost.yaml",
+                "--out",
+                "artifacts/evidence",
+            ]
+        )
+        verify = parser.parse_args(["trading", "evidence", "verify", "--receipt", "a" * 64])
+        verify_window = parser.parse_args(["trading", "evidence", "verify", "--window", "window.yaml"])
+
+        self.assertEqual((capture.trading_command, capture.evidence_command), ("evidence", "capture"))
+        self.assertEqual((capture.start_ms, capture.end_ms), (10, 20))
+        self.assertEqual(drain.evidence_command, "drain")
+        self.assertEqual((drain.max_horizon_ms, drain.finalization_lag_ms), (14_400_000, 2_100_000))
+        self.assertEqual((verify.evidence_command, verify.receipt), ("verify", "a" * 64))
+        self.assertEqual((verify_window.evidence_command, verify_window.window), ("verify", "window.yaml"))
+
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
         with self.assertRaises(SystemExit):

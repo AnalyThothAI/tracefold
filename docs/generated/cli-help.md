@@ -804,14 +804,16 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,replay-oi,show,blacklist,control,authority} ...
+                         {status,cases,replay-oi,evidence,show,blacklist,control,authority} ...
 
 positional arguments:
-  {status,cases,replay-oi,show,blacklist,control,authority}
+  {status,cases,replay-oi,evidence,show,blacklist,control,authority}
     status              Decision, Capital, binding facts, and durable outcomes
     cases               list Trading cases newest first
     replay-oi           source-native BAR replay with an audited artifact and
                         immutable receipt (#286)
+    evidence            capture, seal, preregister, unblind, and verify the
+                        Production V3 evidence clock
     show                one case with its intent and current outcome
     blacklist           the canonical deny-list; one row blocks every provider
                         spelling of that underlying
@@ -866,6 +868,151 @@ options:
   --venues VENUES       comma-separated exact source-native venue scenarios
   --fidelity {bar_v1}
   --out OUT             artifact root
+
+```
+
+## `trading evidence`
+
+```
+usage: tracefold trading evidence [-h]
+                                  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify} ...
+
+positional arguments:
+  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify}
+    capture             freeze a point-in-time discovery or protocol-locked
+                        future source partition
+    drain               freeze bars and funding only after the capture horizon
+                        can be finalized
+    corpus-seal         deterministically seal a discovery capture and drain;
+                        zero provider I/O
+    candidate-register  durably register one candidate or NO_CANDIDATE before
+                        a future window
+    release-register    bind an approved exact release and fixed window to the
+                        current Workers/Serve generations
+    future-unblind      evaluate one protocol-locked future partition after
+                        its fixed drain cutoff
+    verify              credential-free verification of one evidence chain,
+                        lifecycle, release, window, or rollback
+
+options:
+  -h, --help            show this help message and exit
+
+```
+
+## `trading evidence capture`
+
+```
+usage: tracefold trading evidence capture [-h] --partition {discovery,future}
+                                          --start-ms START_MS --end-ms END_MS
+                                          [--candidate CANDIDATE]
+                                          [--candidate-receipt CANDIDATE_RECEIPT]
+                                          --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --partition {discovery,future}
+  --start-ms START_MS
+  --end-ms END_MS
+  --candidate CANDIDATE
+  --candidate-receipt CANDIDATE_RECEIPT
+  --out OUT             content-addressed evidence artifact root
+
+```
+
+## `trading evidence drain`
+
+```
+usage: tracefold trading evidence drain [-h] --capture CAPTURE
+                                        [--candidate CANDIDATE]
+                                        [--candidate-receipt CANDIDATE_RECEIPT]
+                                        [--max-horizon-ms MAX_HORIZON_MS]
+                                        [--finalization-lag-ms FINALIZATION_LAG_MS]
+                                        [--cost-model COST_MODEL] --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --capture CAPTURE
+  --candidate CANDIDATE
+  --candidate-receipt CANDIDATE_RECEIPT
+  --max-horizon-ms MAX_HORIZON_MS
+  --finalization-lag-ms FINALIZATION_LAG_MS
+  --cost-model COST_MODEL
+  --out OUT             content-addressed evidence artifact root
+
+```
+
+## `trading evidence corpus-seal`
+
+```
+usage: tracefold trading evidence corpus-seal [-h] --capture CAPTURE
+                                              --drain DRAIN --out OUT
+
+options:
+  -h, --help         show this help message and exit
+  --capture CAPTURE
+  --drain DRAIN
+  --out OUT          content-addressed evidence artifact root
+
+```
+
+## `trading evidence candidate-register`
+
+```
+usage: tracefold trading evidence candidate-register [-h] --file FILE
+                                                     --out OUT
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE
+  --out OUT    content-addressed evidence artifact root
+
+```
+
+## `trading evidence release-register`
+
+```
+usage: tracefold trading evidence release-register [-h] --file FILE
+
+options:
+  -h, --help   show this help message and exit
+  --file FILE  approved release candidate YAML/JSON
+
+```
+
+## `trading evidence future-unblind`
+
+```
+usage: tracefold trading evidence future-unblind [-h] --capture CAPTURE
+                                                 --drain DRAIN
+                                                 --candidate CANDIDATE
+                                                 --candidate-receipt CANDIDATE_RECEIPT
+                                                 --out OUT
+
+options:
+  -h, --help            show this help message and exit
+  --capture CAPTURE
+  --drain DRAIN
+  --candidate CANDIDATE
+  --candidate-receipt CANDIDATE_RECEIPT
+  --out OUT             content-addressed evidence artifact root
+
+```
+
+## `trading evidence verify`
+
+```
+usage: tracefold trading evidence verify [-h] (--receipt RECEIPT |
+                                         --case-id CASE_ID | --window WINDOW |
+                                         --release RELEASE |
+                                         --rollback ROLLBACK)
+
+options:
+  -h, --help           show this help message and exit
+  --receipt RECEIPT    durable evidence receipt SHA
+  --case-id CASE_ID    single durable Case/Intent lifecycle
+  --window WINDOW      fixed seven-day acceptance YAML/JSON
+  --release RELEASE    exact approved release candidate YAML/JSON
+  --rollback ROLLBACK  rollback receipt YAML/JSON
 
 ```
 

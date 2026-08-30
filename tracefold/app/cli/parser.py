@@ -422,6 +422,63 @@ def build_parser() -> argparse.ArgumentParser:
     )
     trading_replay.add_argument("--fidelity", choices=("bar_v1",), default="bar_v1")
     trading_replay.add_argument("--out", default="artifacts/trading-replay", help="artifact root")
+    trading_evidence = trading_subcommands.add_parser(
+        "evidence",
+        help="capture, seal, preregister, unblind, and verify the Production V3 evidence clock",
+    )
+    evidence_subcommands = trading_evidence.add_subparsers(dest="evidence_command", required=True)
+    evidence_capture = evidence_subcommands.add_parser(
+        "capture", help="freeze a point-in-time discovery or protocol-locked future source partition"
+    )
+    evidence_capture.add_argument("--partition", choices=("discovery", "future"), required=True)
+    evidence_capture.add_argument("--start-ms", type=_nonnegative_int, required=True)
+    evidence_capture.add_argument("--end-ms", type=_positive_int, required=True)
+    evidence_capture.add_argument("--candidate", default="")
+    evidence_capture.add_argument("--candidate-receipt", default="")
+    evidence_capture.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_drain = evidence_subcommands.add_parser(
+        "drain", help="freeze bars and funding only after the capture horizon can be finalized"
+    )
+    evidence_drain.add_argument("--capture", required=True)
+    evidence_drain.add_argument("--candidate", default="")
+    evidence_drain.add_argument("--candidate-receipt", default="")
+    evidence_drain.add_argument("--max-horizon-ms", type=_positive_int, default=None)
+    evidence_drain.add_argument("--finalization-lag-ms", type=_nonnegative_int, default=None)
+    evidence_drain.add_argument("--cost-model", default="")
+    evidence_drain.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_seal = evidence_subcommands.add_parser(
+        "corpus-seal", help="deterministically seal a discovery capture and drain; zero provider I/O"
+    )
+    evidence_seal.add_argument("--capture", required=True)
+    evidence_seal.add_argument("--drain", required=True)
+    evidence_seal.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_register = evidence_subcommands.add_parser(
+        "candidate-register", help="durably register one candidate or NO_CANDIDATE before a future window"
+    )
+    evidence_register.add_argument("--file", required=True)
+    evidence_register.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_release_register = evidence_subcommands.add_parser(
+        "release-register",
+        help="bind an approved exact release and fixed window to the current Workers/Serve generations",
+    )
+    evidence_release_register.add_argument("--file", required=True, help="approved release candidate YAML/JSON")
+    evidence_unblind = evidence_subcommands.add_parser(
+        "future-unblind", help="evaluate one protocol-locked future partition after its fixed drain cutoff"
+    )
+    evidence_unblind.add_argument("--capture", required=True)
+    evidence_unblind.add_argument("--drain", required=True)
+    evidence_unblind.add_argument("--candidate", required=True)
+    evidence_unblind.add_argument("--candidate-receipt", required=True)
+    evidence_unblind.add_argument("--out", required=True, help="content-addressed evidence artifact root")
+    evidence_verify = evidence_subcommands.add_parser(
+        "verify", help="credential-free verification of one evidence chain, lifecycle, release, window, or rollback"
+    )
+    verification_subject = evidence_verify.add_mutually_exclusive_group(required=True)
+    verification_subject.add_argument("--receipt", default="", help="durable evidence receipt SHA")
+    verification_subject.add_argument("--case-id", default="", help="single durable Case/Intent lifecycle")
+    verification_subject.add_argument("--window", default="", help="fixed seven-day acceptance YAML/JSON")
+    verification_subject.add_argument("--release", default="", help="exact approved release candidate YAML/JSON")
+    verification_subject.add_argument("--rollback", default="", help="rollback receipt YAML/JSON")
     trading_show = trading_subcommands.add_parser("show", help="one case with its intent and current outcome")
     trading_show.add_argument("case_id")
     trading_blacklist = trading_subcommands.add_parser(

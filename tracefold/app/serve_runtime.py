@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID, uuid4
 
 from tracefold.app.http.exceptions import ApiUnavailable
 from tracefold.app.repository_session import RepositorySession
@@ -14,6 +15,7 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import latest_migration_version
+from tracefold.platform.runtime_identity import runtime_identity
 
 
 @dataclass(slots=True)
@@ -23,6 +25,10 @@ class ServeRuntime:
     settings: Settings
     db: ServeDatabase
     telemetry: TelemetryRegistry
+    runtime_id: UUID
+    runtime_revision: str
+    image_digest: str
+    started_at_ms: int
 
     @contextmanager
     def repositories(self, *, lane: str = "ordinary") -> Iterator[RepositorySession]:
@@ -105,6 +111,12 @@ class ServeRuntime:
             "ok": bool(db_status["ok"]) and runtime_status["state"] == "running",
             "reasons": reasons,
             "db": db_status,
+            "serve_runtime": {
+                "runtime_id": str(self.runtime_id),
+                "runtime_revision": self.runtime_revision,
+                "image_digest": self.image_digest,
+                "started_at_ms": self.started_at_ms,
+            },
             "workers_runtime": runtime_status,
         }
 
@@ -118,10 +130,15 @@ def bootstrap_serve(settings: Settings) -> ServeRuntime:
     telemetry = TelemetryRegistry()
     db = ServeDatabase.create(settings, telemetry=telemetry)
     try:
+        identity = runtime_identity()
         runtime = ServeRuntime(
             settings=settings,
             db=db,
             telemetry=telemetry,
+            runtime_id=uuid4(),
+            runtime_revision=identity.runtime_revision,
+            image_digest=identity.image_digest,
+            started_at_ms=int(time.time() * 1_000),
         )
         readiness = runtime.readiness_payload()
         if readiness["db"]["error_code"] == "database_unavailable":

@@ -416,7 +416,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260830_0333` head; schema tests also run against that migrated head.
+current `20260830_0334` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -427,6 +427,32 @@ Workers root, publishes through RabbitMQ, persists the deterministic OI path in
 PostgreSQL and reads it through HTTP. ReviewDesk and CandidateEvaluator have their own integration lanes;
 production shadow/canary evidence is sealed in PostgreSQL rather than inferred
 from the HTTP e2e fixture.
+
+The #377 Trading evidence clock is verified at three distinct seams. Pure tests
+prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
+scope/sign, actual database-stamped receipt clocks, finite candidate selection,
+append-only blind-batch continuity/health, deterministic block bootstrap and declared
+power. PostgreSQL tests prove the irreversible `0334` cutover, the append-only
+corpus -> candidate -> future capture -> future drain -> result parent chain,
+one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
+link, database-recomputed complete future chains/health incidents, gap-free
+bar/funding boundaries, News-source-to-Gate conservation, Case/Intent conservation, exact-release
+fixed-window accounting, pre-window release registration against exact
+Workers/Serve generations, append-only Nautilus process generations,
+signed-tag/restart/canary release binding, and release-bound rollback snapshots
+that require new Workers and Serve generations plus a binding reconciliation
+heartbeat written by Nautilus query-first reconciliation after the new Workers
+generation starts. The canonical fixed-window/release report also binds the
+complete per-binding accounting digest.
+Pure verifier tests own interpretation of receipt artifacts and the bounded
+DB/runtime/Git facts; App integration tests use real PostgreSQL, raw artifact bytes,
+and real Git identities to prove the public handler supplies those facts and cannot
+replace a failed check. CLI contract tests keep one `release-register` transition and
+one `trading evidence verify` entry with
+receipt, lifecycle, seven-day window, release, and rollback subjects. No pure
+test, fixture, local artifact, mock, or green CI job may stand in for future
+calendar data, a human grant/arm, a venue-native write/flat receipt, or the
+final fixed-window/rollback terminal.
 
 ### News V3 evaluation seams
 

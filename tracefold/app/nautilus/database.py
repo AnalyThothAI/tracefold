@@ -9,11 +9,16 @@ from decimal import Decimal
 from queue import Empty
 from threading import Event, Lock, Thread
 from typing import Any
+from uuid import uuid4
 
 from loguru import logger
 from psycopg import InterfaceError, OperationalError
 
 from tracefold.app.repository_session import repositories
+from tracefold.integrations.nautilus.config import (
+    NAUTILUS_RELEASE,
+    installed_nautilus_wheel_identity,
+)
 from tracefold.integrations.nautilus.messages import (
     AdoptIntent,
     BootstrapAccountZeroChanged,
@@ -42,7 +47,8 @@ from tracefold.integrations.nautilus.messages import (
     StrategyQueues,
 )
 from tracefold.platform.config.models import Settings
-from tracefold.trading import ExecutionBindingV1, VenueBinding
+from tracefold.platform.runtime_identity import runtime_identity
+from tracefold.trading import ExecutionBindingV1, NautilusRuntimeStartV1, VenueBinding
 
 _RepositoryFactory = Callable[..., AbstractContextManager[Any]]
 NAUTILUS_POLL_SECONDS = 1.0
@@ -67,6 +73,17 @@ class NautilusDatabaseBridge:
         self._pending_execution_bindings = dict(pending_execution_bindings or {})
         self._repository_factory = repository_factory
         self._now_ms = now_ms or (lambda: int(time.time() * 1_000))
+        identity = runtime_identity()
+        self._runtime_start = NautilusRuntimeStartV1(
+            runtime_id=uuid4(),
+            runtime_revision=identity.runtime_revision,
+            image_digest=identity.image_digest,
+            nautilus_version=NAUTILUS_RELEASE.version,
+            nautilus_source_git_commit=NAUTILUS_RELEASE.git_commit,
+            nautilus_wheel_identity=installed_nautilus_wheel_identity(),
+            started_at_ms=self._now_ms(),
+        )
+        self._runtime_start_recorded = False
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._lock = Lock()
@@ -157,6 +174,10 @@ class NautilusDatabaseBridge:
         self._set_db_connected(False)
 
     def _cycle(self, repos: Any) -> None:
+        if not self._runtime_start_recorded:
+            with repos.transaction():
+                repos.trading.append_nautilus_runtime_start(self._runtime_start)
+            self._runtime_start_recorded = True
         projection_blocked = False
         if self._pending_event is not None:
             if self._handle_event(repos, self._pending_event):

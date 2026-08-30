@@ -384,6 +384,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0331\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
+			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
