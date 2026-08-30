@@ -9,11 +9,11 @@ import pytest
 from tests.integration.test_news_review_desk import NOW, _open_event
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
-from tracefold.app import learning_runtime
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring import news as workers
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
@@ -21,6 +21,7 @@ from tracefold.news.release.canary import (
     apply_canary_control,
     parse_canary_control,
 )
+from tracefold.news.release.runtime import CandidateRuntimeFact, reconcile_canary_startup
 from tracefold.platform.postgres.client import create_pool
 
 pytestmark = pytest.mark.integration
@@ -201,13 +202,13 @@ def test_canary_arm_rejects_an_invalid_program_artifact_before_writing_activatio
             program_candidate_sha256="b" * 64,
         ),
     )
-    monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(release_runtime, "load_stable_program_artifact", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str):
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(learning_runtime, "load_program_artifact", reject_artifact)
-    shipped = learning_runtime.artifact_valid_candidate_bundles(stable, {candidate_sha: candidate})
+    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
+    shipped = release_runtime.artifact_valid_candidate_bundles(stable, {candidate_sha: candidate})
     assert shipped == {}
 
     repos = repositories_for_connection(conn)
@@ -308,17 +309,21 @@ def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(co
     pool.wait(timeout=5.0)
     database = WorkerDatabase(worker_pool=pool, telemetry=None)
     try:
-        assert workers._trip_unavailable_active_canary(
+        facts = {
+            candidate_sha: CandidateRuntimeFact(
+                candidate_manifest_sha=candidate_sha,
+                compiled_bundle_sha=candidate_bundle,
+                runnable_bundle_sha=None,
+                failure_kind="artifact_invalid",
+            )
+        }
+        assert workers._reconcile_news_canary_startup(
             database,
-            {candidate_sha: candidate_bundle},
-            frozenset(),
-            {candidate_sha: "candidate_artifact_invalid"},
+            facts,
         )
-        assert not workers._trip_unavailable_active_canary(
+        assert not workers._reconcile_news_canary_startup(
             database,
-            {candidate_sha: candidate_bundle},
-            frozenset(),
-            {candidate_sha: "candidate_artifact_invalid"},
+            facts,
         )
     finally:
         database.close_executors()
@@ -354,6 +359,291 @@ def test_worker_startup_persists_unrunnable_candidate_trip_before_consumption(co
         "previous_revision": 2,
         "new_revision": 3,
     }
+
+
+class _StartupRepositoryProbe:
+    def __init__(self, repository, *, lose_cas: bool, now_ms: int) -> None:
+        self._repository = repository
+        self._lose_cas = lose_cas
+        self._now_ms = now_ms
+        self.transitions: list[dict[str, object]] = []
+
+    def canary_status(self):
+        status = self._repository.canary_status()
+        activation = status.get("activation")
+        if self._lose_cas and activation is not None:
+            assert self._repository.transition_canary(
+                activation_id=str(activation["activation_id"]),
+                target_state="closed",
+                reason="concurrent_operator_close",
+                now_ms=self._now_ms - 1,
+            )
+        return status
+
+    def transition_canary(self, **kwargs):
+        self.transitions.append(dict(kwargs))
+        return self._repository.transition_canary(**kwargs)
+
+
+_STARTUP_DURABLE_CASES = [
+    ("no_activation", None, {}, "missing", None, None, False),
+    ("terminal_tripped", "tripped", {}, "missing", None, None, False),
+    ("terminal_closed", "closed", {}, "missing", None, None, False),
+    (
+        "selector_version_mismatch",
+        "active",
+        {"selector_version": "news_canary_selector_v1"},
+        "missing",
+        None,
+        "selector_version_mismatch",
+        False,
+    ),
+    (
+        "eligibility_profile_hash_mismatch",
+        "active",
+        {"eligibility_profile_sha": "0" * 64},
+        "missing",
+        None,
+        "eligibility_profile_hash_mismatch",
+        False,
+    ),
+    (
+        "rolling_profile_hash_mismatch",
+        "active",
+        {"rolling_profile_sha": "0" * 64},
+        "missing",
+        None,
+        "rolling_profile_hash_mismatch",
+        False,
+    ),
+    (
+        "candidate_manifest_missing_or_invalid",
+        "active",
+        {},
+        "missing",
+        None,
+        "candidate_manifest_missing_or_invalid",
+        False,
+    ),
+    (
+        "candidate_bundle_mismatch",
+        "active",
+        {},
+        "mismatch",
+        "parent_stale",
+        "candidate_bundle_mismatch",
+        False,
+    ),
+    ("candidate_parent_stale", "active", {}, "failed", "parent_stale", "candidate_parent_stale", False),
+    (
+        "candidate_artifact_invalid",
+        "active",
+        {},
+        "failed",
+        "artifact_invalid",
+        "candidate_artifact_invalid",
+        False,
+    ),
+    (
+        "candidate_runtime_invalid",
+        "active",
+        {},
+        "failed",
+        "runtime_invalid",
+        "candidate_runtime_invalid",
+        False,
+    ),
+    (
+        "candidate_runtime_unavailable",
+        "active",
+        {},
+        "failed",
+        "runtime_unavailable",
+        "candidate_runtime_unavailable",
+        False,
+    ),
+    ("runnable_armed", "armed", {}, "runnable", None, None, False),
+    ("runnable_active", "active", {}, "runnable", None, None, False),
+    (
+        "repository_cas_false",
+        "active",
+        {},
+        "failed",
+        "runtime_unavailable",
+        "candidate_runtime_unavailable",
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "initial_state", "activation_overrides", "fact_mode", "failure_kind", "expected_reason", "lose_cas"),
+    _STARTUP_DURABLE_CASES,
+    ids=[case[0] for case in _STARTUP_DURABLE_CASES],
+)
+def test_canary_startup_durable_parity_matrix(
+    conn,
+    case,
+    initial_state,
+    activation_overrides,
+    fact_mode,
+    failure_kind,
+    expected_reason,
+    lose_cas,
+) -> None:
+    activation_id = hashlib.sha256(f"{case}:activation".encode()).hexdigest()[:32]
+    stable_bundle = hashlib.sha256(f"{case}:stable".encode()).hexdigest()
+    candidate_sha = hashlib.sha256(f"{case}:candidate".encode()).hexdigest()
+    candidate_bundle = hashlib.sha256(f"{case}:bundle".encode()).hexdigest()
+    repos = repositories_for_connection(conn)
+    if initial_state is not None:
+        with repos.transaction():
+            repos.news.arm_canary(
+                activation_id=activation_id,
+                baseline_bundle_sha=stable_bundle,
+                candidate_manifest_sha=candidate_sha,
+                candidate_bundle_sha=candidate_bundle,
+                selector_version=activation_overrides.get("selector_version", CANARY_SELECTOR_VERSION),
+                exposure_bps=1_000,
+                eligibility_profile_sha=activation_overrides.get(
+                    "eligibility_profile_sha", CANARY_ELIGIBILITY_PROFILE_SHA
+                ),
+                rolling_profile_sha=activation_overrides.get("rolling_profile_sha", CANARY_ROLLING_PROFILE_SHA),
+                now_ms=NOW,
+            )
+            if initial_state != "active":
+                repos.news.transition_canary(
+                    activation_id=activation_id,
+                    target_state=initial_state,
+                    reason=f"setup_{initial_state}",
+                    now_ms=NOW + 1,
+                )
+
+    facts = {}
+    if fact_mode != "missing":
+        compiled_bundle = (
+            hashlib.sha256(f"{case}:other-bundle".encode()).hexdigest() if fact_mode == "mismatch" else candidate_bundle
+        )
+        facts[candidate_sha] = CandidateRuntimeFact(
+            candidate_manifest_sha=candidate_sha,
+            compiled_bundle_sha=compiled_bundle,
+            runnable_bundle_sha=compiled_bundle if fact_mode == "runnable" else None,
+            failure_kind=None if fact_mode == "runnable" else failure_kind,
+        )
+
+    before = _canary_durable_projection(conn, activation_id)
+    probe = _StartupRepositoryProbe(repos.news, lose_cas=lose_cas, now_ms=NOW + 3)
+    with repos.transaction():
+        result = reconcile_canary_startup(probe, candidate_facts=facts, now_ms=NOW + 3)
+    after = _canary_durable_projection(conn, activation_id)
+
+    assert result is bool(expected_reason is not None and not lose_cas)
+    assert len(probe.transitions) == (1 if expected_reason is not None else 0)
+    if expected_reason is not None:
+        assert probe.transitions[0] == {
+            "activation_id": activation_id,
+            "target_state": "tripped",
+            "reason": expected_reason,
+            "now_ms": NOW + 3,
+        }
+    if initial_state is None:
+        assert before is None
+        assert after is None
+    elif expected_reason is None:
+        assert after == before
+    elif lose_cas:
+        assert after == {
+            **before,
+            "state": "closed",
+            "revision": before["revision"] + 1,
+            "trip_reason": "concurrent_operator_close",
+            "deployment_receipts": before["deployment_receipts"] + 1,
+        }
+    else:
+        assert after == {
+            **before,
+            "state": "tripped",
+            "revision": before["revision"] + 1,
+            "trip_reason": expected_reason,
+            "rollback_receipts": before["rollback_receipts"] + 1,
+        }
+        receipt = conn.execute(
+            "SELECT payload FROM news_learning_artifacts WHERE kind = 'rollback_receipt' "
+            "AND payload->>'activation_id' = %s ORDER BY created_at_ms DESC LIMIT 1",
+            (activation_id,),
+        ).fetchone()["payload"]
+        assert receipt["reason"] == expected_reason
+        assert receipt["previous_revision"] == before["revision"]
+        assert receipt["new_revision"] == after["revision"]
+
+
+def _canary_durable_projection(conn, activation_id):
+    activation = conn.execute(
+        "SELECT state, revision, trip_reason FROM news_canary_activations WHERE activation_id = %s",
+        (activation_id,),
+    ).fetchone()
+    if activation is None:
+        return None
+    receipts = conn.execute(
+        "SELECT kind, count(*) AS n FROM news_learning_artifacts WHERE payload->>'activation_id' = %s GROUP BY kind",
+        (activation_id,),
+    ).fetchall()
+    counts = {str(row["kind"]): int(row["n"]) for row in receipts}
+    return {
+        **dict(activation),
+        "deployment_receipts": counts.get("deployment_receipt", 0),
+        "rollback_receipts": counts.get("rollback_receipt", 0),
+    }
+
+
+def test_canary_startup_transition_rolls_back_with_its_transaction(conn) -> None:
+    activation_id = "5" * 32
+    stable_bundle = "6" * 64
+    candidate_sha = "7" * 64
+    candidate_bundle = "8" * 64
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.arm_canary(
+            activation_id=activation_id,
+            baseline_bundle_sha=stable_bundle,
+            candidate_manifest_sha=candidate_sha,
+            candidate_bundle_sha=candidate_bundle,
+            selector_version=CANARY_SELECTOR_VERSION,
+            exposure_bps=1_000,
+            eligibility_profile_sha=CANARY_ELIGIBILITY_PROFILE_SHA,
+            rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
+            now_ms=NOW,
+        )
+        repos.news.transition_canary(
+            activation_id=activation_id,
+            target_state="armed",
+            reason="operator_hold",
+            now_ms=NOW + 1,
+        )
+
+    facts = {
+        candidate_sha: CandidateRuntimeFact(
+            candidate_manifest_sha=candidate_sha,
+            compiled_bundle_sha=candidate_bundle,
+            runnable_bundle_sha=None,
+            failure_kind="runtime_unavailable",
+        )
+    }
+    with pytest.raises(RuntimeError, match="startup_after_transition_failure"), repos.transaction():
+        assert reconcile_canary_startup(repos.news, candidate_facts=facts, now_ms=NOW + 2)
+        raise RuntimeError("startup_after_transition_failure")
+
+    activation = conn.execute(
+        "SELECT state, revision, trip_reason FROM news_canary_activations WHERE activation_id = %s",
+        (activation_id,),
+    ).fetchone()
+    assert activation == {"state": "armed", "revision": 2, "trip_reason": None}
+    receipt_count = conn.execute(
+        "SELECT count(*) AS n FROM news_learning_artifacts WHERE kind = 'rollback_receipt' "
+        "AND payload->>'activation_id' = %s AND payload->>'reason' = 'candidate_runtime_unavailable'",
+        (activation_id,),
+    ).fetchone()
+    assert receipt_count["n"] == 0
 
 
 def test_existing_candidate_assignment_revalidates_profile_before_retry(conn) -> None:

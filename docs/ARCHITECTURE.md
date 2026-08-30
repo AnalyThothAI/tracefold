@@ -375,6 +375,7 @@ tracefold.news
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
     canary.py         deterministic one-arm assignment and durable trip/close control
+    runtime.py        image candidate lineage/availability and startup Canary reconciliation
   triage_rules.py     decide() post-rules (DecidePolicy), throttle, fail-closed fallback
   program/            SemanticJudge, artifact/registry, seed instructions, chat transport, artifact_tool
   delivery.py / control.py  cards, control commands
@@ -486,6 +487,13 @@ cross-context transaction.
 business fact means. It reads business projections; it does not write business
 tables. Every `news_*` / `trading_*` `INSERT`, `UPDATE` and `DELETE` lives in
 the owning package's storage behind a named repository method.
+
+| Surface | Semantic owner | App responsibility |
+| --- | --- | --- |
+| Canary identity / durable reason | News Release | transaction + runtime facts |
+| Candidate artifact lineage | News Release runtime | image/model composition caller |
+| DSPy endpoint binding | App | full owner |
+| News → Trading projection | App mapper | field-by-field mapping |
 
 Business packages never import `tracefold.app`, provider integrations, or each
 other. Transport adapters do not own business rules. `app/workers/root.py` owns

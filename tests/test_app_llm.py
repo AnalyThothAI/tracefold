@@ -29,6 +29,7 @@ from tracefold.news.program.lm import (
 from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.program.signatures import EventSemanticsSignature
+from tracefold.news.release import runtime as release_runtime
 from tracefold.news.release.canary import (
     CANARY_ELIGIBILITY_PROFILE_SHA,
     CANARY_ROLLING_PROFILE_SHA,
@@ -739,8 +740,14 @@ def test_a_candidate_whose_parent_is_not_the_running_stable_never_resolves_an_ar
     artifact is loaded, not after — loading is what an unverified lineage would smuggle behavior through.
     """
 
-    stable = SimpleNamespace(program_sha256="a" * 64)
+    stable = SimpleNamespace(
+        bundle_sha="d" * 64,
+        program_version=PROGRAM_VERSION,
+        program_sha256="a" * 64,
+    )
+    stable_artifact = SimpleNamespace(program_sha256=stable.program_sha256)
     candidate = SimpleNamespace(
+        parent_stable_sha=stable.bundle_sha,
         candidate_arm=SimpleNamespace(program_version=PROGRAM_VERSION, program_sha256="c" * 64),
         proposal_receipt=SimpleNamespace(program_parent_sha256="b" * 64, program_candidate_sha256="c" * 64),
     )
@@ -748,10 +755,10 @@ def test_a_candidate_whose_parent_is_not_the_running_stable_never_resolves_an_ar
     def unexpected_load(_sha: str) -> Any:
         raise AssertionError("a mismatched parent must be refused before any artifact is loaded")
 
-    monkeypatch.setattr(learning_runtime, "load_program_artifact", unexpected_load)
+    monkeypatch.setattr(release_runtime, "load_program_artifact", unexpected_load)
 
     with pytest.raises(ValueError, match="news_candidate_program_parent_mismatch"):
-        learning_runtime.candidate_program_artifact(candidate, stable)
+        release_runtime.candidate_program_artifact(candidate, stable, stable_artifact=stable_artifact)
 
 
 class _StartupNewsRepository:
@@ -921,15 +928,15 @@ def test_canary_control_excludes_a_manifest_whose_program_artifact_cannot_load(m
         program_sha256="b" * 64,
     )
     stable_artifact = SimpleNamespace(program_sha256=stable_arm.program_sha256)
-    monkeypatch.setattr(learning_runtime, "load_stable_program_artifact", lambda: stable_artifact)
+    monkeypatch.setattr(release_runtime, "load_stable_program_artifact", lambda: stable_artifact)
 
     def reject_artifact(_program_sha256: str) -> Any:
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(learning_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
 
     assert (
-        learning_runtime.artifact_valid_candidate_bundles(
+        release_runtime.artifact_valid_candidate_bundles(
             stable_arm,
             {candidate.candidate_sha: candidate},
         )
@@ -1034,7 +1041,7 @@ def test_worker_startup_isolates_bad_candidate_artifact_and_trips_active_activat
     def reject_artifact(_program_sha256: str) -> Any:
         raise ValueError("news_program_artifact_hash_mismatch")
 
-    monkeypatch.setattr(learning_runtime, "load_program_artifact", reject_artifact)
+    monkeypatch.setattr(release_runtime, "load_program_artifact", reject_artifact)
 
     pipeline, news = _wire_startup_test(
         monkeypatch,

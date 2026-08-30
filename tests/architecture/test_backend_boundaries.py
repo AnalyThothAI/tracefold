@@ -45,6 +45,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.artifact_identity",
         "tracefold.news.bus",
         "tracefold.news.release.canary",
+        "tracefold.news.release.runtime",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
         # #199. The framework-neutral objective: which accepted cases GEPA may optimize, which ones hold it
@@ -152,6 +153,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # that turns a lane's admission timeout into the Defer/Transient distinction the broker acts on.
         "tracefold.news.bus",
         "tracefold.news.release.canary",
+        "tracefold.news.release.runtime",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
         "tracefold.news.oi_signals",
@@ -477,6 +479,40 @@ def test_production_sql_lives_in_owned_storage_or_an_explicit_adapter() -> None:
     assert sql_paths, "production SQL location scan must fail closed"
 
     violations = sorted(path for path in sql_paths if not _sql_location_allowed(path))
+    assert violations == []
+
+
+def test_app_composition_does_not_own_news_canary_release_semantics() -> None:
+    """App may pass runtime facts, but News Release owns lineage, reasons, and transitions."""
+
+    durable_reasons = {
+        "selector_version_mismatch",
+        "eligibility_profile_hash_mismatch",
+        "rolling_profile_hash_mismatch",
+        "candidate_manifest_missing_or_invalid",
+        "candidate_bundle_mismatch",
+        "candidate_parent_stale",
+        "candidate_artifact_invalid",
+        "candidate_runtime_invalid",
+        "candidate_runtime_unavailable",
+    }
+    lineage_attributes = {
+        "parent_stable_sha",
+        "program_parent_sha256",
+        "program_candidate_sha256",
+    }
+    violations: list[str] = []
+    for path in _python_files(SRC / "app"):
+        relative = path.relative_to(SRC)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                if node.func.attr == "transition_canary":
+                    violations.append(f"{relative.as_posix()} calls transition_canary")
+            elif isinstance(node, ast.Attribute) and node.attr in lineage_attributes:
+                violations.append(f"{relative.as_posix()} interprets {node.attr}")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in durable_reasons:
+                violations.append(f"{relative.as_posix()} owns durable reason {node.value}")
     assert violations == []
 
 
