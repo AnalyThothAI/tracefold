@@ -60,11 +60,12 @@ log = logging.getLogger("tracefold.news.bus")
 # generous enough that a busy broker does not fail a deploy-time policy apply.
 _MANAGEMENT_TIMEOUT_SECONDS: Final = 20.0
 _DEFAULT_MANAGEMENT_PORT: Final = 15672
-# How long a broker write (a policy import, a topology declaration) may take to become visible to a
-# management read before verification calls it a failure. The management API publishes queue rows and
-# their effective policy on its own statistics interval: measured on 4.3.5, a freshly declared queue
-# reports `effective_policy_definition: {}` for 1.5-3.7 s before the real policy appears. Public
-# because the consumer attach in Workers bounds its pre-consume verification with the same budget.
+# How long a freshly declared topology may take to become visible to a management read before
+# verification calls it a failure. The management API publishes queue rows and their effective policy
+# on its own statistics interval: measured on 4.3.5, a freshly declared queue reports
+# `effective_policy_definition: {}` for 1.5-3.7 s before the real policy appears. Public because the
+# consumer attach in Workers bounds its pre-consume verification with this budget, and the broker
+# integration tests settle with the same one.
 POLICY_EFFECTIVE_TIMEOUT_SECONDS: Final = 30.0
 _QUEUE_COLUMNS: Final = ",".join(
     (
@@ -141,8 +142,23 @@ def topology(prefix: str = "") -> Topology:
     return Topology(exchange=ex, dlx=dlx, queues=queues)
 
 
+def _policy_mismatch(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> dict[str, Any]:
+    """Name -> {expected, actual} for every entry that differs; the one diff both verifications raise."""
+
+    return {
+        name: {"expected": want, "actual": actual.get(name)}
+        for name, want in expected.items()
+        if actual.get(name) != want
+    }
+
+
 class BrokerPolicyMismatch(RuntimeError):
-    """The broker's effective policy is not the checked-in News retry contract."""
+    """The broker is not carrying the checked-in News retry contract.
+
+    Raised in two flavors, named by the JSON key in the message: ``news_broker_policy_document_mismatch``
+    (a policy document differs from the checked-in one — re-apply it) and ``news_broker_policy_mismatch``
+    (a declared queue's effective policy differs — find what shadows or edited it).
+    """
 
 
 class RabbitMQBus:
@@ -439,49 +455,45 @@ class RabbitMQBus:
 
     # ---------------- policy ----------------
     async def apply_policies(self) -> dict[str, Any]:
-        """Import the checked-in policy document, then read back until the broker reports it.
+        """Import the checked-in policy document, then read it back.
 
-        Explicit operator/deploy step, never a runtime repair. The import is one declarative write; the
-        loop that follows is read-after-write confirmation, because the management API publishes a
-        queue's effective policy on its own statistics interval. It never writes twice, and it fails
-        rather than returning success the deploy would go on to trust.
+        Explicit operator/deploy step, never a runtime repair. The import is one declarative write, and
+        the read-back is immediate: `POST /api/definitions` is a synchronous metadata write and
+        `GET /api/policies` reads the same metadata store, not the lagging statistics database (measured
+        sub-second on a fresh 4.3.5 broker). It never writes twice, and it fails rather than returning
+        success the deploy would go on to trust.
         """
 
         document = broker_policy.definitions_document(
             name_prefix=self._prefix, vhost=self._management.vhost, delay_ms=self._retry_delay_ms
         )
         await self._management.import_definitions(document)
-        deadline = asyncio.get_running_loop().time() + POLICY_EFFECTIVE_TIMEOUT_SECONDS
-        while True:
-            try:
-                await self.verify_policy_documents()
-                break
-            except BrokerPolicyMismatch:
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise
-                await asyncio.sleep(0.5)
+        await self.verify_policy_documents()
         return {"vhost": self._management.vhost, "policies": [entry["name"] for entry in document["policies"]]}
 
     async def verify_policy_documents(self) -> dict[str, Any]:
-        """The four policies exist on the broker with exactly the checked-in definitions.
+        """The four policies exist on the broker exactly as checked in — every field, not just the definition.
 
         This is what `apply_policies` reads back, and it is deliberately not the per-queue check. A
         RabbitMQ policy is a name-pattern rule that exists whether or not anything matches it yet, so
         asking about queues here would make provisioning depend on the topology — which is backwards on
         a fresh broker (no queues until a consumer declares them) and impossible during the #400 cutover
         (the old queues have to go before the new ones can be declared).
+
+        The comparison covers the complete entry (pattern, apply-to, priority, definition): a pattern
+        edited to match nothing or a lowered priority ungoverns a queue exactly as thoroughly as a
+        deleted policy. What it cannot see is a differently-named policy shadowing these — only the
+        per-queue effective check can, which is why Workers still refuses on that before consuming.
         """
 
         expected = {
-            policy.name: dict(policy.definition)
-            for policy in broker_policy.policies(name_prefix=self._prefix, delay_ms=self._retry_delay_ms)
+            entry["name"]: entry
+            for entry in broker_policy.definitions_document(
+                name_prefix=self._prefix, vhost=self._management.vhost, delay_ms=self._retry_delay_ms
+            )["policies"]
         }
         actual = await self._management.policies()
-        mismatched = {
-            name: {"expected": want, "actual": actual.get(name)}
-            for name, want in expected.items()
-            if actual.get(name) != want
-        }
+        mismatched = _policy_mismatch(expected, actual)
         if mismatched:
             raise BrokerPolicyMismatch(json.dumps({"news_broker_policy_document_mismatch": mismatched}, sort_keys=True))
         return {"verified": sorted(expected)}
@@ -502,7 +514,10 @@ class RabbitMQBus:
         ``settle_timeout_seconds`` exists for the moment right after ``declare_topology``: the management
         API publishes a fresh queue's effective policy on its own statistics interval, so on a fresh
         broker the first read reports ``{}`` for every queue the policy in fact already governs. The
-        consumer attach retries inside that bound instead of dying on a truthful-but-early read.
+        consumer attach retries inside that bound instead of dying on a truthful-but-early read, and the
+        same bound rides out a management listener that is still warming up after a broker restart
+        (`BrokerUnavailable` on the read). ``None`` means one strict read that fails immediately — the
+        opposite of the wait-forever most timeout parameters mean by ``None``.
 
         Verification is not repair: a mismatch is reported and refused, never silently corrected, so a
         removed or edited policy can never degrade into immediate redelivery or at-most-once dead
@@ -515,12 +530,14 @@ class RabbitMQBus:
             asyncio.get_running_loop().time() + settle_timeout_seconds if settle_timeout_seconds is not None else None
         )
         while True:
-            actual = await self.effective_policies()
-            mismatched = {
-                name: {"expected": want, "actual": actual.get(name)}
-                for name, want in expected.items()
-                if actual.get(name) != want
-            }
+            try:
+                actual = await self.effective_policies()
+            except news_bus.BrokerUnavailable:
+                if deadline is None or asyncio.get_running_loop().time() >= deadline:
+                    raise
+                await asyncio.sleep(0.5)
+                continue
+            mismatched = _policy_mismatch(expected, actual)
             if not mismatched:
                 return {"verified": sorted(expected)}
             if deadline is None or asyncio.get_running_loop().time() >= deadline:
@@ -769,9 +786,18 @@ class _Management:
         await self._request("POST", "/api/definitions", dict(document))
 
     async def policies(self) -> dict[str, dict[str, Any]]:
+        """Name -> the complete policy entry, shaped like a definitions-document row for direct diffing."""
+
         rows = await self._request("GET", f"/api/policies/{quote(self.vhost, safe='')}")
         return {
-            str(row["name"]): dict(row.get("definition") or {})
+            str(row["name"]): {
+                "vhost": row.get("vhost"),
+                "name": str(row["name"]),
+                "pattern": row.get("pattern"),
+                "apply-to": row.get("apply-to"),
+                "priority": row.get("priority"),
+                "definition": dict(row.get("definition") or {}),
+            }
             for row in rows or []
             if isinstance(row, dict) and row.get("name")
         }

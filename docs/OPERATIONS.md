@@ -536,10 +536,14 @@ API () { curl -fsS -u "$USER:$PASS" "$@" http://127.0.0.1:15672/api/queues/%2F; 
    command, and `uv run` reaches the same broker because the compose host name is
    rewritten to its published loopback port. The command deliberately opens no
    AMQP connection and declares no topology, so it works while the queues still
-   have their old shape. A policy overrides a queue argument on 4.3, so from here
-   the retry contract is already in force and there is no later window in which a
-   queue is unconfigured. Every deployment after this one re-applies it through
-   the `rabbitmq-policy` Compose service.
+   have their old shape. What it proves is the policy documents — every field of
+   the checked-in entries, verbatim on the broker. A policy overrides a queue
+   argument on 4.3 and applies the moment a matching queue exists, so the
+   business queues are never argument-less and unconfigured at once; the
+   per-queue confirmation that the policies actually govern the new queues is
+   step 7, where Workers verifies the effective policy before consuming, and
+   step 8's `bus-check`. Every deployment after this one re-applies the
+   documents through the `rabbitmq-policy` Compose service.
 3. Observe the old lane and let it drain: `API | jq '.[] | select(.name=="news.retry")'`.
    Record ready, unacked and the oldest message.
 4. If anything in `news.retry` cannot drain deterministically, stop here. Do not

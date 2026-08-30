@@ -848,13 +848,14 @@ class _StartupBus:
         del url, connect_timeout_seconds, management_url, telemetry
         self.prefix = name_prefix
         self.connected = False
+        self.settle_timeout_seconds: float | None = None
         self.policies_verified = False
 
     async def connect(self) -> None:
         self.connected = True
 
     async def verify_policies(self, *, settle_timeout_seconds: float | None = None) -> dict[str, Any]:
-        del settle_timeout_seconds
+        self.settle_timeout_seconds = settle_timeout_seconds
         self.policies_verified = True
         return {"verified": []}
 
@@ -982,6 +983,12 @@ def _wire_startup_test(
     )
 
     assert bus.connected is True
+    # The attach must run the bounded settle before consuming: a one-shot read dies inside the
+    # management statistics interval on every fresh broker volume (#400).
+    from tracefold.integrations.rabbitmq import POLICY_EFFECTIVE_TIMEOUT_SECONDS
+
+    assert bus.policies_verified is True
+    assert bus.settle_timeout_seconds == POLICY_EFFECTIVE_TIMEOUT_SECONDS
     assert pipeline.triage.judge is stable_program
     assert pipeline.deliverer._progression_verifier is progression_verifier
     assert identity_reads == 1
