@@ -256,17 +256,23 @@ Both `make up` and `make deploy-image` acquire the repository deployment lock,
 then run `verify-main-ci` while that lock is held and before any deployment
 mutation. The private implementation targets verify the inherited lock file
 descriptor, so setting an environment flag or invoking them directly cannot
-bypass either control. `make db-migrate` runs the same verifier before its
-cutover preflight (#373). It applies Alembic revisions to the production
-database from whatever tree invoked it, so it is a deployment of application
-source even though it starts no container; until #373 its only prerequisite was
-that git, uv and docker existed. Which entries are covered is no longer a list
-someone maintains: `tests/deploy/test_main_ci_gate.py` derives the set from the
-Makefile by what each recipe does, so a new entry that starts the image or
-migrates the database cannot be added without the gate. `db-provision-nautilus-role`
-is deliberately outside it — it runs a script baked into the postgres image
-against an offline volume and ships no application code, and requiring a green
-`main` would make a recovery harder without making a deployment safer.
+bypass either control. `make db-migrate` and `make db-provision-nautilus-role`
+take the same lock and run the same verifier (#373). Both put working-tree source
+in front of production without starting the application image: the first applies
+Alembic revisions to the production database, and the second executes
+`docker/postgres-provision-nautilus-role.sh` — which `compose.yaml` bind-mounts
+into the postgres container rather than baking into the image — as the `postgres`
+superuser against the production volume. Until #373 the only prerequisite for
+either was that git, uv and docker existed.
+
+Which entries are covered is no longer a list someone maintains:
+`tests/deploy/test_main_ci_gate.py` derives the set from the Makefile by what each
+recipe does. It classifies a recipe that runs `docker compose up`, `build` or
+`run`, that applies Alembic revisions, or that runs the image directly, and it
+asserts the derived set still contains the four known entries so a derivation that
+stopped matching cannot pass by finding nothing. The three read-only preflights
+and the observe-or-stop targets (`down`, `status`, `logs`, the `*-shell` pair) are
+not classified, because they change nothing.
 The gate requires the primary checkout on `main`, a
 clean source tree, `HEAD` equal to both the local and live remote `origin/main`,
 and that exact SHA's latest `ci-gate` check to be completed and successful

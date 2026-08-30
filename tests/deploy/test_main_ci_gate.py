@@ -12,19 +12,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 pytestmark = pytest.mark.deploy
 
-# What "deploys application source" means, mechanically: something that puts *this repository's*
-# code — the image built from it, or its Alembic revisions — in front of production.
+# What "deploys application source" means, mechanically: something that starts, builds or runs a
+# container from this repository's Compose stack, or applies its Alembic revisions. `docker compose
+# run` counts — `compose.yaml` mounts working-tree scripts into service containers, so "it is the
+# postgres image" is not the same claim as "it is not our code". #373 got that wrong once: the
+# provisioning entrypoint looks image-owned and is in fact bind-mounted from `docker/`.
 _DEPLOYS_APPLICATION_SOURCE = (
-    re.compile(r"docker compose[^\n]*\bup\b"),
-    re.compile(r"docker compose[^\n]*\bbuild\b"),
+    # The subcommand, not the word anywhere in the line: `docker compose exec ... /run/secrets/...`
+    # is a read, and matching `run` loosely classified all three read-only preflights as deployments.
+    re.compile(r"docker compose(?:\s+--?\S+)*\s+(?:up|build|run)\b"),
     re.compile(r"\btracefold db migrate\b"),
-    re.compile(r"docker run[^\n]*tracefold"),
+    re.compile(r"docker run\s[^;\n]*?tracefold"),
 )
-# The one production-touching recipe that ships no application code: a script baked into the
-# postgres image, run against an offline volume to create a database role. Requiring a green main
-# for it would make a recovery harder without making a deployment safer.
-_RUNS_AN_IMAGE_OWNED_SCRIPT = re.compile(r"--entrypoint /usr/local/bin/tracefold-provision-")
 _PRIVATE_TARGET = re.compile(r"make --no-print-directory (_[a-z-]+)")
+# `make --dry-run` prints recipes with their backslash continuations intact, so a command split
+# across physical lines would escape a line-anchored pattern. Joining them first is also what
+# lets the patterns above exclude newlines: one logical command is then one line, and
+# `docker compose ps` on line 3 can no longer reach the word `run` on line 11.
+_LINE_CONTINUATION = re.compile(r"\\\n\s*")
 
 
 def _make_targets() -> tuple[str, ...]:
@@ -33,7 +38,7 @@ def _make_targets() -> tuple[str, ...]:
 
 
 def _dry_run(target: str) -> str:
-    return subprocess.run(
+    recipe = subprocess.run(
         ["make", "--dry-run", target],
         cwd=ROOT,
         capture_output=True,
@@ -41,6 +46,7 @@ def _dry_run(target: str) -> str:
         text=True,
         timeout=60,
     ).stdout
+    return _LINE_CONTINUATION.sub(" ", recipe)
 
 
 def _repository(tmp_path: Path) -> Path:
@@ -398,19 +404,25 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
     whatever tree invoked it, and its only prerequisite was that git, uv and docker existed — but it
     was not in the list, so nothing looked. Classifying by what a recipe *does* removes the list.
 
-    Three things are deliberately not in scope, and saying so here is cheaper than rediscovering it:
-    `db-provision-nautilus-role` runs a script baked into the *postgres* image against an offline
-    volume and ships no application code; the `*-preflight` targets are read-only proofs; and
-    `down`, `status`, `logs` and the `*-shell` targets observe or stop what is already running.
+    There is no exemption list, and the first draft of this test is why. It exempted
+    `db-provision-nautilus-role` on the grounds that its entrypoint is "a script baked into the
+    postgres image" — which `compose.yaml` disproves in one line, by bind-mounting
+    `./docker/postgres-provision-nautilus-role.sh` over that path. It runs working-tree source as the
+    `postgres` superuser against the production volume. An exemption is a claim about code someone
+    has to keep re-verifying; not having one is cheaper and was, in this case, also correct.
+
+    Still out of scope, because they are not classified in the first place: the `*-preflight` targets
+    are read-only proofs, and `down`, `status`, `logs` and the `*-shell` targets observe or stop what
+    is already running.
     """
 
+    classified: list[str] = []
     ungated: list[str] = []
     for target in _make_targets():
         recipe = _dry_run(target)
-        if _RUNS_AN_IMAGE_OWNED_SCRIPT.search(recipe):
-            continue
         if not any(pattern.search(recipe) for pattern in _DEPLOYS_APPLICATION_SOURCE):
             continue
+        classified.append(target)
         # A public entry may reach the verifier through the private target it takes the lock for,
         # which `make --dry-run` does not expand for it.
         reachable = recipe + "".join(_dry_run(private) for private in _PRIVATE_TARGET.findall(recipe))
@@ -418,3 +430,13 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
             ungated.append(target)
 
     assert ungated == []
+    # A classifier that stopped recognising anything would satisfy the line above by finding nothing
+    # to check, which is the failure mode this whole test exists to remove. These three are what puts
+    # this repository's code in front of production today; a fourth is welcome, a missing one means
+    # the patterns stopped matching the Makefile rather than that the risk went away.
+    assert set(classified) >= {
+        "_up-locked",
+        "_deploy-image-locked",
+        "_db-migrate-locked",
+        "_db-provision-nautilus-role-locked",
+    }
