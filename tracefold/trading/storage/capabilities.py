@@ -126,9 +126,30 @@ class CapabilityStorage:
             """,
             (snapshot.binding,),
         ).fetchone()
-        if runtime is None or runtime["control"] != "PAUSED" or binding is None:
+        if runtime is None or binding is None:
             return False
         if binding["catalog_snapshot_sha256"] != snapshot.catalog_snapshot_sha256:
+            return False
+        self.conn.execute(
+            """
+            UPDATE trading_binding_runtime AS runtime
+               SET capability_state = CASE
+                     WHEN runtime.capability_state <> 'error' THEN runtime.capability_state
+                     WHEN runtime.capability_snapshot_sha256 IS NULL THEN 'missing'
+                     WHEN EXISTS (
+                       SELECT 1 FROM trading_execution_capability_snapshots active
+                        WHERE active.snapshot_sha256 = runtime.capability_snapshot_sha256
+                          AND active.catalog_snapshot_sha256 = runtime.catalog_snapshot_sha256
+                     ) THEN 'ready'
+                     ELSE 'stale'
+                   END,
+                   capability_compile_error = NULL,
+                   updated_at_ms = %s
+             WHERE runtime.binding = %s
+            """,
+            (int(created_at_ms), snapshot.binding),
+        )
+        if runtime["control"] != "PAUSED":
             return False
         if binding["account_state"] != "reconciled_flat":
             return False

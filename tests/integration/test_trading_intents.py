@@ -1035,6 +1035,107 @@ def test_initial_capability_activation_requires_the_exact_catalog_and_flat_accou
     _reset_authority(conn)
 
 
+@pytest.mark.parametrize("projection", ("missing", "ready", "stale"))
+def test_successful_compile_clears_stale_error_without_moving_authority(
+    conn: Any,
+    projection: str,
+) -> None:
+    repos = repositories_for_connection(conn)
+    _reset_authority(conn)
+    conn.commit()
+
+    with conn.transaction():
+        current_catalog = CATALOG_SNAPSHOT
+        if projection == "stale":
+            current_catalog = binance_catalog(captured_at_ms=NOW + 2, symbols=("BTCUSDT",))
+            store_catalog_fixture(repos.trading, current_catalog, now_ms=NOW + 2)
+        compiled = binance_capability(
+            catalog=current_catalog,
+            app_revision=f"successful-inactive-compile-{projection}",
+        )
+        missing_projection = projection == "missing"
+        conn.execute(
+            "UPDATE trading_binding_runtime SET capability_state = 'error', "
+            "capability_snapshot_sha256 = CASE WHEN %s THEN NULL ELSE capability_snapshot_sha256 END, "
+            "capability_compiled_at_ms = CASE WHEN %s THEN NULL ELSE capability_compiled_at_ms END, "
+            "capability_compile_error = 'execution_capability_validationerror_failed', "
+            "execution_binding_sha256 = CASE WHEN %s THEN NULL ELSE execution_binding_sha256 END, "
+            "account_state = 'unknown' WHERE binding = 'BINANCE_USDM'",
+            (missing_projection, missing_projection, missing_projection),
+        )
+
+        assert not repos.trading.append_and_activate_execution_capability_snapshot(
+            compiled,
+            created_at_ms=NOW + 3,
+        )
+
+        runtime = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 3)
+        assert runtime is not None
+        assert runtime.capability_state == projection
+        assert runtime.capability_compile_error is None
+        if missing_projection:
+            assert runtime.capability_snapshot_sha256 is None
+            assert runtime.capability_compiled_at_ms is None
+            assert runtime.execution_binding_sha256 is None
+        else:
+            assert runtime.capability_snapshot_sha256 == CAPABILITY_SNAPSHOT.snapshot_sha256
+            assert runtime.capability_compiled_at_ms == NOW
+            assert runtime.execution_binding_sha256 == EXECUTION_BINDING.binding_sha256
+        assert repos.trading.execution_capability_snapshot(compiled.snapshot_sha256) == compiled
+
+    _reset_authority(conn)
+    conn.commit()
+
+
+def test_late_success_for_stale_catalog_cannot_clear_current_compile_error(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    compiled = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "late-success"})
+    current_catalog = binance_catalog(captured_at_ms=NOW + 4, symbols=("BTCUSDT",))
+    started = Event()
+    _reset_authority(conn)
+    conn.commit()
+
+    def publish_stale_snapshot() -> bool:
+        contender = connect_postgres_test(read_only=False)
+        try:
+            contender_repos = repositories_for_connection(contender)
+            with contender.transaction():
+                started.set()
+                return contender_repos.trading.append_and_activate_execution_capability_snapshot(
+                    compiled,
+                    created_at_ms=NOW + 5,
+                )
+        finally:
+            contender.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with conn.transaction():
+            conn.execute(
+                "SELECT binding FROM trading_binding_runtime WHERE binding = 'BINANCE_USDM' FOR UPDATE"
+            ).fetchone()
+            future = pool.submit(publish_stale_snapshot)
+            assert started.wait(timeout=5)
+            with pytest.raises(FutureTimeoutError):
+                future.result(timeout=0.5)
+            store_catalog_fixture(repos.trading, current_catalog, now_ms=NOW + 4)
+            conn.execute(
+                "UPDATE trading_binding_runtime SET capability_state = 'error', "
+                "capability_compile_error = 'execution_capability_current_catalog_failed' "
+                "WHERE binding = 'BINANCE_USDM'"
+            )
+        assert future.result(timeout=5) is False
+
+    runtime = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 5)
+    assert runtime is not None
+    assert runtime.catalog_snapshot_sha256 == current_catalog.snapshot_sha256
+    assert runtime.capability_state == "error"
+    assert runtime.capability_compile_error == "execution_capability_current_catalog_failed"
+    assert repos.trading.execution_capability_snapshot(compiled.snapshot_sha256) == compiled
+    conn.rollback()
+    _reset_authority(conn)
+    conn.commit()
+
+
 def test_execution_binding_activation_is_atomic_with_current_generation_and_capability(conn: Any) -> None:
     _case(conn)
     repos = repositories_for_connection(conn)
