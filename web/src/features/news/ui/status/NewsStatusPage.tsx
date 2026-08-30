@@ -14,6 +14,7 @@ import {
 import {
   HEALTH_ITEM_KEYS,
   absoluteTime,
+  brokerQueueSummary,
   formatCount,
   healthItemEyebrow,
   healthItemTitle,
@@ -434,11 +435,7 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
           <KeyValueRow k="observed_at_ms" v={optionalTime(status.broker.observed_at_ms)} />
           <KeyValueRow k="error_code" v={status.broker.error_code ?? "—"} />
           {queues.map(([name, queue]) => (
-            <KeyValueRow
-              k={name}
-              key={name}
-              v={`${queue.messages} 条 · ${queue.consumers} 消费者`}
-            />
+            <KeyValueRow k={name} key={name} v={brokerQueueSummary(queue)} />
           ))}
         </KeyValue>
       </section>

@@ -131,12 +131,34 @@ async def publish_verdict(
         return "marker_pending"
 
 
-def _open_circuit_incident(repos: Any, *, now_ms: int) -> Any:
-    return repos.news.open_incident(cause_class="triage_circuit_open", now_ms=now_ms)
+def _circuit_incident_for(
+    arm: _ArmSelection, attempts: _ProgramAttempts, *, stamp: int
+) -> Literal["open", "close"] | None:
+    """Which durable transition this settle owes the `triage_circuit_open` incident.
+
+    Derived from state that survives a retry, never from a remembered edge: a stable Program answer
+    means the provider is back, and an open stable breaker means it is not. A candidate arm owns a
+    canary, not this incident, and the deterministic OI and liquidation lanes never reach here.
+    """
+
+    if arm.arm == "candidate":
+        return None
+    if attempts.stable_program_answered:
+        return "close"
+    return "open" if arm.circuit.is_open(stamp) else None
 
 
-def _close_circuit_incidents(repos: Any, *, now_ms: int) -> Any:
-    return repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms)
+def _apply_circuit_incident(repos: Any, transition: Literal["open", "close"], *, now_ms: int) -> None:
+    """The one durable Triage-circuit write, inside the verdict's transaction.
+
+    Both statements are idempotent, so repeating them after a retried transaction is a no-op rather than
+    a second incident or a second close.
+    """
+
+    if transition == "open":
+        repos.news.open_incident(cause_class="triage_circuit_open", now_ms=now_ms)
+    else:
+        repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms)
 
 
 def _evaluate_canary_rolling_slo(repos: Any, *, activation_id: str, now_ms: int) -> dict[str, Any]:
@@ -177,7 +199,6 @@ class TriageConsumer:
         self._circuit_failures = int(circuit_failures)
         self._circuit_open_seconds = float(circuit_open_seconds)
         self._candidate_circuits: dict[str, _Circuit] = {}
-        self._circuit_incident_open = False
         self.policy = policy
         self.oi_policy = oi_policy
         self._canary_enabled = stable_bundle_sha is not None
@@ -215,12 +236,14 @@ class TriageConsumer:
         )
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
-        # A fresh process starts with a closed circuit: an incident left open by a previous process is over.
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx(
-                "news_triage_circuit_reconcile",
-                lambda repos: repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms()),
-            )
+        # A fresh process starts with a closed circuit: an incident left open by a previous process is
+        # over. This is not best-effort. Beginning to consume without knowing whether PostgreSQL still
+        # shows a circuit open would make the durable incident permanently wrong, so the failure fails
+        # the Workers root and the supervised restart tries again.
+        await self.db.tx(
+            "news_triage_circuit_reconcile",
+            lambda repos: repos.news.close_open_incidents(cause_classes=["triage_circuit_open"], now_ms=now_ms()),
+        )
         await self.bus.consume(Q_TRIAGE, self.handle, prefetch=self.concurrency, stop_event=stop_event)
 
     async def handle(self, message: BusMessage) -> None:
@@ -558,14 +581,11 @@ class TriageConsumer:
             log.warning("news semantic program output unusable event=%s code=%s", route.event_id, exc.code)
             if arm.arm == "candidate" and arm.activation_id:
                 await self._trip_canary(arm.activation_id, "candidate_schema_contract_breach", route.stamp)
-        elif exc.retryable and arm.circuit.record_failure(route.stamp):
-            if arm.arm != "candidate":
-                self._circuit_incident_open = True
-                with contextlib.suppress(TransientError, DeferError):
-                    await self.db.tx(
-                        "news_triage_circuit",
-                        functools.partial(_open_circuit_incident, now_ms=route.stamp),
-                    )
+        elif exc.retryable:
+            # Tripping the breaker is process state; the incident it implies is PostgreSQL's. The trip is
+            # not written here — `_settle_for` reads the breaker and the persist transaction opens the
+            # incident — so a failed transaction cannot leave the trip recorded only in memory.
+            arm.circuit.record_failure(route.stamp)
 
     async def _accept_program_call(
         self,
@@ -602,13 +622,7 @@ class TriageConsumer:
                 return _resolve_after_reask_failure(route, attempts=attempts, code=code, trace=trace)
             return _degraded_judgment(route, code)
         arm.circuit.record_success()
-        if arm.arm == "stable" and self._circuit_incident_open:
-            self._circuit_incident_open = False
-            with contextlib.suppress(TransientError, DeferError):
-                await self.db.tx(
-                    "news_triage_circuit_close",
-                    functools.partial(_close_circuit_incidents, now_ms=route.stamp),
-                )
+        attempts.stable_program_answered = attempts.stable_program_answered or arm.arm == "stable"
         attempts.model_name = call.answering_model
         attempts.selected_index = index
         attempts.executions[index]["status"] = "accepted"
@@ -669,6 +683,7 @@ class TriageConsumer:
             trace=trace,
             stamp=route.stamp,
             allow_stale=not attempts.reasked and not judged.degraded,
+            circuit_incident=_circuit_incident_for(arm, attempts, stamp=route.stamp),
         )
 
     async def _refresh_after_stale(
@@ -1133,6 +1148,8 @@ class TriageConsumer:
     ) -> _TriageOutcome:
         """Re-check the locked snapshot and persist only already-materialized values."""
 
+        if s.circuit_incident is not None:
+            _apply_circuit_incident(repos, s.circuit_incident, now_ms=s.stamp)
         repos.news.lock_storyline(s.final_key)
         locked_revision = repos.news.reader_history_revision(now_ms=s.stamp)
         if locked_revision != s.history.ledger_revision:

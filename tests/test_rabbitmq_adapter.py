@@ -8,7 +8,7 @@ import pytest
 from aio_pika.exceptions import ChannelInvalidStateError
 
 from tracefold.integrations.rabbitmq import RabbitMQBus
-from tracefold.news.bus import BrokerUnavailable, BusMessage, PermanentError, TransientError
+from tracefold.news.bus import BrokerUnavailable, BusMessage, DeferError, PermanentError, TransientError
 from tracefold.news.telemetry import NewsDurableEventTelemetryPort, NewsRabbitConsumerFatalReason
 
 
@@ -29,14 +29,17 @@ class _Incoming:
         *,
         ack_error: BaseException | None = None,
         reject_error: BaseException | None = None,
+        nack_error: BaseException | None = None,
+        body: bytes | None = None,
     ) -> None:
         message = _event()
-        self.body = message.body()
+        self.body = message.body() if body is None else body
         self.routing_key = message.routing_key
         self.priority = 0
         self.headers: dict[str, object] = {}
         self.ack_error = ack_error
         self.reject_error = reject_error
+        self.nack_error = nack_error
         self.actions: list[tuple[str, bool | None]] = []
 
     async def ack(self) -> None:
@@ -48,6 +51,11 @@ class _Incoming:
         if self.reject_error is not None:
             raise self.reject_error
         self.actions.append(("reject", requeue))
+
+    async def nack(self, *, requeue: bool = True, multiple: bool = False) -> None:
+        if self.nack_error is not None:
+            raise self.nack_error
+        self.actions.append(("nack", requeue))
 
 
 class _Iterator:
@@ -101,7 +109,6 @@ class _ConsumerBus(RabbitMQBus):
         self,
         channel: _Channel,
         *,
-        retry_error: BaseException | None = None,
         telemetry: _Telemetry | None = None,
         name_prefix: str = "",
     ) -> None:
@@ -111,18 +118,12 @@ class _ConsumerBus(RabbitMQBus):
             name_prefix=name_prefix,
         )
         self.channel = channel
-        self.retry_error = retry_error
 
     async def connect(self) -> None:
         return None
 
     async def _channel(self) -> Any:
         return self.channel
-
-    async def publish_retry(self, _message: BusMessage) -> bool:
-        if self.retry_error is not None:
-            raise self.retry_error
-        return True
 
 
 class _Telemetry:
@@ -141,6 +142,98 @@ def _leaves(exc: BaseException) -> list[BaseException]:
     if isinstance(exc, BaseExceptionGroup):
         return [leaf for nested in exc.exceptions for leaf in _leaves(nested)]
     return [exc]
+
+
+def _run_one(handler: Any, incoming: _Incoming, *, telemetry: _Telemetry | None = None) -> None:
+    """Deliver exactly one message to `handler` through the real consume loop, then stop."""
+
+    async def scenario() -> None:
+        channel = _Channel(incoming)
+        bus = _ConsumerBus(channel, telemetry=telemetry)
+        stop = asyncio.Event()
+
+        async def once(message: BusMessage) -> None:
+            try:
+                await handler(message)
+            finally:
+                stop.set()
+
+        await asyncio.wait_for(bus.consume("news.triage", once, prefetch=1, stop_event=stop), timeout=1)
+
+    asyncio.run(scenario())
+
+
+def test_success_acks_and_nothing_else() -> None:
+    incoming = _Incoming()
+
+    async def handler(_message: BusMessage) -> None:
+        return None
+
+    _run_one(handler, incoming)
+    assert incoming.actions == [("ack", None)]
+
+
+def test_transient_is_the_counted_broker_return_with_no_republish() -> None:
+    """A transient failure settles as `basic.reject(requeue=True)` and nothing else.
+
+    That settlement is what increments the broker's `x-delivery-count`, so the delivery limit — not an
+    application counter — decides when the message becomes terminal. An ack, a nack or a republish here
+    would each silently restore the deleted retry lane's semantics.
+    """
+
+    incoming = _Incoming()
+
+    async def handler(_message: BusMessage) -> None:
+        raise TransientError("try again")
+
+    _run_one(handler, incoming)
+    assert incoming.actions == [("reject", True)]
+
+
+def test_defer_is_the_uncounted_broker_return() -> None:
+    """A defer settles as `basic.nack(requeue=True)`, which RabbitMQ does not count as a failure."""
+
+    incoming = _Incoming()
+
+    async def handler(_message: BusMessage) -> None:
+        raise DeferError("db lane busy")
+
+    _run_one(handler, incoming)
+    assert incoming.actions == [("nack", True)]
+
+
+def test_permanent_failure_is_terminal_rejection() -> None:
+    incoming = _Incoming()
+
+    async def handler(_message: BusMessage) -> None:
+        raise PermanentError("nope")
+
+    _run_one(handler, incoming)
+    assert incoming.actions == [("reject", False)]
+
+
+def test_undecodable_body_is_terminal_rejection_without_reaching_the_handler() -> None:
+    async def scenario() -> None:
+        incoming = _Incoming(body=b"{}")
+        channel = _Channel(incoming)
+        bus = _ConsumerBus(channel)
+        stop = asyncio.Event()
+        seen: list[BusMessage] = []
+
+        async def handler(message: BusMessage) -> None:
+            seen.append(message)
+
+        consumer = asyncio.create_task(bus.consume("news.triage", handler, prefetch=1, stop_event=stop))
+        for _ in range(50):
+            if incoming.actions:
+                break
+            await asyncio.sleep(0.01)
+        stop.set()
+        await asyncio.wait_for(consumer, timeout=1)
+        assert incoming.actions == [("reject", False)]
+        assert seen == []
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize(
@@ -180,41 +273,14 @@ def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
     asyncio.run(scenario())
 
 
-def test_retry_publish_failure_leaves_the_original_unsettled_and_fails_consume() -> None:
-    async def scenario() -> None:
-        incoming = _Incoming()
-        channel = _Channel(incoming)
-        telemetry = _Telemetry()
-        bus = _ConsumerBus(
-            channel,
-            retry_error=BrokerUnavailable("retry publish failed"),
-            telemetry=telemetry,
-        )
-
-        async def handler(_message: BusMessage) -> None:
-            raise TransientError("try again")
-
-        with pytest.raises(BaseExceptionGroup) as caught:
-            await asyncio.wait_for(
-                bus.consume("news.triage", handler, prefetch=1, stop_event=asyncio.Event()),
-                timeout=1,
-            )
-
-        assert any(isinstance(leaf, BrokerUnavailable) for leaf in _leaves(caught.value))
-        assert incoming.actions == []
-        assert channel.is_closed
-        assert telemetry.fatals == [("news.triage", "broker")]
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("settlement", ["ack", "reject"])
+@pytest.mark.parametrize("settlement", ["ack", "reject", "nack"])
 def test_settlement_failure_fails_consume(settlement: str) -> None:
     async def scenario() -> None:
         failure = RuntimeError(f"{settlement} failed")
         incoming = _Incoming(
             ack_error=failure if settlement == "ack" else None,
             reject_error=failure if settlement == "reject" else None,
+            nack_error=failure if settlement == "nack" else None,
         )
         channel = _Channel(incoming)
         telemetry = _Telemetry()
@@ -223,6 +289,8 @@ def test_settlement_failure_fails_consume(settlement: str) -> None:
         async def handler(_message: BusMessage) -> None:
             if settlement == "reject":
                 raise PermanentError("bad message")
+            if settlement == "nack":
+                raise DeferError("db lane busy")
 
         with pytest.raises(BaseExceptionGroup) as caught:
             await asyncio.wait_for(
@@ -317,11 +385,9 @@ def test_connect_clears_partial_initialization_and_enables_return_errors(monkeyp
         assert bus._connection is None
         assert bus._publish_channel is None
         assert bus._exchange is None
-        assert bus._retry_exchange is None
 
         async def declare(_channel: object) -> dict[str, object]:
             bus._exchange = cast(Any, object())
-            bus._retry_exchange = cast(Any, object())
             return {}
 
         monkeypatch.setattr(bus, "declare_topology", declare)

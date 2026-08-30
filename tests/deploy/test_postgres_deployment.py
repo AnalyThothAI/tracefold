@@ -36,16 +36,30 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "nautilus",
         "postgres",
         "rabbitmq",
+        "rabbitmq-policy",
         "serve",
         "workers",
     }
-    assert services["rabbitmq"]["image"].startswith("rabbitmq:")
+    # #400 needs native quorum delayed retry, which does not exist before RabbitMQ 4.3.
+    assert services["rabbitmq"]["image"].startswith("rabbitmq:4.3")
     assert "build" not in services["rabbitmq"]
     assert "tracefold-rabbitmq:/var/lib/rabbitmq" in services["rabbitmq"]["volumes"]
     assert services["rabbitmq"]["healthcheck"]["test"][0] == "CMD"
-    assert "rabbitmq-diagnostics" in services["rabbitmq"]["healthcheck"]["test"]
+    assert "rabbitmq-diagnostics" in " ".join(services["rabbitmq"]["healthcheck"]["test"])
+    # As `rabbitmq`, never as root: a root-run CLI that creates .erlang.cookie before the node does
+    # leaves the server unable to read its own cookie, and 4.3 then refuses to boot on a fresh volume.
+    assert services["rabbitmq"]["healthcheck"]["test"][1:4] == ["su", "-s", "/bin/sh"]
+    # `su` resets PATH on the Debian image, so the probe would not find the CLI it just dropped
+    # privileges to run. Spelling PATH out is what makes the same command work on both images.
+    assert "PATH=/opt/rabbitmq/sbin:/opt/erlang/bin" in services["rabbitmq"]["healthcheck"]["test"][-1]
     assert "rabbitmq" not in services["serve"]["depends_on"]
     assert services["workers"]["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    # The retry policy is imported once, declaratively, before any consumer attaches.
+    policy = services["rabbitmq-policy"]
+    assert policy["command"] == ["tracefold", "news", "bus-policy", "apply"]
+    assert policy["restart"] == "no"
+    assert policy["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    assert services["workers"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["postgres"]["image"] == POSTGRES_IMAGE
     assert "build" not in services["postgres"]
     assert any("pg_stat_statements" in part for part in services["postgres"]["command"])

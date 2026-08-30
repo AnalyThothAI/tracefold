@@ -26,6 +26,9 @@ CI_RUNTIME_PROCESS_SELECTION := tests -m "(deploy or e2e or golden or slow) and 
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
 TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
+TRACEFOLD_MUTATION_DIR ?= artifacts/mutation
+TRACEFOLD_MUTATION_SHARDS ?= 1
+TRACEFOLD_MUTATION_SHARD ?= 0
 
 # The required lanes run under `coverage run`, so the same execution that produces the JUnit report
 # produces the coverage data — there is no second full-suite pass. `--parallel-mode` keeps one data
@@ -39,7 +42,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -166,6 +169,66 @@ ci-test-effectiveness:
 		uv run python -m coverage xml -o "$(TRACEFOLD_COVERAGE_DIR)/coverage.xml"; \
 		uv run python -m coverage html -d "$(TRACEFOLD_COVERAGE_DIR)/html" --quiet
 
+# The scheduled mutation batch. `mutation.toml` carries the scope and the reasoning; the sentinel
+# runs first because a mutation score is only evidence once the mutants provably reach the
+# interpreter, and a harness that silently tests unmutated source reports good news. Locally this is
+# one sequential shard (~63 min); CI splits the same session six ways, one checkout per worker,
+# because Cosmic Ray mutates in place. `uv sync --group mutation` first: the tool is in a
+# non-default group so that nothing which builds or ships the service can reach it.
+#
+# Mutating in place means the working tree holds a mutant for the whole run, and an interrupted run
+# leaves one behind — which is a live defect sitting in a tracked file, one `git add -A` away from
+# being committed. So the batch refuses to start unless the files it rewrites are clean, and
+# restores them on the way out however it exits. The clean check is what makes the restore safe:
+# it is only ever discarding a mutant this target wrote.
+#
+# Two details the first version got wrong. The sentinel rewrites a *third* tracked file — the canary
+# under `tests/support/` — so `$(TRACEFOLD_MUTATION_FILES)` covers it as well as `mutation.toml`'s
+# two kernels; leaving it out meant a kill during the sentinel could strand a mutated canary that
+# then silently defeats the next run's harness proof. And an EXIT trap alone does not fire when the
+# shell is killed by an untrapped signal under dash, which is `/bin/sh` on Debian and Ubuntu — so
+# Ctrl-C during the hour-long batch, by far the likeliest way this ends, would leave the mutant in
+# place. INT, TERM and HUP are trapped too.
+TRACEFOLD_MUTATION_FILES = $$(uv run --no-sync python -c 'import tomllib, pathlib; \
+	print(" ".join([*tomllib.loads(pathlib.Path("mutation.toml").read_text())["cosmic-ray"]["module-path"], \
+	"tests/support/mutation_canary.py"]))')
+
+mutation: ## scheduled-lane mutation batch: sentinel, then the batch, then survivor triage
+	@set -eu; \
+		files="$(TRACEFOLD_MUTATION_FILES)"; \
+		if ! git diff --quiet -- $$files; then \
+			echo "mutation: these files have uncommitted changes and the batch rewrites them in place:" >&2; \
+			echo "  $$files" >&2; \
+			echo "commit or set the changes aside first." >&2; \
+			exit 1; \
+		fi; \
+		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
+		mkdir -p "$(TRACEFOLD_MUTATION_DIR)"; \
+		uv sync --locked --group mutation; \
+		uv run --no-sync python scripts/mutation_sentinel.py; \
+		session="$(TRACEFOLD_MUTATION_DIR)/shard-$(TRACEFOLD_MUTATION_SHARD).sqlite"; \
+		rm -f "$$session"; \
+		uv run --no-sync cosmic-ray init mutation.toml "$$session"; \
+		uv run --no-sync python scripts/mutation_shard.py "$$session" \
+			--shard $(TRACEFOLD_MUTATION_SHARD) --of $(TRACEFOLD_MUTATION_SHARDS); \
+		uv run --no-sync cosmic-ray exec mutation.toml "$$session"; \
+		uv run --no-sync python scripts/mutation_survivors.py "$$session"
+
+# Same guard as `mutation`: the sentinel rewrites the canary in place, so an interrupted run leaves
+# a mutated tracked file behind — and a stranded canary is the one file whose corruption makes the
+# harness proof itself meaningless.
+mutation-sentinel: ## prove the mutation harness executes mutated code, without running a batch
+	@set -eu; \
+		files="$(TRACEFOLD_MUTATION_FILES)"; \
+		if ! git diff --quiet -- $$files; then \
+			echo "mutation-sentinel: the canary or a mutated module has uncommitted changes:" >&2; \
+			echo "  $$files" >&2; \
+			exit 1; \
+		fi; \
+		trap 'git checkout -- '"$$files" EXIT INT TERM HUP; \
+		uv sync --locked --group mutation; \
+		uv run --no-sync python scripts/mutation_sentinel.py
+
 test-property: ## bounded pure properties (TRACEFOLD_HYPOTHESIS_PROFILE=nightly for extended runs)
 	@uv run python -m pytest -m property
 
@@ -204,6 +267,7 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run ruff format --check .
 	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
+	@uv run python scripts/regen_rabbitmq_definitions.py --check
 	@uv run python scripts/regen_trading_contract_receipt.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
@@ -388,7 +452,8 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
 			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
-			20260830_0335\|t\|t) echo "Trading evidence clock and the explicit News current-view projection are present at database head 20260830_0335." ;; \
+			20260830_0335\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0335." ;; \
+			20260830_0336\|t\|t) echo "Trading evidence clock, News incident uniqueness, and the explicit News current-view projection are present at database head 20260830_0336." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
@@ -464,7 +529,7 @@ _up-locked:
 		fi; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
-		runtime_services="migrate serve workers"; \
+		runtime_services="migrate rabbitmq-policy serve workers"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -574,7 +639,7 @@ _deploy-image-locked:
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
-		runtime_services="migrate serve workers"; \
+		runtime_services="migrate rabbitmq-policy serve workers"; \
 		base_services="$$runtime_services"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
@@ -712,12 +777,15 @@ clean: ## remove local test/cache artifacts
 	@rm -rf .pytest_cache .ruff_cache __pycache__
 	@find tracefold tests -type d -name __pycache__ -prune -exec rm -rf {} +
 
-.PHONY: docs-generated docs-db-schema docs-cli-help
+.PHONY: docs-generated docs-db-schema docs-cli-help docs-rabbitmq-definitions
 
-docs-generated: docs-db-schema docs-cli-help ## regenerate docs/generated/*
+docs-generated: docs-db-schema docs-cli-help docs-rabbitmq-definitions ## regenerate docs/generated/* and the broker policy document
 
 docs-db-schema: ## regenerate docs/generated/db-schema.md (requires Postgres)
 	@uv run python scripts/regen_db_schema.py
 
 docs-cli-help: ## regenerate docs/generated/cli-help.md
 	@uv run python scripts/regen_cli_help.py
+
+docs-rabbitmq-definitions:
+	@uv run python scripts/regen_rabbitmq_definitions.py

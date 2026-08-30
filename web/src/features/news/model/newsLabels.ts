@@ -277,6 +277,35 @@ export function displayAssetRefs(
   return resolved;
 }
 
+/**
+ * One broker queue in one line. After #400 the broker owns retry, so depth alone no longer says whether
+ * a queue is healthy: `delayed` is the native retry backlog, `dead_letter_pending` counts dead letters
+ * the queue is still holding because `news.dead` would not take them, and the byte share is how close
+ * the queue is to the bound at which it starts rejecting publishes. Zeros are left out, so the ordinary
+ * line stays as short as it was.
+ */
+export function brokerQueueSummary(queue: {
+  messages: number;
+  consumers: number;
+  unacked?: number | null;
+  delayed?: number | null;
+  dead_letter_pending?: number | null;
+  bytes_used_bps?: number | null;
+  policy_ok?: boolean | null;
+  missing?: boolean;
+}): string {
+  if (queue.missing) return "队列不存在";
+  const parts = [`${formatCount(queue.messages)} 条`, `${formatCount(queue.consumers)} 消费者`];
+  if (queue.unacked) parts.push(`${formatCount(queue.unacked)} 处理中`);
+  if (queue.delayed) parts.push(`${formatCount(queue.delayed)} 延迟重试`);
+  if (queue.dead_letter_pending) parts.push(`${formatCount(queue.dead_letter_pending)} 死信待投`);
+  if (queue.bytes_used_bps) parts.push(`字节 ${(queue.bytes_used_bps / 100).toFixed(1)}%`);
+  // Null is "the management API did not answer this tick", which is not the same as a healthy policy.
+  if (queue.policy_ok === false) parts.push("策略不符");
+  if (queue.policy_ok === null || queue.policy_ok === undefined) parts.push("策略未知");
+  return parts.join(" · ");
+}
+
 export function percent(numerator: number, denominator: number): string {
   if (!denominator) return "—";
   const share = (numerator / denominator) * 100;

@@ -1,0 +1,65 @@
+# The scheduled mutation batch. `make mutation` runs it; `.github/workflows/mutation.yml` schedules it.
+#
+# Scope is the Trading price/authority kernels: the arithmetic that turns two prices into the
+# basis-point move a capital decision is made on, and the bounds that admit or reject an execution
+# quote. These are pure, hermetic and load-bearing — exactly where a test that executes a line
+# without constraining it is most expensive, and where `coverage` is least able to tell you so.
+#
+# Two things about this file were wrong in earlier drafts, and the batch itself is what corrected
+# them. Both corrections are the reason to keep the lane.
+#
+# 1. Nothing is excluded. A draft filtered the `ReplaceBinaryOperator_BitOr_*` family, reasoning that
+#    every `|` in these modules is a PEP 604 union in an annotation that `from __future__ import
+#    annotations` never evaluates. That is true of all but one site: `quote_authority.py`'s `ExecutionQuoteAuditV1` builds
+#    a runtime type alias, its `|` *is* evaluated at import, and its mutants are KILLED while every
+#    annotation `|` survives. Excluding the family by name would have skipped 11 mutants the tests
+#    genuinely catch. Annotation survivors are classified after the fact in
+#    `mutation-survivors.toml`, by a rule whose premise is checked per site against the source.
+#
+# 2. The command includes `tests/test_execution_quote.py`, which costs ~3 s per mutant because it
+#    imports `nautilus_trader`. A draft left it out to fit a sequential 30-minute budget, and the
+#    resulting run reported 46 survivors in `validate_entry_quote` — a number that says nothing
+#    about the tests and everything about the command, because the file that pins each of those
+#    bounds at its exact `==`/`<`/`>` point was the one being skipped. A mutation score computed
+#    without the test that does the constraining is precisely the misleading number this lane exists
+#    to prevent, so the cost is paid and the batch is sharded instead.
+#
+# Measured locally: the command is 4.77 s and Cosmic Ray adds ~1.1 s, so 628 mutants is ~61 minutes
+# sequentially. The workflow splits that across six runners — Cosmic Ray mutates in place, so
+# parallelism needs one checkout per worker, which is exactly what a job matrix is — for ~10 minutes
+# a shard, and caps each shard at 30 minutes so an over-long batch fails loudly instead of drifting.
+#
+# `tracefold/trading/policy.py` (203 mutants) is the next batch, and is out of this one deliberately:
+# 13 of its 18 sampled survivors mutate the Chinese `setup=` rationale string that `decide()` builds
+# for the console. An operator reads that number before committing capital, so those are worth
+# killing with a test that pins what it says — but that test is its own change, and a batch is not
+# the place to smuggle one in.
+#
+# The command is prefixed rather than plain, and both halves are load-bearing. Cosmic Ray runs it
+# through `shlex.split` with no shell, so `env` has to be a real process; it inherits the parent's
+# environment, so this could also be exported around `cosmic-ray exec`, but a config that carries
+# its own determinism is one a person can run by hand and get the same answer from.
+#
+# `TRACEFOLD_HYPOTHESIS_PROFILE=ci` sets `derandomize=True`. `tests/trading/test_quote_properties.py`
+# is a Hypothesis suite, and the default `fast` profile draws fresh examples every run: a mutant
+# would be killed on Monday and survive on Tuesday, `mutation-survivors.toml` would go stale on its
+# own, and the lane would fail for reasons that have nothing to do with the code. A mutation score
+# has to be reproducible before it can be evidence.
+#
+# `--no-sync` pins the environment for the length of the batch. A plain nested `uv run` does not
+# prune the non-default `mutation` group — that was measured, not assumed — but it does re-resolve
+# whenever `pyproject.toml` or `uv.lock` looks newer, so an edit landing mid-batch would change the
+# environment underneath the mutants and quietly invalidate every result after it. It also skips a
+# sync check per mutant, which is ~16 ms and not the reason.
+
+[cosmic-ray]
+module-path = [
+  "tracefold/trading/quote_authority.py",
+  "tracefold/trading/market_context.py",
+]
+timeout = 60.0
+excluded-modules = []
+test-command = "env TRACEFOLD_HYPOTHESIS_PROFILE=ci uv run --no-sync python -m pytest -x -q -p no:cacheprovider tests/test_execution_quote.py tests/trading/test_capital_lane.py tests/trading/test_capital_policy.py tests/trading/test_market_context.py tests/trading/test_oi_replay.py tests/trading/test_quote_authority_guards.py tests/trading/test_quote_properties.py"
+
+[cosmic-ray.distributor]
+name = "local"

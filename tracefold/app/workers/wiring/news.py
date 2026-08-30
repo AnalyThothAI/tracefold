@@ -140,9 +140,14 @@ async def _connect_news_bus(
         url=broker_url,
         name_prefix=settings.news.broker.name_prefix,
         connect_timeout_seconds=settings.news.broker.connect_timeout_seconds,
+        management_url=settings.news.broker.management_url,
         telemetry=telemetry,
     )
     await bus.connect()
+    # Retry now lives in the broker policy (#400). Workers refuses to consume against a topology whose
+    # effective policy is not the checked-in contract, because a missing policy is not a degraded mode:
+    # it is immediate redelivery, the quorum default delivery limit and at-most-once dead lettering.
+    await bus.verify_policies()
     return bus
 
 

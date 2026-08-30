@@ -650,13 +650,14 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        -> one configured-provider delivery attempt
        -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
-  -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
-     DeferError uncounted; retry publish is confirmed before the original delivery is acked;
-     x:news.dlx -> q:news.dead only for decode/permanent/exhausted deliveries or broker delivery limits
+  -> RabbitMQ 4.3 quorum delayed retry inside each business queue (no retry lane):
+     TransientError is a counted return delayed 30 s and terminal after 3 total attempts,
+     DeferError is an uncounted return delayed the same 30 s and never terminal;
+     x:news.dlx -> q:news.dead (at-least-once) for decode/permanent/exhausted deliveries
   -> Janitor: bounded Event->Triage and push-Verdict->Delivery handoff repair,
               band expiry, 30/365-day Item retention,
               bounded learning-evidence retention on the one-slot heavy gate,
-     broker depth snapshot
+     broker snapshot (depth, ready/unacked, delayed, pending dead letters, byte share, policy match)
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
 ```
 
@@ -670,15 +671,33 @@ search document for text. Search creates no Event or business row, publishes no
 broker message, and is absent from Judge, Gate, Delivery, Learning, and Trading;
 those pipelines therefore have no search dependency or alternate truth.
 
-Every broker delivery lives inside its consumer channel's `TaskGroup`. A
-decode error, explicit `PermanentError`, or exhausted `TransientError` may be
-terminally rejected. Retry/defer first confirms the retry-lane publish and only
-then acknowledges the original. Broker publish failures, ack/reject failures,
-and unclassified handler exceptions leave the message task without terminal
-settlement; channel closure releases the delivery and Workers root supervision
-turns readiness unhealthy. This deliberately permits duplicates at the
+Every broker delivery lives inside its consumer channel's `TaskGroup`, and one
+typed domain outcome becomes exactly one AMQP settlement. Success acks. A
+`DeferError` is `basic.nack(requeue=true)`, which RabbitMQ does not count as a
+failed delivery, so a process that cannot admit a message may say so
+indefinitely. A `TransientError` is `basic.reject(requeue=true)`, which
+increments the broker's `x-delivery-count` and becomes terminal once the queue's
+`delivery-limit` is spent. A decode error or `PermanentError` is
+`basic.reject(requeue=false)`. An unclassified handler exception, an ack/reject
+failure, or a broker publish failure settles nothing and fails the consumer;
+channel closure releases the delivery and Workers root supervision turns
+readiness unhealthy. The application therefore holds no retry counter, no timer
+and no republish path: `BusMessage.attempt` is read from the broker's counter
+and is one greater than it. This deliberately permits duplicates at the
 confirm-to-marker crash window and relies on the existing stable message IDs
 and PostgreSQL idempotency keys to converge.
+
+Retry configuration is a RabbitMQ policy, generated from
+`tracefold.news.broker_policy` into `docker/rabbitmq/definitions.json` and
+imported by `tracefold news bus-policy apply` (a one-shot Compose service before
+Workers starts). The application declares queue type, exchanges, bindings and
+passive consumer access; it never repairs policy drift. Workers verifies the
+effective policy at startup and refuses to consume when it does not match,
+because a missing policy is not a degraded mode — it is immediate redelivery,
+the quorum default delivery limit and at-most-once dead lettering. Terminal
+dead lettering is `at-least-once`, so a `news.dead` that is unavailable or full
+leaves the message held on its source queue (visible as `messages_dlx`) instead
+of dropping it; RabbitMQ retries that transfer about every three minutes.
 
 The Event and Verdict business tables are the two concrete handoff ledgers;
 there is no generic outbox table. `published_at_ms IS NOT NULL` means confirmed,
@@ -1882,7 +1901,11 @@ handoff repair/status scan.
 append-only future-capture batches, database-stamped evidence receipts, exact
 release/window preregistration, and the promotion/verification hard links. It
 also rejects any attempt to revive a terminal Intent after rollback.
-`20260830_0335` replaces the current Event security-barrier view's published
+`20260830_0335` makes PostgreSQL the sole owner of open-incident truth: a
+partial unique index over `news_opennews_incidents(cause_class) WHERE
+closed_at_ms IS NULL`, preceded by a preflight that refuses rather than repairs
+pre-existing duplicates.
+`20260830_0336` replaces the current Event security-barrier view's published
 wildcard with the same explicit column sequence, so future base-table columns
 cannot silently widen Serve, Review, learning, or Trading handoff contracts.
 No chained revision has a downgrade. Exact-image replacement requires the

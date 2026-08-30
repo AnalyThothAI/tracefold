@@ -176,6 +176,9 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": (
         "tracefold.news.bus",
+        # #400: the broker owns retry, and the News-owned policy document is what says so. The adapter
+        # applies and verifies that contract; it does not decide it.
+        "tracefold.news.broker_policy",
         # The adapter reports fatal transport settlement through the News-owned, platform-implemented
         # low-cardinality telemetry port; it does not reach storage or pipeline implementation.
         "tracefold.news.telemetry",

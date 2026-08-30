@@ -5,8 +5,8 @@ Migration evidence:
 - category: destructive hard-cut
 - why_database_must_change: the security-barrier database view is a public/cross-context projection;
   replacing its published wildcard prevents a later base-table column from silently widening that contract
-- current_source_revision: 20260830_0334
-- minimum_supported_source_revision: 20260830_0334
+- current_source_revision: 20260830_0335
+- minimum_supported_source_revision: 20260830_0335
 - lock_level_and_order: ACCESS EXCLUSIVE on news_current_events_v1 only; no base-table lock is requested
 - statement_timeout: 5s
 - lock_timeout: 1s
@@ -22,16 +22,16 @@ Migration evidence:
 - production_postgres_image:
   postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296
 
-Revision ID: 20260830_0335
-Revises: 20260830_0334
+Revision ID: 20260830_0336
+Revises: 20260830_0335
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "20260830_0335"
-down_revision = "20260830_0334"
+revision = "20260830_0336"
+down_revision = "20260830_0335"
 branch_labels = None
 depends_on = None
 
@@ -60,4 +60,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise RuntimeError("20260830_0335 is an irreversible current-projection hard cut; restore a backup")
+    raise RuntimeError("20260830_0336 is an irreversible current-projection hard cut; restore a backup")

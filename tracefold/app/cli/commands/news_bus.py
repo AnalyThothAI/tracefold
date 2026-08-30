@@ -17,10 +17,13 @@ def _bus(settings: Any) -> Any:
         url=url,
         name_prefix=settings.news.broker.name_prefix,
         connect_timeout_seconds=settings.news.broker.connect_timeout_seconds,
+        management_url=settings.news.broker.management_url,
     )
 
 
 def _handle_bus_check() -> tuple[int, dict[str, Any]]:
+    """Declare the topology and report what the broker actually holds, including retry-policy drift."""
+
     settings = load_settings(require_ws_token=False)
 
     async def _run() -> dict[str, Any]:
@@ -28,15 +31,47 @@ def _handle_bus_check() -> tuple[int, dict[str, Any]]:
         try:
             await bus.connect()
             declared = await bus.declare_topology()
-            depths = await bus.queue_depths()
+            queues = await bus.broker_snapshot()
+            policies = await bus.effective_policies()
+            drift = await bus.topology_drift()
         finally:
             await bus.close()
-        return {"declared": declared, "queues": depths}
+        return {"declared": declared, "queues": queues, "policies": policies, "drift": drift}
 
     try:
         result = asyncio.run(_run())
     except Exception as exc:
         return 1, {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:200]}
+    unexpected = result["drift"]["queues"] + result["drift"]["exchanges"]
+    policy_ok = all(bool(row.get("policy_ok")) for row in result["queues"].values())
+    ok = policy_ok and not unexpected
+    return (0 if ok else 1), {"ok": ok, "data": result}
+
+
+def _handle_bus_policy(args: Namespace) -> tuple[int, dict[str, Any]]:
+    """Apply or verify the checked-in RabbitMQ policy document.
+
+    Applying is an explicit deploy/operator step. Nothing in the runtime repairs policy drift: Workers
+    verifies and refuses, and this command is the only writer.
+    """
+
+    settings = load_settings(require_ws_token=False)
+
+    async def _run() -> dict[str, Any]:
+        # No AMQP connection and no topology declaration. A RabbitMQ policy is matched by queue name
+        # pattern and applies whenever a queue appears, so the retry contract can — and during the #400
+        # cutover must — be put in place while the queues on the broker still have their old shape and
+        # would refuse to be redeclared.
+        bus = _bus(settings)
+        applied = await bus.apply_policies() if args.policy_action == "apply" else None
+        verified = await bus.verify_policies()
+        effective = await bus.effective_policies()
+        return {"applied": applied, "verified": verified, "effective": effective}
+
+    try:
+        result = asyncio.run(_run())
+    except Exception as exc:
+        return 1, {"ok": False, "error": type(exc).__name__, "detail": str(exc)[:400]}
     return 0, {"ok": True, "data": result}
 
 

@@ -39,6 +39,19 @@ dev = [
     "types-defusedxml>=0.7.0",
     "types-regex>=2024.11.6",
 ]
+# The scheduled mutation lane (#373). Not a default group, for the reason `research` is not one:
+# `uv run`, `make test` and the Docker image (`uv sync --locked --no-dev`) never install it, so a
+# harness whose whole job is to rewrite source in place cannot reach a service image or a release
+# path. `uv sync --group mutation` is the one way in.
+#
+# Exactly pinned, like `coverage`, and for the same reason one step further: the tool's operator set
+# *is* the mutant population. A new Cosmic Ray minor that adds or retires an operator changes the
+# denominator of every score and the contents of `mutation-survivors.toml`, without a line of
+# `tracefold` having changed.
+mutation = [
+    "cosmic-ray==8.7.0",
+]
+
 # The `notebooks/` research workspace (#274). Not a default group: `uv run`, `make test` and the
 # Docker image never install it, so a Jupyter stack cannot reach a worker, a release path, or the
 # service dependency set. `uv sync --group research` is the one way in.

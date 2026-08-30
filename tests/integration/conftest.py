@@ -52,6 +52,34 @@ def rabbitmq_url() -> str:
 
 
 @pytest.fixture(scope="session")
+def restartable_rabbitmq(rabbitmq_url: str) -> str:
+    """The container a test may restart, named explicitly by the operator or by CI.
+
+    Restarting a broker is destructive to whoever else is using it, so a test never discovers one on its
+    own: the default local broker is the operator's running deployment. `TRACEFOLD_TEST_RABBITMQ_CONTAINER`
+    is the declaration that this particular broker is disposable. When it names a container that is not
+    running, that is a broken declaration and fails rather than skipping.
+    """
+
+    del rabbitmq_url
+    name = os.environ.get("TRACEFOLD_TEST_RABBITMQ_CONTAINER", "").strip()
+    if not name:
+        message = "no disposable broker declared (set TRACEFOLD_TEST_RABBITMQ_CONTAINER)"
+        if os.environ.get("TRACEFOLD_TEST_RESOURCES_REQUIRED") == "1":
+            pytest.fail(message + " (required test resource)", pytrace=False)
+        pytest.skip(message + "; a test must never restart the operator's own broker")
+    probe = subprocess.run(
+        ["docker", "inspect", "--format", "{{.State.Status}}", name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0 or probe.stdout.strip() != "running":
+        pytest.fail(f"TRACEFOLD_TEST_RABBITMQ_CONTAINER={name} is not a running container", pytrace=False)
+    return name
+
+
+@pytest.fixture(scope="session")
 def postgres_server_dsn() -> Iterator[str]:
     """Yield one reachable dedicated server database without choosing a test isolation policy."""
     existing = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_DSN)

@@ -70,9 +70,18 @@ def select_bar(bars: Sequence[Bar], *, target_ms: int, gap_tolerance_ms: int) ->
 
 
 def move_bps(p0: Decimal | None, p1: Decimal | None) -> int | None:
-    """`(p1 / p0) - 1` in integer basis points, Decimal throughout so the number is reproducible."""
+    """`(p1 / p0) - 1` in integer basis points, Decimal throughout so the number is reproducible.
 
-    if p0 is None or p1 is None or p0 <= 0:
+    Both ends must be a price that could have traded. The guard used to cover only `p0`, where a
+    non-positive value is a division problem, and let a non-positive `p1` through as arithmetic:
+    a close of `0` on a halted or delisted interval returned a confident `-10000` — a -100% move
+    persisted as a material fact and served over HTTP. `Bar.close` carries no positivity constraint
+    and the bars come from a provider REST page, so this is reachable from data rather than from a
+    caller mistake. `select_bar`'s docstring names the same failure for the same reason: an absent
+    price has to read as missing data, not as a price.
+    """
+
+    if p0 is None or p1 is None or p0 <= 0 or p1 <= 0:
         return None
     return int(((Decimal(p1) / Decimal(p0) - 1) * 10_000).quantize(Decimal("1"), rounding=ROUND_HALF_EVEN))
 

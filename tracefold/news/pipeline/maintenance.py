@@ -268,7 +268,7 @@ class JanitorLoop:
         if self.bus is not None:
             snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
             try:
-                depths = await asyncio.wait_for(self.bus.queue_depths(), timeout=5.0)
+                depths = await asyncio.wait_for(self.bus.broker_snapshot(), timeout=5.0)
                 prefix = f"{self.bus.prefix}." if getattr(self.bus, "prefix", "") else ""
                 snapshot.update(
                     connected=True,

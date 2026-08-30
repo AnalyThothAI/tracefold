@@ -1021,6 +1021,37 @@ def test_triage_consumer_start_closes_incidents_left_open_by_a_previous_process(
     assert bus.consumed == ["news.triage"]
 
 
+def test_triage_refuses_to_consume_when_startup_reconciliation_fails() -> None:
+    """#400: consuming with unknown incident state would leave PostgreSQL permanently wrong.
+
+    The failure has to reach the Workers root so the supervised restart tries again; swallowing it would
+    start the consumer against an incident this process cannot see and will never close.
+    """
+
+    news = RecordingNews(close_open_incidents=1)
+    bus = FakeBus()
+    triage = TriageConsumer(
+        bus=bus,
+        db=FakeWorkerDatabase(news, admission_timeout_for={"news_triage_circuit_reconcile"}),
+        judge=None,
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=3,
+        circuit_open_seconds=60.0,
+        runtime_manifest={"manifest_sha": "d" * 64},
+    )
+    stop = asyncio.Event()
+    stop.set()
+
+    with pytest.raises(DeferError, match="db_admission_timeout:news_triage_circuit_reconcile"):
+        asyncio.run(triage.run(stop_event=stop))
+
+    assert bus.consumed == []
+
+
 def test_triage_hard_stops_a_recovery_event_even_if_a_message_exists() -> None:
     news = RecordingNews(
         event_card=_card(admission="recovery"),
@@ -1087,16 +1118,97 @@ def test_triage_transport_failures_open_the_circuit_and_a_success_closes_the_inc
     )
     outcomes: list[Any] = [_program_error("news_program_timeout", retryable=True) for _ in range(3)] + [ok]
     triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(outcomes))
-    triage.circuit.open_seconds = 0.0  # let the fourth call reach the model in the same test clock
 
-    for index in range(4):
+    for index in range(3):
         asyncio.run(triage.handle(_message("event", {"event_id": f"ev-net-{index}"})))
+    assert triage.circuit.open_until_ms > 0  # the circuit tripped on the third transport failure
+    # The open window elapsing is what lets the fourth call reach the model again.
+    triage.circuit.open_until_ms = 0
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-net-3"})))
 
     assert news.names().count("open_incident") == 1
     assert news.kwargs_of("open_incident")["cause_class"] == "triage_circuit_open"
     assert news.kwargs_of("close_open_incidents")["cause_classes"] == ["triage_circuit_open"]
     inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
     assert [row["degraded"] for row in inserted] == [True, True, True, False]
+
+
+def test_triage_reasserts_the_open_incident_while_the_circuit_stays_open() -> None:
+    """#400: the durable incident follows the circuit's state, not a remembered edge.
+
+    A trip recorded only once, in memory, is exactly the divergence this replaced: if the transaction
+    that should have opened the incident failed, nothing would ever try again. Deriving the transition
+    from the circuit itself makes every later settle converge instead.
+    """
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, open_incident=1)
+    bus = FakeBus()
+    failures = [_program_error("news_program_timeout", retryable=True) for _ in range(5)]
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge(failures))
+
+    for index in range(5):
+        asyncio.run(triage.handle(_message("event", {"event_id": f"ev-open-{index}"})))
+
+    # Three failures trip the circuit; every settle from there on re-asserts the same open incident.
+    assert news.names().count("open_incident") == 3
+    assert "close_open_incidents" not in news.names()
+
+
+def test_triage_closes_the_incident_inside_the_transaction_that_writes_the_verdict() -> None:
+    """The verdict and the incident close move together or not at all, so a failed write retries both."""
+
+    from tracefold.news.models import TriageVerdict
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, close_open_incidents=0)
+    bus = FakeBus()
+    ok = _judgment(
+        TriageVerdict(
+            novelty="new_fact",
+            assets=[],
+            direction="bullish",
+            scope="single_name",
+            magnitude=1,
+            confidence=0.6,
+            headline_zh="ok",
+        )
+    )
+    triage = _triage_with_judge(news, bus, _ScriptedSemanticJudge([ok]))
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-close"})))
+
+    names = news.names()
+    # No prior open is remembered anywhere, so a healthy Program answer still asserts the closed state.
+    assert names.count("close_open_incidents") == 1
+    assert names.index("close_open_incidents") < names.index("insert_verdict")
+    assert "open_incident" not in names
+
+
+def test_triage_circuit_incident_failure_reaches_the_broker_instead_of_process_memory() -> None:
+    """A DB lane that cannot admit the incident write must return the message, not drop the transition."""
+
+    news = RecordingNews(get_verdict=None, event_card=_card(), insert_verdict=True, open_incident=1)
+    bus = FakeBus()
+    triage = TriageConsumer(
+        bus=bus,
+        db=FakeWorkerDatabase(news, admission_timeout_for={"news_triage_persist"}),
+        judge=_ScriptedSemanticJudge([_program_error("news_program_timeout", retryable=True) for _ in range(3)]),
+        program_version=PROGRAM_VERSION,
+        program_sha256=PROGRAM_SHA256,
+        watchlist_symbols=WATCHLIST,
+        watchlist=sorted(WATCHLIST),
+        concurrency=1,
+        circuit_failures=1,
+        circuit_open_seconds=60.0,
+        runtime_manifest={"manifest_sha": "d" * 64},
+    )
+
+    with pytest.raises(DeferError, match="db_admission_timeout:news_triage_persist"):
+        asyncio.run(triage.handle(_message("event", {"event_id": "ev-defer"})))
+
+    assert "open_incident" not in news.names()
+    # The circuit is open in this process, so the next attempt re-derives the same transition rather
+    # than treating the trip as already recorded.
+    assert triage.circuit.open_until_ms > 0
 
 
 def test_triage_records_the_answering_model_and_the_fallback_reason() -> None:

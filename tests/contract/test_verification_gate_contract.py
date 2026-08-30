@@ -23,6 +23,10 @@ REQUIRED_JOBS = {
 # Report-only (#373 PR 2). It is in the workflow but not in `ci-gate`'s dependencies, and the tests
 # below hold it to both halves of that: it may not decide a merge, and it may not run a test.
 REPORT_ONLY_JOB = "test-effectiveness"
+# Scheduled mutation (#373 PR 4) lives in its own workflow for the same reason, taken further:
+# `require_main_ci.py` reads the `ci-gate` check run and requires its workflow run's `path` to be
+# `.github/workflows/ci.yml`, so a lane outside that file cannot reach a deployment at all.
+MUTATION_WORKFLOW = ROOT / ".github" / "workflows" / "mutation.yml"
 pytestmark = pytest.mark.contract
 
 
@@ -73,6 +77,30 @@ def test_required_ci_runs_one_fixed_full_plan_for_every_event() -> None:
             action = step.get("uses")
             if action:
                 assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), action
+
+
+@pytest.mark.parametrize("workflow_path", sorted((ROOT / ".github" / "workflows").glob("*.y*ml")), ids=lambda p: p.name)
+def test_every_workflow_pins_its_actions_and_keeps_its_credentials(workflow_path: Path) -> None:
+    """The supply-chain invariants belong to every workflow, not to the one they were written beside.
+
+    `test_the_gate_is_thin_and_owns_the_required_set` walks only `ci.yml`, so a workflow added later
+    inherits none of it — `mutation.yml` and `scheduled-diagnostics.yml` between them run a dozen
+    actions that nothing held to a SHA pin, and a `@v5` tag or a `persist-credentials` default could
+    land with the whole required suite green. Parametrised over the directory so the next workflow
+    is covered by existing.
+    """
+
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    for job in workflow.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            action = step.get("uses")
+            if not action:
+                continue
+            assert FULL_SHA.fullmatch(action.rsplit("@", 1)[1]), f"{workflow_path.name}: {action} is not SHA-pinned"
+            if action.startswith("actions/checkout@"):
+                assert step.get("with", {}).get("persist-credentials") is False, (
+                    f"{workflow_path.name}: checkout must not leave the token in .git/config"
+                )
 
 
 def test_the_effectiveness_job_reports_and_decides_nothing() -> None:
@@ -285,3 +313,32 @@ def test_migration_marker_owns_every_historical_migration_module() -> None:
         source = module.read_text(encoding="utf-8")
         assert "pytest.mark.migration" in source, module
         assert 'pytest.mark.usefixtures("postgres_migration_dsn")' in source, module
+
+
+def test_the_mutation_lane_is_scheduled_and_cannot_gate_anything() -> None:
+    """The measurement informs; it never decides a merge or a deploy.
+
+    Two independent reasons, both asserted rather than assumed. It defines no `ci-gate` job, so
+    `require_unique_ci_gate_definition` still finds exactly one owner and `require_main_ci` never
+    reads this workflow. And it does not run on `pull_request` or `push`, so it produces no check
+    run on a commit anyone is waiting on.
+    """
+
+    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert "ci-gate" not in {str(job.get("name") or job_id) for job_id, job in jobs.items()}
+
+    # PyYAML resolves a bare `on:` key to the boolean True, which is why this is not `workflow["on"]`.
+    triggers = workflow[True]
+    assert set(triggers) == {"schedule", "workflow_dispatch"}
+
+
+def test_the_mutation_lane_proves_its_harness_before_it_reports_a_score() -> None:
+    """A score from a harness that never delivered a mutant is the failure that looks like success."""
+
+    workflow = yaml.safe_load(MUTATION_WORKFLOW.read_text(encoding="utf-8"))
+    jobs = workflow["jobs"]
+    assert jobs["mutate"]["needs"] == "sentinel"
+    assert jobs["classify"]["needs"] == "mutate"
+    assert "scripts/mutation_sentinel.py" in str(jobs["sentinel"]["steps"])
+    assert jobs["mutate"]["timeout-minutes"] == 30

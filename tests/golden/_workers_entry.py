@@ -32,6 +32,7 @@ def main() -> int:
     parser.add_argument("--name-prefix", required=True)
     parser.add_argument("--probe-port", required=True, type=int)
     parser.add_argument("--app-home", required=True)
+    parser.add_argument("--management-url", default=None)
     args = parser.parse_args()
 
     from tracefold.app.workers import root as workers_root
@@ -53,7 +54,11 @@ def main() -> int:
         },
         news={
             "enabled": True,
-            "broker": {"url": args.amqp_url, "name_prefix": args.name_prefix},
+            "broker": {
+                "url": args.amqp_url,
+                "name_prefix": args.name_prefix,
+                "management_url": args.management_url,
+            },
             "push": {
                 "enabled": True,
                 "feishu_webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/tracefold-golden",

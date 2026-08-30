@@ -1583,8 +1583,15 @@ def test_bus_envelope_roundtrip() -> None:
         occurred_at_ms=5,
         priority=5,
     )
-    back = decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={"x-news-attempt": 2})
+    back = decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={"x-delivery-count": 1})
     assert back.payload == {"event_id": "1"} and back.attempt == 2 and back.priority == 5
+    # A first delivery carries no broker counter at all; that is attempt 1, not a decode failure (#400).
+    first = decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={})
+    assert first.attempt == 1
+    # Anything else in that header means the delivery cannot be attributed, so it fails closed.
+    for invalid in ("2", -1, 2.0, True, None):
+        with pytest.raises(BusDecodeError, match="news_bus_delivery_count_invalid"):
+            decode_body(m.body(), routing_key=m.routing_key, priority=5, headers={"x-delivery-count": invalid})
     with pytest.raises(BusDecodeError):
         decode_body(b"{}", routing_key="x", priority=0, headers=None)
 
