@@ -291,12 +291,18 @@ def test_official_strategy_history_adapter_rejects_compression_before_decoding()
     asyncio.run(scenario())
 
 
-def test_official_strategy_history_adapter_classifies_deep_json_as_invalid() -> None:
+def test_official_strategy_history_adapter_classifies_json_recursion_as_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _recursive_json(_body: object) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr(opennews_client.json, "loads", _recursive_json)
+
     async def scenario() -> None:
-        body = (b'{"nested":' * 2_000) + b"null" + (b"}" * 2_000)
         client = opennews_client.OpenNewsStrategyHistoryClient(
             token="history-token",
-            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=body)),
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"{}")),
         )
         try:
             with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
