@@ -105,9 +105,10 @@ same. In particular, a shared retry policy would erase information: a missed
 quote refresh has no durable value, while an ambiguous order must not simply be
 resent.
 
-The class states the required contract, not proof that every failure path has
-already achieved it. Issue #187 owns the known RabbitMQ settlement, outbox and
-recovery gaps; this inventory neither repairs nor hides them.
+The class states the required contract. News implements its `durable_event`
+boundary with confirmed publish before settlement, structured consumer-task
+supervision, two database-backed handoff repair lanes, and durable incident
+recovery; none of those mechanisms turns RabbitMQ into business truth.
 
 <!-- BEGIN EXTERNAL DATA INVENTORY -->
 
@@ -161,10 +162,10 @@ does not apply.
 | Flow | Cadence / trigger | Freshness SLO | Batching key | Max targets | Max source groups / requests | External concurrency | Turn / provider deadline | Catch up / coalesce / stale-not-blank | Failure semantics |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | OpenNews live frames | provider push; reconnect after 3 s | provider-current | Strategy stream | provider-enabled Strategies; provider-owned | one account / one WSS | one WSS session | receiver idle/provider budgets; broker confirm | history recovery / incident windows / no | disconnect opens a durable incident; a frame is not business truth before Admission persists it |
-| OpenNews history recovery | startup or closed incident; 30 s overlap | recover while provider history exists | Strategy + incident window | 100 Strategies from the bounded list read | 100 hits/page, 60 pages/Strategy | serial Strategies/pages | provider-client budget | yes / requested pass coalesces / no | partial window remains explicit and all hits re-enter `raw.recovery.*` |
-| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; retry/DLQ/recovery semantics remain explicit (#187) |
-| RabbitMQ event handoff | message delivery | durable backlog | Event ID | configured bounded Triage prefetch | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / no / no | versioned verdict persistence is idempotent; settlement gaps remain owned by #187 |
-| RabbitMQ verdict handoff | message delivery | durable backlog | Event ID + delivery kind | delivery prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | delivery ledger preserves the at-most-once reader contract; outbox/recovery gaps remain owned by #187 |
+| OpenNews history recovery | startup, request, or 300 s fallback scan; 30 s overlap | recover while provider history exists | Strategy + incident window | bounded pending incidents and enabled Strategies | 100 hits/page; shared 60 provider calls and 1,000 confirmed messages/turn | serial Strategies/pages | shared 30 s wall budget plus provider-client budget | yes / requested pass coalesces / no | typed transient failures and budget exhaustion stay pending with bounded backoff; only explicit no-history/retention terminalizes |
+| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, while broker, settlement, and unknown failures reach root supervision |
+| RabbitMQ event handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Event marker | Event ID | configured bounded Triage prefetch; repair batch 50 | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / stable-ID duplicates coalesce at Triage / expired is explicit | confirmed publish precedes Event marker; PostgreSQL repairs marker-null Events while relevant and projects older rows as expired |
+| RabbitMQ verdict handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Verdict marker | Event ID + delivery kind | delivery prefetch 1; repair batch 50 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / stable-ID duplicates converge on the delivery ledger / expired is explicit | confirmed publish precedes Verdict marker; PostgreSQL repairs push/escalate Verdicts while relevant, while external delivery remains at-most-once |
 | Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Binance perpetual quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.perp` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
 | Hyperliquid quote | start-based 20 s | current <=45 s; native reference <=360 s | bounded `hl.*` source group | shared cap 256 symbols | shared cap 12 current groups; one group request | current 4 | 10 s current turn / 8 s provider | no / yes / yes | completed answer commits even when another source times out; failed/pending source keeps its previous row |
@@ -378,7 +379,7 @@ tracefold.news
     triage.py / triage_audit.py  SemanticJudge route, policy persistence, execution audit
     triage_route.py   the route's typed vocabulary: arm selection, inputs, attempts, outcome
     delivery.py       one-attempt reader-card delivery consumer
-    maintenance.py    instrument snapshot, retention, broker snapshot, outbox catch-up
+    maintenance.py    instrument snapshot, retention, broker snapshot, two handoff repairs
     root.py / runtime.py  Workers composition and the NewsDatabasePort/stop mechanics
   storage/
     events.py / decisions.py  material facts/evidence and verdict/delivery ledgers
@@ -541,6 +542,16 @@ finishes.
 News consumers have no frontier lease; the broker's single-active-consumer and
 per-message ack are their fences.
 
+The loopback Workers readiness probe classifies a fatal News task as
+`news_consumer_fatal`, `news_receiver_fatal`, `news_broker_unavailable`, or
+`news_recovery_fatal` instead of flattening every child failure to
+`runtime_failed`. Recoverable Receiver broker incidents and Recovery
+provider/broker/database faults do not kill the process: their durable rows and
+`/api/news/status` recovery summary keeps product health degraded until the
+history gap closes. That summary exposes `reason=recovery_pending` before an
+attempt and `reason=recovery_transient` after a typed failed attempt; neither is
+a false process-readiness failure.
+
 ## Workers task set
 
 The Workers root TaskGroup contains exactly: `workers-probe` (loopback
@@ -599,13 +610,16 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        headline_zh, audience, exact runtime manifest,
        Program identity, per-Predictor execution/cost trace, preliminary + final status snapshots,
        named rule) -> publish verdict.push (an escalate rides the same routing key at AMQP priority 5)
-  -> q:news.deliver [single-active-consumer] Deliverer: provider prepare/preflight -> begin(sending)
+  -> q:news.deliver [single-active-consumer] Deliverer: restart edit/delete reconciliation waits out
+       News-lane admission before consuming -> provider prepare/preflight -> begin(sending)
        -> one configured-provider delivery attempt
        -> settle sent|terminal; crash between send and ack
        -> ambiguous_after_crash
   -> news.retry (one 30 s TTL lane -> back to x:news): TransientError counted (3 attempts),
-     DeferError uncounted; x:news.dlx -> q:news.dead for permanent/exhausted/crashed messages
-  -> Janitor: outbox catch-up, band expiry, 30/365-day Item retention,
+     DeferError uncounted; retry publish is confirmed before the original delivery is acked;
+     x:news.dlx -> q:news.dead only for decode/permanent/exhausted deliveries or broker delivery limits
+  -> Janitor: bounded Event->Triage and push-Verdict->Delivery handoff repair,
+              band expiry, 30/365-day Item retention,
               bounded learning-evidence retention on the one-slot heavy gate,
      broker depth snapshot
   -> Serve: /api/news/feed, /api/news/events/{event_id}, /api/news/status
@@ -620,6 +634,26 @@ predicate before counts and cursor pagination: the durable
 search document for text. Search creates no Event or business row, publishes no
 broker message, and is absent from Judge, Gate, Delivery, Learning, and Trading;
 those pipelines therefore have no search dependency or alternate truth.
+
+Every broker delivery lives inside its consumer channel's `TaskGroup`. A
+decode error, explicit `PermanentError`, or exhausted `TransientError` may be
+terminally rejected. Retry/defer first confirms the retry-lane publish and only
+then acknowledges the original. Broker publish failures, ack/reject failures,
+and unclassified handler exceptions leave the message task without terminal
+settlement; channel closure releases the delivery and Workers root supervision
+turns readiness unhealthy. This deliberately permits duplicates at the
+confirm-to-marker crash window and relies on the existing stable message IDs
+and PostgreSQL idempotency keys to converge.
+
+The Event and Verdict business tables are the two concrete handoff ledgers;
+there is no generic outbox table. `published_at_ms IS NOT NULL` means confirmed,
+a marker-null row at or below the 30-minute relevance ceiling is pending, and a
+strictly older row is expired. Repair scans use a 15-second minimum age, the
+30-minute maximum age, and a batch limit. They publish first and CAS the marker
+after confirmation. Marker failure therefore causes a safe duplicate on the
+next turn. Feed page, counts, filters, detail, and telemetry use the same
+code-owned ceiling; expired rows remain auditable but are never shown as
+pending or republished.
 
 #### Price Review plane (#88, #304)
 
@@ -1416,12 +1450,28 @@ the Deliverer regardless of how many earlier cards were sent.
 
 Incidents and recovery: WSS transport/auth/protocol/idle failures, broker
 backpressure/unavailability, and Triage circuit opens are rows in
-`news_opennews_incidents`; reconnect closes transport incidents and requests
-recovery, which pages the official Strategy hits endpoints for the closed
-interval and publishes `raw.recovery.*` frames (normally
-`admission=recovery`; unsupported contracts retain their named admission;
-never delivered). Dead letters are operator-visible through `tracefold news dlq
-inspect|replay|purge`.
+`news_opennews_incidents`. The Receiver never uses process memory to decide
+whether a durable broker incident exists: every classified broker failure
+opens it and updates ingest state in one transaction; every confirmed live
+publish unconditionally closes matching open broker incidents and updates
+ingest state in one transaction. An actual close wakes Recovery. Reconnect does
+the same for transport incidents, so a process restart cannot strand an older
+row.
+
+Recovery scans on startup, explicit wakeup, and a 300-second fallback. It pages
+the official Strategy history for closed pending intervals and publishes
+stable-ID `raw.recovery.*` frames under one turn-wide 30-second / 60-provider-
+call / 1,000-message budget. Typed provider, broker, or database faults leave
+the incident pending; provider/broker and known-incident database errors record
+their bounded code and use bounded in-process backoff; budget exhaustion also stays
+pending and schedules another turn. Provider calls and confirmed broker
+publishes each inherit the remaining turn deadline, so neither can overrun the
+wall budget. An empty current Strategy list is a retryable configuration state,
+not proof that historical data never existed. Only explicit no-history or
+retention exhaustion may write unavailable/partial. Unknown exceptions leave
+the runner and fail Workers. Recovery Admission persists facts and evidence
+but is defensively barred from Triage and Delivery. Dead letters are
+operator-visible through `tracefold news dlq inspect|replay|purge`.
 
 News storage is split by meaning, not by a fragile table count. Material
 evidence and current Event state remain in the ingestion/Event tables;
@@ -1785,6 +1835,10 @@ paused, zero-recovery-obligation cutover.
 `20260830_0331` hard-cuts current execution truth to per-binding Capability V2,
 immutable ExecutionBinding V1, source-native routing, and TradeIntent V3 while
 retaining only terminal V1/V2 rows as archive facts.
+`20260830_0332` installs Trading capital authority, UTC risk reservation, and
+the arm epoch after a paused cutover.
+`20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
+handoff repair/status scan.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

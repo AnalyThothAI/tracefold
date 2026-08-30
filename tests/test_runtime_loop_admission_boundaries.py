@@ -6,6 +6,7 @@ import pytest
 from psycopg import OperationalError
 
 from tracefold.app.workers import root as workers_module
+from tracefold.news.bus import BrokerUnavailable
 from tracefold.platform.resource import ResourceCapability, ResourceOperationOverrun
 
 
@@ -27,6 +28,30 @@ def test_fatal_code_uses_typed_overrun_instead_of_error_text() -> None:
         )
         == "resource_operation_overrun"
     )
+
+
+@pytest.mark.parametrize(
+    ("task_name", "failure", "reason"),
+    [
+        ("news-deduper", RuntimeError("handler bug"), "news_consumer_fatal"),
+        ("news-receiver", RuntimeError("receiver bug"), "news_receiver_fatal"),
+        ("news-recovery", RuntimeError("recovery bug"), "news_recovery_fatal"),
+        ("news-janitor", RuntimeError("janitor bug"), "runtime_failed"),
+        ("capital-lane", RuntimeError("capital bug"), "runtime_failed"),
+    ],
+)
+def test_news_task_failure_has_specific_live_readiness_reason(
+    task_name: str,
+    failure: BaseException,
+    reason: str,
+) -> None:
+    assert workers_module._task_unavailable_reason(task_name, failure) == reason
+
+
+def test_broker_failure_has_priority_over_news_task_role() -> None:
+    grouped = ExceptionGroup("message task failed", [BrokerUnavailable("publish failed")])
+
+    assert workers_module._task_unavailable_reason("news-triage", grouped) == "news_broker_unavailable"
 
 
 def test_control_loop_retries_a_transient_pooled_heartbeat_failure(

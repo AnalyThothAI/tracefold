@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hashlib
+import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from .. import liquidations, oi_signals
 from ..bus import (
@@ -39,6 +39,8 @@ from ..source_contracts import (
 )
 from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
+
+log = logging.getLogger("tracefold.news")
 
 NEAR_DUPLICATE_THRESHOLD = 0.55
 # How far back an exact *artifact* match may reach (#154). The dedupe-family windows bound how long two texts stay
@@ -626,8 +628,15 @@ def _reconstruct_text(event: OpenNewsEvent) -> str:
 
 
 async def publish_event(
-    bus: Any, db: NewsDatabasePort, *, event_id: str, dedupe_family: str, queue_priority: str, trace_id: str
-) -> None:
+    bus: Any,
+    db: NewsDatabasePort,
+    *,
+    event_id: str,
+    dedupe_family: str,
+    queue_priority: str,
+    trace_id: str,
+    occurred_at_ms: int | None = None,
+) -> Literal["marker_pending", "published"]:
     """Publish one candidate Event to Triage and mark it published (commit-then-publish outbox step)."""
 
     stamp = now_ms()
@@ -638,16 +647,24 @@ async def publish_event(
             routing_key=RK_EVENT.format(dedupe_family=dedupe_family, queue_priority=queue_priority),
             payload={"event_id": event_id},
             trace_id=trace_id,
-            occurred_at_ms=stamp,
+            occurred_at_ms=stamp if occurred_at_ms is None else int(occurred_at_ms),
             priority=5 if queue_priority == "high" else 0,
         )
     )
-    with contextlib.suppress(TransientError, DeferError):
+    try:
         await db.tx(
             "news_event_mark_published",
             lambda repos: repos.news.mark_event_published(event_id=event_id, now_ms=stamp),
             timeout_seconds=1.0,
         )
+        return "published"
+    except (TransientError, DeferError) as exc:
+        log.warning(
+            "news Event handoff confirmed but marker remains pending event_id=%s error=%s",
+            event_id,
+            type(exc).__name__,
+        )
+        return "marker_pending"
 
 
 class DeduperConsumer:

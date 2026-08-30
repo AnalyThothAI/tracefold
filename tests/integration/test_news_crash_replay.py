@@ -38,6 +38,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
     RK_RAW_LIVE,
+    BrokerUnavailable,
     BusMessage,
     TransientError,
     new_trace_id,
@@ -59,10 +60,6 @@ pytestmark = pytest.mark.integration
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "news_v3_hits_sample.json"
 WATCHLIST = frozenset({"BTC", "NVDA", "ETH"})
 PROGRAM_SHA256 = load_stable_program_artifact().program_sha256
-
-
-class BrokerUnavailable(RuntimeError):
-    """Named to match what the Receiver classifies: anything that is not backpressure is unavailability."""
 
 
 class RecordingBus:
@@ -274,7 +271,7 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     strategy_id = str((hit.get("strategy") or {}).get("id") or "")
     bus = RecordingBus()
     db = FaultInjectingDatabase(conn)
-    receiver = OpenNewsReceiver(bus=bus, db=db, ws_client=None, history_client=None, recovery=None)
+    receiver = OpenNewsReceiver(bus=bus, db=db, ws_client=None, recovery=None)
 
     bus.fail_kinds = {"raw"}
     asyncio.run(receiver._publish_frame({"params": dict(hit)}, strategy_id=strategy_id))
@@ -367,7 +364,7 @@ def test_a_mark_failure_after_a_successful_event_publish_leaves_one_event_and_on
     )
     conn.commit()
     janitor = JanitorLoop(db=db, cold_db=db, bus=bus)
-    republished = asyncio.run(janitor.republish_unpublished())
+    republished = asyncio.run(janitor.repair_event_handoffs())
     conn.commit()
 
     assert republished == 1
@@ -606,7 +603,7 @@ def test_a_second_evidence_change_refuses_to_bind_the_stale_judgment(conn) -> No
 def test_a_verdict_mark_failure_redelivers_the_decision_into_one_delivery_lifecycle(conn) -> None:
     """Verdict publish success -> mark failure -> redelivery: one Verdict, one delivery lifecycle.
 
-    `_publish_decision` is the same commit-then-publish shape as the Event outbox, and it suppresses
+    `publish_verdict` is the same commit-then-publish shape as the Event outbox, and it suppresses
     its mark for the same reason. The consequence is a settled verdict the row still calls
     unpublished, so a redelivered Event republishes the decision. Two identical verdict messages then
     reach the Deliverer, and the reader must still receive exactly one card.

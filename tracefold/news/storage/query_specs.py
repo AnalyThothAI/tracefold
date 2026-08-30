@@ -7,6 +7,7 @@ from tracefold.platform.postgres.audit import ReadQuerySpec
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
 from .feed_sql import ASSET_SEARCH_PREDICATE, TEXT_SEARCH_PREDICATE, feed_counts_sql, feed_page_sql
+from .operations import RECOVERY_BACKLOG_LIMIT, pending_recovery_incidents_statement
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
@@ -15,6 +16,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     week_ago = int(now_ms) - 168 * 3600_000
     search_base = "e.ingest_mode IN ('live', 'recovery') AND e.opened_at_ms >= %s"
     search_cursor = "(e.opened_at_ms, e.event_id) < (%s, %s)"
+    recovery_backlog_sql, recovery_backlog_params = pending_recovery_incidents_statement(limit=RECOVERY_BACKLOG_LIMIT)
     return (
         ReadQuerySpec(
             name="news_feed_events",
@@ -63,34 +65,34 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # AssetSearch predicate and the production verdict/delivery joins. The builder is shared with
             # FeedStorage so this audit cannot regress to a simplified look-alike query.
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
-            params=(week_ago, ["BTC"], 51),
+            params=(now_ms, week_ago, ["BTC"], 51),
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
-            params=(week_ago, ["BTC"]),
+            params=(now_ms, week_ago, ["BTC"]),
             amplification_basis="aggregate_input",
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE} AND {search_cursor}"),
-            params=(week_ago, ["BTC"], int(now_ms), "\uffff", 51),
+            params=(now_ms, week_ago, ["BTC"], int(now_ms), "\uffff", 51),
         ),
         ReadQuerySpec(
             name="news_feed_text_search",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
-            params=(week_ago, "bitcoin", 51),
+            params=(now_ms, week_ago, "bitcoin", 51),
         ),
         ReadQuerySpec(
             name="news_feed_text_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
-            params=(week_ago, "bitcoin"),
+            params=(now_ms, week_ago, "bitcoin"),
             amplification_basis="aggregate_input",
         ),
         ReadQuerySpec(
             name="news_feed_text_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE} AND {search_cursor}"),
-            params=(week_ago, "bitcoin", int(now_ms), "\uffff", 51),
+            params=(now_ms, week_ago, "bitcoin", int(now_ms), "\uffff", 51),
         ),
         ReadQuerySpec(
             name="news_event_detail",
@@ -155,6 +157,11 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 "SELECT incident_id, cause_class, opened_at_ms FROM news_opennews_incidents"
                 " WHERE closed_at_ms IS NULL ORDER BY incident_id"
             ),
+        ),
+        ReadQuerySpec(
+            name="news_status_recovery_backlog",
+            sql=recovery_backlog_sql,
+            params=recovery_backlog_params,
         ),
         ReadQuerySpec(
             name="news_status_pipeline_24h",

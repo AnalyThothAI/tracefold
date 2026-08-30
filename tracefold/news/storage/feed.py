@@ -91,6 +91,7 @@ class FeedStorage:
         now_ms: int | None = None,
     ) -> dict[str, Any]:
         cursor_opened, cursor_id = _decode_cursor(cursor)
+        handoff_now_ms = int(now_ms if now_ms is not None else time.time() * 1000)
         # `where` / `params` accumulate the predicates every outcome group shares — the window and the reader's
         # filters. The outcome group itself and the cursor are appended after `_feed_counts` has taken a copy,
         # so the tab counts describe the whole filtered set rather than the page being served.
@@ -99,7 +100,7 @@ class FeedStorage:
         window_hours = int(hours) if hours else None
         if window_hours:
             # The response echoes `hours`, never the wall-clock bound, so an unchanged page keeps its ETag.
-            since_ms = int(now_ms if now_ms is not None else time.time() * 1000) - window_hours * 3600_000
+            since_ms = handoff_now_ms - window_hours * 3600_000
             where.append("e.opened_at_ms >= %s")
             params.append(since_ms)
         taxonomy_filters = (
@@ -149,7 +150,9 @@ class FeedStorage:
         # tabs; the monitor's tabs are gates and it takes their counts from `status.oi`, so on a 5 s poll
         # this would be the file's own "19 ms over the entire table" aggregate run for a field nobody reads.
         wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
-        counts = self._feed_counts(where=list(where), params=list(params)) if wants_counts else None
+        counts = (
+            self._feed_counts(where=list(where), params=list(params), now_ms=handoff_now_ms) if wants_counts else None
+        )
         if outcome in OUTCOME_GROUP_SQL:
             where.append(OUTCOME_GROUP_SQL[outcome])
         if cursor_opened is not None:
@@ -157,9 +160,9 @@ class FeedStorage:
             params.extend([cursor_opened, cursor_id])
         rows = self.conn.execute(
             feed_page_sql(" AND ".join(where)),
-            (*params, int(limit) + 1),
+            (handoff_now_ms, *params, int(limit) + 1),
         ).fetchall()
-        items = [_feed_row(dict(r)) for r in rows[: int(limit)]]
+        items = [_feed_row(dict(r), now_ms=handoff_now_ms) for r in rows[: int(limit)]]
         next_cursor = None
         if len(rows) > int(limit):
             last = rows[int(limit) - 1]
@@ -188,7 +191,7 @@ class FeedStorage:
             "search": search.public_metadata() if search is not None else None,
         }
 
-    def _feed_counts(self, *, where: list[str], params: list[Any]) -> dict[str, int]:
+    def _feed_counts(self, *, where: list[str], params: list[Any], now_ms: int) -> dict[str, int]:
         """How the reader's current filter splits across the three outcome groups.
 
         The three predicates partition the feed exactly (see `OUTCOME_GROUP_SQL`), so one pass with FILTER
@@ -203,7 +206,7 @@ class FeedStorage:
         """
         row = self.conn.execute(
             feed_counts_sql(" AND ".join(where)),
-            tuple(params),
+            (int(now_ms), *params),
         ).fetchone()
         return {key: int((row or {}).get(key) or 0) for key in ("total", "pushed", "held", "pending")}
 
@@ -294,7 +297,11 @@ class FeedStorage:
             for r in deliveries
         ]
         outcome, timeline = event_timeline(
-            event=event, members=member_rows, verdicts=timeline_verdict_rows, deliveries=delivery_rows
+            event=event,
+            members=member_rows,
+            verdicts=timeline_verdict_rows,
+            deliveries=delivery_rows,
+            now_ms=int(time.time() * 1000),
         )
         latest_triage = next((dict(v) for v in reversed(verdicts) if v["stage"] == "triage"), None)
         latest_editorial = dict((latest_triage or {}).get("editorial") or {})
@@ -587,6 +594,7 @@ class FeedStorage:
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         ingest = self.conn.execute("SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'").fetchone()
         incidents = self.open_incidents()  # type: ignore[attr-defined]
+        recovery = self.recovery_backlog()  # type: ignore[attr-defined]
         day_ago = int(now_ms) - 24 * 3600_000
         hour_ago = int(now_ms) - 3600_000
         pipeline = self.conn.execute(
@@ -677,6 +685,7 @@ class FeedStorage:
                 "last_frame_at_ms": ingest["last_frame_at_ms"] if ingest else None,
                 "last_publish_at_ms": ingest["last_publish_at_ms"] if ingest else None,
                 "last_error_code": ingest["last_error_code"] if ingest else None,
+                "recovery": recovery,
                 "open_incidents": [
                     {
                         "incident_id": int(r["incident_id"]),
@@ -1106,7 +1115,7 @@ def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | No
     }
 
 
-def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
+def _feed_row(row: Mapping[str, Any], *, now_ms: int) -> dict[str, Any]:
     triage = _triage_summary(
         final_decision=row.get("final_decision"),
         override_rule=row.get("override_rule"),
@@ -1126,8 +1135,22 @@ def _feed_row(row: Mapping[str, Any]) -> dict[str, Any]:
         if row.get("delivery_state")
         else None
     )
+    outcome_triage = (
+        {
+            **triage,
+            "created_at_ms": row.get("verdict_created_at_ms"),
+            "published_at_ms": row.get("verdict_published_at_ms"),
+        }
+        if triage is not None
+        else None
+    )
     outcome = event_outcome(
-        admission=row.get("admission"), published_at_ms=row.get("published_at_ms"), triage=triage, delivery=delivery
+        admission=row.get("admission"),
+        opened_at_ms=row.get("opened_at_ms"),
+        published_at_ms=row.get("published_at_ms"),
+        triage=outcome_triage,
+        delivery=delivery,
+        now_ms=now_ms,
     )
     return {
         **_event_public(row),

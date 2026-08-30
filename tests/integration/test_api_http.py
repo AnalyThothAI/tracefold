@@ -162,6 +162,8 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",
         "held_gate",
+        "expired_triage_handoff",
+        "expired_delivery_handoff",
         "queued_publish",
         "queued_triage",
         "dropped",
@@ -207,6 +209,7 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     status_data = status.json()["data"]
     assert status_data["state"] == "unavailable"
     assert status_data["ingest"]["token_configured"] is False
+    assert status_data["ingest"]["recovery"]["reason"] is None
     assert status_data["broker"]["configured"] is False
     assert status_data["broker"]["connected"] is True
     assert status_data["broker"]["queues"]["news.raw"]["consumers"] == 1

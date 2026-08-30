@@ -84,6 +84,15 @@ def ingest_health(ingest: Mapping[str, Any], *, now_ms: int, workers_state: str 
     if incidents:
         causes = "、".join(incident_cause_zh(i.get("cause_class")) for i in incidents)
         return HealthItem("warn", "已连接，有未关闭的接入事故", causes)
+    recovery = ingest.get("recovery") or {}
+    recovery_pending = int(recovery.get("pending_count") or 0)
+    if recovery_pending:
+        oldest = recovery.get("oldest_opened_at_ms")
+        age = int(now_ms) - int(oldest) if oldest else None
+        detail = str(recovery.get("last_error_code") or "等待周期恢复扫描")
+        if age is not None:
+            detail = f"最早事故 {_minutes(age)}前 · {detail}"
+        return HealthItem("warn", f"历史补抄待恢复 {recovery_pending} 个事故窗口", detail)
     # No wall-clock text on the healthy path: the status ETag must not churn while nothing changes.
     return HealthItem("ok", "已连接，正在收帧", "")
 

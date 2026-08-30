@@ -9,15 +9,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
 import aio_pika
 from aio_pika import DeliveryMode, ExchangeType
 from aio_pika.abc import AbstractChannel, AbstractRobustChannel, AbstractRobustConnection
-from aio_pika.exceptions import AMQPError, DeliveryError
+from aio_pika.exceptions import AMQPError, ChannelInvalidStateError, DeliveryError, PublishError
 
+from tracefold.news import bus as news_bus
 from tracefold.news.bus import (
     DLX,
     EXCHANGE,
@@ -37,20 +38,13 @@ from tracefold.news.bus import (
     TransientError,
     decode_body,
 )
+from tracefold.news.telemetry import NewsDurableEventTelemetryPort, NewsRabbitConsumerFatalReason
 from tracefold.platform.docker_host import local_docker_host_amqp_url
 
 log = logging.getLogger("tracefold.news.bus")
 
 RAW_MAX_LENGTH = 100_000
 DEAD_LETTER_DELIVERY_LIMIT = 1_000_000
-
-
-class BrokerBackpressure(RuntimeError):
-    """Publish was rejected by the broker (queue overflow with reject-publish)."""
-
-
-class BrokerUnavailable(RuntimeError):
-    pass
 
 
 def _q(name_prefix: str, name: str) -> str:
@@ -130,11 +124,13 @@ class RabbitMQBus:
         name_prefix: str = "",
         connect_timeout_seconds: float = 10.0,
         retry_ttl_ms: int = RETRY_TTL_MS,
+        telemetry: NewsDurableEventTelemetryPort | None = None,
     ) -> None:
         self._url = local_docker_host_amqp_url(url)
         self._prefix = name_prefix
         self._connect_timeout = connect_timeout_seconds
         self._retry_ttl_ms = int(retry_ttl_ms)
+        self._telemetry = telemetry
         self._connection: AbstractRobustConnection | None = None
         self._publish_channel: AbstractRobustChannel | None = None
         self._exchange: aio_pika.abc.AbstractRobustExchange | None = None
@@ -150,19 +146,48 @@ class RabbitMQBus:
 
     async def connect(self) -> None:
         async with self._lock:
-            if self._connection is not None and not self._connection.is_closed:
+            if (
+                self._connection is not None
+                and not self._connection.is_closed
+                and self._publish_channel is not None
+                and not self._publish_channel.is_closed
+                and self._exchange is not None
+                and self._retry_exchange is not None
+            ):
                 return
+            stale_connection = self._connection
+            self._connection = None
+            self._publish_channel = None
+            self._exchange = None
+            self._retry_exchange = None
+            if stale_connection is not None:
+                with contextlib.suppress(Exception):
+                    await stale_connection.close()
+            connection: AbstractRobustConnection | None = None
             try:
-                self._connection = await aio_pika.connect_robust(self._url, timeout=self._connect_timeout)
-            except (TimeoutError, AMQPError, OSError) as exc:
-                raise BrokerUnavailable(f"news_broker_connect_failed:{type(exc).__name__}") from exc
-            self._publish_channel = await self._connection.channel(publisher_confirms=True)
-            await self.declare_topology(self._publish_channel)
+                connection = await aio_pika.connect_robust(self._url, timeout=self._connect_timeout)
+                channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+                self._connection = connection
+                self._publish_channel = channel
+                await self.declare_topology(channel)
+            except BaseException as exc:
+                self._connection = None
+                self._publish_channel = None
+                self._exchange = None
+                self._retry_exchange = None
+                if connection is not None:
+                    with contextlib.suppress(Exception):
+                        await connection.close()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                if isinstance(exc, (TimeoutError, AMQPError, ChannelInvalidStateError, OSError)):
+                    raise news_bus.BrokerUnavailable(f"news_broker_connect_failed:{type(exc).__name__}") from exc
+                raise
 
     async def declare_topology(self, channel: AbstractRobustChannel | None = None) -> dict[str, Any]:
         ch = channel or self._publish_channel
         if ch is None:
-            raise BrokerUnavailable("news_broker_not_connected")
+            raise news_bus.BrokerUnavailable("news_broker_not_connected")
         spec = topology(self._prefix)
         exchange = await ch.declare_exchange(spec.exchange, ExchangeType.TOPIC, durable=True)
         dlx = await ch.declare_exchange(spec.dlx, ExchangeType.FANOUT, durable=True)
@@ -221,7 +246,7 @@ class RabbitMQBus:
 
     async def _channel(self) -> AbstractChannel:
         if self._connection is None:
-            raise BrokerUnavailable("news_broker_not_connected")
+            raise news_bus.BrokerUnavailable("news_broker_not_connected")
         return await self._connection.channel()
 
     async def close(self) -> None:
@@ -250,20 +275,27 @@ class RabbitMQBus:
     async def publish(self, message: BusMessage) -> None:
         if self._exchange is None:
             await self.connect()
-        if self._exchange is None:
-            raise BrokerUnavailable("news_broker_not_connected")
+        exchange = self._exchange
+        if exchange is None:
+            raise news_bus.BrokerUnavailable("news_broker_not_connected")
+        await self._publish_confirmed(exchange, message)
+
+    async def _publish_confirmed(self, exchange: aio_pika.abc.AbstractExchange, message: BusMessage) -> None:
         try:
-            await self._exchange.publish(self._amqp_message(message), routing_key=message.routing_key, timeout=10)
+            await exchange.publish(self._amqp_message(message), routing_key=message.routing_key, timeout=10)
+        except PublishError as exc:
+            raise news_bus.BrokerUnavailable("news_broker_publish_unroutable") from exc
         except DeliveryError as exc:
-            raise BrokerBackpressure("news_broker_publish_rejected") from exc
-        except (TimeoutError, AMQPError, OSError) as exc:
-            raise BrokerUnavailable(f"news_broker_publish_failed:{type(exc).__name__}") from exc
+            raise news_bus.BrokerBackpressure("news_broker_publish_rejected") from exc
+        except (TimeoutError, AMQPError, ChannelInvalidStateError, OSError) as exc:
+            raise news_bus.BrokerUnavailable(f"news_broker_publish_failed:{type(exc).__name__}") from exc
 
     async def _publish_retry_lane(self, message: BusMessage, *, attempt: int) -> None:
         if self._retry_exchange is None:
             await self.connect()
-        if self._retry_exchange is None:
-            raise BrokerUnavailable("news_broker_not_connected")
+        exchange = self._retry_exchange
+        if exchange is None:
+            raise news_bus.BrokerUnavailable("news_broker_not_connected")
         retried = BusMessage(
             kind=message.kind,
             message_id=message.message_id,
@@ -275,7 +307,7 @@ class RabbitMQBus:
             attempt=attempt,
             headers=message.headers,
         )
-        await self._retry_exchange.publish(self._amqp_message(retried), routing_key=message.routing_key, timeout=10)
+        await self._publish_confirmed(exchange, retried)
 
     async def publish_retry(self, message: BusMessage) -> bool:
         """Counted retry through the TTL lane; returns False when attempts are exhausted."""
@@ -296,7 +328,7 @@ class RabbitMQBus:
 
         width = max(1, int(prefetch))
         while not stop_event.is_set():
-            inflight: set[asyncio.Task[None]] = set()
+            channel: AbstractChannel | None = None
             try:
                 await self.connect()
                 channel = await self._channel()
@@ -306,47 +338,66 @@ class RabbitMQBus:
                 async with amqp_queue.iterator() as iterator:
                     stop_task = asyncio.create_task(stop_event.wait())
                     try:
-                        while not stop_event.is_set():
-                            await slots.acquire()
-                            next_task = asyncio.create_task(iterator.__anext__())
-                            done, _ = await asyncio.wait({next_task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
-                            if next_task not in done:
-                                slots.release()
-                                next_task.cancel()
-                                with contextlib.suppress(BaseException):
-                                    await next_task
-                                break
-                            incoming = next_task.result()
-                            task = asyncio.create_task(self._handle_released(incoming, handler, slots))
-                            inflight.add(task)
-                            task.add_done_callback(inflight.discard)
+                        async with asyncio.TaskGroup() as messages:
+                            while not stop_event.is_set():
+                                await slots.acquire()
+                                if stop_event.is_set():
+                                    slots.release()
+                                    break
+                                next_task = asyncio.create_task(iterator.__anext__())
+                                try:
+                                    done, _ = await asyncio.wait(
+                                        {next_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+                                    )
+                                    if next_task not in done:
+                                        next_task.cancel()
+                                        with contextlib.suppress(asyncio.CancelledError):
+                                            await next_task
+                                        slots.release()
+                                        break
+                                    incoming = next_task.result()
+                                except BaseException:
+                                    if not next_task.done():
+                                        next_task.cancel()
+                                        with contextlib.suppress(asyncio.CancelledError):
+                                            await next_task
+                                    slots.release()
+                                    raise
+                                messages.create_task(self._handle_released(queue, incoming, handler, slots))
                     finally:
                         stop_task.cancel()
-                        with contextlib.suppress(BaseException):
+                        with contextlib.suppress(asyncio.CancelledError):
                             await stop_task
-                        if inflight:
-                            await asyncio.gather(*inflight, return_exceptions=True)
-                with contextlib.suppress(Exception):
-                    await channel.close()
             except asyncio.CancelledError:
                 raise
             except StopAsyncIteration:
                 continue
-            except (AMQPError, OSError, BrokerUnavailable) as exc:
+            except (AMQPError, OSError, news_bus.BrokerUnavailable) as exc:
                 log.warning("news bus consumer %s reconnecting after %s", queue, type(exc).__name__)
-                if inflight:
-                    await asyncio.gather(*inflight, return_exceptions=True)
                 await _sleep_or_stop(stop_event, 2.0)
+            finally:
+                if channel is not None and not channel.is_closed:
+                    try:
+                        await channel.close()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        self._record_consumer_fatal(queue, "settlement")
+                        raise
 
     async def _handle_released(
-        self, incoming: aio_pika.abc.AbstractIncomingMessage, handler: Handler, slots: asyncio.Semaphore
+        self,
+        queue: str,
+        incoming: aio_pika.abc.AbstractIncomingMessage,
+        handler: Handler,
+        slots: asyncio.Semaphore,
     ) -> None:
         try:
-            await self._handle(incoming, handler)
+            await self._handle(queue, incoming, handler)
         finally:
             slots.release()
 
-    async def _handle(self, incoming: aio_pika.abc.AbstractIncomingMessage, handler: Handler) -> None:
+    async def _handle(self, queue: str, incoming: aio_pika.abc.AbstractIncomingMessage, handler: Handler) -> None:
         try:
             message = decode_body(
                 incoming.body,
@@ -355,44 +406,59 @@ class RabbitMQBus:
                 headers=dict(incoming.headers or {}),
             )
         except BusDecodeError:
-            await incoming.reject(requeue=False)
+            await self._settle(queue, incoming.reject(requeue=False))
             return
         try:
             await handler(message)
-        except DeferError as exc:
-            deferred = False
-            with contextlib.suppress(Exception):
-                await self.publish_defer(message)
-                deferred = True
-            if deferred:
-                await incoming.ack()
-            else:
-                log.warning("news bus defer failed for %s: %s", message.message_id, exc)
-                await incoming.reject(requeue=False)
+        except DeferError:
+            await self._publish_before_settlement(queue, self.publish_defer(message))
+            await self._settle(queue, incoming.ack())
             return
         except TransientError as exc:
-            retried = False
-            with contextlib.suppress(Exception):
-                retried = await self.publish_retry(message)
+            retried = await self._publish_before_settlement(queue, self.publish_retry(message))
             if retried:
-                await incoming.ack()
+                await self._settle(queue, incoming.ack())
             else:
                 log.warning("news bus transient attempts exhausted for %s: %s", message.message_id, exc)
-                await incoming.reject(requeue=False)
+                await self._settle(queue, incoming.reject(requeue=False))
             return
         except PermanentError as exc:
             log.warning("news bus permanent failure for %s: %s", message.message_id, exc)
-            await incoming.reject(requeue=False)
+            await self._settle(queue, incoming.reject(requeue=False))
             return
+        except Exception as exc:
+            reason: NewsRabbitConsumerFatalReason = (
+                "broker" if isinstance(exc, (news_bus.BrokerBackpressure, news_bus.BrokerUnavailable)) else "handler"
+            )
+            self._record_consumer_fatal(queue, reason)
+            log.exception("news bus handler crashed for %s", message.message_id)
+            raise
+        await self._settle(queue, incoming.ack())
+
+    async def _publish_before_settlement(self, queue: str, publish: Awaitable[Any]) -> Any:
+        try:
+            return await publish
         except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
-                await incoming.nack(requeue=True)
+            raise
+        except (news_bus.BrokerBackpressure, news_bus.BrokerUnavailable):
+            self._record_consumer_fatal(queue, "broker")
             raise
         except Exception:
-            log.exception("news bus handler crashed for %s", message.message_id)
-            await incoming.reject(requeue=False)
-            return
-        await incoming.ack()
+            self._record_consumer_fatal(queue, "unknown")
+            raise
+
+    async def _settle(self, queue: str, settlement: Awaitable[None]) -> None:
+        try:
+            await settlement
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._record_consumer_fatal(queue, "settlement")
+            raise
+
+    def _record_consumer_fatal(self, queue: str, reason: NewsRabbitConsumerFatalReason) -> None:
+        if self._telemetry is not None:
+            self._telemetry.record_news_rabbitmq_consumer_fatal(queue, reason)
 
     # ---------------- operator tooling ----------------
     async def queue_depths(self) -> dict[str, dict[str, int]]:
@@ -497,4 +563,4 @@ async def _sleep_or_stop(stop_event: asyncio.Event, seconds: float) -> None:
         await asyncio.wait_for(stop_event.wait(), timeout=seconds)
 
 
-__all__ = ["BrokerBackpressure", "BrokerUnavailable", "QueueSpec", "RabbitMQBus", "Topology", "topology"]
+__all__ = ["QueueSpec", "RabbitMQBus", "Topology", "topology"]

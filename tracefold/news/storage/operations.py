@@ -7,6 +7,22 @@ from typing import Any
 
 from .sql_values import _dumps
 
+RECOVERY_BACKLOG_LIMIT = 20
+_PENDING_RECOVERY_INCIDENTS_SQL = """
+    SELECT incident_id, cause_class, opened_at_ms, closed_at_ms, recovery_from_at_ms,
+           recovery_to_at_ms, last_error_code, updated_at_ms
+      FROM news_opennews_incidents
+     WHERE recovery_status = 'pending' AND closed_at_ms IS NOT NULL
+     ORDER BY incident_id
+     LIMIT %s
+"""
+
+
+def pending_recovery_incidents_statement(*, limit: int) -> tuple[str, tuple[int]]:
+    """Return the exact bounded statement shared by Recovery, status, and query audit."""
+
+    return _PENDING_RECOVERY_INCIDENTS_SQL, (int(limit),)
+
 
 class OperationsStorage:
     conn: Any
@@ -75,7 +91,7 @@ class OperationsStorage:
                 int(now_ms),
                 bool(planned),
                 close_code,
-                "not_applicable" if cause_class in {"broker_backpressure", "triage_circuit_open"} else "pending",
+                "not_applicable" if cause_class == "triage_circuit_open" else "pending",
                 int(now_ms),
                 int(now_ms),
             ),
@@ -83,40 +99,73 @@ class OperationsStorage:
         return int(row["incident_id"])
 
     def close_open_incidents(self, *, cause_classes: Sequence[str] | None, now_ms: int) -> int:
-        if cause_classes is None:
-            cursor = self.conn.execute(
-                """
-                UPDATE news_opennews_incidents
-                   SET closed_at_ms = %s, recovery_to_at_ms = COALESCE(recovery_to_at_ms, %s),
-                       updated_at_ms = %s
-                 WHERE closed_at_ms IS NULL
-                """,
-                (int(now_ms), int(now_ms), int(now_ms)),
-            )
-        else:
-            cursor = self.conn.execute(
-                """
-                UPDATE news_opennews_incidents
-                   SET closed_at_ms = %s, recovery_to_at_ms = COALESCE(recovery_to_at_ms, %s),
-                       updated_at_ms = %s
-                 WHERE closed_at_ms IS NULL AND cause_class = ANY(%s)
-                """,
-                (int(now_ms), int(now_ms), int(now_ms), list(cause_classes)),
-            )
+        cause_filter = "" if cause_classes is None else " AND cause_class = ANY(%s)"
+        params: tuple[Any, ...] = (int(now_ms), int(now_ms), int(now_ms))
+        if cause_classes is not None:
+            params = (*params, list(cause_classes))
+        cursor = self.conn.execute(
+            f"""
+            UPDATE news_opennews_incidents
+               SET closed_at_ms = %s, recovery_to_at_ms = COALESCE(recovery_to_at_ms, %s),
+                   recovery_status = CASE
+                     WHEN cause_class IN ('broker_backpressure', 'broker_unavailable') THEN 'pending'
+                     ELSE recovery_status
+                   END,
+                   updated_at_ms = %s
+             WHERE closed_at_ms IS NULL{cause_filter}
+            """,
+            params,
+        )
         return int(cursor.rowcount or 0)
 
     def pending_recovery_incidents(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        sql, params = pending_recovery_incidents_statement(limit=limit)
+        rows = self.conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def recovery_backlog(self) -> dict[str, Any]:
+        rows = self.pending_recovery_incidents(limit=RECOVERY_BACKLOG_LIMIT)
+        pending_count = len(rows)
+        oldest_opened_at_ms = min((int(row["opened_at_ms"]) for row in rows), default=None)
+        latest_error = max(
+            (row for row in rows if row["last_error_code"] is not None),
+            key=lambda row: (int(row["updated_at_ms"]), int(row["incident_id"])),
+            default=None,
+        )
+        last_error_code = latest_error["last_error_code"] if latest_error is not None else None
+        return {
+            "pending_count": pending_count,
+            "oldest_opened_at_ms": oldest_opened_at_ms,
+            "last_error_code": last_error_code,
+            "reason": (
+                "recovery_transient"
+                if pending_count and last_error_code is not None
+                else ("recovery_pending" if pending_count else None)
+            ),
+        }
+
+    def open_incident_summary(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
-            SELECT incident_id, cause_class, opened_at_ms, closed_at_ms, recovery_from_at_ms, recovery_to_at_ms
+            SELECT cause_class, count(*)::int AS count, min(opened_at_ms) AS oldest_opened_at_ms
               FROM news_opennews_incidents
-             WHERE recovery_status = 'pending' AND closed_at_ms IS NOT NULL
-             ORDER BY incident_id
-             LIMIT %s
-            """,
-            (int(limit),),
+             WHERE closed_at_ms IS NULL
+             GROUP BY cause_class
+             ORDER BY cause_class
+            """
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(row) for row in rows]
+
+    def record_recovery_error(self, *, incident_id: int, error_code: str, now_ms: int) -> bool:
+        cursor = self.conn.execute(
+            """
+            UPDATE news_opennews_incidents
+               SET last_error_code = %s, updated_at_ms = %s
+             WHERE incident_id = %s AND recovery_status = 'pending'
+            """,
+            (str(error_code)[:200], int(now_ms), int(incident_id)),
+        )
+        return bool(cursor.rowcount)
 
     def complete_recovery(
         self,
@@ -128,14 +177,14 @@ class OperationsStorage:
         recovery_from_at_ms: int | None,
         recovery_to_at_ms: int | None,
         now_ms: int,
-    ) -> None:
-        self.conn.execute(
+    ) -> bool:
+        cursor = self.conn.execute(
             """
             UPDATE news_opennews_incidents
                SET recovery_status = %s, recovered_count = recovered_count + %s, last_error_code = %s,
                    recovery_from_at_ms = COALESCE(%s, recovery_from_at_ms),
                    recovery_to_at_ms = COALESCE(%s, recovery_to_at_ms), updated_at_ms = %s
-             WHERE incident_id = %s
+             WHERE incident_id = %s AND recovery_status = 'pending'
             """,
             (
                 status,
@@ -147,6 +196,7 @@ class OperationsStorage:
                 int(incident_id),
             ),
         )
+        return bool(cursor.rowcount)
 
     def open_incidents(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(

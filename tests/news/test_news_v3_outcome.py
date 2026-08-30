@@ -195,6 +195,58 @@ def test_outcome_reasons_are_chinese_never_bare_keys() -> None:
     assert fallback_push.kind == "delivered" and fallback_push.reason_zh == "模型不可用，按规则兜底推送：语义程序超时"
 
 
+def test_expired_handoffs_are_terminal_held_outcomes() -> None:
+    expired_event = event_outcome(
+        admission="candidate",
+        opened_at_ms=NOW - 30 * 60_000 - 1,
+        published_at_ms=None,
+        triage=None,
+        delivery=None,
+        now_ms=NOW,
+    )
+    assert expired_event.kind == "expired_triage_handoff"
+    assert expired_event.group == "held"
+
+    triage = _triage("push", override_rule="model_push_actionable")
+    triage["created_at_ms"] = NOW - 30 * 60_000 - 1
+    triage["published_at_ms"] = None
+    expired_verdict = event_outcome(
+        admission="candidate",
+        opened_at_ms=NOW - 60 * 60_000,
+        published_at_ms=NOW - 59 * 60_000,
+        triage=triage,
+        delivery=None,
+        now_ms=NOW,
+    )
+    assert expired_verdict.kind == "expired_delivery_handoff"
+    assert expired_verdict.group == "held"
+
+
+def test_handoff_deadline_boundary_is_still_pending_and_marker_wins() -> None:
+    boundary = event_outcome(
+        admission="candidate",
+        opened_at_ms=NOW - 30 * 60_000,
+        published_at_ms=None,
+        triage=None,
+        delivery=None,
+        now_ms=NOW,
+    )
+    assert boundary.kind == "queued_publish"
+
+    triage = _triage("push", override_rule="model_push_actionable")
+    triage["created_at_ms"] = NOW - 31 * 60_000
+    triage["published_at_ms"] = NOW - 1
+    published = event_outcome(
+        admission="candidate",
+        opened_at_ms=NOW - 60 * 60_000,
+        published_at_ms=NOW - 59 * 60_000,
+        triage=triage,
+        delivery=None,
+        now_ms=NOW,
+    )
+    assert published.kind == "pending_delivery"
+
+
 def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_codes() -> None:
     current_rules = {
         "degraded_listing_objective",
@@ -549,3 +601,23 @@ def test_timeline_exposes_only_the_current_reader_headline() -> None:
     facts = steps[2]["facts"]
     assert facts["headline_zh"] == "币安上线 XYZ"
     assert set(facts).isdisjoint({"event" + "_type", "action" + "able", "model" + "_decision", "title" + "_zh"})
+
+
+def test_closed_pending_recovery_keeps_news_status_degraded() -> None:
+    inputs = _status_inputs()
+    inputs["ingest"] = {
+        **inputs["ingest"],
+        "recovery": {
+            "pending_count": 2,
+            "oldest_opened_at_ms": NOW - 20 * 60_000,
+            "last_error_code": "opennews_history_rate_limited",
+            "reason": "recovery_transient",
+        },
+    }
+    out = status_health(**inputs)  # type: ignore[arg-type]
+    assert out["health"]["overall"] == "warn"
+    assert out["health"]["ingest"] == {
+        "level": "warn",
+        "summary_zh": "历史补抄待恢复 2 个事故窗口",
+        "detail_zh": "最早事故 20 分钟前 · opennews_history_rate_limited",
+    }

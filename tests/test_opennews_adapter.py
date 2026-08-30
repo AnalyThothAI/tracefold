@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 
 import httpx
 import pytest
@@ -249,6 +250,76 @@ def test_official_strategy_history_adapter_classifies_unavailable_endpoint() -> 
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_official_strategy_history_adapter_rejects_a_body_over_the_fixed_limit() -> None:
+    async def scenario() -> None:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(
+                lambda _request: httpx.Response(
+                    200,
+                    content=b"x" * (opennews_client.OPENNEWS_HISTORY_MAX_BODY_BYTES + 1),
+                )
+            ),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_too_large$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_adapter_rejects_compression_before_decoding() -> None:
+    async def scenario() -> None:
+        def _response(request: httpx.Request) -> httpx.Response:
+            assert request.headers["Accept-Encoding"] == "identity"
+            return httpx.Response(200, headers={"Content-Encoding": "gzip"}, content=gzip.compress(b"{}"))
+
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(_response),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_content_encoding_unsupported$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_adapter_classifies_json_recursion_as_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _recursive_json(_body: object) -> object:
+        raise RecursionError
+
+    monkeypatch.setattr(opennews_client.json, "loads", _recursive_json)
+
+    async def scenario() -> None:
+        client = opennews_client.OpenNewsStrategyHistoryClient(
+            token="history-token",
+            transport=httpx.MockTransport(lambda _request: httpx.Response(200, content=b"{}")),
+        )
+        try:
+            with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+                await client.get_strategy_list(limit=100, page=1)
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_official_strategy_history_rejects_more_than_one_hundred_rows() -> None:
+    overfull = {"success": True, "data": [{}] * 101, "page": 1, "limit": 100, "total": 101}
+
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+        parse_opennews_strategy_list(overfull)
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_invalid$"):
+        parse_opennews_strategy_hits(overfull)
 
 
 @pytest.mark.parametrize(

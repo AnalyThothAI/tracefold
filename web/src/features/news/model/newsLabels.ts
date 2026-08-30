@@ -47,6 +47,8 @@ const OUTCOME_TONE: Record<NewsOutcomeKind, Tone> = {
   dropped: "neutral",
   held_gate: "neutral",
   held_recovery: "neutral",
+  expired_triage_handoff: "alert",
+  expired_delivery_handoff: "alert",
   degraded_dropped: "alert",
   delivery_failed: "alert",
 };

@@ -214,7 +214,7 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0332|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0333|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -649,6 +649,24 @@ def test_db_migrate_enforces_the_db_only_quote_authority_preflight_without_nauti
 
     assert result.returncode == 0, result.stderr
     assert "Intent Quote preflight passed: PAUSED and no recovery obligations" in result.stdout
+
+
+def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_additive_news_head(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|1|1|1"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading capital-authority hard cut is already present at database head 20260830_0333" in result.stdout
+    assert "Trading hard-cut preflight passed" not in result.stdout
 
 
 @pytest.mark.parametrize("cut_state", ("RUNNING|0", "PAUSED|1"))

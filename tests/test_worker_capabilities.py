@@ -259,6 +259,47 @@ def test_external_data_metrics_use_bounded_labels_and_a_live_success_age(monkeyp
         )  # type: ignore[arg-type]
 
 
+def test_news_durable_event_metrics_use_only_bounded_labels() -> None:
+    telemetry = TelemetryRegistry()
+
+    telemetry.set_news_handoff_state("event", pending=2, oldest_age_seconds=5.0, expired=3)
+    telemetry.record_news_handoff_repair("event", "published")
+    telemetry.record_news_rabbitmq_consumer_fatal("news.raw", "handler")
+    telemetry.set_news_opennews_incident(
+        provider="opennews",
+        cause="broker_unavailable",
+        count=1,
+        oldest_age_seconds=9.0,
+    )
+    telemetry.record_news_opennews_recovery_turn(
+        "budget",
+        provider_calls=4,
+        published_messages=7,
+        exhausted_budget="provider_calls",
+    )
+
+    rendered = telemetry.render_prometheus_text()
+    assert 'tracefold_news_handoff_pending{stage="event"} 2.0' in rendered
+    assert 'tracefold_news_handoff_expired_total{stage="event"} 3.0' in rendered
+    assert 'tracefold_news_handoff_repair_total{outcome="published",stage="event"} 1.0' in rendered
+    assert 'tracefold_news_rabbitmq_consumer_fatal_total{queue="news.raw",reason_class="handler"} 1.0' in rendered
+    assert 'tracefold_news_opennews_incident_open{cause="broker_unavailable",provider="opennews"} 1.0' in rendered
+    assert 'tracefold_news_opennews_recovery_turn_total{outcome="budget"} 1.0' in rendered
+    assert "tracefold_news_opennews_recovery_provider_calls_total 4.0" in rendered
+    assert "tracefold_news_opennews_recovery_published_messages_total 7.0" in rendered
+    assert 'tracefold_news_opennews_recovery_budget_exhaustion_total{budget="provider_calls"} 1.0' in rendered
+
+    with pytest.raises(ValueError, match="news_handoff_stage_invalid"):
+        telemetry.set_news_handoff_state("BTC", pending=1, oldest_age_seconds=1, expired=0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="news_recovery_budget_invalid"):
+        telemetry.record_news_opennews_recovery_turn(
+            "budget",
+            provider_calls=0,
+            published_messages=0,
+            exhausted_budget="incident-42",  # type: ignore[arg-type]
+        )
+
+
 def test_finite_does_not_submit_when_durable_fence_fails() -> None:
     class FenceFailure(RuntimeError):
         pass

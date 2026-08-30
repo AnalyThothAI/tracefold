@@ -3,36 +3,30 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import logging
 from collections.abc import Mapping
 from typing import Any, ClassVar
 
-from ..bus import RK_RAW_LIVE, BusMessage, DeferError, TransientError, new_trace_id, now_ms
+from ..bus import RK_RAW_LIVE, BrokerBackpressure, BrokerUnavailable, BusMessage, new_trace_id, now_ms
 from ..opennews import OpenNewsExpectedError, parse_opennews_message
 from ..telemetry import NewsWorkSemantics
 from .recovery import RecoveryRunner
 from .runtime import NewsDatabasePort, _receive_or_stop, _sleep_or_stop
 
-log = logging.getLogger("tracefold.news")
-
 _WS_RECONNECT_SECONDS = 3.0
 _WS_CAUSE = {
-    "opennews_network_connect": "network_connect",
-    "opennews_authentication": "authentication",
-    "opennews_provider_close": "provider_close",
+    "opennews_authentication_failed": "authentication",
+    "opennews_connect_failed": "network_connect",
+    "opennews_handshake_failed": "network_connect",
+    "opennews_not_connected": "network_connect",
+    "opennews_receive_failed": "provider_close",
     "opennews_protocol_error": "protocol_error",
     "opennews_idle_timeout": "idle_timeout",
 }
+_WS_INCIDENT_CAUSES = tuple(dict.fromkeys(_WS_CAUSE.values()))
 
 
-def _cause_for(code: str | None) -> str:
-    if not code:
-        return "unknown"
-    for prefix, cause in _WS_CAUSE.items():
-        if code.startswith(prefix):
-            return cause
-    return "unknown"
+def _cause_for(code: str) -> str | None:
+    return _WS_CAUSE.get(code)
 
 
 class OpenNewsReceiver:
@@ -46,15 +40,12 @@ class OpenNewsReceiver:
         bus: Any,
         db: NewsDatabasePort,
         ws_client: Any | None,
-        history_client: Any | None,
         recovery: RecoveryRunner | None,
     ) -> None:
         self.bus = bus
         self.db = db
         self.ws_client = ws_client
-        self.history_client = history_client
         self.recovery = recovery
-        self._backpressure_open = False
 
     async def run(self, *, stop_event: asyncio.Event) -> None:
         if self.ws_client is None:
@@ -75,13 +66,12 @@ class OpenNewsReceiver:
             except asyncio.CancelledError:
                 raise
             except OpenNewsExpectedError as exc:
-                await self._disconnected(cause=_cause_for(exc.code), close_code=exc.status_code, error_code=exc.code)
-            except Exception as exc:
-                log.exception("news receiver failed")
-                await self._disconnected(cause="unknown", close_code=None, error_code=type(exc).__name__)
+                cause = _cause_for(exc.code)
+                if cause is None:
+                    raise
+                await self._disconnected(cause=cause, close_code=exc.status_code, error_code=exc.code)
             finally:
-                with contextlib.suppress(Exception):
-                    await self.ws_client.close()
+                await self.ws_client.close()
             if not stop_event.is_set():
                 await _sleep_or_stop(stop_event, _WS_RECONNECT_SECONDS)
         await self._disconnected(cause="planned_shutdown", close_code=None, error_code=None, planned=True)
@@ -102,50 +92,43 @@ class OpenNewsReceiver:
         )
         try:
             await self.bus.publish(msg)
-        except Exception as exc:  # BrokerBackpressure / BrokerUnavailable
-            cause = "broker_backpressure" if type(exc).__name__ == "BrokerBackpressure" else "broker_unavailable"
-            if not self._backpressure_open:
-                self._backpressure_open = True
-                with contextlib.suppress(TransientError, DeferError):
-                    await self.db.tx(
-                        "news_ingest_backpressure",
-                        lambda repos: (
-                            repos.news.open_incident(cause_class=cause, now_ms=stamp),
-                            repos.news.update_ingest_state(now_ms=stamp, last_error_code=cause),
-                        ),
-                    )
-            return
-        if self._backpressure_open:
-            self._backpressure_open = False
-            with contextlib.suppress(TransientError, DeferError):
-                await self.db.tx(
-                    "news_ingest_backpressure_close",
-                    lambda repos: repos.news.close_open_incidents(
-                        cause_classes=["broker_backpressure", "broker_unavailable"], now_ms=stamp
-                    ),
-                )
-        with contextlib.suppress(TransientError, DeferError):
+        except (BrokerBackpressure, BrokerUnavailable) as exc:
+            cause = "broker_backpressure" if isinstance(exc, BrokerBackpressure) else "broker_unavailable"
             await self.db.tx(
-                "news_ingest_frame",
-                lambda repos: repos.news.update_ingest_state(
-                    now_ms=stamp, last_frame_at_ms=stamp, last_publish_at_ms=stamp, clear_error=True
+                "news_ingest_backpressure",
+                lambda repos: (
+                    repos.news.open_incident(cause_class=cause, now_ms=stamp),
+                    repos.news.update_ingest_state(now_ms=stamp, last_frame_at_ms=stamp, last_error_code=cause),
                 ),
-                timeout_seconds=1.0,
             )
+            return
+
+        def _published(repos: Any) -> int:
+            closed = repos.news.close_open_incidents(
+                cause_classes=["broker_backpressure", "broker_unavailable"], now_ms=stamp
+            )
+            repos.news.update_ingest_state(
+                now_ms=stamp, last_frame_at_ms=stamp, last_publish_at_ms=stamp, clear_error=True
+            )
+            return int(closed)
+
+        closed = await self.db.tx("news_ingest_frame", _published, timeout_seconds=1.0)
+        if closed > 0 and self.recovery is not None:
+            self.recovery.request()
 
     async def _connected(self) -> None:
         stamp = now_ms()
 
-        def _fn(repos: Any) -> None:
-            repos.news.close_open_incidents(
-                cause_classes=[*_WS_CAUSE.values(), "unknown", "process_outage", "planned_shutdown"],
+        def _fn(repos: Any) -> int:
+            closed = repos.news.close_open_incidents(
+                cause_classes=[*_WS_INCIDENT_CAUSES, "unknown", "process_outage", "planned_shutdown"],
                 now_ms=stamp,
             )
             repos.news.update_ingest_state(now_ms=stamp, connected=True, clear_error=True)
+            return int(closed)
 
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx("news_ingest_connected", _fn)
-        if self.recovery is not None:
+        closed = await self.db.tx("news_ingest_connected", _fn)
+        if closed > 0 and self.recovery is not None:
             self.recovery.request()
 
     async def _disconnected(
@@ -157,5 +140,4 @@ class OpenNewsReceiver:
             repos.news.open_incident(cause_class=cause, now_ms=stamp, planned=planned, close_code=close_code)
             repos.news.update_ingest_state(now_ms=stamp, connected=False, last_error_code=error_code)
 
-        with contextlib.suppress(TransientError, DeferError):
-            await self.db.tx("news_ingest_disconnected", _fn)
+        await self.db.tx("news_ingest_disconnected", _fn)

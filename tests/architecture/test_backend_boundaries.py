@@ -155,7 +155,12 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
     ),
     "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),
-    "integrations.rabbitmq": ("tracefold.news.bus",),
+    "integrations.rabbitmq": (
+        "tracefold.news.bus",
+        # The adapter reports fatal transport settlement through the News-owned, platform-implemented
+        # low-cardinality telemetry port; it does not reach storage or pipeline implementation.
+        "tracefold.news.telemetry",
+    ),
     "integrations.venues": (
         "tracefold.news.market_review.instruments",
         "tracefold.news.market_review.pricing",

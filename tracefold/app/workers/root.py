@@ -9,6 +9,7 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 from uuid import uuid4
 
@@ -27,7 +28,12 @@ from tracefold.app.workers.task_contract import (
     WORKERS_PROBE_TASK_NAME,
     worker_business_runners,
 )
-from tracefold.app.workers.wiring.components import _Components, _wire_components
+from tracefold.app.workers.wiring.components import (
+    _Components,
+    _leaf_exceptions,
+    _task_unavailable_reason,
+    _wire_components,
+)
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.postgres.client import postgres_health_check
@@ -128,13 +134,13 @@ async def run_workers(settings: Settings) -> None:
         work_stop_event.set()
         shutdown_requested.set()
 
-    def enter_fatal(_exc: BaseException) -> None:
+    def enter_fatal(_exc: BaseException, *, task_name: str | None = None) -> None:
         nonlocal fatal_deadline, fatal_watchdog
         if fatal_watchdog is not None:
             return
         probe_state.ready = False
         probe_state.lifecycle_state = "failed"
-        probe_state.unavailable_reason = "runtime_failed"
+        probe_state.unavailable_reason = _task_unavailable_reason(task_name, _exc)
         work_stop_event.set()
         control_stop_event.set()
         probe_stop_event.set()
@@ -198,7 +204,10 @@ async def run_workers(settings: Settings) -> None:
             ):
                 business_tasks.append(
                     group.create_task(
-                        _guard_child(runner(work_stop_event), on_fatal=enter_fatal),
+                        _guard_child(
+                            runner(work_stop_event),
+                            on_fatal=partial(enter_fatal, task_name=task_name),
+                        ),
                         name=task_name,
                     )
                 )
@@ -336,14 +345,6 @@ async def run_workers(settings: Settings) -> None:
         raise
     except BaseException as exc:
         enter_fatal(exc)
-        probe_state.ready = False
-        probe_state.lifecycle_state = "failed"
-        probe_state.unavailable_reason = "runtime_failed"
-        work_stop_event.set()
-        control_stop_event.set()
-        probe_stop_event.set()
-        if server is not None:
-            server.should_exit = True
         await _fatal_exit(
             exc=exc,
             db=db,
@@ -619,15 +620,6 @@ def _fatal_code(exc: BaseException, *, phase: str) -> str:
     ):
         return "runtime_invariant_failed"
     return "child_failed"
-
-
-def _leaf_exceptions(exc: BaseException) -> list[BaseException]:
-    if isinstance(exc, BaseExceptionGroup):
-        leaves: list[BaseException] = []
-        for nested in exc.exceptions:
-            leaves.extend(_leaf_exceptions(nested))
-        return leaves
-    return [exc]
 
 
 def _startup_database_status(db: WorkerDatabase) -> dict[str, object]:

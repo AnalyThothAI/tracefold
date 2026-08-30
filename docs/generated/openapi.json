@@ -2686,6 +2686,9 @@
             "title": "Open Incidents",
             "type": "array"
           },
+          "recovery": {
+            "$ref": "#/components/schemas/NewsRecoveryStatusData"
+          },
           "token_configured": {
             "title": "Token Configured",
             "type": "boolean"
@@ -2990,6 +2993,8 @@
             "enum": [
               "held_recovery",
               "held_gate",
+              "expired_triage_handoff",
+              "expired_delivery_handoff",
               "queued_publish",
               "queued_triage",
               "dropped",
@@ -3984,6 +3989,55 @@
           "count"
         ],
         "title": "NewsReasonCountData",
+        "type": "object"
+      },
+      "NewsRecoveryStatusData": {
+        "additionalProperties": false,
+        "properties": {
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "oldest_opened_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Opened At Ms"
+          },
+          "pending_count": {
+            "default": 0,
+            "title": "Pending Count",
+            "type": "integer"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "recovery_pending",
+                  "recovery_transient"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "NewsRecoveryStatusData",
         "type": "object"
       },
       "NewsSourceContractStageCountsData": {

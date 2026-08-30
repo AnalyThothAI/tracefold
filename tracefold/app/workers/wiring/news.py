@@ -83,7 +83,7 @@ async def _wire_news_pipeline(
 ) -> tuple[RabbitMQBus, NewsPipeline]:
     """Broker-driven News V3: one RabbitMQ bus + consumers; models/providers are optional capabilities."""
 
-    bus = await _connect_news_bus(settings)
+    bus = await _connect_news_bus(settings, telemetry=telemetry)
     news_db = WorkerNewsDatabase(db)
     cold_db = WorkerNewsColdDatabase(db)
     quote_db = WorkerQuoteDatabase(db)
@@ -94,14 +94,15 @@ async def _wire_news_pipeline(
         OpenNewsStrategyHistoryClient(token=settings.news.opennews_token) if settings.news.opennews_token else None
     )
     recovery = (
-        RecoveryRunner(bus=bus, db=news_db, history_client=history_client, telemetry=telemetry) if ws_client else None
+        RecoveryRunner(bus=bus, db=news_db, history_client=history_client, telemetry=telemetry)
+        if history_client
+        else None
     )
     receiver = (
         OpenNewsReceiver(
             bus=bus,
             db=news_db,
             ws_client=ws_client,
-            history_client=history_client,
             recovery=recovery,
         )
         if ws_client
@@ -125,7 +126,11 @@ async def _wire_news_pipeline(
     return bus, pipeline
 
 
-async def _connect_news_bus(settings: Settings) -> RabbitMQBus:
+async def _connect_news_bus(
+    settings: Settings,
+    *,
+    telemetry: TelemetryRegistry | None = None,
+) -> RabbitMQBus:
     from tracefold.integrations.rabbitmq import RabbitMQBus
 
     broker_url = settings.news.broker.url
@@ -135,6 +140,7 @@ async def _connect_news_bus(settings: Settings) -> RabbitMQBus:
         url=broker_url,
         name_prefix=settings.news.broker.name_prefix,
         connect_timeout_seconds=settings.news.broker.connect_timeout_seconds,
+        telemetry=telemetry,
     )
     await bus.connect()
     return bus
@@ -356,6 +362,7 @@ def _compose_news_pipeline(
             bus=bus,
             retention_raw_days=settings.news.retention.raw_days,
             retention_judged_days=settings.news.retention.judged_days,
+            telemetry=telemetry,
         ),
         instruments=_instrument_snapshot_loop(settings, db=news_db, telemetry=telemetry),
         quotes=_quote_snapshot_loop(

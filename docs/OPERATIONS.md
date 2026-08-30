@@ -100,7 +100,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0332`
+5. Deploy the exact reviewed image at the current Alembic head (`20260830_0333`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -112,8 +112,13 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    deliberately database-only: it requires PAUSED and zero nonterminal Intents,
    so a no-key deployment can drain that recovery obligation without inventing
    a Nautilus readiness requirement. `0329` repeats those two predicates before
-   installing Intent-level Q1/fence/Q2 evidence. Older execution-authority cutover
-   routes retain the full venue-flat/Nautilus preflight above.
+   installing Intent-level Q1/fence/Q2 evidence. `0330` then hard-cuts the
+   current News contract; upgrading that head to Trading Production V3 `0331`
+   repeats the full venue-flat/Nautilus preflight. Upgrading `0331` to Trading
+   capital authority `0332` also repeats that preflight. `0333` is the
+   subsequent additive News Verdict-handoff partial index and has no capital
+   cutover predicate. Older execution-authority cutover routes retain the full
+   venue-flat/Nautilus preflight above.
 6. Run `make status`, then `uv run tracefold trading status`. Require one
    healthy Nautilus replica, `execution_authority=nautilus`,
    each configured binding's exact account generation, catalog, capability and
@@ -417,7 +422,9 @@ messages concurrently with a per-message ack, so `news.triage.concurrency`
 (default 4) is real concurrency and the only News concurrency knob;
 single-active queues use prefetch 1. When the News lane cannot admit a message
 the consumer raises `DeferError` and the message requeues uncounted through
-the retry lane.
+the retry lane. Delivery restart reconciliation likewise waits out a typed
+admission `DeferError` before consuming; statement overruns and unknown faults
+remain process-fatal.
 
 News has no projection lease: the broker's single-active-consumer and
 per-message ack are the fences.
@@ -433,6 +440,30 @@ successful first-page requests only; cursor pages are excluded, while repeated
 browser polling remains repeated operational load. These counters are not
 distinct user-search or user-session analytics. Labels never carry the raw
 query, symbol, resolved identity, route, or user-controlled text.
+
+News durable-event boundaries add the following bounded metrics. `stage`,
+`outcome`, `queue`, `reason_class`, `cause`, and `budget` are closed code-owned
+sets; Event/message/incident/Strategy IDs are log fields, never labels.
+
+```text
+tracefold_news_handoff_pending{stage}
+tracefold_news_handoff_oldest_age_seconds{stage}
+tracefold_news_handoff_repair_total{stage,outcome}
+tracefold_news_handoff_expired_total{stage}
+tracefold_news_rabbitmq_consumer_fatal_total{queue,reason_class}
+tracefold_news_opennews_incident_open{provider,cause}
+tracefold_news_opennews_incident_oldest_age_seconds{provider,cause}
+tracefold_news_opennews_recovery_turn_total{outcome}
+tracefold_news_opennews_recovery_provider_calls_total
+tracefold_news_opennews_recovery_published_messages_total
+tracefold_news_opennews_recovery_budget_exhaustion_total{budget}
+```
+
+`handoff_expired_total` is a Gauge despite its compatibility name: expiry is a
+current marker-plus-age projection, not a durable transition that can be
+incremented once. Counting it on each Janitor scan would manufacture growth.
+The pending and expired gauges are each capped at 1,000 rows per stage; their
+partial-index scans are bounded even when retained expired audit facts grow.
 
 ## Durable state and transaction rules
 
@@ -466,6 +497,14 @@ For missing or stale live data:
 | readiness 503 | DB liveness and startup schema/composition |
 | status degraded, readiness 200 | expected runtime/product separation |
 
+The separate loopback Workers probe reports fatal News task reasons as
+`news_consumer_fatal`, `news_receiver_fatal`, `news_broker_unavailable`, or
+`news_recovery_fatal`. A classified live broker incident or Recovery transient
+is recoverable work, not a crashed task: Workers readiness stays up while
+`/api/news/status` names the open incident or closed-pending recovery state as
+`reason=recovery_pending|recovery_transient`, retains the typed error code, and
+remains degraded.
+
 ## Domain traces
 
 News:
@@ -484,9 +523,10 @@ OpenNews account Strategy WSS (whatever the account has enabled; no local allowl
      -> policy-v10 decide() -> news_verdicts (editorial + runtime manifest)
      -> verdict.push (an escalate rides the same key at AMQP priority 5)
   -> q:news.deliver [SAC] Deliverer: one configured-provider attempt per Event (kind first)
-  -> q:news.retry (30 s TTL) for TransientError/DeferError; q:news.dead for the rest
-  -> Janitor: outbox catch-up (unpublished candidates older than 15 s), band
-     expiry, 30-day purge, broker snapshot
+  -> q:news.retry (30 s TTL) for TransientError/DeferError; retry publish confirms before original ack;
+     q:news.dead for decode/PermanentError/exhausted transient or broker delivery-limit terminal cases
+  -> Janitor: Event->Triage and push-Verdict->Delivery repair (15 s minimum age,
+     30 min relevance ceiling, 50 rows/stage), band expiry, 30-day purge, broker snapshot
   -> /api/news/feed + /api/news/events/{event_id} + /api/news/status
 ```
 
@@ -521,15 +561,22 @@ prints per-queue message/consumer counts. Outside a container the compose
 host names resolve to the published loopback ports (`postgres` ->
 `127.0.0.1:${TRACEFOLD_POSTGRES_PORT:-56532}`, `rabbitmq` ->
 `127.0.0.1:${TRACEFOLD_RABBITMQ_PORT:-5672}`), so the same `config.yaml`
-serves `docker compose exec` and host-side CLI runs. Consumers reconnect automatically
-(robust connection); while the broker is unreachable the Receiver keeps the
-WSS open, drops frames, and opens a `broker_unavailable` incident that
-Recovery fills from the official Strategy hits after reconnect. Queue overflow
-on `news.raw` (`reject-publish` at 100k) opens `broker_backpressure`.
+serves `docker compose exec` and host-side CLI runs. Connection/setup faults may
+reconnect before consuming a delivery. Once a message task owns a delivery,
+broker, settlement, or unknown handler failure leaves the consumer scope and
+makes Workers unready; it is never converted into a permanent data error.
+While the broker is unreachable the Receiver keeps the WSS open, records every
+failed interval as a durable `broker_unavailable` incident, and Recovery fills
+the closed interval from official Strategy history. Queue overflow on
+`news.raw` (`reject-publish` at 100k) opens recovery-eligible
+`broker_backpressure`. A confirmed live publish always reconciles both broker
+causes from PostgreSQL, including incidents created by a previous process.
 
 Dead letters: `q:news.dead` receives permanently failed messages (schema
-errors, missing events, `PermanentError`, handler crashes, `TransientError`
-after 3 attempts, delivery-limit hits); it is declared with delivery limit
+errors, explicit `PermanentError`, `TransientError` after 3 attempts, and
+broker delivery-limit hits). Unclassified handler exceptions, retry-lane
+publish failures, and ack/reject failures do not terminally settle the
+delivery; they fail Workers instead. The queue is declared with delivery limit
 1,000,000 so peeking never drops evidence. `tracefold news dlq inspect
 [--limit N]` peeks without consuming, `tracefold news dlq replay [--limit N]`
 republishes to the topic exchange with a fresh attempt counter, and
@@ -626,23 +673,32 @@ queue, `bad` when a business queue has no consumer, `warn` with dead letters;
 model is `warn` at a 3 % and `bad` at a 10 % 24 h degraded share (the detail
 names the error codes); delivery is `warn` when 10 % of 24 h attempts
 are terminal, `bad` at 30 %. A `warn` or `bad` level from any enabled health
-lane makes top-level `state` `degraded`; the API no longer reports a green
-`ready` state beside a failing health item. The five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
+lane makes top-level `state` `degraded`. A closed incident with
+`recovery_status=pending` keeps ingest at `warn` and is exposed under
+`ingest.recovery` with its count, oldest opening time, latest typed error, and
+bounded product-readiness `reason` (`recovery_pending` before a failed attempt,
+`recovery_transient` after one);
+the API cannot turn green merely because the live connection recovered. This
+projection describes at most the next 20 incident rows, using the same bounded
+batch statement as Recovery and query audit. The
+API no longer reports a green `ready` state beside a failing health item. The
+five visible Event-feed stages in `funnel_24h` use one cohort: Events opened
 in the rolling 24 h window, tested for parsed/admitted/Triage/sent durable facts. The independent Triage and
 delivery rolling ledgers remain throughput/health facts, so late work does not make a later funnel stage exceed
 its intake cohort. `reasons_24h` (Chinese labels
 over `suppressed_by_reason`, `dropped_by_rule`, `throttled_by_key`,
 `pushed_by_rule`, `triage_degraded_by_code_24h`) say where the day went. Every
-Event's `outcome` (feed, detail, `news why`) is the same ten-kind conclusion:
-`held_recovery`, `held_gate`, `queued_publish`, `queued_triage`, `dropped`,
+Event's `outcome` (feed, detail, `news why`) is the same twelve-kind conclusion:
+`held_recovery`, `held_gate`, `expired_triage_handoff`,
+`expired_delivery_handoff`, `queued_publish`, `queued_triage`, `dropped`,
 `throttled`, `degraded_dropped`, `pending_delivery`, `delivered`,
-`delivery_failed` — "no state" on the console means one of the two `queued_*`
-kinds, and only those two are worth chasing as backlog.
+`delivery_failed`. The two expired kinds are terminal `held` projections after
+the 30-minute handoff ceiling; only the `queued_*` kinds are live backlog.
 
 Diagnose News in this order:
 
 1. `/api/news/status.state` and `ingest`: `connected`, `last_frame_at_ms`,
-   `open_incidents`. Which Strategies are feeding the pipeline is a question for
+   `open_incidents`, and `recovery.pending_count/reason/last_error_code`. Which Strategies are feeding the pipeline is a question for
    the OpenNews dashboard, not for Tracefold.
 2. For a market-contract frame, inspect its normalized four-field Strategy
    identity, `event_kind`, `source_contract_reason`, admission, classifier version and parser

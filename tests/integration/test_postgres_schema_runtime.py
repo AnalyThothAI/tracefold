@@ -152,6 +152,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "ix_news_event_assets_symbol",
         "ix_news_verdicts_stage_created",
         "ix_news_verdicts_final",
+        "ix_news_verdicts_unpublished_delivery",
         "ix_news_deliveries_state",
         "ix_news_deliveries_sent",
         "ix_news_deliveries_editing",
@@ -170,7 +171,11 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in unpublished_index
     assert "'candidate'" in unpublished_index and "'listing_deterministic'" in unpublished_index
     assert "'telemetry_deterministic'" in unpublished_index and "'liquidation_deterministic'" in unpublished_index
-    assert version == latest_migration_version() == "20260830_0332"
+    verdict_handoff_index = news_v3_indexes["ix_news_verdicts_unpublished_delivery"]
+    assert "published_at_ms IS NULL" in verdict_handoff_index
+    assert "stage = 'triage'" in verdict_handoff_index
+    assert "final_decision = ANY" in verdict_handoff_index
+    assert version == latest_migration_version() == "20260830_0333"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -195,4 +200,4 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260830_0332"
+    assert version == latest_migration_version() == "20260830_0333"

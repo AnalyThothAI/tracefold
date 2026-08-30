@@ -32,6 +32,25 @@ ExternalDataProviderOutcome = Literal["error", "success"]
 ExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
 NewsSearchMode = Literal["asset", "text"]
 NewsSearchResult = Literal["zero", "nonzero"]
+NewsHandoffStage = Literal["event", "verdict"]
+NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
+NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]
+NewsRabbitConsumerFatalReason = Literal["broker", "handler", "settlement", "unknown"]
+NewsOpenNewsIncidentCause = Literal[
+    "authentication",
+    "broker_backpressure",
+    "broker_unavailable",
+    "idle_timeout",
+    "network_connect",
+    "planned_shutdown",
+    "process_outage",
+    "protocol_error",
+    "provider_close",
+    "triage_circuit_open",
+    "unknown",
+]
+NewsRecoveryOutcome = Literal["budget", "no_work", "partial", "success", "transient"]
+NewsRecoveryBudget = Literal["provider_calls", "published_messages", "wall_time"]
 
 _EXTERNAL_DATA_NAMES: Final[frozenset[str]] = frozenset(get_args(ExternalDataName))
 _EXTERNAL_DATA_SOURCES: Final[frozenset[str]] = frozenset(get_args(ExternalDataSource))
@@ -40,6 +59,13 @@ _EXTERNAL_DATA_PROVIDER_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(Ext
 _EXTERNAL_DATA_SKIP_REASONS: Final[frozenset[str]] = frozenset(get_args(ExternalDataSkipReason))
 _NEWS_SEARCH_MODES: Final[frozenset[str]] = frozenset(get_args(NewsSearchMode))
 _NEWS_SEARCH_RESULTS: Final[frozenset[str]] = frozenset(get_args(NewsSearchResult))
+_NEWS_HANDOFF_STAGES: Final[frozenset[str]] = frozenset(get_args(NewsHandoffStage))
+_NEWS_HANDOFF_REPAIR_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(NewsHandoffRepairOutcome))
+_NEWS_RABBIT_QUEUES: Final[frozenset[str]] = frozenset(get_args(NewsRabbitQueue))
+_NEWS_RABBIT_FATAL_REASONS: Final[frozenset[str]] = frozenset(get_args(NewsRabbitConsumerFatalReason))
+_NEWS_OPENNEWS_INCIDENT_CAUSES: Final[frozenset[str]] = frozenset(get_args(NewsOpenNewsIncidentCause))
+_NEWS_RECOVERY_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(NewsRecoveryOutcome))
+_NEWS_RECOVERY_BUDGETS: Final[frozenset[str]] = frozenset(get_args(NewsRecoveryBudget))
 
 
 class TelemetryRegistry:
@@ -123,6 +149,73 @@ class TelemetryRegistry:
             "Successful first-page News feed search request duration in seconds.",
             ("mode",),
             buckets=(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0),
+            registry=self.registry,
+        )
+        self.news_handoff_pending = Gauge(
+            "tracefold_news_handoff_pending",
+            "Current durable handoffs awaiting a confirmed broker publish.",
+            ("stage",),
+            registry=self.registry,
+        )
+        self.news_handoff_oldest_age_seconds = Gauge(
+            "tracefold_news_handoff_oldest_age_seconds",
+            "Age of the oldest non-expired durable handoff awaiting broker publish.",
+            ("stage",),
+            registry=self.registry,
+        )
+        self.news_handoff_repair_total = Counter(
+            "tracefold_news_handoff_repair_total",
+            "Durable handoff repair attempts by bounded outcome.",
+            ("stage", "outcome"),
+            registry=self.registry,
+        )
+        # Expiry is a deterministic marker+age projection, not a durable transition. This is deliberately a
+        # gauge despite the issue-prescribed `_total` suffix: incrementing a Counter on every scan would count
+        # the same row forever and manufacture evidence.
+        self.news_handoff_expired_total = Gauge(
+            "tracefold_news_handoff_expired_total",
+            "Current durable handoffs past their relevance deadline.",
+            ("stage",),
+            registry=self.registry,
+        )
+        self.news_rabbitmq_consumer_fatal_total = Counter(
+            "tracefold_news_rabbitmq_consumer_fatal_total",
+            "RabbitMQ consumer scopes terminated by an unhandled message-task failure.",
+            ("queue", "reason_class"),
+            registry=self.registry,
+        )
+        self.news_opennews_incident_open = Gauge(
+            "tracefold_news_opennews_incident_open",
+            "Current open OpenNews incidents by bounded provider and cause.",
+            ("provider", "cause"),
+            registry=self.registry,
+        )
+        self.news_opennews_incident_oldest_age_seconds = Gauge(
+            "tracefold_news_opennews_incident_oldest_age_seconds",
+            "Age of the oldest open OpenNews incident by bounded provider and cause.",
+            ("provider", "cause"),
+            registry=self.registry,
+        )
+        self.news_opennews_recovery_turn_total = Counter(
+            "tracefold_news_opennews_recovery_turn_total",
+            "OpenNews recovery turns by bounded outcome.",
+            ("outcome",),
+            registry=self.registry,
+        )
+        self.news_opennews_recovery_provider_calls_total = Counter(
+            "tracefold_news_opennews_recovery_provider_calls_total",
+            "History-provider calls made by OpenNews recovery turns.",
+            registry=self.registry,
+        )
+        self.news_opennews_recovery_published_messages_total = Counter(
+            "tracefold_news_opennews_recovery_published_messages_total",
+            "Recovery messages confirmed by RabbitMQ.",
+            registry=self.registry,
+        )
+        self.news_opennews_recovery_budget_exhaustion_total = Counter(
+            "tracefold_news_opennews_recovery_budget_exhaustion_total",
+            "OpenNews recovery turns stopped by a code-owned resource budget.",
+            ("budget",),
             registry=self.registry,
         )
         self.queue_oldest_delay_seconds = Gauge(
@@ -273,6 +366,85 @@ class TelemetryRegistry:
         result_label = _bounded_label(result, allowed=_NEWS_SEARCH_RESULTS, field="news_search_result")
         self.news_search_requests.labels(mode=mode_label, result=result_label).inc()
         self.news_search_duration_seconds.labels(mode=mode_label).observe(max(0.0, float(seconds)))
+
+    def set_news_handoff_state(
+        self,
+        stage: NewsHandoffStage,
+        *,
+        pending: int,
+        oldest_age_seconds: float,
+        expired: int,
+    ) -> None:
+        stage_label = _bounded_label(stage, allowed=_NEWS_HANDOFF_STAGES, field="news_handoff_stage")
+        self.news_handoff_pending.labels(stage=stage_label).set(max(0, int(pending)))
+        self.news_handoff_oldest_age_seconds.labels(stage=stage_label).set(max(0.0, float(oldest_age_seconds)))
+        self.news_handoff_expired_total.labels(stage=stage_label).set(max(0, int(expired)))
+
+    def record_news_handoff_repair(
+        self,
+        stage: NewsHandoffStage,
+        outcome: NewsHandoffRepairOutcome,
+    ) -> None:
+        stage_label = _bounded_label(stage, allowed=_NEWS_HANDOFF_STAGES, field="news_handoff_stage")
+        outcome_label = _bounded_label(
+            outcome,
+            allowed=_NEWS_HANDOFF_REPAIR_OUTCOMES,
+            field="news_handoff_repair_outcome",
+        )
+        self.news_handoff_repair_total.labels(stage=stage_label, outcome=outcome_label).inc()
+
+    def record_news_rabbitmq_consumer_fatal(
+        self,
+        queue: str,
+        reason_class: NewsRabbitConsumerFatalReason,
+    ) -> None:
+        reason_label = _bounded_label(
+            reason_class,
+            allowed=_NEWS_RABBIT_FATAL_REASONS,
+            field="news_rabbitmq_consumer_fatal_reason",
+        )
+        queue_label = _bounded_label(queue, allowed=_NEWS_RABBIT_QUEUES, field="news_rabbitmq_queue")
+        self.news_rabbitmq_consumer_fatal_total.labels(queue=queue_label, reason_class=reason_label).inc()
+
+    def set_news_opennews_incident(
+        self,
+        *,
+        provider: str,
+        cause: str,
+        count: int,
+        oldest_age_seconds: float,
+    ) -> None:
+        if provider != "opennews":
+            raise ValueError(f"news_opennews_provider_invalid:{_label(provider)}")
+        cause_label = _bounded_label(
+            cause,
+            allowed=_NEWS_OPENNEWS_INCIDENT_CAUSES,
+            field="news_opennews_incident_cause",
+        )
+        self.news_opennews_incident_open.labels(provider="opennews", cause=cause_label).set(max(0, int(count)))
+        self.news_opennews_incident_oldest_age_seconds.labels(provider="opennews", cause=cause_label).set(
+            max(0.0, float(oldest_age_seconds))
+        )
+
+    def record_news_opennews_recovery_turn(
+        self,
+        outcome: NewsRecoveryOutcome,
+        *,
+        provider_calls: int,
+        published_messages: int,
+        exhausted_budget: NewsRecoveryBudget | None = None,
+    ) -> None:
+        outcome_label = _bounded_label(outcome, allowed=_NEWS_RECOVERY_OUTCOMES, field="news_recovery_outcome")
+        self.news_opennews_recovery_turn_total.labels(outcome=outcome_label).inc()
+        self.news_opennews_recovery_provider_calls_total.inc(max(0, int(provider_calls)))
+        self.news_opennews_recovery_published_messages_total.inc(max(0, int(published_messages)))
+        if exhausted_budget is not None:
+            budget_label = _bounded_label(
+                exhausted_budget,
+                allowed=_NEWS_RECOVERY_BUDGETS,
+                field="news_recovery_budget",
+            )
+            self.news_opennews_recovery_budget_exhaustion_total.labels(budget=budget_label).inc()
 
     def set_queue_oldest_delay_seconds(self, worker: str, queue: str, seconds: float) -> None:
         self.queue_oldest_delay_seconds.labels(

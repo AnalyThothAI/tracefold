@@ -16,22 +16,37 @@ from typing import Any
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import connect_postgres_test, seed_current_news_evidence
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.news.bus import (
     RK_RAW_LIVE,
+    RK_RAW_RECOVERY,
     RK_VERDICT_PUSH,
     BusMessage,
     PermanentError,
+    TransientError,
     new_trace_id,
     now_ms,
 )
 from tracefold.news.models import ADMITTED_ADMISSIONS, TRIAGE_POLICY_VERSION
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
+from tracefold.news.pipeline.maintenance import JanitorLoop
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.program.runtime import PROGRAM_VERSION
+from tracefold.news.storage.decisions import (
+    _HANDOFF_STATE_LIMIT as _VERDICT_HANDOFF_STATE_LIMIT,
+)
+from tracefold.news.storage.decisions import (
+    _VERDICT_HANDOFF_STATE_SQL,
+)
+from tracefold.news.storage.events import (
+    _EVENT_HANDOFF_STATE_SQL,
+)
+from tracefold.news.storage.events import (
+    _HANDOFF_STATE_LIMIT as _EVENT_HANDOFF_STATE_LIMIT,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -92,6 +107,18 @@ class FakeWorkerDatabase:
         del operation_timeout_seconds
         self.operations.append(name)
         return fn(*args, **kwargs)
+
+
+class FailOnceWorkerDatabase(FakeWorkerDatabase):
+    def __init__(self, conn: Any, *, fail_once: set[str]) -> None:
+        super().__init__(conn)
+        self.fail_once = set(fail_once)
+
+    async def tx(self, name: str, fn: Any, *, timeout_seconds: float = 3.0) -> Any:
+        if name in self.fail_once:
+            self.fail_once.remove(name)
+            raise TransientError(f"injected:{name}")
+        return await super().tx(name, fn, timeout_seconds=timeout_seconds)
 
 
 class InlineFiniteOperations:
@@ -163,6 +190,65 @@ def _deliverer(conn: Any, bus: FakeBus) -> DelivererConsumer:
     return deliverer
 
 
+def _ensure_handoff_facts(conn: Any) -> tuple[str, str]:
+    """Persist at least one admitted Event and one push Verdict through the production repositories."""
+
+    deduper = _deduper(conn, FakeBus())
+
+    async def _admit() -> None:
+        for message in _raw_messages():
+            await deduper.handle(message)
+
+    asyncio.run(_admit())
+    conn.commit()
+    push = conn.execute(
+        """
+        SELECT v.event_id, v.policy_version
+          FROM news_verdicts v
+         WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
+         ORDER BY v.created_at_ms DESC LIMIT 1
+        """
+    ).fetchone()
+    if push is None:
+        event = conn.execute(
+            """
+            SELECT event_id, queue_priority
+              FROM news_events
+             WHERE admission = 'candidate'
+               AND jsonb_array_length(grounded_assets) > 0
+               AND jsonb_array_length(watchlist_hits) > 0
+               AND event_id NOT IN (SELECT event_id FROM news_verdicts)
+             ORDER BY opened_at_ms DESC, event_id LIMIT 1
+            """
+        ).fetchone()
+        assert event is not None
+        priority = 5 if event["queue_priority"] == "high" else 0
+        asyncio.run(
+            _triage(conn, FakeBus()).handle(
+                BusMessage(
+                    kind="event",
+                    message_id=f"event:{event['event_id']}",
+                    routing_key=f"event.general.{event['queue_priority']}",
+                    payload={"event_id": event["event_id"]},
+                    trace_id="handoff-integration",
+                    occurred_at_ms=now_ms(),
+                    priority=priority,
+                )
+            )
+        )
+        conn.commit()
+        push = conn.execute(
+            """
+            SELECT event_id, policy_version
+              FROM news_verdicts
+             WHERE event_id = %s AND stage = 'triage' AND final_decision IN ('push', 'escalate')
+            """,
+            (event["event_id"],),
+        ).fetchone()
+    assert push is not None
+    return str(push["event_id"]), str(push["policy_version"])
+
+
 def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> None:
     bus = FakeBus()
     deduper = _deduper(conn, bus)
@@ -219,6 +305,45 @@ def test_deduper_publishes_each_new_candidate_once_and_marks_published(conn) -> 
     ).fetchone()
     assert dict(after) == dict(before)
     assert len(bus.published) == published_before
+
+
+def test_recovery_raw_is_persisted_but_never_published_to_triage_or_delivery(conn) -> None:
+    original = _raw_messages()[0]
+    params = {**dict(original.payload["params"]), "id": 9_187_001}
+    recovery_message = BusMessage(
+        kind="raw",
+        message_id="raw:9187001",
+        routing_key=RK_RAW_RECOVERY.format(strategy_id=original.payload["strategy_id"]),
+        payload={**dict(original.payload), "params": params, "ingest_mode": "recovery"},
+        trace_id="recovery-no-triage",
+        occurred_at_ms=now_ms(),
+    )
+    bus = FakeBus()
+
+    asyncio.run(_deduper(conn, bus).handle(recovery_message))
+    conn.commit()
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT e.event_id, e.admission, e.published_at_ms
+          FROM news_events e
+          JOIN news_event_members m ON m.event_id = e.event_id
+          JOIN news_items i ON i.item_id = m.item_id
+         WHERE i.source_item_key = '9187001'
+        """
+    ).fetchall()
+    assert rows and all(row["admission"] == "recovery" and row["published_at_ms"] is None for row in rows)
+    event_ids = [row["event_id"] for row in rows]
+    downstream = conn.execute(
+        """
+        SELECT
+          (SELECT count(*) FROM news_verdicts WHERE event_id = ANY(%s)) AS verdicts,
+          (SELECT count(*) FROM news_deliveries WHERE event_id = ANY(%s)) AS deliveries
+        """,
+        (event_ids, event_ids),
+    ).fetchone()
+    assert downstream == {"verdicts": 0, "deliveries": 0}
+    assert bus.published == []
 
 
 def test_deduper_admits_an_unknown_strategy_and_rejects_missing_params(conn) -> None:
@@ -360,6 +485,402 @@ def test_triage_without_model_is_fail_closed_and_only_objective_guards_push(conn
     # Triage wrote the final storyline key back and recorded it in the replayable trace.
     assert context["storyline_key"] == strong_row["trace"]["storyline_key"]
     assert conn.execute("SELECT count(*) AS n FROM news_verdicts").fetchone()["n"] == 2
+
+
+def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(conn) -> None:
+    event_id, policy_version = _ensure_handoff_facts(conn)
+    stamp = now_ms()
+    conn.execute(
+        "UPDATE news_events SET opened_at_ms = %s, published_at_ms = NULL WHERE event_id = %s",
+        (stamp - 60_000, event_id),
+    )
+    conn.commit()
+
+    first_event_bus = FakeBus()
+    failing_event_db = FailOnceWorkerDatabase(conn, fail_once={"news_event_mark_published"})
+    first_event = asyncio.run(
+        JanitorLoop(db=failing_event_db, cold_db=failing_event_db, bus=first_event_bus).repair_event_handoffs()
+    )
+    assert first_event == 1
+    assert (
+        conn.execute("SELECT published_at_ms FROM news_events WHERE event_id = %s", (event_id,)).fetchone()[
+            "published_at_ms"
+        ]
+        is None
+    )
+
+    second_event_bus = FakeBus()
+    event_db = FakeWorkerDatabase(conn)
+    second_event = asyncio.run(JanitorLoop(db=event_db, cold_db=event_db, bus=second_event_bus).repair_event_handoffs())
+    assert second_event == 1
+    assert first_event_bus.published[0].message_id == second_event_bus.published[0].message_id == f"event:{event_id}"
+    event_marker = conn.execute("SELECT published_at_ms FROM news_events WHERE event_id = %s", (event_id,)).fetchone()[
+        "published_at_ms"
+    ]
+    assert event_marker is not None
+
+    conn.execute(
+        """
+        UPDATE news_verdicts SET created_at_ms = %s, published_at_ms = NULL
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (stamp - 60_000, event_id, policy_version),
+    )
+    conn.commit()
+    first_verdict_bus = FakeBus()
+    failing_verdict_db = FailOnceWorkerDatabase(conn, fail_once={"news_triage_mark_published"})
+    first_verdict = asyncio.run(
+        JanitorLoop(
+            db=failing_verdict_db,
+            cold_db=failing_verdict_db,
+            bus=first_verdict_bus,
+        ).repair_verdict_handoffs()
+    )
+    assert first_verdict == 1
+    assert (
+        conn.execute(
+            """
+        SELECT published_at_ms FROM news_verdicts
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+            (event_id, policy_version),
+        ).fetchone()["published_at_ms"]
+        is None
+    )
+
+    second_verdict_bus = FakeBus()
+    verdict_db = FakeWorkerDatabase(conn)
+    second_verdict = asyncio.run(
+        JanitorLoop(db=verdict_db, cold_db=verdict_db, bus=second_verdict_bus).repair_verdict_handoffs()
+    )
+    assert second_verdict == 1
+    assert first_verdict_bus.published[0].message_id == second_verdict_bus.published[0].message_id == f"push:{event_id}"
+    assert (
+        first_verdict_bus.published[0].payload
+        == second_verdict_bus.published[0].payload
+        == {
+            "event_id": event_id,
+            "kind": "first",
+        }
+    )
+    verdict_marker = conn.execute(
+        """
+        SELECT published_at_ms FROM news_verdicts
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (event_id, policy_version),
+    ).fetchone()["published_at_ms"]
+    assert verdict_marker is not None
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        assert repos.news.mark_event_published(event_id=event_id, now_ms=int(event_marker) + 1) is False
+        assert (
+            repos.news.mark_verdict_published(
+                event_id=event_id,
+                stage="triage",
+                policy_version=policy_version,
+                now_ms=int(verdict_marker) + 1,
+            )
+            is False
+        )
+    unchanged = conn.execute(
+        """
+        SELECT e.published_at_ms AS event_marker, v.published_at_ms AS verdict_marker
+          FROM news_events e
+          JOIN news_verdicts v ON v.event_id = e.event_id AND v.stage = 'triage' AND v.policy_version = %s
+         WHERE e.event_id = %s
+        """,
+        (policy_version, event_id),
+    ).fetchone()
+    assert unchanged["event_marker"] == event_marker and unchanged["verdict_marker"] == verdict_marker
+
+
+def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(conn) -> None:
+    event_id, policy_version = _ensure_handoff_facts(conn)
+    stamp = now_ms()
+    conn.execute(
+        """
+        INSERT INTO news_events (
+          event_id, leader_item_id, dedupe_family, event_kind, source_contract_reason,
+          comparison_fingerprint, comparison_title, leader_title,
+          focus_fact_id, focus_fact_text, focus_fact_context, focus_fact_method,
+          focus_span_start, focus_span_end, opened_at_ms, last_member_at_ms, expires_at_ms,
+          member_count, admission, queue_priority, provider_score_max, engine_type, asset_class,
+          grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
+          published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms
+        )
+        SELECT 'handoff-scale-' || g.n, template.leader_item_id, template.dedupe_family, template.event_kind,
+               template.source_contract_reason, md5('handoff-' || g.n) || md5('handoff-x-' || g.n),
+               template.comparison_title, template.leader_title, template.focus_fact_id,
+               template.focus_fact_text, template.focus_fact_context, template.focus_fact_method,
+               template.focus_span_start, template.focus_span_end, %s - g.n, %s - g.n,
+               template.expires_at_ms, 1, template.admission, template.queue_priority,
+               template.provider_score_max, template.engine_type, template.asset_class,
+               template.grounded_assets, template.watchlist_hits, template.macro_lexicon,
+               template.storyline_key, template.context_line, %s, template.ingest_mode,
+               template.trace_id, %s - g.n, %s - g.n
+          FROM news_events template
+          CROSS JOIN generate_series(1, 20000) AS g(n)
+         WHERE template.event_id = %s
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            stamp - 120_000,
+            stamp - 120_000,
+            stamp - 120_000,
+            stamp - 120_000,
+            stamp - 120_000,
+            event_id,
+        ),
+    )
+    seed_current_news_evidence(conn)
+    conn.execute(
+        """
+        INSERT INTO news_verdicts (
+          event_id, stage, policy_version, judgment_contract_version, judgment_origin,
+          rule_baseline_decision, final_decision, override_rule, throttled_by, verdict, editorial,
+          scored_judgment_sha256, runtime_manifest_sha, model, program_version, program_sha256,
+          degraded, error_code, trace, published_at_ms, created_at_ms, evidence_version,
+          evidence_sha256, focus_fact_id
+        )
+        SELECT e.event_id, template.stage, template.policy_version, template.judgment_contract_version,
+               template.judgment_origin, template.rule_baseline_decision, template.final_decision,
+               template.override_rule, template.throttled_by, template.verdict, template.editorial,
+               template.scored_judgment_sha256, template.runtime_manifest_sha, template.model,
+               template.program_version, template.program_sha256, template.degraded, template.error_code,
+               template.trace || jsonb_build_object(
+                 'evidence_version', evidence.evidence_version,
+                 'evidence_sha256', evidence.evidence_sha256,
+                 'focus_fact_id', evidence.focus_fact_id
+               ),
+               %s, %s, evidence.evidence_version, evidence.evidence_sha256, evidence.focus_fact_id
+          FROM news_events e
+          JOIN news_event_evidence_snapshots evidence ON evidence.event_id = e.event_id
+          CROSS JOIN news_verdicts template
+         WHERE e.event_id LIKE 'handoff-scale-%%'
+           AND evidence.provenance = 'observed' AND evidence.release_eligible
+           AND evidence.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+           AND template.event_id = %s AND template.stage = 'triage' AND template.policy_version = %s
+        ON CONFLICT DO NOTHING
+        """,
+        (stamp - 120_000, stamp - 120_000, event_id, policy_version),
+    )
+    conn.execute(
+        """
+        UPDATE news_events SET published_at_ms = NULL
+         WHERE event_id LIKE 'handoff-scale-%%' AND created_at_ms >= %s
+        """,
+        (stamp - 120_000 - _EVENT_HANDOFF_STATE_LIMIT,),
+    )
+    conn.execute(
+        """
+        UPDATE news_verdicts verdict SET published_at_ms = NULL
+          FROM news_events event
+         WHERE event.event_id = verdict.event_id
+           AND event.event_id LIKE 'handoff-scale-%%' AND event.created_at_ms >= %s
+        """,
+        (stamp - 120_000 - _VERDICT_HANDOFF_STATE_LIMIT,),
+    )
+    conn.execute(
+        "UPDATE news_events SET opened_at_ms = %s, published_at_ms = NULL WHERE event_id = %s",
+        (stamp - 60_000, event_id),
+    )
+    conn.execute(
+        """
+        UPDATE news_verdicts SET created_at_ms = %s, published_at_ms = NULL
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (stamp - 60_000, event_id, policy_version),
+    )
+    conn.execute("ANALYZE news_events")
+    conn.execute("ANALYZE news_event_evidence_snapshots")
+    conn.execute("ANALYZE news_verdicts")
+    conn.commit()
+
+    event_plan = "\n".join(
+        row["QUERY PLAN"]
+        for row in conn.execute(
+            """
+            EXPLAIN (ANALYZE, BUFFERS)
+            SELECT event_id, dedupe_family, queue_priority, trace_id, opened_at_ms
+              FROM news_events
+             WHERE published_at_ms IS NULL
+               AND admission IN (
+                 'candidate', 'listing_deterministic',
+                 'telemetry_deterministic', 'liquidation_deterministic'
+               )
+               AND opened_at_ms <= %s AND opened_at_ms >= %s
+             ORDER BY opened_at_ms LIMIT 50
+            """,
+            (stamp - 15_000, stamp - 30 * 60_000),
+        ).fetchall()
+    )
+    verdict_plan = "\n".join(
+        row["QUERY PLAN"]
+        for row in conn.execute(
+            """
+            EXPLAIN (ANALYZE, BUFFERS)
+            SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
+              FROM news_verdicts v
+              JOIN news_events e ON e.event_id = v.event_id
+             WHERE v.stage = 'triage'
+               AND v.final_decision IN ('push', 'escalate')
+               AND v.published_at_ms IS NULL
+               AND e.event_kind <> 'unsupported_market'
+               AND v.created_at_ms <= %s AND v.created_at_ms >= %s
+             ORDER BY v.created_at_ms, v.event_id, v.policy_version LIMIT 50
+            """,
+            (stamp - 15_000, stamp - 30 * 60_000),
+        ).fetchall()
+    )
+    event_state_plan = "\n".join(
+        row["QUERY PLAN"]
+        for row in conn.execute(
+            "EXPLAIN (ANALYZE, BUFFERS) " + _EVENT_HANDOFF_STATE_SQL,
+            (
+                stamp - 30 * 60_000,
+                _EVENT_HANDOFF_STATE_LIMIT,
+                stamp - 30 * 60_000,
+                _EVENT_HANDOFF_STATE_LIMIT,
+            ),
+        ).fetchall()
+    )
+    verdict_state_plan = "\n".join(
+        row["QUERY PLAN"]
+        for row in conn.execute(
+            "EXPLAIN (ANALYZE, BUFFERS) " + _VERDICT_HANDOFF_STATE_SQL,
+            (
+                stamp - 30 * 60_000,
+                _VERDICT_HANDOFF_STATE_LIMIT,
+                stamp - 30 * 60_000,
+                _VERDICT_HANDOFF_STATE_LIMIT,
+            ),
+        ).fetchall()
+    )
+    repos = repositories_for_connection(conn)
+    _, event_state = repos.news.event_handoff_scan(
+        older_than_ms=stamp - 15_000,
+        newer_than_ms=stamp - 30 * 60_000,
+    )
+    _, verdict_state = repos.news.verdict_handoff_scan(
+        older_than_ms=stamp - 15_000,
+        newer_than_ms=stamp - 30 * 60_000,
+    )
+    conn.execute("DELETE FROM news_verdicts WHERE event_id LIKE 'handoff-scale-%%'")
+    conn.execute("ALTER TABLE news_event_evidence_snapshots DISABLE TRIGGER trg_news_event_evidence_append_only")
+    conn.execute("DELETE FROM news_event_evidence_snapshots WHERE event_id LIKE 'handoff-scale-%%'")
+    conn.execute("ALTER TABLE news_event_evidence_snapshots ENABLE TRIGGER trg_news_event_evidence_append_only")
+    conn.execute("DELETE FROM news_events WHERE event_id LIKE 'handoff-scale-%%'")
+    conn.execute(
+        "UPDATE news_events SET published_at_ms = %s WHERE event_id = %s",
+        (stamp, event_id),
+    )
+    conn.execute(
+        """
+        UPDATE news_verdicts SET published_at_ms = %s
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (stamp, event_id, policy_version),
+    )
+    conn.commit()
+
+    assert "ix_news_events_unpublished" in event_plan, event_plan
+    assert "ix_news_verdicts_unpublished_delivery" in verdict_plan, verdict_plan
+    assert "ix_news_events_unpublished" in event_state_plan, event_state_plan
+    assert "ix_news_verdicts_unpublished_delivery" in verdict_state_plan, verdict_state_plan
+    assert "Seq Scan on news_events" not in event_plan
+    assert "Seq Scan on news_verdicts" not in verdict_plan
+    assert "Seq Scan on news_events" not in event_state_plan
+    assert "Seq Scan on news_verdicts" not in verdict_state_plan
+    assert event_state["pending"] == _EVENT_HANDOFF_STATE_LIMIT
+    assert verdict_state["pending"] == _VERDICT_HANDOFF_STATE_LIMIT
+
+
+def test_handoff_scan_bounds_keep_the_deadline_in_pending_until_strict_expiry(conn) -> None:
+    event_id, policy_version = _ensure_handoff_facts(conn)
+    stamp = now_ms()
+    min_age_boundary = stamp - 15_000
+    deadline = stamp - 30 * 60_000
+    repos = repositories_for_connection(conn)
+
+    conn.execute(
+        "UPDATE news_events SET opened_at_ms = %s, published_at_ms = NULL WHERE event_id = %s",
+        (min_age_boundary + 1, event_id),
+    )
+    conn.commit()
+    rows, state = repos.news.event_handoff_scan(
+        older_than_ms=min_age_boundary,
+        newer_than_ms=deadline,
+        limit=1,
+    )
+    assert rows == [] and state["pending"] >= 1
+
+    conn.execute("UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s", (deadline, event_id))
+    conn.commit()
+    rows, state = repos.news.event_handoff_scan(
+        older_than_ms=min_age_boundary,
+        newer_than_ms=deadline,
+        limit=1,
+    )
+    assert rows[0]["event_id"] == event_id and rows[0]["opened_at_ms"] == deadline
+    assert set(rows[0]) == {"event_id", "dedupe_family", "queue_priority", "trace_id", "opened_at_ms"}
+    assert state["pending"] >= 1
+
+    conn.execute("UPDATE news_events SET opened_at_ms = %s WHERE event_id = %s", (deadline - 1, event_id))
+    conn.commit()
+    rows, state = repos.news.event_handoff_scan(
+        older_than_ms=min_age_boundary,
+        newer_than_ms=deadline,
+        limit=1,
+    )
+    assert rows == [] and state["expired"] >= 1
+
+    conn.execute(
+        """
+        UPDATE news_verdicts SET created_at_ms = %s, published_at_ms = NULL
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (deadline, event_id, policy_version),
+    )
+    conn.commit()
+    rows, state = repos.news.verdict_handoff_scan(
+        older_than_ms=min_age_boundary,
+        newer_than_ms=deadline,
+        limit=1,
+    )
+    assert rows[0]["event_id"] == event_id
+    assert rows[0]["policy_version"] == policy_version
+    assert rows[0]["created_at_ms"] == deadline
+    assert {"queue_priority", "trace_id"} <= rows[0].keys()
+    assert state["pending"] >= 1
+
+    conn.execute(
+        """
+        UPDATE news_verdicts SET created_at_ms = %s
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (deadline - 1, event_id, policy_version),
+    )
+    conn.commit()
+    rows, state = repos.news.verdict_handoff_scan(
+        older_than_ms=min_age_boundary,
+        newer_than_ms=deadline,
+        limit=1,
+    )
+    assert rows == [] and state["expired"] >= 1
+    conn.execute(
+        "UPDATE news_events SET published_at_ms = %s WHERE event_id = %s",
+        (stamp, event_id),
+    )
+    conn.execute(
+        """
+        UPDATE news_verdicts SET published_at_ms = %s
+         WHERE event_id = %s AND stage = 'triage' AND policy_version = %s
+        """,
+        (stamp, event_id, policy_version),
+    )
+    conn.commit()
 
 
 def test_strategy_1019_parse_failure_is_persisted_and_counted_without_a_model(

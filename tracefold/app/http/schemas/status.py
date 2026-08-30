@@ -41,12 +41,20 @@ class NewsIncidentData(ExactApiSchema):
     planned: bool
 
 
+class NewsRecoveryStatusData(ExactApiSchema):
+    pending_count: int = 0
+    oldest_opened_at_ms: int | None = None
+    last_error_code: str | None = None
+    reason: Literal["recovery_pending", "recovery_transient"] | None = None
+
+
 class NewsIngestStatusData(ExactApiSchema):
     connected: bool
     last_frame_at_ms: int | None = None
     last_publish_at_ms: int | None = None
     last_error_code: str | None = None
     open_incidents: list[NewsIncidentData] = Field(default_factory=list)
+    recovery: NewsRecoveryStatusData = Field(default_factory=NewsRecoveryStatusData)
     token_configured: bool
 
 
@@ -283,6 +291,7 @@ __all__ = [
     "NewsPriceStatusData",
     "NewsQuoteVenueData",
     "NewsReasonCountData",
+    "NewsRecoveryStatusData",
     "NewsSourceContractStageCountsData",
     "NewsSourceContracts24hData",
     "NewsStatusData",
