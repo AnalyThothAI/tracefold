@@ -21,7 +21,7 @@ from loguru import logger
 from tracefold.app.learning_runtime import active_arm_manifest
 from tracefold.app.trading_config import capital_lane_config
 from tracefold.app.worker_database import WorkerDatabase
-from tracefold.app.workers.wiring.database import WorkerTradingDatabase
+from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
 from tracefold.integrations.trading_catalog import (
     VenueExpectedError,
@@ -37,6 +37,7 @@ from tracefold.trading import InstrumentRef, VenueBinding
 from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
 from tracefold.trading.contracts import Bar as TradingBar
+from tracefold.trading.contracts import OiCandidateRow
 
 from .execution_capabilities import ExecutionCapabilityCompileError, ExecutionCapabilityCompiler
 
@@ -47,6 +48,7 @@ VENUE_CATALOG_TASK_NAME = "trading-venue-catalog"
 CAPITAL_LANE_POLL_SECONDS = 2.0
 VENUE_CATALOG_PERIOD_SECONDS = 6 * 3_600.0
 VENUE_CATALOG_RETRY_SECONDS = 15 * 60.0
+_CAPITAL_PROJECTION_TIMEOUT_SECONDS = 10.0
 
 
 def _wire_venue_catalog(*, db: WorkerDatabase, telemetry: TelemetryRegistry | None = None) -> VenueCatalog:
@@ -77,11 +79,30 @@ def _wire_capital_lane(
 
     if not settings.trading.enabled:
         return None
+
+    news_db = WorkerNewsColdDatabase(db)
+
+    async def read_news_oi_projection(
+        metric_version: str,
+        after_created_at_ms: int,
+        until_created_at_ms: int,
+    ) -> Sequence[OiCandidateRow]:
+        return await news_db.read(
+            "trading_oi_projection",
+            lambda repos: news_oi_sources(
+                repos,
+                metric_version,
+                after_created_at_ms,
+                until_created_at_ms,
+            ),
+            timeout_seconds=_CAPITAL_PROJECTION_TIMEOUT_SECONDS,
+        )
+
     return CapitalLane(
         db=WorkerTradingDatabase(db),
         config=capital_lane_config(settings),
         bars=_source_native_bars,
-        oi_projection=news_oi_sources,
+        oi_projection=read_news_oi_projection,
         # The one place that may tell Trading which News generation is running (#314). Trading
         # holds no News literal and reads no News table; this seam derives the label from the same
         # stable arm the News workers appoint, so the two cannot drift.

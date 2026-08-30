@@ -178,6 +178,37 @@ class TelemetryRegistry:
             ("stage",),
             registry=self.registry,
         )
+        self.news_raw_retention_deleted_rows_total = Counter(
+            "tracefold_news_raw_retention_deleted_rows_total",
+            "Raw News Items deleted by bounded retention batches.",
+            registry=self.registry,
+        )
+        self.news_raw_retention_batches_total = Counter(
+            "tracefold_news_raw_retention_batches_total",
+            "Bounded raw News retention transactions completed.",
+            registry=self.registry,
+        )
+        self.news_raw_retention_wall_seconds = Histogram(
+            "tracefold_news_raw_retention_wall_seconds",
+            "Wall time consumed by one bounded raw News retention turn.",
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0),
+            registry=self.registry,
+        )
+        self.news_raw_retention_backlog_rows = Gauge(
+            "tracefold_news_raw_retention_backlog_rows",
+            "Bounded sample of raw News Items still eligible for retention.",
+            registry=self.registry,
+        )
+        self.news_raw_retention_backlog_capped = Gauge(
+            "tracefold_news_raw_retention_backlog_capped",
+            "Whether the bounded raw News retention backlog sample hit its cap.",
+            registry=self.registry,
+        )
+        self.news_raw_retention_oldest_age_seconds = Gauge(
+            "tracefold_news_raw_retention_oldest_age_seconds",
+            "Age of the oldest raw News Item still eligible for retention.",
+            registry=self.registry,
+        )
         self.news_rabbitmq_consumer_fatal_total = Counter(
             "tracefold_news_rabbitmq_consumer_fatal_total",
             "RabbitMQ consumer scopes terminated by an unhandled message-task failure.",
@@ -392,6 +423,23 @@ class TelemetryRegistry:
             field="news_handoff_repair_outcome",
         )
         self.news_handoff_repair_total.labels(stage=stage_label, outcome=outcome_label).inc()
+
+    def record_news_raw_retention(
+        self,
+        *,
+        deleted_rows: int,
+        batches: int,
+        wall_seconds: float,
+        backlog_rows: int,
+        backlog_capped: bool,
+        oldest_age_seconds: float,
+    ) -> None:
+        self.news_raw_retention_deleted_rows_total.inc(max(0, int(deleted_rows)))
+        self.news_raw_retention_batches_total.inc(max(0, int(batches)))
+        self.news_raw_retention_wall_seconds.observe(max(0.0, float(wall_seconds)))
+        self.news_raw_retention_backlog_rows.set(max(0, int(backlog_rows)))
+        self.news_raw_retention_backlog_capped.set(1 if backlog_capped else 0)
+        self.news_raw_retention_oldest_age_seconds.set(max(0.0, float(oldest_age_seconds)))
 
     def record_news_rabbitmq_consumer_fatal(
         self,

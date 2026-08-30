@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any, Literal
+
+from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 
-MAX_READ_RETURN_AMPLIFICATION = 20.0
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
 
 AmplificationBasis = Literal["returned_rows", "aggregate_input"]
@@ -22,12 +24,15 @@ class ReadQuerySpec:
     sql: str
     params: Any = ()
     amplification_basis: AmplificationBasis = "returned_rows"
+    max_read_return_amplification: float | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("query audit name must not be empty")
         if not self.sql.strip():
             raise ValueError(f"query audit SQL must not be empty: {self.name}")
+        if self.max_read_return_amplification is not None and self.max_read_return_amplification <= 0:
+            raise ValueError(f"query audit amplification budget must be positive: {self.name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +48,9 @@ class QueryAuditCatalog:
         names = [query.name for query in self.queries]
         if len(names) != len(set(names)):
             raise ValueError("query audit names must be unique")
+        missing_budgets = [query.name for query in self.queries if query.max_read_return_amplification is None]
+        if missing_budgets:
+            raise ValueError(f"query audit amplification budget missing: {', '.join(missing_budgets)}")
 
 
 NEWS_TABLES = (
@@ -120,7 +128,12 @@ def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
     del now_ms
     return tuple(
-        ReadQuerySpec(name=str(template["name"]), sql=str(template["sql"]), params=template["params"])
+        ReadQuerySpec(
+            name=str(template["name"]),
+            sql=str(template["sql"]),
+            params=template["params"],
+            max_read_return_amplification=4.0,
+        )
         for template in _POSTGRES_QUERY_TEMPLATES
     )
 
@@ -130,8 +143,9 @@ class PostgresOperationalAudit:
         self.conn = conn
         self.expected_migration_version = expected_migration_version or latest_migration_version()
 
-    def run(self) -> dict[str, Any]:
-        counts = self._counts(NEWS_TABLES + TRADING_TABLES)
+    def run(self, *, deep: bool = False) -> dict[str, Any]:
+        table_names = NEWS_TABLES + TRADING_TABLES
+        row_estimates = self._row_estimates(table_names)
         actual_news_tables = self._tables_with_prefix("news_")
         news_schema = {
             "expected_tables": list(NEWS_TABLES),
@@ -147,23 +161,80 @@ class PostgresOperationalAudit:
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
         runtime_roles = runtime_role_contract(self.conn)
-        return {
+        database_identity = self._database_identity()
+        result = {
             "ok": (
                 migration_ready
-                and all(count >= 0 for count in counts.values())
+                and bool(database_identity["ok"])
+                and all(count >= 0 for count in row_estimates.values())
                 and bool(news_schema["exact"])
                 and bool(trading_schema["exact"])
                 and bool(runtime_roles["ok"])
             ),
             "engine": "postgresql",
+            "mode": "deep" if deep else "fast",
+            "database_identity": database_identity,
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
-            "counts": counts,
+            "row_estimates": row_estimates,
             "news_schema": news_schema,
             "trading_schema": trading_schema,
             "runtime_roles": runtime_roles,
         }
+        if deep:
+            counts = self._counts(table_names)
+            result["counts"] = counts
+            result["ok"] = bool(result["ok"]) and all(count >= 0 for count in counts.values())
+        return result
+
+    def _database_identity(self) -> dict[str, Any]:
+        settings = self.conn.execute(
+            """
+            SELECT current_setting('server_version_num') AS server_version_num,
+                   current_setting('transaction_isolation') AS transaction_isolation,
+                   current_setting('statement_timeout') AS statement_timeout,
+                   current_setting('lock_timeout') AS lock_timeout,
+                   current_setting('idle_in_transaction_session_timeout') AS idle_in_transaction_session_timeout,
+                   current_setting('jit') AS jit
+            """
+        ).fetchone()
+        extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
+        server_version_num = int(settings["server_version_num"])
+        extension_versions = {str(row["extname"]): str(row["extversion"]) for row in extensions}
+        setting_names = {
+            "transaction_isolation",
+            "statement_timeout",
+            "lock_timeout",
+            "idle_in_transaction_session_timeout",
+            "jit",
+        }
+        checks = {
+            "production_major": server_version_num // 10_000 == 18,
+            "plpgsql_available": "plpgsql" in extension_versions,
+            "session_settings_reported": all(settings[name] is not None for name in setting_names),
+        }
+        return {
+            "ok": all(checks.values()),
+            "checks": checks,
+            "server_version_num": server_version_num,
+            "declared_image_identity": os.environ.get("TRACEFOLD_POSTGRES_IMAGE", "unreported"),
+            "image_identity_source": "TRACEFOLD_POSTGRES_IMAGE",
+            "extensions": extension_versions,
+            "settings": {key: str(settings[key]) for key in setting_names},
+        }
+
+    def _row_estimates(self, table_names: tuple[str, ...]) -> dict[str, int]:
+        rows = self.conn.execute(
+            """
+            SELECT relname, greatest(n_live_tup, 0)::bigint AS row_estimate
+              FROM pg_stat_user_tables
+             WHERE schemaname = 'public' AND relname = ANY(%s)
+            """,
+            (list(table_names),),
+        ).fetchall()
+        estimates = {str(row["relname"]): int(row["row_estimate"]) for row in rows}
+        return {table_name: estimates.get(table_name, -1) for table_name in table_names}
 
     def _counts(self, table_names: tuple[str, ...]) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -171,7 +242,9 @@ class PostgresOperationalAudit:
             if not self._table_exists(table_name):
                 counts[table_name] = -1
                 continue
-            row = self.conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+            row = self.conn.execute(
+                sql.SQL("SELECT COUNT(*) AS count FROM {}").format(sql.Identifier(table_name))
+            ).fetchone()
             counts[table_name] = int(row["count"] if row else 0)
         return counts
 
@@ -232,7 +305,6 @@ class PostgresQueryAudit:
             "analyze": bool(analyze),
             "thresholds": {
                 "large_seq_scan_plan_rows": LARGE_SEQ_SCAN_PLAN_ROWS,
-                "max_read_return_amplification": MAX_READ_RETURN_AMPLIFICATION,
                 "temp_blocks": 0,
             },
             "route_coverage": {
@@ -247,6 +319,9 @@ class PostgresQueryAudit:
     def _explain(self, query: ReadQuerySpec, *, analyze: bool) -> dict[str, Any]:
         prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" if analyze else "EXPLAIN (FORMAT JSON)"
         try:
+            budget = query.max_read_return_amplification
+            if budget is None:  # pragma: no cover - QueryAuditCatalog rejects this at composition
+                raise RuntimeError("query_audit_amplification_budget_missing")
             rows = self.conn.execute(f"{prefix} {query.sql}", query.params).fetchall()
             plan = _json_plan(rows)
             metrics = (
@@ -257,12 +332,22 @@ class PostgresQueryAudit:
                 if analyze
                 else None
             )
-            violations = _plan_violations(metrics) if metrics is not None else []
+            violations = (
+                _plan_violations(
+                    metrics,
+                    max_read_return_amplification=budget,
+                )
+                if metrics is not None
+                else []
+            )
             return {
                 "ok": not violations,
                 "name": query.name,
                 "plan": plan,
                 "metrics": metrics,
+                "budget": {
+                    "max_read_return_amplification": budget,
+                },
                 "violations": violations,
             }
         except Exception as exc:
@@ -416,7 +501,11 @@ def _amplification_basis_rows(
     return aggregate_input_rows or returned_rows
 
 
-def _plan_violations(metrics: dict[str, Any]) -> list[str]:
+def _plan_violations(
+    metrics: dict[str, Any],
+    *,
+    max_read_return_amplification: float,
+) -> list[str]:
     violations: list[str] = []
     if not bool(metrics["plan_json_valid"]):
         violations.append("plan_json_missing")
@@ -424,7 +513,7 @@ def _plan_violations(metrics: dict[str, Any]) -> list[str]:
         violations.append("unexpected_large_table_seq_scan")
     if int(metrics["temp_read_blocks"]) or int(metrics["temp_written_blocks"]):
         violations.append("temp_spill")
-    if float(metrics["read_return_amplification"]) > MAX_READ_RETURN_AMPLIFICATION:
+    if float(metrics["read_return_amplification"]) > max_read_return_amplification:
         violations.append("read_return_amplification_exceeded")
     return violations
 

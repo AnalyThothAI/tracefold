@@ -98,6 +98,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.contracts",
         "tracefold.trading.market_context",
         "tracefold.trading.policy",
+        "tracefold.trading.storage.query_sql",
     ),
     "app.http": (
         "tracefold.news.health",
@@ -156,7 +157,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.oi_signals",
         "tracefold.news.pipeline",
         "tracefold.news.market_review.loops",
+        # The database composition adapter constructs narrow callback views from the concrete
+        # repositories; no business package imports the App adapter in return.
+        "tracefold.news.market_review.storage",
         "tracefold.news.program.contracts",
+        "tracefold.news.storage.root",
         # The News-owned row contract for the Trading handoff. Only the composition root's mapper reads
         # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
         "tracefold.news.storage.trade_projection",
@@ -165,6 +170,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.capital_lane",
         "tracefold.trading.catalog",
         "tracefold.trading.contracts",
+        "tracefold.trading.storage.root",
     ),
     "app.nautilus": ("tracefold.trading.intent",),
     "integrations.opennews": ("tracefold.news.opennews",),
@@ -198,26 +204,38 @@ INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
 # would have to be named here; no News module may write another business package's tables.
 ALLOWED_READ_ONLY_CROSS_DOMAIN_TABLES: dict[str, set[str]] = {}
 WRITE_SQL_TABLE_RE = re.compile(
-    r"\b(?:DELETE\s+FROM|INSERT\s+INTO|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
+    r"\b(?:DELETE\s+FROM|INSERT\s+INTO|MERGE\s+INTO|TRUNCATE(?:\s+TABLE)?|UPDATE)\s+"
+    r'(?:ONLY\s+)?(?:public\.)?"?(?P<table>[a-z][a-z0-9_]*)"?',
     re.IGNORECASE,
 )
 SCHEMA_TABLE_RE = re.compile(r"^## `(?P<table>[a-z][a-z0-9_]*)`$", re.MULTILINE)
 SQL_TABLE_RE = re.compile(
-    r"\b(?:DELETE\s+FROM|INSERT\s+INTO|FROM|JOIN|UPDATE)\s+(?P<table>[a-z][a-z0-9_]*)",
+    r"\b(?:COPY|DELETE\s+FROM|INSERT\s+INTO|MERGE\s+INTO|TRUNCATE(?:\s+TABLE)?|FROM|JOIN|UPDATE)\s+"
+    r'(?:ONLY\s+)?(?:public\.)?"?(?P<table>[a-z][a-z0-9_]*)"?',
     re.IGNORECASE,
 )
 PLATFORM_TABLES = {
     "alembic_version",
     "workers_runtime",
 }
+# Existing database adapters that legitimately own SQL without being storage modules. Keep this small:
+# App is the composition seam, ReviewDesk/evaluation_history predate the storage package split, and moving
+# them is not part of PostgreSQL governance. New product SQL belongs in its owner's storage family.
+SQL_LOCATION_EXCEPTIONS = frozenset(
+    {
+        "tracefold/app/cli/commands/db.py",
+        "tracefold/app/cli/commands/news_learning.py",
+        "tracefold/app/cli/commands/news_learning_runtime.py",
+        "tracefold/app/query_audit.py",
+        "tracefold/app/workers/runtime.py",
+        "tracefold/news/learning/evaluation_history.py",
+        "tracefold/news/review/desk.py",
+    }
+)
 
 
 def _python_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.py")
-        if "__pycache__" not in path.parts and "alembic/versions" not in path.as_posix()
-    )
+    return sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def _module_exists(module: str) -> bool:
@@ -445,6 +463,31 @@ def test_business_sql_uses_only_owned_tables() -> None:
                 if owner is not None and owner != package:
                     violations.append(f"{relative} writes {table} ({owner})")
     assert violations == []
+
+
+def test_production_sql_lives_in_owned_storage_or_an_explicit_adapter() -> None:
+    schema = (ROOT / "docs" / "generated" / "db-schema.md").read_text(encoding="utf-8")
+    tables = set(SCHEMA_TABLE_RE.findall(schema))
+    assert tables, "generated schema table scan must fail closed"
+
+    sql_paths: set[str] = set()
+    for path in [*_python_files(SRC), *sorted(SRC.rglob("*.sql"))]:
+        if set(SQL_TABLE_RE.findall(path.read_text(encoding="utf-8"))) & tables:
+            sql_paths.add(path.relative_to(ROOT).as_posix())
+    assert sql_paths, "production SQL location scan must fail closed"
+
+    violations = sorted(path for path in sql_paths if not _sql_location_allowed(path))
+    assert violations == []
+
+
+def _sql_location_allowed(relative: str) -> bool:
+    path = Path(relative)
+    return (
+        "storage" in path.parts
+        or path.stem.endswith("_storage")
+        or relative.startswith("tracefold/platform/postgres/")
+        or relative in SQL_LOCATION_EXCEPTIONS
+    )
 
 
 def _business_table_owner(table: str) -> str:

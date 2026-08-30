@@ -88,7 +88,21 @@ dataclass otherwise. Do not build a DTO framework.
 
 **Transactions and I/O.** The caller owns the transaction; a repository never
 hides a commit. Provider, model, filesystem and network I/O happen outside a
-database transaction, and no connection is held across one.
+database transaction, and no connection is held across one. Database callbacks
+receive the narrow News, Price, Instrument, or Trading repository capability,
+not a raw connection. They contain only SQL/locks, primitive row mapping, and
+immediate rowcount/`RETURNING`/CAS checks. Prepare canonical JSON, hashes and
+validated payloads before the callback; run Pydantic materialization,
+compression, large loops/sorts/deep comparison and retry sleep after it.
+
+**SQL and migrations.** Production SQL belongs to the owning storage package,
+the PostgreSQL platform package, Alembic, or the small reviewed App adapter
+allowlist enforced by the architecture suite. Values are parameters; dynamic
+identifiers use psycopg composition; public/cross-context projections list
+their columns. Query-plan audit imports the production statement builder.
+Follow [the migration authoring guide](MIGRATIONS.md); a new revision must
+explain the database need, lock/timeout/size boundary and verified recovery
+path, and must run on the exact production PostgreSQL image.
 
 **Naming.** Modules are named for what they own, not for a layer. There are no
 `services/`, `managers/`, `factories/` or `utils.py` packages, and no
@@ -416,7 +430,7 @@ preservation/grant cuts that carry user evidence forward and the `0292` to
 `0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
 epoch transitions. The Alembic chain is the
 `20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260830_0336` head; schema tests also run against that migrated head.
+current `20260830_0337` head; schema tests also run against that migrated head.
 The e2e lane
 (`tests/e2e/test_serve_process_smoke.py`) starts one
 uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
@@ -432,7 +446,7 @@ The #377 Trading evidence clock is verified at three distinct seams. Pure tests
 prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
 scope/sign, actual database-stamped receipt clocks, finite candidate selection,
 append-only blind-batch continuity/health, deterministic block bootstrap and declared
-power. PostgreSQL tests prove the irreversible `0334` cutover, the append-only
+power. PostgreSQL tests prove the irreversible `0334` evidence-clock cutover, the append-only
 corpus -> candidate -> future capture -> future drain -> result parent chain,
 one candidate/capture/drain/result constraints, grant-to-PROMOTE hard
 link, database-recomputed complete future chains/health incidents, gap-free

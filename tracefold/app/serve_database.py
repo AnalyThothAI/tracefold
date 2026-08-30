@@ -9,9 +9,13 @@ from typing import Any
 
 from psycopg_pool import PoolClosed, PoolTimeout
 
-from tracefold.app.repository_session import RepositorySession, repositories_for_connection
+from tracefold.app.repository_session import NewsSearchPlan, RepositorySession, repositories_for_connection
+from tracefold.app.workers.runtime import WorkersRuntimeRepository
+from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.storage.root import NewsRepository
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.client import create_pool, with_password_from_file
+from tracefold.platform.postgres.client import create_pool, postgres_health_check, with_password_from_file
+from tracefold.trading.storage.root import TradingRepository
 
 _SERVE_POOL_SIZE = 7  # 6 ordinary read permits + 1 control permit
 _SERVE_CHECKOUT_TIMEOUT_SECONDS = 0.250
@@ -30,6 +34,37 @@ _SERVE_PERMIT_TIMEOUT_SECONDS = 0.050
 
 class ServeDatabaseBusy(RuntimeError):
     pass
+
+
+class ServeRepositories:
+    """Read-only Serve capabilities with infrastructure probes instead of a public raw connection."""
+
+    __slots__ = ("_conn", "_session", "instruments", "news", "price", "trading")
+
+    def __init__(self, session: RepositorySession) -> None:
+        self._conn = session.conn
+        self._session = session
+        self.news: NewsRepository = session.news
+        self.instruments: InstrumentsRepository = session.instruments
+        self.price: PriceRepository = session.price
+        self.trading: TradingRepository = session.trading
+
+    def database_health(self, *, expected_migration_version: str) -> dict[str, Any]:
+        return postgres_health_check(self._conn, expected_migration_version=expected_migration_version)
+
+    def workers_runtime_row(self) -> dict[str, Any] | None:
+        return WorkersRuntimeRepository(self._conn).read()
+
+    def compile_news_search(self, *, q: str | None, symbol: str | None) -> NewsSearchPlan | None:
+        return self._session.compile_news_search(q=q, symbol=symbol)
+
+    def session_policy(self) -> dict[str, str]:
+        row = self._conn.execute(
+            "SELECT current_setting('jit') AS jit, "
+            "current_setting('max_parallel_workers_per_gather') AS max_parallel_workers_per_gather, "
+            "current_setting('work_mem') AS work_mem"
+        ).fetchone()
+        return {str(key): str(value) for key, value in dict(row or {}).items()}
 
 
 @dataclass(slots=True)
@@ -75,7 +110,7 @@ class ServeDatabase:
         )
 
     @contextmanager
-    def api_session(self, lane: str = "ordinary") -> Iterator[RepositorySession]:
+    def api_session(self, lane: str = "ordinary") -> Iterator[ServeRepositories]:
         try:
             gate = self.admission[lane]
         except KeyError as exc:
@@ -102,7 +137,7 @@ class ServeDatabase:
                             "serve",
                             (time.perf_counter() - permit_acquired_at) * 1000,
                         )
-                    yield repositories_for_connection(conn)
+                    yield ServeRepositories(repositories_for_connection(conn))
             except (PoolClosed, PoolTimeout) as exc:
                 raise ServeDatabaseBusy(f"serve_database_pool_busy:{lane}") from exc
         finally:

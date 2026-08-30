@@ -1076,10 +1076,11 @@ Intent contract.
 maintenance lock, so operators can inspect the running singleton without
 interrupting it.
 
-`db audit` reports the migration revision, row `counts` for every table in the
+`db audit` reports the migration revision, catalog row estimates for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260830_0336`). Since
+append without rewrite access (current at migration `20260830_0337`). `db audit --deep`
+adds exact table counts for offline migration or restore evidence. Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

@@ -8,12 +8,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from tracefold.app.http.exceptions import ApiUnavailable
-from tracefold.app.repository_session import RepositorySession
-from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy
-from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.serve_database import ServeDatabase, ServeDatabaseBusy, ServeRepositories
+from tracefold.app.workers.runtime import workers_runtime_status
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
-from tracefold.platform.postgres.client import postgres_health_check
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.runtime_identity import runtime_identity
 
@@ -31,7 +29,7 @@ class ServeRuntime:
     started_at_ms: int
 
     @contextmanager
-    def repositories(self, *, lane: str = "ordinary") -> Iterator[RepositorySession]:
+    def repositories(self, *, lane: str = "ordinary") -> Iterator[ServeRepositories]:
         try:
             with self.db.api_session(lane) as repos:
                 yield repos
@@ -66,13 +64,10 @@ class ServeRuntime:
         runtime_row: dict[str, Any] | None = None
         try:
             with self.repositories(lane="control") as repos:
-                raw_db = postgres_health_check(
-                    repos.conn,
-                    expected_migration_version=expected_revision,
-                )
+                raw_db = repos.database_health(expected_migration_version=expected_revision)
                 if bool(raw_db.get("ok")) or raw_db.get("migration_version") is not None:
                     try:
-                        runtime_row = WorkersRuntimeRepository(repos.conn).read()
+                        runtime_row = repos.workers_runtime_row()
                     except Exception:
                         runtime_query_failed = True
         except Exception:

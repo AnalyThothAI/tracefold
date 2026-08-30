@@ -477,6 +477,10 @@ universe used by Trading. That universe reuses the production Gate's exact
 current-Event and live-ingest eligibility, so recovery or archived rows cannot
 manufacture a missing Gate disposition; editorial News and liquidation have no
 capital-lane projection.
+The live OI handoff reads that projection through the News cold adapter, closes
+the News transaction, and then lets the Trading adapter open its own bounded
+transactions. No callback receives both repositories and there is no
+cross-context transaction.
 
 `tracefold.app` decides how capabilities are assembled and run, never what a
 business fact means. It reads business projections; it does not write business
@@ -509,7 +513,12 @@ SQL ownership follows the same boundary: News owns `news_*`; Trading owns
 read-only seam (`macro_module_current` as Analyst evidence) went with the
 Analyst lane in #57, and the Macro tables themselves went in #68. The
 architecture gate checks SQL table references against the generated current
-schema. SQL functions follow the same ownership rule: a Trading trigger may
+schema and fails if its production SQL scan is empty. Production statements
+live in the owning storage/PostgreSQL boundary or the small named App adapter
+allowlist. Public and cross-context projections list columns explicitly.
+High-risk runtime and query-audit paths import the same canonical statement
+builder; the audit does not maintain a representative copy.
+SQL functions follow the same ownership rule: a Trading trigger may
 call only Trading/platform helpers, including its own canonical-JSON seal
 helper, never a News-prefixed function.
 
@@ -518,6 +527,13 @@ helper, never a News-prefixed function.
 Application services and workers own transaction scope. Repository writes use
 the supplied connection and never expose commit switches or open hidden
 transactions.
+
+A Worker callback receives only the repository capabilities required by its
+bounded context, never the raw connection or the cross-capability repository
+session. The Worker database adapter owns the true outer transaction: setup,
+callback SQL, commit or rollback, and its one telemetry observation. A nested
+repository transaction cannot shorten that scope or manufacture a second
+transaction count.
 
 Important atomic units are:
 
@@ -528,7 +544,11 @@ Important atomic units are:
   transition.
 
 Provider, model, filesystem, and network I/O occurs outside database
-transactions.
+transactions. The same rule excludes Pydantic materialization, canonical JSON,
+hashing, compression, large sorts/deep comparisons, and sleep/backoff. A
+callback may execute SQL/transaction-scoped locks, map rows to primitives, and
+immediately check rowcount/`RETURNING`/CAS. Payloads are prepared before the
+callback and rich objects are materialized after it.
 
 Each Worker database session owns exactly one bounded PostgreSQL transaction.
 It installs its statement and transaction limits as transaction-local settings
@@ -871,8 +891,11 @@ lines and pinned wire source labels/suffixes; exchange names and `@handles`
 are subjects and stay — `@Krakenfx launches ...` keeps `Krakenfx`),
 `tracefold.news.events.identity`
 normalizes for comparison, `tracefold.news.events.tokens` + `minhash` produce the
-band keys stored in `news_event_bands`, and `tracefold.news.pipeline.admission.admit_item`
-is the single Deduper transaction. Fingerprints of at most two tokens never
+band keys stored in `news_event_bands`. Admission prepares fact units, Gate output and MinHash outside PostgreSQL,
+then one short transaction owns the Item/Event assignment. It commits before the evidence rows are loaded,
+serialized and hashed; a compare-and-append transaction installs that prepared snapshot before any Event is
+published to RabbitMQ. A crash between those steps is safe because the redelivered Item assignment is idempotent
+and the snapshot append is content-addressed. Fingerprints of at most two tokens never
 share an Event. `event_kind` fences every dedupe candidate lookup and namespaces
 non-News Event identity. Current cross-Item exact/artifact/near joins require
 the same source-contract reason. Pre-genesis Events were physically deleted;
@@ -1283,12 +1306,12 @@ counts toward the circuit and records the failing Predictor, finish reason,
 tokens and error code. After the Program returns the consumer decides and
 persists in one transaction under a per-storyline advisory lock on the final
 key (`repository.lock_storyline`; `pg_advisory_xact_lock('NEWS', hashtext(key))`),
-re-reading the reader evidence inside the lock so two same-key Events in flight
+re-checking the delivered-ledger revision inside the lock so two same-key Events in flight
 cannot both send the same fact (the lock raises the lane's 250 ms
 `lock_timeout` for that transaction only). The wide sent ledger is always
-re-read inside that lock, because `decide()` must measure this card against
-every card the reader received including one that landed while the model was
-thinking. Only the *selected* told context decides whether the judgment itself
+loaded and materialized without a transaction; the locked primitive revision
+detects any card landing while the model was thinking and discards that stale
+material before a write. Only the *selected* told context decides whether the judgment itself
 is stale: the consumer rebuilds it from the refreshed ledger with the same
 selector and compares `novelty_context_sha256` — the hash of the shown rows that
 are evidence *about this candidate* (storyline, instrument, same-fact), which
@@ -1886,6 +1909,9 @@ archive columns, guards and compatibility view, preserves the Price and
 instrument tables plus every Trading/Capital owner, and appends one
 content-addressed genesis receipt. Its only rollback is restoring the verified
 pre-cut snapshot.
+`20260830_0337` grants the Nautilus runtime role only the canonical-JSON
+function required by its existing capital risk-event append authority; it does
+not recreate any News compatibility object.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -2295,8 +2321,9 @@ magnitude-2 presentation and a push result; a rejected one has a magnitude-0
 presentation and a drop result.
 
 The rule counts, while ordinary-News `decide()` deliberately does not.
-Counting eligible history in PostgreSQL inside the Triage transaction and
-persisting the typed result keeps one action authority and the shared delivery, receipts,
+Counting and reserving the eligible rank in PostgreSQL under the per-asset lock keeps one rank authority. The
+typed arithmetic judgment is then materialized outside PostgreSQL and follows the same prepared Verdict write as
+ordinary News, preserving the shared delivery, receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
 they were built for.
 
@@ -2312,12 +2339,13 @@ collapsed upstream by the exact fingerprint. Listing frames keep the different
 exemption they were given in #72, which is per instrument rather than blanket,
 because two notices for the same instrument really are one fact.
 
-Rank, ledger row and verdict are written in one transaction under the storyline's
-advisory lock. PostgreSQL filters the complete `(cutoff, observed_at]` range by
+Rank and the idempotent ledger row are written in one transaction under the asset
+advisory lock; the prepared verdict follows in its own short transaction. PostgreSQL filters the complete `(cutoff, observed_at]` range by
 the same strict whale-ratio and inclusive absolute-change thresholds before
 `count(*)`; ineligible frames stay in the ledger for audit but never spend a
 later signal's rank. Reading that count outside the lock would let two frames for
-one symbol both see a history without the other and both claim the same rank.
+one symbol both see a history without the other and both claim the same rank. If the process stops between the
+ledger commit and Verdict commit, broker redelivery reads the already-stored rank and completes the Verdict.
 
 `news_oi_signals` is the rank ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and

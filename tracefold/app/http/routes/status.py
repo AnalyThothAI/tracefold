@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import Response
 
-from tracefold.app.workers.runtime import WorkersRuntimeRepository, workers_runtime_status
+from tracefold.app.workers.runtime import workers_runtime_status
 from tracefold.news.health import status_health
 from tracefold.news.market_review.instruments import grounding_rollup
 from tracefold.platform.config.models import news_model_availability, news_push_availability
@@ -38,7 +38,7 @@ def get_news_status(request: Request) -> Response:
             whale_oi_ratio_above_bps=oi_policy.whale_oi_ratio_above_bps,
             oi_change_at_least_bps=oi_policy.oi_change_at_least_bps,
         )
-        workers_state, _ = _news_workers_observation(repos.conn, now_ms=now_ms)
+        workers_state, _ = _news_workers_observation(repos.workers_runtime_row(), now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
         # #87: each repository answers only over its own tables and the fold happens here — News knows which
         # tags an Event carried, the instrument universe knows which of them name something listed.
@@ -156,8 +156,7 @@ def _derive_state(
     return "ready"
 
 
-def _news_workers_observation(conn: Any, *, now_ms: int) -> tuple[str | None, str | None]:
-    row = WorkersRuntimeRepository(conn).read()
+def _news_workers_observation(row: dict[str, Any] | None, *, now_ms: int) -> tuple[str | None, str | None]:
     if row is None:
         return None, None
     status = workers_runtime_status(row, now_ms=now_ms)

@@ -133,6 +133,7 @@ class ReaderHistoryRow:
 class ReaderHistorySnapshot:
     recent_seen_rows: tuple[ReaderHistoryRow, ...] = ()
     targeted_told_rows: tuple[ReaderHistoryRow, ...] = ()
+    ledger_revision: tuple[int, int, str] = (0, 0, "")
 
     @property
     def told_source_rows(self) -> tuple[ReaderHistoryRow, ...]:
@@ -204,11 +205,19 @@ def assemble_reader_history(
         ),
         key=_newest_first,
     )
+    selected_recent = tuple(replace(row, scope="recent", reason="recent") for row in recent[:RECENT_HISTORY_MAX])
+    selected_targeted = tuple(
+        [replace(row, scope="targeted", reason="exact_fingerprint") for row in exact[:TARGETED_EXACT_MAX]]
+        + [replace(row, scope="targeted", reason="canonical_asset_overlap") for row in asset[:TARGETED_ASSET_MAX]]
+    )
+    revision_rows = (*selected_recent, *selected_targeted)
     return ReaderHistorySnapshot(
-        recent_seen_rows=tuple(replace(row, scope="recent", reason="recent") for row in recent[:RECENT_HISTORY_MAX]),
-        targeted_told_rows=tuple(
-            [replace(row, scope="targeted", reason="exact_fingerprint") for row in exact[:TARGETED_EXACT_MAX]]
-            + [replace(row, scope="targeted", reason="canonical_asset_overlap") for row in asset[:TARGETED_ASSET_MAX]]
+        recent_seen_rows=selected_recent,
+        targeted_told_rows=selected_targeted,
+        ledger_revision=(
+            len({row.event_id for row in revision_rows}),
+            max((row.at_ms for row in revision_rows), default=0),
+            max((row.event_id for row in revision_rows), default=""),
         ),
     )
 

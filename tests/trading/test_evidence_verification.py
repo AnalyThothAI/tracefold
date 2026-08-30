@@ -55,7 +55,7 @@ def _release_payload() -> dict[str, object]:
         "git_commit_sha": "1" * 40,
         "git_tree_sha": "2" * 40,
         "oci_image_digest": "tracefold@sha256:" + "3" * 64,
-        "migration_head": "20260830_0334",
+        "migration_head": "20260830_0337",
         "openapi_sha256": "4" * 64,
         "web_assets_sha256": "5" * 64,
         "workers_runtime_revision": "1" * 40,

@@ -7,6 +7,22 @@ import contextlib
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
+from tracefold.news.storage.root import NewsRepository
+
+
+class NewsRepositories(Protocol):
+    """The News callback capability; deliberately no raw connection or Trading repository."""
+
+    @property
+    def news(self) -> NewsRepository: ...
+
+    @property
+    def instruments(self) -> InstrumentsRepository: ...
+
+    @property
+    def price(self) -> PriceRepository: ...
+
 
 class NewsDatabasePort(Protocol):
     """Everything a News pipeline stage may ask of the process database, and nothing else.
@@ -20,9 +36,9 @@ class NewsDatabasePort(Protocol):
     class's exact shape. `tracefold.app` implements this; `tracefold.news` never names the implementation.
     """
 
-    async def read[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T: ...
+    async def read[T](self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = 3.0) -> T: ...
 
-    async def tx[T](self, name: str, fn: Callable[[Any], T], *, timeout_seconds: float = 3.0) -> T: ...
+    async def tx[T](self, name: str, fn: Callable[[NewsRepositories], T], *, timeout_seconds: float = 3.0) -> T: ...
 
 
 async def _receive_or_stop(client: Any, *, stop_event: asyncio.Event) -> Any | None:

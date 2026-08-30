@@ -6,34 +6,58 @@ from tracefold.platform.postgres.audit import ReadQuerySpec
 
 from ..market_review.pricing import REACTION_METRIC_VERSION
 from ..review.desk import review_read_statements
-from .feed_sql import ASSET_SEARCH_PREDICATE, TEXT_SEARCH_PREDICATE, feed_counts_sql, feed_page_sql
-from .operations import RECOVERY_BACKLOG_LIMIT, pending_recovery_incidents_statement
+from .decisions import UNPUBLISHED_VERDICT_CANDIDATES_SQL
+from .events import UNPUBLISHED_EVENT_CANDIDATES_SQL
+from .feed_sql import (
+    ASSET_SEARCH_PREDICATE,
+    CURRENT_EVENT_CARD_SQL,
+    EVENT_VERDICTS_SQL,
+    STATUS_INGEST_SQL,
+    STATUS_LEARNING_RETENTION_SQL,
+    TEXT_SEARCH_PREDICATE,
+    feed_counts_sql,
+    feed_page_sql,
+)
+from .operations import (
+    RAW_RETENTION_CANDIDATE_SQL,
+    RECOVERY_BACKLOG_LIMIT,
+    pending_recovery_incidents_statement,
+)
 
 
 def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
     day_ago = int(now_ms) - 24 * 3600_000
     hour_ago = int(now_ms) - 3600_000
     week_ago = int(now_ms) - 168 * 3600_000
+    raw_cutoff = int(now_ms) - 30 * 24 * 3600_000
+    judged_cutoff = int(now_ms) - 365 * 24 * 3600_000
     search_base = "e.ingest_mode IN ('live', 'recovery') AND e.opened_at_ms >= %s"
     search_cursor = "(e.opened_at_ms, e.event_id) < (%s, %s)"
     recovery_backlog_sql, recovery_backlog_params = pending_recovery_incidents_statement(limit=RECOVERY_BACKLOG_LIMIT)
     return (
         ReadQuerySpec(
             name="news_feed_events",
-            sql="""
-                SELECT e.event_id, e.leader_title, e.opened_at_ms, e.admission, e.queue_priority, t.final_decision
-                  FROM news_events e
-                  JOIN news_items i ON i.item_id = e.leader_item_id
-                  LEFT JOIN LATERAL (
-                    SELECT final_decision FROM news_verdicts v
-                     WHERE v.event_id = e.event_id AND v.stage = 'triage'
-                       AND v.judgment_contract_version = 'news_judgment_v2'
-                     ORDER BY v.created_at_ms DESC LIMIT 1
-                  ) t ON true
-                 WHERE e.ingest_mode IN ('live', 'recovery')
-                 ORDER BY e.opened_at_ms DESC, e.event_id DESC
-                 LIMIT 51
-            """,
+            sql=feed_page_sql("e.ingest_mode IN ('live', 'recovery')"),
+            params=(now_ms, 51),
+            max_read_return_amplification=32.0,
+        ),
+        ReadQuerySpec(
+            name="news_event_handoff_candidates",
+            sql=UNPUBLISHED_EVENT_CANDIDATES_SQL,
+            params=(int(now_ms) - 15_000, day_ago, 50),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_verdict_handoff_candidates",
+            sql=UNPUBLISHED_VERDICT_CANDIDATES_SQL,
+            params=(int(now_ms) - 15_000, day_ago, 50),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="news_raw_retention_candidates",
+            sql=RAW_RETENTION_CANDIDATE_SQL,
+            params=(raw_cutoff, judged_cutoff, judged_cutoff, judged_cutoff, 500),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_search_identity",
@@ -53,11 +77,13 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  ORDER BY priority, base_symbol
             """,
             params=("BTC", "BTC", "BTC", "BTC"),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_search_event_symbols",
             sql="SELECT alias FROM news_symbol_aliases WHERE base_symbol = %s ORDER BY alias",
             params=("BTC",),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_feed_asset_search",
@@ -66,41 +92,45 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             # FeedStorage so this audit cannot regress to a simplified look-alike query.
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, ["BTC"], 51),
+            max_read_return_amplification=32.0,
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, ["BTC"]),
             amplification_basis="aggregate_input",
+            max_read_return_amplification=2.0,
         ),
         ReadQuerySpec(
             name="news_feed_asset_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {ASSET_SEARCH_PREDICATE} AND {search_cursor}"),
             params=(now_ms, week_ago, ["BTC"], int(now_ms), "\uffff", 51),
+            max_read_return_amplification=32.0,
         ),
         ReadQuerySpec(
             name="news_feed_text_search",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, "bitcoin", 51),
+            max_read_return_amplification=32.0,
         ),
         ReadQuerySpec(
             name="news_feed_text_search_counts",
             sql=feed_counts_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE}"),
             params=(now_ms, week_ago, "bitcoin"),
             amplification_basis="aggregate_input",
+            max_read_return_amplification=2.0,
         ),
         ReadQuerySpec(
             name="news_feed_text_search_cursor",
             sql=feed_page_sql(f"{search_base} AND {TEXT_SEARCH_PREDICATE} AND {search_cursor}"),
             params=(now_ms, week_ago, "bitcoin", int(now_ms), "\uffff", 51),
+            max_read_return_amplification=32.0,
         ),
         ReadQuerySpec(
             name="news_event_detail",
-            sql=(
-                "SELECT e.*, i.description FROM news_events e"
-                " JOIN news_items i ON i.item_id = e.leader_item_id WHERE e.event_id = %s"
-            ),
+            sql=CURRENT_EVENT_CARD_SQL,
             params=("event",),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_event_asset_projection",
@@ -109,6 +139,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             " JOIN news_events event ON event.event_id = asset.event_id"
             " WHERE asset.event_id = ANY(%s) GROUP BY asset.event_id",
             params=(["event"],),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_event_members",
@@ -119,12 +150,13 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
             """,
             params=("event",),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_event_verdicts",
-            sql="SELECT * FROM news_verdicts WHERE event_id = %s "
-            "AND judgment_contract_version = 'news_judgment_v2' ORDER BY created_at_ms",
+            sql=EVENT_VERDICTS_SQL,
             params=("event",),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_storyline_status",
@@ -136,6 +168,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                    AND e.storyline_key = %s AND v.created_at_ms >= %s
             """,
             params=("theme:rates", day_ago),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_band_lookup",
@@ -146,10 +179,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  WHERE b.dedupe_family = %s AND b.expires_at_ms > %s
             """,
             params=([0, 1], ["a", "b"], "general", now_ms),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_status_ingest",
-            sql="SELECT * FROM news_ingest_state WHERE singleton_key = 'opennews'",
+            sql=STATUS_INGEST_SQL,
+            max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(
             name="news_status_incidents_open",
@@ -157,17 +192,20 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 "SELECT incident_id, cause_class, opened_at_ms FROM news_opennews_incidents"
                 " WHERE closed_at_ms IS NULL ORDER BY incident_id"
             ),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_status_recovery_backlog",
             sql=recovery_backlog_sql,
             params=recovery_backlog_params,
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_status_pipeline_24h",
             sql="SELECT count(*) AS n FROM news_verdicts WHERE stage = 'triage' "
             "AND judgment_contract_version = 'news_judgment_v2' AND created_at_ms >= %s",
             params=(day_ago,),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_status_delivery_1h",
@@ -175,10 +213,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             " JOIN news_events event ON event.event_id = delivery.event_id"
             " WHERE delivery.state = 'sent' AND delivery.settled_at_ms >= %s",
             params=(hour_ago,),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_status_learning_retention",
-            sql="SELECT * FROM news_learning_retention_state WHERE singleton",
+            sql=STATUS_LEARNING_RETENTION_SQL,
+            max_read_return_amplification=4.0,
         ),
         # #88 price plane. The due scan and the review aggregates are the two reads that could grow without
         # anyone noticing, so both are in the EXPLAIN registry with their real predicates.
@@ -190,10 +230,12 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             "WHERE signal.metric_version = 'oi_signal_v1' AND signal.symbol = 'BTC' "
             "AND signal.observed_at_ms > 0 AND signal.observed_at_ms < 1 AND signal.event_id <> '' "
             "AND signal.whale_oi_ratio_bps > 8000 AND abs(signal.oi_change_bps) >= 0",
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_quote_snapshot_read",
             sql="SELECT source_key, quotes, received_at_ms FROM news_quote_snapshots",
+            max_read_return_amplification=4.0,
         ),
         # #207 PR-W1 token page identity. Both are one indexed base lookup, but every asset chip on the
         # console is now a link into them, so they are in the registry with their real predicates.
@@ -202,18 +244,21 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="SELECT venue, venue_symbol, instrument_class, quote_asset FROM news_market_instruments"
             " WHERE base_symbol = %s AND status = 'trading' ORDER BY venue, venue_symbol LIMIT 24",
             params=("BTC",),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_symbol_tradeable",
             sql="SELECT 1 FROM news_market_instruments WHERE base_symbol = %s AND status = 'trading'"
             " AND NOT (venue = ANY(%s)) LIMIT 1",
             params=("BTC", ["us.listed"]),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_symbol_aliases",
             sql="SELECT alias, base_symbol, source FROM news_symbol_aliases"
             " WHERE base_symbol = ANY(%s) AND source = ANY(%s) ORDER BY base_symbol, alias",
             params=(["BTC"], ["seed"]),
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="news_reaction_due_scan",
@@ -229,6 +274,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                  LIMIT 100
             """,
             params=(REACTION_METRIC_VERSION, hour_ago),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="news_reaction_attach",
@@ -239,9 +285,15 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 " WHERE reaction.event_id = ANY(%s) AND reaction.metric_version = %s"
             ),
             params=(["event"], REACTION_METRIC_VERSION),
+            max_read_return_amplification=8.0,
         ),
         *(
-            ReadQuerySpec(name=statement.name, sql=statement.sql, params=statement.params)
+            ReadQuerySpec(
+                name=statement.name,
+                sql=statement.sql,
+                params=statement.params,
+                max_read_return_amplification=20.0,
+            )
             for statement in review_read_statements(now_ms=int(now_ms))
         ),
     )

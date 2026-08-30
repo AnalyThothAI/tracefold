@@ -45,12 +45,13 @@ def test_quote_ordinary_lane_progresses_while_trading_holds_the_heavy_gate() -> 
 
     def hold_heavy(repos) -> str:
         trading_started.set()
-        repos.conn.execute("SELECT pg_sleep(1.5)")
+        repos.trading.case_counts(since_ms=0)
+        time.sleep(1.5)
         return "trading-finished"
 
     def read_one(repos) -> int:
-        row = repos.conn.execute("SELECT 1 AS ok").fetchone()
-        return int(row["ok"])
+        repos.price.quote_target_symbols(since_ms=0, limit=1)
+        return 1
 
     def read_reaction(repos) -> int:
         reaction_started.set()

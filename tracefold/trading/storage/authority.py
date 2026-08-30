@@ -6,6 +6,8 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any, cast
 
+from psycopg import sql
+
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
@@ -640,43 +642,45 @@ class AuthorityStorage:
         realized_loss_amount: Any | None = None,
         event_identity: str | None = None,
     ) -> bool:
-        payload = {
-            "event_version": "capital_risk_event_v1",
-            "reservation_sha256": reservation_sha256,
-            "intent_id": intent_id,
-            "event_kind": event_kind,
-            "current_planned_risk_amount": str(current_planned_risk_amount),
-            "attempt_consumed": bool(attempt_consumed),
-            "settlement_asset": settlement_asset,
-            "realized_loss_amount": None if realized_loss_amount is None else str(realized_loss_amount),
-            "occurred_at_ms": int(occurred_at_ms),
-            "event_identity": event_identity,
-        }
-        from ..contracts import canonical_sha256
-
-        digest = canonical_sha256(payload)
         inserted = self.conn.execute(
             """
+            WITH event AS (
+              SELECT jsonb_build_object(
+                       'event_version', 'capital_risk_event_v1',
+                       'reservation_sha256', %(reservation)s::text,
+                       'intent_id', %(intent)s::text,
+                       'event_kind', %(kind)s::text,
+                       'current_planned_risk_amount', %(amount)s::text,
+                       'attempt_consumed', %(consumed)s::boolean,
+                       'settlement_asset', %(asset)s::text,
+                       'realized_loss_amount', %(loss)s::text,
+                       'occurred_at_ms', %(occurred)s::bigint,
+                       'event_identity', %(identity)s::text
+                     ) AS payload
+            )
             INSERT INTO trading_capital_risk_events (
               event_sha256, reservation_sha256, intent_id, event_kind,
               current_planned_risk_amount, attempt_consumed, settlement_asset,
               realized_loss_amount, occurred_at_ms, payload
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+            )
+            SELECT encode(sha256(convert_to(trading_canonical_jsonb(payload), 'UTF8')), 'hex'),
+                   %(reservation)s::text, %(intent)s::text, %(kind)s::text, %(amount)s::numeric,
+                   %(consumed)s::boolean, %(asset)s::text, %(loss)s::numeric, %(occurred)s::bigint, payload
+              FROM event
             ON CONFLICT (event_sha256) DO NOTHING
             RETURNING event_sha256
             """,
-            (
-                digest,
-                reservation_sha256,
-                intent_id,
-                event_kind,
-                current_planned_risk_amount,
-                attempt_consumed,
-                settlement_asset,
-                realized_loss_amount,
-                int(occurred_at_ms),
-                _dumps(payload),
-            ),
+            {
+                "reservation": reservation_sha256,
+                "intent": intent_id,
+                "kind": event_kind,
+                "amount": str(current_planned_risk_amount),
+                "consumed": bool(attempt_consumed),
+                "asset": settlement_asset,
+                "loss": None if realized_loss_amount is None else str(realized_loss_amount),
+                "occurred": int(occurred_at_ms),
+                "identity": event_identity,
+            },
         ).fetchone()
         return inserted is not None
 
@@ -694,7 +698,13 @@ class AuthorityStorage:
             "trading_operator_arm_receipts",
         } or key_name not in {"risk_policy_sha256", "grant_sha256", "arm_receipt_sha256"}:
             raise RuntimeError("capital_authority_identity_query_invalid")
-        row = self.conn.execute(f"SELECT payload FROM {table} WHERE {key_name} = %s", (key,)).fetchone()
+        row = self.conn.execute(
+            sql.SQL("SELECT payload FROM {} WHERE {} = %s").format(
+                sql.Identifier(table),
+                sql.Identifier(key_name),
+            ),
+            (key,),
+        ).fetchone()
         if row is None or row["payload"] != payload:
             raise RuntimeError("capital_authority_identity_conflict")
 

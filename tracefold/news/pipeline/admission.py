@@ -8,9 +8,10 @@ import logging
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, cast
 
 from .. import liquidations, oi_signals
+from ..artifact_identity import canonical_json
 from ..bus import (
     Q_RAW,
     RK_EVENT,
@@ -25,7 +26,7 @@ from ..events.gate import GateInput, GateVerdict, evaluate_gate
 from ..events.identity import dedupe_family, dedupe_window_ms
 from ..events.minhash import band_keys, minhash_signature
 from ..events.storyline import preliminary_storyline_key
-from ..events.titles import description_after_title, extract_title
+from ..events.titles import ExtractedTitle, description_after_title, extract_title
 from ..events.tokens import comparison_tokens, jaccard
 from ..models import ADMITTED_ADMISSIONS, EVENT_IDENTITY_VERSION
 from ..opennews import OPENNEWS_SOURCE_ID, OpenNewsEvent, parse_opennews_message
@@ -37,6 +38,7 @@ from ..source_contracts import (
     classify_source_contracts,
     source_contract_admission,
 )
+from ..storage.events import prepare_evidence_snapshot
 from ..telemetry import NewsWorkSemantics
 from .runtime import NewsDatabasePort
 
@@ -94,6 +96,49 @@ class AdmitBatchResult:
     results: tuple[AdmitResult, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _PreparedAdmission:
+    provider_metadata_json: str
+    source_contract: SourceContract
+    source_contract_reason: SourceContractReason | None
+    engine_type: str
+    strategy_ids_json: str
+    raw_text: str
+    parent: ExtractedTitle
+    item_id: str
+    fact: FactUnit
+    title: str
+    comparison: str
+    dedupe_family: str
+    fingerprint: str
+    published_at_ms: int
+    provider_score: float | None
+    gate: GateVerdict
+    grounded_assets_json: str
+    watchlist_hits_json: str
+    tokens: frozenset[str]
+    window_ms: int
+    shareable: bool
+    band_keys: tuple[str, ...]
+    strong_facts: tuple[set[str], set[str]]
+    storyline_key: str
+    context_line: str
+    event_id: str
+    liquidation: liquidations.LiquidationFact | None
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedFrame:
+    item_id: str
+    admissions: tuple[_PreparedAdmission, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _NearMatch:
+    event_id: str
+    jaccard_estimate: float
+
+
 def item_identity(*, source_id: str, source_item_key: str) -> str:
     return hashlib.sha256(f"{source_id}\x1f{source_item_key}".encode()).hexdigest()
 
@@ -109,6 +154,140 @@ def _event_identity(
     ).hexdigest()
 
 
+def _prepare_frame(
+    *,
+    event: OpenNewsEvent,
+    ingest_mode: str,
+    observed_at_ms: int,
+    watchlist_symbols: frozenset[str],
+    text_override: str | None,
+    suppress_low_signal: bool,
+    instrument_classes: Mapping[str, str] | None,
+    fact_units: tuple[FactUnit, ...] | None = None,
+    source_contracts: tuple[SourceContract, ...] | None = None,
+) -> _PreparedFrame:
+    raw_text = text_override if text_override is not None else (event.raw_text or _reconstruct_text(event))
+    parent = extract_title(raw_text)
+    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
+    units = fact_units or extract_fact_units(
+        item_id=item_id,
+        raw_text=raw_text,
+        fallback_title=parent.title or (event.entry.title or "")[:500],
+    )
+    if source_contracts is None:
+        contracts: list[SourceContract] = []
+        seen_kinds: set[EventKind] = set()
+        for contract in classify_source_contracts(event.provider_metadata):
+            if contract.event_kind not in seen_kinds:
+                seen_kinds.add(contract.event_kind)
+                contracts.append(contract)
+    else:
+        contracts = list(source_contracts)
+    metadata = dict(event.provider_metadata)
+    strategy_ids = tuple(
+        str(strategy.get("id"))
+        for strategy in (metadata.get("strategies") or [])
+        if isinstance(strategy, Mapping) and strategy.get("id")
+    )
+    provider_metadata_json = canonical_json(metadata)
+    strategy_ids_json = canonical_json(sorted(set(strategy_ids)))
+    provider_score_value = metadata.get("score")
+    provider_score = float(provider_score_value) if isinstance(provider_score_value, (int, float)) else None
+    prepared: list[_PreparedAdmission] = []
+    for fact in units:
+        for source_contract in contracts:
+            source_contract_reason: SourceContractReason | None = source_contract.reason
+            contract_engine = source_contract.identity.engine_type
+            engine_type = contract_engine if contract_engine in {"news", "meme", "listing", "market"} else "unknown"
+            extracted = extract_title(fact.text)
+            title = extracted.title or fact.text[:500]
+            comparison = extracted.comparison
+            family_name = dedupe_family(comparison)
+            fingerprint = hashlib.sha256(comparison.encode("utf-8")).hexdigest()
+            published_at_ms = int(event.entry.published_at_ms or observed_at_ms)
+            coins = tuple(c for c in (metadata.get("coins") or []) if isinstance(c, Mapping))
+            gate_context = fact.context if fact.method == "explicit_numbered" else parent.first_line
+            gate = evaluate_gate(
+                GateInput(
+                    title=title,
+                    engine_type=engine_type,  # type: ignore[arg-type]
+                    provider_score=provider_score,
+                    coins=coins,
+                    ingest_mode=ingest_mode,
+                    watchlist_symbols=watchlist_symbols,
+                    raw_first_line=gate_context,
+                    suppress_low_signal=suppress_low_signal,
+                    instrument_classes=instrument_classes,
+                )
+            )
+            gate = replace(
+                gate,
+                admission=source_contract_admission(
+                    source_contract,
+                    generic_admission=gate.admission,
+                    ingest_mode=ingest_mode,
+                ),
+            )
+            tokens = comparison_tokens(comparison)
+            shareable = len(tokens) >= 3
+            keys = band_keys(minhash_signature(tokens)) if shareable else ()
+            liquidation = None
+            if source_contract.source_contract_family == "liquidation_v1":
+                liquidation = liquidations.parse_liquidation(
+                    title,
+                    item_id=item_id,
+                    fact_id=fact.fact_id,
+                    provider_source=str(metadata.get("source") or ""),
+                    event_at_ms=published_at_ms,
+                    received_at_ms=int(observed_at_ms),
+                    provider_record_identity=event.provider_record_id,
+                )
+                if liquidation is None:
+                    source_contract_reason = "source_contract_drift"
+            if source_contract.source_contract_family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
+                source_contract_reason = "source_contract_drift"
+            storyline = preliminary_storyline_key(
+                title=title,
+                grounded_assets=gate.strong_assets,
+                asset_class=gate.asset_class,
+                dedupe_family=family_name,
+            )
+            prepared.append(
+                _PreparedAdmission(
+                    provider_metadata_json=provider_metadata_json,
+                    source_contract=source_contract,
+                    source_contract_reason=source_contract_reason,
+                    engine_type=engine_type,
+                    strategy_ids_json=strategy_ids_json,
+                    raw_text=raw_text,
+                    parent=parent,
+                    item_id=item_id,
+                    fact=fact,
+                    title=title,
+                    comparison=comparison,
+                    dedupe_family=family_name,
+                    fingerprint=fingerprint,
+                    published_at_ms=published_at_ms,
+                    provider_score=provider_score,
+                    gate=gate,
+                    grounded_assets_json=canonical_json(list(gate.grounded_assets)),
+                    watchlist_hits_json=canonical_json(list(gate.watchlist_hits)),
+                    tokens=tokens,
+                    window_ms=dedupe_window_ms(family_name),
+                    shareable=shareable,
+                    band_keys=keys,
+                    strong_facts=_strong_facts(title, gate.grounded_assets),
+                    storyline_key=storyline,
+                    context_line=(
+                        f"[{gate.asset_class}/{family_name}/{engine_type}] " + " ".join(gate.grounded_assets)
+                    ).strip(),
+                    event_id=_event_identity(item_id=item_id, fact=fact, event_kind=source_contract.event_kind),
+                    liquidation=liquidation,
+                )
+            )
+    return _PreparedFrame(item_id=item_id, admissions=tuple(prepared))
+
+
 def admit_frame(
     repos: Any,
     *,
@@ -121,26 +300,20 @@ def admit_frame(
     text_override: str | None = None,
     suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
+    append_evidence: bool = True,
+    _prepared_frame: _PreparedFrame | None = None,
 ) -> AdmitBatchResult:
     """Admit every high-confidence FactUnit in one provider Item."""
 
-    raw_text = text_override if text_override is not None else (event.raw_text or _reconstruct_text(event))
-    parent = extract_title(raw_text)
-    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
-    units = extract_fact_units(
-        item_id=item_id,
-        raw_text=raw_text,
-        fallback_title=parent.title or (event.entry.title or "")[:500],
+    prepared_frame = _prepared_frame or _prepare_frame(
+        event=event,
+        ingest_mode=ingest_mode,
+        observed_at_ms=observed_at_ms,
+        watchlist_symbols=watchlist_symbols,
+        text_override=text_override,
+        suppress_low_signal=suppress_low_signal,
+        instrument_classes=instrument_classes,
     )
-    contracts: list[SourceContract] = []
-    seen_kinds: set[EventKind] = set()
-    for contract in classify_source_contracts(event.provider_metadata):
-        # Event identity is one provider FactUnit per kind. Keeping the first
-        # durable tuple for a repeated kind makes a merged Item replay exactly
-        # like the original first-seen delivery order.
-        if contract.event_kind not in seen_kinds:
-            seen_kinds.add(contract.event_kind)
-            contracts.append(contract)
     results = tuple(
         admit_item(
             repos,
@@ -153,13 +326,16 @@ def admit_frame(
             text_override=text_override,
             suppress_low_signal=suppress_low_signal,
             instrument_classes=instrument_classes,
-            _fact_unit=unit,
-            _source_contract=contract,
+            append_evidence=append_evidence,
+            _prepared=prepared,
         )
-        for unit in units
-        for contract in contracts
+        for prepared in prepared_frame.admissions
     )
-    return AdmitBatchResult(item_id=item_id, item_inserted=any(r.item_inserted for r in results), results=results)
+    return AdmitBatchResult(
+        item_id=prepared_frame.item_id,
+        item_inserted=any(r.item_inserted for r in results),
+        results=results,
+    )
 
 
 def _strong_facts(title: str, grounded: Sequence[str]) -> tuple[set[str], set[str]]:
@@ -176,6 +352,40 @@ def _compatible(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> b
     if a[0] and b[0] and not (a[0] & b[0]):
         return False
     return not (a[1] and b[1] and not (a[1] & b[1]))
+
+
+def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: int) -> tuple[dict[str, Any], ...]:
+    """Load bounded candidate rows without holding a write transaction."""
+
+    if not prepared.shareable or prepared.source_contract.event_kind in {"oi", "liquidation"}:
+        return ()
+    return tuple(
+        dict(row)
+        for row in repos.news.find_band_candidates(
+            dedupe_family=prepared.dedupe_family,
+            event_kind=prepared.source_contract.event_kind,
+            band_keys=prepared.band_keys,
+            now_ms=now_ms,
+            source_contract_reason=prepared.source_contract_reason,
+        )
+    )
+
+
+def _select_near_match(prepared: _PreparedAdmission, candidates: Sequence[Mapping[str, Any]]) -> _NearMatch | None:
+    """Choose a compatible near duplicate after the database read has returned."""
+
+    best_id, best_j = None, 0.0
+    for candidate in candidates:
+        candidate_tokens = comparison_tokens(str(candidate["comparison_title"]))
+        estimate = jaccard(prepared.tokens, candidate_tokens)
+        if estimate >= NEAR_DUPLICATE_THRESHOLD and estimate > best_j:
+            theirs = _strong_facts(
+                str(candidate["leader_title"]),
+                list(candidate.get("grounded_assets") or []),
+            )
+            if _compatible(prepared.strong_facts, theirs):
+                best_id, best_j = str(candidate["event_id"]), estimate
+    return None if best_id is None else _NearMatch(event_id=best_id, jaccard_estimate=round(best_j, 4))
 
 
 def _engine_type(metadata: Mapping[str, Any]) -> str:
@@ -198,8 +408,12 @@ def admit_item(
     text_override: str | None = None,
     suppress_low_signal: bool = False,
     instrument_classes: Mapping[str, str] | None = None,
+    append_evidence: bool = True,
     _fact_unit: FactUnit | None = None,
     _source_contract: SourceContract | None = None,
+    _prepared: _PreparedAdmission | None = None,
+    _near_match: _NearMatch | None = None,
+    _near_match_prepared: bool = False,
 ) -> AdmitResult:
     """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
 
@@ -207,32 +421,45 @@ def admit_item(
     an A/A+ grounded tag, or a different reporting origin); the Event is then upgraded in place and published once.
     """
 
+    prepared = (
+        _prepared
+        or _prepare_frame(
+            event=event,
+            ingest_mode=ingest_mode,
+            observed_at_ms=observed_at_ms,
+            watchlist_symbols=watchlist_symbols,
+            text_override=text_override,
+            suppress_low_signal=suppress_low_signal,
+            instrument_classes=instrument_classes,
+            fact_units=None if _fact_unit is None else (_fact_unit,),
+            source_contracts=(
+                (_source_contract,)
+                if _source_contract is not None
+                else (classify_source_contract(event.provider_metadata),)
+            ),
+        ).admissions[0]
+    )
     news = repos.news
-    metadata = dict(event.provider_metadata)
-    source_contract = _source_contract or classify_source_contract(metadata)
-    source_contract_reason: SourceContractReason | None = source_contract.reason
-    contract_engine = source_contract.identity.engine_type
-    engine_type = contract_engine if contract_engine in {"news", "meme", "listing", "market"} else "unknown"
-    strategy_ids = tuple(
-        str(s.get("id")) for s in (metadata.get("strategies") or []) if isinstance(s, Mapping) and s.get("id")
-    )
-    raw_text = text_override if text_override is not None else (event.raw_text or _reconstruct_text(event))
-    parent_extracted = extract_title(raw_text)
-    item_id = item_identity(source_id=OPENNEWS_SOURCE_ID, source_item_key=event.provider_record_id)
-    fact = (
-        _fact_unit
-        or extract_fact_units(
-            item_id=item_id,
-            raw_text=raw_text,
-            fallback_title=parent_extracted.title or (event.entry.title or "")[:500],
-        )[0]
-    )
-    extracted = extract_title(fact.text)
-    title = extracted.title or fact.text[:500]
-    comparison = extracted.comparison
-    family_name = dedupe_family(comparison)
-    fingerprint = hashlib.sha256(comparison.encode("utf-8")).hexdigest()
-    published_at_ms = int(event.entry.published_at_ms or observed_at_ms)
+    source_contract = prepared.source_contract
+    source_contract_reason = prepared.source_contract_reason
+    engine_type = prepared.engine_type
+    raw_text = prepared.raw_text
+    parent_extracted = prepared.parent
+    item_id = prepared.item_id
+    fact = prepared.fact
+    title = prepared.title
+    comparison = prepared.comparison
+    family_name = prepared.dedupe_family
+    fingerprint = prepared.fingerprint
+    published_at_ms = prepared.published_at_ms
+    provider_score = prepared.provider_score
+    gate = prepared.gate
+    window_ms = prepared.window_ms
+    shareable = prepared.shareable
+    keys = prepared.band_keys
+    storyline = prepared.storyline_key
+    context_line = prepared.context_line
+    event_id = prepared.event_id
     inserted = news.upsert_item(
         item_id=item_id,
         source_id=OPENNEWS_SOURCE_ID,
@@ -244,26 +471,16 @@ def admit_item(
         reporting_origin=event.entry.reporting_origin or "opennews",
         published_at_ms=published_at_ms,
         observed_at_ms=int(observed_at_ms),
-        provider_metadata=metadata,
-        strategy_ids=strategy_ids,
+        provider_metadata_json=prepared.provider_metadata_json,
+        strategy_ids_json=prepared.strategy_ids_json,
         ingest_mode=ingest_mode,
         trace_id=trace_id,
         now_ms=now_ms,
         source_artifact_id=event.source_artifact_id,
     )
     if source_contract.source_contract_family == "liquidation_v1":
-        liquidation = liquidations.parse_liquidation(
-            title,
-            item_id=item_id,
-            fact_id=fact.fact_id,
-            provider_source=str(metadata.get("source") or ""),
-            event_at_ms=published_at_ms,
-            received_at_ms=int(observed_at_ms),
-            provider_record_identity=event.provider_record_id,
-        )
-        if liquidation is None:
-            source_contract_reason = "source_contract_drift"
-        else:
+        liquidation = prepared.liquidation
+        if liquidation is not None:
             news.insert_market_liquidation(
                 source_key=liquidation.source_key,
                 item_id=liquidation.item_id,
@@ -291,11 +508,6 @@ def admit_item(
                 source_contract_complete=liquidation.source_contract_complete,
                 now_ms=now_ms,
             )
-    # Admission exercises the strict parser in both live and recovery modes so contract drift is durable
-    # even when recovery intentionally never reaches Triage. This parse is side-effect free: OI's ranked
-    # fact remains live-only and is still written by the deterministic judge.
-    if source_contract.source_contract_family == "oi_v1" and oi_signals.parse_oi_signal(title) is None:
-        source_contract_reason = "source_contract_drift"
     existing_membership = news.fact_membership(
         item_id=item_id,
         fact_id=fact.fact_id,
@@ -317,38 +529,6 @@ def admit_item(
             comparison_fingerprint=fingerprint,
             title=title,
         )
-
-    coins = tuple(c for c in (metadata.get("coins") or []) if isinstance(c, Mapping))
-    provider_score = metadata.get("score")
-    # A split unit's shared evidence is the digest's lead, not the parent's first line — which on a bare numbered
-    # digest *is* bullet 1.  The Gate reads `title + raw_first_line` for cashtags and for the macro/energy/PR
-    # lexicons, so the old value grounded every bullet on whatever the first one happened to say.  This is the same
-    # text the model receives as `content`, so the two now agree on what the digest's shared context is.
-    gate_context = fact.context if fact.method == "explicit_numbered" else parent_extracted.first_line
-    gate = evaluate_gate(
-        GateInput(
-            title=title,
-            engine_type=engine_type,  # type: ignore[arg-type]
-            provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
-            coins=coins,
-            ingest_mode=ingest_mode,
-            watchlist_symbols=watchlist_symbols,
-            raw_first_line=gate_context,
-            suppress_low_signal=suppress_low_signal,
-            instrument_classes=instrument_classes,
-        )
-    )
-    gate = replace(
-        gate,
-        admission=source_contract_admission(
-            source_contract,
-            generic_admission=gate.admission,
-            ingest_mode=ingest_mode,
-        ),
-    )
-    tokens = comparison_tokens(comparison)
-    window_ms = dedupe_window_ms(family_name)
-    shareable = len(tokens) >= 3
 
     exact = (
         news.find_exact_event(
@@ -400,21 +580,20 @@ def admit_item(
             fingerprint=fingerprint,
             title=title,
             reporting_origin=event.entry.reporting_origin or "opennews",
+            grounded_assets_json=prepared.grounded_assets_json,
+            watchlist_hits_json=prepared.watchlist_hits_json,
             now_ms=now_ms,
         )
-        news.append_evidence_snapshot(
-            event_id=result.event_id,
-            now_ms=now_ms,
-            focus_item_id=item_id if result.evidence_focus_changed else None,
-            focus_fact=fact if result.evidence_focus_changed else None,
-        )
+        if append_evidence:
+            news.append_evidence_snapshot(
+                event_id=result.event_id,
+                now_ms=now_ms,
+                focus_item_id=item_id if result.evidence_focus_changed else None,
+                focus_fact=fact if result.evidence_focus_changed else None,
+            )
         return result
 
     if shareable:
-        signature = minhash_signature(tokens)
-        keys = band_keys(signature)
-        mine = _strong_facts(title, gate.grounded_assets)
-        best_id, best_j = None, 0.0
         # Telemetry frames are exempt from near-duplicate matching (#137). Two frames for one symbol
         # differ only in their four numbers, which is their entire content: they score 0.60 against
         # each other, so the second observation would join the first as a member, never reach Triage,
@@ -423,31 +602,21 @@ def admit_item(
         #
         # Keyed on source-contract kind and result rather than live/recovery admission: a format-drift
         # or recovered deterministic frame must remain its own measurement.
-        candidates = (
-            ()
-            if source_contract.event_kind in {"oi", "liquidation"}
-            else news.find_band_candidates(
-                dedupe_family=family_name,
-                event_kind=source_contract.event_kind,
-                band_keys=keys,
-                now_ms=now_ms,
-                source_contract_reason=source_contract_reason,
+        near_match = (
+            _near_match
+            if _near_match_prepared
+            else _select_near_match(
+                prepared,
+                _load_near_candidates(repos, prepared, now_ms=now_ms),
             )
         )
-        for cand in candidates:
-            cand_tokens = comparison_tokens(str(cand["comparison_title"]))
-            j = jaccard(tokens, cand_tokens)
-            if j >= NEAR_DUPLICATE_THRESHOLD and j > best_j:
-                theirs = _strong_facts(str(cand["leader_title"]), list(cand.get("grounded_assets") or []))
-                if _compatible(mine, theirs):
-                    best_id, best_j = str(cand["event_id"]), j
-        if best_id is not None:
+        if near_match is not None:
             news.add_member(
-                event_id=best_id,
+                event_id=near_match.event_id,
                 item_id=item_id,
                 joined_at_ms=published_at_ms,
                 match_kind="near",
-                jaccard_estimate=round(best_j, 4),
+                jaccard_estimate=near_match.jaccard_estimate,
                 provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
                 fact_id=fact.fact_id,
                 fact_text=fact.text,
@@ -455,7 +624,7 @@ def admit_item(
             )
             result = _member_result(
                 repos,
-                event_id=best_id,
+                event_id=near_match.event_id,
                 item_id=item_id,
                 inserted=inserted,
                 match_kind="near",
@@ -465,30 +634,18 @@ def admit_item(
                 fingerprint=fingerprint,
                 title=title,
                 reporting_origin=event.entry.reporting_origin or "opennews",
+                grounded_assets_json=prepared.grounded_assets_json,
+                watchlist_hits_json=prepared.watchlist_hits_json,
                 now_ms=now_ms,
             )
-            news.append_evidence_snapshot(
-                event_id=result.event_id,
-                now_ms=now_ms,
-                focus_item_id=item_id if result.evidence_focus_changed else None,
-                focus_fact=fact if result.evidence_focus_changed else None,
-            )
+            if append_evidence:
+                news.append_evidence_snapshot(
+                    event_id=result.event_id,
+                    now_ms=now_ms,
+                    focus_item_id=item_id if result.evidence_focus_changed else None,
+                    focus_fact=fact if result.evidence_focus_changed else None,
+                )
             return result
-    else:
-        keys = ()
-
-    storyline = preliminary_storyline_key(
-        title=title,
-        grounded_assets=gate.strong_assets,
-        asset_class=gate.asset_class,
-        dedupe_family=family_name,
-    )
-    context_line = f"[{gate.asset_class}/{family_name}/{engine_type}] " + " ".join(gate.grounded_assets)
-    event_id = _event_identity(
-        item_id=item_id,
-        fact=fact,
-        event_kind=source_contract.event_kind,
-    )
     news.insert_event(
         event_id=event_id,
         leader_item_id=item_id,
@@ -511,17 +668,20 @@ def admit_item(
         engine_type=engine_type,
         asset_class=gate.asset_class,
         grounded_assets=gate.grounded_assets,
+        grounded_assets_json=prepared.grounded_assets_json,
         watchlist_hits=gate.watchlist_hits,
+        watchlist_hits_json=prepared.watchlist_hits_json,
         macro_lexicon=gate.macro_lexicon,
         storyline_key=storyline,
-        context_line=context_line.strip(),
+        context_line=context_line,
         ingest_mode=ingest_mode,
         trace_id=trace_id,
         band_keys=keys if shareable else (),
         now_ms=now_ms,
         source_contract_reason=source_contract_reason,
     )
-    news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
+    if append_evidence:
+        news.append_evidence_snapshot(event_id=event_id, now_ms=now_ms)
     return AdmitResult(
         item_id=item_id,
         item_inserted=inserted,
@@ -551,6 +711,8 @@ def _member_result(
     fingerprint: str,
     title: str,
     reporting_origin: str,
+    grounded_assets_json: str,
+    watchlist_hits_json: str,
     now_ms: int,
 ) -> AdmitResult:
     """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
@@ -579,7 +741,9 @@ def _member_result(
             queue_priority=gate.queue_priority,
             asset_class=gate.asset_class,
             grounded_assets=gate.grounded_assets,
+            grounded_assets_json=grounded_assets_json,
             watchlist_hits=gate.watchlist_hits,
+            watchlist_hits_json=watchlist_hits_json,
             macro_lexicon=gate.macro_lexicon,
             now_ms=now_ms,
         )
@@ -711,22 +875,105 @@ class DeduperConsumer:
         ingest_mode = "recovery" if str(message.payload.get("ingest_mode")) == "recovery" else "live"
         observed = int(message.payload.get("observed_at_ms") or message.occurred_at_ms or now_ms())
         stamp = now_ms()
-        batch = await self.db.tx(
-            "news_deduper_admit",
-            lambda repos: admit_frame(
-                repos,
-                event=event,
-                ingest_mode=ingest_mode,
-                observed_at_ms=observed,
-                trace_id=message.trace_id,
-                watchlist_symbols=self.watchlist_symbols,
-                now_ms=stamp,
-                suppress_low_signal=self.suppress_low_signal,
-                instrument_classes=self._current_instrument_classes(repos, now=stamp),
-            ),
-            timeout_seconds=5.0,
+        instrument_classes = await self.db.read(
+            "news_admission_instruments",
+            lambda repos: self._current_instrument_classes(repos, now=stamp),
+            timeout_seconds=1.0,
         )
-        for result in batch.results:
+        prepared_frame = _prepare_frame(
+            event=event,
+            ingest_mode=ingest_mode,
+            observed_at_ms=observed,
+            watchlist_symbols=self.watchlist_symbols,
+            text_override=None,
+            suppress_low_signal=self.suppress_low_signal,
+            instrument_classes=instrument_classes,
+        )
+        admitted: list[AdmitResult] = []
+        for prepared in prepared_frame.admissions:
+
+            def _read_candidates(
+                repos: Any,
+                admission: _PreparedAdmission = prepared,
+            ) -> tuple[dict[str, Any], ...]:
+                return _load_near_candidates(repos, admission, now_ms=stamp)
+
+            candidates = await self.db.read(
+                "news_deduper_candidates",
+                _read_candidates,
+                timeout_seconds=2.0,
+            )
+            near_match = _select_near_match(prepared, candidates)
+
+            def _admit(
+                repos: Any,
+                admission: _PreparedAdmission = prepared,
+                selected: _NearMatch | None = near_match,
+            ) -> AdmitResult:
+                return admit_item(
+                    repos,
+                    event=event,
+                    ingest_mode=ingest_mode,
+                    observed_at_ms=observed,
+                    trace_id=message.trace_id,
+                    watchlist_symbols=self.watchlist_symbols,
+                    now_ms=stamp,
+                    suppress_low_signal=self.suppress_low_signal,
+                    instrument_classes=instrument_classes,
+                    append_evidence=False,
+                    _prepared=admission,
+                    _near_match=selected,
+                    _near_match_prepared=True,
+                )
+
+            result = await self.db.tx(
+                "news_deduper_admit",
+                _admit,
+                timeout_seconds=5.0,
+            )
+            admitted.append(result)
+        batch = AdmitBatchResult(
+            item_id=prepared_frame.item_id,
+            item_inserted=any(result.item_inserted for result in admitted),
+            results=tuple(admitted),
+        )
+        for result, prepared in zip(batch.results, prepared_frame.admissions, strict=True):
+            focus_changed = bool(getattr(result, "evidence_focus_changed", False))
+            focus_item_id = prepared.item_id if focus_changed else None
+
+            def _load_evidence(
+                repos: Any,
+                event_id: str = result.event_id,
+                focused_item: str | None = focus_item_id,
+            ) -> dict[str, Any]:
+                return cast(
+                    dict[str, Any],
+                    repos.news.evidence_snapshot_material(
+                        event_id=event_id,
+                        focus_item_id=focused_item,
+                    ),
+                )
+
+            material = await self.db.read(
+                "news_evidence_snapshot_load",
+                _load_evidence,
+                timeout_seconds=2.0,
+            )
+            prepared_snapshot = prepare_evidence_snapshot(
+                material,
+                event_id=result.event_id,
+                now_ms=stamp,
+                focus_fact=prepared.fact if focus_changed else None,
+            )
+
+            def _append_evidence(repos: Any, snapshot: dict[str, Any] = prepared_snapshot) -> Any:
+                return repos.news.append_prepared_evidence_snapshot(snapshot)
+
+            await self.db.tx(
+                "news_evidence_snapshot_append",
+                _append_evidence,
+                timeout_seconds=2.0,
+            )
             if result.event_created and result.admission in ADMITTED_ADMISSIONS:
                 await publish_event(
                     self.bus,

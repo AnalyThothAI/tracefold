@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -54,7 +55,7 @@ _NEWS_QUERY_NAMES = (
 
 def test_query_audit_requires_an_explicit_catalog_and_explains_only_its_queries():
     catalog = QueryAuditCatalog(
-        queries=(ReadQuerySpec(name="owned_read", sql="SELECT 1"),),
+        queries=(ReadQuerySpec(name="owned_read", sql="SELECT 1", max_read_return_amplification=20.0),),
         query_routes={"/owned": ("owned_read",)},
         no_sql_routes=frozenset(),
     )
@@ -77,7 +78,9 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
 
     def news_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         observed_now_ms.append(now_ms)
-        return tuple(ReadQuerySpec(name=name, sql="SELECT 1") for name in _NEWS_QUERY_NAMES)
+        return tuple(
+            ReadQuerySpec(name=name, sql="SELECT 1", max_read_return_amplification=20.0) for name in _NEWS_QUERY_NAMES
+        )
 
     catalog = query_audit_catalog(now_ms=123_456, news_query_specs=news_specs)
 
@@ -156,6 +159,7 @@ def test_app_catalog_rejects_unapproved_aggregate_input_queries():
                 name="news_status_pipeline_24h",
                 sql="SELECT 1",
                 amplification_basis="aggregate_input",
+                max_read_return_amplification=20.0,
             ),
         )
 
@@ -175,6 +179,16 @@ def test_query_audit_covers_every_public_openapi_route():
     assert all(
         query_name in query_names for route_queries in catalog.query_routes.values() for query_name in route_queries
     )
+
+
+def test_audited_public_and_high_risk_queries_name_their_columns():
+    select_star = re.compile(r"\bSELECT\s+(?:[A-Za-z_][A-Za-z0-9_]*\.)?\*", re.IGNORECASE)
+    catalog = query_audit_catalog(now_ms=0)
+    public_names = {name for names in catalog.query_routes.values() for name in names}
+
+    assert [
+        query.name for query in catalog.queries if query.name in public_names and select_star.search(query.sql)
+    ] == []
 
 
 def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
@@ -203,7 +217,9 @@ def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplificatio
 
     payload = PostgresQueryAudit(
         conn,
-        catalog=_single_query_catalog(ReadQuerySpec(name="bounded_read", sql="SELECT 1")),
+        catalog=_single_query_catalog(
+            ReadQuerySpec(name="bounded_read", sql="SELECT 1", max_read_return_amplification=20.0)
+        ),
     ).run(analyze=True)
 
     assert payload["ok"] is False
@@ -258,7 +274,9 @@ def test_analyzed_query_audit_counts_bitmap_heap_rows_not_index_candidates():
 
     payload = PostgresQueryAudit(
         conn,
-        catalog=_single_query_catalog(ReadQuerySpec(name="bitmap_read", sql="SELECT 1")),
+        catalog=_single_query_catalog(
+            ReadQuerySpec(name="bitmap_read", sql="SELECT 1", max_read_return_amplification=20.0)
+        ),
     ).run(analyze=True)
 
     assert payload["ok"] is True
@@ -271,7 +289,9 @@ def test_analyzed_query_audit_defaults_to_returned_rows_for_aggregate_amplificat
 
     payload = PostgresQueryAudit(
         conn,
-        catalog=_single_query_catalog(ReadQuerySpec(name="aggregate_read", sql="SELECT 1")),
+        catalog=_single_query_catalog(
+            ReadQuerySpec(name="aggregate_read", sql="SELECT 1", max_read_return_amplification=20.0)
+        ),
     ).run(analyze=True)
     readiness = payload["queries"][0]
 
@@ -292,6 +312,7 @@ def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
                 name="bounded_aggregate",
                 sql="SELECT 1",
                 amplification_basis="aggregate_input",
+                max_read_return_amplification=20.0,
             )
         ),
     ).run(analyze=True)
@@ -302,6 +323,26 @@ def test_analyzed_query_audit_can_use_explicit_aggregate_input_amplification():
     assert facets["metrics"]["amplification_basis_rows"] == 500
     assert facets["metrics"]["read_return_amplification"] == 1.0
     assert facets["violations"] == []
+
+
+def test_each_query_owns_its_amplification_budget():
+    conn = RecordingJsonPlanConn(_aggregate_plan(input_rows=10, returned_rows=1))
+    query = ReadQuerySpec(
+        name="tight_read",
+        sql="SELECT 1",
+        max_read_return_amplification=5.0,
+    )
+
+    payload = PostgresQueryAudit(conn, catalog=_single_query_catalog(query)).run(analyze=True)
+
+    audited = payload["queries"][0]
+    assert audited["budget"] == {"max_read_return_amplification": 5.0}
+    assert audited["violations"] == ["read_return_amplification_exceeded"]
+
+
+def test_catalog_rejects_a_query_without_its_own_amplification_budget():
+    with pytest.raises(ValueError, match="amplification budget missing: unbudgeted"):
+        _single_query_catalog(ReadQuerySpec(name="unbudgeted", sql="SELECT 1"))
 
 
 class RecordingJsonPlanConn:

@@ -64,6 +64,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/storage/intents.py",
     "trading/storage/evidence.py",
     "trading/storage/queries.py",
+    "trading/storage/query_sql.py",
     "trading/storage/sql_values.py",
     # The execution authority. It is not in `tracefold.trading`, and pretending otherwise is what let
     # the old test pass over an empty directory.
@@ -499,6 +500,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "MAX_RECEIVE_AGE_NS",
         "PROTECTION_CONTRACT_SHA256",
         "QUOTE_CONTRACT_SHA256",
+        "ActiveIntentValues",
         "Bar",
         "BlacklistSnapshotV1",
         "CapitalAuthoritySnapshot",
@@ -508,6 +510,10 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "CaseState",
         "DailyRiskPolicyV1",
         "DecisionRuntimeV1",
+        "EntryFence",
+        "EntryFenceDisposition",
+        "EntryFenceUnavailable",
+        "EntryFenceWrite",
         "ExecutionBindingV1",
         "ExecutionCapabilityExclusionV2",
         "ExecutionCapabilitySnapshotV2",
@@ -546,7 +552,12 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "build_venue_catalog_snapshot",
         "canonical_sha256",
         "deterministic_client_order_id",
+        "materialize_active_intent",
+        "materialize_entry_fence",
+        "materialize_intent_outcome",
+        "validate_close_submission_identity",
         "validate_entry_quote",
+        "validate_stop_submission_identity",
         "venue_for_binding",
     ]
     assert "TradingRepository" not in trading.__dict__

@@ -71,7 +71,7 @@ def _pool() -> Any:
         application_name="tracefold_trading_transaction_cpu_boundary_test",
         statement_timeout_seconds=3.0,
         lock_timeout_seconds=0.25,
-        idle_in_transaction_session_timeout_seconds=5.0,
+        idle_in_transaction_session_timeout_seconds=0.1,
     )
     pool.wait(timeout=5.0)
     return pool
@@ -164,7 +164,6 @@ class _TightAuthorityIdleTimeout:
             return await self._delegate.read(name, fn, timeout_seconds=timeout_seconds)
 
         def with_tight_idle_timeout(repos: Any) -> Any:
-            repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
             original_conn = repos.trading.conn
             repos.trading.conn = _CountingConnection(original_conn, self._count_authority_statement)
             self.inside_authority_callback = True
@@ -202,7 +201,7 @@ class _TightWriteIdleTimeout:
         timeout_seconds: float,
     ) -> Any:
         def with_tight_idle_timeout(repos: Any) -> Any:
-            repos.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
+            repos.trading.conn.execute("SET LOCAL idle_in_transaction_session_timeout = '100ms'")
             statement_count = 0
 
             def count_statement() -> None:
@@ -264,11 +263,14 @@ def test_capital_authority_materialization_runs_after_the_read_transaction(
     async def no_bars(*_args: Any, **_kwargs: Any) -> Sequence[Any]:
         raise AssertionError("an empty source projection must not call the provider")
 
+    async def no_sources(_metric: str, _after: int, _until: int) -> Sequence[Any]:
+        return ()
+
     lane = CapitalLane(
         db=boundary,  # type: ignore[arg-type]
         config=CapitalLaneConfig(),
         bars=no_bars,
-        oi_projection=lambda *_args: (),
+        oi_projection=no_sources,
         news_generation="test-generation",
         release_revision="test-revision",
         clock=lambda: NOW,
@@ -332,6 +334,51 @@ def test_catalog_publish_serializes_identity_before_the_write_transaction(
             assert row is not None and row["catalog_snapshot_sha256"] == stored.snapshot_sha256
         finally:
             conn.close()
+    finally:
+        database.close_executors()
+        pool.close()
+
+
+def test_20k_catalog_write_keeps_materialization_outside_the_transaction() -> None:
+    """Production-size catalog validation/serialization is complete before the one SQL write."""
+
+    instruments = tuple(
+        VenueInstrumentCatalogEntryV1(
+            provider_instrument_id=f"ASSET{index}USDT",
+            provider_symbol=f"ASSET{index}USDT",
+            venue="binance.usdm",
+            canonical_asset=f"ASSET{index}",
+            canonical_namespace="native",
+            product_kind="linear_perpetual",
+            active=True,
+            settlement_asset="USDT",
+            margin_asset="USDT",
+            raw_metadata_sha256=canonical_sha256({"index": index}),
+        )
+        for index in range(20_000)
+    )
+    prepared = prepare_venue_catalog_snapshot(
+        build_venue_catalog_snapshot(
+            binding="BINANCE_USDM",
+            captured_at_ms=NOW + 20_000,
+            stale_after_ms=60_000,
+            instruments=instruments,
+        )
+    )
+    pool = _pool()
+    database = WorkerDatabase(worker_pool=pool, telemetry=None)
+    tight_writes = _TightWriteIdleTimeout(WorkerTradingDatabase(database))
+
+    async def store() -> None:
+        await tight_writes.tx(
+            "trading_venue_catalog_20k",
+            lambda repos: repos.trading.store_venue_catalog_snapshot(prepared=prepared, now_ms=NOW + 20_001),
+            timeout_seconds=30.0,
+        )
+
+    try:
+        asyncio.run(store())
+        assert tight_writes.repository_statement_counts == [1]
     finally:
         database.close_executors()
         pool.close()

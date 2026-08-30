@@ -89,6 +89,7 @@ class RecordingHandoffTelemetry:
         self.states: list[tuple[str, int, float, int]] = []
         self.repairs: list[tuple[str, str]] = []
         self.incidents: list[tuple[str, str, int, float]] = []
+        self.raw_retention: list[dict[str, int | float]] = []
 
     def set_news_handoff_state(self, stage: str, *, pending: int, oldest_age_seconds: float, expired: int) -> None:
         self.states.append((stage, pending, oldest_age_seconds, expired))
@@ -98,6 +99,27 @@ class RecordingHandoffTelemetry:
 
     def set_news_opennews_incident(self, *, provider: str, cause: str, count: int, oldest_age_seconds: float) -> None:
         self.incidents.append((provider, cause, count, oldest_age_seconds))
+
+    def record_news_raw_retention(
+        self,
+        *,
+        deleted_rows: int,
+        batches: int,
+        wall_seconds: float,
+        backlog_rows: int,
+        backlog_capped: bool,
+        oldest_age_seconds: float,
+    ) -> None:
+        self.raw_retention.append(
+            {
+                "deleted_rows": deleted_rows,
+                "batches": batches,
+                "wall_seconds": wall_seconds,
+                "backlog_rows": backlog_rows,
+                "backlog_capped": int(backlog_capped),
+                "oldest_age_seconds": oldest_age_seconds,
+            }
+        )
 
 
 class WaitingBus(FakeBus):
@@ -130,6 +152,10 @@ class RecordingNews:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
             if name == "reader_history" and name not in self.responses:
                 return ReaderHistorySnapshot()  # nothing pushed yet
+            if name == "reader_history_revision" and name not in self.responses:
+                history = self.responses.get("reader_history", ReaderHistorySnapshot())
+                value = history(**kwargs) if callable(history) else history
+                return value.ledger_revision
             if name == "latest_evidence_snapshot" and name not in self.responses:
                 card = self.responses.get("event_card") or {}
                 return {
@@ -137,6 +163,45 @@ class RecordingNews:
                     "evidence_sha256": str(card.get("evidence_sha256") or "e" * 64),
                     "focus_fact_id": str(card.get("focus_fact_id") or "fact-1"),
                 }
+            if name == "latest_evidence_identity" and name not in self.responses:
+                evidence = self.responses.get("latest_evidence_snapshot")
+                card = self.responses.get("event_card") or {}
+                source = evidence if isinstance(evidence, dict) else card
+                return (
+                    int(source.get("evidence_version") or 1),
+                    str(source.get("evidence_sha256") or "e" * 64),
+                )
+            if name == "evidence_snapshot_material" and name not in self.responses:
+                event_id = str(kwargs.get("event_id") or "event")
+                focused_item = kwargs.get("focus_item_id")
+                return {
+                    "card": {
+                        "event_id": event_id,
+                        "leader_item_id": focused_item or "item",
+                        "leader_title": "fixture event",
+                        "focus_fact_id": "fact-1",
+                        "focus_fact_text": "fixture event",
+                        "focus_fact_method": "whole_item",
+                    },
+                    "members": [],
+                    "latest": None,
+                    "focus_item_id": focused_item,
+                    "focus_source": (
+                        {
+                            "leader_item_id": focused_item,
+                            "leader_url": None,
+                            "reporting_origin": "opennews",
+                            "provider_metadata": {},
+                            "provenance": [],
+                            "leader_published_at_ms": NOW_MS,
+                            "raw_first_line": "fixture event",
+                        }
+                        if focused_item is not None
+                        else None
+                    ),
+                }
+            if name == "append_prepared_evidence_snapshot" and name not in self.responses:
+                return {}
             if name == "event_admission" and name not in self.responses:
                 response = self.responses.get("event_card") or {}
                 card = response if isinstance(response, dict) else {}
@@ -241,6 +306,7 @@ class FakeWorkerDatabase:
         self.price = price or RecordingPrice()
         self.operations: list[str] = []
         self.heavy_operations: list[str] = []
+        self.operation_timeouts: list[tuple[str, float]] = []
         self.admission_timeout_for = admission_timeout_for or set()
         self._port = WorkerNewsDatabase(self)
         self.cold_port = WorkerNewsColdDatabase(self)
@@ -262,7 +328,7 @@ class FakeWorkerDatabase:
         )
 
     async def run_news(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
-        del operation_timeout_seconds
+        self.operation_timeouts.append((name, operation_timeout_seconds))
         self.operations.append(name)
         if name in self.admission_timeout_for:
             raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
@@ -272,7 +338,7 @@ class FakeWorkerDatabase:
         return self
 
     async def run_business(self, name: str, fn: Any, *args: Any, operation_timeout_seconds: float, **kwargs: Any):
-        del operation_timeout_seconds
+        self.operation_timeouts.append((name, operation_timeout_seconds))
         self.heavy_operations.append(name)
         if name in self.admission_timeout_for:
             raise ResourceAdmissionTimeout(f"worker_database_admission_timeout:{name}")
@@ -330,6 +396,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     admissions = iter(
         [
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="candidate",
                 event_id="ev-1",
@@ -337,6 +404,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
             SimpleNamespace(
+                item_inserted=False,
                 event_created=False,
                 admission="candidate",
                 event_id="ev-1",
@@ -344,6 +412,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 gate=None,
             ),
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="suppressed_ungrounded",
                 event_id="ev-2",
@@ -353,6 +422,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
             # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
             # frames must reach Triage like any candidate (#72 — they used to die silently right here).
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="listing_deterministic",
                 event_id="ev-3",
@@ -362,6 +432,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
             # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
             # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="candidate",
                 event_id="ev-4",
@@ -374,10 +445,10 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     def fake_admit(repos: Any, **kwargs: Any) -> Any:
         seen.append(kwargs)
-        return SimpleNamespace(results=(next(admissions),))
+        return next(admissions)
 
-    monkeypatch.setattr(admission_module, "admit_frame", fake_admit)
-    news = RecordingNews()
+    monkeypatch.setattr(admission_module, "admit_item", fake_admit)
+    news = RecordingNews(find_band_candidates=[])
     bus = FakeBus()
     deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
     params = {
@@ -419,13 +490,15 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     assert bus.published[0].payload == {"event_id": "ev-1"}
     assert bus.published[0].priority == 5 and bus.published[0].message_id == "event:ev-1"
     assert bus.published[1].payload == {"event_id": "ev-3"}
-    assert news.names() == ["mark_event_published"] * 3
+    assert news.names().count("evidence_snapshot_material") == 5
+    assert news.names().count("append_prepared_evidence_snapshot") == 5
+    assert news.names().count("mark_event_published") == 3
     assert news.kwargs_of("mark_event_published")["event_id"] == "ev-1"
 
 
 def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(admission_module, "admit_frame", lambda *_a, **_k: pytest.fail("db never admitted"))
-    news = RecordingNews()
+    monkeypatch.setattr(admission_module, "admit_item", lambda *_a, **_k: pytest.fail("db never admitted"))
+    news = RecordingNews(find_band_candidates=[])
     bus = FakeBus()
     deduper = DeduperConsumer(
         bus=bus,
@@ -493,7 +566,7 @@ def test_unsupported_market_contracts_are_auditable_without_triage_or_delivery(
     assert inserted["event_kind"] == "unsupported_market"
     assert inserted["admission"] == "unsupported_market_contract"
     assert inserted["source_contract_reason"] == "unsupported_market_contract"
-    assert news.kwargs_of("upsert_item")["provider_metadata"]["strategies"] == [
+    assert json.loads(news.kwargs_of("upsert_item")["provider_metadata_json"])["strategies"] == [
         {
             "id": str(strategy_id),
             "name": strategy_name,
@@ -3278,34 +3351,68 @@ def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pyte
         asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, telemetry=telemetry).turn())
 
 
-def test_janitor_runs_learning_retention_on_the_one_slot_cold_lane() -> None:
+def test_janitor_runs_raw_batches_and_learning_retention_in_separate_cold_transactions() -> None:
+    raw_batches = iter(
+        (
+            {
+                "deleted_items": 500,
+                "backlog_items": 1,
+                "backlog_capped": False,
+                "oldest_observed_at_ms": NOW_MS - 40 * 86_400_000,
+            },
+            {
+                "deleted_items": 1,
+                "backlog_items": 0,
+                "backlog_capped": False,
+                "oldest_observed_at_ms": None,
+            },
+        )
+    )
     news = RecordingNews(
+        purge_before=lambda **_kwargs: next(raw_batches),
         purge_learning_retention={
             "deleted_recordings": 2,
             "deleted_cases": 1,
             "deleted_artifacts": 0,
-        }
+        },
     )
     db = FakeWorkerDatabase(news)
+    telemetry = RecordingHandoffTelemetry()
 
-    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, telemetry=telemetry).turn())
 
-    assert db.heavy_operations == ["news_janitor"]
-    assert db.operations == []
+    assert db.heavy_operations == [
+        "news_expire_bands",
+        "news_raw_retention",
+        "news_raw_retention",
+        "news_learning_retention",
+    ]
+    assert db.operations == ["news_opennews_incident_summary"]
     assert news.kwargs_of("purge_learning_retention") == {"batch_size": 500}
-    assert "expire_bands" in news.names() and "purge_before" in news.names()
+    assert [name for name in news.names() if name == "purge_before"] == ["purge_before", "purge_before"]
+    assert telemetry.raw_retention[0]["deleted_rows"] == 501
+    assert telemetry.raw_retention[0]["batches"] == 2
+    assert telemetry.raw_retention[0]["backlog_rows"] == 0
+    raw_timeouts = [timeout for name, timeout in db.operation_timeouts if name == "news_raw_retention"]
+    assert len(raw_timeouts) == 2
+    assert all(0 < timeout <= 1.0 for timeout in raw_timeouts)
 
 
 def test_janitor_records_retention_failure_without_stopping_the_loop() -> None:
     def _fail(**_kwargs: Any) -> dict[str, Any]:
         raise RuntimeError("broken retention function")
 
-    news = RecordingNews(purge_learning_retention=_fail)
+    news = RecordingNews(purge_before={}, purge_learning_retention=_fail)
     db = FakeWorkerDatabase(news)
 
     asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port).turn())
 
-    assert db.heavy_operations == ["news_janitor", "news_learning_retention_error"]
+    assert db.heavy_operations == [
+        "news_expire_bands",
+        "news_raw_retention",
+        "news_learning_retention",
+        "news_learning_retention_error",
+    ]
     error = news.kwargs_of("record_learning_retention_error")
     assert error["error_code"] == "learning_retention_failed:RuntimeError"
 
@@ -3790,10 +3897,47 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
         "total_tokens": 50,
         "provider_cost_microusd": 60,
     }
-    assert news.names().count("lock_storyline") == 2
+    assert news.names().count("lock_storyline") == 1  # stale material is discarded before opening a write transaction
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2
     assert bus.published == []
+
+
+def test_triage_rechecks_reader_history_after_taking_the_storyline_lock() -> None:
+    """A same-key delivery between the preflight refresh and lock cannot let both Events push."""
+
+    fresh_push = _ledger_row("ev-between-refresh-and-lock", NOW_MS - 1_000)
+    ledger_calls = {"n": 0}
+
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
+        ledger_calls["n"] += 1
+        if ledger_calls["n"] <= 2:  # initial load and transaction-free refresh
+            return ReaderHistorySnapshot()
+        return _recent_history(fresh_push, now_ms=now_ms)
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        insert_verdict=True,
+        reader_history=reader_history,
+    )
+    model = _ScriptedSemanticJudge(
+        [
+            _model_verdict(novelty="new_fact"),
+            _model_verdict(novelty="restatement", restates=0),
+        ]
+    )
+    triage = _triage_with_judge(news, FakeBus(), model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 2
+    assert model.inputs[0].told.entries == ()
+    assert model.inputs[1].told.entries[0].event_id == "ev-between-refresh-and-lock"
+    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
+    assert len(inserted) == 1
+    assert inserted[0]["final_decision"] == "drop"
+    assert news.names().count("lock_storyline") == 2
 
 
 def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> None:
@@ -4714,7 +4858,7 @@ def test_a_judged_telemetry_frame_records_the_asset_its_gate_could_not_ground() 
     recorded = news.kwargs_of("record_event_assets")
     assert recorded["event_id"] == "ev-oi"
     # The judge's own primary, with the contract it named — not the Gate's empty `grounded_assets`.
-    assert recorded["assets"] == [("TRUMP", "perp")]
+    assert recorded["assets"] == (("TRUMP", "perp"),)
 
 
 def test_a_telemetry_frame_that_matched_no_template_records_no_asset() -> None:

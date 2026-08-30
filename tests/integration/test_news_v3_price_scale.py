@@ -212,6 +212,9 @@ def _seed(conn: Any) -> None:
     conn.execute("ANALYZE news_event_reactions")
     conn.execute("ANALYZE news_events")
     conn.execute("ANALYZE news_verdicts")
+    # The production review joins first-delivery state. Leaving this table to auto-analyze made the
+    # native-timeout plan depend on whether background maintenance won a race with the assertion.
+    conn.execute("ANALYZE news_deliveries")
     conn.commit()
 
 
