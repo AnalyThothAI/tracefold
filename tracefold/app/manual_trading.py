@@ -8,15 +8,16 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from tracefold.integrations.telegram import TelegramTradingUpdate
 from tracefold.trading import (
-    MAX_DEVELOPMENT_TEST_NOTIONAL_USD,
     ManualAccountSnapshot,
+    ManualAdjustmentDirection,
+    ManualAdjustmentField,
     ManualModificationGuard,
     ManualPositionState,
     ManualPositionView,
@@ -25,6 +26,7 @@ from tracefold.trading import (
     ManualStrategyPresetConfig,
     ManualTargetPicker,
     ManualTargetPickerState,
+    ManualTradeAdjustment,
     ManualTradeHistoryEvent,
     ManualTradeIntent,
     ManualTradeParameters,
@@ -35,10 +37,10 @@ from tracefold.trading import (
     ModificationGuardState,
     StrategyPreset,
     TradeSide,
+    adjust_manual_trade_parameters,
     build_manual_trade_preview,
     create_manual_trade_intent,
-    guard_manual_trade_modification,
-    is_development_test_source,
+    guard_manual_trade_selection,
     recommend_manual_trade,
 )
 
@@ -667,7 +669,7 @@ class ManualTelegramTradingController:
         ):
             await self._bot.answer(update.callback_query_id, text="当前不能修改参数。", show_alert=True)
             return "modification_invalid"
-        selected = _adjust_parameters(session.selected, argument)
+        selected = adjust_manual_trade_parameters(session.selected, _parse_adjustment(argument))
         stored = await self._store_preview(
             update=update,
             session=session,
@@ -702,20 +704,14 @@ class ManualTelegramTradingController:
             parameters=selected,
             liquidation_distance_bps=snapshot.liquidation_distance_bps,
         )
-        guard = guard_manual_trade_modification(
+        guard = guard_manual_trade_selection(
+            source=session.source,
             preset=preset,
             account_equity=snapshot.account_equity_usd,
             recommended=recommended,
-            modified=selected,
+            selected=selected,
             config=self._config.risk,
         )
-        if is_development_test_source(session.source) and selected.notional_usd > MAX_DEVELOPMENT_TEST_NOTIONAL_USD:
-            guard = guard.model_copy(
-                update={
-                    "state": ModificationGuardState.REJECTED,
-                    "reason_codes": tuple((*guard.reason_codes, "development_test_notional_cap")),
-                }
-            )
         return await self._repository.set_preview(
             session_id=session.session_id,
             preset=preset,
@@ -1299,26 +1295,20 @@ def _modification_keyboard(session_id: str) -> tuple[tuple[str, str], ...]:
     )
 
 
-def _adjust_parameters(parameters: ManualTradeParameters, argument: str) -> ManualTradeParameters:
-    field, direction = argument.split(":", maxsplit=1)
-    factor = Decimal("1.5") if direction == "u" else Decimal("0.5")
-    notional = parameters.notional_usd
-    stop_loss_bps = parameters.stop_loss_bps
-    take_profit_bps = parameters.take_profit_bps
-    if field == "n":
-        notional = (notional * factor).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    elif field == "s":
-        stop_loss_bps = max(1, int(Decimal(stop_loss_bps) * factor))
-    elif field == "t":
-        take_profit_bps = max(1, int(Decimal(take_profit_bps) * factor))
-    else:
-        raise ValueError("manual_trade_modification_field_invalid")
-    return ManualTradeParameters(
-        notional_usd=notional,
-        leverage=parameters.leverage,
-        stop_loss_bps=stop_loss_bps,
-        take_profit_bps=take_profit_bps,
-    )
+def _parse_adjustment(argument: str) -> ManualTradeAdjustment:
+    commands = {
+        "n:u": (ManualAdjustmentField.NOTIONAL, ManualAdjustmentDirection.INCREASE),
+        "n:d": (ManualAdjustmentField.NOTIONAL, ManualAdjustmentDirection.DECREASE),
+        "s:u": (ManualAdjustmentField.STOP_LOSS, ManualAdjustmentDirection.INCREASE),
+        "s:d": (ManualAdjustmentField.STOP_LOSS, ManualAdjustmentDirection.DECREASE),
+        "t:u": (ManualAdjustmentField.TAKE_PROFIT, ManualAdjustmentDirection.INCREASE),
+        "t:d": (ManualAdjustmentField.TAKE_PROFIT, ManualAdjustmentDirection.DECREASE),
+    }
+    try:
+        field, direction = commands[argument]
+    except KeyError as exc:
+        raise ValueError("manual_trade_modification_command_invalid") from exc
+    return ManualTradeAdjustment(field=field, direction=direction)
 
 
 def _render_strategy_selector(source: ManualTradeSource) -> str:

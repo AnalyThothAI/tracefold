@@ -6,13 +6,16 @@
 
 ```
 usage: tracefold [-h]
-                 {serve,workers,nautilus,init,config,db,news,trading,ops} ...
+                 {serve,workers,nautilus,manual-executor,onchain-executor,init,config,db,news,trading,ops} ...
 
 positional arguments:
-  {serve,workers,nautilus,init,config,db,news,trading,ops}
+  {serve,workers,nautilus,manual-executor,onchain-executor,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     nautilus            run the Production V3 execution authority
+    manual-executor     run the Telegram manual Binance USD-M live execution
+                        authority
+    onchain-executor    run the shared manual EVM wallet execution authority
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
@@ -69,6 +72,54 @@ options:
   --bootstrap-zero-claims
                         prove a paused bound account is empty before
                         activating execution truth
+
+```
+
+## `manual-executor`
+
+```
+usage: tracefold manual-executor [-h] {run} ...
+
+positional arguments:
+  {run}
+    run       run the isolated manual execution process
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `manual-executor run`
+
+```
+usage: tracefold manual-executor run [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `onchain-executor`
+
+```
+usage: tracefold onchain-executor [-h] {run} ...
+
+positional arguments:
+  {run}
+    run       run the isolated onchain execution process
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `onchain-executor run`
+
+```
+usage: tracefold onchain-executor run [-h]
+
+options:
+  -h, --help  show this help message and exit
 
 ```
 

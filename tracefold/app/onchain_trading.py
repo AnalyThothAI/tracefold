@@ -28,6 +28,7 @@ from tracefold.trading import (
     OnchainTelegramEditState,
     RouteAnalysisState,
     onchain_wallet_fingerprint,
+    validate_onchain_execution_notional,
 )
 
 
@@ -81,6 +82,8 @@ class OnchainTradingRepositoryPort(Protocol):
         session: OnchainAnalysisSession,
         provider: str,
         wallet_address: str,
+        notional_usd: Decimal,
+        settlement_decimals: int,
         request: OnchainQuoteRequest,
         quote: OnchainRouteQuote,
         now_ms: int,
@@ -229,7 +232,7 @@ class OnchainTelegramTradingController:
         gateway: OnchainRouteGatewayPort,
         bot: OnchainTradingBotPort,
         wallet_address: str | None = None,
-        execution_assets: dict[int, tuple[str, int]] | None = None,
+        execution_assets: dict[int, tuple[str, int, Decimal]] | None = None,
         execution_available: bool = False,
         executable_providers: tuple[str, ...] = (),
         clock_ms: Callable[[], int] | None = None,
@@ -567,6 +570,16 @@ class OnchainTelegramTradingController:
         if candidate.chain_id not in self._execution_assets:
             await self._bot.answer(update.callback_query_id, text="该网络尚未配置执行 RPC。", show_alert=True)
             return "onchain_execution_rpc_missing"
+        settlement = self._execution_assets[candidate.chain_id]
+        try:
+            notional_usd = validate_onchain_execution_notional(session.sources, settlement[2])
+        except ValueError:
+            await self._bot.answer(
+                update.callback_query_id,
+                text="测试新闻的链上真实交易金额不得超过 200U。请降低该网络的 quote_amount 后重试。",
+                show_alert=True,
+            )
+            return "onchain_development_test_notional_cap"
         quote = next(
             (value for value in analysis.eligible_quotes if value.provider == analysis.winner_provider),
             None,
@@ -585,6 +598,8 @@ class OnchainTelegramTradingController:
             session=session,
             provider=analysis.winner_provider,
             wallet_address=self._wallet_address,
+            notional_usd=notional_usd,
+            settlement_decimals=settlement[1],
             request=request,
             quote=quote,
             now_ms=int(self._clock_ms()),
@@ -592,7 +607,7 @@ class OnchainTelegramTradingController:
         return await self._store_and_deliver_edit(
             update,
             session,
-            text=_render_execution_confirmation(execution, candidate, self._execution_assets[candidate.chain_id]),
+            text=_render_execution_confirmation(execution, candidate, settlement),
             keyboard=(
                 ("确认交易", f"tf:o:y:{session.session_id}"),
                 ("取消", f"tf:o:x:{session.session_id}"),
@@ -910,9 +925,9 @@ def _render_analysis(session: OnchainAnalysisSession, result: OnchainQuoteResult
 def _render_execution_confirmation(
     execution: OnchainExecutionIntent,
     candidate: OnchainAssetCandidate,
-    settlement: tuple[str, int],
+    settlement: tuple[str, int, Decimal],
 ) -> str:
-    settlement_symbol, settlement_decimals = settlement
+    settlement_symbol, settlement_decimals, _notional_usd = settlement
     spend = Decimal(execution.request.input_amount_raw) / (Decimal(10) ** settlement_decimals)
     expected = Decimal(execution.quote.expected_output_raw) / (Decimal(10) ** candidate.decimals)
     minimum = (

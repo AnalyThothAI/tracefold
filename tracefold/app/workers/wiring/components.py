@@ -9,6 +9,7 @@ from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.capabilities import FiniteOperations
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.app.workers.wiring.execution_capabilities import ExecutionCapabilityCompiler
+from tracefold.app.workers.wiring.manual_trading import ManualTradingRunner, _wire_manual_trading
 from tracefold.app.workers.wiring.news import _wire_news_pipeline
 from tracefold.app.workers.wiring.trading import (
     _wire_capital_lane,
@@ -33,6 +34,7 @@ class _Components:
     venue_catalog: VenueCatalog | None = None
     execution_capability_compiler: ExecutionCapabilityCompiler | None = None
     telemetry: TelemetryRegistry | None = None
+    manual_trading_runner: ManualTradingRunner | None = None
 
 
 async def _wire_components(
@@ -73,6 +75,7 @@ async def _wire_components(
             raise RuntimeError("trading_decision_runtime_missing")
     venue_catalog = _wire_venue_catalog(db=db, telemetry=telemetry)
     execution_capability_compiler = _wire_execution_capability_compiler(db=db)
+    manual_trading_runner = _wire_manual_trading(settings=settings, db=db, finite=finite)
     return _Components(
         news_pipeline=news_pipeline,
         news_bus=news_bus,
@@ -80,4 +83,5 @@ async def _wire_components(
         venue_catalog=venue_catalog,
         execution_capability_compiler=execution_capability_compiler,
         telemetry=telemetry,
+        manual_trading_runner=manual_trading_runner,
     )

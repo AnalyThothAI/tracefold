@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import re
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Annotated, Literal
 
 from eth_abi.abi import decode as decode_abi
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .onchain import OnchainProvider, OnchainQuoteRequest, OnchainRouteQuote
+from .onchain import MAX_DEVELOPMENT_TEST_ONCHAIN_NOTIONAL_USD, OnchainProvider, OnchainQuoteRequest, OnchainRouteQuote
 
 _ADDRESS_RE = re.compile(r"0x[0-9a-f]{40}")
 _HEX_DATA_RE = re.compile(r"0x(?:[0-9a-f]{2})*")
@@ -217,6 +218,9 @@ class OnchainExecutionIntent(BaseModel):
     provider: OnchainProvider
     wallet_address: str
     wallet_fingerprint: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    development_test: bool = False
+    notional_usd: Decimal = Decimal("10")
+    settlement_decimals: Annotated[int, Field(ge=0, le=255)] = 6
     request: OnchainQuoteRequest
     quote: OnchainRouteQuote
     state: OnchainExecutionState
@@ -233,10 +237,26 @@ class OnchainExecutionIntent(BaseModel):
 
     _normalize_wallet = field_validator("wallet_address", mode="before")(canonical_evm_address)
 
+    @field_validator("notional_usd", mode="before")
+    @classmethod
+    def validate_notional_usd(cls, value: object) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError("onchain_execution_notional_invalid") from exc
+        if not parsed.is_finite() or parsed <= 0:
+            raise ValueError("onchain_execution_notional_invalid")
+        return parsed
+
     @model_validator(mode="after")
     def validate_execution_intent(self) -> OnchainExecutionIntent:
         if self.wallet_fingerprint != onchain_wallet_fingerprint(self.wallet_address):
             raise ValueError("onchain_execution_wallet_fingerprint_mismatch")
+        if self.development_test and self.notional_usd > MAX_DEVELOPMENT_TEST_ONCHAIN_NOTIONAL_USD:
+            raise ValueError("onchain_development_test_notional_exceeds_cap")
+        expected_input_raw = int(self.notional_usd * (Decimal(10) ** self.settlement_decimals))
+        if self.request.input_amount_raw != expected_input_raw:
+            raise ValueError("onchain_execution_notional_amount_mismatch")
         if self.quote.provider != self.provider:
             raise ValueError("onchain_execution_provider_mismatch")
         if self.updated_at_ms < self.created_at_ms:

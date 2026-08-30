@@ -90,6 +90,8 @@ class _Store:
         }
         self.events: list[str] = []
         self.snapshot: tuple[Decimal, int] | None = None
+        self.active_symbols: set[str] = set()
+        self.fence_entry_succeeds = True
 
     def refresh_account(self, *, equity_usd: Decimal, observed_at_ms: int) -> None:
         self.snapshot = (equity_usd, observed_at_ms)
@@ -120,8 +122,15 @@ class _Store:
     def next_open_position(self):
         return None
 
+    def has_active_symbol(self, *, base_symbol: str, exclude_intent_id: str) -> bool:
+        assert exclude_intent_id == self.intent.intent_id
+        return base_symbol in self.active_symbols
+
     def fence_entry(self, intent_id: str, *, plan: object, now_ms: int) -> bool:
         assert intent_id == self.intent.intent_id and now_ms > 0
+        if not self.fence_entry_succeeds:
+            self.active_symbols.add("BTC")
+            return False
         self.record.update(state="SUBMITTING", execution_plan=plan)
         self.events.append("entry_fenced")
         return True
@@ -252,6 +261,26 @@ def test_service_fences_and_reconciles_each_economic_leg_before_marking_open() -
         call for call in venue.calls if call.startswith("submit_take_profit:") or call.startswith("submit_stop_loss:")
     ]
     assert len(protection_submits) == 2
+
+
+def test_existing_durable_symbol_exposure_rejects_a_pending_entry_without_crashing() -> None:
+    store, venue = _Store(), _Venue()
+    store.active_symbols.add("BTC")
+    service = ManualExecutionService(store=store, venue=venue, clock_ms=lambda: 1_900_000_000_200)
+
+    assert service.turn() == "entry_rejected"
+    assert store.events == ["entry_rejected:manual_executor_existing_symbol_exposure"]
+    assert not any(call.startswith("submit_") for call in venue.calls)
+
+
+def test_symbol_exposure_race_after_provider_read_rejects_without_crashing() -> None:
+    store, venue = _Store(), _Venue()
+    store.fence_entry_succeeds = False
+    service = ManualExecutionService(store=store, venue=venue, clock_ms=lambda: 1_900_000_000_200)
+
+    assert service.turn() == "entry_rejected"
+    assert store.events == ["entry_rejected:manual_executor_existing_symbol_exposure"]
+    assert not any(call.startswith("submit_") for call in venue.calls)
 
 
 class _AmbiguousEntryVenue(_Venue):

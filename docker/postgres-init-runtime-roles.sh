@@ -39,14 +39,19 @@ serve_password=$(read_role_password postgres_serve_password)
 workers_password=$(read_role_password postgres_workers_password)
 migrate_password=$(read_role_password postgres_migrate_password)
 nautilus_password=$(read_role_password postgres_nautilus_password)
-trap 'unset serve_password workers_password migrate_password nautilus_password' EXIT
+onchain_password=$(read_role_password postgres_onchain_password)
+trap 'unset serve_password workers_password migrate_password nautilus_password onchain_password' EXIT
 
 if [ "$serve_password" = "$workers_password" ] \
   || [ "$serve_password" = "$migrate_password" ] \
   || [ "$serve_password" = "$nautilus_password" ] \
+  || [ "$serve_password" = "$onchain_password" ] \
   || [ "$workers_password" = "$migrate_password" ] \
   || [ "$workers_password" = "$nautilus_password" ] \
-  || [ "$migrate_password" = "$nautilus_password" ]; then
+  || [ "$workers_password" = "$onchain_password" ] \
+  || [ "$migrate_password" = "$nautilus_password" ] \
+  || [ "$migrate_password" = "$onchain_password" ] \
+  || [ "$nautilus_password" = "$onchain_password" ]; then
   echo "Tracefold PostgreSQL runtime role passwords must be distinct" >&2
   exit 1
 fi
@@ -80,6 +85,9 @@ psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGR
 	CREATE ROLE tracefold_nautilus
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${nautilus_password}';
+	CREATE ROLE tracefold_onchain
+	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+	  PASSWORD '${onchain_password}';
 
 	GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE;
 	GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE;

@@ -1056,7 +1056,7 @@ def test_status_does_not_call_a_declared_target_available_without_running_worker
                 "push": {
                     "enabled": True,
                     "telegram_bot_token_file": "telegram_bot_token",
-                    "telegram_chat_id": -1001234567890,
+                    "telegram_chat_ids": [-1001234567890],
                 },
             },
         }

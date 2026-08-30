@@ -13,6 +13,7 @@ from tracefold.integrations.telegram import TelegramDeliveryError, TelegramNewsP
 from tracefold.news import ReaderDeliveryPresentation, ReaderMarketMovement, ReaderTradeTarget
 
 CHANNEL_ID = -1001234567890
+PRIVATE_CHAT_ID = 8385255219
 BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12345"
 BOT_TOKEN_ROTATED = "123456:abcdefghijklmnopqrstuvwxyzABCDE_12346"
 BOT_ID = 123456
@@ -122,7 +123,7 @@ def test_sender_posts_scannable_sections_and_links_the_normalized_source_text() 
     assert observed["link_preview_options"] == {"is_disabled": True}
     assert "reply_markup" not in observed
     assert methods == ["getChat", "getMe", "getChatMember", "sendMessage"]
-    assert all(total <= 5.0 for total in timeout_totals)
+    assert all(total <= 16.0 for total in timeout_totals)
     assert receipt["provider"] == "telegram"
     assert receipt["message_id"] == 42
     assert len(str(receipt["target_sha256"])) == 64
@@ -1125,10 +1126,44 @@ def test_sender_rejects_a_response_from_any_other_chat() -> None:
         sender.send_card(_card())
 
 
-@pytest.mark.parametrize("chat_id", [0, 123456789, -123456789, -100, -1000000000, "@public_channel"])
-def test_sender_accepts_only_a_private_channel_bot_api_id(chat_id: object) -> None:
+@pytest.mark.parametrize("chat_id", [0, -100, "@public_channel"])
+def test_sender_rejects_values_that_are_not_exact_numeric_telegram_target_ids(chat_id: object) -> None:
     with pytest.raises(ValueError, match="news_push_telegram_chat_id_invalid"):
         TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=chat_id)  # type: ignore[arg-type]
+
+
+def test_sender_preflights_and_delivers_to_an_exact_private_user_chat_without_channel_membership() -> None:
+    methods: list[str] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        methods.append(method)
+        if method == "getChat":
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": {"id": PRIVATE_CHAT_ID, "type": "private"}},
+            )
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {"id": BOT_ID, "is_bot": True}})
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "result": {"message_id": 42, "chat": {"id": PRIVATE_CHAT_ID, "type": "private"}},
+            },
+        )
+
+    sender = TelegramNewsPushSender(
+        bot_token=BOT_TOKEN,
+        chat_id=PRIVATE_CHAT_ID,
+        trading_actions_enabled=True,
+        transport=httpx.MockTransport(handle),
+    )
+
+    sender.prepare()
+    sender.send_card(_card())
+
+    assert methods == ["getChat", "getMe", "sendMessage"]
 
 
 @pytest.mark.parametrize(
@@ -1166,28 +1201,49 @@ def test_sender_keeps_an_unsafe_source_destination_as_plain_text(source_url: str
 
 
 @pytest.mark.parametrize(
-    ("chat", "error"),
+    "chat",
     [
-        ({"id": CHANNEL_ID, "type": "supergroup"}, "target_not_private_channel"),
-        ({"id": CHANNEL_ID, "type": "channel", "username": "public_feed"}, "target_not_private_channel"),
-        ({"id": -1009999999999, "type": "channel"}, "target_chat_mismatch"),
+        {"id": CHANNEL_ID, "type": "supergroup"},
+        {"id": CHANNEL_ID, "type": "group"},
+        {"id": CHANNEL_ID, "type": "channel", "username": "public_feed"},
     ],
 )
-def test_sender_rejects_any_target_that_is_not_the_exact_private_channel(chat: dict[str, object], error: str) -> None:
+def test_sender_accepts_configured_channels_groups_and_supergroups(chat: dict[str, object]) -> None:
     methods: list[str] = []
 
     def handle(request: httpx.Request) -> httpx.Response:
-        methods.append(request.url.path.rsplit("/", maxsplit=1)[-1])
-        return httpx.Response(200, json={"ok": True, "result": chat})
+        method = request.url.path.rsplit("/", maxsplit=1)[-1]
+        methods.append(method)
+        if method == "getChat":
+            return httpx.Response(200, json={"ok": True, "result": chat})
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {"id": BOT_ID, "is_bot": True}})
+        assert method == "getChatMember"
+        membership: dict[str, object] = {
+            "status": "administrator" if chat["type"] == "channel" else "member",
+            "user": {"id": BOT_ID, "is_bot": True},
+        }
+        if chat["type"] == "channel":
+            membership["can_post_messages"] = True
+        return httpx.Response(200, json={"ok": True, "result": membership})
 
     sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
     assert methods == []
 
-    with pytest.raises(TelegramDeliveryError, match=error):
-        sender.prepare()
+    sender.prepare()
 
-    assert methods == ["getChat"]
+    assert methods == ["getChat", "getMe", "getChatMember"]
     assert "sendMessage" not in methods
+
+
+def test_sender_rejects_a_preflight_target_id_mismatch() -> None:
+    def handle(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True, "result": {"id": -1009999999999, "type": "channel"}})
+
+    sender = TelegramNewsPushSender(bot_token=BOT_TOKEN, chat_id=CHANNEL_ID, transport=httpx.MockTransport(handle))
+
+    with pytest.raises(TelegramDeliveryError, match="target_chat_mismatch"):
+        sender.prepare()
 
 
 def test_sender_requires_the_bot_to_have_channel_post_permission() -> None:

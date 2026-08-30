@@ -316,7 +316,7 @@ def runtime_role_contract(
               has_column_privilege(
                 'tracefold_onchain',
                 'public.trading_onchain_executor_runtime',
-                'id',
+                'wallet_fingerprint',
                 'INSERT'
               ) AS onchain_executor_runtime_insert,
               has_column_privilege(
@@ -331,6 +331,46 @@ def runtime_role_contract(
                 'wallet_fingerprint',
                 'UPDATE'
               ) AS onchain_executor_wallet_rotation_update,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_onchain_settlement_assets',
+                'SELECT'
+              ) AS workers_onchain_settlement_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_onchain_settlement_assets',
+                'INSERT, UPDATE, DELETE, TRUNCATE'
+              ) AS workers_onchain_settlement_write,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.trading_onchain_settlement_assets',
+                'SELECT'
+              ) AS serve_onchain_settlement_select,
+              has_table_privilege(
+                'tracefold_serve',
+                'public.trading_onchain_settlement_assets',
+                'INSERT, UPDATE, DELETE, TRUNCATE'
+              ) AS serve_onchain_settlement_write,
+              has_table_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_settlement_assets',
+                'SELECT'
+              ) AS onchain_settlement_select,
+              has_table_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_settlement_assets',
+                'INSERT, UPDATE, DELETE, TRUNCATE'
+              ) AS onchain_settlement_write,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_onchain_settlement_assets',
+                'SELECT'
+              ) AS nautilus_onchain_settlement_select,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_onchain_settlement_assets',
+                'INSERT, UPDATE, DELETE, TRUNCATE'
+              ) AS nautilus_onchain_settlement_write,
               pg_has_role(
                 'tracefold_migrate',
                 'tracefold_owner',
@@ -399,7 +439,15 @@ def runtime_role_contract(
         and bool(privileges["onchain_executor_runtime_select"])
         and bool(privileges["onchain_executor_runtime_insert"])
         and bool(privileges["onchain_executor_runtime_update"])
-        and bool(privileges["onchain_executor_wallet_rotation_update"]),
+        and not bool(privileges["onchain_executor_wallet_rotation_update"])
+        and bool(privileges["workers_onchain_settlement_select"])
+        and not bool(privileges["workers_onchain_settlement_write"])
+        and bool(privileges["serve_onchain_settlement_select"])
+        and not bool(privileges["serve_onchain_settlement_write"])
+        and not bool(privileges["onchain_settlement_select"])
+        and not bool(privileges["onchain_settlement_write"])
+        and not bool(privileges["nautilus_onchain_settlement_select"])
+        and not bool(privileges["nautilus_onchain_settlement_write"]),
         "migrate_owner_member": bool(privileges["migrate_owner_member"]),
     }
     failures = [name for name, passed in checks.items() if not passed]

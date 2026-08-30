@@ -16,7 +16,7 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading no-key Decision/Capital operation (#350)
+### Automatic Trading no-key Decision/Capital operation (#350)
 
 Execution credentials are optional for deployment. The supported observer state is:
 
@@ -32,6 +32,88 @@ states and resolved paths. Missing files are `unconfigured`; partial,
 malformed, insecure, or unreadable inputs are `invalid`. Never print or copy a
 credential. `make up`, migration, Serve, Workers, Web, and the public venue
 catalog must remain green without either binding credential.
+
+### Telegram manual live-trading operation
+
+Telegram manual trading is a separate, default-disabled production-account
+lane. Add one `trading.telegram_profiles` row per private operator, set that
+profile's `manual.enabled=true` and `manual.live_trading_acknowledged=true`,
+keep the fixed `manual.venue=binance_usdm_live`, and allowlist the same positive
+Telegram **user** ID as a News destination. Populate that user's dedicated
+mode-`0600` `trading_profiles/manual/<user_id>/binance_api_key` and
+`binance_api_secret` files. Use a dedicated Binance USD-M production account
+and key with only Read and Futures Trade permissions; never reuse the automatic
+lane credentials or another user's files.
+
+Run `uv run tracefold config` and require the intended profile's
+`manual.requested=true` and `manual.interaction_available=true`. The command is
+redacted; do not print the files. Then run `make up` and `make status`. The Make lifecycle
+derives the `manual-trading` Compose profile from validated config and requires
+exactly one running `manual-executor`; operators do not set
+`COMPOSE_PROFILES` themselves. A missing account snapshot, stale public quote,
+unauthorized user, mismatched message/session/target, or incomplete credential
+fails closed before an order Intent. Do not place a real order merely to prove
+deployment health: verify executor startup, account-snapshot freshness, and a
+credential-free public quote instead.
+
+Executor health is stronger than process liveness: each successful
+account/venue/database turn atomically refreshes a process-local heartbeat.
+Compose marks a missing or stale heartbeat unhealthy, and a turn exception
+terminates the executor so supervision can restart it instead of leaving a
+green but non-functional order authority.
+
+Workers alone polls Telegram callbacks and persists the code-owned interaction
+state. The manual executor alone reads the dedicated Binance credentials and
+settles manual execution rows. The first increment supports Binance USD-M
+production only; it does not aggregate on-chain venues. The independent #370
+onchain slice may share that single Telegram cursor, but it has its own
+authorization, projections, provider credentials, callbacks, and
+`tracefold_onchain` executor role. Workers performs token lookup and read-only
+OKX/1inch comparison. Only an explicit second Telegram confirmation creates an
+execution intent; the isolated executor alone receives the one shared EVM
+private key used by every executable route.
+
+For discovery-only onchain operation, enable `trading.onchain`, configure its
+Telegram allowlist, and run `uv run tracefold config`; Binance Alpha and verified
+DEX Screener discovery remain usable without a quote credential. Populate a
+complete OKX or 1inch credential set for live quotes. Require `requested=true`
+and `interaction_available=true`. Live execution is available only when
+`executable_providers` includes the winning `okx` or `oneinch` route, the one
+shared wallet and a trusted RPC are configured, and the dedicated executor
+heartbeat is fresh. Binance Alpha's
+public Token List contributes CA discovery evidence without a credential, but
+its route quote remains visibly unavailable with
+`binance_general_web3_swap_api_unpublished`. `make status` then requires the
+onchain capability inside Workers. A provisional route is expected while gas
+USD or simulation/risk facts are incomplete and must not be described as a
+definitive executable best route.
+
+Ticker or CA discovery spans `discovery_chain_ids`, independently of which
+chains currently have funded settlement assets. DEX market observations are
+used only to close long-tail directory lag and are accepted only after exact
+ERC-20 metadata reads on the reported chain. A ticker collision stays as
+multiple chain/CA candidates; do not infer authenticity from the symbol alone.
+
+Provider safety metadata is enforced before presentation: 1inch v1.6
+`blacklisted` or `tradingRestricted` token rows are excluded from CA discovery,
+and any 1inch v6.1 or OKX v6 quote whose returned token identity differs from
+the request is rejected. An OKX chain mismatch is also rejected, and an OKX
+`isHoneyPot=true` fact hard-rejects that route.
+
+Telegram edits are recoverable effects rather than business truth. A `SENDING`
+row in `trading_onchain_telegram_edit_effects` may replay the exact stored edit;
+`AMBIGUOUS` is terminal and is not blindly resent. The associated session facts
+are already durable before either outcome.
+
+Use `uv run tracefold trading test-news futures` or
+`uv run tracefold trading test-news onchain` for an explicitly labeled TG
+fixture. The latter defaults to two targets so the target picker is exercised.
+The fixture projection expires after two hours and is separate from News truth.
+The equivalent private-chat commands are `/test_futures` and `/test_onchain`.
+Only `/test_futures` reaches the futures execution flow, and every development
+fixture is hard-capped at 200 USDT even if a future preset is configured higher.
+Use `/positions`, `/history`, and `/trades` to inspect the actor-bound portfolio
+projection and its append-only ledger after execution.
 
 `trading.enabled` controls only the Decision Plane. Workers always project both
 closed bindings and refresh the credential-free Binance USD-M and Hyperliquid
@@ -60,10 +142,13 @@ composition is invalid, Workers must fail startup/readiness or record Decision
 `FAULTED`. Do not classify an arbitrary exception as legal no-key observer
 mode.
 
-On a fresh database, `tracefold init` and `make up` create the Nautilus
-password and role with the other runtime roles. For an existing volume that
-predates `20260828_0316`, stop the entire stack and run
-`make db-provision-nautilus-role` once; it is offline-only.
+On a fresh database, `tracefold init` and `make up` create the Nautilus and
+onchain-executor passwords and roles with the other runtime roles. For an
+existing volume that predates `20260828_0316`, stop the entire stack and run
+`make db-provision-nautilus-role` once. Before migrating an existing volume to
+`0337`, also run `make db-provision-onchain-role`. The onchain target first
+initializes a missing role-password file without replacing existing operator
+configuration. Both commands are offline-only and idempotent.
 
 #### Retired pre-#350 execution cutover record — do not execute
 
@@ -100,7 +185,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260830_0332`
+5. Deploy the exact reviewed image at the current Alembic head (`20260829_0341`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -160,8 +245,11 @@ source must produce the Case, and only a frozen long/non-shadow Case admitted by
 the active snapshot and current blacklist may emit an Intent.
 
 Current `make up` and `make deploy-image` idempotently create empty 0600
-credential placeholders, do not require execution credentials, and do not start an execution adapter. `make status` reports adapters as
-not required while Capital is PAUSED. The browser and HTTP surface expose
+credential placeholders and do not require or start an **automatic** execution
+adapter. They do require and recreate the manual executor when the independent
+manual feature is requested and fully configured. `make status` reports
+automatic adapters as not required while Capital is PAUSED and separately
+checks the manual executor. The browser and HTTP surface expose
 durable Decision/Capital/binding facts and independent Case policy/capital
 attribution; existing Intent/Outcome history remains read-only.
 
@@ -205,14 +293,16 @@ CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Execution
-credentials do not participate in deployment readiness, and no Nautilus
-process is recreated. It
-does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
+credentials for the automatic lane do not participate in deployment readiness,
+and no Nautilus process is recreated. When manual trading is requested, the
+same command validates its authority and recreates `manual-executor` from the
+same image. It also starts `onchain-executor` only when onchain execution is
+fully available. It does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, six
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
 
 Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
-creates a non-login owner plus the separate Serve, Workers, Nautilus, and migrate roles
+creates a non-login owner plus the separate Serve, Workers, Nautilus, onchain executor, and migrate roles
 from their mode-`0600` password files, revokes the bootstrap login, and only
 then permits migration. It is not a periodic reconciler and will not mutate an
 unknown non-empty cluster. Such a cluster must already satisfy the role/schema
@@ -220,8 +310,10 @@ contract; startup never repairs an unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. Execution-adapter absence is expected at #350 and does
-not weaken those required boundaries.
+HTML console all pass. It additionally requires `manual-executor` exactly when
+manual trading is requested and rejects one left running while the feature is
+disabled. Automatic execution-adapter absence is expected at #350 and does not
+weaken those required boundaries.
 It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
@@ -311,7 +403,7 @@ runtime.
 | Workers `/readyz` | root running, singleton session healthy, latest O(1) heartbeat persisted within 15 s, and (when News is enabled) the runtime manifest plus linked active/deployment receipt committed, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
-| `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
+| `make status` | PostgreSQL, migration, Serve, Workers, requested manual executor, readiness, and console | fail-closed lifecycle check |
 | `tracefold ops validate-projections` | bounded News singleton and delivery-state invariants | strict Serve-role read |
 
 Source degradation does not make the HTTP process unready. `/api/status` has no
@@ -560,44 +652,47 @@ only its reduced semantic view and never ToldContext or delivery intent. A
 successful primary route makes exactly two serial provider calls. JSONAdapter
 may make one format fallback per Predictor, so one route makes at most four
 calls; provider errors and truncation do not spend a format fallback. The
-code-owned 20-second deadline covers the whole route. If primary fails, a
-configured `llm.news_triage_fallback` restarts the full Program with its own
-deadline budget. Its ReaderCard slot explicitly aliases the same
-endpoint unless a complete `llm.news_reader_card_fallback` endpoint is present;
-one missing or invalid fallback slot disables fallback instead of mixing
-routes. One Program execution's maximum is eight. The typed LM seam makes one
+code-owned 20-second deadline covers the whole route. If primary fails, each
+configured item in ordered `llm.news_fallbacks` restarts the full Program with
+its own deadline budget, stopping at the first complete answer. A route's
+ReaderCard slot explicitly aliases its EventSemantics endpoint unless that item
+contains a complete nested `reader_card`; one missing or invalid slot disables
+that route instead of mixing endpoints. One Program execution's maximum is
+sixteen across primary plus three fallbacks. The typed LM seam makes one
 stock DSPy/LiteLLM call per physical invocation with no client cache or provider
 retry, so every billable attempt is visible. There is still one persisted final semantic judgment and one card,
 not a restored Analyst stage. Capacity planning must account for the normal
 1 -> 2 call increase and serial latency. A stale-ledger re-ask is a second full
 Program execution:
-normally four calls total for that Event, with the same per-execution eight-call
+normally four calls total for that Event, with the same per-execution sixteen-call
 ceiling and all superseded/failed work included in telemetry.
 
 By default both Predictors use the Triage endpoint, but each has its own
 Adapter and code-owned token cap. A complete `llm.news_reader_card`
-endpoint moves only ReaderCard's primary slot. A complete
-`llm.news_reader_card_fallback` independently moves the ReaderCard fallback
-slot; otherwise that slot is an explicit alias of the EventSemantics fallback
-slot. `tracefold config` and `/api/news/status.pipeline` expose the effective
+endpoint moves only ReaderCard's primary slot. A complete nested
+`llm.news_fallbacks[].reader_card` independently moves that route's ReaderCard
+slot; otherwise it explicitly aliases the same route's EventSemantics slot.
+`tracefold config` and `/api/news/status.pipeline` expose the ordered effective
 model names and dedicated-Reader flags without exposing endpoints or
 credentials.
+Physical Program v8 traces retain both the logical `route` (`primary`/`fallback`)
+and the exact `route_slot` (`primary`/`fallback_1..3`) beside the runtime model.
 
 A schema-capable Predictor may spend one stock JSONAdapter **format fallback**
 only after a schema answer cannot parse. Provider timeouts, rate limits,
 connection errors and other typed LM failures do not spend that format call;
-they fail the route and may restart the complete Program on fallback. A
+they fail the route and may restart the complete Program on the next fallback. A
 `max_tokens` truncation (`news_program_output_truncated`,
 `finish_reason=length`) also does not retry. The code-owned primary-route breaker defaults to three retryable
-transport failures and 60 seconds; while open it routes directly to fallback.
+transport failures and 60 seconds; while open it routes directly to the ordered fallback chain.
 Separately, the consumer's configured circuit opens a
-`triage_circuit_open` incident after the whole primary+fallback chain fails
+`triage_circuit_open` incident after the whole primary-plus-fallback chain fails
 retryably for `news.triage.circuit_failures` consecutive Events, and remains
 open for `news.triage.circuit_open_seconds`. Output failures do not count
 toward either transport circuit. When fallback answers,
 `news_verdicts.model` names its resolved runtime model, the trace
 carries `model_fallback_from`, and the worker logs one warning per Event; only
-a chain where both routes fail degrades, with `primary_error` retaining the
+a chain where all routes fail degrades, with `primary_error` retaining the
 first route's code.
 
 The degraded path is never silent: only deterministic listing/telemetry and a
@@ -697,8 +792,8 @@ Diagnose News in this order:
    only mode whose failure rate resembles the reader's — it spends real provider
    calls on the same single-slot GPU that serves Triage, so both live modes
    require an explicit `--max-model-cases N`; expect exactly two physical calls
-   on common success, at most four on one route and at most eight across a full
-   primary/fallback judgment. Read both
+   on common success, at most four on one route and at most sixteen across a full
+   primary-plus-three-fallback judgment. Read both
    `scores.case_macro_answered` and `scores.case_macro_failure_as_zero`: the
    first is quality given an answer, the second counts every unanswered case as
    zero, and the gap between them is the availability of the route rather than

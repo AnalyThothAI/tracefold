@@ -9,10 +9,19 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text, secret_file_configured
 from tracefold.platform.paths import app_home, app_log_path
 
 _TELEGRAM_BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
+
+
+def _parse_telegram_delivery_target_id(value: object, *, error_code: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(error_code)
+    normalized = str(value).strip()
+    if re.fullmatch(r"(?:[1-9][0-9]{5,15}|-[1-9][0-9]{5,15})", normalized) is None:
+        raise ValueError(error_code)
+    return int(normalized)
 
 
 class ApiConfig(BaseModel):
@@ -29,13 +38,15 @@ class PostgresConfig(BaseModel):
     workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
     nautilus_dsn: str = "postgresql://tracefold_nautilus@postgres:5432/tracefold"
+    onchain_dsn: str = "postgresql://tracefold_onchain@postgres:5432/tracefold"
     serve_password_file: str | None = "postgres_serve_password"
     workers_password_file: str | None = "postgres_workers_password"
     migrate_password_file: str | None = "postgres_migrate_password"
     nautilus_password_file: str | None = "postgres_nautilus_password"
+    onchain_password_file: str | None = "postgres_onchain_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", "nautilus_dsn", mode="before")
+    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", "nautilus_dsn", "onchain_dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
@@ -48,6 +59,7 @@ class PostgresConfig(BaseModel):
         "workers_password_file",
         "migrate_password_file",
         "nautilus_password_file",
+        "onchain_password_file",
         mode="before",
     )
     @classmethod
@@ -223,7 +235,7 @@ class NewsPushSettings(BaseModel):
     feishu_webhook_url: str | None = None
     feishu_signing_secret: str | None = None
     telegram_bot_token_file: str | None = None
-    telegram_chat_id: int | None = None
+    telegram_chat_ids: tuple[int, ...] = ()
     min_interval_seconds: float = 0.6
 
     @field_validator("feishu_webhook_url", "feishu_signing_secret", mode="before")
@@ -238,17 +250,26 @@ class NewsPushSettings(BaseModel):
         normalized = str(value or "").strip()
         return normalized or None
 
-    @field_validator("telegram_chat_id", mode="before")
+    @field_validator("telegram_chat_ids", mode="before")
     @classmethod
-    def parse_private_channel_id(cls, value: Any) -> int | None:
-        if value is None or value == "":
-            return None
-        if isinstance(value, bool):
-            raise ValueError("news_push_telegram_chat_id_invalid")
-        normalized = str(value).strip()
-        if not re.fullmatch(r"-100[1-9][0-9]{5,15}", normalized):
-            raise ValueError("news_push_telegram_chat_id_invalid")
-        return int(normalized)
+    def parse_telegram_chat_ids(cls, value: Any) -> tuple[int, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("news_push_telegram_chat_ids_invalid")
+        try:
+            targets = tuple(
+                _parse_telegram_delivery_target_id(
+                    item,
+                    error_code="news_push_telegram_chat_ids_invalid",
+                )
+                for item in value
+            )
+        except ValueError:
+            raise ValueError("news_push_telegram_chat_ids_invalid") from None
+        if len(targets) > 32 or len(set(targets)) != len(targets):
+            raise ValueError("news_push_telegram_chat_ids_invalid")
+        return targets
 
     @model_validator(mode="after")
     def validate_pacing(self) -> NewsPushSettings:
@@ -538,6 +559,322 @@ class TradingBindingsSettings(BaseModel):
     hyperliquid_perp: TradingHyperliquidPerpSettings = Field(default_factory=TradingHyperliquidPerpSettings)
 
 
+class TradingManualRiskSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notional_deviation_limit_bps: int = Field(default=5_000, ge=0, le=50_000)
+    tight_stop_deviation_limit_bps: int = Field(default=5_000, ge=0, le=50_000)
+    wide_stop_deviation_limit_bps: int = Field(default=10_000, ge=0, le=50_000)
+    max_account_risk_bps: int = Field(default=1_000, gt=0, le=10_000)
+    high_risk_loss_multiple_bps: int = Field(default=15_000, ge=10_000, le=100_000)
+    min_leverage: int = Field(default=1, ge=1, le=125)
+    max_leverage: int = Field(default=20, ge=1, le=125)
+
+    @model_validator(mode="after")
+    def validate_leverage_range(self) -> TradingManualRiskSettings:
+        if self.max_leverage < self.min_leverage:
+            raise ValueError("manual_trading_leverage_range_invalid")
+        return self
+
+
+class TradingManualPresetSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    leverage: int = Field(ge=1, le=125)
+    stop_loss_bps: int = Field(gt=0, lt=10_000)
+    take_profit_bps: int = Field(gt=0, le=100_000)
+    account_risk_bps: int = Field(gt=0, le=10_000)
+    min_notional_usd: Decimal = Decimal("5")
+    max_notional_usd: Decimal = Decimal("10")
+
+    @field_validator("min_notional_usd", "max_notional_usd", mode="before")
+    @classmethod
+    def parse_notional_bound(cls, value: object) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, ValueError) as exc:
+            raise ValueError("manual_trading_notional_bound_invalid") from exc
+        if not parsed.is_finite() or parsed <= 0:
+            raise ValueError("manual_trading_notional_bound_invalid")
+        return parsed
+
+    @model_validator(mode="after")
+    def validate_notional_range(self) -> TradingManualPresetSettings:
+        if self.max_notional_usd < self.min_notional_usd:
+            raise ValueError("manual_trading_notional_range_invalid")
+        return self
+
+
+class TradingManualAccountSettings(BaseModel):
+    """One Telegram user's dedicated Binance USD-M live account."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    live_trading_acknowledged: bool = False
+    venue: Literal["binance_usdm_live"] = "binance_usdm_live"
+    account_ref: str = Field(default="binance-manual-live", pattern=r"^[a-z0-9][a-z0-9._-]{0,63}$")
+    api_key_file: str | None = None
+    api_secret_file: str | None = None
+
+    @field_validator("api_key_file", "api_secret_file", mode="before")
+    @classmethod
+    def parse_optional_secret_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
+
+
+class TradingManualSettings(BaseModel):
+    """Shared manual-futures risk policy; account authority lives in Telegram profiles."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    risk: TradingManualRiskSettings = Field(default_factory=TradingManualRiskSettings)
+    tight_stop: TradingManualPresetSettings = Field(
+        default_factory=lambda: TradingManualPresetSettings(
+            leverage=10,
+            stop_loss_bps=100,
+            take_profit_bps=200,
+            account_risk_bps=200,
+        )
+    )
+    wide_stop: TradingManualPresetSettings = Field(
+        default_factory=lambda: TradingManualPresetSettings(
+            leverage=2,
+            stop_loss_bps=2_000,
+            take_profit_bps=10_000,
+            account_risk_bps=100,
+        )
+    )
+
+
+class TradingOnchainSettlementAssetSettings(BaseModel):
+    """One operator-funded quote asset and its execution RPC."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    chain_id: int = Field(gt=0)
+    chain_name: str = Field(min_length=1, max_length=40)
+    symbol: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
+    contract_address: str = Field(pattern=r"^0x[0-9a-f]{40}$")
+    decimals: int = Field(ge=0, le=255)
+    quote_amount: Decimal = Decimal("10")
+    rpc_url: str | None = Field(default=None, repr=False)
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: object) -> str:
+        return str(value).strip().upper()
+
+    @field_validator("contract_address", mode="before")
+    @classmethod
+    def normalize_contract(cls, value: object) -> str:
+        return str(value).strip().lower()
+
+    @field_validator("quote_amount", mode="before")
+    @classmethod
+    def parse_quote_amount(cls, value: object) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, ValueError) as exc:
+            raise ValueError("onchain_quote_amount_invalid") from exc
+        if not parsed.is_finite() or not Decimal("0") < parsed <= Decimal("1000"):
+            raise ValueError("onchain_quote_amount_invalid")
+        return parsed
+
+    @field_validator("rpc_url", mode="before")
+    @classmethod
+    def parse_rpc_url(cls, value: object) -> str | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        parsed = urlsplit(normalized)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("onchain_rpc_url_invalid")
+        return normalized
+
+    @property
+    def quote_amount_raw(self) -> int:
+        return int(self.quote_amount * (Decimal(10) ** self.decimals))
+
+
+class TradingOnchainOkxSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = True
+    api_key_file: str | None = None
+    api_secret_file: str | None = None
+    passphrase_file: str | None = None
+
+    @field_validator("api_key_file", "api_secret_file", "passphrase_file", mode="before")
+    @classmethod
+    def parse_secret_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+
+class TradingOnchainOneInchSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = True
+    api_key_file: str | None = None
+
+    @field_validator("api_key_file", mode="before")
+    @classmethod
+    def parse_secret_path(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+
+class TradingOnchainBinanceSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+
+
+class TradingOnchainWalletSettings(BaseModel):
+    """The one manual EVM wallet shared by every executable onchain route."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    address: str | None = None
+    private_key_file: str | None = None
+    live_trading_acknowledged: bool = False
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def parse_address(cls, value: object) -> str | None:
+        normalized = str(value or "").strip().lower()
+        if not normalized:
+            return None
+        if re.fullmatch(r"0x[0-9a-f]{40}", normalized) is None:
+            raise ValueError("onchain_wallet_address_invalid")
+        return normalized
+
+    @field_validator("private_key_file", mode="before")
+    @classmethod
+    def parse_private_key_path(cls, value: object) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+
+class TradingOnchainProviderSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    okx: TradingOnchainOkxSettings = Field(default_factory=TradingOnchainOkxSettings)
+    oneinch: TradingOnchainOneInchSettings = Field(default_factory=TradingOnchainOneInchSettings)
+    binance: TradingOnchainBinanceSettings = Field(default_factory=TradingOnchainBinanceSettings)
+
+
+ONCHAIN_EXECUTION_SETTLEMENT_CATALOG_V1: tuple[tuple[int, str, str, int], ...] = (
+    (1, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "USDC", 6),
+    (56, "0x55d398326f99059ff775485246999027b3197955", "USDT", 18),
+    (8453, "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", "USDC", 6),
+    (42161, "0xaf88d065e77c8cc2239327c5edb3a432268e5831", "USDC", 6),
+    (4663, "0x5fc5360d0400a0fd4f2af552add042d716f1d168", "USDG", 6),
+)
+_ONCHAIN_EXECUTION_CHAIN_NAMES_V1 = {
+    1: "Ethereum",
+    56: "BNB Chain",
+    8453: "Base",
+    42161: "Arbitrum One",
+    4663: "Robinhood Chain",
+}
+_ONCHAIN_LIVE_EXECUTION_SETTLEMENT_IDENTITIES = frozenset(ONCHAIN_EXECUTION_SETTLEMENT_CATALOG_V1)
+
+
+def _default_onchain_settlement_assets() -> tuple[TradingOnchainSettlementAssetSettings, ...]:
+    return tuple(
+        TradingOnchainSettlementAssetSettings(
+            chain_id=chain_id,
+            chain_name=_ONCHAIN_EXECUTION_CHAIN_NAMES_V1[chain_id],
+            symbol=symbol,
+            contract_address=contract_address,
+            decimals=decimals,
+        )
+        for chain_id, contract_address, symbol, decimals in ONCHAIN_EXECUTION_SETTLEMENT_CATALOG_V1
+    )
+
+
+def onchain_execution_settlement_supported(asset: TradingOnchainSettlementAssetSettings) -> bool:
+    """Return whether code and schema bind this exact settlement identity for signing."""
+
+    return (
+        asset.chain_id,
+        asset.contract_address,
+        asset.symbol,
+        asset.decimals,
+    ) in _ONCHAIN_LIVE_EXECUTION_SETTLEMENT_IDENTITIES
+
+
+class TradingOnchainSettings(BaseModel):
+    """Shared onchain discovery, route, settlement, and RPC policy."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    slippage_bps: int = Field(default=100, gt=0, le=5_000)
+    discovery_chain_ids: tuple[int, ...] = (1, 56, 8453, 42161, 4663)
+    settlement_assets: tuple[TradingOnchainSettlementAssetSettings, ...] = Field(
+        default_factory=_default_onchain_settlement_assets
+    )
+
+    @field_validator("discovery_chain_ids", mode="before")
+    @classmethod
+    def parse_discovery_chain_ids(cls, value: object) -> tuple[int, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("onchain_discovery_chains_invalid")
+        try:
+            chains = tuple(int(str(item)) for item in value)
+        except ValueError as exc:
+            raise ValueError("onchain_discovery_chains_invalid") from exc
+        if not 1 <= len(chains) <= 32 or any(chain <= 0 for chain in chains) or len(set(chains)) != len(chains):
+            raise ValueError("onchain_discovery_chains_invalid")
+        return chains
+
+    @model_validator(mode="after")
+    def validate_settlement_assets(self) -> TradingOnchainSettings:
+        if not 1 <= len(self.settlement_assets) <= 12:
+            raise ValueError("onchain_settlement_assets_invalid")
+        chains = [asset.chain_id for asset in self.settlement_assets]
+        if len(set(chains)) != len(chains):
+            raise ValueError("onchain_settlement_chain_duplicate")
+        return self
+
+    @property
+    def chain_ids(self) -> tuple[int, ...]:
+        return tuple(dict.fromkeys((*self.discovery_chain_ids, *(asset.chain_id for asset in self.settlement_assets))))
+
+
+class TradingOnchainAccountSettings(BaseModel):
+    """One Telegram user's route-provider credentials and one shared-per-route EVM signer."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    providers: TradingOnchainProviderSettings = Field(default_factory=TradingOnchainProviderSettings)
+    wallet: TradingOnchainWalletSettings = Field(default_factory=TradingOnchainWalletSettings)
+
+
+class TradingTelegramProfileSettings(BaseModel):
+    """The sole identity-to-trading-authority binding for one Telegram private user."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    user_id: int = Field(gt=0)
+    manual: TradingManualAccountSettings = Field(default_factory=TradingManualAccountSettings)
+    onchain: TradingOnchainAccountSettings = Field(default_factory=TradingOnchainAccountSettings)
+
+    @model_validator(mode="after")
+    def require_enabled_lane(self) -> TradingTelegramProfileSettings:
+        if not self.manual.enabled and not self.onchain.enabled:
+            raise ValueError("telegram_trading_profile_lane_missing")
+        return self
+
+
 class TradingSettings(BaseModel):
     """Decision Plane configuration plus two closed, credential-optional bindings (#350)."""
 
@@ -547,6 +884,62 @@ class TradingSettings(BaseModel):
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
     bindings: TradingBindingsSettings = Field(default_factory=TradingBindingsSettings)
+    manual: TradingManualSettings = Field(default_factory=TradingManualSettings)
+    onchain: TradingOnchainSettings = Field(default_factory=TradingOnchainSettings)
+    telegram_profiles: tuple[TradingTelegramProfileSettings, ...] = ()
+
+    @field_validator("telegram_profiles", mode="before")
+    @classmethod
+    def parse_telegram_profiles(cls, value: object) -> object:
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("telegram_trading_profiles_invalid")
+        return value
+
+    @model_validator(mode="after")
+    def validate_telegram_profiles(self) -> TradingSettings:
+        if len(self.telegram_profiles) > 16:
+            raise ValueError("telegram_trading_profiles_invalid")
+        user_ids = [profile.user_id for profile in self.telegram_profiles]
+        if len(set(user_ids)) != len(user_ids):
+            raise ValueError("telegram_trading_profile_user_duplicate")
+        account_refs = [profile.manual.account_ref for profile in self.telegram_profiles if profile.manual.enabled]
+        if len(set(account_refs)) != len(account_refs):
+            raise ValueError("telegram_trading_profile_account_duplicate")
+        wallet_addresses = [
+            profile.onchain.wallet.address
+            for profile in self.telegram_profiles
+            if profile.onchain.enabled and profile.onchain.wallet.address is not None
+        ]
+        if len(set(wallet_addresses)) != len(wallet_addresses):
+            raise ValueError("telegram_trading_profile_wallet_duplicate")
+        secret_paths: list[str] = []
+        for profile in self.telegram_profiles:
+            manual = profile.manual
+            onchain = profile.onchain
+            if manual.enabled:
+                secret_paths.extend(path for path in (manual.api_key_file, manual.api_secret_file) if path)
+            if onchain.enabled:
+                okx = onchain.providers.okx
+                oneinch = onchain.providers.oneinch
+                secret_paths.extend(
+                    path
+                    for path in (
+                        okx.api_key_file,
+                        okx.api_secret_file,
+                        okx.passphrase_file,
+                        oneinch.api_key_file,
+                        onchain.wallet.private_key_file,
+                    )
+                    if path
+                )
+        if len(set(secret_paths)) != len(secret_paths):
+            raise ValueError("telegram_trading_profile_secret_reuse")
+        return self
+
+    def telegram_profile(self, user_id: int) -> TradingTelegramProfileSettings | None:
+        return next((profile for profile in self.telegram_profiles if profile.user_id == user_id), None)
 
 
 class Settings(BaseModel):
@@ -561,6 +954,39 @@ class Settings(BaseModel):
     news: NewsSettings = Field(default_factory=NewsSettings)
     trading: TradingSettings = Field(default_factory=TradingSettings)
 
+    @model_validator(mode="after")
+    def require_compose_profile_secret_names(self) -> Settings:
+        """Keep every user's authority in a lane-specific, read-only mounted directory."""
+
+        if self.trading.telegram_profiles and self.news.push.telegram_bot_token_file != "telegram_bot_token":
+            raise ValueError("telegram_trading_bot_token_name_invalid")
+        targets = set(self.news.push.telegram_chat_ids)
+        for profile in self.trading.telegram_profiles:
+            user = str(profile.user_id)
+            if profile.user_id not in targets:
+                raise ValueError("telegram_trading_profile_delivery_target_missing")
+            if profile.manual.enabled:
+                manual_expected = (
+                    (profile.manual.api_key_file, f"trading_profiles/manual/{user}/binance_api_key"),
+                    (profile.manual.api_secret_file, f"trading_profiles/manual/{user}/binance_api_secret"),
+                )
+                if any(actual != required for actual, required in manual_expected):
+                    raise ValueError("manual_trading_profile_secret_name_invalid")
+            if profile.onchain.enabled:
+                okx = profile.onchain.providers.okx
+                oneinch = profile.onchain.providers.oneinch
+                onchain_expected = (
+                    (okx.api_key_file, f"trading_profiles/quotes/{user}/okx_api_key"),
+                    (okx.api_secret_file, f"trading_profiles/quotes/{user}/okx_api_secret"),
+                    (okx.passphrase_file, f"trading_profiles/quotes/{user}/okx_passphrase"),
+                    (oneinch.api_key_file, f"trading_profiles/quotes/{user}/oneinch_api_key"),
+                    (profile.onchain.wallet.private_key_file, f"trading_profiles/onchain/{user}/evm_private_key"),
+                )
+                configured = tuple((actual, required) for actual, required in onchain_expected if actual is not None)
+                if any(actual != required for actual, required in configured):
+                    raise ValueError("onchain_trading_profile_secret_name_invalid")
+        return self
+
     def set_config_dir(self, value: Path) -> None:
         self._config_dir = value
 
@@ -568,12 +994,12 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    def postgres_dsn(self, role: Literal["serve", "workers", "migrate", "nautilus"]) -> str:
+    def postgres_dsn(self, role: Literal["serve", "workers", "migrate", "nautilus", "onchain"]) -> str:
         return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
 
     def postgres_password_file(
         self,
-        role: Literal["serve", "workers", "migrate", "nautilus"],
+        role: Literal["serve", "workers", "migrate", "nautilus", "onchain"],
     ) -> Path | None:
         value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
         if not value:
@@ -594,6 +1020,27 @@ class Settings(BaseModel):
 
     def trading_hyperliquid_private_key_file(self) -> Path | None:
         return self._configured_path(self.trading.bindings.hyperliquid_perp.private_key_file)
+
+    def trading_manual_api_key_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.manual.api_key_file)
+
+    def trading_manual_api_secret_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.manual.api_secret_file)
+
+    def trading_onchain_okx_api_key_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.onchain.providers.okx.api_key_file)
+
+    def trading_onchain_okx_api_secret_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.onchain.providers.okx.api_secret_file)
+
+    def trading_onchain_okx_passphrase_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.onchain.providers.okx.passphrase_file)
+
+    def trading_onchain_oneinch_api_key_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.onchain.providers.oneinch.api_key_file)
+
+    def trading_onchain_wallet_private_key_file(self, profile: TradingTelegramProfileSettings) -> Path | None:
+        return self._configured_path(profile.onchain.wallet.private_key_file)
 
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:
@@ -625,7 +1072,37 @@ class NewsPushAvailability:
     feishu_webhook_url_configured: bool
     feishu_signing_secret_configured: bool
     telegram_bot_token_file_configured: bool
-    telegram_chat_id_configured: bool
+    telegram_target_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ManualTradingAvailability:
+    requested: bool
+    interaction_available: bool
+    reason: str | None
+    venue: Literal["binance_usdm_live"]
+    authorized_user_count: int
+    credentials_configured: bool
+    available_user_ids: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class OnchainTradingAvailability:
+    requested: bool
+    interaction_available: bool
+    reason: str | None
+    authorized_user_count: int
+    configured_quote_providers: tuple[Literal["okx", "oneinch"], ...]
+    executable_providers: tuple[Literal["okx", "oneinch"], ...]
+    execution_available: bool
+    execution_reason: str | None
+    wallet_address_configured: bool
+    wallet_private_key_configured: bool
+    rpc_chain_ids: tuple[int, ...]
+    okx_credentials_configured: bool
+    oneinch_credentials_configured: bool
+    binance_reason: Literal["binance_general_web3_swap_api_unpublished"]
+    available_user_ids: tuple[int, ...] = ()
 
 
 def news_push_availability(settings: Settings, *, inspect_secret_file: bool = True) -> NewsPushAvailability:
@@ -638,7 +1115,7 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         if inspect_secret_file
         else bool(push.telegram_bot_token_file)
     )
-    telegram_configured = bool(push.telegram_bot_token_file or push.telegram_chat_id)
+    telegram_configured = bool(push.telegram_bot_token_file or push.telegram_chat_ids)
     provider: Literal["feishu", "telegram"] | None = (
         None if feishu_configured == telegram_configured else "feishu" if feishu_configured else "telegram"
     )
@@ -649,8 +1126,8 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         reason = "news_item_push_provider_conflict"
     elif requested and provider == "telegram" and not token_file_configured:
         reason = "news_item_push_telegram_bot_token_unavailable"
-    elif requested and provider == "telegram" and push.telegram_chat_id is None:
-        reason = "news_item_push_telegram_chat_id_missing"
+    elif requested and provider == "telegram" and not push.telegram_chat_ids:
+        reason = "news_item_push_telegram_targets_missing"
     elif requested and not webhook_configured and provider != "telegram":
         reason = "news_item_push_feishu_webhook_missing"
     elif requested and provider == "feishu" and not _is_feishu_webhook_url(push.feishu_webhook_url):
@@ -663,8 +1140,228 @@ def news_push_availability(settings: Settings, *, inspect_secret_file: bool = Tr
         feishu_webhook_url_configured=webhook_configured,
         feishu_signing_secret_configured=bool(push.feishu_signing_secret),
         telegram_bot_token_file_configured=token_file_configured,
-        telegram_chat_id_configured=push.telegram_chat_id is not None,
+        telegram_target_count=len(push.telegram_chat_ids),
     )
+
+
+def manual_trading_availability(
+    settings: Settings,
+    *,
+    inspect_secret_files: bool = True,
+) -> ManualTradingAvailability:
+    """Aggregate the independently resolved Telegram manual-account profiles."""
+
+    rows = tuple(
+        manual_trading_profile_availability(settings, profile, inspect_secret_files=inspect_secret_files)
+        for profile in settings.trading.telegram_profiles
+        if profile.manual.enabled
+    )
+    requested = bool(rows)
+    reason = next((row.reason for row in rows if row.reason is not None), None)
+    available_user_ids = tuple(
+        profile.user_id
+        for profile, row in zip(
+            (profile for profile in settings.trading.telegram_profiles if profile.manual.enabled),
+            rows,
+            strict=True,
+        )
+        if row.interaction_available
+    )
+    return ManualTradingAvailability(
+        requested=requested,
+        interaction_available=bool(requested and len(available_user_ids) == len(rows)),
+        reason=reason,
+        venue="binance_usdm_live",
+        authorized_user_count=len(rows),
+        credentials_configured=bool(rows and all(row.credentials_configured for row in rows)),
+        available_user_ids=available_user_ids,
+    )
+
+
+def manual_trading_profile_availability(
+    settings: Settings,
+    profile: TradingTelegramProfileSettings,
+    *,
+    inspect_secret_files: bool = True,
+) -> ManualTradingAvailability:
+    manual = profile.manual
+    requested = manual.enabled
+    manual_key_path = settings.trading_manual_api_key_file(profile)
+    manual_secret_path = settings.trading_manual_api_secret_file(profile)
+    credentials_configured = (
+        secret_file_configured(manual_key_path) and secret_file_configured(manual_secret_path)
+        if inspect_secret_files
+        else bool(manual.api_key_file and manual.api_secret_file)
+    )
+    push = news_push_availability(settings, inspect_secret_file=inspect_secret_files)
+    reason: str | None = None
+    if requested and not manual.live_trading_acknowledged:
+        reason = "manual_live_trading_not_acknowledged"
+    elif requested and (push.provider != "telegram" or not push.delivery_available):
+        reason = "manual_trading_telegram_delivery_unavailable"
+    elif requested and profile.user_id not in settings.news.push.telegram_chat_ids:
+        reason = "manual_trading_private_target_missing"
+    elif requested and not credentials_configured:
+        reason = "manual_trading_credentials_unavailable"
+    elif requested and _manual_reuses_auto_credentials(
+        settings,
+        profile,
+        inspect_secret_files=inspect_secret_files,
+    ):
+        reason = "manual_trading_account_credential_reuse"
+    return ManualTradingAvailability(
+        requested=requested,
+        interaction_available=bool(requested and reason is None),
+        reason=reason,
+        venue=manual.venue,
+        authorized_user_count=1 if requested else 0,
+        credentials_configured=credentials_configured,
+        available_user_ids=(profile.user_id,) if requested and reason is None else (),
+    )
+
+
+def onchain_trading_availability(
+    settings: Settings,
+    *,
+    inspect_secret_files: bool = True,
+) -> OnchainTradingAvailability:
+    """Aggregate independent Telegram onchain profiles without merging their authority."""
+
+    rows = tuple(
+        onchain_trading_profile_availability(settings, profile, inspect_secret_files=inspect_secret_files)
+        for profile in settings.trading.telegram_profiles
+        if profile.onchain.enabled
+    )
+    requested = bool(rows)
+    reason = next((row.reason for row in rows if row.reason is not None), None)
+    available_user_ids = tuple(
+        profile.user_id
+        for profile, row in zip(
+            (profile for profile in settings.trading.telegram_profiles if profile.onchain.enabled),
+            rows,
+            strict=True,
+        )
+        if row.interaction_available
+    )
+    providers = tuple(dict.fromkeys(provider for row in rows for provider in row.configured_quote_providers))
+    executable = tuple(dict.fromkeys(provider for row in rows for provider in row.executable_providers))
+    execution_reason = next((row.execution_reason for row in rows if row.execution_reason is not None), None)
+    return OnchainTradingAvailability(
+        requested=requested,
+        interaction_available=bool(requested and len(available_user_ids) == len(rows)),
+        reason=reason,
+        authorized_user_count=len(rows),
+        configured_quote_providers=providers,
+        executable_providers=executable,
+        execution_available=any(row.execution_available for row in rows),
+        execution_reason=execution_reason,
+        wallet_address_configured=bool(rows and all(row.wallet_address_configured for row in rows)),
+        wallet_private_key_configured=bool(rows and all(row.wallet_private_key_configured for row in rows)),
+        rpc_chain_ids=tuple(dict.fromkeys(chain for row in rows for chain in row.rpc_chain_ids)),
+        okx_credentials_configured=any(row.okx_credentials_configured for row in rows),
+        oneinch_credentials_configured=any(row.oneinch_credentials_configured for row in rows),
+        binance_reason="binance_general_web3_swap_api_unpublished",
+        available_user_ids=available_user_ids,
+    )
+
+
+def onchain_trading_profile_availability(
+    settings: Settings,
+    profile: TradingTelegramProfileSettings,
+    *,
+    inspect_secret_files: bool = True,
+) -> OnchainTradingAvailability:
+    onchain = settings.trading.onchain
+    account = profile.onchain
+    requested = account.enabled
+    okx = account.providers.okx
+    oneinch = account.providers.oneinch
+    if inspect_secret_files:
+        okx_configured = bool(
+            secret_file_configured(settings.trading_onchain_okx_api_key_file(profile))
+            and secret_file_configured(settings.trading_onchain_okx_api_secret_file(profile))
+            and secret_file_configured(settings.trading_onchain_okx_passphrase_file(profile))
+        )
+        oneinch_configured = secret_file_configured(settings.trading_onchain_oneinch_api_key_file(profile))
+        wallet_private_key_configured = secret_file_configured(
+            settings.trading_onchain_wallet_private_key_file(profile)
+        )
+    else:
+        okx_configured = bool(okx.api_key_file and okx.api_secret_file and okx.passphrase_file)
+        oneinch_configured = bool(oneinch.api_key_file)
+        wallet_private_key_configured = bool(account.wallet.private_key_file)
+    providers: list[Literal["okx", "oneinch"]] = []
+    if okx.enabled and okx_configured:
+        providers.append("okx")
+    if oneinch.enabled and oneinch_configured:
+        providers.append("oneinch")
+    push = news_push_availability(settings, inspect_secret_file=inspect_secret_files)
+    reason: str | None = None
+    if requested and (push.provider != "telegram" or not push.delivery_available):
+        reason = "onchain_telegram_delivery_unavailable"
+    elif requested and profile.user_id not in settings.news.push.telegram_chat_ids:
+        reason = "onchain_private_target_missing"
+    rpc_assets = tuple(asset for asset in onchain.settlement_assets if asset.rpc_url)
+    rpc_chain_ids = tuple(asset.chain_id for asset in rpc_assets if onchain_execution_settlement_supported(asset))
+    executable_provider_rows: list[Literal["okx", "oneinch"]] = []
+    if okx.enabled and okx_configured:
+        executable_provider_rows.append("okx")
+    if oneinch.enabled and oneinch_configured:
+        executable_provider_rows.append("oneinch")
+    executable_providers = tuple(executable_provider_rows)
+    execution_reason: str | None = None
+    if requested and not account.wallet.live_trading_acknowledged:
+        execution_reason = "onchain_live_trading_not_acknowledged"
+    elif requested and account.wallet.address is None:
+        execution_reason = "onchain_wallet_address_missing"
+    elif requested and not wallet_private_key_configured:
+        execution_reason = "onchain_wallet_private_key_unavailable"
+    elif requested and rpc_assets and not rpc_chain_ids:
+        execution_reason = "onchain_execution_settlement_unsupported"
+    elif requested and not rpc_chain_ids:
+        execution_reason = "onchain_execution_rpc_unavailable"
+    elif requested and not executable_providers:
+        execution_reason = "onchain_calldata_verifier_unavailable"
+    return OnchainTradingAvailability(
+        requested=requested,
+        interaction_available=bool(requested and reason is None),
+        reason=reason,
+        authorized_user_count=1 if requested else 0,
+        configured_quote_providers=tuple(providers),
+        executable_providers=executable_providers,
+        execution_available=bool(requested and reason is None and execution_reason is None),
+        execution_reason=execution_reason,
+        wallet_address_configured=account.wallet.address is not None,
+        wallet_private_key_configured=wallet_private_key_configured,
+        rpc_chain_ids=rpc_chain_ids,
+        okx_credentials_configured=okx_configured,
+        oneinch_credentials_configured=oneinch_configured,
+        binance_reason="binance_general_web3_swap_api_unpublished",
+        available_user_ids=(profile.user_id,) if requested and reason is None else (),
+    )
+
+
+def _manual_reuses_auto_credentials(
+    settings: Settings,
+    profile: TradingTelegramProfileSettings,
+    *,
+    inspect_secret_files: bool,
+) -> bool:
+    manual_paths = (settings.trading_manual_api_key_file(profile), settings.trading_manual_api_secret_file(profile))
+    auto_paths = (settings.trading_binance_usdm_api_key_file(), settings.trading_binance_usdm_api_secret_file())
+    if any(manual is not None and manual == auto for manual, auto in zip(manual_paths, auto_paths, strict=True)):
+        return True
+    if not inspect_secret_files:
+        return False
+    for manual, auto in zip(manual_paths, auto_paths, strict=True):
+        if manual is None or auto is None:
+            continue
+        try:
+            if read_secure_secret_text(manual) == read_secure_secret_text(auto):
+                return True
+        except SecretFileError:
+            continue
+    return False
 
 
 @dataclass(frozen=True, slots=True)

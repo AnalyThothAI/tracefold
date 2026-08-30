@@ -12,6 +12,7 @@ from ..onchain import (
     OnchainRouteAnalysis,
     OnchainTelegramEditEffect,
     OnchainTelegramEditPayload,
+    is_development_test_onchain_source,
 )
 from ..onchain_execution import (
     OnchainExecutionIntent,
@@ -34,7 +35,9 @@ candidates, selected_candidate, analysis, provider_errors, created_at_ms, update
 _EXECUTION_COLUMNS = """
 intent.execution_id::text AS execution_id, intent.session_id::text AS session_id,
 intent.actor_user_id, intent.chat_id, intent.interaction_message_id, intent.provider,
-intent.wallet_address, intent.wallet_fingerprint, intent.request, intent.quote,
+intent.wallet_address, intent.wallet_fingerprint, intent.development_test, intent.notional_usd,
+intent.settlement_decimals,
+intent.request, intent.quote,
 intent.state, intent.confirmation_update_id, intent.plan, intent.error_code,
 intent.created_at_ms, intent.confirmed_at_ms, intent.updated_at_ms,
 approval.signed_transaction AS approval_transaction,
@@ -46,7 +49,9 @@ swap.state AS swap_transaction_state
 _EXECUTION_STATUS_COLUMNS = """
 intent.execution_id::text AS execution_id, intent.session_id::text AS session_id,
 intent.actor_user_id, intent.chat_id, intent.interaction_message_id, intent.provider,
-intent.wallet_address, intent.wallet_fingerprint, intent.request, intent.quote,
+intent.wallet_address, intent.wallet_fingerprint, intent.development_test, intent.notional_usd,
+intent.settlement_decimals,
+intent.request, intent.quote,
 intent.state, intent.confirmation_update_id, intent.plan, intent.error_code,
 intent.created_at_ms, intent.confirmed_at_ms, intent.updated_at_ms,
 CASE WHEN approval.execution_id IS NULL THEN NULL ELSE jsonb_build_object(
@@ -187,6 +192,8 @@ class OnchainStorage:
         session: OnchainAnalysisSession,
         provider: str,
         wallet_address: str,
+        notional_usd: Any,
+        settlement_decimals: int,
         request: Any,
         quote: Any,
         now_ms: int,
@@ -197,10 +204,12 @@ class OnchainStorage:
             """
             INSERT INTO trading_onchain_execution_intents (
               execution_id, session_id, actor_user_id, chat_id, interaction_message_id,
-              provider, wallet_address, wallet_fingerprint, request, quote, state,
+              provider, wallet_address, wallet_fingerprint, development_test, notional_usd,
+              settlement_decimals,
+              request, quote, state,
               created_at_ms, updated_at_ms
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb,
-                      'AWAITING_CONFIRMATION', %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s::jsonb, %s::jsonb, 'AWAITING_CONFIRMATION', %s, %s)
             ON CONFLICT DO NOTHING
             RETURNING execution_id::text AS execution_id
             """,
@@ -213,6 +222,9 @@ class OnchainStorage:
                 provider,
                 wallet_address,
                 onchain_wallet_fingerprint(wallet_address),
+                is_development_test_onchain_source(session.sources),
+                notional_usd,
+                int(settlement_decimals),
                 _dumps(request.model_dump(mode="json")),
                 _dumps(quote.model_dump(mode="json")),
                 int(now_ms),
@@ -283,6 +295,7 @@ class OnchainStorage:
     def claim_next_onchain_execution(
         self,
         *,
+        actor_user_id: int,
         wallet_fingerprint: str,
         now_ms: int,
     ) -> OnchainExecutionIntent | None:
@@ -298,10 +311,11 @@ class OnchainStorage:
              FROM trading_onchain_execution_intents
              WHERE state IN ('CLAIMED', 'APPROVAL_SUBMITTED', 'SWAP_SUBMITTED')
                AND wallet_fingerprint = %s
+               AND actor_user_id = %s
              ORDER BY updated_at_ms, execution_id
              LIMIT 1
             """,
-            (wallet_fingerprint,),
+            (wallet_fingerprint, int(actor_user_id)),
         ).fetchone()
         if active is not None:
             return self.onchain_execution_for_executor(str(active["session_id"]))
@@ -312,6 +326,7 @@ class OnchainStorage:
                FROM trading_onchain_execution_intents
                WHERE state = 'PENDING'
                  AND wallet_fingerprint = %s
+                 AND actor_user_id = %s
                ORDER BY confirmed_at_ms, execution_id
                FOR UPDATE SKIP LOCKED
                LIMIT 1
@@ -322,7 +337,7 @@ class OnchainStorage:
              WHERE intent.execution_id = candidate.execution_id
             RETURNING intent.session_id::text AS session_id
             """,
-            (wallet_fingerprint, int(now_ms)),
+            (wallet_fingerprint, int(actor_user_id), int(now_ms)),
         ).fetchone()
         return None if row is None else self.onchain_execution_for_executor(str(row["session_id"]))
 

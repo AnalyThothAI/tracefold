@@ -42,10 +42,15 @@ separate persisted answers: before #360, every LONG is capital-blocked and the
 lane creates no Intent. It shares Event Reaction's one-slot heavy database
 admission rather than the four News lane slots.
 
-No execution adapter is part of the required deployment. Existing Intent rows
-remain durable recovery evidence; #355 owns the new execution contract, #356
-and #357 own read-only adapter preflight, and #360 uniquely owns permission,
-risk reservation, and future Intent creation. RabbitMQ remains News-only.
+No **automatic** execution adapter is part of the required deployment. Existing
+Intent rows remain durable recovery evidence; #355 owns the automatic execution
+contract, #356 and #357 own its read-only adapter preflight, and #360 uniquely
+owns permission, risk reservation, and future automatic Intent creation. The
+separate Telegram manual-trading slice is disabled by default; each enabled
+Telegram Trading Profile binds one private Telegram user to one dedicated
+Binance USD-M production account. The isolated `manual-executor` owns all such
+configured accounts without ever merging their authority.
+RabbitMQ remains News-only.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -56,11 +61,14 @@ projection/EDF coordinator, no CPU-process lane, and no in-memory correctness
 dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.
 
-The deployment composition has four required boundaries: PostgreSQL, one
-successful migration job, Serve, and Workers. `make up` is only their
-fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
+The deployment composition has four always-required boundaries: PostgreSQL,
+one successful migration job, Serve, and Workers. It has two conditionally
+required boundaries: `manual-executor` when at least one profile enables its
+manual account, and `onchain-executor` when at least one profile wallet and executable route are
+fully configured. `make up` is their fail-closed lifecycle
+orchestrator; it does not merge the runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the
-non-login owner plus least-privilege Serve, Workers, Nautilus, and migrate roles from
+non-login owner plus least-privilege Serve, Workers, Nautilus, onchain executor, and migrate roles from
 separate password files, then revokes the bootstrap login before the migration
 job runs. That hook is never replayed against a non-empty cluster. Repeated
 startup therefore preserves the database and operator-owned credentials, while
@@ -68,10 +76,13 @@ an unknown existing schema or missing role fails instead of being implicitly
 hard-cut.
 
 The same project-scoped application image contains the Python service and a
-production React build. Migration, Serve, and Workers use that exact image and
-build revision with different commands and credentials.
-`make up` builds the image once and recreates migration, Serve, and Workers;
-missing execution credentials are a legal product state. It
+production React build. Migration, Serve, Workers, and the conditionally
+enabled manual executor use that exact image and build revision with different
+commands and credentials.
+`make up` builds the image once and recreates migration, Serve, Workers, and —
+when requested — the manual executor. Missing automatic-execution credentials
+remain a legal product state; requested manual trading with incomplete
+authority or credentials fails before runtime replacement. It
 starts PostgreSQL when absent but does not recreate a running PostgreSQL
 container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
@@ -592,7 +603,7 @@ OpenNews account Strategies (whatever the account has enabled; no local allowlis
        serial provider calls through explicit Predictor-local LMs/token caps
        (ReaderCard.v2 optionally has a dedicated primary endpoint); JSONAdapter
        may make one format fallback per Predictor (at most four calls per route),
-       and primary failure restarts the full fallback route (at most eight calls) -> final storyline key
+       and primary failure tries up to three ordered full fallback routes (at most sixteen calls) -> final storyline key
        from the verdict (written back) -> model-origin decide() or the structured
        lane's typed DecisionResult -> current verdict row
        (news_judgment_v2 marker, judgment origin/hash, model editorial when applicable,
@@ -897,7 +908,7 @@ consumer does not know Predictor instructions, output schemas, model
 routing, retry state, or artifact layout. That **Interface** lives at the
 semantic-judgment **Seam**, and `RoutedSemanticJudge` is the production
 **Adapter** there. It wraps one `NativeNewsProgram(dspy.Module)` and explicit
-primary/fallback model slots. Recorded-arm replay is an evaluator-side composition seam,
+primary plus ordered fallback model slots. Recorded-arm replay is an evaluator-side composition seam,
 not a second production generation Interface: the default evaluation path
 re-executes the real arm-scoped native Program with every Predictor call
 answered by `RecordedLM` from the run's content-addressed recordings. The Program
@@ -958,8 +969,8 @@ preserving the same two-Predictor graph and exact two-call common-success path.
 about a model call: exact DSPy/LiteLLM/transitive-GEPA versions, public Signature
 dumps, actual `dspy.JSONAdapter` renders for the schema, JSON-object and
 prompt-only capability paths, both typed output contracts, model-visible input
-shapes, the four model slots, retry/fallback/error transitions, route deadline,
-2/4/8 physical-call ceilings, token ceilings, normalization/assembly surface
+shapes, the four logical artifact binding slots, ordered runtime fallback limit,
+retry/fallback/error transitions, route deadline, 2/4/16 physical-call ceilings, token ceilings, normalization/assembly surface
 and the breaker. It is computed from those values rather than declared
 beside them, so a change to any of them moves the identity whether or not anyone
 remembers to say so. One contract test
@@ -1044,7 +1055,7 @@ sync execution for `dspy.GEPA` and genuine async execution for production; it
 does not construct HTTP, messages or `response_format`. Provider retry and cache
 are disabled. JSONAdapter may perform one format fallback per Predictor, so a
 common route uses exactly two calls, one route is capped at four, and a complete
-primary-to-fallback judgment is capped at eight.
+primary-plus-three-fallback judgment is capped at sixteen.
 
 The factory owns route topology, slot roles, token ceilings, deadlines and
 breaker policy. The concrete model bound to each slot has a separate
@@ -1196,9 +1207,10 @@ JSONAdapter may make one formatting fallback independently for either Predictor,
 so a route makes at most four calls. Provider errors do not trigger that fallback,
 and `max_tokens` truncation is terminal without another format call. The
 code-owned 20-second deadline
-applies to the whole route, not to each call. If primary still fails, fallback
-restarts the full Program with its own route deadline; the complete chain
-therefore makes at most eight visible provider attempts. Client-side
+applies to the whole route, not to each call. If primary still fails, up to
+three fallbacks restart the full Program in operator-declared order, each with
+its own route deadline; the complete chain therefore makes at most sixteen
+visible provider attempts. Client-side
 cache and hidden provider retries are disabled so the trace count equals real
 attempts. Missing or invalid `novelty` fails closed, and pre-current Program
 traces are not decoded by this route. OI and liquidation use their typed
@@ -1785,6 +1797,51 @@ paused, zero-recovery-obligation cutover.
 `20260830_0331` hard-cuts current execution truth to per-binding Capability V2,
 immutable ExecutionBinding V1, source-native routing, and TradeIntent V3 while
 retaining only terminal V1/V2 rows as archive facts.
+`20260830_0332` then installs the immutable capital-authority receipts and risk
+reservation truth. `20260829_0330` follows that cut and adds the append-oriented Telegram manual-trading session,
+effect, account-snapshot, order, fill, position, and audit ledgers. `0331`
+hard-binds that slice to Binance USD-M production and its dedicated account;
+`0332` adds explicit multi-target selection, `0333` makes selection a durable
+session transition, `0334` binds every selection to the originating Telegram
+message/user/session, and `0335` grants the executor the narrowly scoped effect
+insert needed to settle those transitions. `0336` adds the separate mutable
+`trading_onchain_analysis_sessions` projection and the append-fenced
+`trading_onchain_telegram_edit_effects` ledger for #370. Workers first commit
+the exact target message, Chinese render, keyboard, and result code together
+with each state transition, then settle the idempotent Telegram edit as
+`SENT` or `AMBIGUOUS`; Serve is read-only, and Nautilus has no access because
+this increment has no wallet or transaction authority.
+`20260829_0337` adds the separate manual EVM execution intent and exact signed
+transaction ledger. The Telegram/Workers side can request and confirm, while a
+dedicated executor alone mounts the one manual wallet key. Every route adapter
+shares that signer; provider blocks can never define a seed phrase or private
+key. Verified 1inch Router V6 and OKX Router V1 calldata are executable; each
+uses its own code-owned router/approval rules before the shared RPC simulation.
+Binance remains evidence-only until its public execution contract can be bound
+as strictly. `0338` adds an expiring Trading-owned Telegram development fixture
+projection so operators can exercise either interaction without fabricating a
+material News fact.
+`0339` makes Telegram delivery a fanout receipt, scopes manual executor claims
+by account reference and onchain executor claims by wallet fingerprint, and
+permits multiple independent manual accounts. It also scopes development
+fixture message identity by Telegram target. These constraints prevent one
+Telegram user's callback, preview, or executor loop from selecting another
+user's profile.
+`0340` adds the actor-bound manual position projection and manual close-order
+ledger. It enforces the 200-USDT development-fixture ceiling in PostgreSQL,
+supports reduce-only 30/50/100-percent closes, retains close-all protection
+after partial fills, records exchange reconciliation, and exposes current
+positions, closed positions, and the append-only trade history only to the
+originating private user/chat.
+`0341` gives onchain development fixtures the same durable 200-USDT ceiling.
+The execution intent stores its source classification, decimal precision, and
+notional, while an immutable, versioned settlement catalog binds the exact
+chain/contract/symbol/decimal identities permitted to sign. Workers can read
+that catalog only to validate a new intent; Serve has read-only audit access,
+and neither Nautilus nor the isolated onchain signer role can read or mutate
+it. Triggers reject catalog insert, update, delete, and truncate even for the table
+owner, so expanding executable settlement assets requires an explicit schema
+migration and matching application identity change.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -1797,8 +1854,8 @@ See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 
 ## Trading core (#104, #331)
 
-`tracefold.trading` is the disabled-by-default capital capability, and since
-#331 it is one deep module with one business action:
+`tracefold.trading` is the disabled-by-default capital capability. Since #331,
+its automatic lane is one deep module with one business action:
 
 ```python
 await capital_lane.advance()
@@ -1808,6 +1865,70 @@ The caller — always `tracefold.app` — owns polling, the stop event and proce
 lifecycle, and knows none of the admission order, the underlying
 de-duplication, the bar cutoff, the manifest construction, the capability
 resolution, the Case lease, the Intent identity or the transaction boundaries.
+
+The manual slice is a sibling public contract under the same package. It
+consumes only the sent-card projection supplied by `tracefold.app`, never
+imports News, and exposes explicit Telegram session transitions plus one
+execution authority. Only displayed `🎯 标的` blocks become candidates; when a
+card displays more than one, target selection is required before risk
+selection. News may fan out to private chats, channels, groups, and supergroups.
+Only a positive private-chat destination with a matching Telegram Trading
+Profile receives a Trading keyboard; non-private destinations are always
+read-only. The callback actor and chat must both equal the profile user ID.
+Manual sessions and the automatic
+Case/Intent lane use different account bindings, credentials, and ledgers.
+
+The onchain slice is another sibling contract, not a mode of manual futures.
+It also consumes only the sent-card `🎯 标的` projection. A displayed ticker or
+exact EVM CA is only a lookup seed and need not include a chain: provider
+directory observations are grouped by the material
+`(EVM chain_id, canonical contract address)` identity, and an operator must pick
+when more than one identity remains. The same exact chain, input contract,
+output contract, and raw amount are then quoted concurrently through configured
+OKX and 1inch adapters. Binance's public Alpha Token List contributes a third
+official `(chain_id, contract address)` discovery observation, but its route
+slot remains explicitly unavailable until Binance publishes or supplies an
+official general-token Web3 Swap quote contract; Alpha market data, Convert,
+and Prediction Trading are not substitutes. Alpha evidence is admitted only
+when both lifecycle flags are strict booleans and explicitly false; missing or
+malformed `offline` / `fullyDelisted` facts are not treated as verified.
+Long-tail DEX market discovery closes the directory-lag gap. It is discovery
+evidence, never a quote or execution provider, and a row is admitted only after
+the reported contract answers `name()`, `symbol()`, and `decimals()` on that
+chain. Duplicate symbols remain separate candidates; aggregate liquidity,
+pair count, provider corroboration, and exact-CA matching affect ordering but
+never replace the operator's explicit chain/CA choice.
+
+Provider facts are normalized fail-closed. The 1inch v1.6 Token API may add a
+CA candidate only when it is neither `blacklisted` nor `tradingRestricted`.
+An OKX v6 quote must repeat the requested chain and input/output contract
+identities, while a 1inch v6.1 quote must repeat both contract identities;
+when either token is marked `isHoneyPot=true`, the quote is risk-blocked and
+cannot become the displayed winner. Missing simulation, cost, or risk facts
+keep a non-blocked comparison provisional rather than silently treating the
+missing fact as safe or zero.
+
+Route ranking hard-rejects expired, failed-simulation, and risk-blocked rows.
+It calls a result definitive only when output value, provider fee, gas cost,
+minimum output, simulation, and risk evidence are all present; otherwise the
+highest same-token raw output is labeled provisional with the missing evidence
+shown in Chinese. `0336` persists the exact candidate and normalized quote
+facts without wallet authority. `0337` adds a separate, Telegram-confirmed
+execution intent and append-fenced signed-transaction ledger. The dedicated
+`tracefold_onchain` executor path refreshes the selected provider route, enforces
+the confirmed minimum output, binds an exact token approval to the swap target
+and amount, simulates through a configured RPC, and locally signs with the
+profile wallet selected by the callback actor. Every provider inside that
+profile uses the same wallet; profiles never share it. Workers can read
+status/hash projections but never raw
+signed bytes or the key; the manual futures/Nautilus lane has no access. Live
+execution is enabled only for 1inch Router V6 or OKX Router V1 calldata whose
+decoded arguments bind trusted router code, recipient, exact input, token pair,
+and minOut. OKX additionally binds its per-chain approval proxy and deadline;
+1inch rejects partial fill. The TG surface also requires
+a fresh database heartbeat for the configured wallet fingerprint before it
+shows or accepts confirmation. A successful `eth_call` alone is insufficient.
+Bridging remains out of scope.
 
 ### The domain language
 
@@ -2023,10 +2144,12 @@ copy Nautilus's complete Order/Fill history.
 
 ### Runtime and cutover
 
-A deployment with `trading.enabled=true` requires no execution credential and
-no execution-adapter replica. `make up`, `make deploy-image`, and `make status`
-require PostgreSQL, migration, Serve, Workers, and Web; execution adapters are
-reported not required while Capital remains PAUSED. Decision starts
+A deployment with `trading.enabled=true` requires no automatic execution
+credential and no automatic execution-adapter replica. Independently, a
+deployment with any profile manual account enabled requires every requested
+manual authority to be complete and one running `manual-executor`; `make up`,
+`make deploy-image`, `make status`, `make logs`, and `make down` manage that
+profile as part of the product lifecycle. Decision starts
 `STARTING`, advances to `RUNNING` with a durable heartbeat, and a real
 schema/wiring/policy/generation fault fails Workers startup or records
 `FAULTED` rather than becoming observer mode.

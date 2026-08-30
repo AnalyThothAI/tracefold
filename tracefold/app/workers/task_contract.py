@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from tracefold.app.workers.wiring.execution_capabilities import ExecutionCapabilityCompiler
 from tracefold.app.workers.wiring.trading import (
@@ -16,6 +16,9 @@ from tracefold.app.workers.wiring.trading import (
 from tracefold.news.pipeline.root import NewsPipeline
 from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
+
+if TYPE_CHECKING:
+    from tracefold.app.workers.wiring.manual_trading import ManualTradingRunner
 
 WORKERS_PROBE_TASK_NAME = "workers-probe"
 WORKERS_CONTROL_TASK_NAME = "workers-control"
@@ -31,6 +34,7 @@ def worker_business_runners(
     venue_catalog: VenueCatalog | None = None,
     execution_capability_compiler: ExecutionCapabilityCompiler | None = None,
     telemetry: Any | None = None,
+    manual_trading_runner: ManualTradingRunner | None = None,
 ) -> tuple[WorkerRunner, ...]:
     """Return the ordered task declarations consumed by the Workers root.
 
@@ -61,4 +65,6 @@ def worker_business_runners(
                 ),
             )
         )
+    if manual_trading_runner is not None:
+        runners.append(("trading-telegram", manual_trading_runner.run))
     return tuple(runners)

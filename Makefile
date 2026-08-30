@@ -3,6 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
+READ_TELEGRAM_TRADING_FLAGS := uv run python -c 'import json, sys; trading = json.load(sys.stdin)["data"]["trading"]; values = (trading["manual"]["requested"], trading["manual"]["interaction_available"], trading["onchain"]["requested"], trading["onchain"]["interaction_available"], trading["onchain"]["execution_available"]); print(" ".join(str(value).lower() for value in values)) if all(type(value) is bool for value in values) else sys.exit("invalid Telegram trading availability")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -39,7 +40,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked db-provision-onchain-role _db-provision-onchain-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -293,8 +294,26 @@ _db-provision-nautilus-role-locked:
 			echo "Nautilus role provisioning is offline-only; stop the entire Tracefold stack first." >&2; \
 			exit 1; \
 		fi; \
-		docker compose run --rm --no-deps --user postgres \
+	docker compose run --rm --no-deps --user postgres \
 			--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres
+
+db-provision-onchain-role: preflight github-preflight ## offline one-shot provisioning for an existing PostgreSQL volume
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-provision-onchain-role-locked
+
+_db-provision-onchain-role-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@# This entrypoint is bind-mounted from the working tree and runs as the PostgreSQL
+	@# superuser, so it must prove the exact reviewed main-CI revision before changing
+	@# the operator database, just like Nautilus role provisioning above.
+	@uv run python scripts/require_main_ci.py
+	@set -eu; \
+		running=$$(docker compose ps -q); \
+		if [ -n "$$running" ]; then \
+			echo "Onchain role provisioning is offline-only; stop the entire Tracefold stack first." >&2; \
+			exit 1; \
+		fi; \
+		docker compose run --rm --no-deps --user postgres \
+			--entrypoint /usr/local/bin/tracefold-provision-onchain-role postgres
 
 trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutover prerequisites
 	@set -eu; \
@@ -383,6 +402,8 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0330\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			20260830_0331\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
+			20260829_0330\|t\|t|20260829_0331\|t\|t|20260829_0332\|t\|t|20260829_0333\|t\|t|20260829_0334\|t\|t|20260829_0335\|t\|t|20260829_0336\|t\|t|20260829_0337\|t\|t|20260829_0338\|t\|t|20260829_0339\|t\|t|20260829_0340\|t\|t|20260829_0341\|t\|t) \
+				echo "Trading hard cuts are already present at database head $${migration_state%%|*}." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
@@ -431,8 +452,25 @@ _up-locked:
 		fi; \
 		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
 		COMPOSE_PROJECT_NAME=tracefold; \
-		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		COMPOSE_PROFILES=manual-trading,onchain-trading; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES; \
 		$(TRACEFOLD) init; \
+		runtime_config=$$($(TRACEFOLD) config); \
+		set -- $$(printf '%s\n' "$$runtime_config" | $(READ_TELEGRAM_TRADING_FLAGS)); \
+		if [ "$$#" -ne 5 ]; then \
+			echo "Could not read Telegram trading availability from the active config." >&2; \
+			exit 2; \
+		fi; \
+		manual_requested=$$1; manual_available=$$2; onchain_requested=$$3; \
+		onchain_available=$$4; onchain_execution_available=$$5; \
+		if [ "$$manual_requested" = true ] && [ "$$manual_available" != true ]; then \
+			echo "Telegram manual trading is requested but unavailable; inspect the redacted tracefold config output." >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$onchain_requested" = true ] && [ "$$onchain_available" != true ]; then \
+			echo "Telegram onchain route analysis is requested but unavailable; inspect the redacted tracefold config output." >&2; \
+			exit 2; \
+		fi; \
 		unset TRACEFOLD_APP_IMAGE; \
 		token="$${GITHUB_TOKEN:-}"; \
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
@@ -459,7 +497,9 @@ _up-locked:
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate serve workers"; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		if [ "$$manual_requested" = true ]; then runtime_services="$$runtime_services manual-executor"; fi; \
+		if [ "$$onchain_execution_available" = true ]; then runtime_services="$$runtime_services onchain-executor"; fi; \
+		docker compose stop -t 40 workers serve nautilus manual-executor onchain-executor || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		make --no-print-directory status || fail; \
@@ -481,7 +521,8 @@ _deploy-image-locked:
 		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
 		COMPOSE_PROJECT_NAME=tracefold; \
 		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
-		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		COMPOSE_PROFILES=manual-trading,onchain-trading; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES; \
 		git_dir=$$(git rev-parse --absolute-git-dir); \
 		git_common_dir=$$(git rev-parse --path-format=absolute --git-common-dir); \
 		branch=$$(git branch --show-current); \
@@ -512,6 +553,22 @@ _deploy-image-locked:
 			exit 2; \
 		fi; \
 		$(TRACEFOLD) init >/dev/null; \
+		host_runtime_config=$$($(TRACEFOLD) config); \
+		set -- $$(printf '%s\n' "$$host_runtime_config" | $(READ_TELEGRAM_TRADING_FLAGS)); \
+		if [ "$$#" -ne 5 ]; then \
+			echo "Could not read Telegram trading availability from the active config." >&2; \
+			exit 2; \
+		fi; \
+		host_manual_requested=$$1; host_manual_available=$$2; host_onchain_requested=$$3; \
+		host_onchain_available=$$4; host_onchain_execution_available=$$5; \
+		if [ "$$host_manual_requested" = true ] && [ "$$host_manual_available" != true ]; then \
+			echo "Telegram manual trading is requested but unavailable in the active host config." >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$host_onchain_requested" = true ] && [ "$$host_onchain_available" != true ]; then \
+			echo "Telegram onchain route analysis is requested but unavailable in the active host config." >&2; \
+			exit 2; \
+		fi; \
 		if [ "$(origin IMAGE_ID)" != "command line" ]; then \
 			echo "Pass an explicit local image ID: make deploy-image IMAGE_ID=sha256:<64 lowercase hex>." >&2; \
 			exit 2; \
@@ -559,8 +616,31 @@ _deploy-image-locked:
 			echo "Compose did not resolve migrate to the exact requested image ID." >&2; \
 			exit 2; \
 		fi; \
-		if ! runtime_config=$$(docker compose run --rm --no-deps --entrypoint tracefold migrate config); then \
+		if ! runtime_config=$$(docker compose run --rm --no-deps \
+			-v "$${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" \
+			-v "$${HOME}/.tracefold/trading_profiles/manual:/root/.tracefold/trading_profiles/manual:ro" \
+			-v "$${HOME}/.tracefold/trading_profiles/quotes:/root/.tracefold/trading_profiles/quotes:ro" \
+			-v "$${HOME}/.tracefold/trading_profiles/onchain:/root/.tracefold/trading_profiles/onchain:ro" \
+			--entrypoint tracefold migrate config); then \
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		set -- $$(printf '%s\n' "$$runtime_config" | $(READ_TELEGRAM_TRADING_FLAGS)); \
+		if [ "$$#" -ne 5 ]; then \
+			echo "Target image returned invalid Telegram trading availability; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		manual_requested=$$1; manual_available=$$2; onchain_requested=$$3; \
+		onchain_available=$$4; onchain_execution_available=$$5; \
+		if [ "$$manual_requested" != "$$host_manual_requested" ] || \
+			{ [ "$$host_manual_requested" = true ] && [ "$$manual_available" != true ]; }; then \
+			echo "Target image reports Telegram manual trading unavailable or inconsistent; no services were stopped." >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$onchain_requested" != "$$host_onchain_requested" ] || \
+			[ "$$onchain_execution_available" != "$$host_onchain_execution_available" ] || \
+			{ [ "$$host_onchain_requested" = true ] && [ "$$onchain_available" != true ]; }; then \
+			echo "Target image reports Telegram onchain route analysis unavailable or inconsistent; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
 		fail() { \
@@ -569,8 +649,10 @@ _deploy-image-locked:
 			exit 1; \
 		}; \
 		runtime_services="migrate serve workers"; \
+		if [ "$$manual_requested" = true ]; then runtime_services="$$runtime_services manual-executor"; fi; \
+		if [ "$$onchain_execution_available" = true ]; then runtime_services="$$runtime_services onchain-executor"; fi; \
 		base_services="$$runtime_services"; \
-		docker compose stop -t 40 workers serve nautilus || fail; \
+		docker compose stop -t 40 workers serve nautilus manual-executor onchain-executor || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$base_services || fail; \
 		for service in $$runtime_services; do \
@@ -640,10 +722,18 @@ _deploy-image-locked:
 		echo "Tracefold deployed exact local image $$image_id."
 
 status: preflight ## fail closed unless every enabled runtime is ready
-	@docker compose ps --all
+	@COMPOSE_PROFILES=manual-trading,onchain-trading docker compose ps --all
 	@set -eu; \
+		COMPOSE_PROFILES=manual-trading,onchain-trading; export COMPOSE_PROFILES; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
+		set -- $$(printf '%s\n' "$$runtime_config" | $(READ_TELEGRAM_TRADING_FLAGS)); \
+		if [ "$$#" -ne 5 ]; then \
+			echo "Could not read Telegram trading availability from the active config." >&2; \
+			exit 2; \
+		fi; \
+		manual_requested=$$1; manual_available=$$2; onchain_requested=$$3; \
+		onchain_available=$$4; onchain_execution_available=$$5; \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -663,6 +753,48 @@ status: preflight ## fail closed unless every enabled runtime is ready
 			echo "execution adapters: not required (#356/#357 pending; capital paused)"; \
 		else \
 			echo "execution adapters: not required (Trading disabled)"; \
+		fi; \
+		manual_ids=$$(docker compose ps -q manual-executor); \
+		manual_count=$$(printf '%s\n' "$$manual_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
+		if [ "$$manual_requested" = true ]; then \
+			if [ "$$manual_available" != true ]; then \
+				echo "manual-executor: requested but configuration unavailable" >&2; failed=1; \
+			elif [ "$$manual_count" -ne 1 ]; then \
+				echo "manual-executor: missing or stopped" >&2; failed=1; \
+			else \
+				manual_state=$$(docker inspect --format '{{.State.Status}}' "$$manual_ids"); \
+				manual_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$manual_ids"); \
+				if [ "$$manual_state" != running ] || [ "$$manual_health" != healthy ]; then \
+					echo "manual-executor: state=$$manual_state health=$$manual_health" >&2; failed=1; \
+				else \
+					echo "manual-executor: required and running"; \
+				fi; \
+			fi; \
+		elif [ "$$manual_count" -ne 0 ]; then \
+			echo "manual-executor: running while manual trading is disabled" >&2; failed=1; \
+		else \
+			echo "manual-executor: not required"; \
+		fi; \
+		onchain_ids=$$(docker compose ps -q onchain-executor); \
+		onchain_count=$$(printf '%s\n' "$$onchain_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
+		if [ "$$onchain_requested" = true ] && [ "$$onchain_available" != true ]; then \
+			echo "onchain-executor: route analysis requested but configuration unavailable" >&2; failed=1; \
+		elif [ "$$onchain_execution_available" = true ]; then \
+			if [ "$$onchain_count" -ne 1 ]; then \
+				echo "onchain-executor: missing or stopped" >&2; failed=1; \
+			else \
+				onchain_state=$$(docker inspect --format '{{.State.Status}}' "$$onchain_ids"); \
+				onchain_health=$$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$$onchain_ids"); \
+				if [ "$$onchain_state" != running ] || [ "$$onchain_health" != healthy ]; then \
+					echo "onchain-executor: state=$$onchain_state health=$$onchain_health" >&2; failed=1; \
+				else \
+					echo "onchain-executor: required and running"; \
+				fi; \
+			fi; \
+		elif [ "$$onchain_count" -ne 0 ]; then \
+			echo "onchain-executor: running without executable onchain authority" >&2; failed=1; \
+		else \
+			echo "onchain-executor: not required"; \
 		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \
@@ -691,10 +823,10 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		fi
 
 logs: preflight ## tail all product runtime and dependency logs
-	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
+	@COMPOSE_PROFILES=manual-trading,onchain-trading docker compose logs -f --tail=100 serve workers manual-executor onchain-executor migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
-	@docker compose down
+	@COMPOSE_PROFILES=manual-trading,onchain-trading docker compose down
 
 serve-shell: preflight ## open a shell in the Serve container
 	@docker compose exec serve /bin/sh

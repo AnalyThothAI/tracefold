@@ -169,7 +169,10 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
 # Concrete integration families may own one business-facing adapter. This is a module-family rule,
 # not a filename inventory: converting `opentrade.py` into an `opentrade/` package keeps the seam.
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
+    "binance_manual": {"trading"},
+    "binance_usdm_account": {"trading"},
     "nautilus": {"trading"},
+    "onchain": {"trading"},
     "opentrade": {"trading"},
     "trading_catalog": {"trading"},
 }

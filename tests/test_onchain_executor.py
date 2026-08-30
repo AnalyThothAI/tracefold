@@ -186,6 +186,8 @@ class _Rpc:
     def __init__(self) -> None:
         self.simulated: list[OnchainTransactionTemplate] = []
         self.sent: list[OnchainSignedTransaction] = []
+        self.known_transactions: set[str] = set()
+        self.reject_after_accept = False
 
     async def verify_chain(self) -> None:
         return None
@@ -207,7 +209,13 @@ class _Rpc:
 
     async def send_raw_transaction(self, signed: OnchainSignedTransaction) -> str:
         self.sent.append(signed)
+        self.known_transactions.add(signed.transaction_hash)
+        if self.reject_after_accept:
+            raise RuntimeError("onchain_rpc_rejected")
         return signed.transaction_hash
+
+    async def transaction_known(self, transaction_hash: str) -> bool:
+        return transaction_hash in self.known_transactions
 
     async def receipt(self, _transaction_hash: str) -> None:
         return None
@@ -295,3 +303,30 @@ def test_executor_replays_durable_signed_bytes_without_resigning_after_crash() -
     assert store.appended == []
     assert rpc.sent == [signed]
     assert store.advanced == [(OnchainExecutionState.CLAIMED, OnchainExecutionState.APPROVAL_SUBMITTED)]
+
+
+def test_executor_settles_signed_transaction_when_rpc_reports_already_known() -> None:
+    plan = _plan()
+    signed = OnchainSignedTransaction(
+        provider="oneinch",
+        leg="approval",
+        chain_id=1,
+        wallet_address=WALLET,
+        nonce=9,
+        raw_transaction="0x1234",
+        transaction_hash="0x" + "c" * 64,
+    )
+    store = _Store(_intent(plan=plan, approval=signed, approval_state="SIGNED"))
+    rpc = _Rpc()
+    rpc.reject_after_accept = True
+    service = OnchainExecutionService(
+        store=store,
+        providers={"oneinch": _Provider(plan)},
+        rpcs={1: rpc},
+        signer=_Signer(),
+        clock_ms=lambda: NOW + 2,
+    )
+
+    assert asyncio.run(service.turn()) == "approval_submitted"
+    assert rpc.sent == [signed]
+    assert store.settled[-1]["state"] == "SUBMITTED"

@@ -1167,6 +1167,27 @@ class ManualStorage:
             close_receipts=tuple(_manual_order_receipt(value) for value in row["close_receipts"]),
         )
 
+    def manual_has_active_symbol(
+        self,
+        *,
+        account_ref: str,
+        base_symbol: str,
+        exclude_intent_id: str,
+    ) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1
+              FROM trading_manual_intents
+             WHERE account_ref = %s
+               AND payload -> 'source' ->> 'base_symbol' = %s
+               AND intent_id <> %s
+               AND state IN ('SUBMITTING', 'AMBIGUOUS', 'OPEN', 'EXPOSED')
+             LIMIT 1
+            """,
+            (account_ref, base_symbol, exclude_intent_id),
+        ).fetchone()
+        return row is not None
+
     def observe_manual_position(
         self,
         intent_id: str,
@@ -1541,10 +1562,19 @@ class ManualStorage:
     def fence_manual_entry(self, intent_id: str, *, plan: ManualExecutionPlan, now_ms: int) -> bool:
         row = self.conn.execute(
             """
-            UPDATE trading_manual_intents
+            UPDATE trading_manual_intents AS pending
                SET state = 'SUBMITTING', execution_plan = %s::jsonb,
                    entry_client_order_id = %s, entry_fenced_at_ms = %s, updated_at_ms = %s
-             WHERE intent_id = %s AND state = 'PENDING'
+             WHERE pending.intent_id = %s AND pending.state = 'PENDING'
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM trading_manual_intents AS active
+                  WHERE active.account_ref = pending.account_ref
+                    AND active.payload -> 'source' ->> 'base_symbol'
+                        = pending.payload -> 'source' ->> 'base_symbol'
+                    AND active.intent_id <> pending.intent_id
+                    AND active.state IN ('SUBMITTING', 'AMBIGUOUS', 'OPEN', 'EXPOSED')
+               )
             RETURNING session_id::text AS session_id
             """,
             (

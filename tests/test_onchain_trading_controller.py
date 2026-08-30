@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any
 
 from tracefold.app.onchain_trading import (
@@ -456,6 +457,7 @@ def _controller(
     sources: tuple[OnchainNewsSource, ...],
     *,
     execution_available: bool = False,
+    execution_notional_usd: Decimal = Decimal("10"),
 ) -> tuple[Any, _Repository, _Gateway, _Bot]:
     repository = _Repository(sources)
     gateway = _Gateway(quote_provider="oneinch" if execution_available else "okx")
@@ -465,7 +467,7 @@ def _controller(
         gateway=gateway,
         bot=bot,
         wallet_address=("0x7e5f4552091a69125d5dfcb7b8c2659029395bdf" if execution_available else None),
-        execution_assets={1: ("USDC", 6)} if execution_available else None,
+        execution_assets={1: ("USDC", 6, execution_notional_usd)} if execution_available else None,
         execution_available=execution_available,
         executable_providers=("oneinch",) if execution_available else (),
         clock_ms=lambda: NOW,
@@ -493,6 +495,24 @@ def test_trade_button_requires_live_shared_wallet_executor_heartbeat() -> None:
     assert asyncio.run(controller.handle(refreshed)) == "onchain_analysis_ready"
     callbacks = [value for _, value in bot.edits[-1]["keyboard"]]  # type: ignore[union-attr]
     assert f"tf:o:p:{SESSION_ID}" in callbacks
+
+
+def test_development_test_execution_refuses_configured_notional_above_200u() -> None:
+    source = _source("HYPE").model_copy(update={"news_event_id": "development-test:fixture"})
+    controller, repository, _gateway, bot = _controller(
+        (source,),
+        execution_available=True,
+        execution_notional_usd=Decimal("200.01"),
+    )
+
+    asyncio.run(controller.handle(_update("tf:onchain:v1")))
+    selected = replace(_update(f"tf:o:c:0:{SESSION_ID}", message_id=99), update_id=102)
+    assert asyncio.run(controller.handle(selected)) == "onchain_analysis_ready"
+    prepare = replace(_update(f"tf:o:p:{SESSION_ID}", message_id=99), update_id=103)
+
+    assert asyncio.run(controller.handle(prepare)) == "onchain_development_test_notional_cap"
+    assert repository.session is not None
+    assert "200U" in bot.answers[-1][0]
 
 
 def test_single_displayed_ticker_resolves_ca_candidates_then_quotes_selected_identity() -> None:

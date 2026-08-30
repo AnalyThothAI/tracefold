@@ -17,8 +17,10 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     services = compose["services"]
 
     assert set(services) == {
+        "manual-executor",
         "migrate",
         "nautilus",
+        "onchain-executor",
         "postgres",
         "rabbitmq",
         "serve",
@@ -46,7 +48,10 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert (
         "./docker/postgres-provision-nautilus-role.sh:/usr/local/bin/tracefold-provision-nautilus-role:ro"
     ) in services["postgres"]["volumes"]
-    assert len(services["postgres"]["volumes"]) == 3
+    assert (
+        "./docker/postgres-provision-onchain-role.sh:/usr/local/bin/tracefold-provision-onchain-role:ro"
+    ) in services["postgres"]["volumes"]
+    assert len(services["postgres"]["volumes"]) == 4
     assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
     postgres_healthcheck = services["postgres"]["healthcheck"]["test"][1]
     assert "pg_isready" in postgres_healthcheck
@@ -59,6 +64,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         "postgres_workers_password",
         "postgres_migrate_password",
         "postgres_nautilus_password",
+        "postgres_onchain_password",
     ]
 
     shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
@@ -69,11 +75,11 @@ def test_compose_separates_migration_serve_and_workers() -> None:
         },
         "secrets": ["github_token"],
     }
-    for role in ("migrate", "serve", "workers", "nautilus"):
+    for role in ("migrate", "serve", "workers", "nautilus", "manual-executor", "onchain-executor"):
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
 
-    for role in ("serve", "workers", "nautilus"):
+    for role in ("serve", "workers", "nautilus", "manual-executor", "onchain-executor"):
         depends = services[role]["depends_on"]
         assert depends["postgres"]["condition"] == "service_healthy"
         assert depends["migrate"]["condition"] == "service_completed_successfully"
@@ -82,6 +88,18 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
+    assert services["manual-executor"]["command"] == ["tracefold", "manual-executor", "run"]
+    assert services["manual-executor"]["profiles"] == ["manual-trading"]
+    manual_healthcheck = services["manual-executor"]["healthcheck"]
+    assert manual_healthcheck["test"][0:2] == ["CMD", "python"]
+    assert "tracefold-manual-executor-heartbeat" in manual_healthcheck["test"][3]
+    assert manual_healthcheck["interval"] == "5s"
+    assert services["onchain-executor"]["command"] == ["tracefold", "onchain-executor", "run"]
+    assert services["onchain-executor"]["profiles"] == ["onchain-trading"]
+    onchain_healthcheck = services["onchain-executor"]["healthcheck"]
+    assert onchain_healthcheck["test"][0:2] == ["CMD", "python"]
+    assert "tracefold-onchain-executor-heartbeat" in onchain_healthcheck["test"][3]
+    assert onchain_healthcheck["interval"] == "5s"
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
@@ -99,6 +117,7 @@ def test_compose_declares_host_role_password_files_as_postgres_init_secrets() ->
     assert compose["secrets"]["postgres_workers_password"]["file"] == "${HOME}/.tracefold/postgres_workers_password"
     assert compose["secrets"]["postgres_migrate_password"]["file"] == "${HOME}/.tracefold/postgres_migrate_password"
     assert compose["secrets"]["postgres_nautilus_password"]["file"] == "${HOME}/.tracefold/postgres_nautilus_password"
+    assert compose["secrets"]["postgres_onchain_password"]["file"] == "${HOME}/.tracefold/postgres_onchain_password"
     assert "postgres_review_password" not in compose["secrets"]
 
 
@@ -110,6 +129,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
         "postgres_workers_password": "B" * 43,
         "postgres_migrate_password": "C" * 43,
         "postgres_nautilus_password": "D" * 43,
+        "postgres_onchain_password": "E" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -151,6 +171,7 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "tracefold_review" not in sql
     assert "CREATE ROLE tracefold_migrate" in sql
     assert "CREATE ROLE tracefold_nautilus" in sql
+    assert "CREATE ROLE tracefold_onchain" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE" in sql
     assert "GRANT tracefold_owner TO tracefold_migrate WITH SET TRUE" in sql
@@ -172,6 +193,7 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
         "postgres_workers_password": "B" * 43,
         "postgres_migrate_password": "C" * 43,
         "postgres_nautilus_password": "D" * 43,
+        "postgres_onchain_password": "E" * 43,
     }
     for name, password in passwords.items():
         path = secrets_dir / name
@@ -203,6 +225,7 @@ def test_runtime_role_migration_validates_owner_bootstrap_and_normalizes_legacy_
         "tracefold_workers",
         "tracefold_migrate",
         "tracefold_nautilus",
+        "tracefold_onchain",
         "tracefold_migrate_owner_membership",
         "public_schema_owner",
         "bootstrap_login_disabled",
@@ -287,11 +310,58 @@ def test_offline_nautilus_role_provisioning_refuses_a_running_cluster(tmp_path: 
     assert "offline" in result.stderr.lower()
 
 
+def test_offline_onchain_role_provisioning_is_narrow_and_keeps_the_password_out_of_output(
+    tmp_path: Path,
+) -> None:
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    password = "O" * 43
+    password_file = secrets_dir / "postgres_onchain_password"
+    password_file.write_text(password + "\n", encoding="utf-8")
+    password_file.chmod(0o600)
+    pgdata = tmp_path / "pgdata"
+    pgdata.mkdir()
+    capture_path = tmp_path / "captured.sql"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_postgres = bin_dir / "postgres"
+    fake_postgres.write_text(
+        '#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n',
+        encoding="utf-8",
+    )
+    fake_postgres.chmod(0o700)
+
+    result = subprocess.run(
+        ["sh", "docker/postgres-provision-onchain-role.sh", str(secrets_dir)],
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "PGDATA": str(pgdata),
+            "POSTGRES_DB": "tracefold",
+            "TRACEFOLD_CAPTURE_SQL": str(capture_path),
+        },
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert password not in result.stdout
+    assert password not in result.stderr
+    sql = capture_path.read_text(encoding="utf-8")
+    assert "CREATE ROLE tracefold_onchain LOGIN" in sql
+    assert "ALTER ROLE tracefold_onchain" in sql
+    assert "NOCREATEROLE" in sql
+    assert "GRANT tracefold_owner" not in sql
+
+
 def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     compose = yaml.safe_load(Path("compose.yaml").read_text())
     serve_volumes = compose["services"]["serve"].get("volumes", [])
     worker_volumes = compose["services"]["workers"].get("volumes", [])
     nautilus_volumes = compose["services"]["nautilus"].get("volumes", [])
+    manual_volumes = compose["services"]["manual-executor"].get("volumes", [])
+    onchain_volumes = compose["services"]["onchain-executor"].get("volumes", [])
 
     assert any("postgres_serve_password" in volume for volume in serve_volumes)
     assert not any(
@@ -302,6 +372,7 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
     assert "${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro" in worker_volumes
     assert "${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro" in worker_volumes
     assert "${HOME}/.tracefold/hyperliquid_private_key:/root/.tracefold/hyperliquid_private_key:ro" in worker_volumes
+    assert "${HOME}/.tracefold/trading_profiles/quotes:/root/.tracefold/trading_profiles/quotes:ro" in worker_volumes
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert not any(
         "postgres_serve_password" in volume or "postgres_migrate_password" in volume for volume in worker_volumes
@@ -314,6 +385,14 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
         for volume in nautilus_volumes
         for role_password in ("postgres_serve_password", "postgres_workers_password", "postgres_migrate_password")
     )
+    assert any("postgres_nautilus_password" in volume for volume in manual_volumes)
+    assert "${HOME}/.tracefold/trading_profiles/manual:/root/.tracefold/trading_profiles/manual:ro" in manual_volumes
+    assert all("telegram_bot_token" not in volume for volume in manual_volumes)
+    assert all("binance_demo_api_key" not in volume for volume in manual_volumes)
+    assert all("binance_demo_api_secret" not in volume for volume in manual_volumes)
+    assert any("postgres_onchain_password" in volume for volume in onchain_volumes)
+    assert "${HOME}/.tracefold/trading_profiles/quotes:/root/.tracefold/trading_profiles/quotes:ro" in onchain_volumes
+    assert "${HOME}/.tracefold/trading_profiles/onchain:/root/.tracefold/trading_profiles/onchain:ro" in onchain_volumes
     for service_name, service in compose["services"].items():
         if service_name not in {"workers", "nautilus"}:
             assert not any(
@@ -322,5 +401,16 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
                 or "hyperliquid_private_key" in volume
                 for volume in service.get("volumes", [])
             )
-    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
+        if service_name != "manual-executor":
+            assert not any("binance_manual_live_" in volume for volume in service.get("volumes", []))
+        if service_name not in {"workers", "onchain-executor"}:
+            assert not any(
+                "onchain_okx_" in volume or "onchain_oneinch_" in volume for volume in service.get("volumes", [])
+            )
+        if service_name != "onchain-executor":
+            assert not any("onchain_manual_evm_private_key" in volume for volume in service.get("volumes", []))
+    assert all(
+        "/root/.tracefold/data" not in volume
+        for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes, *manual_volumes, *onchain_volumes]
+    )
     assert "tracefold-postgres" in compose["volumes"]

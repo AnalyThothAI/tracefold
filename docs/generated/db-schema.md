@@ -1038,6 +1038,9 @@
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `confirmed_at_ms` | `BIGINT` | True | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+| `development_test` | `BOOLEAN` | False | `None` |
+| `notional_usd` | `NUMERIC(38, 18)` | False | `None` |
+| `settlement_decimals` | `INTEGER` | False | `None` |
 
 ## `trading_onchain_executor_runtime`
 
@@ -1046,6 +1049,15 @@
 | `wallet_fingerprint` | `TEXT` | False | `None` |
 | `started_at_ms` | `BIGINT` | False | `None` |
 | `heartbeat_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_onchain_settlement_assets`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `chain_id` | `BIGINT` | False | `None` |
+| `contract_address` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `decimals` | `INTEGER` | False | `None` |
 
 ## `trading_onchain_signed_transactions`
 

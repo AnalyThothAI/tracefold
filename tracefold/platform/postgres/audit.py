@@ -115,6 +115,7 @@ TRADING_TABLES = (
     "trading_onchain_analysis_sessions",
     "trading_onchain_telegram_edit_effects",
     "trading_onchain_executor_runtime",
+    "trading_onchain_settlement_assets",
     "trading_onchain_execution_intents",
     "trading_onchain_signed_transactions",
 )

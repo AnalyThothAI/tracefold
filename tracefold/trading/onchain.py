@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 OnchainProvider = Literal["okx", "oneinch", "binance"]
 OnchainDiscoveryProvider = Literal["okx", "oneinch", "binance", "dexscreener"]
+MAX_DEVELOPMENT_TEST_ONCHAIN_NOTIONAL_USD = Decimal("200")
 
 _CONTRACT_RE = re.compile(r"0x[0-9a-f]{40}")
 _SYMBOL_RE = re.compile(r"[A-Z0-9][A-Z0-9._-]{0,19}")
@@ -66,6 +67,25 @@ class OnchainNewsSource(BaseModel):
     source_observed_at_ms: Annotated[int, Field(gt=0)]
 
     _normalize_ticker = field_validator("ticker", mode="before")(canonical_onchain_asset_seed)
+
+
+def is_development_test_onchain_source(sources: tuple[OnchainNewsSource, ...]) -> bool:
+    return any(source.news_event_id.startswith("development-test:") for source in sources)
+
+
+def validate_onchain_execution_notional(
+    sources: tuple[OnchainNewsSource, ...],
+    notional_usd: object,
+) -> Decimal:
+    try:
+        parsed = Decimal(str(notional_usd))
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError("onchain_execution_notional_invalid") from exc
+    if not parsed.is_finite() or parsed <= 0:
+        raise ValueError("onchain_execution_notional_invalid")
+    if is_development_test_onchain_source(sources) and parsed > MAX_DEVELOPMENT_TEST_ONCHAIN_NOTIONAL_USD:
+        raise ValueError("onchain_development_test_notional_exceeds_cap")
+    return parsed
 
 
 class OnchainProviderToken(BaseModel):
@@ -545,6 +565,7 @@ def analyze_onchain_routes(
 
 
 __all__ = [
+    "MAX_DEVELOPMENT_TEST_ONCHAIN_NOTIONAL_USD",
     "OnchainAnalysisSession",
     "OnchainAnalysisState",
     "OnchainAssetCandidate",
@@ -563,5 +584,7 @@ __all__ = [
     "RouteAnalysisState",
     "analyze_onchain_routes",
     "canonical_onchain_asset_seed",
+    "is_development_test_onchain_source",
     "resolve_onchain_candidates",
+    "validate_onchain_execution_notional",
 ]

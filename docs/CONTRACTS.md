@@ -21,7 +21,8 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-an empty Telegram bot-token placeholder, and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
+empty Telegram and automatic/manual/onchain execution credential placeholders,
+and bootstrap/Serve/Workers/Nautilus/onchain/migrate password files. The operator directory is
 mode `0700`; config, Telegram placeholder, and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
@@ -90,25 +91,26 @@ Reflection has an exact 32k-token ceiling. The judge binds its
 model/endpoint, instruction/schema, JSONAdapter, timeout/token/temperature/LM
 kwargs and cache/retry contract, and its calls, cost and explicit unavailable
 failures stay separate facts inside the compile record.
-`llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
-only valid next to a complete primary triple; issue #65) is a second direct
-endpoint used only when the primary Triage call fails — timeout, transport
-error, truncated or invalid output — or while the code-owned primary-route
-breaker is open. `llm.news_reader_card_fallback` is an optional complete
-ReaderCard endpoint for that same fallback route and is valid only when
-`news_triage_fallback` is complete. When it is absent, the Reader fallback slot
-is an explicit alias of the EventSemantics fallback slot; when it is present but
-invalid, the whole fallback route is unavailable rather than silently using a
-different backend. The Program factory owns that breaker plus each
+`llm.news_fallbacks` is an ordered list of at most three complete direct routes
+(`api_key`, `base_url`, `model`; all-or-nothing and only valid next to a complete
+primary triple). They run in declared order after the primary fails — timeout,
+transport error, truncated or invalid output — or while the code-owned primary-route
+breaker is open, and stop at the first complete answer. A route may carry an optional
+complete nested `reader_card` endpoint. When absent, ReaderCard explicitly aliases
+that route's EventSemantics endpoint; when present but invalid, that whole route is
+unavailable rather than silently mixing backends. The Program factory owns that breaker plus each
 route's deadline and retry/call budget; `deadline_seconds` is not a
 configuration field. The separate `news.triage.circuit_failures` /
 `circuit_open_seconds` settings govern the consumer's whole-chain breaker after
-both routes fail retryably. `news_verdicts.model` records the runtime model that
+all configured routes fail retryably. `news_verdicts.model` records the runtime model that
 answered and the trace carries `model_fallback_from` (the primary's error code
-or `primary_circuit_open`) or, when both routes failed, `primary_error`.
+or `primary_circuit_open`) or, when all routes failed, `primary_error`. Every
+physical v8 call also carries `route_slot` (`primary` or `fallback_1..3`) beside
+the concrete runtime provider/model, so repeated providers remain unambiguous.
 `/api/news/status.pipeline` and `tracefold config` report `triage_model`, the
 effective `reader_card_model`, whether it is dedicated, and
-`triage_fallback_model` plus the effective Reader fallback model/dedicated flag.
+ordered `triage_fallback_models` plus effective `reader_card_fallback_models`
+and per-route dedicated flags.
 Internal `ReaderCard` outputs only `headline_zh`
 and `why_zh`; no other model or provider produces copy. `headline_zh` is the
 only Verdict/feed reader title; when no current judgment exists the Web falls
@@ -133,7 +135,8 @@ run; `news.broker.name_prefix` prefixes every exchange and queue name and
 (`concurrency`, `circuit_failures`, `circuit_open_seconds`), `news.push.*`
 (`enabled`, the mutually exclusive Feishu fields `feishu_webhook_url` and
 optional `feishu_signing_secret`, or Telegram fields
-`telegram_bot_token_file` and `telegram_chat_id`, plus
+`telegram_bot_token_file`, up to 32 unique private-user/channel/group Bot API
+IDs in `telegram_chat_ids`, plus
 `min_interval_seconds`), and
 `news.venues.*` (`enabled`, public-data switches `binance`, `hyperliquid`,
 `okx`, `lighter`, `bitget`, reference-only `us_reference`, and `snapshot_period_hours`), and
@@ -146,8 +149,13 @@ keys, or webhook.
 
 Push delivery is available only when `news.push.enabled` is true, exactly one
 provider is complete, and Workers is running. Feishu requires a valid HTTPS custom-bot v2 URL.
-Telegram requires a secure bot-token file and one private channel Bot API ID
-beginning with `-100`. Provider conflicts, invalid targets, and missing or
+Telegram requires a secure bot-token file and at least one exact Bot API target
+ID. Positive IDs must resolve to private chats. Negative IDs may resolve to a
+channel, group, or supergroup where the bot has the required membership/posting
+authority. Every target receives the same news card, but a trading keyboard is
+attached only to a positive private target that has a matching enabled
+`trading.telegram_profiles[]` row. Channels and groups are always read-only.
+Provider conflicts, invalid targets, and missing or
 insecure credentials fail closed: Serve remains credential-free, while an
 explicitly enabled invalid provider configuration makes Workers fail startup.
 On Telegram, a reader ticker is clickable only when an official venue catalogue proves an exact contract.
@@ -224,20 +232,93 @@ catalog remain active Workers responsibilities. The accepted keys are only:
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
 - `bindings.binance_usdm.api_key_file` / `api_secret_file`;
-- `bindings.hyperliquid_perp.private_key_file` / `account_address`.
+- `bindings.hyperliquid_perp.private_key_file` / `account_address`;
+- `manual.risk.*`, `manual.tight_stop.*`, and `manual.wide_stop.*` as shared
+  code-validated presentation/risk policy;
+- `onchain.slippage_bps`, up to 32 unique
+  `onchain.discovery_chain_ids`, and one unique
+  `onchain.settlement_assets[]` row per EVM chain (`chain_id`, display name,
+  stablecoin symbol/CA/decimals, and bounded quote amount);
+- up to 16 unique `telegram_profiles[]` rows. Each row has one positive
+  `user_id`, optional `manual` account authority, and optional `onchain`
+  provider/wallet authority. At least one lane must be enabled;
+- profile `manual`: `enabled`, `live_trading_acknowledged`, the fixed literal
+  `venue=binance_usdm_live`, unique `account_ref`, and the user's dedicated
+  Binance API key/secret paths;
+- profile `onchain`: `enabled`; `providers.okx` API key/secret/passphrase,
+  optional `providers.oneinch` API key, and the explicit Binance capability
+  slot; plus one `wallet.address`, private-key file, and explicit live-trading
+  acknowledgement. Provider blocks never own a seed phrase or wallet key.
 
-Secret-file paths are resolved relative to the operator config directory
-unless absolute. Missing files are the legal `unconfigured` state. Partial,
-malformed, insecure, or unreadable inputs are `invalid`; neither state exposes
-secret contents. A configured binding is still `stopped/unknown` until its
-later adapter-owned read-only preflight exists (#356/#357).
+Secret-file paths are normally resolved relative to the operator config
+directory unless absolute. Missing files are the legal `unconfigured` state.
+Partial, malformed, insecure, or unreadable inputs are `invalid`; neither state
+exposes secret contents. A configured binding is still `stopped/unknown` until
+its later adapter-owned read-only preflight exists (#356/#357). For Telegram
+Trading, every profile user ID must also be a positive member of
+`news.push.telegram_chat_ids`. Profile credential paths are closed to
+`trading_profiles/<lane>/<user_id>/...`; secret paths may not be reused by two
+profiles. This makes the Telegram user ID the only account selector and prevents
+one user's callback from reaching another user's credentials.
 
-There is no mode, live symbol, account, venue, OpenTrade, approval, backend
-selector, or Intent-acceptance configuration, and since #331 no `regime.*`,
-no `policy.*` and no model budget: a capital threshold in a YAML file is a rule
-with no version and no frozen evidence. Unknown retired keys fail strict
-settings validation. The capital lane's poll cadence is App-owned and the
-Nautilus cadence is code-owned.
+Profile route-provider credentials are mounted into Workers for directory/quote
+reads and into the isolated onchain executor for fresh executable routes; they
+authorize API access, not wallet custody. Only the executor receives the
+profile wallet key. OKX, 1inch, Binance, and any future route adapter within one
+profile use that same wallet. `tracefold config` reports provider
+enabled/configured booleans, paths, chain settlement identities, and the stable
+Binance unavailable reason; it never reports provider credential contents.
+`execution_available=true` means at least one executable provider exists in
+addition to a profile wallet and RPC authority. The executable set may
+contain `okx` and `oneinch`. Router V6 calldata is decoded and bound to the
+trusted router, exact input, requested contracts, wallet recipient, minOut, and
+no-partial-fill rule. OKX Router V1 calldata is bound to its code-owned
+per-chain router and approval proxy, supported selector, exact input, requested
+contracts, wallet recipient, minOut, and deadline.
+
+The automatic lane has no mode, live symbol, account, venue, OpenTrade,
+approval, backend selector, or Intent-acceptance configuration, and since #331
+no `regime.*`, no `policy.*` and no model budget: a capital threshold in a YAML
+file is a rule with no version and no frozen evidence. Unknown retired keys
+fail strict settings validation. The capital lane's poll cadence is App-owned
+and the Nautilus cadence is code-owned.
+
+Manual trading is independent and disabled per profile by default. A profile
+becomes interaction available only when Telegram push includes that user's
+private destination, the bot token and that profile's dedicated manual Binance
+key pair are secure and readable, and live trading is explicitly acknowledged.
+The manual credential files and credential contents must be
+distinct from the automatic Binance pair. Its fixed provider origin is
+`https://fapi.binance.com`; Demo, another CEX, and on-chain signing are not
+selectable in this increment. `tracefold config` reports only requested/
+available booleans, sanitized reasons, paths, counts, venue, account reference,
+and numeric presets.
+
+Onchain route analysis is independently disabled per profile by default and
+does not require `trading.enabled` or a manual-futures account. It becomes
+interaction available when valid Telegram delivery includes the profile's
+private user ID; Binance
+Alpha plus verified DEX Screener observations provide credential-free discovery,
+while OKX/1inch credentials add quotes. A displayed target may
+be a ticker or exact EVM CA without a chain. Binance's public Alpha Token List
+may contribute ticker/CA evidence without credentials, and long-tail DEX market
+discovery is admitted only after onchain ERC-20 metadata verification. The
+Binance route remains visible as `binance_general_web3_swap_api_unpublished`;
+enabling its provider flag does not make it an executable quote source. The
+only live operator interaction is the Telegram `链上路由` flow; no HTTP write
+route is added. Development fixtures are accepted only as `/test_futures` or
+`/test_onchain` messages sent directly to the bot by a configured profile user.
+A channel, group, supergroup, forwarded actor, or unconfigured private user
+cannot trigger them. The bot sends the marked two-hour Trading fixture only
+back to that same private chat and never writes News material facts.
+Each callback edit is fenced by its Telegram update ID in
+`trading_onchain_telegram_edit_effects`. The desired message ID, exact render,
+keyboard, and result code are durable before `editMessageText`; terminal
+`SENT` / `AMBIGUOUS` settlement is monotonic.
+The trade button additionally requires that the winning provider is in
+`executable_providers` and that the durable heartbeat for the configured wallet
+fingerprint is fresh. Confirmation repeats that check and leaves an awaiting
+intent unsubmitted when the executor is stale.
 
 The one production policy, `source_native_oi_smart_money_long_v3`, is
 code-owned and frozen onto every Case it decides, together with the per-check
@@ -287,14 +368,19 @@ The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
 initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. Execution credentials are not a deployment prerequisite,
-and no execution adapter is started (#356/#357 pending). A repeated invocation preserves config, passwords, and
+console boundaries. Automatic execution credentials are not a deployment
+prerequisite and no automatic adapter is started (#356/#357 pending). When
+manual trading is requested, `make up` derives the Compose profile from the
+validated config and also requires and recreates `manual-executor`; incomplete
+manual authority fails closed before replacement. A repeated invocation preserves config, passwords, and
 named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
-required runtime readiness endpoint, or console HTML is missing or unhealthy.
-It reports execution adapters as not required while Capital is PAUSED.
-`make logs` follows the bounded startup services. `make down` stops the stack
+required runtime readiness endpoint, console HTML, or a requested manual
+executor is missing or unhealthy. It reports automatic adapters as not
+required while Capital is PAUSED and rejects a stale manual executor when the
+feature is disabled. `make logs` follows all bounded startup services,
+including the manual executor profile. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
@@ -306,11 +392,19 @@ stack selectors, `.env`, Compose overrides, and untracked or ignored Alembic
 revisions. Before stopping Serve or Workers it requires source, image, and live
 database Alembic heads to match and requires the target image to parse the
 active config. It never builds, pulls, or downgrades. Success additionally
-requires the recreated migration, Serve, and Workers containers, Workers
+requires the recreated migration, Serve, Workers, and any requested manual
+executor containers, Workers
 readiness identity, runtime manifest, and linked active/deployment receipt to
 prove that exact image. `make up` and `make deploy-image` share one
 process-lifetime deployment lock; concurrent mutation is refused and process
 exit releases the lock.
+For requested manual trading, the pre-stop config check runs inside the exact
+target image with ephemeral read-only credential mounts, so a rollback cannot
+borrow the current host source's validation result. The running executor writes
+a process-local heartbeat only after a successful account/venue/database turn;
+its Compose healthcheck and `make status` fail closed on a missing or stale
+heartbeat, and an unhandled turn fault terminates the process for supervised
+restart.
 
 ## HTTP
 
@@ -726,8 +820,8 @@ The current execution contract is `EventSemantics.v2 -> deterministic
 SemanticNormalizer -> ReaderCard.v2 -> deterministic assembler`: normally two
 serial calls because the normalizer and assembler make no provider request;
 JSONAdapter may make one format fallback per Predictor, so at most four calls
-per route; fallback restarts the full Program, so primary plus fallback is at
-most eight. The code-owned 20-second
+per route; every fallback restarts the full Program, so primary plus three
+fallbacks is at most sixteen. The code-owned 20-second
 deadline covers one whole route. One Event still persists one final
 SemanticJudgment and one card; this is not a restored Analyst stage. A stale-
 ledger re-ask is a separate execution with the same ceiling (normally another
@@ -1018,7 +1112,8 @@ orthogonal durable runtime facts and bounded totals.
 
 `uv run tracefold --help` is the exact CLI source of truth. Stable top-level families are:
 
-- service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
+- service/config: `serve`, `workers`, `nautilus run`, `manual-executor run`,
+  `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
 - Trading: `trading status|cases|show|replay-oi|blacklist|control`;
@@ -1029,9 +1124,10 @@ maintenance command. Mutating maintenance commands require an explicit
 execution flag where the parser offers a dry-run mode. They operate from
 persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
-There is no CLI command that creates, approves, rejects, resolves, submits,
-amends, or cancels an execution. Nautilus owns execution from the durable
-Intent contract.
+There is no operator CLI command that creates, approves, rejects, resolves,
+submits, amends, or cancels an order. Nautilus owns automatic execution from
+the durable Intent contract; `manual-executor run` is a long-running Telegram
+callback authority and exposes no direct order subcommand.
 
 `validate-projections` is a strict Serve-role read. It does not acquire the
 maintenance lock, so operators can inspect the running singleton without
@@ -1040,7 +1136,8 @@ interrupting it.
 `db audit` reports the migration revision, row `counts` for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260830_0332`). Since
+append without rewrite access plus the immutable onchain settlement-catalog
+boundary (current at migration `20260829_0341`). Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.

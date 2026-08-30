@@ -273,7 +273,8 @@ class CliTests(unittest.TestCase):
                 "feishu_webhook_url_configured": False,
                 "feishu_signing_secret_configured": False,
                 "telegram_bot_token_file_configured": False,
-                "telegram_chat_id_configured": False,
+                "telegram_target_count": 0,
+                "telegram_private_target_count": 0,
                 "min_interval_seconds": 0.6,
             },
         )
@@ -303,7 +304,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
         self.assertEqual(
             set(payload["data"]["store"]["postgres_roles"]),
-            {"serve", "workers", "migrate", "nautilus"},
+            {"serve", "workers", "migrate", "nautilus", "onchain"},
         )
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
@@ -345,7 +346,7 @@ class CliTests(unittest.TestCase):
                 "feishu_webhook_url": None,
                 "feishu_signing_secret": None,
                 "telegram_bot_token_file": None,
-                "telegram_chat_id": None,
+                "telegram_chat_ids": [],
                 "min_interval_seconds": 0.6,
             },
         )
@@ -367,6 +368,85 @@ class CliTests(unittest.TestCase):
                         "account_address": None,
                     },
                 },
+                "manual": {
+                    "risk": {
+                        "notional_deviation_limit_bps": 5000,
+                        "tight_stop_deviation_limit_bps": 5000,
+                        "wide_stop_deviation_limit_bps": 10000,
+                        "max_account_risk_bps": 1000,
+                        "high_risk_loss_multiple_bps": 15000,
+                        "min_leverage": 1,
+                        "max_leverage": 20,
+                    },
+                    "tight_stop": {
+                        "leverage": 10,
+                        "stop_loss_bps": 100,
+                        "take_profit_bps": 200,
+                        "account_risk_bps": 200,
+                        "min_notional_usd": 5,
+                        "max_notional_usd": 10,
+                    },
+                    "wide_stop": {
+                        "leverage": 2,
+                        "stop_loss_bps": 2000,
+                        "take_profit_bps": 10000,
+                        "account_risk_bps": 100,
+                        "min_notional_usd": 5,
+                        "max_notional_usd": 10,
+                    },
+                },
+                "onchain": {
+                    "slippage_bps": 100,
+                    "discovery_chain_ids": [1, 56, 8453, 42161, 4663],
+                    "settlement_assets": [
+                        {
+                            "chain_id": 1,
+                            "chain_name": "Ethereum",
+                            "symbol": "USDC",
+                            "contract_address": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+                            "decimals": 6,
+                            "quote_amount": 10,
+                            "rpc_url": None,
+                        },
+                        {
+                            "chain_id": 56,
+                            "chain_name": "BNB Chain",
+                            "symbol": "USDT",
+                            "contract_address": "0x55d398326f99059ff775485246999027b3197955",
+                            "decimals": 18,
+                            "quote_amount": 10,
+                            "rpc_url": None,
+                        },
+                        {
+                            "chain_id": 8453,
+                            "chain_name": "Base",
+                            "symbol": "USDC",
+                            "contract_address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+                            "decimals": 6,
+                            "quote_amount": 10,
+                            "rpc_url": None,
+                        },
+                        {
+                            "chain_id": 42161,
+                            "chain_name": "Arbitrum One",
+                            "symbol": "USDC",
+                            "contract_address": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+                            "decimals": 6,
+                            "quote_amount": 10,
+                            "rpc_url": None,
+                        },
+                        {
+                            "chain_id": 4663,
+                            "chain_name": "Robinhood Chain",
+                            "symbol": "USDG",
+                            "contract_address": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+                            "decimals": 6,
+                            "quote_amount": 10,
+                            "rpc_url": None,
+                        },
+                    ],
+                },
+                "telegram_profiles": [],
             },
         )
 
@@ -483,6 +563,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "postgres_workers_password",
         "postgres_migrate_password",
         "postgres_nautilus_password",
+        "postgres_onchain_password",
     ):
         path = app_home / name
         assert path.is_file()
@@ -490,8 +571,19 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert (app_home / "telegram_bot_token").read_bytes() == b""
     assert all(
         (app_home / name).read_bytes() == b""
-        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
+        for name in (
+            "binance_usdm_api_key",
+            "binance_usdm_api_secret",
+            "hyperliquid_private_key",
+        )
     )
+    for directory in (
+        app_home / "trading_profiles" / "manual",
+        app_home / "trading_profiles" / "quotes",
+        app_home / "trading_profiles" / "onchain",
+    ):
+        assert directory.is_dir()
+        assert directory.stat().st_mode & 0o777 == 0o700
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -512,6 +604,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "postgres_workers_password",
         "postgres_migrate_password",
         "postgres_nautilus_password",
+        "postgres_onchain_password",
     )
     before = {name: (app_home / name).read_bytes() for name in tracked_names}
     app_home.chmod(0o755)

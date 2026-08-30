@@ -592,7 +592,7 @@ def test_0315_backfills_exact_source_contracts_and_records_the_factory_hard_cut(
         _upgrade("head")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0340"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260829_0341"
         assert {
             str(row["event_id"]): str(row["event_kind"])
             for row in conn.execute("SELECT event_id, event_kind FROM news_events ORDER BY event_id").fetchall()

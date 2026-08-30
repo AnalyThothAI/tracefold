@@ -152,15 +152,21 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     capability_snapshot = None if snapshot_missing else frozen_snapshot
 
     @contextmanager
+    def fake_transaction():
+        calls.append("transaction")
+        yield
+
+    @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
+            transaction=fake_transaction,
             trading=SimpleNamespace(
                 active_execution_capability_snapshot=lambda *, binding: capability_snapshot,
                 binding_runtime=lambda *, binding, now_ms: None,
                 active_execution_binding=lambda *, binding: None,
                 nautilus_runtime_state=lambda: {"control": "PAUSED"},
                 active_intent=lambda: None,
-            )
+            ),
         )
 
     monkeypatch.setattr(root, "repositories", fake_repositories)
@@ -374,8 +380,13 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
     _secure_secret(tmp_path / "binance_usdm_api_secret", "demo-secret")
 
     @contextmanager
+    def fake_transaction():
+        yield
+
+    @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):
         yield SimpleNamespace(
+            transaction=fake_transaction,
             trading=SimpleNamespace(
                 active_execution_capability_snapshot=lambda *, binding: SimpleNamespace(
                     snapshot_sha256="c" * 64,
@@ -385,7 +396,7 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
                 active_execution_binding=lambda *, binding: None,
                 nautilus_runtime_state=lambda: runtime,
                 active_intent=lambda: active_intent,
-            )
+            ),
         )
 
     monkeypatch.setattr(root, "repositories", fake_repositories)

@@ -394,7 +394,7 @@ def test_delivery_begin_settle_and_ambiguous_after_crash(conn) -> None:
     delivery = repos.news.delivery(event_id=event_id, kind="first")
     assert delivery is not None
     assert delivery["card"] == {"x": 2, "market_data_state": "ready"}
-    assert delivery["receipt"] == updated_receipt
+    assert delivery["receipt"] == {**updated_receipt, "copies": []}
     assert delivery["pending_card"] is None
     assert delivery["edit_state"] == "edited"
     with repos.transaction():
@@ -597,7 +597,7 @@ def test_delivery_delete_requires_durable_five_venue_evidence_and_exact_receipt(
     assert delivery["delete_state"] == "deleted"
     assert delivery["delete_evidence"] == evidence
     assert delivery["delete_reason"] == reason
-    assert delivery["receipt"] == deleted_receipt
+    assert delivery["receipt"] == {**deleted_receipt, "copies": []}
     with pytest.raises(CheckViolation), repos.transaction():
         conn.execute(
             """

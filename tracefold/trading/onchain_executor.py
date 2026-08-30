@@ -72,6 +72,8 @@ class OnchainExecutionRpc(Protocol):
 
     async def send_raw_transaction(self, signed: OnchainSignedTransaction) -> str: ...
 
+    async def transaction_known(self, transaction_hash: str) -> bool: ...
+
     async def receipt(self, transaction_hash: str) -> Mapping[str, Any] | None: ...
 
 
@@ -293,8 +295,13 @@ class OnchainExecutionService:
             existing_state = "SIGNED"
         if existing_state == "SIGNED":
             receipt = await rpc.receipt(signed.transaction_hash)
-            if receipt is None:
-                await rpc.send_raw_transaction(signed)
+            known = receipt is not None or await rpc.transaction_known(signed.transaction_hash)
+            if not known:
+                try:
+                    await rpc.send_raw_transaction(signed)
+                except RuntimeError:
+                    if not await rpc.transaction_known(signed.transaction_hash):
+                        raise
             if not self._store.settle_signed(
                 intent.execution_id,
                 leg=signed.leg,

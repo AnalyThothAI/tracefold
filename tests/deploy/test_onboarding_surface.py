@@ -69,10 +69,21 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
       printf '%s\\n' PAUSED > "$TRACEFOLD_TEST_TRADING_CONTROL"
       ;;
     *"--entrypoint tracefold migrate config"*)
+      printf '%s\n' "$*" > "$TRACEFOLD_TEST_TARGET_CONFIG_ARGS"
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
       printf '%s' ',"nautilus":{"credentials_configured":'
       printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+      printf '%s' '},"manual":{"requested":'
+      printf '%s' "$TRACEFOLD_TEST_TARGET_MANUAL_REQUESTED"
+      printf '%s' ',"interaction_available":'
+      printf '%s' "$TRACEFOLD_TEST_TARGET_MANUAL_AVAILABLE"
+      printf '%s' '},"onchain":{"requested":'
+      printf '%s' "$TRACEFOLD_TEST_TARGET_ONCHAIN_REQUESTED"
+      printf '%s' ',"interaction_available":'
+      printf '%s' "$TRACEFOLD_TEST_TARGET_ONCHAIN_AVAILABLE"
+      printf '%s' ',"execution_available":'
+      printf '%s' "$TRACEFOLD_TEST_TARGET_ONCHAIN_EXECUTION_AVAILABLE"
       printf '}}}}\\n'
       ;;
   esac
@@ -99,6 +110,8 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
   case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;; esac
+  case " $* " in *" manual-executor "*) : > "$TRACEFOLD_TEST_MANUAL_RECREATED" ;; esac
+  case " $* " in *" onchain-executor "*) : > "$TRACEFOLD_TEST_ONCHAIN_RECREATED" ;; esac
   exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
@@ -120,6 +133,16 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
         esac
       fi
       ;;
+    manual-executor)
+      if [ -e "$TRACEFOLD_TEST_MANUAL_RECREATED" ] || [ "${TRACEFOLD_TEST_MANUAL_PRESENT:-0}" = "1" ]; then
+        printf '%s\\n' manual-executor-id
+      fi
+      ;;
+    onchain-executor)
+      if [ -e "$TRACEFOLD_TEST_ONCHAIN_RECREATED" ] || [ "${TRACEFOLD_TEST_ONCHAIN_PRESENT:-0}" = "1" ]; then
+        printf '%s\\n' onchain-executor-id
+      fi
+      ;;
   esac
   exit 0
 fi
@@ -137,13 +160,23 @@ if [ "$1" = "inspect" ]; then
       fi
       ;;
     *State.ExitCode*) printf '%s\\n' 0 ;;
-    *State.Health*) printf '%s\\n' healthy ;;
+    *State.Health*)
+      if [ "$container_id" = "manual-executor-id" ]; then
+        printf '%s\\n' "$TRACEFOLD_TEST_MANUAL_HEALTH"
+      elif [ "$container_id" = "onchain-executor-id" ]; then
+        printf '%s\\n' "$TRACEFOLD_TEST_ONCHAIN_HEALTH"
+      else
+        printf '%s\\n' healthy
+      fi
+      ;;
     *Image*)
       case "$container_id" in
         migrate-id) printf '%s\\n' "$TRACEFOLD_TEST_MIGRATE_IMAGE" ;;
         serve-id) printf '%s\\n' "$TRACEFOLD_TEST_SERVE_IMAGE" ;;
         workers-id) printf '%s\\n' "$TRACEFOLD_TEST_WORKERS_IMAGE" ;;
         nautilus-id) printf '%s\\n' "$TRACEFOLD_TEST_NAUTILUS_IMAGE" ;;
+        manual-executor-id) printf '%s\\n' "$TRACEFOLD_TEST_MANUAL_IMAGE" ;;
+        onchain-executor-id) printf '%s\\n' "$TRACEFOLD_TEST_ONCHAIN_IMAGE" ;;
       esac
       ;;
   esac
@@ -168,12 +201,25 @@ if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
   printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
   printf '%s' ',"nautilus":{"credentials_configured":'
   printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
+  printf '%s' '},"manual":{"requested":'
+  printf '%s' "$TRACEFOLD_TEST_HOST_MANUAL_REQUESTED"
+  printf '%s' ',"interaction_available":'
+  printf '%s' "$TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE"
+  printf '%s' '},"onchain":{"requested":'
+  printf '%s' "$TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED"
+  printf '%s' ',"interaction_available":'
+  printf '%s' "$TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE"
+  printf '%s' ',"execution_available":'
+  printf '%s' "$TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE"
   printf '}}}}\\n'
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*|*trading*enabled*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
+    *credentials_configured*|*trading*enabled*|*manual*|*onchain*|*active_capability_snapshot_sha256*)
+      shift 2
+      exec python3 "$@"
+      ;;
   esac
 fi
 case "$*" in
@@ -212,9 +258,10 @@ esac
         "TRACEFOLD_TEST_SERVICES_STOPPED": str(services_stopped),
         "TRACEFOLD_TEST_STOP_ARGS": str(tmp_path / "stop-args"),
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
+        "TRACEFOLD_TEST_TARGET_CONFIG_ARGS": str(tmp_path / "target-config-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0332|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260829_0341|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
@@ -222,10 +269,26 @@ esac
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_MANUAL_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_ONCHAIN_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
+        "TRACEFOLD_TEST_HOST_MANUAL_REQUESTED": "false",
+        "TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE": "false",
+        "TRACEFOLD_TEST_TARGET_MANUAL_REQUESTED": "false",
+        "TRACEFOLD_TEST_TARGET_MANUAL_AVAILABLE": "false",
+        "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "false",
+        "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "false",
+        "TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE": "false",
+        "TRACEFOLD_TEST_TARGET_ONCHAIN_REQUESTED": "false",
+        "TRACEFOLD_TEST_TARGET_ONCHAIN_AVAILABLE": "false",
+        "TRACEFOLD_TEST_TARGET_ONCHAIN_EXECUTION_AVAILABLE": "false",
+        "TRACEFOLD_TEST_MANUAL_HEALTH": "healthy",
+        "TRACEFOLD_TEST_ONCHAIN_HEALTH": "healthy",
         "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_MANUAL_RECREATED": str(tmp_path / "manual-recreated"),
+        "TRACEFOLD_TEST_ONCHAIN_RECREATED": str(tmp_path / "onchain-recreated"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
@@ -246,7 +309,15 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
 
     assert result.returncode == 0, result.stderr
-    assert {"up", "status", "logs", "down", "db-provision-nautilus-role", "trading-hard-cut-preflight"} <= targets
+    assert {
+        "up",
+        "status",
+        "logs",
+        "down",
+        "db-provision-nautilus-role",
+        "db-provision-onchain-role",
+        "trading-hard-cut-preflight",
+    } <= targets
     assert {
         "docker-up",
         "docker-status",
@@ -421,7 +492,23 @@ case "$url" in */) printf '<html></html>' ;; esac
     )
     fake_curl.chmod(0o700)
     fake_uv = bin_dir / "uv"
-    fake_uv.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_uv.write_text(
+        """#!/bin/sh
+set -eu
+if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
+  printf '%s' '{"data":{"trading":{"enabled":false'
+  printf '%s' ',"manual":{"requested":false,"interaction_available":false}'
+  printf '%s\\n' ',"onchain":{"requested":false,"interaction_available":false,"execution_available":false}}}}'
+  exit 0
+fi
+if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
+  shift 2
+  exec python3 "$@"
+fi
+exit 0
+""",
+        encoding="utf-8",
+    )
     fake_uv.chmod(0o700)
     github_probe = tmp_path / "github-probe"
     fake_gh = bin_dir / "gh"
@@ -742,6 +829,212 @@ def test_status_does_not_require_an_adapter_before_its_owner_issue(
     assert expected_message in result.stdout + result.stderr
 
 
+def test_up_starts_and_requires_the_manual_executor_when_requested(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_HOST_MANUAL_REQUESTED"] = "true"
+    env["TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE"] = "true"
+
+    result = subprocess.run(["make", "up"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "manual-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "manual-executor: required and running" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("present", "health", "expected"),
+    (("0", "healthy", "missing or stopped"), ("1", "unhealthy", "state=running health=unhealthy")),
+)
+def test_status_fails_closed_for_missing_or_unhealthy_manual_executor(
+    tmp_path: Path,
+    present: str,
+    health: str,
+    expected: str,
+) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_MANUAL_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE": "true",
+            "TRACEFOLD_TEST_MANUAL_PRESENT": present,
+            "TRACEFOLD_TEST_MANUAL_HEALTH": health,
+        }
+    )
+
+    result = subprocess.run(["make", "status"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode != 0
+    assert f"manual-executor: {expected}" in result.stderr
+
+
+def test_up_starts_and_requires_the_onchain_executor_when_execution_is_available(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE": "true",
+        }
+    )
+
+    result = subprocess.run(["make", "up"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "onchain-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "onchain-executor: required and running" in result.stdout
+
+
+def test_status_fails_closed_for_missing_onchain_executor_when_execution_is_available(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE": "true",
+        }
+    )
+
+    result = subprocess.run(["make", "status"], cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode != 0
+    assert "onchain-executor: missing or stopped" in result.stderr
+
+
+def test_exact_image_manual_preflight_uses_the_target_image_before_stopping_services(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_MANUAL_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_MANUAL_REQUESTED": "true",
+            "TRACEFOLD_TEST_TARGET_MANUAL_AVAILABLE": "false",
+        }
+    )
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Target image reports Telegram manual trading unavailable" in result.stderr
+    assert not services_stopped.exists()
+    preflight = Path(env["TRACEFOLD_TEST_TARGET_CONFIG_ARGS"]).read_text(encoding="utf-8")
+    assert "telegram_bot_token" in preflight
+    assert "trading_profiles/manual" in preflight
+
+
+def test_exact_image_onchain_preflight_mounts_quote_keys_before_stopping_services(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_AVAILABLE": "false",
+        }
+    )
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Target image reports Telegram onchain route analysis unavailable" in result.stderr
+    assert not services_stopped.exists()
+    preflight = Path(env["TRACEFOLD_TEST_TARGET_CONFIG_ARGS"]).read_text(encoding="utf-8")
+    assert "trading_profiles/quotes" in preflight
+    assert "trading_profiles/onchain" in preflight
+
+
+def test_exact_image_refuses_to_drop_existing_onchain_execution_authority(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_EXECUTION_AVAILABLE": "false",
+        }
+    )
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Target image reports Telegram onchain route analysis unavailable" in result.stderr
+    assert not services_stopped.exists()
+
+
+def test_exact_image_deploy_recreates_and_verifies_requested_manual_executor(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_MANUAL_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_MANUAL_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_MANUAL_REQUESTED": "true",
+            "TRACEFOLD_TEST_TARGET_MANUAL_AVAILABLE": "true",
+        }
+    )
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "manual-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "manual-executor: required and running" in result.stdout
+
+
+def test_exact_image_deploy_recreates_and_verifies_executable_onchain_runtime(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env.update(
+        {
+            "TRACEFOLD_TEST_HOST_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_HOST_ONCHAIN_EXECUTION_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_REQUESTED": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_AVAILABLE": "true",
+            "TRACEFOLD_TEST_TARGET_ONCHAIN_EXECUTION_AVAILABLE": "true",
+        }
+    )
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "onchain-executor" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "onchain-executor: required and running" in result.stdout
+
+
 def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
@@ -813,6 +1106,25 @@ def test_nautilus_role_provisioning_uses_one_offline_single_user_container(tmp_p
     invocation = provisioned.read_text(encoding="utf-8")
     assert "compose run --rm --no-deps --user postgres" in invocation
     assert "--entrypoint /usr/local/bin/tracefold-provision-nautilus-role postgres" in invocation
+
+
+def test_onchain_role_provisioning_uses_one_offline_single_user_container(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    provisioned = Path(env["TRACEFOLD_TEST_ROLE_PROVISION"])
+
+    result = subprocess.run(
+        ["make", "db-provision-onchain-role"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    invocation = provisioned.read_text(encoding="utf-8")
+    assert "compose run --rm --no-deps --user postgres" in invocation
+    assert "--entrypoint /usr/local/bin/tracefold-provision-onchain-role postgres" in invocation
 
 
 def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:

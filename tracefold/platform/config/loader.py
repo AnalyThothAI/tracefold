@@ -54,10 +54,12 @@ storage:
     workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
     migrate_dsn: "postgresql://tracefold_migrate@postgres:5432/tracefold"
     nautilus_dsn: "postgresql://tracefold_nautilus@postgres:5432/tracefold"
+    onchain_dsn: "postgresql://tracefold_onchain@postgres:5432/tracefold"
     serve_password_file: "postgres_serve_password"
     workers_password_file: "postgres_workers_password"
     migrate_password_file: "postgres_migrate_password"
     nautilus_password_file: "postgres_nautilus_password"
+    onchain_password_file: "postgres_onchain_password"
     connect_timeout_seconds: 5
 
 llm:
@@ -93,7 +95,7 @@ news:
     feishu_webhook_url:
     feishu_signing_secret:
     telegram_bot_token_file:
-    telegram_chat_id:
+    telegram_chat_ids: []
     min_interval_seconds: 0.6
   policy:
     restatement_drop: true
@@ -132,6 +134,69 @@ trading:
     hyperliquid_perp:
       private_key_file: "hyperliquid_private_key"
       account_address:
+  manual:
+    risk:
+      notional_deviation_limit_bps: 5000
+      tight_stop_deviation_limit_bps: 5000
+      wide_stop_deviation_limit_bps: 10000
+      max_account_risk_bps: 1000
+      high_risk_loss_multiple_bps: 15000
+      min_leverage: 1
+      max_leverage: 20
+    tight_stop:
+      leverage: 10
+      stop_loss_bps: 100
+      take_profit_bps: 200
+      account_risk_bps: 200
+      min_notional_usd: 5
+      max_notional_usd: 10
+    wide_stop:
+      leverage: 2
+      stop_loss_bps: 2000
+      take_profit_bps: 10000
+      account_risk_bps: 100
+      min_notional_usd: 5
+      max_notional_usd: 10
+  onchain:
+    slippage_bps: 100
+    discovery_chain_ids: [1, 56, 8453, 42161, 4663]
+    settlement_assets:
+      - chain_id: 1
+        chain_name: "Ethereum"
+        symbol: "USDC"
+        contract_address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        decimals: 6
+        quote_amount: 10
+        rpc_url:
+      - chain_id: 56
+        chain_name: "BNB Chain"
+        symbol: "USDT"
+        contract_address: "0x55d398326f99059ff775485246999027b3197955"
+        decimals: 18
+        quote_amount: 10
+        rpc_url:
+      - chain_id: 8453
+        chain_name: "Base"
+        symbol: "USDC"
+        contract_address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        decimals: 6
+        quote_amount: 10
+        rpc_url:
+      - chain_id: 42161
+        chain_name: "Arbitrum One"
+        symbol: "USDC"
+        contract_address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+        decimals: 6
+        quote_amount: 10
+        rpc_url:
+      - chain_id: 4663
+        chain_name: "Robinhood Chain"
+        symbol: "USDG"
+        contract_address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+        decimals: 6
+        quote_amount: 10
+        rpc_url:
+  telegram_profiles: []
 """
 
 

@@ -41,26 +41,33 @@ Feishu webhook or Telegram target/token-file reference, the API bind address and
 provider/name. `trading.bindings` has closed file references for Binance USD-M
 and Hyperliquid credentials. Workers reads them only to project a redacted
 fingerprint/state; it never constructs an execution provider client. Serve has
-no mount and no secret-reading path.
+no mount and no secret-reading path. Each `trading.telegram_profiles[]` row has
+its own manual Binance account and/or onchain provider credentials plus one EVM
+wallet. Workers mounts only the profile quote files for directory and quote
+reads. The isolated executors select one profile by Telegram user-owned account
+reference or wallet fingerprint and are the only processes that mount execution
+keys. Within one profile, OKX, 1inch, Binance, and future route adapters use the
+same wallet; profiles cannot reuse a secret path.
 
 The complete secret inventory is: `ws_token` (HTTP API bearer token),
 `news.opennews_token`, `llm.api_key`, the optional
-`llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
-`llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
-the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
-fallback endpoint),
+`llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), and each optional
+`llm.news_fallbacks[].api_key` plus nested
+`llm.news_fallbacks[].reader_card.api_key` (ordered complete fallback routes),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
-`news.push.telegram_bot_token_file`, the five PostgreSQL password files
-(bootstrap, Serve, Workers, migrate, Nautilus), the Binance files named by
+`news.push.telegram_bot_token_file`, the six PostgreSQL password files
+(bootstrap, Serve, Workers, migrate, Nautilus, onchain executor), the Binance files named by
 `trading.bindings.binance_usdm.api_key_file` / `api_secret_file`, and the
 Hyperliquid file named by
-`trading.bindings.hyperliquid_perp.private_key_file`. The corresponding
+`trading.bindings.hyperliquid_perp.private_key_file`, and each Telegram Trading
+Profile's dedicated manual Binance files, OKX files, optional 1inch file, and
+EVM private-key file under `trading_profiles/<lane>/<user_id>/`. The corresponding
 Hyperliquid account address is public identity, not a secret. There is no other
 provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
-`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
+`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/onchain/migrate
 secret files with mode `0600`; reruns repair those permissions. Without
 `--force`, an existing config is preserved byte-for-byte. `--force` replaces
 only the generated config and does not rotate existing PostgreSQL passwords.
@@ -68,16 +75,20 @@ Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create an empty mode-`0600`
 `telegram_bot_token`, `binance_usdm_api_key`, `binance_usdm_api_secret`, and
 `hyperliquid_private_key` placeholders so Workers' read-only bind mounts are
-stable; an empty file is `unconfigured`, never a credential. They do not create
-or populate an execution key. A live
+stable, plus empty `trading_profiles/manual`, `trading_profiles/quotes`, and
+`trading_profiles/onchain` directories. It does not create user profiles or
+credential placeholders inside them; an operator creates only the exact files
+referenced by an enabled profile. The generator never populates a wallet key. A live
 operator populates each required provider file as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
 diagnostics expose only configured/readable booleans and resolved paths, never
 contents.
 
-Compose mounts only the generated `telegram_bot_token` filename and only into
-Workers. Serve receives neither the file nor its contents. If outbound push is
+Compose mounts the generated `telegram_bot_token` filename only into Workers.
+The profile quote directory is mounted into Workers and the isolated onchain
+executor; the profile wallet directory is mounted only into the executor.
+Serve receives none of those files or their contents. If outbound push is
 explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
@@ -88,6 +99,20 @@ Neither plaintext nor path enters PostgreSQL, HTTP, logs, artifacts, or Issues.
 The dormant Nautilus container also has the Binance pair for recovery of
 existing Intent obligations, but is not a required deployment runtime. No
 execution credential is exposed to Serve, News, RabbitMQ, or public HTTP.
+The manual executor mounts only the directory of per-profile production Binance pairs, the
+Nautilus-role database password, config, and logs; it does not receive the
+Telegram token or automatic-lane credentials. Workers owns callback polling and
+durable session/effect writes but never receives the manual production key
+pair. Configuration rejects reuse of the automatic Binance credential content
+for any manual account even when different filenames are used.
+Before an exact-image replacement stops any service, one ephemeral target-image
+`tracefold config` process receives read-only mounts for the Telegram,
+automatic Binance, and profile credential directories solely to evaluate the complete
+redacted manual-authority predicate under that image's own validation code. It
+performs no provider call, persists nothing, prints no secret, and exits before
+runtime replacement. Profile secret references are fixed to
+`trading_profiles/<lane>/<user_id>/...`; custom paths fail config validation, so
+preflight and steady-state mounts cannot diverge.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,
 resource budgets, history limits, product windows/venues, and model
@@ -119,9 +144,9 @@ terminal disposition for every physical delegate call.
 
 EventSemantics uses the primary Triage endpoint. ReaderCard inherits that
 endpoint unless the operator supplies the complete `llm.news_reader_card`
-triple. The fallback route likewise aliases both Predictor slots only when
-`llm.news_reader_card_fallback` is absent; a requested dedicated Reader fallback
-must validate or the entire fallback route is disabled. The two Predictors
+triple. Each item in the ordered `llm.news_fallbacks` list aliases both Predictor
+slots when its nested `reader_card` is absent; a requested dedicated Reader endpoint
+must validate or that entire fallback route is disabled. The two Predictors
 always receive separate explicit LM bindings and code-owned
 token caps; endpoint credentials remain application configuration and never
 enter the content-addressed Program artifact or secret-free runtime identity.
@@ -271,7 +296,8 @@ PostgreSQL runtime roles are code-owned:
 `20260818_0275` baseline migration and extended by the #112 migrations,
 creates the non-login `tracefold_owner` plus `tracefold_serve`
 (`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
-writes), `tracefold_nautilus` (only the #283 execution projection), and
+writes), `tracefold_nautilus` (only the #283 execution projection),
+`tracefold_onchain` (only the manual EVM intent/signed-transaction projection), and
 `tracefold_migrate`. Serve has SELECT plus INSERT only on
 `news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
 those append-only facts and no write grant on Event, verdict, delivery,
@@ -310,6 +336,46 @@ Migration `0329` grants Nautilus only the additional Intent projection columns
 needed for bounded Q1/Q2 audit, exact submission quantity, and unlabeled
 lifecycle clocks. It grants no tick-table, credential, provider-adapter, or
 cross-capability write authority.
+Migrations `0330` through `0335` add the manual session/effect and execution
+ledgers, exact message/user/target bindings, and least-privilege grants:
+Workers may advance Telegram interaction facts but cannot place an order, while
+the executor's Nautilus role may claim and settle only the dedicated manual
+execution projection. Serve remains read-only and no HTTP write route is added.
+Migration `0336` grants Workers only the mutable onchain resolution/analysis
+projection, grants Serve read-only visibility, and grants Nautilus nothing; no
+wallet or provider transaction payload is stored. Migration `0337` adds one
+manual EVM wallet execution lane: Workers may create and Telegram-confirm an
+intent but cannot read the private key or write signed transactions; the
+isolated onchain executor alone receives the one wallet secret and uses the
+dedicated `tracefold_onchain` database role to append exact signed bytes and
+advance execution receipts. It validates exact approval scope, refreshes the
+minimum-output floor, simulates through the configured trusted RPC, and ignores
+provider-supplied gas values before signing. All executable provider adapters
+share that signer; provider API credentials have no wallet authority.
+1inch Router V6 is executable only after decoding and binding its calldata to
+the trusted router, exact input amount and token pair, wallet recipient,
+confirmed minOut, and disabled partial fill. An `eth_call` that merely succeeds
+is never treated as proof of those facts. OKX Router V1 is executable only
+after separately binding the code-owned per-chain router and approval proxy,
+exact approval amount, supported selector, token pair, wallet recipient,
+confirmed minOut, and deadline. Workers also require a fresh durable executor heartbeat for the one
+configured wallet fingerprint before exposing or accepting confirmation;
+Nautilus cannot read that runtime row.
+
+Migration `0338` grants Workers insert/read access to one expiring Telegram
+development-fixture table. Its rows are visibly test-marked, contain no provider
+or wallet secret, expire after two hours, and do not enter News material facts;
+Serve, Nautilus, and the onchain signer role receive no access.
+
+Migration `0341` binds each onchain development-test execution to its durable
+fixture source and to a 200-USDT notional ceiling. Its versioned settlement
+catalog is the database trust root for chain, input contract, symbol, and
+decimal precision; row and statement triggers reject every catalog insert,
+update, delete, or truncate, including owner-issued DML. Workers and Serve have SELECT-only access
+for intent validation and audit respectively. Nautilus and `tracefold_onchain`
+have no catalog privilege, and all runtime roles lack catalog write authority.
+The application publishes the same V1 identity constant, and PostgreSQL
+integration tests require an exact match before release.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as
@@ -370,18 +436,19 @@ without one it deliberately sends an unsigned body containing neither field.
 Unsigned delivery has weaker request authentication and is an explicit
 operator choice, not a fallback after a signing error. In both modes the
 Adapter accepts only the configured Feishu webhook boundary and never follows
-redirects. The Telegram Adapter sends only to the fixed private-channel ID
-loaded from operator configuration, verifies the returned message belongs to
-that same channel, uses a fixed HTTPS Bot API origin, follows no redirects, and
+redirects. The Telegram Adapter sends only to the exact private-user, channel,
+group, or supergroup IDs loaded from operator configuration, verifies every
+returned message belongs to its requested destination, uses a fixed HTTPS Bot API origin, follows no redirects, and
 stores only a token-keyed, domain-separated HMAC-SHA-256 target digest, never
-the channel ID, in the delivery receipt. The keyed digest is not enumerable
-from the small private-channel-ID space and changes when the bot token rotates.
+the chat ID, in the delivery receipt. Every target uses the same versioned,
+token-keyed digest domain, and the keyed digest changes when the bot token rotates.
 The credential never enters the httpx request URL seen by its INFO logger: a
 fixed-origin transport injects `/bot{token}/` only while building the TLS wire
 path and converts transport failures to sanitized codes.
-Before the first send it verifies exact target ID, private
-channel type, bot identity, administrator status, and post permission; a public
-channel, group, supergroup, or mismatched target fails closed. Preflight and
+Before the first send it verifies exact target ID and bot identity. A channel
+must grant administrator post permission; a positive target must resolve as a
+private chat. A group or supergroup must report the bot as a member,
+administrator, or creator. A mismatched target fails closed. Preflight and
 `sendMessage` are separate finite operations: preflight completes before the
 durable `sending` row exists, and the operation behind that row contains only
 `sendMessage`. After that message is verified and durably settled `sent`, the only permitted mutations are
@@ -389,12 +456,16 @@ durable `sending` row exists, and the operation behind that row contains only
 from the canonical receipt. The
 Adapter rejects a receipt with a different provider, target digest, invalid message ID, or missing original send
 timestamp. It independently verifies the edit response still names the configured channel and same message ID.
-The typed receipt has an exact allowlist (`provider`, `message_id`, `pushed_at_ms`, `target_sha256`, and optional
-`edited_at_ms` / `deleted_at_ms`); extra provider text, URLs, or metadata fail validation. Storage binds
+The typed receipt has an exact allowlist (`provider`, one primary target's
+`message_id` / `pushed_at_ms` / `target_sha256`, optional lifecycle timestamps,
+and up to 31 identically typed credential-free `copies`); extra provider text,
+URLs, numeric chat IDs, or metadata fail validation. Storage binds
 `pushed_at_ms` as well as
 message and target identity before accepting either edit intent or settlement.
-The Bot API transport allowlist contains only the fixed preflight methods, `sendMessage`,
-`editMessageText`, and `deleteMessage`; arbitrary bot methods and destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
+The Bot API transport allowlist contains only the fixed preflight methods,
+`sendMessage`, `editMessageText`, `deleteMessage`, and — for the enabled manual
+lane — `getUpdates` plus `answerCallbackQuery`; arbitrary bot methods and
+destinations remain impossible. Each operation uses a seven-second application budget; every HTTP
 phase is capped at 1.25 seconds and later calls stop when the monotonic budget is
 exhausted. Socket timeouts are inactivity limits rather than a strict wall-clock
 guarantee, so DNS or a continuously slow peer can outlive that budget. A timed-out
@@ -410,9 +481,22 @@ HTTPS-only with no redirects followed by Tracefold. Provider text never supplies
 normalized source label and every other card character before inserting the validated URL into one anchor. It
 recognizes a publisher brand from a hostname only on the exact domain or a dot-delimited subdomain, so a name
 such as `jin10.com.evil.test` cannot inherit the trusted reader label. It does not create an inline keyboard or
-a second destination. Ephemeral typed market/timing presentation values contain no credential. A successful edit
+second destination by itself. When manual trading is explicitly available, the
+same adapter adds only code-owned, versioned `[详细数据] [交易]` callbacks to a
+positive private-chat copy whose ID has a matching enabled Telegram Trading
+Profile. Channel/group copies never contain callback data.
+Callback handling accepts only a configured profile's private destination,
+an actor whose Telegram user ID exactly equals that destination and profile,
+the exact originating positive message ID, and
+the persisted session/target binding; callback text cannot name a venue,
+credential, quantity, price, or arbitrary command. Ephemeral typed
+market/timing presentation values contain no credential. A successful edit
 may persist the final rendered card plus only provider lifecycle timestamps in the canonical receipt; it never
 persists price-provider requests, arbitrary URLs, channel IDs, or credentials.
+The same user ID selects the manual account reference, quote credentials, and
+wallet fingerprint at every controller and executor boundary. Profile secret
+paths are unique and lane-scoped; an A-user action cannot fall back to a global
+or B-user credential.
 Persisted delivery rows store the
 rendered card (code facts plus sanitized AI copy) for audit but never provider
 credentials or signatures. There is exactly one initial provider-send attempt

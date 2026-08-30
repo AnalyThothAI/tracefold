@@ -8,17 +8,22 @@ import pytest
 
 from tracefold.trading import (
     ManualAccountSnapshot,
+    ManualAdjustmentDirection,
+    ManualAdjustmentField,
     ManualRiskConfig,
     ManualStrategyPresetConfig,
+    ManualTradeAdjustment,
     ManualTradeIntent,
     ManualTradeParameters,
     ManualTradeSource,
     ModificationGuardState,
     StrategyPreset,
     TradeSide,
+    adjust_manual_trade_parameters,
     build_manual_trade_preview,
     create_manual_trade_intent,
     guard_manual_trade_modification,
+    guard_manual_trade_selection,
     recommend_manual_trade,
 )
 from tracefold.trading.contracts import canonical_sha256
@@ -79,6 +84,33 @@ def test_short_preview_places_stop_above_and_take_profit_below_entry() -> None:
     assert preview.take_profit_price == Decimal("85.00")
     assert preview.estimated_loss_usd == Decimal("50.00")
     assert preview.estimated_profit_usd == Decimal("150.00")
+
+
+def test_manual_parameter_adjustment_semantics_live_in_trading() -> None:
+    parameters = ManualTradeParameters(
+        notional_usd=Decimal("10.01"),
+        leverage=2,
+        stop_loss_bps=101,
+        take_profit_bps=201,
+    )
+
+    increased = adjust_manual_trade_parameters(
+        parameters,
+        ManualTradeAdjustment(
+            field=ManualAdjustmentField.NOTIONAL,
+            direction=ManualAdjustmentDirection.INCREASE,
+        ),
+    )
+    decreased = adjust_manual_trade_parameters(
+        parameters,
+        ManualTradeAdjustment(
+            field=ManualAdjustmentField.STOP_LOSS,
+            direction=ManualAdjustmentDirection.DECREASE,
+        ),
+    )
+
+    assert increased.notional_usd == Decimal("15.02")
+    assert decreased.stop_loss_bps == 50
 
 
 def test_combined_notional_and_stop_expansion_requires_high_risk_confirmation(
@@ -421,3 +453,15 @@ def test_development_test_intent_has_an_independent_hard_200u_ceiling(
     assert build("200").selected.notional_usd == Decimal("200")
     with pytest.raises(ValueError, match="manual_development_test_notional_exceeds_cap"):
         build("200.01")
+
+    selected = build("200").selected.model_copy(update={"notional_usd": Decimal("200.01")})
+    decision = guard_manual_trade_selection(
+        source=source,
+        preset=StrategyPreset.TIGHT_STOP,
+        account_equity=Decimal("1000"),
+        recommended=build("200").recommended,
+        selected=selected,
+        config=risk_config,
+    )
+    assert decision.state is ModificationGuardState.REJECTED
+    assert "development_test_notional_cap" in decision.reason_codes

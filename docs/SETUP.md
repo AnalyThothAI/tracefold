@@ -17,22 +17,23 @@ This is the canonical startup path. It preflights Git, `uv`, Docker, Compose,
 `curl`, an authenticated GitHub CLI, and daemon access; idempotently initializes
 the operator directory; builds one application image containing the React console and Python service;
 initializes PostgreSQL and its least-privilege roles on a fresh named volume;
-migrates to the current Alembic head; starts Serve and Workers; and waits for
-PostgreSQL, migration, both runtime readiness boundaries, and an HTML console.
+migrates to the current Alembic head; starts Serve and Workers; starts the
+manual executor when requested by validated config; and waits for PostgreSQL,
+migration, required runtime boundaries, and an HTML console.
 Any failed boundary makes the command return non-zero and directs the operator
 to `make logs`.
 
 ```bash
 make status            # fail closed on infrastructure/runtime readiness
-make logs              # follow PostgreSQL, migration, Serve, and Workers logs
+make logs              # follow dependencies and all enabled runtime logs
 make down              # stop containers; preserve config, passwords, and database data
 ```
 
 The console is available at `http://127.0.0.1:8765/`. PostgreSQL, public HTTP,
 and Workers metrics/readiness are bound to loopback by default. A second
 `make up` rebuilds the shared application image and deliberately recreates only
-the migration, Serve, and Workers containers so edits to the bind-mounted
-operator config take effect. An already running PostgreSQL container is not
+the migration, Serve, Workers, and any requested manual-executor containers so
+edits to the bind-mounted operator config take effect. An already running PostgreSQL container is not
 recreated; the operator files and named-volume data remain in place.
 
 ### Upgrading across a removed config key
@@ -81,14 +82,14 @@ file sets both.
 `news.triage.deadline_seconds` is retired in #129. Remove that line from an
 existing `news.triage` mapping before `make up`; keep `concurrency` and the
 optional whole-chain `circuit_failures` / `circuit_open_seconds`. The Program
-artifact now owns its primary and fallback route deadline, so carrying the old
+artifact now owns the primary and every fallback route deadline, so carrying the old
 key fails `extra="forbid"` rather than silently overriding the artifact.
 
 ### Initialization semantics
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
-token (`ws_token`) but no external credentials, five independent PostgreSQL
+token (`ws_token`) but no external credentials, six independent PostgreSQL
 password files, and an empty Telegram token placeholder:
 
 ```text
@@ -98,6 +99,7 @@ postgres_serve_password
 postgres_workers_password
 postgres_migrate_password
 postgres_nautilus_password
+postgres_onchain_password
 ```
 
 The config, Telegram token placeholder, and all password files are mode `0600`.
@@ -129,10 +131,9 @@ contract is not valid.
 The credentials a live deployment can hold are exactly: the OpenNews token
 (`news.opennews_token`), the direct model triple (`llm.api_key`,
 `llm.base_url`, `llm.news_triage_model`, plus the optional
-`llm.news_reader_card`, `llm.news_triage_fallback`, and
-`llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
-one push provider's configuration (`news.push.*`), and the PostgreSQL role
-password files.
+`llm.news_reader_card` triple and ordered `llm.news_fallbacks` route list), the RabbitMQ URL (`news.broker.url`), the
+one push provider's configuration (`news.push.*`), the separate automatic and
+manual Binance key/secret files, and the PostgreSQL role password files.
 
 The product process is usable without optional live credentials, but affected
 lanes report explicit degradation or unavailable evidence:
@@ -149,7 +150,10 @@ lanes report explicit degradation or unavailable evidence:
   the feed and card fall back to the original title;
 - News push remains off until `news.push.enabled: true` and exactly one provider
   is complete: either a supported `news.push.feishu_webhook_url`, or a secure
-  Telegram bot-token file plus one private channel ID (`-100...`).
+  Telegram bot-token file plus one or more exact IDs in `telegram_chat_ids`.
+  Private users are positive IDs; channels/groups/supergroups are negative.
+  Only a private user with a matching `trading.telegram_profiles[]` row gets
+  trading buttons.
 
 `tracefold config` reports the effective file paths, configured booleans,
 broker `url_configured`, model names, watchlist symbols, the selected push
@@ -166,22 +170,241 @@ card header is the Triage verdict's `headline_zh` (the original title when
 Triage is degraded) and the body is `why_zh` plus the code-owned facts line.
 Telegram delivery reads `news.push.telegram_bot_token_file` under the same
 regular-file, no-symlink, mode-`0600` policy as other provider files. The
-configured `telegram_chat_id` must be a private channel Bot API ID beginning
-with `-100`. Before the first send, Workers asks Telegram for the target
-metadata, verifies the exact ID is a channel without a public username, and
-verifies the bot is an administrator allowed to post. Invite links, public
-channels, personal chats, groups, and supergroups are rejected before the first
-message. Feishu and Telegram fields may not be configured together while push
-is enabled. An enabled but incomplete or insecure provider configuration makes
-Workers fail startup; it is not silently treated as disabled. Serve never mounts
-or reads the bot token, and reports delivery available only while Workers is
-running.
+configured `telegram_chat_ids` list may contain positive private-user IDs and
+negative channel/group/supergroup IDs. Before the first send, Workers asks
+Telegram for every target's exact metadata. A channel requires administrator
+post authority; a group or supergroup requires bot membership; a positive
+target must resolve as a private chat. Mismatched IDs fail before the first
+message. Channels and groups never receive trading buttons. A positive target
+receives them only when the same user ID owns an enabled Telegram Trading
+Profile. Feishu and Telegram fields may not be configured
+together while push is enabled. An enabled but incomplete or insecure provider
+configuration makes Workers fail startup; it is not silently treated as
+disabled. Serve never mounts or reads the bot token, and reports delivery
+available only while Workers is running.
 
 The Compose deployment mounts exactly the generated
 `~/.tracefold/telegram_bot_token` file into Workers, so Compose deployments must
 use `telegram_bot_token_file: "telegram_bot_token"`. A directly launched local
 Workers process may point at a different operator-owned secure file, but that
 path is not automatically mounted by Compose.
+
+### Telegram manual trading (disabled by default)
+
+Manual Trading requires the Telegram push configuration above. It does not
+require `trading.enabled: true`; that flag owns the separate automatic lane.
+Create a Binance USD-M production API key on a dedicated manual account, with
+Read and Futures Trade only, and store the pair in regular non-symlink files:
+
+```bash
+uv run tracefold init
+# For Telegram user 123456789, create these mode-0600 files without printing them:
+# ~/.tracefold/trading_profiles/manual/123456789/binance_api_key
+# ~/.tracefold/trading_profiles/manual/123456789/binance_api_secret
+uv run tracefold config
+```
+
+Do not use the automatic account or its `binance_usdm_api_*` files. The manual
+profile directory is mounted only into the manual executor. Configure shared
+risk presets under `trading.manual`, then bind the private Telegram user ID to
+that user's account under `trading.telegram_profiles`:
+
+```yaml
+trading:
+  enabled: false                 # automatic lane remains independent
+  manual:
+    risk:
+      notional_deviation_limit_bps: 5000
+      tight_stop_deviation_limit_bps: 5000
+      wide_stop_deviation_limit_bps: 10000
+      max_account_risk_bps: 1000
+      high_risk_loss_multiple_bps: 15000
+      min_leverage: 1
+      max_leverage: 20
+    tight_stop:
+      leverage: 10
+      stop_loss_bps: 100
+      take_profit_bps: 200
+      account_risk_bps: 200
+      min_notional_usd: 5
+      max_notional_usd: 10
+    wide_stop:
+      leverage: 2
+      stop_loss_bps: 2000
+      take_profit_bps: 10000
+      account_risk_bps: 100
+      min_notional_usd: 5
+      max_notional_usd: 10
+  telegram_profiles:
+    - user_id: 123456789
+      manual:
+        enabled: true
+        live_trading_acknowledged: true # explicitly acknowledges real orders
+        venue: binance_usdm_live
+        account_ref: binance-manual-live-123456789
+        api_key_file: trading_profiles/manual/123456789/binance_api_key
+        api_secret_file: trading_profiles/manual/123456789/binance_api_secret
+```
+
+Run `uv run tracefold config` and require
+the profile's `manual.interaction_available=true`; output remains redacted. Run
+`make up`; it derives the `manual-trading` Compose profile from the validated
+config and starts the isolated executor automatically. Do not export
+`COMPOSE_PROFILES` yourself. The executor is locked to
+`https://fapi.binance.com`; this configuration cannot select Binance Demo,
+another CEX, or an on-chain signer.
+
+Repeat the profile row for each additional private user, changing `user_id`,
+`account_ref`, and every credential path to that user's directory. Never point
+two rows at the same file. A profile user must also appear as a positive entry
+in `news.push.telegram_chat_ids`; negative channel/group targets have no profile
+and remain news-only.
+
+### Telegram onchain routing and manual-wallet execution (disabled by default)
+
+This is independent from Binance USD-M manual trading. `tracefold init` creates
+empty lane directories but no user or credential. For Telegram user 123456789,
+the quote files authenticate provider APIs and have no custody authority; the
+wallet file is that user's one EVM signer shared by all routes in the profile:
+
+```bash
+# Populate the desired provider set without printing its contents:
+# ~/.tracefold/trading_profiles/quotes/123456789/okx_api_key
+# ~/.tracefold/trading_profiles/quotes/123456789/okx_api_secret
+# ~/.tracefold/trading_profiles/quotes/123456789/okx_passphrase
+# ~/.tracefold/trading_profiles/quotes/123456789/oneinch_api_key  # optional
+# ~/.tracefold/trading_profiles/onchain/123456789/evm_private_key
+```
+
+Write one 32-byte EVM private key as 64 hexadecimal characters (an optional
+`0x` prefix is accepted) to the profile's `evm_private_key`. Do not put that
+key into any provider credential file. The wallet needs the configured
+settlement token and the chain native token for gas. A mnemonic is deliberately
+not accepted by this process; derive the dedicated manual-account private key in
+the wallet and keep the seed phrase out of the application host.
+
+Add the following under the existing `trading` block. The generated default
+config already contains the complete five-chain settlement-asset list; keep
+those exact chain/CA/decimal values unless you intentionally change the input
+asset that every provider must quote. Live execution accepts only this
+code-owned list because the database uses it to verify the quote amount and the
+development-test ceiling. Supporting another settlement asset therefore
+requires an explicit application release and schema migration; a local config
+change alone remains analysis-only.
+
+```yaml
+trading:
+  enabled: false                 # automatic lane remains independent
+  onchain:
+    slippage_bps: 100
+    discovery_chain_ids: [1, 56, 8453, 42161, 4663]
+    settlement_assets:
+      - chain_id: 1
+        chain_name: Ethereum
+        symbol: USDC
+        contract_address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+        decimals: 6
+        quote_amount: 10
+        rpc_url: "https://YOUR_ETHEREUM_RPC"
+      - chain_id: 56
+        chain_name: BNB Chain
+        symbol: USDT
+        contract_address: "0x55d398326f99059ff775485246999027b3197955"
+        decimals: 18
+        quote_amount: 10
+        rpc_url: "https://YOUR_BNB_RPC"
+      - chain_id: 8453
+        chain_name: Base
+        symbol: USDC
+        contract_address: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+        decimals: 6
+        quote_amount: 10
+        rpc_url: "https://YOUR_BASE_RPC"
+      - chain_id: 42161
+        chain_name: Arbitrum One
+        symbol: USDC
+        contract_address: "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+        decimals: 6
+        quote_amount: 10
+        rpc_url: "https://YOUR_ARBITRUM_RPC"
+      - chain_id: 4663
+        chain_name: Robinhood Chain
+        symbol: USDG
+        contract_address: "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
+        decimals: 6
+        quote_amount: 10
+        rpc_url: "https://YOUR_ROBINHOOD_CHAIN_RPC"
+  telegram_profiles:
+    - user_id: 123456789
+      onchain:
+        enabled: true
+        wallet:
+          address: "0xYOUR_DEDICATED_MANUAL_EVM_WALLET"
+          private_key_file: trading_profiles/onchain/123456789/evm_private_key
+          live_trading_acknowledged: true
+        providers:
+          okx:
+            enabled: true
+            api_key_file: trading_profiles/quotes/123456789/okx_api_key
+            api_secret_file: trading_profiles/quotes/123456789/okx_api_secret
+            passphrase_file: trading_profiles/quotes/123456789/okx_passphrase
+          oneinch:
+            enabled: false
+            api_key_file:
+          binance:
+            enabled: true         # public Alpha CA evidence; route quote remains unavailable
+```
+
+Run `uv run tracefold config` and require
+the profile's `onchain.interaction_available=true`, then run `make up`. A news card
+shows `链上路由`; only its rendered `🎯 标的` values enter resolution. Each value
+may be a ticker or an exact EVM CA and need not carry a chain. Multiple targets
+require a target choice, and ambiguous token names require an explicit chain/CA
+choice. OKX, 1inch, Binance Alpha, and a DEX Screener discovery observation are
+merged; the last source is accepted only after `symbol/name/decimals` are read
+from the candidate contract on the reported chain. The result is labeled
+`确定最佳` only with complete cost and safety evidence; otherwise it is visibly
+`暂定最佳`.
+
+Live signing is available for an OKX or 1inch winner when the profile wallet,
+trusted execution RPC, acknowledgment, and dedicated executor heartbeat are
+all current. The 1inch Router V6 verifier binds its router, source/destination
+contracts, exact input, wallet recipient, minimum output, and no-partial-fill
+flag. The OKX verifier independently binds the code-owned per-chain router and
+approval proxy, exact approval, supported Router V1 selector, token pair,
+amount, wallet recipient, minimum output, and deadline. Both routes require a
+trusted-RPC simulation before local signing. Binance currently contributes public
+Alpha CA evidence only because its general Web3 Swap execution contract is not
+publicly documented. None of these provider states creates a second wallet.
+For `/test_onchain`, `quote_amount` is rejected before confirmation and again by
+the durable intent and PostgreSQL constraint when it exceeds 200
+USDT-equivalent settlement units.
+
+To send an expiring, visibly marked fixture, open a direct private conversation
+with the bot from a configured profile user and send one of:
+
+```text
+/test_futures
+/test_onchain
+```
+
+The defaults exercise HYPE and the multi-target BLUECHIP/COPPERINU choice.
+`/test_futures` creates the same confirmation and live-execution flow as a
+delivered News card, but its selected notional is hard-capped at 200 USDT in
+both the domain contract and PostgreSQL. The configured presets may impose a
+lower ceiling. The private bot command menu also exposes:
+
+```text
+/start       # help and command keyboard
+/positions   # current manual positions
+/history     # closed manual positions
+/trades      # append-only interaction/order/position ledger
+```
+
+The bot accepts neither command from a group/channel nor from an unconfigured
+private user. It replies only to the requesting private chat, selects only that
+user's Telegram Trading Profile, and stores no News material fact. Fixture rows
+expire after two hours.
 
 An operator configuration for live News uses the existing generated fields and
 the documented secure token file; do not add another config source or
@@ -207,16 +430,16 @@ llm:
       send_temperature: false
       structured_output: "prompt_json"
       extra_body: {}
-  # Optional all-or-none fallback route.
-  news_triage_fallback:
-    api_key: "<event fallback secret>"
-    base_url: "https://event-fallback.example/v1"
-    model: "event-fallback-model"
-  # Optional: requires news_triage_fallback; omit to alias its endpoint explicitly.
-  news_reader_card_fallback:
-    api_key: "<reader fallback secret>"
-    base_url: "https://reader-fallback.example/v1"
-    model: "reader-fallback-model"
+  # Optional ordered fallback routes, tried top to bottom; at most three.
+  news_fallbacks:
+    - api_key: "<event fallback secret>"
+      base_url: "https://event-fallback.example/v1"
+      model: "event-fallback-model"
+      # Optional; omit to alias ReaderCard to this route's EventSemantics endpoint.
+      reader_card:
+        api_key: "<reader fallback secret>"
+        base_url: "https://reader-fallback.example/v1"
+        model: "reader-fallback-model"
   # Required only for `news learning run` / `optimize`. Reflection uses this endpoint with
   # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
   # role from it with its own schema, budget, tariff and accounted calls.
@@ -234,7 +457,9 @@ news:
   push:
     enabled: true
     telegram_bot_token_file: "telegram_bot_token"
-    telegram_chat_id: -1001234567890
+    # Private user, channel and group targets. Only a positive user with a
+    # matching trading.telegram_profiles row receives trading buttons.
+    telegram_chat_ids: [123456789, -1001234567890, -1009876543210]
     # Alternative provider (do not configure both):
     # feishu_webhook_url: "<Feishu v2 webhook>"
     # feishu_signing_secret:
@@ -364,10 +589,10 @@ Worker topology and all safety/resource budgets are code-owned. For real data,
 `config.yaml` must contain only the News credentials above; the `llm` block
 owns one all-or-none direct Triage triple (`api_key`, `base_url`,
 `news_triage_model`) and may own one all-or-none `news_reader_card` endpoint;
-an absent Reader endpoint inherits Triage. The optional fallback route has an
-all-or-none `news_triage_fallback` endpoint and may add an all-or-none
-`news_reader_card_fallback`; absent Reader fallback is an explicit alias of the
-EventSemantics fallback endpoint. There is no environment-variable
+an absent Reader endpoint inherits Triage. `news_fallbacks` declares at most
+three complete routes in execution order. Each item is an all-or-none EventSemantics
+endpoint and may carry an all-or-none nested `reader_card`; an absent nested Reader
+is an explicit alias of that same fallback endpoint. There is no environment-variable
 credential path or inferred URL/model. Configs written before the GMGN lane removal must drop the
 `gmgn`, `upstream`, `providers.binance`, `api.heartbeat_interval`, and
 `api.replay_limit` keys, and configs written before the Analyst lane removal

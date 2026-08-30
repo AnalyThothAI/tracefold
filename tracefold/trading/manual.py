@@ -40,6 +40,17 @@ class ModificationGuardState(StrEnum):
     REJECTED = "rejected"
 
 
+class ManualAdjustmentField(StrEnum):
+    NOTIONAL = "notional"
+    STOP_LOSS = "stop_loss"
+    TAKE_PROFIT = "take_profit"
+
+
+class ManualAdjustmentDirection(StrEnum):
+    INCREASE = "increase"
+    DECREASE = "decrease"
+
+
 class ManualSessionState(StrEnum):
     AWAITING_STRATEGY = "AWAITING_STRATEGY"
     PREVIEW = "PREVIEW"
@@ -82,6 +93,11 @@ class ManualTradeParameters(_FrozenManualModel):
         if not parsed.is_finite() or parsed <= 0:
             raise ValueError("manual_trade_notional_invalid")
         return parsed
+
+
+class ManualTradeAdjustment(_FrozenManualModel):
+    field: ManualAdjustmentField
+    direction: ManualAdjustmentDirection
 
 
 class ManualRiskConfig(_FrozenManualModel):
@@ -527,6 +543,58 @@ def guard_manual_trade_modification(
     )
 
 
+def adjust_manual_trade_parameters(
+    parameters: ManualTradeParameters,
+    adjustment: ManualTradeAdjustment,
+) -> ManualTradeParameters:
+    """Apply one product-defined 50% step without leaking its semantics into App."""
+
+    factor = Decimal("1.5") if adjustment.direction is ManualAdjustmentDirection.INCREASE else Decimal("0.5")
+    notional = parameters.notional_usd
+    stop_loss_bps = parameters.stop_loss_bps
+    take_profit_bps = parameters.take_profit_bps
+    if adjustment.field is ManualAdjustmentField.NOTIONAL:
+        notional = _money(notional * factor)
+    elif adjustment.field is ManualAdjustmentField.STOP_LOSS:
+        stop_loss_bps = max(1, int(Decimal(stop_loss_bps) * factor))
+    else:
+        take_profit_bps = max(1, int(Decimal(take_profit_bps) * factor))
+    return ManualTradeParameters(
+        notional_usd=notional,
+        leverage=parameters.leverage,
+        stop_loss_bps=stop_loss_bps,
+        take_profit_bps=take_profit_bps,
+    )
+
+
+def guard_manual_trade_selection(
+    *,
+    source: ManualTradeSource,
+    preset: StrategyPreset,
+    account_equity: Decimal,
+    recommended: ManualTradeParameters,
+    selected: ManualTradeParameters,
+    config: ManualRiskConfig,
+) -> ManualModificationGuard:
+    """Apply the complete manual-trading guard, including development-test policy."""
+
+    guard = guard_manual_trade_modification(
+        preset=preset,
+        account_equity=account_equity,
+        recommended=recommended,
+        modified=selected,
+        config=config,
+    )
+    if is_development_test_source(source) and selected.notional_usd > MAX_DEVELOPMENT_TEST_NOTIONAL_USD:
+        return guard.model_copy(
+            update={
+                "state": ModificationGuardState.REJECTED,
+                "reason_codes": tuple(dict.fromkeys((*guard.reason_codes, "development_test_notional_cap"))),
+            }
+        )
+    return guard
+
+
 def _positive_decimal(value: object, code: str) -> Decimal:
     try:
         parsed = Decimal(str(value))
@@ -564,12 +632,15 @@ def _signed_change_bps(value: Decimal, baseline: Decimal) -> int:
 __all__ = [
     "MAX_DEVELOPMENT_TEST_NOTIONAL_USD",
     "ManualAccountSnapshot",
+    "ManualAdjustmentDirection",
+    "ManualAdjustmentField",
     "ManualModificationGuard",
     "ManualRiskConfig",
     "ManualSessionState",
     "ManualStrategyPresetConfig",
     "ManualTargetPicker",
     "ManualTargetPickerState",
+    "ManualTradeAdjustment",
     "ManualTradeIntent",
     "ManualTradeParameters",
     "ManualTradePreview",
@@ -580,9 +651,11 @@ __all__ = [
     "ModificationGuardState",
     "StrategyPreset",
     "TradeSide",
+    "adjust_manual_trade_parameters",
     "build_manual_trade_preview",
     "create_manual_trade_intent",
     "guard_manual_trade_modification",
+    "guard_manual_trade_selection",
     "is_development_test_source",
     "recommend_manual_trade",
 ]

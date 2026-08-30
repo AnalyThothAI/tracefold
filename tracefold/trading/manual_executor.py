@@ -158,6 +158,8 @@ class ManualExecutionStore(Protocol):
 
     def next_open_position(self) -> ManualManagedPositionRecord | None: ...
 
+    def has_active_symbol(self, *, base_symbol: str, exclude_intent_id: str) -> bool: ...
+
     def fence_entry(self, intent_id: str, *, plan: ManualExecutionPlan, now_ms: int) -> bool: ...
 
     def begin_attempt(self, intent_id: str, *, leg: ManualAttemptLeg, now_ms: int) -> bool: ...
@@ -742,6 +744,16 @@ class ManualExecutionService:
         now_ms: int,
     ) -> tuple[ManualExecutionPlan | None, ManualReconciliationResult]:
         symbol = f"{intent.source.base_symbol}USDT"
+        if self._store.has_active_symbol(
+            base_symbol=intent.source.base_symbol,
+            exclude_intent_id=intent.intent_id,
+        ):
+            return None, self._reject(
+                intent,
+                leg="entry",
+                error_code="manual_executor_existing_symbol_exposure",
+                now_ms=now_ms,
+            )
         try:
             position = self._venue.position(symbol)
             rules = self._venue.instrument(symbol)
@@ -759,6 +771,16 @@ class ManualExecutionService:
         except ValueError as exc:
             return None, self._reject(intent, leg="entry", error_code=str(exc), now_ms=now_ms)
         if not self._store.fence_entry(intent.intent_id, plan=plan, now_ms=now_ms):
+            if self._store.has_active_symbol(
+                base_symbol=intent.source.base_symbol,
+                exclude_intent_id=intent.intent_id,
+            ):
+                return None, self._reject(
+                    intent,
+                    leg="entry",
+                    error_code="manual_executor_existing_symbol_exposure",
+                    now_ms=now_ms,
+                )
             raise RuntimeError("manual_executor_entry_fence_conflict")
         return plan, "confirmed"
 

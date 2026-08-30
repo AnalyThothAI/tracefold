@@ -31,7 +31,7 @@ from tracefold.app.workers.wiring.market_review import (
 )
 from tracefold.integrations.feishu import FeishuNewsPushSender
 from tracefold.integrations.opennews import OpenNewsStrategyHistoryClient, OpenNewsWebSocketClient
-from tracefold.integrations.telegram import TelegramNewsPushSender
+from tracefold.integrations.telegram import TelegramNewsFanoutSender, TelegramNewsPushSender
 from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
 from tracefold.news import ProgressionVerifier
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
@@ -53,7 +53,14 @@ from tracefold.news.program.contracts import SemanticJudge
 from tracefold.news.program.runtime import PROGRAM_VERSION
 from tracefold.news.release.canary import CanaryRuntimeArm
 from tracefold.news.triage_rules import DecidePolicy
-from tracefold.platform.config.models import Settings, news_push_availability
+from tracefold.platform.config.models import (
+    Settings,
+    manual_trading_availability,
+    manual_trading_profile_availability,
+    news_push_availability,
+    onchain_trading_availability,
+    onchain_trading_profile_availability,
+)
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
@@ -263,23 +270,50 @@ def _candidate_runtime_arms(
     return canary_arms, candidate_failures
 
 
-def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNewsPushSender | None:
+def _news_push_sender(settings: Settings) -> FeishuNewsPushSender | TelegramNewsFanoutSender | None:
     push = news_push_availability(settings)
     if not push.requested:
         return None
     if not push.delivery_available:
         raise RuntimeError(f"news_push_unavailable:{push.reason or 'news_item_push_configuration_invalid'}")
     if push.provider == "telegram":
+        manual = manual_trading_availability(settings, inspect_secret_files=False)
+        onchain = onchain_trading_availability(settings, inspect_secret_files=False)
+        if manual.requested and not manual.interaction_available:
+            raise RuntimeError(f"manual_trading_unavailable:{manual.reason or 'configuration_invalid'}")
+        if onchain.requested and not onchain.interaction_available:
+            raise RuntimeError(f"onchain_trading_unavailable:{onchain.reason or 'configuration_invalid'}")
         token_file = settings.news_telegram_bot_token_file()
-        chat_id = settings.news.push.telegram_chat_id
-        if token_file is None or chat_id is None:
+        chat_ids = settings.news.push.telegram_chat_ids
+        if token_file is None or not chat_ids:
             raise RuntimeError("news_push_unavailable:news_item_push_telegram_configuration_invalid")
         try:
             bot_token = read_secure_secret_text(token_file)
         except SecretFileError:
             raise RuntimeError("news_push_unavailable:news_item_push_telegram_bot_token_unavailable") from None
         try:
-            return TelegramNewsPushSender(bot_token=bot_token, chat_id=chat_id)
+            senders: list[TelegramNewsPushSender] = []
+            for chat_id in chat_ids:
+                profile = settings.trading.telegram_profile(chat_id) if chat_id > 0 else None
+                manual_profile = (
+                    manual_trading_profile_availability(settings, profile, inspect_secret_files=False)
+                    if profile is not None
+                    else None
+                )
+                onchain_profile = (
+                    onchain_trading_profile_availability(settings, profile, inspect_secret_files=False)
+                    if profile is not None
+                    else None
+                )
+                senders.append(
+                    TelegramNewsPushSender(
+                        bot_token=bot_token,
+                        chat_id=chat_id,
+                        trading_actions_enabled=bool(manual_profile and manual_profile.interaction_available),
+                        onchain_actions_enabled=bool(onchain_profile and onchain_profile.interaction_available),
+                    )
+                )
+            return TelegramNewsFanoutSender(senders)
         except ValueError:
             raise RuntimeError("news_push_unavailable:news_item_push_telegram_sender_invalid") from None
     return FeishuNewsPushSender(
