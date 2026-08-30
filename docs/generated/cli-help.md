@@ -96,11 +96,15 @@ options:
 ## `db`
 
 ```
-usage: tracefold db [-h] {migrate,health,audit,query-audit} ...
+usage: tracefold db [-h]
+                    {migrate,news-genesis-manifest,health,audit,query-audit} ...
 
 positional arguments:
-  {migrate,health,audit,query-audit}
+  {migrate,news-genesis-manifest,health,audit,query-audit}
     migrate             apply PostgreSQL migrations
+    news-genesis-manifest
+                        compute the News genesis target runtime manifest from
+                        this image and config
     health              check PostgreSQL liveness and migration version
     audit               run PostgreSQL count, FK, and projection schema audit
     query-audit         explain PostgreSQL hot read paths
@@ -114,6 +118,16 @@ options:
 
 ```
 usage: tracefold db migrate [-h]
+
+options:
+  -h, --help  show this help message and exit
+
+```
+
+## `db news-genesis-manifest`
+
+```
+usage: tracefold db news-genesis-manifest [-h]
 
 options:
   -h, --help  show this help message and exit

@@ -48,6 +48,9 @@ def _install_bus(monkeypatch: pytest.MonkeyPatch, *, consumers: int = 0) -> None
         async def verify_policies(self) -> None:
             pass
 
+        async def queue_depths(self):
+            return {"news.raw": {"messages": 0, "consumers": consumers}}
+
         async def broker_snapshot(self):
             return _queues(consumers=consumers)
 

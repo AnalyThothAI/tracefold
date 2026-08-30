@@ -1337,16 +1337,19 @@ Phase 0 is fail-closed:
    unverified or mutable snapshot.
 4. Prebuild the exact main image with
    `TRACEFOLD_BUILD_REVISION=<40-hex-main-sha>`, inspect its full
-   `sha256:<64-hex>` image ID. Record the expected target runtime-manifest SHA;
-   the migration command recomputes it inside that same image from the active
-   operator config, stable bundle, compiled candidate set, image ID and runtime
-   revision and rejects a mismatch. Do not use a tag or a value from another
-   build.
+   `sha256:<64-hex>` image ID, export it as `TRACEFOLD_IMAGE_DIGEST`, then run
+   `make news-genesis-manifest`. Record `data.runtime_manifest_sha` from that
+   read-only command as the expected target runtime-manifest SHA. The command
+   computes it inside that same configured image from the active operator
+   config, stable bundle, compiled candidate set, image ID and runtime revision.
+   Do not use a tag or a value from another build.
 5. Export one compact JSON value as
    `TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON` with exactly these fields (no extra
    keys), then run `make up`. The Makefile rechecks exact main CI, owns the
    deployment lock, rebuilds or reuses the exact image, stops runtimes, and the
-   `migrate` service receives the JSON and image identity. It runs only after
+   `migrate` service receives the JSON and image identity. Before changing the
+   database, `make up` independently computes the target manifest through the
+   same read-only image command. It runs migration only after
    the broker policy import, reads every configured News queue after the
    runtimes stop, and rejects a missing queue, consumer, policy/topology drift,
    ready/unacked/delayed/dead-letter message, or a queue total that differs
@@ -1394,7 +1397,9 @@ the full disposition, and
 `rollback=verified_snapshot_restore_only`.
 
 Start the exact image, then require Workers `/readyz` to publish the same target
-runtime-manifest SHA, all readiness endpoints green, the first new Event to
+runtime-manifest SHA. `make up` always compares it with the pre-migration target
+for maintenance upgrades and fresh installs. Require all readiness endpoints
+green, the first new Event to
 complete the current evidence/verdict/delivery path, and a restart to preserve
 that result without recovering any pre-genesis identifier. Open a new review,
 dataset, candidate and canary epoch only from post-genesis evidence; the
