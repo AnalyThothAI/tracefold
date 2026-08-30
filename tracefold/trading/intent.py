@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Final, Literal, Self
 
@@ -366,12 +367,97 @@ class IntentOutcome(BaseModel):
         return value
 
 
+EntryFenceDisposition = Literal["GRANTED", "REFUSED", "UNAVAILABLE"]
+EntryFenceUnavailable = Literal[
+    "intent_not_claimable",
+    "runtime_not_ready",
+    "intent_expired",
+]
+type EntryFenceReason = EntryFenceUnavailable | Literal["entry_fence_granted"] | IntentReasonCode
+
+
+@dataclass(frozen=True, slots=True)
+class EntryFenceWrite:
+    """Primitive transaction result; materialize the domain result after commit."""
+
+    disposition: EntryFenceDisposition
+    reason: EntryFenceReason
+    outcome_values: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EntryFence:
+    """The closed result of attempting to take the durable entry fence."""
+
+    disposition: EntryFenceDisposition
+    reason: EntryFenceReason
+    outcome: IntentOutcome | None = None
+
+    @property
+    def granted(self) -> bool:
+        return self.disposition == "GRANTED"
+
+
+def materialize_entry_fence(value: EntryFenceWrite) -> EntryFence:
+    """Build the domain result only after the caller's transaction has committed."""
+
+    outcome = None if value.outcome_values is None else IntentOutcome.model_validate(value.outcome_values)
+    return EntryFence(disposition=value.disposition, reason=value.reason, outcome=outcome)
+
+
+type ActiveIntentValues = tuple[dict[str, Any], dict[str, Any]]
+
+
+def materialize_active_intent(value: ActiveIntentValues) -> tuple[TradeIntent, IntentOutcome]:
+    """Build the active handoff after its locking transaction has committed."""
+
+    intent_values, outcome_values = value
+    return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
+
+
+def materialize_intent_outcome(value: dict[str, Any]) -> IntentOutcome:
+    """Build one execution projection after the caller's transaction has committed."""
+
+    return IntentOutcome.model_validate(value)
+
+
+def validate_stop_submission_identity(
+    intent_id: str,
+    *,
+    client_order_id: str,
+    generation: int,
+    previous_client_order_id: str | None,
+) -> None:
+    """Validate the deterministic initial or replacement stop identity."""
+
+    expected = deterministic_client_order_id(
+        intent_id,
+        "stop",
+        previous_client_order_id=previous_client_order_id,
+    )
+    if generation < 0 or (generation == 0) is not (previous_client_order_id is None) or client_order_id != expected:
+        code = "initial_stop_identity_invalid" if generation == 0 else "replacement_stop_identity_invalid"
+        raise ValueError(code)
+
+
+def validate_close_submission_identity(intent_id: str, *, client_order_id: str) -> None:
+    """Validate the deterministic close identity before entering a write transaction."""
+
+    if client_order_id != deterministic_client_order_id(intent_id, "close"):
+        raise ValueError("close_identity_invalid")
+
+
 __all__ = [
     "ACTIVE_INTENT_STATES",
     "INTENT_POLICY_PAYLOAD",
     "INTENT_POLICY_SHA256",
     "INTENT_POLICY_VERSION",
     "TRADE_INTENT_VERSION",
+    "ActiveIntentValues",
+    "EntryFence",
+    "EntryFenceDisposition",
+    "EntryFenceUnavailable",
+    "EntryFenceWrite",
     "IntentExecutionState",
     "IntentOutcome",
     "IntentReasonCode",
@@ -382,4 +468,9 @@ __all__ = [
     "economic_leg_id",
     "economic_lifecycle_id",
     "is_executable_instrument",
+    "materialize_active_intent",
+    "materialize_entry_fence",
+    "materialize_intent_outcome",
+    "validate_close_submission_identity",
+    "validate_stop_submission_identity",
 ]

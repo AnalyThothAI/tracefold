@@ -6,7 +6,7 @@ from sqlalchemy.exc import ProgrammingError
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
-from tracefold.platform.postgres.migrations import alembic_config, upgrade_head
+from tracefold.platform.postgres.migrations import alembic_config
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 
@@ -83,7 +83,7 @@ def test_0324_refuses_an_invalid_lifecycle_row_admitted_by_0323_without_advancin
 
     try:
         with pytest.raises(ProgrammingError, match="news_delivery_lifecycle_shape_invalid"):
-            upgrade_head(postgres_test_dsn())
+            command.upgrade(config, "20260828_0324")
         conn = connect_postgres_test(read_only=False)
         try:
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == (
@@ -94,4 +94,4 @@ def test_0324_refuses_an_invalid_lifecycle_row_admitted_by_0323_without_advancin
         finally:
             conn.close()
     finally:
-        upgrade_head(postgres_test_dsn())
+        command.upgrade(config, "20260828_0324")

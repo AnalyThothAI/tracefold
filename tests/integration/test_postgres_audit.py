@@ -36,6 +36,8 @@ def test_operational_audit_fast_path_uses_catalog_estimates_and_exact_schema(
     assert payload["migration_version"] == latest_migration_version()
     assert payload["migration_status"] == "ready"
     assert payload["mode"] == "fast"
+    assert payload["database_identity"]["ok"] is True
+    assert all(payload["database_identity"]["checks"].values())
     assert payload["database_identity"]["server_version_num"] >= 180_000
     assert payload["database_identity"]["declared_image_identity"] == "postgres:18-bookworm@sha256:test"
     assert payload["database_identity"]["image_identity_source"] == "TRACEFOLD_POSTGRES_IMAGE"
@@ -72,7 +74,7 @@ def test_operational_audit_deep_mode_runs_explicit_exact_counts(tmp_path, postgr
     assert payload["mode"] == "deep"
     assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
     assert all(count >= 0 for count in payload["counts"].values())
-    assert payload["counts"]["news_learning_epochs"] > 0
+    assert payload["counts"]["news_learning_epochs"] == 0
 
 
 def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path, postgres_clone_dsn: str):

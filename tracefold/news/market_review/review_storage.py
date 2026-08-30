@@ -56,7 +56,7 @@ _REVIEW_FACTS_CTE: Final = """
              COALESCE(v.editorial #>> '{{taxonomy,event_family}}', 'unknown') AS event_family,
              (d.state = 'sent') AS delivered
         FROM news_verdicts v
-        JOIN news_current_events_v1 e ON e.event_id = v.event_id
+        JOIN news_events e ON e.event_id = v.event_id
         LEFT JOIN news_deliveries d ON d.event_id = v.event_id AND d.kind = 'first'
        WHERE v.stage = 'triage' AND e.ingest_mode = 'live'
          AND v.judgment_contract_version = 'news_judgment_v2'
@@ -343,7 +343,7 @@ class ReviewStorage:
                      WHERE v.event_id = e.event_id AND v.stage = 'triage'
                        AND v.judgment_contract_version = 'news_judgment_v2'
                      ORDER BY v.created_at_ms DESC LIMIT 1) AS headline_zh
-              FROM news_current_events_v1 e
+              FROM news_events e
              WHERE e.event_id = ANY(%s)
             """,
             (list(event_ids),),

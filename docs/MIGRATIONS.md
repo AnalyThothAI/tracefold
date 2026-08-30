@@ -38,14 +38,16 @@ DDL.
 
 Audit-start baseline: exact `main` `17338e78dbf0c99dc98e876433790adf02e1bd70`,
 head `20260830_0333`. The implementation was reconciled with
-`main@651ba997d43d0046660ac5dd84f221782b6e1a63` / `20260830_0334`, then added
-forward revision `20260830_0336` to freeze explicit current-view columns. The
-audit found no object that can be removed
-without changing the News current contract or Trading capital/execution truth,
+`main@30b924abd61f42302314626d4270e962c5db9cd9` / `20260830_0336`, whose #398
+genesis deliberately removed the retired News archive compatibility plane.
+Revision `20260830_0337` adds only the missing Nautilus canonical-JSON function
+grant. The #375 audit found no additional object that can be removed without
+changing the News current contract or Trading capital/execution truth,
 so no published revision was edited and no forward-removal revision is
-warranted. Every object below is retained. Objects grouped in one row inherit
-every field in that row; each exact object name is listed so the contract test
-can fail closed on omissions.
+warranted. The matrix records the 0330–0332 audit result and explicitly marks
+the compatibility objects subsequently superseded by #398. Objects grouped in
+one row inherit every field in that row; each exact object name is listed so
+the contract test can fail closed on omissions.
 
 Cost evidence uses PostgreSQL-native statement/transaction timeouts and plan
 rows/blocks rather than shared-runner wall-clock thresholds. The relevant
@@ -66,12 +68,12 @@ real-PostgreSQL seams are
 | `news_current_evidence_snapshot_valid` | Evidence version, Event/focus-fact identity, provenance, and content hash must agree with the immutable snapshot. | Admission/Triage evidence writers and direct fixture/import paths; Python owner is News evidence storage. | One small-to-medium snapshot version per Event; archive Events reject current evidence. Hash equivalence and real inserts are tested. | Retain: evidence identity is release authority, not presentation validation. |
 | `news_current_review_dimensions_valid`<br>`news_current_review_novelty_valid`<br>`news_current_review_evidence_refs_valid`<br>`news_current_review_taxonomy_valid`<br>`news_current_review_expected_valid`<br>`news_current_review_taxonomy_provenance_valid`<br>`news_current_event_review_payload_valid`<br>`news_current_pairwise_review_payload_valid`<br>`news_current_review_selection_valid`<br>`news_current_review_valid` | Accepted event/external-miss/pairwise review rows must keep rubric, expected answer, evidence references, selection probability, taxonomy, and provenance mutually consistent. | Serve-role ReviewDesk append, CLI review/import, and learning readers; matching exact models live in `tracefold.news.review.desk`. | Append-only human judgments, much less frequent than Event ingestion, contract-bounded payloads; old review versions remain archive-only. Historical fixtures and valid/invalid payload tests run on real PostgreSQL. | Retain: Serve can append directly with narrow grants and must not bypass review integrity. |
 | `news_current_verdict_evidence_guard`<br>`news_verdicts_current_evidence_check` | A current verdict must reference the exact current evidence version/SHA/focus fact for its Event. | Every verdict producer; Python storage prepares the identity but PostgreSQL owns the cross-table fact. | One indexed lookup per current verdict; archive verdicts are excluded. Real migration fixtures prove mismatch rejection. | Retain: cross-table identity cannot be enforced by Pydantic. |
-| `news_current_event_archive_guard`<br>`news_events_current_archive_only_check`<br>`news_reviews_current_archive_only_check`<br>`news_event_evidence_current_archive_only_check` | A pre-cut archive Event, review, or evidence row can never be resurrected into the current contract. | Workers, ReviewDesk/Serve, maintenance, and migration/import paths. | Trigger is O(1) by Event key. Old rows remain readable only as audit evidence. | Retain: current/archive is a database authority fence. |
+| `news_current_event_archive_guard`<br>`news_events_current_archive_only_check`<br>`news_reviews_current_archive_only_check`<br>`news_event_evidence_current_archive_only_check` | A pre-cut archive Event, review, or evidence row can never be resurrected into the current contract. | Workers, ReviewDesk/Serve, maintenance, and migration/import paths. | Trigger is O(1) by Event key. Old rows remained readable only as audit evidence before genesis. | Superseded by #398: `0336` deleted all pre-genesis evidence, then removed these compatibility guards and both archive columns. |
 | `news_current_review_acceptance_target_guard`<br>`news_reviews_current_acceptance_target_check` | An accepted review targets a current eligible Event/evidence identity. | Serve/CLI review writers and News learning readers. | Append-time indexed lookup; reviews are low-frequency and permanent/retained evidence. | Retain: cross-table acceptance authority. |
 | `news_current_review_source_exists`<br>`news_current_review_source_guard`<br>`news_reviews_current_task_source_check` | Review task source, subject kind, and selected Event/external miss/pair are real and current. | Serve/CLI review appenders. | Low-frequency indexed existence checks; old tasks stay archive-only. | Retain: protects foreign identities not expressible as one ordinary FK. |
 | `news_events_source_contract_reason_check`<br>`news_events_source_contract_consistency_check`<br>`news_verdicts_final_decision_check`<br>`news_verdicts_current_judgment_check`<br>`news_event_evidence_current_contract_check`<br>`news_verdicts_current_evidence_fk`<br>`news_events_current_focus_fact_check`<br>`news_reviews_current_contract_check` | Current Event, verdict, evidence, and review scalar/JSON/cross-row invariants; `NOT VALID` preserves historical rows without admitting new invalid facts. | News admission/Triage/ReviewDesk plus deterministic telemetry writers; matching Python owners are the current News models and storage methods. | Checks run per current write; bounded payloads. The 0329→0330 fixture proves history preservation and invalid-write rejection. | Retain: these are the composed current-contract authority. |
-| `news_current_events_v1`<br>`news_review_task_source_v1`<br>`news_review_records_v1` | Public/current projections exclude archive-only Events and non-current judgments/reviews. | Serve, ReviewDesk, learning, and Trading handoff readers. | Hot reads use explicit columns and production predicates; plan audit covers current filters. | Retain: one current projection prevents reader-specific archive leakage. |
-| `ux_news_event_evidence_current_identity`<br>`ix_news_events_current_opened` | Unique current evidence identity and ordered current-feed access. | All current evidence writers/readers and public feed. | Partial indexes exclude archive rows; real plan evidence binds them to current query builders. | Retain: read/write evidence supports both indexes. |
+| `news_current_events_v1`<br>`news_review_task_source_v1`<br>`news_review_records_v1` | Public/current projections excluded archive-only Events and non-current judgments/reviews. | Serve, ReviewDesk, learning, and Trading handoff readers. | Hot reads use explicit columns and production predicates; plan audit covers current filters. | `news_review_task_source_v1` and `news_review_records_v1` remain current-only. #398 removed `news_current_events_v1`; ordinary Event readers now query the physically current-only table. |
+| `ux_news_event_evidence_current_identity`<br>`ix_news_events_current_opened` | Unique current evidence identity and ordered current-feed access. | All current evidence writers/readers and public feed. | Partial indexes excluded archive rows; real plan evidence binds them to current query builders. | #398 removed archive-only partial-index compatibility and retained/rebuilt only indexes needed by the current-only tables. |
 
 ### 0331 — Trading Production V3
 
@@ -104,15 +106,15 @@ real-PostgreSQL seams are
 
 ### Audit disposition
 
-- Retained: every 0330–0332 object above, because it protects identity,
-  current/archive separation, an append-only ledger, cross-table truth, or a
-  contract shared by independent writers.
+- Retained: every current 0330–0332 identity, append-only ledger, cross-table
+  truth, and contract shared by independent writers. #398 independently
+  superseded only the explicitly marked archive-compatibility objects.
 - Governed: SQL placement/dynamic composition, explicit projection columns,
   production/audit statement sharing, and transaction CPU boundaries.
 - Optimized: bounded raw retention and band expiry, risk-based query plans,
   fast operational audit, and production-image restore evidence.
-- Deleted: no database object and no published revision; evidence did not
-  justify a contract-changing forward removal.
+- Deleted by #375: no database object and no published revision. The later
+  #398 product hard cut removed its enumerated compatibility objects in `0336`.
 - Product-owner follow-up: none created by this audit. A future proposal to
   weaken News current validation or Trading capital/execution authority must
   be a separate product Issue with its own migration evidence.

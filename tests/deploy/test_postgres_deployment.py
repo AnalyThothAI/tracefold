@@ -59,6 +59,7 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert policy["command"] == ["tracefold", "news", "bus-policy", "apply"]
     assert policy["restart"] == "no"
     assert policy["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    assert services["migrate"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["workers"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["postgres"]["image"] == POSTGRES_IMAGE
     assert "build" not in services["postgres"]
@@ -101,6 +102,13 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     for role in ("migrate", "serve", "workers", "nautilus"):
         assert services[role]["image"] == shared_app_image
         assert services[role]["build"] == shared_app_build
+
+    assert services["migrate"]["environment"] == {
+        "TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}",
+        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": "${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}",
+    }
+    for role in ("serve", "workers", "nautilus"):
+        assert "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" not in services[role]["environment"]
 
     for role in ("serve", "workers", "nautilus"):
         depends = services[role]["depends_on"]

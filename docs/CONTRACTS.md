@@ -380,8 +380,9 @@ liquidation contracts select their strict parsers. The pinned tuples are
 Known tuple drift and unbound scoreless market/wallet frames persist Item/Event
 provenance with nullable Event field
 `source_contract_reason=source_contract_drift|unsupported_market_contract`.
-The historical `source_contract_unverified` value is archive-only and is not a
-current contract member. Unsupported rows call no model and create no delivery.
+Migration `0336` deletes rows carrying the retired
+`source_contract_unverified` value; it is not a current contract member.
+Unsupported rows call no model and create no delivery.
 A malformed OI/liquidation frame stores `source_contract_drift`;
 a valid current-writer contract stores `null`. Recovery uses the same classifier
 and, when provider history includes the complete tuple, the same strict parser;
@@ -532,8 +533,7 @@ title alone selects a deterministic route.
   `source_classifier_version`, and `source_contracts_24h` keyed by the five
   closed families. Each family counts the same Event cohort opened in the last
   24 h: `received`; `parsed` (durably verified OI/liquidation parses, all
-  supported News/listing Events, and zero for unsupported; archive-only rows
-  are outside the current cohort);
+  supported News/listing Events, and zero for unsupported);
   `parse_failed` (`source_contract_reason=source_contract_drift`); `unsupported`; and
   `verdict` (any Triage verdict for the Event). It also returns degraded counts
   incl. `triage_degraded_by_code_24h`, decided pushes,
@@ -596,13 +596,13 @@ honor `If-None-Match`; `/api/news/status` uses a weak ETag that ignores
 Item identity is `sha256(source_id, params.id)`; `params.strategy.id` is
 provenance, not fact identity. Event identity v6 is
 `sha256(identity_version,item_id,fact_id,event_kind)` for every route.
-Archive-only identities are not candidates for current Event membership and
-there is no pre-v6 collision or rekey bridge. Events
+Pre-genesis identities were deleted and there is no pre-v6 collision or rekey
+bridge. Events
 merge different Items only within the same `event_kind` and current
 source-contract reason, by exact comparison fingerprint or MinHash/LSH
 near-duplicate (estimated Jaccard >= 0.55 with strong-fact compatibility)
 inside the dedupe-family window (market telemetry 2 h, disaster 6 h, filing 72 h,
-general 12 h). Archive-only Events never enter exact, artifact, or near-match
+general 12 h). Only post-genesis Events enter exact, artifact, or near-match
 candidate sets; current drift and success cohorts never cross.
 Fingerprints of at most two tokens never share an Event.
 
@@ -666,7 +666,8 @@ their own typed judgments. `news_verdicts` stores the current marker/origin,
 verdict, model editorial when applicable, judgment hash, exact `runtime_manifest_sha`,
 `rule_baseline_decision`, `final_decision`, `override_rule`,
 `throttled_by`, `degraded`, `error_code`, and trace in one transaction. Rows
-without the current marker are archive-only and ordinary readers never decode them.
+without the current marker cannot exist after the `0336` genesis, and every
+ordinary reader requires the current marker.
 
 The trace binds `verdict_sha256`, `editorial_sha256`, Program version/SHA,
 runtime manifest/provider/model identity, every frozen `DecidePolicy` value,
@@ -1078,7 +1079,7 @@ interrupting it.
 `db audit` reports the migration revision, catalog row estimates for every table in the
 code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the runtime-role contract including a role-authentic Workers evidence
-append without rewrite access (current at migration `20260830_0336`). `db audit --deep`
+append without rewrite access (current at migration `20260830_0337`). `db audit --deep`
 adds exact table counts for offline migration or restore evidence. Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
@@ -1310,12 +1311,9 @@ alongside as `scores.case_macro_answered_byte_equality`.
 Reviews whose `evidence_version` has been superseded are not replayable and are
 excluded, the same rule `_load_case` already enforced.
 
-`tests/fixtures/news_audit_replay_corpus_v2.json` preserves pre-hard-cut bytes as
-immutable archive evidence only. It is not a metric-v6 corpus and no current
-dataset, evaluator, recorded mode, or release gate may decode it. The exact
-historical allowlist is enforced by the current-contract architecture guard;
-current metric evidence comes only from exact `news_judgment_v2` rows in the
-active epoch.
+The `0336` genesis removed the retired replay fixture. Current metric evidence
+comes only from exact `news_judgment_v2` rows created in the post-genesis active
+epoch; no repository fixture provides a legacy recorded-mode input.
 
 Reviews are accepted under `news_review_v6`. Its exact Gold includes the five
 taxonomy axes; its optional `expected` block continues to cover magnitude,

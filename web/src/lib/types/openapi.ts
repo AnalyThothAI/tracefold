@@ -3195,15 +3195,6 @@ export interface operations {
                     "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
                 };
             };
-            /** @description Event is archive-only under the current contract */
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_NewsEventDetailData_"];
-                };
-            };
             /** @description Validation Error */
             422: {
                 headers: {

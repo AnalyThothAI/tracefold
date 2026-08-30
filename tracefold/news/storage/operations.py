@@ -73,7 +73,7 @@ def pending_recovery_incidents_statement(*, limit: int) -> tuple[str, tuple[int]
 class OperationsStorage:
     conn: Any
 
-    def seed_restore_drill_facts(self, *, current_event_id: str, archive_event_id: str) -> str:
+    def seed_restore_drill_facts(self, *, current_event_id: str) -> str:
         """Seed the bounded News truth used only by the isolated restore drill."""
 
         self.conn.execute(
@@ -86,10 +86,7 @@ class OperationsStorage:
               ('restore-current', 'restore', 'restore-current', 'restore current',
                'restore current', 'current durable fact', 'restore', 10, 10,
                '{"strategies":["restore"]}'::jsonb, '["restore"]'::jsonb, 'live',
-               'restore-current-trace', 10, 10),
-              ('restore-archive', 'restore', 'restore-archive', 'restore archive',
-               'restore archive', 'archive durable fact', 'restore', 20, 20,
-               '{}'::jsonb, '["restore"]'::jsonb, 'live', 'restore-archive-trace', 20, 20)
+               'restore-current-trace', 10, 10)
             """
         )
         self.conn.execute(
@@ -99,18 +96,14 @@ class OperationsStorage:
               leader_title, opened_at_ms, last_member_at_ms, expires_at_ms, admission,
               ingest_mode, trace_id, created_at_ms, updated_at_ms, focus_fact_id,
               focus_fact_text, focus_fact_context, focus_fact_method, focus_span_start,
-              focus_span_end, event_kind, current_contract_archive_only
+              focus_span_end, event_kind
             ) VALUES
               (%s, 'restore-current', 'general', 'restore-current-fingerprint', 'restore current',
                'restore current', 10, 10, 100, 'candidate', 'live', 'restore-current-trace',
                10, 10, 'restore-current-fact', 'restore current', 'current durable fact',
-               'whole_item', 0, 15, 'news', false),
-              (%s, 'restore-archive', 'general', 'restore-archive-fingerprint', 'restore archive',
-               'restore archive', 20, 20, 100, 'candidate', 'live', 'restore-archive-trace',
-               20, 20, 'restore-archive-fact', 'restore archive', 'archive durable fact',
-               'whole_item', 0, 15, 'news', true)
+               'whole_item', 0, 15, 'news')
             """,
-            (current_event_id, archive_event_id),
+            (current_event_id,),
         )
         self.conn.execute(
             """

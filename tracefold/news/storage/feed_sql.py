@@ -47,11 +47,10 @@ CURRENT_EVENT_CARD_SQL: Final = """
            e.ingest_mode, e.trace_id, e.created_at_ms, e.updated_at_ms, e.focus_fact_id,
            e.focus_fact_text, e.focus_fact_context, e.focus_fact_method, e.focus_span_start,
            e.focus_span_end, e.event_kind, e.source_contract_reason,
-           e.current_contract_archive_only,
            i.description AS leader_description, i.canonical_url AS leader_url, i.reporting_origin,
            i.provider_metadata, i.provenance, i.published_at_ms AS leader_published_at_ms,
            i.raw_first_line
-      FROM news_current_events_v1 e
+      FROM news_events e
       JOIN news_items i ON i.item_id = e.leader_item_id
      WHERE e.event_id = %s
 """
@@ -102,7 +101,7 @@ def feed_page_sql(where_sql: str) -> str:
                t.trace -> 'judgment' AS oi_judgment,
                t.trace -> 'oi_signal' AS oi_metadata,
                d.state AS delivery_state, d.settled_at_ms AS delivered_at_ms, d.error_code AS delivery_error_code
-          FROM clock CROSS JOIN news_current_events_v1 e
+          FROM clock CROSS JOIN news_events e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot
@@ -137,7 +136,7 @@ def feed_counts_sql(where_sql: str) -> str:
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pushed"]}) AS pushed,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["held"]}) AS held,
                count(*) FILTER (WHERE {OUTCOME_GROUP_SQL["pending"]}) AS pending
-          FROM clock CROSS JOIN news_current_events_v1 e
+          FROM clock CROSS JOIN news_events e
           JOIN news_items i ON i.item_id = e.leader_item_id
           JOIN LATERAL (
             SELECT s.provenance, s.snapshot

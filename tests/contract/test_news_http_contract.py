@@ -93,8 +93,6 @@ class _FakeNewsRepository:
 
     def event_detail(self, event_id: str) -> dict[str, Any] | None:
         self.calls.append(("event_detail", {"event_id": event_id}))
-        if event_id == "archive":
-            return {"archive_only": True}
         event = next((event for event in self.events if event["event_id"] == event_id), None)
         if event is None:
             return None
@@ -989,7 +987,7 @@ def test_status_counts_grounding_from_both_owners_without_either_reaching_across
     assert any(call[0] == "asset_usage_24h" for call in news.calls)
 
 
-def test_event_detail_returns_current_envelope_or_explicit_archive_and_missing_states(client) -> None:
+def test_event_detail_returns_current_envelope_or_missing_state(client) -> None:
     http, _ = client
 
     found = http.get("/api/news/events/ev-1", params={"token": TOKEN})
@@ -997,10 +995,6 @@ def test_event_detail_returns_current_envelope_or_explicit_archive_and_missing_s
     assert found.json()["data"]["event"]["event_id"] == "ev-1"
     assert "priority" not in found.json()["data"]["event"]
     assert found.json()["data"]["members"] == []
-
-    archive = http.get("/api/news/events/archive", params={"token": TOKEN})
-    assert archive.status_code == 410
-    assert archive.json() == {"ok": False, "error": "news_event_archive_only"}
 
     missing = http.get("/api/news/events/ev-404", params={"token": TOKEN})
     assert missing.status_code == 404

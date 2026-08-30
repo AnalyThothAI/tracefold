@@ -20,12 +20,21 @@ from ..capital_authority import (
 )
 from ..intent import (
     ACTIVE_INTENT_STATES,
+    ActiveIntentValues,
+    EntryFence,
+    EntryFenceDisposition,
+    EntryFenceUnavailable,
+    EntryFenceWrite,
     IntentOutcome,
     IntentReasonCode,
     ManualReviewReason,
     RejectedReason,
     TradeIntent,
     deterministic_client_order_id,
+    materialize_active_intent,
+    materialize_entry_fence,
+    validate_close_submission_identity,
+    validate_stop_submission_identity,
 )
 from ..quote_authority import (
     ExecutionQuoteAuditV1,
@@ -64,19 +73,6 @@ realized_pnl_amount, realized_pnl_currency, commissions_by_currency, funding_by_
 _INTENT_OUTCOME_COLUMNS = ", ".join(f"intent.{column.strip()}" for column in _OUTCOME_COLUMNS.split(","))
 
 
-EntryFenceDisposition = Literal["GRANTED", "REFUSED", "UNAVAILABLE"]
-# Why the fence could not be taken, when nothing terminal was written. Closed, because the execution
-# authority branches on it and `None` used to mean all four of these at once.
-EntryFenceUnavailable = Literal[
-    "intent_not_claimable",
-    "runtime_not_ready",
-    "intent_expired",
-]
-# Serialisation is deliberately absent: `ux_trading_intents_one_active` is a unique index, so a second
-# live Intent cannot exist to be refused here (#348).
-type EntryFenceReason = EntryFenceUnavailable | Literal["entry_fence_granted"] | IntentReasonCode
-
-
 @dataclass(frozen=True, slots=True)
 class _RiskFencePlan:
     reservation_sha256: str
@@ -109,52 +105,6 @@ class PreparedEntryFence:
     blacklist_payload_json: str
     blacklisted: bool
     authority: _PreparedRiskAuthority | None
-
-
-@dataclass(frozen=True, slots=True)
-class EntryFenceWrite:
-    """Primitive transaction result; Pydantic materialization happens after commit."""
-
-    disposition: EntryFenceDisposition
-    reason: EntryFenceReason
-    outcome_values: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EntryFence:
-    """The one typed answer to "may this Intent send an economic entry now?" (#331).
-
-    Three dispositions, never mixed:
-
-        GRANTED      the fence is committed. `outcome` is the durable `IN_FLIGHT` projection, and only
-                     after this row commits may a provider entry be sent.
-        REFUSED      a terminal `REJECTED` was written at zero exposure, with a durable reason.
-        UNAVAILABLE  nothing was written. The Intent is not claimable *now* — a stale dispatch, a
-                     runtime that is not ready, or an expired TTL.
-
-    `fence_entry` used to return `IntentOutcome | None`, and `None` carried every one of the
-    `UNAVAILABLE` cases plus the race where another engine already fenced. The caller could only
-    release the Intent and had nothing to record, so a lane that was refusing every entry because
-    `nautilus_ready` was false looked exactly like one with nothing to do.
-    """
-
-    disposition: EntryFenceDisposition
-    # Typed, because a bare `str` made `EntryFenceUnavailable` decorative: #348 invented an
-    # `active_intent_exists` reason, documented it and parametrised a test with it, and nothing
-    # objected because no annotation connected the Literal to this field. It cannot happen twice.
-    reason: EntryFenceReason
-    outcome: IntentOutcome | None = None
-
-    @property
-    def granted(self) -> bool:
-        return self.disposition == "GRANTED"
-
-
-def materialize_entry_fence(value: EntryFenceWrite) -> EntryFence:
-    """Build the domain result only after the caller's transaction has committed."""
-
-    outcome = None if value.outcome_values is None else IntentOutcome.model_validate(value.outcome_values)
-    return EntryFence(disposition=value.disposition, reason=value.reason, outcome=outcome)
 
 
 def _require_quote_audit(
@@ -242,6 +192,36 @@ def _quote_audit_payload(evidence: ExecutionQuoteAuditV1) -> dict[str, str | int
 class IntentStorage:
     conn: Any
 
+    def seed_restore_drill_archive_intent(self, *, intent_id: str, case_id: str) -> None:
+        """Seed the pre-V3 archive shape in a disposable admin-owned restore source."""
+
+        self.conn.execute("ALTER TABLE trading_intents DISABLE TRIGGER trg_trading_intents_v3_only")
+        try:
+            self.conn.execute(
+                """
+                INSERT INTO trading_intents (
+                  intent_id, intent_version, case_id, case_manifest_sha256, intent_policy_sha256,
+                  execution_environment, instrument_id, side, created_at_ms, valid_until_ms,
+                  reference_price, target_notional_usd, stop_loss_bps, max_holding_ms,
+                  max_entry_drift_bps, max_spread_bps, execution_state, terminal_outcome,
+                  reason_code, updated_at_ms
+                ) VALUES (
+                  %s, 'trade_intent_v1', %s, %s, %s,
+                  'BINANCE_USDM_DEMO', 'RESTORE' || 'USDT-PERP.BINANCE', 'long', 10, 60010,
+                  100, 10, 200, 180000, 25, 30, 'TERMINAL', 'EXPIRED',
+                  'intent_expired', 20
+                )
+                """,
+                (
+                    intent_id,
+                    case_id,
+                    "a" * 64,
+                    "45702e47bf093ba7c5996eae2186e9e2d1dfee0d9c0a434ced7afa4377286243",
+                ),
+            )
+        finally:
+            self.conn.execute("ALTER TABLE trading_intents ENABLE TRIGGER trg_trading_intents_v3_only")
+
     def _quote_identity(self, intent_id: str) -> tuple[str, str] | None:
         row = self.conn.execute(
             "SELECT instrument_id, side FROM trading_intents WHERE intent_id = %s",
@@ -289,11 +269,17 @@ class IntentStorage:
         return None if row is None else TradeIntent.model_validate(dict(row))
 
     def intent_outcome(self, intent_id: str) -> IntentOutcome | None:
+        values = self.intent_outcome_values(intent_id)
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def intent_outcome_values(self, intent_id: str) -> dict[str, Any] | None:
+        """Return primitive projection values for short transaction callbacks."""
+
         row = self.conn.execute(
             f"SELECT {_OUTCOME_COLUMNS} FROM trading_intents WHERE intent_id = %s",  # noqa: S608
             (intent_id,),
         ).fetchone()
-        return None if row is None else IntentOutcome.model_validate(dict(row))
+        return None if row is None else dict(row)
 
     def intent_for_case(self, *, case_id: str) -> tuple[TradeIntent, IntentOutcome] | None:
         row = self.conn.execute(
@@ -312,6 +298,12 @@ class IntentStorage:
     def active_intent(self) -> tuple[TradeIntent, IntentOutcome] | None:
         """Return the single non-terminal handoff, if one exists."""
 
+        values = self.active_intent_values()
+        return None if values is None else materialize_active_intent(values)
+
+    def active_intent_values(self) -> ActiveIntentValues | None:
+        """Lock and return primitive handoff values for a short transaction."""
+
         row = self.conn.execute(
             f"""
             SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS}
@@ -328,10 +320,16 @@ class IntentStorage:
         values = dict(row)
         intent_values = {name: values[name] for name in TradeIntent.model_fields}
         outcome_values = {name: values[name] for name in IntentOutcome.model_fields}
-        return TradeIntent.model_validate(intent_values), IntentOutcome.model_validate(outcome_values)
+        return intent_values, outcome_values
 
     def mark_intent_adopted(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        values = self.mark_intent_adopted_values(intent_id, now_ms=now_ms)
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def mark_intent_adopted_values(self, intent_id: str, *, now_ms: int) -> dict[str, Any] | None:
+        """Write adoption and return primitives for post-commit materialization."""
+
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET adopted_at_ms = COALESCE(adopted_at_ms, %(now)s),
@@ -343,7 +341,6 @@ class IntentStorage:
             """,  # noqa: S608
             {"intent_id": intent_id, "now": int(now_ms)},
         )
-        return outcome
 
     def _prepare_capital_risk_authority(
         self,
@@ -881,20 +878,57 @@ class IntentStorage:
         q1_evidence: ExecutionQuoteAuditV1,
         now_ms: int,
     ) -> IntentOutcome | None:
+        q1_payload_json = self.prepare_quote_audit_json(
+            intent_id,
+            q1_evidence,
+            stage="Q1",
+            accepted=isinstance(q1_evidence, ExecutionQuoteSnapshotV1),
+            reason=None if isinstance(q1_evidence, ExecutionQuoteSnapshotV1) else reason_code,
+        )
+        if q1_payload_json is None:
+            return None
+        values = self.record_entry_preflight_no_submit_values(
+            intent_id=intent_id,
+            reason_code=reason_code,
+            q1_payload_json=q1_payload_json,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def prepare_quote_audit_json(
+        self,
+        intent_id: str,
+        evidence: ExecutionQuoteAuditV1,
+        *,
+        stage: QuoteStage,
+        accepted: bool,
+        reason: str | None = None,
+    ) -> str | None:
+        """Validate and serialize quote evidence outside the write transaction."""
+
         identity = self._quote_identity(intent_id)
         if identity is None:
             return None
-        q1_accepted = isinstance(q1_evidence, ExecutionQuoteSnapshotV1)
-        q1_payload = _require_quote_audit(
-            q1_evidence,
+        payload = _require_quote_audit(
+            evidence,
             intent_id=intent_id,
             instrument_id=identity[0],
             intent_side=identity[1],
-            stage="Q1",
-            accepted=q1_accepted,
-            reason=None if q1_accepted else reason_code,
+            stage=stage,
+            accepted=accepted,
+            reason=reason,
         )
-        outcome = self._outcome_update(
+        return _dumps(payload)
+
+    def record_entry_preflight_no_submit_values(
+        self,
+        intent_id: str,
+        *,
+        reason_code: IntentReasonCode,
+        q1_payload_json: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'TERMINAL',
@@ -912,13 +946,13 @@ class IntentStorage:
             {
                 "intent_id": intent_id,
                 "reason": reason_code,
-                "q1_evidence": _dumps(q1_payload),
+                "q1_evidence": q1_payload_json,
                 "now": int(now_ms),
             },
         )
-        if outcome is not None:
+        if values is not None:
             cast(Any, self).release_capital_risk_zero_submit(intent_id=intent_id, now_ms=now_ms)
-        return outcome
+        return values
 
     def authorize_entry_submission(
         self,
@@ -928,18 +962,31 @@ class IntentStorage:
         q2_evidence: ExecutionQuoteSnapshotV1,
         now_ms: int,
     ) -> IntentOutcome | None:
-        identity = self._quote_identity(intent_id)
-        if identity is None:
-            return None
-        q2_payload = _require_quote_audit(
+        q2_payload_json = self.prepare_quote_audit_json(
+            intent_id,
             q2_evidence,
-            intent_id=intent_id,
-            instrument_id=identity[0],
-            intent_side=identity[1],
             stage="Q2",
             accepted=True,
         )
-        return self._outcome_update(
+        if q2_payload_json is None:
+            return None
+        values = self.authorize_entry_submission_values(
+            intent_id=intent_id,
+            entry_client_order_id=entry_client_order_id,
+            q2_payload_json=q2_payload_json,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def authorize_entry_submission_values(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        q2_payload_json: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET entry_quote_q2 = %(q2_evidence)s::jsonb,
@@ -956,7 +1003,7 @@ class IntentStorage:
             {
                 "intent_id": intent_id,
                 "client_id": entry_client_order_id,
-                "q2_evidence": _dumps(q2_payload),
+                "q2_evidence": q2_payload_json,
                 "now": int(now_ms),
             },
         )
@@ -970,19 +1017,34 @@ class IntentStorage:
         q2_evidence: ExecutionQuoteRejectionV1,
         now_ms: int,
     ) -> IntentOutcome | None:
-        identity = self._quote_identity(intent_id)
-        if identity is None:
-            return None
-        q2_payload = _require_quote_audit(
+        q2_payload_json = self.prepare_quote_audit_json(
+            intent_id,
             q2_evidence,
-            intent_id=intent_id,
-            instrument_id=identity[0],
-            intent_side=identity[1],
             stage="Q2",
             accepted=False,
             reason=reason_code,
         )
-        outcome = self._outcome_update(
+        if q2_payload_json is None:
+            return None
+        values = self.record_fenced_quote_no_submit_values(
+            intent_id=intent_id,
+            entry_client_order_id=entry_client_order_id,
+            reason_code=reason_code,
+            q2_payload_json=q2_payload_json,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_fenced_quote_no_submit_values(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        reason_code: RejectedReason,
+        q2_payload_json: str,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'TERMINAL',
@@ -1006,13 +1068,13 @@ class IntentStorage:
                 "intent_id": intent_id,
                 "client_id": entry_client_order_id,
                 "reason": reason_code,
-                "q2_evidence": _dumps(q2_payload),
+                "q2_evidence": q2_payload_json,
                 "now": int(now_ms),
             },
         )
-        if outcome is not None:
+        if values is not None:
             cast(Any, self).release_capital_risk_zero_submit(intent_id=intent_id, now_ms=now_ms)
-        return outcome
+        return values
 
     def record_entry_submitted(
         self,
@@ -1021,7 +1083,21 @@ class IntentStorage:
         entry_client_order_id: str,
         submitted_at_ms: int,
     ) -> IntentOutcome | None:
-        return self._outcome_update(
+        values = self.record_entry_submitted_values(
+            intent_id,
+            entry_client_order_id=entry_client_order_id,
+            submitted_at_ms=submitted_at_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_entry_submitted_values(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        submitted_at_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET entry_submitted_at_ms = COALESCE(entry_submitted_at_ms, %(now)s),
@@ -1043,7 +1119,21 @@ class IntentStorage:
         entry_client_order_id: str,
         accepted_at_ms: int,
     ) -> IntentOutcome | None:
-        return self._outcome_update(
+        values = self.record_entry_accepted_values(
+            intent_id,
+            entry_client_order_id=entry_client_order_id,
+            accepted_at_ms=accepted_at_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_entry_accepted_values(
+        self,
+        intent_id: str,
+        *,
+        entry_client_order_id: str,
+        accepted_at_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET entry_accepted_at_ms = COALESCE(entry_accepted_at_ms, %(now)s),
@@ -1059,7 +1149,13 @@ class IntentStorage:
         )
 
     def expire_unfenced_intent(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        values = self.expire_unfenced_intent_values(intent_id, now_ms=now_ms)
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def expire_unfenced_intent_values(self, intent_id: str, *, now_ms: int) -> dict[str, Any] | None:
+        """Expire atomically and return primitives for post-commit materialization."""
+
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'TERMINAL',
@@ -1075,9 +1171,9 @@ class IntentStorage:
             """,  # noqa: S608
             {"intent_id": intent_id, "now": int(now_ms)},
         )
-        if outcome is not None:
+        if values is not None:
             cast(Any, self).release_capital_risk_zero_submit(intent_id=intent_id, now_ms=now_ms)
-        return outcome
+        return values
 
     def record_rejected_without_exposure(
         self,
@@ -1088,7 +1184,25 @@ class IntentStorage:
         entry_client_order_id: str | None,
         now_ms: int,
     ) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        values = self.record_rejected_without_exposure_values(
+            intent_id,
+            reason_code=reason_code,
+            authoritative_quantity=authoritative_quantity,
+            entry_client_order_id=entry_client_order_id,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_rejected_without_exposure_values(
+        self,
+        intent_id: str,
+        *,
+        reason_code: RejectedReason,
+        authoritative_quantity: Decimal,
+        entry_client_order_id: str | None,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'TERMINAL',
@@ -1123,9 +1237,9 @@ class IntentStorage:
                 "now": int(now_ms),
             },
         )
-        if outcome is not None:
+        if values is not None:
             cast(Any, self).release_capital_risk_zero_submit(intent_id=intent_id, now_ms=now_ms)
-        return outcome
+        return values
 
     def mark_manual_review(
         self,
@@ -1134,7 +1248,17 @@ class IntentStorage:
         reason_code: ManualReviewReason,
         now_ms: int,
     ) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        values = self.mark_manual_review_values(intent_id, reason_code=reason_code, now_ms=now_ms)
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def mark_manual_review_values(
+        self,
+        intent_id: str,
+        *,
+        reason_code: ManualReviewReason,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'MANUAL_REVIEW',
@@ -1148,9 +1272,9 @@ class IntentStorage:
             """,  # noqa: S608
             {"intent_id": intent_id, "reason": reason_code, "now": int(now_ms)},
         )
-        if outcome is not None:
+        if values is not None:
             cast(Any, self).mark_capital_risk_manual_review(intent_id=intent_id, now_ms=now_ms)
-        return outcome
+        return values
 
     def record_entry_fill(
         self,
@@ -1162,7 +1286,27 @@ class IntentStorage:
         opened_at_ms: int,
         now_ms: int,
     ) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        values = self.record_entry_fill_values(
+            intent_id,
+            actual_quantity=actual_quantity,
+            avg_entry_price=avg_entry_price,
+            position_id=position_id,
+            opened_at_ms=opened_at_ms,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_entry_fill_values(
+        self,
+        intent_id: str,
+        *,
+        actual_quantity: Decimal,
+        avg_entry_price: Decimal,
+        position_id: str,
+        opened_at_ms: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'IN_FLIGHT',
@@ -1189,9 +1333,9 @@ class IntentStorage:
                 "now": int(now_ms),
             },
         )
-        if outcome is not None and not cast(Any, self).mark_capital_risk_open(intent_id=intent_id, now_ms=now_ms):
+        if values is not None and not cast(Any, self).mark_capital_risk_open(intent_id=intent_id, now_ms=now_ms):
             raise RuntimeError("capital_risk_open_transition_failed")
-        return outcome
+        return values
 
     def record_stop_submitted(
         self,
@@ -1203,10 +1347,31 @@ class IntentStorage:
         quantity: Decimal,
         now_ms: int,
     ) -> IntentOutcome | None:
-        expected = deterministic_client_order_id(intent_id, "stop")
-        if generation != 0 or previous_client_order_id is not None or client_order_id != expected:
-            raise ValueError("initial_stop_identity_invalid")
-        return self._outcome_update(
+        validate_stop_submission_identity(
+            intent_id,
+            client_order_id=client_order_id,
+            generation=generation,
+            previous_client_order_id=previous_client_order_id,
+        )
+        values = self.record_stop_submitted_values(
+            intent_id,
+            client_order_id=client_order_id,
+            generation=generation,
+            quantity=quantity,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_stop_submitted_values(
+        self,
+        intent_id: str,
+        *,
+        client_order_id: str,
+        generation: int,
+        quantity: Decimal,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET stop_client_order_id = %(client_id)s,
@@ -1241,7 +1406,29 @@ class IntentStorage:
         protected_at_ms: int,
         now_ms: int,
     ) -> IntentOutcome | None:
-        return self._outcome_update(
+        values = self.record_protected_values(
+            intent_id,
+            accepted_client_order_id=accepted_client_order_id,
+            protection_order_id=protection_order_id,
+            protected_quantity=protected_quantity,
+            stop_price=stop_price,
+            protected_at_ms=protected_at_ms,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_protected_values(
+        self,
+        intent_id: str,
+        *,
+        accepted_client_order_id: str,
+        protection_order_id: str,
+        protected_quantity: Decimal,
+        stop_price: Decimal,
+        protected_at_ms: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = CASE
@@ -1282,7 +1469,25 @@ class IntentStorage:
         avg_entry_price: Decimal,
         now_ms: int,
     ) -> IntentOutcome | None:
-        return self._outcome_update(
+        values = self.record_position_changed_values(
+            intent_id,
+            position_id=position_id,
+            actual_quantity=actual_quantity,
+            avg_entry_price=avg_entry_price,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_position_changed_values(
+        self,
+        intent_id: str,
+        *,
+        position_id: str,
+        actual_quantity: Decimal,
+        avg_entry_price: Decimal,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'IN_FLIGHT',
@@ -1320,14 +1525,33 @@ class IntentStorage:
         quantity: Decimal,
         now_ms: int,
     ) -> IntentOutcome | None:
-        next_client_order_id = deterministic_client_order_id(
+        validate_stop_submission_identity(
             intent_id,
-            "stop",
+            client_order_id=submitted_client_order_id,
+            generation=generation,
             previous_client_order_id=canceled_client_order_id,
         )
-        if generation <= 0 or submitted_client_order_id != next_client_order_id:
-            raise ValueError("replacement_stop_identity_invalid")
-        return self._outcome_update(
+        values = self.prepare_stop_replacement_values(
+            intent_id,
+            canceled_client_order_id=canceled_client_order_id,
+            submitted_client_order_id=submitted_client_order_id,
+            generation=generation,
+            quantity=quantity,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def prepare_stop_replacement_values(
+        self,
+        intent_id: str,
+        *,
+        canceled_client_order_id: str,
+        submitted_client_order_id: str,
+        generation: int,
+        quantity: Decimal,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET stop_client_order_id = %(next_client_id)s,
@@ -1369,10 +1593,28 @@ class IntentStorage:
         submitted_at_ms: int,
         now_ms: int,
     ) -> IntentOutcome | None:
-        expected_client_order_id = deterministic_client_order_id(intent_id, "close")
-        if client_order_id != expected_client_order_id:
-            raise ValueError("close_identity_invalid")
-        return self._outcome_update(
+        validate_close_submission_identity(intent_id, client_order_id=client_order_id)
+        values = self.record_close_submitted_values(
+            intent_id,
+            client_order_id=client_order_id,
+            position_id=position_id,
+            quantity=quantity,
+            submitted_at_ms=submitted_at_ms,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_close_submitted_values(
+        self,
+        intent_id: str,
+        *,
+        client_order_id: str,
+        position_id: str,
+        quantity: Decimal,
+        submitted_at_ms: int,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'IN_FLIGHT',
@@ -1415,7 +1657,48 @@ class IntentStorage:
         now_ms: int,
         funding_by_currency: dict[str, str] | None = None,
     ) -> IntentOutcome | None:
-        outcome = self._outcome_update(
+        commissions_json = self.prepare_currency_amounts_json(commissions_by_currency)
+        funding_json = self.prepare_currency_amounts_json(funding_by_currency)
+        values = self.record_closed_flat_values(
+            intent_id,
+            position_id=position_id,
+            authoritative_quantity=authoritative_quantity,
+            avg_exit_price=avg_exit_price,
+            closed_at_ms=closed_at_ms,
+            flat_verified_at_ms=flat_verified_at_ms,
+            realized_pnl_amount=realized_pnl_amount,
+            realized_pnl_currency=realized_pnl_currency,
+            commissions_json=commissions_json,
+            funding_json=funding_json,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    @staticmethod
+    def prepare_currency_amounts_json(value: dict[str, str] | None) -> str | None:
+        """Validate and serialize settlement currency maps before a write transaction."""
+
+        if value is None:
+            return None
+        IntentOutcome.validate_currency_amounts(value)
+        return _dumps(value)
+
+    def record_closed_flat_values(
+        self,
+        intent_id: str,
+        *,
+        position_id: str,
+        authoritative_quantity: Decimal,
+        avg_exit_price: Decimal,
+        closed_at_ms: int,
+        flat_verified_at_ms: int,
+        realized_pnl_amount: Decimal | None,
+        realized_pnl_currency: str | None,
+        commissions_json: str | None,
+        funding_json: str | None,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        values = self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'IN_FLIGHT',
@@ -1458,21 +1741,21 @@ class IntentStorage:
                 "flat": int(flat_verified_at_ms),
                 "pnl": realized_pnl_amount,
                 "currency": realized_pnl_currency,
-                "commissions": (None if commissions_by_currency is None else _dumps(commissions_by_currency)),
-                "funding": None if funding_by_currency is None else _dumps(funding_by_currency),
+                "commissions": commissions_json,
+                "funding": funding_json,
                 "now": int(now_ms),
             },
         )
-        if outcome is not None:
+        if values is not None:
             settled = cast(Any, self).settle_capital_risk_closed_flat(
                 intent_id=intent_id,
-                realized_pnl_amount=outcome.realized_pnl_amount,
-                realized_pnl_currency=outcome.realized_pnl_currency,
-                commissions_by_currency=outcome.commissions_by_currency,
-                funding_by_currency=outcome.funding_by_currency,
+                realized_pnl_amount=values["realized_pnl_amount"],
+                realized_pnl_currency=values["realized_pnl_currency"],
+                commissions_by_currency=values["commissions_by_currency"],
+                funding_by_currency=values["funding_by_currency"],
                 now_ms=now_ms,
             )
-            outcome = self._outcome_update(
+            values = self._outcome_update_values(
                 f"""
                 UPDATE trading_intents
                    SET execution_state = %(state)s,
@@ -1494,7 +1777,7 @@ class IntentStorage:
                     "now": int(now_ms),
                 },
             )
-        return outcome
+        return values
 
     def record_position_closed_observed(
         self,
@@ -1517,7 +1800,41 @@ class IntentStorage:
 
         if not instrument_id or not account_id:
             raise ValueError("close_observation_scope_invalid")
-        return self._outcome_update(
+        commissions_json = self.prepare_currency_amounts_json(commissions_by_currency)
+        funding_json = self.prepare_currency_amounts_json(funding_by_currency)
+        values = self.record_position_closed_observed_values(
+            intent_id,
+            instrument_id=instrument_id,
+            position_id=position_id,
+            closing_client_order_id=closing_client_order_id,
+            local_quantity=local_quantity,
+            avg_exit_price=avg_exit_price,
+            closed_at_ms=closed_at_ms,
+            realized_pnl_amount=realized_pnl_amount,
+            realized_pnl_currency=realized_pnl_currency,
+            commissions_json=commissions_json,
+            funding_json=funding_json,
+            now_ms=now_ms,
+        )
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def record_position_closed_observed_values(
+        self,
+        intent_id: str,
+        *,
+        instrument_id: str,
+        position_id: str,
+        closing_client_order_id: str,
+        local_quantity: Decimal,
+        avg_exit_price: Decimal,
+        closed_at_ms: int,
+        realized_pnl_amount: Decimal | None,
+        realized_pnl_currency: str | None,
+        commissions_json: str | None,
+        funding_json: str | None,
+        now_ms: int,
+    ) -> dict[str, Any] | None:
+        return self._outcome_update_values(
             f"""
             UPDATE trading_intents
                SET execution_state = 'IN_FLIGHT',
@@ -1561,15 +1878,19 @@ class IntentStorage:
                 "closed": int(closed_at_ms),
                 "pnl": realized_pnl_amount,
                 "currency": realized_pnl_currency,
-                "commissions": (None if commissions_by_currency is None else _dumps(commissions_by_currency)),
-                "funding": None if funding_by_currency is None else _dumps(funding_by_currency),
+                "commissions": commissions_json,
+                "funding": funding_json,
                 "now": int(now_ms),
             },
         )
 
     def _outcome_update(self, statement: str, params: dict[str, Any]) -> IntentOutcome | None:
+        values = self._outcome_update_values(statement, params)
+        return None if values is None else IntentOutcome.model_validate(values)
+
+    def _outcome_update_values(self, statement: str, params: dict[str, Any]) -> dict[str, Any] | None:
         row = self.conn.execute(statement, params).fetchone()
-        return None if row is None else IntentOutcome.model_validate(dict(row))
+        return None if row is None else dict(row)
 
 
 __all__ = [

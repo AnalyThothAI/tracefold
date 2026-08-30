@@ -40,14 +40,14 @@ def upgrade() -> None:
                     USING HINT = 'close the stale duplicates by hand before applying {_INDEX}';
             END IF;
         END $$
-        """,  # noqa: S608 -- only the module-owned index name is interpolated
+        """
     )
     op.execute(
         f"""
         CREATE UNIQUE INDEX {_INDEX}
             ON news_opennews_incidents (cause_class)
          WHERE closed_at_ms IS NULL
-        """,
+        """
     )
 
 

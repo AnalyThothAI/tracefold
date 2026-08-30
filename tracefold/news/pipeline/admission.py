@@ -133,6 +133,12 @@ class _PreparedFrame:
     admissions: tuple[_PreparedAdmission, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _NearMatch:
+    event_id: str
+    jaccard_estimate: float
+
+
 def item_identity(*, source_id: str, source_item_key: str) -> str:
     return hashlib.sha256(f"{source_id}\x1f{source_item_key}".encode()).hexdigest()
 
@@ -348,6 +354,40 @@ def _compatible(a: tuple[set[str], set[str]], b: tuple[set[str], set[str]]) -> b
     return not (a[1] and b[1] and not (a[1] & b[1]))
 
 
+def _load_near_candidates(repos: Any, prepared: _PreparedAdmission, *, now_ms: int) -> tuple[dict[str, Any], ...]:
+    """Load bounded candidate rows without holding a write transaction."""
+
+    if not prepared.shareable or prepared.source_contract.event_kind in {"oi", "liquidation"}:
+        return ()
+    return tuple(
+        dict(row)
+        for row in repos.news.find_band_candidates(
+            dedupe_family=prepared.dedupe_family,
+            event_kind=prepared.source_contract.event_kind,
+            band_keys=prepared.band_keys,
+            now_ms=now_ms,
+            source_contract_reason=prepared.source_contract_reason,
+        )
+    )
+
+
+def _select_near_match(prepared: _PreparedAdmission, candidates: Sequence[Mapping[str, Any]]) -> _NearMatch | None:
+    """Choose a compatible near duplicate after the database read has returned."""
+
+    best_id, best_j = None, 0.0
+    for candidate in candidates:
+        candidate_tokens = comparison_tokens(str(candidate["comparison_title"]))
+        estimate = jaccard(prepared.tokens, candidate_tokens)
+        if estimate >= NEAR_DUPLICATE_THRESHOLD and estimate > best_j:
+            theirs = _strong_facts(
+                str(candidate["leader_title"]),
+                list(candidate.get("grounded_assets") or []),
+            )
+            if _compatible(prepared.strong_facts, theirs):
+                best_id, best_j = str(candidate["event_id"]), estimate
+    return None if best_id is None else _NearMatch(event_id=best_id, jaccard_estimate=round(best_j, 4))
+
+
 def _engine_type(metadata: Mapping[str, Any]) -> str:
     strategies = metadata.get("strategies") or []
     engine = ""
@@ -372,6 +412,8 @@ def admit_item(
     _fact_unit: FactUnit | None = None,
     _source_contract: SourceContract | None = None,
     _prepared: _PreparedAdmission | None = None,
+    _near_match: _NearMatch | None = None,
+    _near_match_prepared: bool = False,
 ) -> AdmitResult:
     """Idempotent by Item identity. Returns the Event assignment for the (possibly pre-existing) Item.
 
@@ -412,11 +454,9 @@ def admit_item(
     published_at_ms = prepared.published_at_ms
     provider_score = prepared.provider_score
     gate = prepared.gate
-    tokens = prepared.tokens
     window_ms = prepared.window_ms
     shareable = prepared.shareable
     keys = prepared.band_keys
-    mine = prepared.strong_facts
     storyline = prepared.storyline_key
     context_line = prepared.context_line
     event_id = prepared.event_id
@@ -554,7 +594,6 @@ def admit_item(
         return result
 
     if shareable:
-        best_id, best_j = None, 0.0
         # Telemetry frames are exempt from near-duplicate matching (#137). Two frames for one symbol
         # differ only in their four numbers, which is their entire content: they score 0.60 against
         # each other, so the second observation would join the first as a member, never reach Triage,
@@ -563,31 +602,21 @@ def admit_item(
         #
         # Keyed on source-contract kind and result rather than live/recovery admission: a format-drift
         # or recovered deterministic frame must remain its own measurement.
-        candidates = (
-            ()
-            if source_contract.event_kind in {"oi", "liquidation"}
-            else news.find_band_candidates(
-                dedupe_family=family_name,
-                event_kind=source_contract.event_kind,
-                band_keys=keys,
-                now_ms=now_ms,
-                source_contract_reason=source_contract_reason,
+        near_match = (
+            _near_match
+            if _near_match_prepared
+            else _select_near_match(
+                prepared,
+                _load_near_candidates(repos, prepared, now_ms=now_ms),
             )
         )
-        for cand in candidates:
-            cand_tokens = comparison_tokens(str(cand["comparison_title"]))
-            j = jaccard(tokens, cand_tokens)
-            if j >= NEAR_DUPLICATE_THRESHOLD and j > best_j:
-                theirs = _strong_facts(str(cand["leader_title"]), list(cand.get("grounded_assets") or []))
-                if _compatible(mine, theirs):
-                    best_id, best_j = str(cand["event_id"]), j
-        if best_id is not None:
+        if near_match is not None:
             news.add_member(
-                event_id=best_id,
+                event_id=near_match.event_id,
                 item_id=item_id,
                 joined_at_ms=published_at_ms,
                 match_kind="near",
-                jaccard_estimate=round(best_j, 4),
+                jaccard_estimate=near_match.jaccard_estimate,
                 provider_score=float(provider_score) if isinstance(provider_score, (int, float)) else None,
                 fact_id=fact.fact_id,
                 fact_text=fact.text,
@@ -595,7 +624,7 @@ def admit_item(
             )
             result = _member_result(
                 repos,
-                event_id=best_id,
+                event_id=near_match.event_id,
                 item_id=item_id,
                 inserted=inserted,
                 match_kind="near",
@@ -860,22 +889,53 @@ class DeduperConsumer:
             suppress_low_signal=self.suppress_low_signal,
             instrument_classes=instrument_classes,
         )
-        batch = await self.db.tx(
-            "news_deduper_admit",
-            lambda repos: admit_frame(
-                repos,
-                event=event,
-                ingest_mode=ingest_mode,
-                observed_at_ms=observed,
-                trace_id=message.trace_id,
-                watchlist_symbols=self.watchlist_symbols,
-                now_ms=stamp,
-                suppress_low_signal=self.suppress_low_signal,
-                instrument_classes=instrument_classes,
-                append_evidence=False,
-                _prepared_frame=prepared_frame,
-            ),
-            timeout_seconds=5.0,
+        admitted: list[AdmitResult] = []
+        for prepared in prepared_frame.admissions:
+
+            def _read_candidates(
+                repos: Any,
+                admission: _PreparedAdmission = prepared,
+            ) -> tuple[dict[str, Any], ...]:
+                return _load_near_candidates(repos, admission, now_ms=stamp)
+
+            candidates = await self.db.read(
+                "news_deduper_candidates",
+                _read_candidates,
+                timeout_seconds=2.0,
+            )
+            near_match = _select_near_match(prepared, candidates)
+
+            def _admit(
+                repos: Any,
+                admission: _PreparedAdmission = prepared,
+                selected: _NearMatch | None = near_match,
+            ) -> AdmitResult:
+                return admit_item(
+                    repos,
+                    event=event,
+                    ingest_mode=ingest_mode,
+                    observed_at_ms=observed,
+                    trace_id=message.trace_id,
+                    watchlist_symbols=self.watchlist_symbols,
+                    now_ms=stamp,
+                    suppress_low_signal=self.suppress_low_signal,
+                    instrument_classes=instrument_classes,
+                    append_evidence=False,
+                    _prepared=admission,
+                    _near_match=selected,
+                    _near_match_prepared=True,
+                )
+
+            result = await self.db.tx(
+                "news_deduper_admit",
+                _admit,
+                timeout_seconds=5.0,
+            )
+            admitted.append(result)
+        batch = AdmitBatchResult(
+            item_id=prepared_frame.item_id,
+            item_inserted=any(result.item_inserted for result in admitted),
+            results=tuple(admitted),
         )
         for result, prepared in zip(batch.results, prepared_frame.admissions, strict=True):
             focus_changed = bool(getattr(result, "evidence_focus_changed", False))

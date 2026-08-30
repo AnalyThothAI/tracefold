@@ -45,11 +45,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
                 ).fetchall()
             }
 
-        # The current security-barrier view intentionally freezes every presently public Event column.
-        # A future base column therefore turns this assertion red until its exposure is reviewed explicitly.
-        assert columns("news_current_events_v1") == columns("news_events")
-
         news_event_columns = columns("news_events")
+        news_review_columns = columns("news_reviews")
         news_verdict_columns = columns("news_verdicts")
         news_delivery_columns = columns("news_deliveries")
         news_ingest_columns = columns("news_ingest_state")
@@ -112,6 +109,8 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
         "judgment_origin",
     } <= news_verdict_columns
     assert "family" not in news_event_columns
+    assert "current_contract_archive_only" not in news_event_columns | news_review_columns
+    assert "news_current_event_archive_guard" not in functions
     assert {"model_decision", "novelty_defaulted"}.isdisjoint(news_verdict_columns)
     assert news_delivery_columns == {
         "event_id",
@@ -186,7 +185,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260830_0336"
+    assert version == latest_migration_version() == "20260830_0337"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -211,7 +210,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260830_0336"
+    assert version == latest_migration_version() == "20260830_0337"
 
 
 def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:

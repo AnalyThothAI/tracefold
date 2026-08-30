@@ -57,6 +57,10 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
     *"--entrypoint tracefold serve trading status"*)
       printf '{"ok":true,"data":{"active_capability_snapshot_sha256":"%s"}}\\n' "$TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"
       ;;
+    *"--entrypoint tracefold migrate db news-genesis-manifest"*)
+      printf '{"ok":true,"data":{"runtime_manifest_sha":"%s","runtime_revision":"%s","image_digest":"%s"}}\\n' \
+        "$TRACEFOLD_TEST_TARGET_MANIFEST" "$TRACEFOLD_TEST_RUNTIME_REVISION" "$TRACEFOLD_TEST_IMAGE"
+      ;;
     *"nautilus tracefold nautilus run --bootstrap-zero-claims"*)
       printf '%s\\n' "$*" > "$TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"
       if [ "$(cat "$TRACEFOLD_TEST_TRADING_CONTROL")" != "PAUSED" ]; then
@@ -174,6 +178,7 @@ fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
     *credentials_configured*|*trading*enabled*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
+    *runtime_manifest_sha*) shift 2; exec python3 "$@" ;;
   esac
 fi
 case "$*" in
@@ -192,7 +197,8 @@ set -eu
 url=''
 for argument do url="$argument"; done
 case "$url" in
-  */readyz) printf '{"ok":true,"image_digest":"%s"}\\n' "$TRACEFOLD_TEST_READY_IMAGE" ;;
+  */readyz) printf '{"ok":true,"image_digest":"%s","runtime_manifest_sha":"%s"}\\n' \
+    "$TRACEFOLD_TEST_READY_IMAGE" "$TRACEFOLD_TEST_READY_MANIFEST" ;;
   */) printf '<html></html>\\n' ;;
 esac
 """,
@@ -214,10 +220,13 @@ esac
         "TRACEFOLD_TEST_UP_ARGS": str(tmp_path / "up-args"),
         "TRACEFOLD_TEST_DB_HEAD": "20260824_0303",
         "TRACEFOLD_TEST_SCHEMA_STATE": "existing",
-        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0335|t|t",
+        "TRACEFOLD_TEST_MIGRATION_STATE": "20260830_0336|t|t",
         "TRACEFOLD_TEST_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_MIGRATE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_READY_IMAGE": TEST_IMAGE_ID,
+        "TRACEFOLD_TEST_TARGET_MANIFEST": "b" * 64,
+        "TRACEFOLD_TEST_READY_MANIFEST": "b" * 64,
+        "TRACEFOLD_TEST_RUNTIME_REVISION": "c" * 40,
         "TRACEFOLD_TEST_RECEIPT": "ok",
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
@@ -322,6 +331,38 @@ def test_up_does_not_wait_for_a_retired_execution_bootstrap(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+
+
+def test_up_proves_the_configured_runtime_manifest_after_start(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_up_refuses_a_runtime_manifest_mismatch(tmp_path: Path) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_READY_MANIFEST"] = "d" * 64
+
+    result = subprocess.run(
+        ["make", "up"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Workers runtime manifest does not equal the configured target" in result.stderr
 
 
 @pytest.mark.parametrize("auth_state", ["missing-cli", "unauthenticated", "authenticated"])
@@ -688,6 +729,27 @@ def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_news_incident_head(
 
     assert result.returncode == 0, result.stderr
     assert "Trading evidence-clock hard cut is already present at database head 20260830_0335" in result.stdout
+    assert "Trading hard-cut preflight passed" not in result.stdout
+
+
+def test_db_migrate_does_not_repeat_a_capital_cutover_at_the_news_genesis_head(tmp_path: Path) -> None:
+    """#398's `0336` is News-only and must not reopen a completed Trading cutover."""
+
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_DB_HEAD"] = "RUNNING|1|1|1"
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260830_0336|t|t"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Trading evidence-clock hard cut is already present at database head 20260830_0336" in result.stdout
     assert "Trading hard-cut preflight passed" not in result.stdout
 
 

@@ -223,6 +223,7 @@ PLATFORM_TABLES = {
 # them is not part of PostgreSQL governance. New product SQL belongs in its owner's storage family.
 SQL_LOCATION_EXCEPTIONS = frozenset(
     {
+        "tracefold/app/cli/commands/db.py",
         "tracefold/app/cli/commands/news_learning.py",
         "tracefold/app/cli/commands/news_learning_runtime.py",
         "tracefold/app/query_audit.py",
@@ -234,11 +235,7 @@ SQL_LOCATION_EXCEPTIONS = frozenset(
 
 
 def _python_files(root: Path) -> list[Path]:
-    return sorted(
-        path
-        for path in root.rglob("*.py")
-        if "__pycache__" not in path.parts and "alembic/versions" not in path.as_posix()
-    )
+    return sorted(path for path in root.rglob("*.py") if "__pycache__" not in path.parts)
 
 
 def _module_exists(module: str) -> bool:

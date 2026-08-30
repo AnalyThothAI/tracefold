@@ -161,9 +161,11 @@ class PostgresOperationalAudit:
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
         runtime_roles = runtime_role_contract(self.conn)
+        database_identity = self._database_identity()
         result = {
             "ok": (
                 migration_ready
+                and bool(database_identity["ok"])
                 and all(count >= 0 for count in row_estimates.values())
                 and bool(news_schema["exact"])
                 and bool(trading_schema["exact"])
@@ -171,7 +173,7 @@ class PostgresOperationalAudit:
             ),
             "engine": "postgresql",
             "mode": "deep" if deep else "fast",
-            "database_identity": self._database_identity(),
+            "database_identity": database_identity,
             "migration_version": migration_version,
             "expected_migration_version": self.expected_migration_version,
             "migration_status": "ready" if migration_ready else "stale",
@@ -198,21 +200,28 @@ class PostgresOperationalAudit:
             """
         ).fetchone()
         extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
+        server_version_num = int(settings["server_version_num"])
+        extension_versions = {str(row["extname"]): str(row["extversion"]) for row in extensions}
+        setting_names = {
+            "transaction_isolation",
+            "statement_timeout",
+            "lock_timeout",
+            "idle_in_transaction_session_timeout",
+            "jit",
+        }
+        checks = {
+            "production_major": server_version_num // 10_000 == 18,
+            "plpgsql_available": "plpgsql" in extension_versions,
+            "session_settings_reported": all(settings[name] is not None for name in setting_names),
+        }
         return {
-            "server_version_num": int(settings["server_version_num"]),
+            "ok": all(checks.values()),
+            "checks": checks,
+            "server_version_num": server_version_num,
             "declared_image_identity": os.environ.get("TRACEFOLD_POSTGRES_IMAGE", "unreported"),
             "image_identity_source": "TRACEFOLD_POSTGRES_IMAGE",
-            "extensions": {str(row["extname"]): str(row["extversion"]) for row in extensions},
-            "settings": {
-                key: str(settings[key])
-                for key in (
-                    "transaction_isolation",
-                    "statement_timeout",
-                    "lock_timeout",
-                    "idle_in_transaction_session_timeout",
-                    "jit",
-                )
-            },
+            "extensions": extension_versions,
+            "settings": {key: str(settings[key]) for key in setting_names},
         }
 
     def _row_estimates(self, table_names: tuple[str, ...]) -> dict[str, int]:

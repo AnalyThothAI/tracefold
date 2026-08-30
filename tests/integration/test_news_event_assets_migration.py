@@ -159,10 +159,10 @@ def test_the_backfill_gives_already_judged_telemetry_events_the_assets_their_gat
         conn.close()
         conn = None
 
-        _upgrade("head")
+        _upgrade("20260830_0335")
 
         conn = connect_postgres_test(read_only=False)
-        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0336"
+        assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260830_0335"
         assert _assets(conn) == [
             ("liq-fact", "ETH", "perp", NOW - 2 * HOUR),
             ("oi-parsed", "TRUMP", "perp", NOW - 2 * HOUR),
@@ -177,9 +177,8 @@ def test_the_backfill_gives_already_judged_telemetry_events_the_assets_their_gat
             repos.news.record_event_assets(event_id="oi-prefixed", assets=[("XYZ-UNITREE", "perp")])
         assert len(_assets(conn)) == 3
 
-        # The historical assets remain byte-for-byte audit evidence, but their pre-cut Events are archive-only.
-        due = repos.price.due_reactions(now_ms=NOW, limit=100)
-        assert due == []
+        # This historical owner test stops before #398; current runtime readers
+        # are tested only against the post-genesis schema.
     finally:
         if conn is not None:
             conn.close()

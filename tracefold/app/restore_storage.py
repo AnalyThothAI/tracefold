@@ -16,8 +16,8 @@ from tracefold.platform.postgres.restore_drill import run_restore_drill as run_p
 from tracefold.trading import DailyRiskPolicyV1, SettlementRiskLimitV1
 
 _CURRENT_EVENT_ID = "restore-current-event"
-_ARCHIVE_EVENT_ID = "restore-archive-event"
 _CASE_ID = "restore-trading-case"
+_LEGACY_INTENT_ID = "7" * 64
 
 
 def run_restore_drill(admin_dsn: str) -> dict[str, Any]:
@@ -34,10 +34,7 @@ def run_restore_drill(admin_dsn: str) -> dict[str, Any]:
 def _seed_and_summarize(dsn: str) -> dict[str, Any]:
     with psycopg.connect(dsn, row_factory=dict_row) as conn:
         repos = repositories_for_connection(conn)
-        repos.news.seed_restore_drill_facts(
-            current_event_id=_CURRENT_EVENT_ID,
-            archive_event_id=_ARCHIVE_EVENT_ID,
-        )
+        repos.news.seed_restore_drill_facts(current_event_id=_CURRENT_EVENT_ID)
         repos.trading.blacklist_upsert(
             base_symbol="RESTORE",
             reason="restore_drill",
@@ -45,6 +42,10 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
             now_ms=10,
         )
         repos.trading.seed_restore_drill_case(case_id=_CASE_ID)
+        repos.trading.seed_restore_drill_archive_intent(
+            intent_id=_LEGACY_INTENT_ID,
+            case_id=_CASE_ID,
+        )
         policy = DailyRiskPolicyV1(
             approved_release="restore-release",
             cost_model_sha256="c" * 64,
@@ -75,9 +76,14 @@ def _summary(conn: Any) -> dict[str, Any]:
             """
             SELECT (SELECT version_num FROM alembic_version) AS migration_head,
                    (SELECT count(*) FROM news_items WHERE left(item_id, 8) = 'restore-') AS news_items,
-                   (SELECT count(*) FROM news_current_events_v1 WHERE event_id = %s) AS current_events,
-                   (SELECT count(*) FROM news_events WHERE event_id = %s) AS archive_events,
-                   (SELECT count(*) FROM news_current_events_v1 WHERE event_id = %s) AS archive_in_current,
+                   (SELECT count(*) FROM news_events WHERE event_id = %s) AS current_events,
+                   (SELECT count(*) FROM information_schema.columns
+                     WHERE table_schema = 'public' AND table_name IN ('news_events', 'news_reviews')
+                       AND column_name = 'current_contract_archive_only')
+                     + (SELECT count(*) FROM pg_class relation
+                          JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+                         WHERE namespace.nspname = 'public'
+                           AND relation.relname = 'news_current_events_v1') AS retired_compatibility_objects,
                    (SELECT count(*) FROM news_event_evidence_snapshots WHERE event_id = %s) AS evidence_rows,
                    (SELECT max(evidence_sha256) FROM news_event_evidence_snapshots WHERE event_id = %s)
                      AS evidence_sha256,
@@ -85,6 +91,8 @@ def _summary(conn: Any) -> dict[str, Any]:
                      AS delivery_rows,
                    (SELECT count(*) FROM trading_cases WHERE case_id = %s AND state = 'NO_TRADE') AS case_rows,
                    (SELECT max(manifest_sha256) FROM trading_cases WHERE case_id = %s) AS case_manifest_sha256,
+                   (SELECT count(*) FROM trading_intents
+                     WHERE intent_id = %s AND intent_version = 'trade_intent_v1') AS legacy_intent_rows,
                    (SELECT count(*) FROM trading_symbol_blacklist WHERE base_symbol = 'RESTORE') AS blacklist_rows,
                    (SELECT count(*) FROM trading_daily_risk_policies
                      WHERE approved_release = 'restore-release') AS risk_policy_rows,
@@ -93,24 +101,23 @@ def _summary(conn: Any) -> dict[str, Any]:
             """,
             (
                 _CURRENT_EVENT_ID,
-                _ARCHIVE_EVENT_ID,
-                _ARCHIVE_EVENT_ID,
                 _CURRENT_EVENT_ID,
                 _CURRENT_EVENT_ID,
                 _CURRENT_EVENT_ID,
                 _CASE_ID,
                 _CASE_ID,
+                _LEGACY_INTENT_ID,
             ),
         ).fetchone()
     )
     numeric = {
         "news_items",
         "current_events",
-        "archive_events",
-        "archive_in_current",
+        "retired_compatibility_objects",
         "evidence_rows",
         "delivery_rows",
         "case_rows",
+        "legacy_intent_rows",
         "blacklist_rows",
         "risk_policy_rows",
     }
@@ -129,10 +136,12 @@ def _smoke(conn: Any) -> dict[str, bool]:
         "news_current_fact": repos.news.event_card(_CURRENT_EVENT_ID) is not None,
         "news_evidence_identity": evidence is not None and evidence["evidence_sha256"] == summary["evidence_sha256"],
         "news_delivery_terminal": delivery is not None and delivery["state"] == "terminal",
-        "archive_excluded_from_current": summary["archive_events"] == 1 and summary["archive_in_current"] == 0,
+        "pre_genesis_compatibility_absent": summary["retired_compatibility_objects"] == 0,
         "trading_case_fact": case is not None
         and case["state"] == "NO_TRADE"
         and case["manifest_sha256"] == summary["case_manifest_sha256"],
+        "trading_legacy_archive_preserved": summary["legacy_intent_rows"] == 1,
+        "trading_legacy_archive_excluded": repos.trading.intent(_LEGACY_INTENT_ID) is None,
         "trading_blacklist_fact": summary["blacklist_rows"] == 1,
         "trading_risk_policy_fact": policy is not None and policy.risk_policy_sha256 == summary["risk_policy_sha256"],
     }

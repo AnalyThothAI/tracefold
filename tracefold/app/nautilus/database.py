@@ -8,7 +8,7 @@ from contextlib import AbstractContextManager
 from decimal import Decimal
 from queue import Empty
 from threading import Event, Lock, Thread
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from loguru import logger
@@ -48,8 +48,18 @@ from tracefold.integrations.nautilus.messages import (
 )
 from tracefold.platform.config.models import Settings
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import ExecutionBindingV1, NautilusRuntimeStartV1, VenueBinding
-from tracefold.trading.storage.intents import materialize_entry_fence
+from tracefold.trading import (
+    ActiveIntentValues,
+    ExecutionBindingV1,
+    ExecutionQuoteSnapshotV1,
+    NautilusRuntimeStartV1,
+    VenueBinding,
+    materialize_active_intent,
+    materialize_entry_fence,
+    materialize_intent_outcome,
+    validate_close_submission_identity,
+    validate_stop_submission_identity,
+)
 
 _RepositoryFactory = Callable[..., AbstractContextManager[Any]]
 NAUTILUS_POLL_SECONDS = 1.0
@@ -198,7 +208,8 @@ class NautilusDatabaseBridge:
                 self._pending_event = None
 
         now_ms = self._now_ms()
-        command: AdoptIntent | IntentReleased | None = None
+        adopt_values: ActiveIntentValues | None = None
+        released_intent_id: str | None = None
         with repos.transaction():
             runtimes: dict[VenueBinding, dict[str, Any]] = {}
             for binding, capability_sha256 in self._capability_snapshot_sha256s.items():
@@ -206,29 +217,31 @@ class NautilusDatabaseBridge:
                 if runtime is None or runtime.get("capability_snapshot_sha256") != capability_sha256:
                     raise RuntimeError(f"nautilus_capability_snapshot_changed:{binding}")
                 runtimes[binding] = runtime
-            active = repos.trading.active_intent()
-            if active is None:
+            active_values = repos.trading.active_intent_values()
+            if active_values is None:
                 self._dispatched_intent_id = None
             else:
-                intent, outcome = active
-                if outcome.execution_state == "PENDING" and intent.valid_until_ms <= now_ms:
-                    expired = repos.trading.expire_unfenced_intent(intent.intent_id, now_ms=now_ms)
+                intent_values, outcome_values = active_values
+                intent_id = str(intent_values["intent_id"])
+                execution_state = str(outcome_values["execution_state"])
+                if execution_state == "PENDING" and int(intent_values["valid_until_ms"]) <= now_ms:
+                    expired_values = repos.trading.expire_unfenced_intent_values(intent_id, now_ms=now_ms)
                     with self._lock:
-                        self._expiry_projection_healthy = expired is not None
-                    if expired is not None:
-                        command = IntentReleased(intent_id=intent.intent_id)
+                        self._expiry_projection_healthy = expired_values is not None
+                    if expired_values is not None:
+                        released_intent_id = intent_id
                     self._dispatched_intent_id = None
                 elif (
-                    self._should_dispatch(runtimes.get(intent.binding), outcome)
-                    and self._dispatched_intent_id != intent.intent_id
+                    self._should_dispatch(runtimes.get(intent_values["binding"]), execution_state)
+                    and self._dispatched_intent_id != intent_id
                 ):
-                    if outcome.execution_state == "PENDING":
-                        adopted = repos.trading.mark_intent_adopted(intent.intent_id, now_ms=now_ms)
-                        if adopted is None:
+                    if execution_state == "PENDING":
+                        adopted_values = repos.trading.mark_intent_adopted_values(intent_id, now_ms=now_ms)
+                        if adopted_values is None:
                             raise RuntimeError("nautilus_intent_adoption_projection_failed")
-                        outcome = adopted
-                    command = AdoptIntent(intent=intent, outcome=outcome)
-                    self._dispatched_intent_id = intent.intent_id
+                        outcome_values = adopted_values
+                    adopt_values = intent_values, outcome_values
+                    self._dispatched_intent_id = intent_id
             for binding in self._capability_snapshot_sha256s:
                 repos.trading.set_binding_execution_runtime(
                     binding=binding,
@@ -247,11 +260,17 @@ class NautilusDatabaseBridge:
                     del self._pending_execution_bindings[binding]
         with self._lock:
             self._heartbeat_at_ms = now_ms
+        command: AdoptIntent | IntentReleased | None = None
+        if adopt_values is not None:
+            intent, outcome = materialize_active_intent(adopt_values)
+            command = AdoptIntent(intent=intent, outcome=outcome)
+        elif released_intent_id is not None:
+            command = IntentReleased(intent_id=released_intent_id)
         if command is not None:
             self._queues.commands.put_nowait(command)
 
-    def _should_dispatch(self, runtime: dict[str, Any] | None, outcome: Any) -> bool:
-        if outcome.execution_state != "PENDING":
+    def _should_dispatch(self, runtime: dict[str, Any] | None, execution_state: str) -> bool:
+        if execution_state != "PENDING":
             return True
         return bool(
             runtime is not None
@@ -320,41 +339,52 @@ class NautilusDatabaseBridge:
             return True
 
         if isinstance(event, EntrySubmissionRequested):
+            q2_payload_json = repos.trading.prepare_quote_audit_json(
+                event.intent_id,
+                event.q2_evidence,
+                stage="Q2",
+                accepted=True,
+            )
+            if q2_payload_json is None:
+                raise RuntimeError("entry_submission_authority_projection_failed")
             with repos.transaction():
-                outcome = repos.trading.authorize_entry_submission(
+                outcome_values = repos.trading.authorize_entry_submission_values(
                     event.intent_id,
                     entry_client_order_id=event.client_order_id,
-                    q2_evidence=event.q2_evidence,
+                    q2_payload_json=q2_payload_json,
                     now_ms=self._now_ms(),
                 )
-                if outcome is None:
-                    current = repos.trading.intent_outcome(event.intent_id)
-                    if current is not None and current.entry_quote_q2 == event.q2_evidence:
-                        outcome = current
-                if outcome is None:
-                    raise RuntimeError("entry_submission_authority_projection_failed")
+                if outcome_values is None:
+                    outcome_values = repos.trading.intent_outcome_values(event.intent_id)
+            outcome = None if outcome_values is None else materialize_intent_outcome(outcome_values)
+            if outcome is None or outcome.entry_quote_q2 != event.q2_evidence:
+                raise RuntimeError("entry_submission_authority_projection_failed")
             self._queues.commands.put_nowait(EntrySubmissionGranted(outcome=outcome))
             return True
 
         if isinstance(event, EntryNoSubmitRequested):
+            q2_payload_json = repos.trading.prepare_quote_audit_json(
+                event.intent_id,
+                event.q2_evidence,
+                stage="Q2",
+                accepted=False,
+                reason=event.reason_code,
+            )
+            if q2_payload_json is None:
+                raise RuntimeError("entry_no_submit_projection_failed")
             with repos.transaction():
-                outcome = repos.trading.record_fenced_quote_no_submit(
+                outcome_values = repos.trading.record_fenced_quote_no_submit_values(
                     event.intent_id,
                     entry_client_order_id=event.client_order_id,
                     reason_code=event.reason_code,
-                    q2_evidence=event.q2_evidence,
+                    q2_payload_json=q2_payload_json,
                     now_ms=self._now_ms(),
                 )
-                if outcome is None:
-                    current = repos.trading.intent_outcome(event.intent_id)
-                    if (
-                        current is not None
-                        and current.entry_quote_q2 == event.q2_evidence
-                        and current.terminal_outcome == "REJECTED"
-                    ):
-                        outcome = current
-                if outcome is None:
-                    raise RuntimeError("entry_no_submit_projection_failed")
+                if outcome_values is None:
+                    outcome_values = repos.trading.intent_outcome_values(event.intent_id)
+            outcome = None if outcome_values is None else materialize_intent_outcome(outcome_values)
+            if outcome is None or outcome.entry_quote_q2 != event.q2_evidence or outcome.terminal_outcome != "REJECTED":
+                raise RuntimeError("entry_no_submit_projection_failed")
             self._queues.commands.put_nowait(EntryNoSubmitFinalized(outcome=outcome))
             return True
 
@@ -365,22 +395,64 @@ class NautilusDatabaseBridge:
                 self._unexpected_exposure = True
             return True
 
+        quote_payload_json: str | None = None
+        commissions_json: str | None = None
+        funding_json: str | None = None
+        if isinstance(event, EntryPreflightRejected):
+            q1_accepted = isinstance(event.q1_evidence, ExecutionQuoteSnapshotV1)
+            quote_payload_json = repos.trading.prepare_quote_audit_json(
+                event.intent_id,
+                event.q1_evidence,
+                stage="Q1",
+                accepted=q1_accepted,
+                reason=None if q1_accepted else event.reason_code,
+            )
+        elif isinstance(event, StopSubmitted):
+            validate_stop_submission_identity(
+                event.intent_id,
+                client_order_id=event.client_order_id,
+                generation=event.generation,
+                previous_client_order_id=event.previous_client_order_id,
+            )
+        elif isinstance(event, CloseSubmitted):
+            validate_close_submission_identity(event.intent_id, client_order_id=event.client_order_id)
+        elif isinstance(event, PositionClosedObserved | PositionFlatConfirmed):
+            if isinstance(event, PositionClosedObserved) and (not event.instrument_id or not event.account_id):
+                raise ValueError("close_observation_scope_invalid")
+            commissions_json = repos.trading.prepare_currency_amounts_json(event.commissions_by_currency)
+            funding_json = repos.trading.prepare_currency_amounts_json(event.funding_by_currency)
         with repos.transaction():
-            outcome = self._write_execution_event(repos.trading, event)
-            if outcome is None:
-                current = repos.trading.intent_outcome(event.intent_id)
-                if current is not None and self._event_is_projected(current, event):
-                    outcome = current
+            outcome_values = self._write_execution_event_values(
+                repos.trading,
+                event,
+                quote_payload_json=quote_payload_json,
+                commissions_json=commissions_json,
+                funding_json=funding_json,
+            )
+            wrote = outcome_values is not None
+            if outcome_values is None:
+                outcome_values = repos.trading.intent_outcome_values(event.intent_id)
+        outcome = None if outcome_values is None else materialize_intent_outcome(outcome_values)
+        if not wrote and outcome is not None and not self._event_is_projected(outcome, event):
+            outcome = None
         with self._lock:
             self._event_projection_healthy = outcome is not None
         return outcome is not None
 
-    def _write_execution_event(self, trading: Any, event: StrategyEvent) -> Any:
+    def _write_execution_event_values(
+        self,
+        trading: Any,
+        event: StrategyEvent,
+        *,
+        quote_payload_json: str | None,
+        commissions_json: str | None,
+        funding_json: str | None,
+    ) -> dict[str, Any] | None:
         if isinstance(event, IntentRefused):
             if event.reason_code == "intent_expired":
-                outcome = trading.expire_unfenced_intent(event.intent_id, now_ms=self._now_ms())
+                outcome = trading.expire_unfenced_intent_values(event.intent_id, now_ms=self._now_ms())
             else:
-                outcome = trading.record_rejected_without_exposure(
+                outcome = trading.record_rejected_without_exposure_values(
                     event.intent_id,
                     reason_code=event.reason_code,
                     authoritative_quantity=Decimal(0),
@@ -388,26 +460,28 @@ class NautilusDatabaseBridge:
                     now_ms=self._now_ms(),
                 )
         elif isinstance(event, EntryPreflightRejected):
-            outcome = trading.record_entry_preflight_no_submit(
+            if quote_payload_json is None:
+                return None
+            outcome = trading.record_entry_preflight_no_submit_values(
                 event.intent_id,
                 reason_code=event.reason_code,
-                q1_evidence=event.q1_evidence,
+                q1_payload_json=quote_payload_json,
                 now_ms=self._now_ms(),
             )
         elif isinstance(event, EntrySubmitted):
-            outcome = trading.record_entry_submitted(
+            outcome = trading.record_entry_submitted_values(
                 event.intent_id,
                 entry_client_order_id=event.client_order_id,
                 submitted_at_ms=event.submitted_at_ms,
             )
         elif isinstance(event, EntryAccepted):
-            outcome = trading.record_entry_accepted(
+            outcome = trading.record_entry_accepted_values(
                 event.intent_id,
                 entry_client_order_id=event.client_order_id,
                 accepted_at_ms=event.accepted_at_ms,
             )
         elif isinstance(event, EntryFilled):
-            outcome = trading.record_entry_fill(
+            outcome = trading.record_entry_fill_values(
                 event.intent_id,
                 actual_quantity=event.actual_quantity,
                 avg_entry_price=event.avg_entry_price,
@@ -416,7 +490,7 @@ class NautilusDatabaseBridge:
                 now_ms=event.opened_at_ms,
             )
         elif isinstance(event, EntryRejected):
-            outcome = trading.record_rejected_without_exposure(
+            outcome = trading.record_rejected_without_exposure_values(
                 event.intent_id,
                 reason_code=event.reason_code,
                 authoritative_quantity=Decimal(0),
@@ -425,18 +499,17 @@ class NautilusDatabaseBridge:
             )
         elif isinstance(event, StopSubmitted):
             if event.generation == 0:
-                outcome = trading.record_stop_submitted(
+                outcome = trading.record_stop_submitted_values(
                     event.intent_id,
                     client_order_id=event.client_order_id,
                     generation=event.generation,
-                    previous_client_order_id=event.previous_client_order_id,
                     quantity=event.quantity,
                     now_ms=event.submitted_at_ms,
                 )
             else:
                 if event.previous_client_order_id is None:
                     raise ValueError("nautilus_replacement_stop_previous_id_missing")
-                outcome = trading.prepare_stop_replacement(
+                outcome = trading.prepare_stop_replacement_values(
                     event.intent_id,
                     canceled_client_order_id=event.previous_client_order_id,
                     submitted_client_order_id=event.client_order_id,
@@ -445,7 +518,7 @@ class NautilusDatabaseBridge:
                     now_ms=event.submitted_at_ms,
                 )
         elif isinstance(event, StopAccepted):
-            outcome = trading.record_protected(
+            outcome = trading.record_protected_values(
                 event.intent_id,
                 accepted_client_order_id=event.client_order_id,
                 protection_order_id=event.venue_order_id,
@@ -455,7 +528,7 @@ class NautilusDatabaseBridge:
                 now_ms=event.accepted_at_ms,
             )
         elif isinstance(event, PositionQuantityChanged):
-            outcome = trading.record_position_changed(
+            outcome = trading.record_position_changed_values(
                 event.intent_id,
                 position_id=event.position_id,
                 actual_quantity=event.actual_quantity,
@@ -463,7 +536,7 @@ class NautilusDatabaseBridge:
                 now_ms=event.changed_at_ms,
             )
         elif isinstance(event, CloseSubmitted):
-            outcome = trading.record_close_submitted(
+            outcome = trading.record_close_submitted_values(
                 event.intent_id,
                 client_order_id=event.client_order_id,
                 position_id=event.position_id,
@@ -472,10 +545,9 @@ class NautilusDatabaseBridge:
                 now_ms=event.submitted_at_ms,
             )
         elif isinstance(event, PositionClosedObserved):
-            outcome = trading.record_position_closed_observed(
+            outcome = trading.record_position_closed_observed_values(
                 event.intent_id,
                 instrument_id=event.instrument_id,
-                account_id=event.account_id,
                 position_id=event.position_id,
                 closing_client_order_id=event.closing_client_order_id,
                 local_quantity=event.local_quantity,
@@ -483,12 +555,12 @@ class NautilusDatabaseBridge:
                 closed_at_ms=event.closed_at_ms,
                 realized_pnl_amount=event.realized_pnl_amount,
                 realized_pnl_currency=event.realized_pnl_currency,
-                commissions_by_currency=event.commissions_by_currency,
+                commissions_json=commissions_json,
                 now_ms=event.closed_at_ms,
-                funding_by_currency=event.funding_by_currency,
+                funding_json=funding_json,
             )
         elif isinstance(event, PositionFlatConfirmed):
-            outcome = trading.record_closed_flat(
+            outcome = trading.record_closed_flat_values(
                 event.intent_id,
                 position_id=event.position_id,
                 authoritative_quantity=event.authoritative_quantity,
@@ -497,9 +569,9 @@ class NautilusDatabaseBridge:
                 flat_verified_at_ms=event.flat_verified_at_ms,
                 realized_pnl_amount=event.realized_pnl_amount,
                 realized_pnl_currency=event.realized_pnl_currency,
-                commissions_by_currency=event.commissions_by_currency,
+                commissions_json=commissions_json,
                 now_ms=event.flat_verified_at_ms,
-                funding_by_currency=event.funding_by_currency,
+                funding_json=funding_json,
             )
         elif isinstance(event, OrderOutcomeUnknown):
             if event.leg is None or event.intent_id is None:
@@ -509,14 +581,14 @@ class NautilusDatabaseBridge:
                 "stop": "protection_unproven",
                 "close": "close_outcome_unknown",
             }[event.leg]
-            outcome = trading.mark_manual_review(
+            outcome = trading.mark_manual_review_values(
                 event.intent_id,
                 reason_code=reason,
                 now_ms=event.observed_at_ms,
             )
         else:
             raise TypeError(f"unsupported_nautilus_event:{type(event).__name__}")
-        return outcome
+        return cast(dict[str, Any] | None, outcome)
 
     @staticmethod
     def _event_is_projected(outcome: Any, event: StrategyEvent) -> bool:

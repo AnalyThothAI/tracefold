@@ -396,6 +396,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
     admissions = iter(
         [
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="candidate",
                 event_id="ev-1",
@@ -403,6 +404,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 gate=SimpleNamespace(queue_priority="high", amqp_priority=5),
             ),
             SimpleNamespace(
+                item_inserted=False,
                 event_created=False,
                 admission="candidate",
                 event_id="ev-1",
@@ -410,6 +412,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
                 gate=None,
             ),
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="suppressed_ungrounded",
                 event_id="ev-2",
@@ -419,6 +422,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
             # `listing_deterministic` is an admitted admission, not a suppression: exchange listing/delisting
             # frames must reach Triage like any candidate (#72 — they used to die silently right here).
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="listing_deterministic",
                 event_id="ev-3",
@@ -428,6 +432,7 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
             # #126: a Strategy Tracefold has no local knowledge of. There is no allowlist to consult — the
             # provider account enabled it and the socket pushed it, so the Gate judges it like any other.
             SimpleNamespace(
+                item_inserted=True,
                 event_created=True,
                 admission="candidate",
                 event_id="ev-4",
@@ -440,10 +445,10 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
     def fake_admit(repos: Any, **kwargs: Any) -> Any:
         seen.append(kwargs)
-        return SimpleNamespace(results=(next(admissions),))
+        return next(admissions)
 
-    monkeypatch.setattr(admission_module, "admit_frame", fake_admit)
-    news = RecordingNews()
+    monkeypatch.setattr(admission_module, "admit_item", fake_admit)
+    news = RecordingNews(find_band_candidates=[])
     bus = FakeBus()
     deduper = DeduperConsumer(bus=bus, db=FakeWorkerDatabase(news), watchlist_symbols=frozenset({"BTC"}))
     params = {
@@ -492,8 +497,8 @@ def test_deduper_publishes_new_candidate_events_once(monkeypatch: pytest.MonkeyP
 
 
 def test_deduper_admission_timeout_defers_uncounted_and_publishes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(admission_module, "admit_frame", lambda *_a, **_k: pytest.fail("db never admitted"))
-    news = RecordingNews()
+    monkeypatch.setattr(admission_module, "admit_item", lambda *_a, **_k: pytest.fail("db never admitted"))
+    news = RecordingNews(find_band_candidates=[])
     bus = FakeBus()
     deduper = DeduperConsumer(
         bus=bus,
@@ -561,7 +566,7 @@ def test_unsupported_market_contracts_are_auditable_without_triage_or_delivery(
     assert inserted["event_kind"] == "unsupported_market"
     assert inserted["admission"] == "unsupported_market_contract"
     assert inserted["source_contract_reason"] == "unsupported_market_contract"
-    assert news.kwargs_of("upsert_item")["provider_metadata"]["strategies"] == [
+    assert json.loads(news.kwargs_of("upsert_item")["provider_metadata_json"])["strategies"] == [
         {
             "id": str(strategy_id),
             "name": strategy_name,

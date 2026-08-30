@@ -136,7 +136,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_event_asset_projection",
             sql="SELECT asset.event_id, array_agg(asset.symbol ORDER BY asset.symbol) AS symbols"
             " FROM news_event_assets asset"
-            " JOIN news_current_events_v1 event ON event.event_id = asset.event_id"
+            " JOIN news_events event ON event.event_id = asset.event_id"
             " WHERE asset.event_id = ANY(%s) GROUP BY asset.event_id",
             params=(["event"],),
             max_read_return_amplification=8.0,
@@ -145,7 +145,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_event_members",
             sql="""
                 SELECT m.item_id, m.match_kind, i.title FROM news_event_members m
-                  JOIN news_current_events_v1 event ON event.event_id = m.event_id
+                  JOIN news_events event ON event.event_id = m.event_id
                   JOIN news_items i ON i.item_id = m.item_id
                  WHERE m.event_id = %s ORDER BY m.joined_at_ms, m.item_id
             """,
@@ -162,7 +162,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="news_storyline_status",
             sql="""
                 SELECT count(*) AS pushed
-                  FROM news_verdicts v JOIN news_current_events_v1 e ON e.event_id = v.event_id
+                  FROM news_verdicts v JOIN news_events e ON e.event_id = v.event_id
                  WHERE v.stage = 'triage' AND v.final_decision IN ('push', 'escalate')
                    AND v.judgment_contract_version = 'news_judgment_v2'
                    AND e.storyline_key = %s AND v.created_at_ms >= %s
@@ -210,7 +210,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_status_delivery_1h",
             sql="SELECT count(*) AS n FROM news_deliveries delivery"
-            " JOIN news_current_events_v1 event ON event.event_id = delivery.event_id"
+            " JOIN news_events event ON event.event_id = delivery.event_id"
             " WHERE delivery.state = 'sent' AND delivery.settled_at_ms >= %s",
             params=(hour_ago,),
             max_read_return_amplification=20.0,
@@ -226,7 +226,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="news_signal_history",
             sql="SELECT count(*)::int AS n FROM news_oi_signals signal "
-            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "JOIN news_events event ON event.event_id = signal.event_id "
             "WHERE signal.metric_version = 'oi_signal_v1' AND signal.symbol = 'BTC' "
             "AND signal.observed_at_ms > 0 AND signal.observed_at_ms < 1 AND signal.event_id <> '' "
             "AND signal.whale_oi_ratio_bps > 8000 AND abs(signal.oi_change_bps) >= 0",
@@ -265,7 +265,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql="""
                 SELECT a.event_id, a.symbol, a.opened_at_ms
                   FROM news_event_assets a
-                  JOIN news_current_events_v1 e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
+                  JOIN news_events e ON e.event_id = a.event_id AND e.ingest_mode = 'live'
                   LEFT JOIN news_event_reactions r
                     ON r.event_id = a.event_id AND r.symbol = a.symbol AND r.metric_version = %s
                  WHERE a.opened_at_ms <= %s
@@ -281,7 +281,7 @@ def news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             sql=(
                 "SELECT reaction.event_id, reaction.symbol, reaction.return_1h_bps, reaction.return_4h_bps,"
                 " reaction.state FROM news_event_reactions reaction"
-                " JOIN news_current_events_v1 event ON event.event_id = reaction.event_id"
+                " JOIN news_events event ON event.event_id = reaction.event_id"
                 " WHERE reaction.event_id = ANY(%s) AND reaction.metric_version = %s"
             ),
             params=(["event"], REACTION_METRIC_VERSION),

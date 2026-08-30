@@ -671,9 +671,9 @@ def test_janitor_repairs_both_handoffs_after_confirmed_publish_marker_failure(co
 def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(conn) -> None:
     event_id, policy_version = _ensure_handoff_facts(conn)
     stamp = now_ms()
-    # Keep 20k table/cardinality evidence for the planner, but only 1,250 current rows: that is already
-    # above the 1,000-row state cap. JSON/hash CHECK cost is covered separately under a native statement
-    # timeout; validating 20,000 current verdicts made a read-plan fixture itself unbounded.
+    # Keep 20k table/cardinality evidence for the planner, but materialize evidence and verdicts for only
+    # 1,250 candidates above the 1,000-row state cap. JSON/hash CHECK cost is covered separately under a
+    # native statement timeout; validating 20,000 verdicts made a read-plan fixture itself unbounded.
     conn.execute(
         """
         INSERT INTO news_events (
@@ -683,8 +683,7 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
           focus_span_start, focus_span_end, opened_at_ms, last_member_at_ms, expires_at_ms,
           member_count, admission, queue_priority, provider_score_max, engine_type, asset_class,
           grounded_assets, watchlist_hits, macro_lexicon, storyline_key, context_line,
-          published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms,
-          current_contract_archive_only
+          published_at_ms, ingest_mode, trace_id, created_at_ms, updated_at_ms
         )
         SELECT 'handoff-scale-' || g.n, template.leader_item_id, template.dedupe_family, template.event_kind,
                template.source_contract_reason, md5('handoff-' || g.n) || md5('handoff-x-' || g.n),
@@ -695,7 +694,7 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
                template.provider_score_max, template.engine_type, template.asset_class,
                template.grounded_assets, template.watchlist_hits, template.macro_lexicon,
                template.storyline_key, template.context_line, %s, template.ingest_mode,
-               template.trace_id, %s - g.n, %s - g.n, g.n > 1250
+               template.trace_id, %s - g.n, %s - g.n
           FROM news_events template
           CROSS JOIN generate_series(1, 20000) AS g(n)
          WHERE template.event_id = %s
@@ -710,7 +709,7 @@ def test_handoff_candidate_and_state_plans_use_partial_indexes_at_history_scale(
             event_id,
         ),
     )
-    seed_current_news_evidence(conn)
+    seed_current_news_evidence(conn, limit=1251)
     conn.execute(
         """
         INSERT INTO news_verdicts (

@@ -24,7 +24,7 @@ _HANDOFF_STATE_LIMIT = 1_000
 UNPUBLISHED_VERDICT_CANDIDATES_SQL = """
     SELECT v.event_id, v.policy_version, v.created_at_ms, e.queue_priority, e.trace_id
       FROM news_verdicts v
-      JOIN news_current_events_v1 e ON e.event_id = v.event_id
+      JOIN news_events e ON e.event_id = v.event_id
       JOIN news_event_evidence_snapshots evidence
         ON evidence.event_id = v.event_id
        AND evidence.evidence_version = v.evidence_version
@@ -43,7 +43,7 @@ _VERDICT_HANDOFF_STATE_SQL = """
     WITH pending AS MATERIALIZED (
       SELECT v.created_at_ms
         FROM news_verdicts v
-        JOIN news_current_events_v1 e ON e.event_id = v.event_id
+        JOIN news_events e ON e.event_id = v.event_id
         JOIN news_event_evidence_snapshots evidence
           ON evidence.event_id = v.event_id
          AND evidence.evidence_version = v.evidence_version
@@ -61,7 +61,7 @@ _VERDICT_HANDOFF_STATE_SQL = """
     ), expired AS MATERIALIZED (
       SELECT v.created_at_ms
         FROM news_verdicts v
-        JOIN news_current_events_v1 e ON e.event_id = v.event_id
+        JOIN news_events e ON e.event_id = v.event_id
         JOIN news_event_evidence_snapshots evidence
           ON evidence.event_id = v.event_id
          AND evidence.evidence_version = v.evidence_version
@@ -98,7 +98,7 @@ _READER_HISTORY_PROJECTION = """
                        WHERE ea.event_id = e.event_id) bases),
              '[]'::jsonb
            ) AS canonical_assets
-      FROM news_current_events_v1 e
+      FROM news_events e
       JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first' AND d.state = 'sent'
                             AND d.delete_state IS DISTINCT FROM 'deleted'
       JOIN LATERAL (
@@ -165,7 +165,7 @@ class DecisionStorage:
 
         exact = self.conn.execute(
             "WITH current_event AS ("  # noqa: S608
-            " SELECT dedupe_family, comparison_fingerprint FROM news_current_events_v1 WHERE event_id = %s"
+            " SELECT dedupe_family, comparison_fingerprint FROM news_events WHERE event_id = %s"
             ") "
             + _READER_HISTORY_PROJECTION
             + """
@@ -188,7 +188,7 @@ class DecisionStorage:
             """
             WITH current_event AS (
               SELECT event_id, dedupe_family, comparison_fingerprint
-                FROM news_current_events_v1 WHERE event_id = %s
+                FROM news_events WHERE event_id = %s
             ), current_bases AS (
               SELECT DISTINCT COALESCE(a.base_symbol, current_asset.symbol) AS base
                 FROM current_event current
@@ -268,7 +268,7 @@ class DecisionStorage:
 
         row = self.conn.execute(
             "SELECT count(*)::int AS n FROM news_oi_signals signal "
-            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "JOIN news_events event ON event.event_id = signal.event_id "
             "WHERE signal.metric_version = %s AND signal.symbol = %s "
             "AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s AND signal.event_id <> %s "
             "AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s",
@@ -294,7 +294,7 @@ class DecisionStorage:
             "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms, "
             "signal.source_item_id, signal.source_venue, signal.available_at_ms, signal.learning_epoch "
             "FROM news_oi_signals signal "
-            "JOIN news_current_events_v1 event ON event.event_id = signal.event_id "
+            "JOIN news_events event ON event.event_id = signal.event_id "
             "WHERE signal.event_id = %s AND signal.metric_version = %s",
             (event_id, metric_version),
         ).fetchone()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -44,7 +45,23 @@ def run_restore_drill(
     _create_database(admin_dsn, source_name)
     _create_database(admin_dsn, restored_name)
     try:
-        upgrade_head(source_dsn)
+        fresh_install_evidence = {
+            "TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL": "1",
+            "TRACEFOLD_RUNTIME_REVISION": "0" * 40,
+            "TRACEFOLD_IMAGE_DIGEST": "sha256:" + "1" * 64,
+            "TRACEFOLD_NEWS_GENESIS_EXPECTED_RUNTIME_MANIFEST_SHA256": "2" * 64,
+            "TRACEFOLD_NEWS_GENESIS_BROKER_OBSERVATION_SHA256": "3" * 64,
+        }
+        previous_evidence = {name: os.environ.get(name) for name in fresh_install_evidence}
+        os.environ.update(fresh_install_evidence)
+        try:
+            upgrade_head(source_dsn)
+        finally:
+            for name, value in previous_evidence.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
         source_summary = seed_and_summarize(source_dsn)
         with tempfile.TemporaryDirectory(prefix="tracefold-restore-") as directory:
             workspace = Path(directory)
@@ -54,7 +71,19 @@ def run_restore_drill(
             _run_client(admin_dsn, database=source_name, workspace=workspace, pgpass=pgpass, action="dump")
             dump_seconds = time.perf_counter() - dump_started
             restore_started = time.perf_counter()
-            _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore")
+            _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_pre")
+            _set_restore_function_search_path(restored_dsn, enabled=True)
+            try:
+                _run_client(
+                    admin_dsn,
+                    database=restored_name,
+                    workspace=workspace,
+                    pgpass=pgpass,
+                    action="restore_data",
+                )
+            finally:
+                _set_restore_function_search_path(restored_dsn, enabled=False)
+            _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_post")
             restore_seconds = time.perf_counter() - restore_started
 
         upgrade_head(restored_dsn)
@@ -116,6 +145,31 @@ def _drop_database(admin_dsn: str, name: str) -> None:
         conn.execute(sql.SQL("DROP DATABASE IF EXISTS {} WITH (FORCE)").format(sql.Identifier(name)))
 
 
+def _set_restore_function_search_path(dsn: str, *, enabled: bool) -> None:
+    """Let restored PL/pgSQL bodies resolve their public helpers during COPY, then restore exact config."""
+
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        functions = conn.execute(
+            """
+            SELECT procedure.proname, pg_get_function_identity_arguments(procedure.oid) AS arguments
+              FROM pg_proc procedure
+              JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+             WHERE namespace.nspname = 'public' AND procedure.proconfig IS NULL
+             ORDER BY procedure.proname, arguments
+            """
+        ).fetchall()
+        setting = sql.SQL("SET search_path = pg_catalog, public") if enabled else sql.SQL("RESET search_path")
+        for function in functions:
+            conn.execute(
+                sql.SQL("ALTER FUNCTION {}.{}({}) {}").format(
+                    sql.Identifier("public"),
+                    sql.Identifier(str(function["proname"])),
+                    sql.SQL(str(function["arguments"])),
+                    setting,
+                )
+            )
+
+
 def _write_pgpass(path: Path, dsn: str) -> None:
     values = conninfo_to_dict(dsn)
     host = _client_host(str(values.get("host") or "127.0.0.1"))
@@ -152,8 +206,9 @@ def _run_client(
     ]
     if action == "dump":
         client = ["pg_dump", "--format=custom", "--file=/work/tracefold.dump", *connection]
-    elif action == "restore":
-        client = ["pg_restore", "--exit-on-error", *connection, "/work/tracefold.dump"]
+    elif action in {"restore_pre", "restore_data", "restore_post"}:
+        section = action.removeprefix("restore_").replace("pre", "pre-data").replace("post", "post-data")
+        client = ["pg_restore", "--exit-on-error", f"--section={section}", *connection, "/work/tracefold.dump"]
     else:  # pragma: no cover - internal closed choice
         raise ValueError(f"postgres_restore_drill_action_invalid:{action}")
     docker = shutil.which("docker")

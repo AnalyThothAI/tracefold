@@ -86,8 +86,10 @@ def test_workers_probe_fails_closed_when_persisted_heartbeat_is_stale() -> None:
         heartbeat_at_ms=1_000,
         ready=True,
         unavailable_reason="",
+        runtime_manifest_sha="a" * 64,
     )
 
+    assert state.payload()["runtime_manifest_sha"] == "a" * 64
     assert state.payload()["ok"] is False
     assert state.payload()["unavailable_reason"] == "runtime_heartbeat_stale"
 

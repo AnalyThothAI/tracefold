@@ -42,7 +42,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -453,7 +453,8 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
 			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
 			20260830_0335\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0335." ;; \
-			20260830_0336\|t\|t) echo "Trading evidence clock, News incident uniqueness, and the explicit News current-view projection are present at database head 20260830_0336." ;; \
+			20260830_0336\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0336; News current-contract genesis is present." ;; \
+			20260830_0337\|t\|t) echo "Trading evidence-clock hard cut, News current-contract genesis, and the Nautilus canonical-JSON grant are present at database head 20260830_0337." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac
@@ -486,6 +487,15 @@ github-preflight:
 
 verify-main-ci: github-preflight ## require the exact origin/main SHA to have a trusted green ci-gate
 	@uv run python scripts/require_main_ci.py
+
+news-genesis-manifest: preflight github-preflight ## print the exact News genesis target manifest for the configured image
+	@uv run python scripts/require_main_ci.py
+	@set -eu; \
+		image=$$(docker compose config --images migrate 2>/dev/null \
+			| grep -v '@sha256:' | head -n 1); \
+		TRACEFOLD_IMAGE_DIGEST=$$(docker image inspect --format '{{.Id}}' "$$image"); \
+		export TRACEFOLD_IMAGE_DIGEST; \
+		docker compose run --rm --no-deps --entrypoint tracefold migrate db news-genesis-manifest
 
 up: preflight github-preflight ## build, migrate, start, and verify the complete product
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _up-locked
@@ -527,6 +537,10 @@ _up-locked:
 			echo "  Deployment continues, but every runtime manifest it writes records" >&2; \
 			echo "  image_digest=unversioned and cannot close a learning promotion." >&2; \
 		fi; \
+		manifest_document=$$(docker compose run --rm --no-deps --entrypoint tracefold migrate \
+			db news-genesis-manifest) || fail; \
+		target_manifest=$$(printf '%s' "$$manifest_document" \
+			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
@@ -534,6 +548,12 @@ _up-locked:
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
 		make --no-print-directory status || fail; \
+		ready_manifest=$$(curl -fsS "$(TRACEFOLD_WORKERS_URL)/readyz" \
+			| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("runtime_manifest_sha") or ""))') || fail; \
+		if [ "$$ready_manifest" != "$$target_manifest" ]; then \
+			echo "Workers runtime manifest does not equal the configured target." >&2; \
+			fail; \
+		fi; \
 		echo "Tracefold ready at $(TRACEFOLD_API_URL)"
 
 deploy-image: preflight github-preflight ## deploy an explicit local DB-compatible sha256 image from the primary checkout

@@ -183,6 +183,8 @@ ignore = [
 "tracefold/platform/postgres/alembic/versions/20260828_0318_program_v8_epoch.py" = ["S608"]
 "tracefold/platform/postgres/alembic/versions/20260828_0319_program_v9_epoch.py" = ["S608"]
 "tracefold/platform/postgres/alembic/versions/20260828_0324_delivery_lifecycle_constraints.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260830_0335_news_incident_uniqueness.py" = ["S608"]
+"tracefold/platform/postgres/alembic/versions/20260830_0336_news_current_contract_genesis.py" = ["S608"]
 
 [tool.ruff.format]
 # Default settings; line-length inherited from [tool.ruff] = 120

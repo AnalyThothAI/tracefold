@@ -31,6 +31,10 @@ class NewsPipeline:
     quotes: QuoteSnapshotLoop | None = None
     reactions: EventReactionLoop | None = None
 
+    @property
+    def runtime_manifest_sha(self) -> str:
+        return self.triage.runtime_manifest_sha
+
     async def register_runtime_manifest(self) -> None:
         await self.triage.register_runtime_manifest()
 
