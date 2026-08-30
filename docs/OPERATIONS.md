@@ -503,63 +503,74 @@ cookie hides this completely, so it only appears on a fresh volume.
 ### Cutting over from the removed TTL retry lane
 
 Run this once, from the primary checkout, when deploying the #400 image onto a
-deployment that still has `news.retry`. It fails closed at every step. Two
-things change on the broker: the policies appear, and the three business queues
-lose the arguments the policy now owns. `news.dead` is untouched — its
-declaration is unchanged, and it holds evidence.
+deployment that still has `news.retry`. It fails closed at every step. Two things
+change on the broker: the policies appear, and the three business queues lose the
+arguments the policy now owns. `news.dead` is untouched — its declaration is
+unchanged, and it holds evidence.
 
-1. Prove the broker: `docker compose exec -T rabbitmq su -s /bin/sh rabbitmq -c
-   'rabbitmqctl version'` must report 4.3 or newer. Native delayed retry does
-   not exist before 4.3, and an older broker would silently retry immediately.
+`rabbitmqctl` runs as the `rabbitmq` user with `PATH` spelled out, because `su`
+resets it on the Debian image and the CLI would not be found. Deleting a queue
+goes through the management API, because `rabbitmqctl delete_queue --if-empty`
+and the API's `?if-empty=true` are both rejected by quorum queues — emptiness is
+something this runbook proves, not something the broker will check.
+
+```bash
+RMQ () { docker compose exec -T rabbitmq su -s /bin/sh rabbitmq -c \
+  "PATH=/opt/rabbitmq/sbin:/opt/erlang/bin:/usr/local/bin:/usr/bin:/bin $1"; }
+API () { curl -fsS -u "$USER:$PASS" "$@" http://127.0.0.1:15672/api/queues/%2F; }
+```
+
+1. Prove the broker: `RMQ 'rabbitmqctl version'` must report 4.3 or newer. Native
+   delayed retry does not exist before 4.3, and an older broker would silently
+   retry immediately.
 2. Apply the policies while the old image is still running, from the checkout
-   rather than from the container: `uv run tracefold news bus-policy apply`,
-   then `uv run tracefold news bus-policy verify`. The deployed image predates
-   the command, and `uv run` reaches the same broker because the compose host
-   name is rewritten to its published loopback port. A policy overrides a queue
-   argument on 4.3, so from here the retry contract is already in force and
-   there is no later window in which a queue is unconfigured. Every deployment
-   after this one re-applies it through the `rabbitmq-policy` Compose service.
-3. Observe the old lane and let it drain. Record ready, unacked and the oldest
-   message: `curl -s -u "$USER:$PASS" http://127.0.0.1:15672/api/queues/%2F/news.retry`.
+   rather than from the container: `uv run tracefold news bus-policy apply`, then
+   `uv run tracefold news bus-policy verify`. The deployed image predates the
+   command, and `uv run` reaches the same broker because the compose host name is
+   rewritten to its published loopback port. The command deliberately opens no
+   AMQP connection and declares no topology, so it works while the queues still
+   have their old shape. A policy overrides a queue argument on 4.3, so from here
+   the retry contract is already in force and there is no later window in which a
+   queue is unconfigured. Every deployment after this one re-applies it through
+   the `rabbitmq-policy` Compose service.
+3. Observe the old lane and let it drain: `API | jq '.[] | select(.name=="news.retry")'`.
+   Record ready, unacked and the oldest message.
 4. If anything in `news.retry` cannot drain deterministically, stop here. Do not
    purge it to make the migration proceed; the messages in it are business facts
    that have not been handled.
-5. Stop the consumers and drain the business queues:
-   `docker compose stop -t 40 workers`, then confirm `news.raw`, `news.triage`
-   and `news.deliver` all read zero. The OpenNews frames that arrive during this
-   window are the ordinary deployment gap, and Recovery backfills them from
+5. Stop the consumers so nothing can produce or redeclare:
+   `docker compose stop -t 40 workers`. The OpenNews frames that arrive during
+   this window are the ordinary deployment gap, and Recovery backfills them from
    official history afterwards.
-6. Delete the three business queues so the new image can declare them without
-   the arguments the policy now owns. Keeping those arguments would work today
-   and silently restore the old delivery limit, at-most-once dead lettering and
-   message-count bound the moment the policy were removed:
+6. Prove `news.raw`, `news.triage` and `news.deliver` each read zero for
+   `messages`, `messages_ready`, `messages_unacknowledged`, `messages_dlx` and
+   `consumers`, immediately before deleting them. Then delete them, so the new
+   image can declare them without the arguments the policy now owns — keeping
+   those arguments would work today and silently restore the old delivery limit,
+   at-most-once dead lettering and message-count bound the moment the policy were
+   removed:
 
    ```bash
    for q in news.raw news.triage news.deliver; do
-     docker compose exec -T rabbitmq \
-       su -s /bin/sh rabbitmq -c "rabbitmqctl delete_queue $q --if-empty"
+     curl -fsS -u "$USER:$PASS" -X DELETE "http://127.0.0.1:15672/api/queues/%2F/$q"
    done
    ```
 
-   `--if-empty` is the safety: `rabbitmqctl` refuses rather than discarding a
-   message that arrived after step 5. Do not delete `news.dead`.
+   Do not delete `news.dead`.
 7. Deploy the hard-cut image (`make up`). Workers redeclares the three queues,
    verifies the effective policy and refuses to consume if it does not match.
    From this point no code path can publish to `news.retry`.
 8. Wait at least one former TTL interval (30 s) and prove `messages_ready` and
-   `messages_unacknowledged` on `news.retry` are both still zero. Then delete
-   the old lane by hand — the application deliberately will not:
+   `messages_unacknowledged` on `news.retry` are both still zero. Then delete the
+   old lane by hand — the application deliberately will not:
 
    ```bash
-   docker compose exec -T rabbitmq \
-     su -s /bin/sh rabbitmq -c 'rabbitmqctl delete_queue news.retry --if-empty'
-   curl -fsS -u "$USER:$PASS" -X DELETE \
-     http://127.0.0.1:15672/api/exchanges/%2F/news.retry
+   curl -fsS -u "$USER:$PASS" -X DELETE http://127.0.0.1:15672/api/queues/%2F/news.retry
+   curl -fsS -u "$USER:$PASS" -X DELETE http://127.0.0.1:15672/api/exchanges/%2F/news.retry
    ```
 
-   There is no `rabbitmqctl delete_exchange`; the exchange is a management-API
-   delete. `uv run tracefold news bus-check` must then report empty `drift` lists
-   and `policy_ok` on every queue.
+   `uv run tracefold news bus-check` must then report empty `drift` lists and
+   `policy_ok` on every queue.
 9. Cold-restart the stack (`docker compose restart rabbitmq workers`) and re-run
    `make status`, `uv run tracefold news bus-check`, and the open-incident check
    `SELECT cause_class, count(*) FROM news_opennews_incidents WHERE closed_at_ms
@@ -568,8 +579,8 @@ declaration is unchanged, and it holds evidence.
 
 Rollback before step 6 may restore the previous image; the policies are additive
 and the old image ignores them. After step 6 the queues carry the new shape and
-after step 8 the old lane is gone, so rolling back would recreate an
-unconfigured retry queue rather than the one that was deleted. Roll forward.
+after step 8 the old lane is gone, so rolling back would recreate an unconfigured
+retry queue rather than the one that was deleted. Roll forward.
 
 ## Worker ownership
 

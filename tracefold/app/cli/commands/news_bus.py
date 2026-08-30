@@ -58,14 +58,14 @@ def _handle_bus_policy(args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
 
     async def _run() -> dict[str, Any]:
+        # No AMQP connection and no topology declaration. A RabbitMQ policy is matched by queue name
+        # pattern and applies whenever a queue appears, so the retry contract can — and during the #400
+        # cutover must — be put in place while the queues on the broker still have their old shape and
+        # would refuse to be redeclared.
         bus = _bus(settings)
-        try:
-            await bus.connect()
-            applied = await bus.apply_policies() if args.policy_action == "apply" else None
-            verified = await bus.verify_policies()
-            effective = await bus.effective_policies()
-        finally:
-            await bus.close()
+        applied = await bus.apply_policies() if args.policy_action == "apply" else None
+        verified = await bus.verify_policies()
+        effective = await bus.effective_policies()
         return {"applied": applied, "verified": verified, "effective": effective}
 
     try:
