@@ -340,6 +340,12 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         "WHERE event_id = 'projection-oi-event'"
     )
     assert projected() == []
+    conn.execute(
+        "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "
+        "source_strategy_id = '1019', source_contract_version = 'opennews_oi_source_v1', "
+        "measurement_window_ms = 300000 WHERE event_id = 'projection-oi-event'"
+    )
+    assert projected() == []
     with repos.transaction():
         # Reproduce a pre-hard-cut archived row.  Production forbids changing this marker, so the
         # regression fixture bypasses triggers only while creating that historical database state.
@@ -357,12 +363,6 @@ def test_oi_trade_projection_requires_one_canonical_signal_rank_and_source_ident
         )
         == []
     )
-    conn.execute(
-        "UPDATE news_oi_signals SET oi_value_usd = oi_value_usd - 1, "
-        "source_strategy_id = '1019', source_contract_version = 'opennews_oi_source_v1', "
-        "measurement_window_ms = 300000 WHERE event_id = 'projection-oi-event'"
-    )
-    assert projected() == []
 
 
 def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadata(conn) -> None:

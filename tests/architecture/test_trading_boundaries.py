@@ -89,6 +89,12 @@ SQL_FUNCTION_DEFINITION_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 SQL_FUNCTION_CALL_RE = re.compile(r"\b(?P<name>[a-z][a-z0-9_]*)\s*\(", re.IGNORECASE)
+SQL_TRIGGER_FUNCTION_RE = re.compile(
+    r"CREATE TRIGGER\s+(?P<trigger>[a-z][a-z0-9_]*)\b"
+    r"(?:(?!CREATE TRIGGER).)*?\bON\s+(?P<table>(?P<owner>news|trading)_[a-z0-9_]*)\b"
+    r"(?:(?!CREATE TRIGGER).)*?EXECUTE FUNCTION\s+(?P<function>[a-z][a-z0-9_]*)\s*\(",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _module_name(path: Path) -> str:
@@ -359,6 +365,12 @@ def test_business_sql_functions_do_not_call_a_sibling_domains_function() -> None
                 called_owner = owner(called_name)
                 if called_owner is not None and called_owner != function_owner:
                     offenders.append(f"{path.relative_to(ROOT)}:{function_name}->{called_name}")
+        for trigger in SQL_TRIGGER_FUNCTION_RE.finditer(source):
+            function_name = trigger.group("function")
+            function_owner = owner(function_name)
+            table_owner = trigger.group("owner").lower()
+            if function_owner is not None and function_owner != table_owner:
+                offenders.append(f"{path.relative_to(ROOT)}:{trigger.group('trigger')}->{function_name}")
     assert offenders == []
 
 
