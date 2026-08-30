@@ -754,7 +754,7 @@ class EventStorage:
         members = [
             dict(row)
             for row in self.conn.execute(
-            """
+                """
             SELECT m.item_id, m.fact_id, m.fact_text, m.joined_at_ms, m.match_kind, m.jaccard_estimate,
                    i.reporting_origin, i.canonical_url, i.provider_metadata, i.provenance
               FROM news_event_members m
@@ -762,7 +762,7 @@ class EventStorage:
              WHERE m.event_id = %s
              ORDER BY m.joined_at_ms, m.item_id, m.fact_id
             """,
-            (event_id,),
+                (event_id,),
             ).fetchall()
         ]
         latest = self.conn.execute(
@@ -812,9 +812,7 @@ class EventStorage:
         ).fetchone()
         expected = (prepared.get("previous_version"), prepared.get("previous_sha256"))
         actual = (
-            (None, None)
-            if current is None
-            else (int(current["evidence_version"]), str(current["evidence_sha256"]))
+            (None, None) if current is None else (int(current["evidence_version"]), str(current["evidence_sha256"]))
         )
         if actual != expected:
             raise RuntimeError("news_event_evidence_snapshot_changed")

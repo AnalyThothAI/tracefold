@@ -228,6 +228,8 @@ SQL_LOCATION_EXCEPTIONS = frozenset(
         "tracefold/news/review/desk.py",
     }
 )
+
+
 def _python_files(root: Path) -> list[Path]:
     return sorted(
         path

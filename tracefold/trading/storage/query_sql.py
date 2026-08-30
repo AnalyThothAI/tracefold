@@ -8,8 +8,7 @@ from ..intent import ACTIVE_INTENT_STATES
 
 DEFAULT_CONSOLE_INTENT_STATES: Final = ACTIVE_INTENT_STATES
 TRADING_STATUS_COUNTS_SQL: Final = (
-    "SELECT execution_state, count(*) AS n FROM trading_intents "
-    "WHERE created_at_ms >= %s GROUP BY execution_state"
+    "SELECT execution_state, count(*) AS n FROM trading_intents WHERE created_at_ms >= %s GROUP BY execution_state"
 )
 GATE_DECISION_FOR_SOURCE_KEY_SQL: Final = """
     SELECT source_key, gate_version, gate_config_digest, trigger_kind, underlying_key,
@@ -217,9 +216,7 @@ def console_cases_sql(*, underlying: bool = False, states: bool = False, before:
     """  # noqa: S608
 
 
-def console_capital_evidence_sql(
-    *, binding: bool = False, statuses: bool = False, before: bool = False
-) -> str:
+def console_capital_evidence_sql(*, binding: bool = False, statuses: bool = False, before: bool = False) -> str:
     predicates: list[str] = []
     if binding:
         predicates.append("reservation.binding = %s")

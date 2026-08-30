@@ -227,11 +227,11 @@ class CatalogRepositories(Protocol):
     def trading(self) -> CatalogRepository: ...
 
 
-class CatalogDatabasePort(Protocol):
-    async def tx[T](self, name: str, fn: Callable[[CatalogRepositories], T], *, timeout_seconds: float) -> T: ...
+class CatalogDatabasePort[RepositoriesT: CatalogRepositories](Protocol):
+    async def tx[T](self, name: str, fn: Callable[[RepositoriesT], T], *, timeout_seconds: float) -> T: ...
 
 
-class VenueCatalog:
+class VenueCatalog[RepositoriesT: CatalogRepositories]:
     """The catalogue's whole write interface: publish public truth or retain last-good as stale."""
 
     work_semantics: ClassVar[tuple[TradingWorkSemantics, ...]] = ("latest_state",)
@@ -239,7 +239,7 @@ class VenueCatalog:
     def __init__(
         self,
         *,
-        db: CatalogDatabasePort,
+        db: CatalogDatabasePort[RepositoriesT],
         clock: Callable[[], int],
         stale_after_ms: int,
         telemetry: TradingExternalDataTelemetryPort | None = None,

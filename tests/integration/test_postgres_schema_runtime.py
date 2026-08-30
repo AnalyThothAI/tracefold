@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import pytest
 
-from tests.postgres_test_utils import connect_postgres_test
-from tests.postgres_test_utils import reset_postgres_schema as migrate
-from tests.postgres_test_utils import test_postgres_dsn as _test_postgres_dsn
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+)
+from tests.postgres_test_utils import (
+    reset_postgres_schema as migrate,
+)
+from tests.postgres_test_utils import (
+    test_postgres_dsn as _test_postgres_dsn,
+)
 from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
+from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.postgres.migrations import (
     latest_migration_version,
     upgrade_head,
 )
-from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 
 pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefixtures("postgres_migration_dsn")]
 

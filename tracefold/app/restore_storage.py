@@ -127,16 +127,14 @@ def _smoke(conn: Any) -> dict[str, bool]:
     return {
         "migration_head": summary["migration_head"] == latest_migration_version(),
         "news_current_fact": repos.news.event_card(_CURRENT_EVENT_ID) is not None,
-        "news_evidence_identity": evidence is not None
-        and evidence["evidence_sha256"] == summary["evidence_sha256"],
+        "news_evidence_identity": evidence is not None and evidence["evidence_sha256"] == summary["evidence_sha256"],
         "news_delivery_terminal": delivery is not None and delivery["state"] == "terminal",
         "archive_excluded_from_current": summary["archive_events"] == 1 and summary["archive_in_current"] == 0,
         "trading_case_fact": case is not None
         and case["state"] == "NO_TRADE"
         and case["manifest_sha256"] == summary["case_manifest_sha256"],
         "trading_blacklist_fact": summary["blacklist_rows"] == 1,
-        "trading_risk_policy_fact": policy is not None
-        and policy.risk_policy_sha256 == summary["risk_policy_sha256"],
+        "trading_risk_policy_fact": policy is not None and policy.risk_policy_sha256 == summary["risk_policy_sha256"],
     }
 
 

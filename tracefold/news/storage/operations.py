@@ -122,12 +122,15 @@ class OperationsStorage:
         )
         repository = cast(Any, self)
         evidence = repository.append_evidence_snapshot(event_id=current_event_id, now_ms=11)
-        if repository.begin_delivery(
-            event_id=current_event_id,
-            kind="first",
-            card={"event_id": current_event_id, "evidence_sha256": evidence["evidence_sha256"]},
-            now_ms=12,
-        ) != "new":
+        if (
+            repository.begin_delivery(
+                event_id=current_event_id,
+                kind="first",
+                card={"event_id": current_event_id, "evidence_sha256": evidence["evidence_sha256"]},
+                now_ms=12,
+            )
+            != "new"
+        ):
             raise RuntimeError("postgres_restore_drill_delivery_seed_conflict")
         if not repository.settle_delivery(
             event_id=current_event_id,

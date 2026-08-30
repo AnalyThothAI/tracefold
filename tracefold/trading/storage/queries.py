@@ -49,6 +49,7 @@ _STAGES: Final[tuple[tuple[str, str], ...]] = (
     ("position_opened_to_closed_flat", "i.flat_verified_at_ms - i.opened_at_ms"),
 )
 
+
 class QueryStorage:
     conn: Any
 

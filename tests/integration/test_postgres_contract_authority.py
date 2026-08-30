@@ -73,9 +73,7 @@ def test_news_current_json_validators_match_the_python_contract() -> None:
         editorial | {"editorial_sha256": "0" * 64},
         editorial | {"editorial_origin": "operator"},
     ]
-    editorial_corpus.extend(
-        {key: value for key, value in editorial.items() if key != removed} for removed in editorial
-    )
+    editorial_corpus.extend({key: value for key, value in editorial.items() if key != removed} for removed in editorial)
     editorial_relevance_extra = copy.deepcopy(editorial)
     editorial_relevance_extra["relevance"]["retired"] = True
     editorial_corpus.append(editorial_relevance_extra)

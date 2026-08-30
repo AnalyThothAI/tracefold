@@ -20,6 +20,7 @@ from .sql_values import _dumps
 # 90-day backlog in a handful of turns and is a no-op on every turn after that.
 _PURGE_BATCH = 500
 
+
 # One row per source, whatever configurations have looked at it.
 #
 # The table deliberately keeps a row per `(source_key, gate_version, gate_config_digest)` — that is what

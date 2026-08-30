@@ -811,9 +811,7 @@ class TriageConsumer:
 
             provider_metadata = card.get("provider_metadata")
             source_venue = (
-                str(provider_metadata.get("source") or "") or None
-                if isinstance(provider_metadata, Mapping)
-                else None
+                str(provider_metadata.get("source") or "") or None if isinstance(provider_metadata, Mapping) else None
             )
 
             def _rank_and_insert(repos: Any) -> int:
@@ -876,7 +874,7 @@ class TriageConsumer:
                     self._persist_prepared_settlement,
                     s=settle,
                     prepared=prepared,
-                )
+                ),
             )
         if outcome.final in {"push", "escalate"}:
             await publish_verdict(

@@ -176,9 +176,7 @@ def _prepare_frame(
         contracts = list(source_contracts)
     metadata = dict(event.provider_metadata)
     provider_score_value = metadata.get("score")
-    provider_score = (
-        float(provider_score_value) if isinstance(provider_score_value, (int, float)) else None
-    )
+    provider_score = float(provider_score_value) if isinstance(provider_score_value, (int, float)) else None
     prepared: list[_PreparedAdmission] = []
     for fact in units:
         for source_contract in contracts:
@@ -373,21 +371,24 @@ def admit_item(
     an A/A+ grounded tag, or a different reporting origin); the Event is then upgraded in place and published once.
     """
 
-    prepared = _prepared or _prepare_frame(
-        event=event,
-        ingest_mode=ingest_mode,
-        observed_at_ms=observed_at_ms,
-        watchlist_symbols=watchlist_symbols,
-        text_override=text_override,
-        suppress_low_signal=suppress_low_signal,
-        instrument_classes=instrument_classes,
-        fact_units=None if _fact_unit is None else (_fact_unit,),
-        source_contracts=(
-            (_source_contract,)
-            if _source_contract is not None
-            else (classify_source_contract(event.provider_metadata),)
-        ),
-    ).admissions[0]
+    prepared = (
+        _prepared
+        or _prepare_frame(
+            event=event,
+            ingest_mode=ingest_mode,
+            observed_at_ms=observed_at_ms,
+            watchlist_symbols=watchlist_symbols,
+            text_override=text_override,
+            suppress_low_signal=suppress_low_signal,
+            instrument_classes=instrument_classes,
+            fact_units=None if _fact_unit is None else (_fact_unit,),
+            source_contracts=(
+                (_source_contract,)
+                if _source_contract is not None
+                else (classify_source_contract(event.provider_metadata),)
+            ),
+        ).admissions[0]
+    )
     news = repos.news
     metadata = prepared.metadata
     source_contract = prepared.source_contract
@@ -888,6 +889,7 @@ class DeduperConsumer:
                 now_ms=stamp,
                 focus_fact=prepared.fact if focus_changed else None,
             )
+
             def _append_evidence(repos: Any, snapshot: dict[str, Any] = prepared_snapshot) -> Any:
                 return repos.news.append_prepared_evidence_snapshot(snapshot)
 

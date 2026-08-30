@@ -183,7 +183,9 @@ def test_audited_public_and_high_risk_queries_name_their_columns():
     catalog = query_audit_catalog(now_ms=0)
     public_names = {name for names in catalog.query_routes.values() for name in names}
 
-    assert [query.name for query in catalog.queries if query.name in public_names and select_star.search(query.sql)] == []
+    assert [
+        query.name for query in catalog.queries if query.name in public_names and select_star.search(query.sql)
+    ] == []
 
 
 def test_analyzed_query_audit_rejects_large_seq_scan_temp_spill_and_amplification():
