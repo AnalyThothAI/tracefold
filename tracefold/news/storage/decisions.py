@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 
 # S608 exemptions below interpolate only closed, module-owned history predicates; all values stay bound.
@@ -127,9 +128,29 @@ _READER_HISTORY_PROJECTION = """
 class DecisionStorage:
     conn: Any
 
+    def reader_history_revision(self, *, now_ms: int) -> tuple[int, int, str]:
+        """Return a primitive CAS token for the delivered-card ledger used by Triage."""
+
+        row = self.conn.execute(
+            """
+            SELECT count(*) AS row_count,
+                   COALESCE(max(settled_at_ms), 0) AS newest_at_ms,
+                   COALESCE(max(event_id), '') AS greatest_event_id
+              FROM news_deliveries
+             WHERE kind = 'first' AND state = 'sent'
+               AND delete_state IS DISTINCT FROM 'deleted'
+               AND settled_at_ms >= %s
+            """,
+            (int(now_ms) - TARGETED_HISTORY_WINDOW_MS,),
+        ).fetchone()
+        if row is None:  # pragma: no cover - aggregate queries always return one row
+            return (0, 0, "")
+        return (int(row["row_count"]), int(row["newest_at_ms"]), str(row["greatest_event_id"]))
+
     def reader_history(self, *, event_id: str, now_ms: int, include_targeted: bool = True) -> ReaderHistorySnapshot:
         """Reader receipt truth split into the 4 h policy ledger and bounded 48 h semantic candidates."""
 
+        revision = self.reader_history_revision(now_ms=now_ms)
         recent = self.conn.execute(
             _READER_HISTORY_PROJECTION
             + """
@@ -140,7 +161,7 @@ class DecisionStorage:
             (event_id, int(now_ms) - RECENT_HISTORY_WINDOW_MS, RECENT_HISTORY_MAX),
         ).fetchall()
         if not include_targeted:
-            return assemble_reader_history(recent_rows=recent, now_ms=now_ms)
+            return replace(assemble_reader_history(recent_rows=recent, now_ms=now_ms), ledger_revision=revision)
 
         exact = self.conn.execute(
             "WITH current_event AS ("  # noqa: S608
@@ -212,7 +233,10 @@ class DecisionStorage:
                 TARGETED_ASSET_MAX,
             ),
         ).fetchall()
-        return assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms)
+        return replace(
+            assemble_reader_history(recent_rows=recent, exact_rows=exact, asset_rows=asset, now_ms=now_ms),
+            ledger_revision=revision,
+        )
 
     def lock_storyline(self, storyline_key: str) -> None:
         """Transaction-scoped advisory lock on one storyline key so "read reader evidence -> decide -> insert verdict"

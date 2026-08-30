@@ -182,6 +182,17 @@ class CapabilityStorage:
         )
 
     def blacklist_snapshot(self, *, now_ms: int, materialize_expiry: bool) -> BlacklistSnapshotV1:
+        revision, rows = self.blacklist_snapshot_rows(now_ms=now_ms, materialize_expiry=materialize_expiry)
+        return Blacklist.from_rows(rows).snapshot(revision=revision, now_ms=now_ms)
+
+    def blacklist_snapshot_rows(
+        self,
+        *,
+        now_ms: int,
+        materialize_expiry: bool,
+    ) -> tuple[int, tuple[dict[str, Any], ...]]:
+        """Take the locked SQL snapshot without materializing its Pydantic value."""
+
         runtime = self.conn.execute(
             "SELECT blacklist_revision FROM trading_runtime_state WHERE id = 1 FOR UPDATE"
         ).fetchone()
@@ -215,7 +226,7 @@ class CapabilityStorage:
              ORDER BY base_symbol
             """
         ).fetchall()
-        return Blacklist.from_rows(rows).snapshot(revision=revision, now_ms=now_ms)
+        return revision, tuple(dict(row) for row in rows)
 
 
 __all__ = ["CapabilityStorage"]

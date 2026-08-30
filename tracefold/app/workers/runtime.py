@@ -147,6 +147,7 @@ def workers_runtime_read_query() -> ReadQuerySpec:
               FROM workers_runtime
              WHERE singleton_key
         """,
+        max_read_return_amplification=4.0,
     )
 
 

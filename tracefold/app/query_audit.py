@@ -159,16 +159,19 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="trading_status_counts",
             sql=TRADING_STATUS_COUNTS_SQL,
             params=(since_ms,),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="trading_console_intents",
             sql=console_intents_sql(),
             params=(list(DEFAULT_CONSOLE_INTENT_STATES), since_ms, 101),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="trading_gate_decision_for_source_key",
             sql=GATE_DECISION_FOR_SOURCE_KEY_SQL,
             params=("oi:not-a-real-event:oi_signal_v1",),
+            max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(
             # #269. One admission answer per source in the window, newest frame first. `DISTINCT ON`
@@ -183,6 +186,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="trading_gate_decisions_since",
             sql=gate_decisions_since_sql(),
             params=("oi", since_ms, 401),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             # The Case aggregate on its own axis. The Intent link is one nullable id, never a joined
@@ -191,25 +195,30 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             name="trading_console_cases",
             sql=console_cases_sql(),
             params=(since_ms, 101),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="trading_capability_bindings",
             sql=BINDING_RUNTIME_ROWS_SQL,
             params={"now": int(now_ms)},
+            max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(
             name="trading_capability_snapshot",
             sql=EXECUTION_CAPABILITY_SNAPSHOT_SQL,
             params=("0" * 64,),
+            max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(
             name="trading_authority_projection",
             sql=AUTHORITY_PROJECTION_SQL,
+            max_read_return_amplification=8.0,
         ),
         ReadQuerySpec(
             name="trading_console_capital_evidence",
             sql=console_capital_evidence_sql(),
             params=(101,),
+            max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
             name="trading_capital_authority_snapshot",
@@ -220,6 +229,7 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
                 "since_ms": since_ms,
                 "now_ms": int(now_ms),
             },
+            max_read_return_amplification=20.0,
         ),
     )
 

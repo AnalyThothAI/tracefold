@@ -9,7 +9,7 @@ import pytest
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import scored_judgment
 from tracefold.app.repository_session import repositories_for_connection
-from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.artifact_identity import canonical_json, canonical_sha
 from tracefold.news.liquidations import PROGRAM_VERSION as LIQUIDATION_PROGRAM_VERSION
 from tracefold.news.liquidations import TRIAGE_POLICY_VERSION as LIQUIDATION_TRIAGE_POLICY_VERSION
 from tracefold.news.liquidations import judge as judge_liquidation
@@ -52,8 +52,8 @@ def _item(news: Any, item_id: str, *, source_artifact_id: str = "artifact:shared
         reporting_origin="OpenNews",
         published_at_ms=NOW,
         observed_at_ms=NOW,
-        provider_metadata={"strategies": [{"id": item_id, "name": item_id}]},
-        strategy_ids=(item_id,),
+        provider_metadata_json=canonical_json({"strategies": [{"id": item_id, "name": item_id}]}),
+        strategy_ids_json=canonical_json([item_id]),
         ingest_mode="live",
         trace_id="trace",
         now_ms=NOW,
@@ -91,7 +91,9 @@ def _event(
         engine_type="news",
         asset_class="none",
         grounded_assets=(),
+        grounded_assets_json="[]",
         watchlist_hits=(),
+        watchlist_hits_json="[]",
         macro_lexicon=False,
         storyline_key=f"story:{event_id}",
         context_line="",
@@ -392,8 +394,8 @@ def test_item_redelivery_unions_full_strategy_tuples_and_preserves_first_metadat
                 reporting_origin="OpenNews",
                 published_at_ms=NOW,
                 observed_at_ms=NOW,
-                provider_metadata=metadata,
-                strategy_ids=(strategy_id,),
+                provider_metadata_json=canonical_json(metadata),
+                strategy_ids_json=canonical_json([strategy_id]),
                 ingest_mode="live",
                 trace_id="trace",
                 now_ms=NOW,
@@ -504,17 +506,19 @@ def test_feed_detail_filters_counts_and_status_project_the_closed_event_kinds(co
                 reporting_origin="OpenNews",
                 published_at_ms=NOW,
                 observed_at_ms=NOW,
-                provider_metadata={
-                    "strategies": [
-                        {
-                            "id": "1019",
-                            "name": "OI Event Monitor",
-                            "source_type": "market",
-                            "engine_type": "market",
-                        }
-                    ]
-                },
-                strategy_ids=("1019",),
+                provider_metadata_json=canonical_json(
+                    {
+                        "strategies": [
+                            {
+                                "id": "1019",
+                                "name": "OI Event Monitor",
+                                "source_type": "market",
+                                "engine_type": "market",
+                            }
+                        ]
+                    }
+                ),
+                strategy_ids_json=canonical_json(["1019"]),
                 ingest_mode="live",
                 trace_id="trace",
                 now_ms=NOW,

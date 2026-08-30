@@ -24,14 +24,14 @@ class ReadQuerySpec:
     sql: str
     params: Any = ()
     amplification_basis: AmplificationBasis = "returned_rows"
-    max_read_return_amplification: float = 20.0
+    max_read_return_amplification: float | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
             raise ValueError("query audit name must not be empty")
         if not self.sql.strip():
             raise ValueError(f"query audit SQL must not be empty: {self.name}")
-        if self.max_read_return_amplification <= 0:
+        if self.max_read_return_amplification is not None and self.max_read_return_amplification <= 0:
             raise ValueError(f"query audit amplification budget must be positive: {self.name}")
 
 
@@ -48,6 +48,9 @@ class QueryAuditCatalog:
         names = [query.name for query in self.queries]
         if len(names) != len(set(names)):
             raise ValueError("query audit names must be unique")
+        missing_budgets = [query.name for query in self.queries if query.max_read_return_amplification is None]
+        if missing_budgets:
+            raise ValueError(f"query audit amplification budget missing: {', '.join(missing_budgets)}")
 
 
 NEWS_TABLES = (
@@ -125,7 +128,12 @@ def postgres_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
     del now_ms
     return tuple(
-        ReadQuerySpec(name=str(template["name"]), sql=str(template["sql"]), params=template["params"])
+        ReadQuerySpec(
+            name=str(template["name"]),
+            sql=str(template["sql"]),
+            params=template["params"],
+            max_read_return_amplification=4.0,
+        )
         for template in _POSTGRES_QUERY_TEMPLATES
     )
 
@@ -302,6 +310,9 @@ class PostgresQueryAudit:
     def _explain(self, query: ReadQuerySpec, *, analyze: bool) -> dict[str, Any]:
         prefix = "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)" if analyze else "EXPLAIN (FORMAT JSON)"
         try:
+            budget = query.max_read_return_amplification
+            if budget is None:  # pragma: no cover - QueryAuditCatalog rejects this at composition
+                raise RuntimeError("query_audit_amplification_budget_missing")
             rows = self.conn.execute(f"{prefix} {query.sql}", query.params).fetchall()
             plan = _json_plan(rows)
             metrics = (
@@ -315,7 +326,7 @@ class PostgresQueryAudit:
             violations = (
                 _plan_violations(
                     metrics,
-                    max_read_return_amplification=query.max_read_return_amplification,
+                    max_read_return_amplification=budget,
                 )
                 if metrics is not None
                 else []
@@ -326,7 +337,7 @@ class PostgresQueryAudit:
                 "plan": plan,
                 "metrics": metrics,
                 "budget": {
-                    "max_read_return_amplification": query.max_read_return_amplification,
+                    "max_read_return_amplification": budget,
                 },
                 "violations": violations,
             }

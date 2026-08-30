@@ -56,6 +56,7 @@ from tracefold.trading.quote_authority import (
     ExecutionQuoteSnapshotV1,
     QuoteStage,
 )
+from tracefold.trading.storage.intents import materialize_entry_fence
 
 pytestmark = pytest.mark.integration
 
@@ -236,14 +237,25 @@ def _fence(
     engine_identity: str,
     now_ms: int,
 ) -> Any:
-    return repos.trading.fence_entry(
+    with repos.transaction():
+        blacklist_state = repos.trading.blacklist_snapshot_rows(now_ms=now_ms, materialize_expiry=True)
+    prepared = repos.trading.prepare_entry_fence(
         intent.intent_id,
-        engine_identity=engine_identity,
         submission_quantity=Decimal("0.0001"),
         q1_evidence=_accepted_q1(intent, evaluated_at_ms=now_ms),
+        blacklist_state=blacklist_state,
         requested_at_ms=now_ms,
         now_ms=now_ms,
     )
+    with repos.transaction():
+        written = repos.trading.fence_entry(
+            prepared,
+            engine_identity=engine_identity,
+            submission_quantity=Decimal("0.0001"),
+            requested_at_ms=now_ms,
+            now_ms=now_ms,
+        )
+    return materialize_entry_fence(written)
 
 
 def _reset_authority(connection: Any) -> None:

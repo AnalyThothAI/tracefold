@@ -1134,6 +1134,11 @@ class TriageConsumer:
         """Re-check the locked snapshot and persist only already-materialized values."""
 
         repos.news.lock_storyline(s.final_key)
+        locked_revision = repos.news.reader_history_revision(now_ms=s.stamp)
+        if locked_revision != s.history.ledger_revision:
+            if s.allow_stale:
+                return _TriageOutcome(stale=True, final="drop", decision=None, stale_reason="told")
+            raise TransientError("news_reader_history_changed")
         latest_evidence = repos.news.latest_evidence_identity(s.event_id)
         if latest_evidence is None:
             raise PermanentError("news_event_evidence_missing")

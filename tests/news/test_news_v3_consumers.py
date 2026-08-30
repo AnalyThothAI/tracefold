@@ -152,6 +152,10 @@ class RecordingNews:
             self.calls.append((name, {**{f"arg{i}": a for i, a in enumerate(args)}, **kwargs}))
             if name == "reader_history" and name not in self.responses:
                 return ReaderHistorySnapshot()  # nothing pushed yet
+            if name == "reader_history_revision" and name not in self.responses:
+                history = self.responses.get("reader_history", ReaderHistorySnapshot())
+                value = history(**kwargs) if callable(history) else history
+                return value.ledger_revision
             if name == "latest_evidence_snapshot" and name not in self.responses:
                 card = self.responses.get("event_card") or {}
                 return {
@@ -3780,6 +3784,43 @@ def test_triage_reasks_once_when_a_card_landed_while_the_model_was_thinking() ->
     # The re-ask reloads everything the model and decide() look at: card, sent ledger, and control state.
     assert news.names().count("event_card") == 2
     assert bus.published == []
+
+
+def test_triage_rechecks_reader_history_after_taking_the_storyline_lock() -> None:
+    """A same-key delivery between the preflight refresh and lock cannot let both Events push."""
+
+    fresh_push = _ledger_row("ev-between-refresh-and-lock", NOW_MS - 1_000)
+    ledger_calls = {"n": 0}
+
+    def reader_history(*, now_ms: int, **_: Any) -> ReaderHistorySnapshot:
+        ledger_calls["n"] += 1
+        if ledger_calls["n"] <= 2:  # initial load and transaction-free refresh
+            return ReaderHistorySnapshot()
+        return _recent_history(fresh_push, now_ms=now_ms)
+
+    news = RecordingNews(
+        get_verdict=None,
+        event_card=_card(),
+        insert_verdict=True,
+        reader_history=reader_history,
+    )
+    model = _ScriptedSemanticJudge(
+        [
+            _model_verdict(novelty="new_fact"),
+            _model_verdict(novelty="restatement", restates=0),
+        ]
+    )
+    triage = _triage_with_judge(news, FakeBus(), model)
+
+    asyncio.run(triage.handle(_message("event", {"event_id": "ev-strong"})))
+
+    assert len(model.inputs) == 2
+    assert model.inputs[0].told.entries == ()
+    assert model.inputs[1].told.entries[0].event_id == "ev-between-refresh-and-lock"
+    inserted = [kwargs for name, kwargs in news.calls if name == "insert_verdict"]
+    assert len(inserted) == 1
+    assert inserted[0]["final_decision"] == "drop"
+    assert news.names().count("lock_storyline") == 2
 
 
 def test_triage_rebuilds_gate_facts_when_evidence_changes_before_the_reask() -> None:

@@ -49,6 +49,7 @@ from tracefold.integrations.nautilus.messages import (
 from tracefold.platform.config.models import Settings
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import ExecutionBindingV1, NautilusRuntimeStartV1, VenueBinding
+from tracefold.trading.storage.intents import materialize_entry_fence
 
 _RepositoryFactory = Callable[..., AbstractContextManager[Any]]
 NAUTILUS_POLL_SECONDS = 1.0
@@ -283,15 +284,26 @@ class NautilusDatabaseBridge:
             return True
 
         if isinstance(event, EntryFenceRequested):
+            now_ms = self._now_ms()
             with repos.transaction():
-                fence = repos.trading.fence_entry(
-                    event.intent_id,
+                blacklist_state = repos.trading.blacklist_snapshot_rows(now_ms=now_ms, materialize_expiry=True)
+            prepared = repos.trading.prepare_entry_fence(
+                event.intent_id,
+                submission_quantity=event.quantity,
+                q1_evidence=event.q1_evidence,
+                blacklist_state=blacklist_state,
+                requested_at_ms=event.requested_at_ms,
+                now_ms=now_ms,
+            )
+            with repos.transaction():
+                written = repos.trading.fence_entry(
+                    prepared,
                     engine_identity=event.engine_identity,
                     submission_quantity=event.quantity,
-                    q1_evidence=event.q1_evidence,
                     requested_at_ms=event.requested_at_ms,
-                    now_ms=self._now_ms(),
+                    now_ms=now_ms,
                 )
+            fence = materialize_entry_fence(written)
             # Three dispositions, three different facts (#331). `GRANTED` is the only one that may
             # precede a provider entry, and it is committed before this line runs. `REFUSED` wrote a
             # terminal rejection at zero exposure; `UNAVAILABLE` wrote nothing at all and names why —

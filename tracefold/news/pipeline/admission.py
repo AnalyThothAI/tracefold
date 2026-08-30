@@ -11,6 +11,7 @@ from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal, cast
 
 from .. import liquidations, oi_signals
+from ..artifact_identity import canonical_json
 from ..bus import (
     Q_RAW,
     RK_EVENT,
@@ -97,11 +98,11 @@ class AdmitBatchResult:
 
 @dataclass(frozen=True, slots=True)
 class _PreparedAdmission:
-    metadata: Mapping[str, Any]
+    provider_metadata_json: str
     source_contract: SourceContract
     source_contract_reason: SourceContractReason | None
     engine_type: str
-    strategy_ids: tuple[str, ...]
+    strategy_ids_json: str
     raw_text: str
     parent: ExtractedTitle
     item_id: str
@@ -113,6 +114,8 @@ class _PreparedAdmission:
     published_at_ms: int
     provider_score: float | None
     gate: GateVerdict
+    grounded_assets_json: str
+    watchlist_hits_json: str
     tokens: frozenset[str]
     window_ms: int
     shareable: bool
@@ -175,6 +178,13 @@ def _prepare_frame(
     else:
         contracts = list(source_contracts)
     metadata = dict(event.provider_metadata)
+    strategy_ids = tuple(
+        str(strategy.get("id"))
+        for strategy in (metadata.get("strategies") or [])
+        if isinstance(strategy, Mapping) and strategy.get("id")
+    )
+    provider_metadata_json = canonical_json(metadata)
+    strategy_ids_json = canonical_json(sorted(set(strategy_ids)))
     provider_score_value = metadata.get("score")
     provider_score = float(provider_score_value) if isinstance(provider_score_value, (int, float)) else None
     prepared: list[_PreparedAdmission] = []
@@ -238,15 +248,11 @@ def _prepare_frame(
             )
             prepared.append(
                 _PreparedAdmission(
-                    metadata=metadata,
+                    provider_metadata_json=provider_metadata_json,
                     source_contract=source_contract,
                     source_contract_reason=source_contract_reason,
                     engine_type=engine_type,
-                    strategy_ids=tuple(
-                        str(s.get("id"))
-                        for s in (metadata.get("strategies") or [])
-                        if isinstance(s, Mapping) and s.get("id")
-                    ),
+                    strategy_ids_json=strategy_ids_json,
                     raw_text=raw_text,
                     parent=parent,
                     item_id=item_id,
@@ -258,6 +264,8 @@ def _prepare_frame(
                     published_at_ms=published_at_ms,
                     provider_score=provider_score,
                     gate=gate,
+                    grounded_assets_json=canonical_json(list(gate.grounded_assets)),
+                    watchlist_hits_json=canonical_json(list(gate.watchlist_hits)),
                     tokens=tokens,
                     window_ms=dedupe_window_ms(family_name),
                     shareable=shareable,
@@ -390,11 +398,9 @@ def admit_item(
         ).admissions[0]
     )
     news = repos.news
-    metadata = prepared.metadata
     source_contract = prepared.source_contract
     source_contract_reason = prepared.source_contract_reason
     engine_type = prepared.engine_type
-    strategy_ids = prepared.strategy_ids
     raw_text = prepared.raw_text
     parent_extracted = prepared.parent
     item_id = prepared.item_id
@@ -425,8 +431,8 @@ def admit_item(
         reporting_origin=event.entry.reporting_origin or "opennews",
         published_at_ms=published_at_ms,
         observed_at_ms=int(observed_at_ms),
-        provider_metadata=metadata,
-        strategy_ids=strategy_ids,
+        provider_metadata_json=prepared.provider_metadata_json,
+        strategy_ids_json=prepared.strategy_ids_json,
         ingest_mode=ingest_mode,
         trace_id=trace_id,
         now_ms=now_ms,
@@ -534,6 +540,8 @@ def admit_item(
             fingerprint=fingerprint,
             title=title,
             reporting_origin=event.entry.reporting_origin or "opennews",
+            grounded_assets_json=prepared.grounded_assets_json,
+            watchlist_hits_json=prepared.watchlist_hits_json,
             now_ms=now_ms,
         )
         if append_evidence:
@@ -597,6 +605,8 @@ def admit_item(
                 fingerprint=fingerprint,
                 title=title,
                 reporting_origin=event.entry.reporting_origin or "opennews",
+                grounded_assets_json=prepared.grounded_assets_json,
+                watchlist_hits_json=prepared.watchlist_hits_json,
                 now_ms=now_ms,
             )
             if append_evidence:
@@ -629,7 +639,9 @@ def admit_item(
         engine_type=engine_type,
         asset_class=gate.asset_class,
         grounded_assets=gate.grounded_assets,
+        grounded_assets_json=prepared.grounded_assets_json,
         watchlist_hits=gate.watchlist_hits,
+        watchlist_hits_json=prepared.watchlist_hits_json,
         macro_lexicon=gate.macro_lexicon,
         storyline_key=storyline,
         context_line=context_line,
@@ -670,6 +682,8 @@ def _member_result(
     fingerprint: str,
     title: str,
     reporting_origin: str,
+    grounded_assets_json: str,
+    watchlist_hits_json: str,
     now_ms: int,
 ) -> AdmitResult:
     """Attach a member and, when the member is stronger evidence than the leader, re-gate a suppressed Event."""
@@ -698,7 +712,9 @@ def _member_result(
             queue_priority=gate.queue_priority,
             asset_class=gate.asset_class,
             grounded_assets=gate.grounded_assets,
+            grounded_assets_json=grounded_assets_json,
             watchlist_hits=gate.watchlist_hits,
+            watchlist_hits_json=watchlist_hits_json,
             macro_lexicon=gate.macro_lexicon,
             now_ms=now_ms,
         )

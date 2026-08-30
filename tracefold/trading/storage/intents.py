@@ -7,9 +7,14 @@ from decimal import Decimal
 from typing import Any, Literal, cast
 
 # S608 exemptions below interpolate only the immutable/outcome column constants; all business values stay bound.
+from ..blacklist import Blacklist
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
+    DailyRiskPolicyV1,
+    OperatorArmReceiptV1,
+    ProductionPromotionGrantV1,
+    SettlementRiskLimitV1,
     planned_risk_components,
     risk_day_bounds,
 )
@@ -81,6 +86,41 @@ class _RiskFencePlan:
 
 
 @dataclass(frozen=True, slots=True)
+class _PreparedRiskAuthority:
+    receipt: CapitalAuthorizationReceiptV1
+    reservation: CapitalRiskReservationV1
+    grant: ProductionPromotionGrantV1 | None
+    policy: DailyRiskPolicyV1 | None
+    arm: OperatorArmReceiptV1 | None
+    limit: SettlementRiskLimitV1 | None
+    static_valid: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedEntryFence:
+    """Materialized fence inputs; construct outside the atomic SQL section."""
+
+    intent_id: str
+    claimable: bool
+    q1_side_price: Decimal | None
+    q1_payload_json: str | None
+    blacklist_revision: int
+    blacklist_sha256: str
+    blacklist_payload_json: str
+    blacklisted: bool
+    authority: _PreparedRiskAuthority | None
+
+
+@dataclass(frozen=True, slots=True)
+class EntryFenceWrite:
+    """Primitive transaction result; Pydantic materialization happens after commit."""
+
+    disposition: EntryFenceDisposition
+    reason: EntryFenceReason
+    outcome_values: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class EntryFence:
     """The one typed answer to "may this Intent send an economic entry now?" (#331).
 
@@ -108,6 +148,13 @@ class EntryFence:
     @property
     def granted(self) -> bool:
         return self.disposition == "GRANTED"
+
+
+def materialize_entry_fence(value: EntryFenceWrite) -> EntryFence:
+    """Build the domain result only after the caller's transaction has committed."""
+
+    outcome = None if value.outcome_values is None else IntentOutcome.model_validate(value.outcome_values)
+    return EntryFence(disposition=value.disposition, reason=value.reason, outcome=outcome)
 
 
 def _require_quote_audit(
@@ -298,12 +345,158 @@ class IntentStorage:
         )
         return outcome
 
+    def _prepare_capital_risk_authority(
+        self,
+        *,
+        intent_id: str,
+        now_ms: int,
+    ) -> _PreparedRiskAuthority:
+        """Materialize immutable authority payloads before the fence transaction begins."""
+
+        row = self.conn.execute(
+            """
+            SELECT intent.capital_authorization_receipt_sha256, intent.capability_entry_id,
+                   receipt.authorization_receipt_sha256, receipt.payload AS receipt_payload,
+                   reservation.reservation_sha256, reservation.payload AS reservation_payload
+              FROM trading_intents intent
+              JOIN trading_capital_authorization_receipts receipt
+                ON receipt.authorization_receipt_sha256 = intent.capital_authorization_receipt_sha256
+              JOIN trading_capital_risk_reservations reservation
+                ON reservation.reservation_sha256 = receipt.reservation_sha256
+             WHERE intent.intent_id = %s AND intent.execution_state = 'PENDING'
+            """,
+            (intent_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("capital_risk_authorization_chain_missing")
+        receipt = CapitalAuthorizationReceiptV1.model_validate(row["receipt_payload"])
+        reservation = CapitalRiskReservationV1.model_validate(row["reservation_payload"])
+        if (
+            receipt.authorization_receipt_sha256 != row["authorization_receipt_sha256"]
+            or receipt.authorization_receipt_sha256 != row["capital_authorization_receipt_sha256"]
+            or reservation.reservation_sha256 != row["reservation_sha256"]
+            or receipt.reservation_sha256 != reservation.reservation_sha256
+            or receipt.binding != reservation.binding
+            or receipt.risk_policy_sha256 != reservation.risk_policy_sha256
+            or receipt.grant_sha256 != reservation.grant_sha256
+            or receipt.arm_receipt_sha256 != reservation.arm_receipt_sha256
+        ):
+            raise RuntimeError("capital_risk_authorization_chain_invalid")
+
+        grant = cast(Any, self).production_promotion_grant(receipt.grant_sha256)
+        policy = cast(Any, self).daily_risk_policy(receipt.risk_policy_sha256)
+        arm = cast(Any, self).operator_arm_receipt(receipt.arm_receipt_sha256)
+        limit = None if policy is None else policy.limit_for(reservation.settlement_asset)
+        static_valid = bool(
+            grant is not None
+            and policy is not None
+            and arm is not None
+            and limit is not None
+            and policy.effective_from_ms <= now_ms < policy.expires_at_ms
+            and grant.risk_policy_sha256 == policy.risk_policy_sha256
+            and grant.cost_model_sha256 == policy.cost_model_sha256
+            and grant.approved_release == receipt.approved_release
+            and policy.approved_release == receipt.approved_release
+            and arm.armed_at_ms <= now_ms < arm.expires_at_ms
+            and arm.grant_sha256 == grant.grant_sha256
+            and arm.risk_policy_sha256 == policy.risk_policy_sha256
+            and row["capability_entry_id"] in grant.allowed_capability_entry_ids
+        )
+        return _PreparedRiskAuthority(
+            receipt=receipt,
+            reservation=reservation,
+            grant=grant,
+            policy=policy,
+            arm=arm,
+            limit=limit,
+            static_valid=static_valid,
+        )
+
+    def prepare_entry_fence(
+        self,
+        intent_id: str,
+        *,
+        submission_quantity: Decimal,
+        q1_evidence: ExecutionQuoteSnapshotV1,
+        blacklist_state: tuple[int, tuple[dict[str, Any], ...]],
+        requested_at_ms: int,
+        now_ms: int,
+    ) -> PreparedEntryFence:
+        """Read and materialize the growing fence payloads outside an explicit transaction."""
+
+        if submission_quantity <= 0:
+            raise ValueError("submission_fence_quantity_invalid")
+        if requested_at_ms > now_ms:
+            raise ValueError("submission_fence_clock_invalid")
+        blacklist_revision, blacklist_rows = blacklist_state
+        blacklist = Blacklist.from_rows(blacklist_rows).snapshot(revision=blacklist_revision, now_ms=now_ms)
+        blacklist_payload_json = _dumps(blacklist.model_dump(mode="json"))
+        permission = self.conn.execute(
+            """
+            SELECT intent.underlying_key, intent.instrument_id, intent.side,
+                   intent.execution_capability_snapshot_sha256,
+                   binding.capability_snapshot_sha256 AS active_capability_snapshot_sha256,
+                   (snapshot.payload -> 'included' ? intent.capability_entry_id) AS instrument_in_snapshot
+              FROM trading_intents intent
+              JOIN trading_binding_runtime binding ON binding.binding = intent.binding
+              LEFT JOIN trading_execution_capability_snapshots snapshot
+                ON snapshot.snapshot_sha256 = intent.execution_capability_snapshot_sha256
+             WHERE intent.intent_id = %s
+               AND intent.intent_version = 'trade_intent_v3'
+               AND intent.execution_state = 'PENDING'
+               AND intent.entry_fenced_at_ms IS NULL
+            """,
+            (intent_id,),
+        ).fetchone()
+        if permission is None:
+            return PreparedEntryFence(
+                intent_id=intent_id,
+                claimable=False,
+                q1_side_price=None,
+                q1_payload_json=None,
+                blacklist_revision=int(blacklist.revision),
+                blacklist_sha256=str(blacklist.snapshot_sha256),
+                blacklist_payload_json=blacklist_payload_json,
+                blacklisted=False,
+                authority=None,
+            )
+        q1_payload_json = _dumps(
+            _require_quote_audit(
+                q1_evidence,
+                intent_id=intent_id,
+                instrument_id=str(permission["instrument_id"]),
+                intent_side=str(permission["side"]),
+                stage="Q1",
+                accepted=True,
+            )
+        )
+        capability_mismatch = bool(
+            permission["execution_capability_snapshot_sha256"] != permission["active_capability_snapshot_sha256"]
+            or not permission["instrument_in_snapshot"]
+        )
+        blacklisted = any(row.underlying_key == permission["underlying_key"] for row in blacklist.active_rows)
+        authority = None
+        if not capability_mismatch and not blacklisted:
+            authority = self._prepare_capital_risk_authority(intent_id=intent_id, now_ms=now_ms)
+        return PreparedEntryFence(
+            intent_id=intent_id,
+            claimable=True,
+            q1_side_price=q1_evidence.side_price,
+            q1_payload_json=q1_payload_json,
+            blacklist_revision=int(blacklist.revision),
+            blacklist_sha256=str(blacklist.snapshot_sha256),
+            blacklist_payload_json=blacklist_payload_json,
+            blacklisted=blacklisted,
+            authority=authority,
+        )
+
     def _capital_risk_fence_plan(
         self,
         *,
         intent_id: str,
         submission_quantity: Decimal,
         q1_side_price: Decimal,
+        authority: _PreparedRiskAuthority,
         now_ms: int,
     ) -> tuple[_RiskFencePlan | None, Literal["risk_denied"] | None]:
         """Revalidate the opaque authorization under the global lock and return a shrink-only plan."""
@@ -313,15 +506,25 @@ class IntentStorage:
         ).fetchone()
         if runtime is None:
             raise RuntimeError("trading_runtime_state_missing")
-        bindings = self.conn.execute("SELECT * FROM trading_binding_runtime ORDER BY binding FOR UPDATE").fetchall()
+        receipt = authority.receipt
+        reservation = authority.reservation
+        grant = authority.grant
+        policy = authority.policy
+        arm = authority.arm
+        limit = authority.limit
+        self.conn.execute("SELECT binding FROM trading_binding_runtime ORDER BY binding FOR UPDATE").fetchall()
+        selected = self.conn.execute(
+            "SELECT * FROM trading_binding_runtime WHERE binding = %s",
+            (reservation.binding,),
+        ).fetchone()
         row = self.conn.execute(
             """
             SELECT intent.binding, intent.account_generation, intent.execution_binding_sha256,
                    intent.execution_capability_snapshot_sha256, intent.capability_entry_id,
                    intent.stop_loss_bps,
                    intent.settlement_asset, intent.capital_authorization_receipt_sha256,
-                   receipt.authorization_receipt_sha256, receipt.payload AS receipt_payload,
-                   reservation.reservation_sha256, reservation.payload AS reservation_payload,
+                   receipt.authorization_receipt_sha256,
+                   reservation.reservation_sha256,
                    risk_state.status AS risk_status,
                    risk_state.current_planned_risk_amount,
                    risk_state.attempt_consumed
@@ -339,8 +542,6 @@ class IntentStorage:
         ).fetchone()
         if row is None:
             raise RuntimeError("capital_risk_authorization_chain_missing")
-        receipt = CapitalAuthorizationReceiptV1.model_validate(row["receipt_payload"])
-        reservation = CapitalRiskReservationV1.model_validate(row["reservation_payload"])
         if (
             receipt.authorization_receipt_sha256 != row["authorization_receipt_sha256"]
             or receipt.authorization_receipt_sha256 != row["capital_authorization_receipt_sha256"]
@@ -355,7 +556,6 @@ class IntentStorage:
         ):
             raise RuntimeError("capital_risk_authorization_chain_invalid")
 
-        selected = next((item for item in bindings if item["binding"] == reservation.binding), None)
         if (
             runtime["control"] != "RUNNING"
             or selected is None
@@ -364,7 +564,10 @@ class IntentStorage:
             or selected["capability_state"] != "ready"
         ):
             return None, None
-        if any(item["account_state"] == "exposure_present" for item in bindings):
+        exposure = self.conn.execute(
+            "SELECT 1 FROM trading_binding_runtime WHERE account_state = 'exposure_present' LIMIT 1"
+        ).fetchone()
+        if exposure is not None:
             return None, "risk_denied"
         if (
             int(selected["account_generation"]) != receipt.account_generation
@@ -377,37 +580,36 @@ class IntentStorage:
         ):
             return None, "risk_denied"
 
-        grant = cast(Any, self).production_promotion_grant(receipt.grant_sha256)
-        policy = cast(Any, self).daily_risk_policy(receipt.risk_policy_sha256)
-        arm = cast(Any, self).operator_arm_receipt(receipt.arm_receipt_sha256)
-        active_grants = cast(Any, self).active_promotion_grants(binding=reservation.binding, now_ms=now_ms)
+        active_grant = self.conn.execute(
+            """
+            SELECT 1
+              FROM trading_production_promotion_grants promotion
+              LEFT JOIN trading_promotion_grant_revocations revoked
+                ON revoked.grant_sha256 = promotion.grant_sha256
+             WHERE promotion.grant_sha256 = %s
+               AND promotion.binding = %s
+               AND promotion.issued_at_ms <= %s
+               AND promotion.review_at_ms > %s
+               AND promotion.expires_at_ms > %s
+               AND (revoked.grant_sha256 IS NULL OR revoked.revoked_at_ms > %s)
+            """,
+            (receipt.grant_sha256, reservation.binding, now_ms, now_ms, now_ms, now_ms),
+        ).fetchone()
         if (
-            grant is None
+            not authority.static_valid
+            or grant is None
             or policy is None
             or arm is None
-            or grant.grant_sha256 not in {item.grant_sha256 for item in active_grants}
-            or policy.effective_from_ms > now_ms
-            or policy.expires_at_ms <= now_ms
-            or grant.risk_policy_sha256 != policy.risk_policy_sha256
-            or grant.cost_model_sha256 != policy.cost_model_sha256
-            or grant.approved_release != receipt.approved_release
-            or policy.approved_release != receipt.approved_release
+            or limit is None
+            or active_grant is None
             or arm.arm_epoch != int(runtime["arm_epoch"])
-            or arm.expires_at_ms <= now_ms
-            or arm.armed_at_ms > now_ms
-            or arm.grant_sha256 != grant.grant_sha256
-            or arm.risk_policy_sha256 != policy.risk_policy_sha256
             or arm.account_generation != int(selected["account_generation"])
             or arm.credential_fingerprint != selected["credential_fingerprint"]
             or arm.catalog_snapshot_sha256 != selected["catalog_snapshot_sha256"]
             or arm.capability_snapshot_sha256 != selected["capability_snapshot_sha256"]
             or arm.execution_binding_sha256 != selected["execution_binding_sha256"]
             or selected["active_arm_receipt_sha256"] != arm.arm_receipt_sha256
-            or row["capability_entry_id"] not in grant.allowed_capability_entry_ids
         ):
-            return None, "risk_denied"
-        limit = policy.limit_for(reservation.settlement_asset)
-        if limit is None:
             return None, "risk_denied"
 
         unsafe_state = self.conn.execute(
@@ -482,14 +684,13 @@ class IntentStorage:
 
     def fence_entry(
         self,
-        intent_id: str,
+        prepared: PreparedEntryFence,
         *,
         engine_identity: str,
         submission_quantity: Decimal,
-        q1_evidence: ExecutionQuoteSnapshotV1,
         requested_at_ms: int,
         now_ms: int,
-    ) -> EntryFence:
+    ) -> EntryFenceWrite:
         """Take the durable entry fence, or say in one closed word why it was not taken.
 
         The order is: prove the two capital-authority facts that must terminate the Intent at zero
@@ -499,19 +700,17 @@ class IntentStorage:
         nullable outcome the caller has to guess at.
         """
 
-        if submission_quantity <= 0:
-            raise ValueError("submission_fence_quantity_invalid")
-        if requested_at_ms > now_ms:
-            raise ValueError("submission_fence_clock_invalid")
-
-        blacklist = cast(Any, self).blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
-        observation = blacklist.model_dump(mode="json")
+        intent_id = prepared.intent_id
+        if not prepared.claimable:
+            return EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable")
+        runtime = self.conn.execute(
+            "SELECT blacklist_revision FROM trading_runtime_state WHERE id = 1 FOR UPDATE"
+        ).fetchone()
+        if runtime is None:
+            raise RuntimeError("trading_runtime_state_missing")
         permission = self.conn.execute(
             """
-            SELECT intent.underlying_key,
-                   intent.instrument_id,
-                   intent.side,
-                   intent.valid_until_ms,
+            SELECT intent.valid_until_ms,
                    intent.execution_capability_snapshot_sha256,
                    binding.capability_snapshot_sha256 AS active_capability_snapshot_sha256,
                    (snapshot.payload -> 'included' ? intent.capability_entry_id) AS instrument_in_snapshot
@@ -523,20 +722,15 @@ class IntentStorage:
                AND intent.intent_version = 'trade_intent_v3'
                AND intent.execution_state = 'PENDING'
                AND intent.entry_fenced_at_ms IS NULL
+               FOR UPDATE OF intent
             """,
             (intent_id,),
         ).fetchone()
         if permission is None:
             # Not PENDING, already fenced, or gone. Nothing was written and nothing should be sent.
-            return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
-        q1_payload = _require_quote_audit(
-            q1_evidence,
-            intent_id=intent_id,
-            instrument_id=str(permission["instrument_id"]),
-            intent_side=str(permission["side"]),
-            stage="Q1",
-            accepted=True,
-        )
+            return EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable")
+        if int(runtime["blacklist_revision"]) != prepared.blacklist_revision:
+            return EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready")
         reason: IntentReasonCode | None = None
         risk_plan: _RiskFencePlan | None = None
         if (
@@ -544,18 +738,23 @@ class IntentStorage:
             or not permission["instrument_in_snapshot"]
         ):
             reason = "capability_mismatch"
-        elif any(row.underlying_key == permission["underlying_key"] for row in blacklist.active_rows):
+        elif prepared.blacklisted:
             reason = "blacklisted"
         if reason is None:
+            if prepared.authority is None or prepared.q1_side_price is None:
+                return EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready")
             risk_plan, risk_reason = self._capital_risk_fence_plan(
                 intent_id=intent_id,
                 submission_quantity=submission_quantity,
-                q1_side_price=q1_evidence.side_price,
+                q1_side_price=prepared.q1_side_price,
+                authority=prepared.authority,
                 now_ms=now_ms,
             )
             if risk_plan is None and risk_reason is None:
-                return EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready")
+                return EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready")
             reason = risk_reason
+        if prepared.q1_payload_json is None:  # pragma: no cover - claimable preparation guarantees it
+            raise RuntimeError("entry_fence_preparation_incomplete")
         if reason is not None:
             row = self.conn.execute(
                 f"""
@@ -578,20 +777,20 @@ class IntentStorage:
                     "intent_id": intent_id,
                     "reason": reason,
                     "requested_at": int(requested_at_ms),
-                    "q1_evidence": _dumps(q1_payload),
-                    "blacklist_revision": blacklist.revision,
-                    "blacklist_sha": blacklist.snapshot_sha256,
-                    "blacklist_payload": _dumps(observation),
+                    "q1_evidence": prepared.q1_payload_json,
+                    "blacklist_revision": prepared.blacklist_revision,
+                    "blacklist_sha": prepared.blacklist_sha256,
+                    "blacklist_payload": prepared.blacklist_payload_json,
                     "now": int(now_ms),
                 },
             ).fetchone()
             if row is None:
-                return EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable")
+                return EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable")
             cast(Any, self).release_capital_risk_zero_submit(intent_id=intent_id, now_ms=now_ms)
-            return EntryFence(
+            return EntryFenceWrite(
                 disposition="REFUSED",
                 reason=reason,
-                outcome=IntentOutcome.model_validate(dict(row)),
+                outcome_values=dict(row),
             )
         row = self.conn.execute(
             f"""
@@ -643,11 +842,11 @@ class IntentStorage:
                 "client_id": deterministic_client_order_id(intent_id, "entry"),
                 "requested_at": int(requested_at_ms),
                 "submission_quantity": submission_quantity,
-                "q1_evidence": _dumps(q1_payload),
+                "q1_evidence": prepared.q1_payload_json,
                 "now": int(now_ms),
-                "blacklist_revision": blacklist.revision,
-                "blacklist_sha": blacklist.snapshot_sha256,
-                "blacklist_payload": _dumps(observation),
+                "blacklist_revision": prepared.blacklist_revision,
+                "blacklist_sha": prepared.blacklist_sha256,
+                "blacklist_payload": prepared.blacklist_payload_json,
             },
         ).fetchone()
         if row is not None:
@@ -661,18 +860,18 @@ class IntentStorage:
                 attempt_day_end_ms=risk_plan.attempt_day_end_ms,
                 now_ms=now_ms,
             )
-            return EntryFence(
+            return EntryFenceWrite(
                 disposition="GRANTED",
                 reason="entry_fence_granted",
-                outcome=IntentOutcome.model_validate(dict(row)),
+                outcome_values=dict(row),
             )
         # The UPDATE matched nothing. Say which of the guard clauses refused, from the same statement
         # snapshot, so a lane held back by an unready engine is distinguishable from one whose Intent
         # simply aged out. Serialisation is not among the answers: `ux_trading_intents_one_active` is a
         # unique index, so a second live Intent cannot exist to be refused here (#348).
         if int(permission["valid_until_ms"]) <= int(now_ms):
-            return EntryFence(disposition="UNAVAILABLE", reason="intent_expired")
-        return EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready")
+            return EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_expired")
+        return EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready")
 
     def record_entry_preflight_no_submit(
         self,
@@ -1373,4 +1572,12 @@ class IntentStorage:
         return None if row is None else IntentOutcome.model_validate(dict(row))
 
 
-__all__ = ["EntryFence", "EntryFenceDisposition", "EntryFenceUnavailable", "IntentStorage"]
+__all__ = [
+    "EntryFence",
+    "EntryFenceDisposition",
+    "EntryFenceUnavailable",
+    "EntryFenceWrite",
+    "IntentStorage",
+    "PreparedEntryFence",
+    "materialize_entry_fence",
+]

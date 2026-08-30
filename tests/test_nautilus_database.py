@@ -35,7 +35,7 @@ from tracefold.integrations.nautilus.messages import (
 )
 from tracefold.trading import IntentOutcome, TradeIntent, deterministic_client_order_id
 from tracefold.trading.quote_authority import ExecutionQuoteRejectionV1, ExecutionQuoteSnapshotV1
-from tracefold.trading.storage.intents import EntryFence
+from tracefold.trading.storage.intents import EntryFenceWrite
 
 NOW_MS = 1_900_000_000_000
 
@@ -254,9 +254,13 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         entry_quote_q1=_accepted_quote(intent),
     )
 
-    def fence(*_args: object, **_kwargs: object) -> EntryFence:
+    def fence(*_args: object, **_kwargs: object) -> EntryFenceWrite:
         repos.order.append("fence")
-        return EntryFence(disposition="GRANTED", reason="entry_fence_granted", outcome=fenced)
+        return EntryFenceWrite(
+            disposition="GRANTED",
+            reason="entry_fence_granted",
+            outcome_values=fenced.model_dump(),
+        )
 
     repos.trading.fence_entry.side_effect = fence
     repos.trading.intent.return_value = intent
@@ -266,7 +270,7 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
         _fence_request(intent, quantity),
     )
 
-    assert repos.order == ["begin", "fence", "commit"]
+    assert repos.order == ["begin", "commit", "begin", "fence", "commit"]
     assert queues.commands.get_nowait() == EntryFenceGranted(outcome=fenced)
     repos.trading.intent.assert_not_called()
 
@@ -274,13 +278,13 @@ def test_entry_fence_is_committed_before_the_strategy_receives_permission() -> N
 @pytest.mark.parametrize(
     "fence",
     (
-        EntryFence(disposition="UNAVAILABLE", reason="runtime_not_ready"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_not_claimable"),
-        EntryFence(disposition="UNAVAILABLE", reason="intent_expired"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="runtime_not_ready"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_not_claimable"),
+        EntryFenceWrite(disposition="UNAVAILABLE", reason="intent_expired"),
     ),
 )
-def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence: EntryFence) -> None:
+def test_an_unavailable_entry_fence_releases_the_intent_and_sends_nothing(fence: EntryFenceWrite) -> None:
     """#331: nothing was written, nothing may be sent, and the reason is no longer a bare `None`."""
 
     intent = _intent()
@@ -309,10 +313,10 @@ def test_a_refused_entry_fence_releases_the_intent_after_a_durable_terminal_reje
         terminal_outcome="REJECTED",
         reason_code="capability_mismatch",
     )
-    repos.trading.fence_entry.return_value = EntryFence(
+    repos.trading.fence_entry.return_value = EntryFenceWrite(
         disposition="REFUSED",
         reason="capability_mismatch",
-        outcome=rejected,
+        outcome_values=rejected.model_dump(),
     )
 
     bridge._handle_event(
