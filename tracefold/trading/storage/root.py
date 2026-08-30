@@ -13,6 +13,8 @@ from .control import ControlStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
 from .lane import LaneStorage
+from .manual import ManualStorage
+from .onchain import OnchainStorage
 from .queries import QueryStorage
 from .replay import ReplayStorage
 
@@ -27,6 +29,8 @@ class TradingRepository(
     CaseStorage,
     IntentStorage,
     LaneStorage,
+    ManualStorage,
+    OnchainStorage,
     QueryStorage,
     ReplayStorage,
 ):

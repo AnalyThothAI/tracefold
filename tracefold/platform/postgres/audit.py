@@ -100,7 +100,29 @@ TRADING_TABLES = (
     "trading_capital_authorization_receipts",
     "trading_capital_risk_reservation_state",
     "trading_capital_risk_events",
+    "trading_account_bindings",
+    "trading_manual_account_snapshots",
+    "trading_manual_runtime",
+    "trading_manual_telegram_updates",
+    "trading_manual_target_pickers",
+    "trading_manual_sessions",
+    "trading_manual_events",
+    "trading_manual_notifications",
+    "trading_manual_intents",
+    "trading_manual_positions",
+    "trading_manual_close_orders",
+    "trading_telegram_development_test_news",
+    "trading_onchain_analysis_sessions",
+    "trading_onchain_telegram_edit_effects",
+    "trading_onchain_executor_runtime",
+    "trading_onchain_execution_intents",
+    "trading_onchain_signed_transactions",
 )
+
+_COUNT_COLUMN_OVERRIDES = {
+    # Serve sees execution status and hashes, never locally signed transaction bytes.
+    "trading_onchain_signed_transactions": "transaction_hash",
+}
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (
     {
@@ -167,7 +189,8 @@ class PostgresOperationalAudit:
             if not self._table_exists(table_name):
                 counts[table_name] = -1
                 continue
-            row = self.conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+            count_expression = _COUNT_COLUMN_OVERRIDES.get(table_name, "*")
+            row = self.conn.execute(f"SELECT COUNT({count_expression}) AS count FROM {table_name}").fetchone()
             counts[table_name] = int(row["count"] if row else 0)
         return counts
 

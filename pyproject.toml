@@ -21,6 +21,8 @@ dependencies = [
     "uvicorn[standard]>=0.30.0",
     "websockets>=12.0",
     "aio-pika>=9.5,<10",
+    "eth-account==0.13.7",
+    "eth-abi==6.0.0",
 ]
 
 [dependency-groups]

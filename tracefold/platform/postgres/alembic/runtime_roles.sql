@@ -23,6 +23,9 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_nautilus') THEN
       CREATE ROLE tracefold_nautilus LOGIN;
     END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_onchain') THEN
+      CREATE ROLE tracefold_onchain LOGIN;
+    END IF;
 
     ALTER ROLE tracefold_owner
       NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -38,6 +41,9 @@ BEGIN
       LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_nautilus
+      LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+      NOREPLICATION NOBYPASSRLS;
+    ALTER ROLE tracefold_onchain
       LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
 
@@ -121,6 +127,20 @@ BEGIN
        AND NOT rolbypassrls
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_nautilus';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM pg_roles
+     WHERE rolname = 'tracefold_onchain'
+       AND rolcanlogin
+       AND rolinherit
+       AND NOT rolsuper
+       AND NOT rolcreatedb
+       AND NOT rolcreaterole
+       AND NOT rolreplication
+       AND NOT rolbypassrls
+  ) THEN
+    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_onchain';
   END IF;
   IF NOT EXISTS (
     SELECT 1
@@ -209,11 +229,11 @@ END
 $ownership$;
 
 REVOKE ALL ON ALL TABLES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers, tracefold_nautilus;
+  FROM tracefold_serve, tracefold_workers, tracefold_nautilus, tracefold_onchain;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public
-  FROM tracefold_serve, tracefold_workers, tracefold_nautilus;
+  FROM tracefold_serve, tracefold_workers, tracefold_nautilus, tracefold_onchain;
 
-GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers, tracefold_nautilus;
+GRANT USAGE ON SCHEMA public TO tracefold_serve, tracefold_workers, tracefold_nautilus, tracefold_onchain;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve;
 GRANT SELECT, INSERT, UPDATE, DELETE
   ON ALL TABLES IN SCHEMA public TO tracefold_workers;

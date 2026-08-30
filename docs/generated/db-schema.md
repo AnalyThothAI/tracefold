@@ -520,6 +520,17 @@
 | `judgment_contract_version` | `TEXT` | True | `None` |
 | `judgment_origin` | `TEXT` | True | `None` |
 
+## `trading_account_bindings`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `account_ref` | `TEXT` | False | `None` |
+| `account_lane` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `credential_fingerprint` | `TEXT` | False | `None` |
+| `provider_account_fingerprint` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
 ## `trading_binding_runtime`
 
 | Column | Type | Nullable | Default |
@@ -790,6 +801,281 @@
 | `risk_currency` | `TEXT` | True | `None` |
 | `funding_by_currency` | `JSONB` | True | `None` |
 
+## `trading_manual_account_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `account_ref` | `TEXT` | False | `None` |
+| `venue` | `TEXT` | False | `None` |
+| `equity_usd` | `NUMERIC` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_manual_close_orders`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `close_id` | `TEXT` | False | `None` |
+| `intent_id` | `TEXT` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `requested_bps` | `INTEGER` | False | `None` |
+| `client_order_id` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `'PENDING'::text` |
+| `target_quantity` | `NUMERIC` | True | `None` |
+| `attempted_at_ms` | `BIGINT` | True | `None` |
+| `receipt` | `JSONB` | True | `None` |
+| `reconciled_at_ms` | `BIGINT` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `requested_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_manual_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `event_id` | `TEXT` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `event_index` | `INTEGER` | False | `None` |
+| `event_kind` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `payload_sha256` | `TEXT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_manual_intents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `intent_id` | `TEXT` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `account_ref` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `state` | `TEXT` | False | `'PENDING'::text` |
+| `execution_plan` | `JSONB` | True | `None` |
+| `execution_setting_attempted_at_ms` | `BIGINT` | True | `None` |
+| `execution_setting_applied_at_ms` | `BIGINT` | True | `None` |
+| `entry_client_order_id` | `TEXT` | True | `None` |
+| `entry_fenced_at_ms` | `BIGINT` | True | `None` |
+| `entry_attempted_at_ms` | `BIGINT` | True | `None` |
+| `entry_submitted_at_ms` | `BIGINT` | True | `None` |
+| `entry_receipt` | `JSONB` | True | `None` |
+| `take_profit_client_order_id` | `TEXT` | True | `None` |
+| `take_profit_fenced_at_ms` | `BIGINT` | True | `None` |
+| `take_profit_attempted_at_ms` | `BIGINT` | True | `None` |
+| `take_profit_submitted_at_ms` | `BIGINT` | True | `None` |
+| `take_profit_receipt` | `JSONB` | True | `None` |
+| `stop_loss_client_order_id` | `TEXT` | True | `None` |
+| `stop_loss_fenced_at_ms` | `BIGINT` | True | `None` |
+| `stop_loss_attempted_at_ms` | `BIGINT` | True | `None` |
+| `stop_loss_submitted_at_ms` | `BIGINT` | True | `None` |
+| `stop_loss_receipt` | `JSONB` | True | `None` |
+| `outcome` | `JSONB` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_manual_notifications`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `notification_id` | `TEXT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `source_message_id` | `BIGINT` | False | `None` |
+| `notification_kind` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `state` | `TEXT` | False | `'PENDING'::text` |
+| `provider_message_id` | `BIGINT` | True | `None` |
+| `attempted_at_ms` | `BIGINT` | True | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `interaction_state` | `TEXT` | False | `'PENDING'::text` |
+| `interaction_attempted_at_ms` | `BIGINT` | True | `None` |
+| `interaction_settled_at_ms` | `BIGINT` | True | `None` |
+| `interaction_error_code` | `TEXT` | True | `None` |
+| `reply_state` | `TEXT` | False | `'PENDING'::text` |
+| `reply_attempted_at_ms` | `BIGINT` | True | `None` |
+| `reply_settled_at_ms` | `BIGINT` | True | `None` |
+| `reply_error_code` | `TEXT` | True | `None` |
+
+## `trading_manual_positions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `intent_id` | `TEXT` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `account_ref` | `TEXT` | False | `None` |
+| `symbol` | `TEXT` | False | `None` |
+| `side` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `None` |
+| `quantity` | `NUMERIC` | False | `None` |
+| `entry_price` | `NUMERIC` | False | `None` |
+| `mark_price` | `NUMERIC` | False | `None` |
+| `unrealized_pnl_usd` | `NUMERIC` | False | `None` |
+| `leverage` | `INTEGER` | False | `None` |
+| `liquidation_price` | `NUMERIC` | True | `None` |
+| `take_profit_price` | `NUMERIC` | False | `None` |
+| `stop_loss_price` | `NUMERIC` | False | `None` |
+| `opened_at_ms` | `BIGINT` | False | `None` |
+| `observed_at_ms` | `BIGINT` | False | `None` |
+| `closed_at_ms` | `BIGINT` | True | `None` |
+| `exit_reason` | `TEXT` | True | `None` |
+| `exit_price` | `NUMERIC` | True | `None` |
+| `realized_pnl_usd` | `NUMERIC` | True | `None` |
+| `take_profit_cancel_attempted_at_ms` | `BIGINT` | True | `None` |
+| `take_profit_cancelled_at_ms` | `BIGINT` | True | `None` |
+| `stop_loss_cancel_attempted_at_ms` | `BIGINT` | True | `None` |
+| `stop_loss_cancelled_at_ms` | `BIGINT` | True | `None` |
+| `last_error_code` | `TEXT` | True | `None` |
+| `version` | `INTEGER` | False | `1` |
+
+## `trading_manual_runtime`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` | `SMALLINT` | False | `1` |
+| `next_telegram_update_id` | `BIGINT` | False | `0` |
+| `updated_at_ms` | `BIGINT` | False | `0` |
+
+## `trading_manual_sessions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_id` | `UUID` | False | `None` |
+| `source_sha256` | `TEXT` | False | `None` |
+| `source` | `JSONB` | False | `None` |
+| `actor_user_id` | `BIGINT` | False | `None` |
+| `chat_id` | `BIGINT` | False | `None` |
+| `source_message_id` | `BIGINT` | False | `None` |
+| `interaction_message_id` | `BIGINT` | True | `None` |
+| `interaction_reply_attempted_at_ms` | `BIGINT` | True | `None` |
+| `last_effect_update_id` | `BIGINT` | True | `None` |
+| `last_effect_result_code` | `TEXT` | True | `None` |
+| `state` | `TEXT` | False | `None` |
+| `preset` | `TEXT` | True | `None` |
+| `account_snapshot` | `JSONB` | True | `None` |
+| `recommended` | `JSONB` | True | `None` |
+| `selected` | `JSONB` | True | `None` |
+| `preview` | `JSONB` | True | `None` |
+| `guard` | `JSONB` | True | `None` |
+| `intent_id` | `TEXT` | True | `None` |
+| `version` | `INTEGER` | False | `1` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_manual_target_pickers`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `picker_id` | `UUID` | False | `None` |
+| `sources_sha256` | `TEXT` | False | `None` |
+| `sources` | `JSONB` | False | `None` |
+| `actor_user_id` | `BIGINT` | False | `None` |
+| `chat_id` | `BIGINT` | False | `None` |
+| `source_message_id` | `BIGINT` | False | `None` |
+| `interaction_message_id` | `BIGINT` | True | `None` |
+| `reply_attempted_at_ms` | `BIGINT` | True | `None` |
+| `state` | `TEXT` | False | `'PENDING'::text` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+| `selected_symbol` | `TEXT` | True | `None` |
+| `consumed_session_id` | `UUID` | True | `None` |
+| `consumed_at_ms` | `BIGINT` | True | `None` |
+
+## `trading_manual_telegram_updates`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `update_id` | `BIGINT` | False | `None` |
+| `callback_query_id` | `TEXT` | False | `None` |
+| `actor_user_id` | `BIGINT` | False | `None` |
+| `chat_id` | `BIGINT` | False | `None` |
+| `message_id` | `BIGINT` | False | `None` |
+| `callback_data` | `TEXT` | False | `None` |
+| `authorized` | `BOOLEAN` | False | `None` |
+| `state` | `TEXT` | False | `'RECEIVED'::text` |
+| `result_code` | `TEXT` | True | `None` |
+| `received_at_ms` | `BIGINT` | False | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+
+## `trading_onchain_analysis_sessions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_id` | `UUID` | False | `None` |
+| `sources` | `JSONB` | False | `None` |
+| `actor_user_id` | `BIGINT` | False | `None` |
+| `chat_id` | `BIGINT` | False | `None` |
+| `source_message_id` | `BIGINT` | False | `None` |
+| `interaction_message_id` | `BIGINT` | True | `None` |
+| `interaction_reply_attempted_at_ms` | `BIGINT` | True | `None` |
+| `interaction_reply_state` | `TEXT` | False | `'PENDING'::text` |
+| `interaction_reply_error_code` | `TEXT` | True | `None` |
+| `state` | `TEXT` | False | `None` |
+| `selected_ticker` | `TEXT` | True | `None` |
+| `candidates` | `JSONB` | False | `'[]'::jsonb` |
+| `selected_candidate` | `JSONB` | True | `None` |
+| `analysis` | `JSONB` | True | `None` |
+| `provider_errors` | `JSONB` | False | `'[]'::jsonb` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_onchain_execution_intents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `execution_id` | `UUID` | False | `None` |
+| `session_id` | `UUID` | False | `None` |
+| `actor_user_id` | `BIGINT` | False | `None` |
+| `chat_id` | `BIGINT` | False | `None` |
+| `interaction_message_id` | `BIGINT` | False | `None` |
+| `provider` | `TEXT` | False | `None` |
+| `wallet_address` | `TEXT` | False | `None` |
+| `wallet_fingerprint` | `TEXT` | False | `None` |
+| `request` | `JSONB` | False | `None` |
+| `quote` | `JSONB` | False | `None` |
+| `state` | `TEXT` | False | `'AWAITING_CONFIRMATION'::text` |
+| `confirmation_update_id` | `BIGINT` | True | `None` |
+| `plan` | `JSONB` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
+| `confirmed_at_ms` | `BIGINT` | True | `None` |
+| `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_onchain_executor_runtime`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `wallet_fingerprint` | `TEXT` | False | `None` |
+| `started_at_ms` | `BIGINT` | False | `None` |
+| `heartbeat_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_onchain_signed_transactions`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `execution_id` | `UUID` | False | `None` |
+| `leg` | `TEXT` | False | `None` |
+| `signed_transaction` | `JSONB` | False | `None` |
+| `transaction_hash` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `'SIGNED'::text` |
+| `receipt` | `JSONB` | True | `None` |
+| `error_code` | `TEXT` | True | `None` |
+| `signed_at_ms` | `BIGINT` | False | `None` |
+| `submitted_at_ms` | `BIGINT` | True | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+
+## `trading_onchain_telegram_edit_effects`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `session_id` | `UUID` | False | `None` |
+| `update_id` | `BIGINT` | False | `None` |
+| `message_id` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+| `result_code` | `TEXT` | False | `None` |
+| `state` | `TEXT` | False | `'SENDING'::text` |
+| `error_code` | `TEXT` | True | `None` |
+| `attempted_at_ms` | `BIGINT` | False | `None` |
+| `settled_at_ms` | `BIGINT` | True | `None` |
+
 ## `trading_operator_arm_receipts`
 
 | Column | Type | Nullable | Default |
@@ -920,6 +1206,21 @@
 | `expires_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_telegram_development_test_news`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_id` | `UUID` | False | `None` |
+| `delivery_message_id` | `BIGINT` | False | `None` |
+| `delivery_target_sha256` | `TEXT` | False | `None` |
+| `test_kind` | `TEXT` | False | `None` |
+| `headline_zh` | `TEXT` | False | `None` |
+| `direction` | `TEXT` | False | `None` |
+| `displayed_targets` | `JSONB` | False | `None` |
+| `source_observed_at_ms` | `BIGINT` | False | `None` |
+| `expires_at_ms` | `BIGINT` | False | `None` |
+| `created_at_ms` | `BIGINT` | False | `None` |
 
 ## `trading_venue_catalog_snapshots`
 

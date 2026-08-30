@@ -11,6 +11,7 @@ RUNTIME_LOGIN_ROLES = (
     "tracefold_workers",
     "tracefold_migrate",
     "tracefold_nautilus",
+    "tracefold_onchain",
 )
 LEGACY_RUNTIME_ROLE = "tracefold_app"
 
@@ -69,6 +70,7 @@ def runtime_role_contract(
     workers = by_name.get("tracefold_workers")
     migrate = by_name.get("tracefold_migrate")
     nautilus = by_name.get("tracefold_nautilus")
+    onchain = by_name.get("tracefold_onchain")
     legacy = by_name.get(LEGACY_RUNTIME_ROLE)
     schema_owner_row = conn.execute(
         """
@@ -257,6 +259,78 @@ def runtime_role_contract(
                 'orders_today',
                 'SELECT'
               ) AS nautilus_runtime_counter_select,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_onchain_execution_intents',
+                'SELECT'
+              ) AS nautilus_onchain_execution_select,
+              has_table_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_execution_intents',
+                'SELECT'
+              ) AS onchain_execution_select,
+              has_column_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_execution_intents',
+                'state',
+                'UPDATE'
+              ) AS onchain_execution_state_update,
+              has_table_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_signed_transactions',
+                'SELECT'
+              ) AS onchain_signed_select,
+              has_column_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_signed_transactions',
+                'signed_transaction',
+                'INSERT'
+              ) AS onchain_signed_insert,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_onchain_signed_transactions',
+                'transaction_hash',
+                'SELECT'
+              ) AS workers_onchain_hash_select,
+              has_column_privilege(
+                'tracefold_workers',
+                'public.trading_onchain_signed_transactions',
+                'signed_transaction',
+                'SELECT'
+              ) AS workers_onchain_raw_select,
+              has_table_privilege(
+                'tracefold_workers',
+                'public.trading_onchain_executor_runtime',
+                'SELECT'
+              ) AS workers_onchain_executor_runtime_select,
+              has_table_privilege(
+                'tracefold_nautilus',
+                'public.trading_onchain_executor_runtime',
+                'SELECT'
+              ) AS nautilus_onchain_executor_runtime_select,
+              has_table_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_executor_runtime',
+                'SELECT'
+              ) AS onchain_executor_runtime_select,
+              has_column_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_executor_runtime',
+                'id',
+                'INSERT'
+              ) AS onchain_executor_runtime_insert,
+              has_column_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_executor_runtime',
+                'heartbeat_at_ms',
+                'UPDATE'
+              ) AS onchain_executor_runtime_update,
+              has_column_privilege(
+                'tracefold_onchain',
+                'public.trading_onchain_executor_runtime',
+                'wallet_fingerprint',
+                'UPDATE'
+              ) AS onchain_executor_wallet_rotation_update,
               pg_has_role(
                 'tracefold_migrate',
                 'tracefold_owner',
@@ -278,6 +352,7 @@ def runtime_role_contract(
             migrate is not None and bool(migrate["rolcanlogin"]) and not bool(migrate["rolinherit"])
         ),
         "nautilus_login": nautilus is not None and bool(nautilus["rolcanlogin"]),
+        "onchain_login": onchain is not None and bool(onchain["rolcanlogin"]),
         "legacy_login_state": legacy_login_state,
         "schema_owner": bool(schema_owner_row) and str(schema_owner_row["owner"]) == "tracefold_owner",
         "serve_select": bool(privileges["serve_select"]),
@@ -312,6 +387,19 @@ def runtime_role_contract(
         and bool(privileges["nautilus_runtime_id_select"])
         and bool(privileges["nautilus_runtime_control_select"])
         and not bool(privileges["nautilus_runtime_counter_select"]),
+        "onchain_execution_isolated": not bool(privileges["nautilus_onchain_execution_select"])
+        and bool(privileges["onchain_execution_select"])
+        and bool(privileges["onchain_execution_state_update"])
+        and bool(privileges["onchain_signed_select"])
+        and bool(privileges["onchain_signed_insert"])
+        and bool(privileges["workers_onchain_hash_select"])
+        and not bool(privileges["workers_onchain_raw_select"])
+        and bool(privileges["workers_onchain_executor_runtime_select"])
+        and not bool(privileges["nautilus_onchain_executor_runtime_select"])
+        and bool(privileges["onchain_executor_runtime_select"])
+        and bool(privileges["onchain_executor_runtime_insert"])
+        and bool(privileges["onchain_executor_runtime_update"])
+        and bool(privileges["onchain_executor_wallet_rotation_update"]),
         "migrate_owner_member": bool(privileges["migrate_owner_member"]),
     }
     failures = [name for name, passed in checks.items() if not passed]

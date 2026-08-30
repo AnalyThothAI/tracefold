@@ -1,4 +1,4 @@
-"""Telegram Bot API adapter for one operator-bound News channel."""
+"""Telegram Bot API adapters for News fanout and profile-bound trading."""
 
 from __future__ import annotations
 
@@ -9,7 +9,9 @@ import re
 import ssl
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import suppress
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from http.client import HTTPException, HTTPSConnection
@@ -22,28 +24,41 @@ from tracefold.news import (
     ReaderDeliveryPresentation,
     ReaderMarketMovement,
     ReaderTradeTarget,
+    TelegramDeliveryCopyReceipt,
     TelegramDeliveryReceipt,
+    telegram_card_facts,
 )
 
 _TELEGRAM_API_ORIGIN = "https://api.telegram.org"
 _TELEGRAM_TIMEOUT_SECONDS = 6.5
 _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS = 7.0
 _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS = 0.05
-_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS = 1.25
+_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS = 4.0
 _TELEGRAM_TEXT_MAX = 4096
 _TELEGRAM_RESPONSE_MAX_BYTES = 1024 * 1024
 _SOURCE_URL_MAX_LENGTH = 2_048
 _BOT_TOKEN_RE = re.compile(r"^[0-9]{6,15}:[A-Za-z0-9_-]{30,80}$")
+_BOT_COMMAND_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _PRIVATE_CHANNEL_ID_RE = re.compile(r"^-100[1-9][0-9]{5,15}$")
-_TELEGRAM_TIME_RE = re.compile(r"^[0-2][0-9]:[0-5][0-9]$")
-_REPORTING_ORIGIN_RE = re.compile(r"^(?P<origin>.+)（(?P<count>[1-9][0-9]*) 条报道）$")
+_PRIVATE_CHAT_ID_RE = re.compile(r"^[1-9][0-9]{5,15}$")
+_TELEGRAM_NEGATIVE_TARGET_ID_RE = re.compile(r"^-[1-9][0-9]{5,15}$")
 _LINKABLE_TICKER_RE = re.compile(r"^[A-Z0-9][A-Z0-9.-]{0,19}$")
 _BINANCE_FUTURES_PATH_RE = re.compile(r"^/en/futures/[A-Z0-9]{2,40}$")
 _BINANCE_SPOT_PATH_RE = re.compile(r"^/en/trade/[A-Z0-9]{1,20}_[A-Z0-9]{1,20}$")
 _TELEGRAM_HTML_TAG_RE = re.compile(r'</?(?:b|strong|blockquote)>|<a href="[^"]+">|</a>')
-_BOT_API_METHODS = frozenset({"getChat", "getMe", "getChatMember", "sendMessage", "editMessageText", "deleteMessage"})
-_DIRECTION_LABELS = frozenset({"利多", "利空", "中性", "不明确", "方向待定"})
-_NOVELTY_LABELS = frozenset({"新事实", "新进展", "复述"})
+_BOT_API_METHODS = frozenset(
+    {
+        "answerCallbackQuery",
+        "deleteMessage",
+        "editMessageText",
+        "getChat",
+        "getChatMember",
+        "getMe",
+        "getUpdates",
+        "sendMessage",
+        "setMyCommands",
+    }
+)
 _MAGNITUDE_LABELS = {
     "影响很小": "很小",
     "影响有限": "有限",
@@ -57,13 +72,16 @@ _NEWSLIQUID_REUTERS_PATH_RE = re.compile(r"^/b/nL[0-9A-Z]+$")
 
 
 @dataclass(frozen=True, slots=True)
-class _TelegramFacts:
-    direction: str = ""
-    novelty: str = ""
-    magnitude: str = ""
-    assets: tuple[str, ...] = ()
-    origin: str = ""
-    report_count: int | None = None
+class TelegramTradingUpdate:
+    update_id: int
+    callback_query_id: str
+    actor_user_id: int
+    chat_id: int
+    message_id: int
+    data: str
+    authorized: bool
+    chat_type: str = "private"
+    update_kind: str = "callback"
 
 
 class TelegramDeliveryError(RuntimeError):
@@ -73,6 +91,83 @@ class TelegramDeliveryError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.status_code = status_code
+
+
+def _is_supported_telegram_target_id(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    normalized = str(value)
+    return bool(_TELEGRAM_NEGATIVE_TARGET_ID_RE.fullmatch(normalized) or _PRIVATE_CHAT_ID_RE.fullmatch(normalized))
+
+
+def _telegram_target_digest_input(chat_id: int) -> bytes:
+    return f"telegram-target-v2:{chat_id}".encode()
+
+
+def _telegram_call_result(
+    *,
+    client: httpx.Client,
+    monotonic: Callable[[], float],
+    method: str,
+    payload: Mapping[str, Any],
+    error_prefix: str,
+    deadline_at: float,
+) -> Any:
+    remaining = deadline_at - monotonic()
+    if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
+        raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
+    # The credential-hiding transport below maps the four httpx phase values onto one
+    # ``HTTPSConnection`` socket timeout.  Dividing the remaining budget by four here
+    # therefore shortened every real Telegram call fourfold instead of bounding four
+    # sequential phases.  Keep the socket inside the shared deadline while tolerating
+    # the latency introduced by an operator VPN.
+    phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining)
+    try:
+        response = client.post(
+            method,
+            json=dict(payload),
+            timeout=httpx.Timeout(
+                connect=phase_timeout,
+                read=phase_timeout,
+                write=phase_timeout,
+                pool=phase_timeout,
+            ),
+        )
+    except (httpx.TimeoutException, httpx.TransportError):
+        raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
+    status_code = int(response.status_code)
+    rejection: object = None
+    if status_code == 400:
+        with suppress(ValueError):
+            rejection = response.json()
+    rejection_description = str(rejection.get("description") or "").lower() if isinstance(rejection, Mapping) else ""
+    if (
+        method == "editMessageText"
+        and status_code == 400
+        and isinstance(rejection, Mapping)
+        and rejection.get("ok") is False
+        and "message is not modified" in rejection_description
+    ):
+        raise TelegramDeliveryError(f"{error_prefix}_not_modified", status_code=status_code)
+    if (
+        method == "answerCallbackQuery"
+        and status_code == 400
+        and isinstance(rejection, Mapping)
+        and rejection.get("ok") is False
+        and ("query is too old" in rejection_description or "query id is invalid" in rejection_description)
+    ):
+        raise TelegramDeliveryError(f"{error_prefix}_expired", status_code=status_code)
+    if status_code == 429 or status_code >= 500:
+        raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
+    if status_code < 200 or status_code >= 300:
+        raise TelegramDeliveryError(f"{error_prefix}_http_rejected", status_code=status_code)
+    try:
+        body = response.json()
+    except ValueError:
+        raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
+    if not isinstance(body, Mapping) or body.get("ok") is not True:
+        raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
+    return body.get("result")
 
 
 class _TelegramHTTPSBotTransport(httpx.BaseTransport):
@@ -128,7 +223,7 @@ class _TelegramHTTPSBotTransport(httpx.BaseTransport):
 
 
 class TelegramNewsPushSender:
-    """Send one News card to the single channel fixed at construction time."""
+    """Send one News-card copy to the exact destination fixed at construction time."""
 
     def __init__(
         self,
@@ -138,23 +233,23 @@ class TelegramNewsPushSender:
         transport: httpx.BaseTransport | None = None,
         monotonic: Callable[[], float] | None = None,
         wall_clock_ms: Callable[[], int] | None = None,
+        trading_actions_enabled: bool = False,
+        onchain_actions_enabled: bool = False,
     ) -> None:
         normalized_token = str(bot_token or "").strip()
         if not _BOT_TOKEN_RE.fullmatch(normalized_token):
             raise ValueError("news_push_telegram_bot_token_invalid")
-        if (
-            isinstance(chat_id, bool)
-            or not isinstance(chat_id, int)
-            or _PRIVATE_CHANNEL_ID_RE.fullmatch(str(chat_id)) is None
-        ):
+        if not _is_supported_telegram_target_id(chat_id):
             raise ValueError("news_push_telegram_chat_id_invalid")
         self._chat_id = chat_id
         self._target_sha256 = hmac.new(
             normalized_token.encode(),
-            f"telegram-private-channel-v1:{chat_id}".encode(),
+            _telegram_target_digest_input(chat_id),
             hashlib.sha256,
         ).hexdigest()
         self._target_validated = False
+        self._trading_actions_enabled = bool(trading_actions_enabled)
+        self._onchain_actions_enabled = bool(onchain_actions_enabled)
         self._monotonic = monotonic or time.monotonic
         self._wall_clock_ms = wall_clock_ms or (lambda: int(time.time() * 1000))
         selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
@@ -174,6 +269,10 @@ class TelegramNewsPushSender:
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS
         self._validate_target(deadline_at=deadline_at)
         self._target_validated = True
+
+    @property
+    def target_sha256(self) -> str:
+        return self._target_sha256
 
     def send_card(
         self,
@@ -229,7 +328,7 @@ class TelegramNewsPushSender:
         *,
         presentation: ReaderDeliveryPresentation | None = None,
     ) -> dict[str, Any]:
-        """Replace one previously sent channel message while preserving its original push timestamp."""
+        """Replace one previously sent copy while preserving its original push timestamp."""
 
         if not self._target_validated:
             raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
@@ -281,7 +380,7 @@ class TelegramNewsPushSender:
         ).canonical()
 
     def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
-        """Delete exactly one previously receipted message from the configured private channel."""
+        """Delete exactly one previously receipted copy from the configured destination."""
 
         if not self._target_validated:
             raise TelegramDeliveryError("news_delivery_telegram_target_not_prepared")
@@ -318,6 +417,16 @@ class TelegramNewsPushSender:
         }
         if message_id is not None:
             payload["message_id"] = message_id
+        if self._trading_actions_enabled or self._onchain_actions_enabled:
+            buttons: list[dict[str, str]] = []
+            if self._trading_actions_enabled:
+                buttons.append({"text": "详细数据", "callback_data": "tf:detail:v1"})
+                buttons.append({"text": "合约交易", "callback_data": "tf:trade:v1"})
+            if self._onchain_actions_enabled:
+                buttons.append({"text": "链上路由", "callback_data": "tf:onchain:v1"})
+            payload["reply_markup"] = {
+                "inline_keyboard": [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+            }
         return payload
 
     def _validated_message_id(
@@ -350,8 +459,13 @@ class TelegramNewsPushSender:
         chat_id = chat.get("id")
         if isinstance(chat_id, bool) or not isinstance(chat_id, int) or chat_id != self._chat_id:
             raise TelegramDeliveryError("news_delivery_telegram_target_chat_mismatch")
-        if chat.get("type") != "channel" or str(chat.get("username") or "").strip():
-            raise TelegramDeliveryError("news_delivery_telegram_target_not_private_channel")
+        chat_type = str(chat.get("type") or "")
+        private_chat = self._chat_id > 0
+        if private_chat:
+            if chat.get("type") != "private":
+                raise TelegramDeliveryError("news_delivery_telegram_target_not_private_chat")
+        elif chat_type not in {"channel", "group", "supergroup"}:
+            raise TelegramDeliveryError("news_delivery_telegram_target_type_invalid")
 
         bot = self._call_api(
             "getMe",
@@ -362,6 +476,8 @@ class TelegramNewsPushSender:
         bot_id = bot.get("id")
         if isinstance(bot_id, bool) or not isinstance(bot_id, int) or bot.get("is_bot") is not True:
             raise TelegramDeliveryError("news_delivery_telegram_bot_identity_invalid")
+        if private_chat:
+            return
         membership = self._call_api(
             "getChatMember",
             {"chat_id": self._chat_id, "user_id": bot_id},
@@ -375,7 +491,13 @@ class TelegramNewsPushSender:
             or member_user.get("is_bot") is not True
         ):
             raise TelegramDeliveryError("news_delivery_telegram_bot_identity_invalid")
-        if membership.get("status") != "administrator" or membership.get("can_post_messages") is not True:
+        status = str(membership.get("status") or "")
+        if chat_type == "channel":
+            if status not in {"administrator", "creator"}:
+                raise TelegramDeliveryError("news_delivery_telegram_target_post_permission_missing")
+            if status == "administrator" and membership.get("can_post_messages") is not True:
+                raise TelegramDeliveryError("news_delivery_telegram_target_post_permission_missing")
+        elif status not in {"member", "administrator", "creator"}:
             raise TelegramDeliveryError("news_delivery_telegram_target_post_permission_missing")
 
     def _call_api(
@@ -404,36 +526,592 @@ class TelegramNewsPushSender:
         error_prefix: str,
         deadline_at: float,
     ) -> Any:
-        remaining = deadline_at - self._monotonic()
-        if remaining < _TELEGRAM_MIN_REQUEST_BUDGET_SECONDS:
-            raise TelegramDeliveryError(f"{error_prefix}_budget_exhausted")
-        phase_timeout = min(_TELEGRAM_MAX_PHASE_TIMEOUT_SECONDS, remaining / 4)
-        try:
-            response = self._client.post(
-                method,
-                json=dict(payload),
-                timeout=httpx.Timeout(
-                    connect=phase_timeout,
-                    read=phase_timeout,
-                    write=phase_timeout,
-                    pool=phase_timeout,
-                ),
-            )
-        except (httpx.TimeoutException, httpx.TransportError):
-            raise TelegramDeliveryError(f"{error_prefix}_transport_failed") from None
+        return _telegram_call_result(
+            client=self._client,
+            monotonic=self._monotonic,
+            method=method,
+            payload=payload,
+            error_prefix=error_prefix,
+            deadline_at=deadline_at,
+        )
 
-        status_code = int(response.status_code)
-        if status_code == 429 or status_code >= 500:
-            raise TelegramDeliveryError(f"{error_prefix}_http_failed", status_code=status_code)
-        if status_code < 200 or status_code >= 300:
-            raise TelegramDeliveryError(f"{error_prefix}_http_rejected", status_code=status_code)
+    def close(self) -> None:
+        self._client.close()
+
+
+class TelegramNewsFanoutSender:
+    """Expose one delivery interface while preserving one receipt per exact Telegram target."""
+
+    def __init__(self, senders: Sequence[TelegramNewsPushSender]) -> None:
+        self._senders = tuple(senders)
+        if not self._senders or len(self._senders) > 32:
+            raise ValueError("news_push_telegram_targets_invalid")
+
+    def prepare(self) -> None:
+        with ThreadPoolExecutor(max_workers=len(self._senders), thread_name_prefix="telegram-preflight") as pool:
+            futures = [pool.submit(sender.prepare) for sender in self._senders]
+            for future in as_completed(futures):
+                future.result()
+
+    def send_card(
+        self,
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        receipts: list[TelegramDeliveryReceipt | None] = [None] * len(self._senders)
+        failure: Exception | None = None
+        with ThreadPoolExecutor(max_workers=len(self._senders), thread_name_prefix="telegram-send") as pool:
+            futures = {
+                pool.submit(sender.send_card, card, presentation=presentation): index
+                for index, sender in enumerate(self._senders)
+            }
+            for future in as_completed(futures):
+                try:
+                    receipts[futures[future]] = TelegramDeliveryReceipt.model_validate(future.result())
+                except Exception as exc:
+                    failure = exc
+        if failure is not None:
+            cleanup_failed = False
+            for sender, receipt in zip(self._senders, receipts, strict=True):
+                if receipt is None:
+                    continue
+                try:
+                    sender.delete_card(receipt.canonical())
+                except Exception:
+                    cleanup_failed = True
+            if cleanup_failed:
+                raise TelegramDeliveryError("news_delivery_telegram_fanout_ambiguous") from failure
+            raise failure
+        completed = tuple(receipt for receipt in receipts if receipt is not None)
+        return _telegram_fanout_receipt(completed).canonical()
+
+    def edit_card(
+        self,
+        receipt: Mapping[str, Any],
+        card: Mapping[str, Any],
+        *,
+        presentation: ReaderDeliveryPresentation | None = None,
+    ) -> dict[str, Any]:
+        parsed = _telegram_fanout_receipts(receipt, expected=len(self._senders))
+        if any(sender.target_sha256 != item.target_sha256 for sender, item in zip(self._senders, parsed, strict=True)):
+            raise TelegramDeliveryError("news_delivery_telegram_fanout_target_mismatch")
+        updated: list[TelegramDeliveryReceipt | None] = [None] * len(self._senders)
+        with ThreadPoolExecutor(max_workers=len(self._senders), thread_name_prefix="telegram-edit") as pool:
+            futures = {}
+            for index, (sender, target_receipt) in enumerate(zip(self._senders, parsed, strict=True)):
+                target_presentation = presentation
+                if index > 0 and presentation is not None:
+                    target_presentation = replace(presentation, progression_review_parent_message_id=None)
+                futures[
+                    pool.submit(
+                        sender.edit_card,
+                        target_receipt.canonical(),
+                        card,
+                        presentation=target_presentation,
+                    )
+                ] = index
+            for future in as_completed(futures):
+                updated[futures[future]] = TelegramDeliveryReceipt.model_validate(future.result())
+        return _telegram_fanout_receipt(tuple(item for item in updated if item is not None)).canonical()
+
+    def delete_card(self, receipt: Mapping[str, Any]) -> dict[str, Any]:
+        parsed = _telegram_fanout_receipts(receipt, expected=len(self._senders))
+        if any(sender.target_sha256 != item.target_sha256 for sender, item in zip(self._senders, parsed, strict=True)):
+            raise TelegramDeliveryError("news_delivery_telegram_fanout_target_mismatch")
+        deleted: list[TelegramDeliveryReceipt | None] = [None] * len(self._senders)
+        with ThreadPoolExecutor(max_workers=len(self._senders), thread_name_prefix="telegram-delete") as pool:
+            futures = {
+                pool.submit(sender.delete_card, target_receipt.canonical()): index
+                for index, (sender, target_receipt) in enumerate(zip(self._senders, parsed, strict=True))
+            }
+            for future in as_completed(futures):
+                deleted[futures[future]] = TelegramDeliveryReceipt.model_validate(future.result())
+        return _telegram_fanout_receipt(tuple(item for item in deleted if item is not None)).canonical()
+
+    def close(self) -> None:
+        for sender in self._senders:
+            sender.close()
+
+
+def _telegram_fanout_receipt(receipts: Sequence[TelegramDeliveryReceipt]) -> TelegramDeliveryReceipt:
+    if not receipts:
+        raise TelegramDeliveryError("news_delivery_telegram_fanout_receipt_invalid")
+    primary = receipts[0]
+    return TelegramDeliveryReceipt(
+        provider="telegram",
+        message_id=primary.message_id,
+        pushed_at_ms=primary.pushed_at_ms,
+        target_sha256=primary.target_sha256,
+        edited_at_ms=primary.edited_at_ms,
+        deleted_at_ms=primary.deleted_at_ms,
+        copies=tuple(
+            TelegramDeliveryCopyReceipt(
+                message_id=item.message_id,
+                pushed_at_ms=item.pushed_at_ms,
+                target_sha256=item.target_sha256,
+                edited_at_ms=item.edited_at_ms,
+                deleted_at_ms=item.deleted_at_ms,
+            )
+            for item in receipts[1:]
+        ),
+    )
+
+
+def _telegram_fanout_receipts(receipt: Mapping[str, Any], *, expected: int) -> tuple[TelegramDeliveryReceipt, ...]:
+    try:
+        batch = TelegramDeliveryReceipt.model_validate(receipt)
+    except ValueError:
+        raise TelegramDeliveryError("news_delivery_telegram_fanout_receipt_invalid") from None
+    rows = (
+        TelegramDeliveryReceipt(
+            provider="telegram",
+            message_id=batch.message_id,
+            pushed_at_ms=batch.pushed_at_ms,
+            target_sha256=batch.target_sha256,
+            edited_at_ms=batch.edited_at_ms,
+            deleted_at_ms=batch.deleted_at_ms,
+        ),
+        *(
+            TelegramDeliveryReceipt(
+                provider="telegram",
+                message_id=copy.message_id,
+                pushed_at_ms=copy.pushed_at_ms,
+                target_sha256=copy.target_sha256,
+                edited_at_ms=copy.edited_at_ms,
+                deleted_at_ms=copy.deleted_at_ms,
+            )
+            for copy in batch.copies
+        ),
+    )
+    if len(rows) != expected:
+        raise TelegramDeliveryError("news_delivery_telegram_fanout_target_mismatch")
+    return rows
+
+
+class TelegramTradingClient:
+    """One Bot API cursor serving independently configured Telegram private users."""
+
+    def __init__(
+        self,
+        *,
+        bot_token: str,
+        authorized_user_ids: Sequence[int],
+        transport: httpx.BaseTransport | None = None,
+        monotonic: Callable[[], float] | None = None,
+    ) -> None:
+        normalized_token = str(bot_token or "").strip()
+        if not _BOT_TOKEN_RE.fullmatch(normalized_token):
+            raise ValueError("manual_trading_telegram_bot_token_invalid")
+        users = tuple(authorized_user_ids)
+        if (
+            not users
+            or len(users) > 16
+            or len(set(users)) != len(users)
+            or any(isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0 for user_id in users)
+        ):
+            raise ValueError("manual_trading_telegram_authorized_users_invalid")
+        self._authorized_user_ids = frozenset(users)
+        self._target_digest_key = normalized_token.encode()
+        self._monotonic = monotonic or time.monotonic
+        selected_transport = transport if transport is not None else _TelegramHTTPSBotTransport(normalized_token)
+        self._client = httpx.Client(
+            base_url=f"{_TELEGRAM_API_ORIGIN}/",
+            timeout=httpx.Timeout(_TELEGRAM_TIMEOUT_SECONDS),
+            headers={"Accept-Encoding": "identity", "Content-Type": "application/json"},
+            follow_redirects=False,
+            transport=selected_transport,
+        )
+
+    def target_sha256_for(self, chat_id: int) -> str:
+        if chat_id not in self._authorized_user_ids:
+            raise ValueError("manual_trading_telegram_chat_unauthorized")
+        return hmac.new(
+            self._target_digest_key,
+            _telegram_target_digest_input(chat_id),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def poll_updates(self, *, next_update_id: int) -> tuple[TelegramTradingUpdate, ...]:
+        if isinstance(next_update_id, bool) or not isinstance(next_update_id, int) or next_update_id < 0:
+            raise ValueError("manual_trading_telegram_update_cursor_invalid")
+        result = self._call_result(
+            "getUpdates",
+            {
+                "offset": next_update_id,
+                "limit": 20,
+                "timeout": 0,
+                "allowed_updates": ["callback_query", "message"],
+            },
+            error_prefix="manual_trading_telegram_poll",
+        )
+        if not isinstance(result, list) or len(result) > 20:
+            raise TelegramDeliveryError("manual_trading_telegram_poll_response_invalid")
+        updates = tuple(self._parse_update(item) for item in result)
+        update_ids = [update.update_id for update in updates]
+        if update_ids != sorted(set(update_ids)) or any(update_id < next_update_id for update_id in update_ids):
+            raise TelegramDeliveryError("manual_trading_telegram_poll_order_invalid")
+        return updates
+
+    def answer_callback(self, callback_query_id: str, *, text: str, show_alert: bool = False) -> None:
+        callback_id = str(callback_query_id or "").strip()
+        message = str(text or "").strip()
+        if not callback_id or len(callback_id) > 128 or not message or len(message) > 200:
+            raise ValueError("manual_trading_telegram_callback_answer_invalid")
         try:
-            response_payload = response.json()
-        except ValueError:
-            raise TelegramDeliveryError(f"{error_prefix}_response_invalid", status_code=status_code) from None
-        if not isinstance(response_payload, Mapping) or response_payload.get("ok") is not True:
-            raise TelegramDeliveryError(f"{error_prefix}_business_rejected", status_code=status_code)
-        return response_payload.get("result")
+            result = self._call_result(
+                "answerCallbackQuery",
+                {"callback_query_id": callback_id, "text": message, "show_alert": bool(show_alert)},
+                error_prefix="manual_trading_telegram_callback_answer",
+            )
+        except TelegramDeliveryError as exc:
+            if exc.code == "manual_trading_telegram_callback_answer_expired":
+                return
+            raise
+        if result is not True:
+            raise TelegramDeliveryError("manual_trading_telegram_callback_answer_response_invalid")
+
+    def set_commands(self, *, chat_id: int, commands: Sequence[tuple[str, str]]) -> None:
+        if chat_id not in self._authorized_user_ids:
+            raise ValueError("manual_trading_telegram_chat_unauthorized")
+        normalized: list[dict[str, str]] = []
+        for command, description in commands:
+            name = str(command or "").strip()
+            label = str(description or "").strip()
+            if _BOT_COMMAND_RE.fullmatch(name) is None or not 1 <= len(label) <= 256:
+                raise ValueError("manual_trading_telegram_commands_invalid")
+            normalized.append({"command": name, "description": label})
+        names = [item["command"] for item in normalized]
+        if not 1 <= len(normalized) <= 100 or len(set(names)) != len(names):
+            raise ValueError("manual_trading_telegram_commands_invalid")
+        result = self._call_result(
+            "setMyCommands",
+            {
+                "commands": normalized,
+                "scope": {"type": "chat", "chat_id": chat_id},
+            },
+            error_prefix="manual_trading_telegram_commands",
+        )
+        if result is not True:
+            raise TelegramDeliveryError("manual_trading_telegram_commands_response_invalid")
+
+    def send_development_test_card(
+        self,
+        *,
+        chat_id: int,
+        card: Mapping[str, Any],
+        kind: str,
+        now_ms: int,
+    ) -> dict[str, Any]:
+        if chat_id not in self._authorized_user_ids or kind not in {"futures", "onchain"}:
+            raise ValueError("telegram_test_news_profile_invalid")
+        text = _telegram_message(
+            card,
+            news_at_ms=now_ms,
+            pushed_at_ms=now_ms,
+        )
+        buttons = (
+            [
+                {"text": "详细数据", "callback_data": "tf:detail:v1"},
+                {"text": "合约交易", "callback_data": "tf:trade:v1"},
+            ]
+            if kind == "futures"
+            else [{"text": "链上路由", "callback_data": "tf:onchain:v1"}]
+        )
+        result = self._call_result(
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
+                "link_preview_options": {"is_disabled": True},
+                "reply_markup": {"inline_keyboard": [buttons]},
+            },
+            error_prefix="telegram_test_news_send",
+        )
+        message_id = self._interaction_message_id(
+            result,
+            expected_chat_id=chat_id,
+            error_prefix="telegram_test_news_send",
+        )
+        return TelegramDeliveryReceipt(
+            provider="telegram",
+            message_id=message_id,
+            pushed_at_ms=now_ms,
+            target_sha256=self.target_sha256_for(chat_id),
+        ).canonical()
+
+    def delete_interaction(self, *, chat_id: int, message_id: int) -> None:
+        if chat_id not in self._authorized_user_ids:
+            raise ValueError("manual_trading_telegram_chat_unauthorized")
+        result = self._call_result(
+            "deleteMessage",
+            {"chat_id": chat_id, "message_id": message_id},
+            error_prefix="manual_trading_telegram_delete",
+        )
+        if result is not True:
+            raise TelegramDeliveryError("manual_trading_telegram_delete_response_invalid")
+
+    def send_interaction_reply(
+        self,
+        *,
+        chat_id: int,
+        source_message_id: int,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+    ) -> int:
+        if isinstance(source_message_id, bool) or not isinstance(source_message_id, int) or source_message_id <= 0:
+            raise ValueError("manual_trading_telegram_source_message_invalid")
+        payload = self._interaction_payload(chat_id=chat_id, text=text, keyboard=keyboard, allow_empty=False)
+        payload["reply_parameters"] = {
+            "message_id": source_message_id,
+            "allow_sending_without_reply": False,
+        }
+        result = self._call_result(
+            "sendMessage",
+            payload,
+            error_prefix="manual_trading_telegram_reply",
+        )
+        return self._interaction_message_id(
+            result,
+            expected_chat_id=chat_id,
+            error_prefix="manual_trading_telegram_reply",
+        )
+
+    def send_plain_reply(self, *, chat_id: int, source_message_id: int, text: str) -> int:
+        if isinstance(source_message_id, bool) or not isinstance(source_message_id, int) or source_message_id <= 0:
+            raise ValueError("manual_trading_telegram_source_message_invalid")
+        payload = self._interaction_payload(chat_id=chat_id, text=text, keyboard=(), allow_empty=True)
+        payload.pop("reply_markup")
+        payload["reply_parameters"] = {
+            "message_id": source_message_id,
+            "allow_sending_without_reply": False,
+        }
+        result = self._call_result(
+            "sendMessage",
+            payload,
+            error_prefix="manual_trading_telegram_reply",
+        )
+        return self._interaction_message_id(
+            result,
+            expected_chat_id=chat_id,
+            error_prefix="manual_trading_telegram_reply",
+        )
+
+    def edit_interaction(
+        self,
+        *,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+    ) -> None:
+        if isinstance(message_id, bool) or not isinstance(message_id, int) or message_id <= 0:
+            raise ValueError("manual_trading_telegram_interaction_message_invalid")
+        payload = self._interaction_payload(chat_id=chat_id, text=text, keyboard=keyboard, allow_empty=True)
+        payload["message_id"] = message_id
+        try:
+            result = self._call_result(
+                "editMessageText",
+                payload,
+                error_prefix="manual_trading_telegram_edit",
+            )
+        except TelegramDeliveryError as exc:
+            if exc.code == "manual_trading_telegram_edit_not_modified":
+                return
+            raise
+        observed = self._interaction_message_id(
+            result,
+            expected_chat_id=chat_id,
+            error_prefix="manual_trading_telegram_edit",
+        )
+        if observed != message_id:
+            raise TelegramDeliveryError("manual_trading_telegram_edit_message_mismatch")
+
+    def _parse_update(self, value: object) -> TelegramTradingUpdate:
+        if not isinstance(value, Mapping):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        update_id = value.get("update_id")
+        query = value.get("callback_query")
+        if isinstance(update_id, bool) or not isinstance(update_id, int) or update_id < 0:
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        if isinstance(query, Mapping):
+            return self._parse_callback_update(update_id, query)
+        message = value.get("message")
+        if isinstance(message, Mapping):
+            return self._parse_message_update(update_id, message)
+        raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+
+    def _parse_callback_update(self, update_id: int, query: Mapping[str, Any]) -> TelegramTradingUpdate:
+        callback_id = query.get("id")
+        actor = query.get("from")
+        message = query.get("message")
+        data = query.get("data")
+        if (
+            not isinstance(callback_id, str)
+            or not callback_id
+            or len(callback_id) > 128
+            or not isinstance(actor, Mapping)
+            or not isinstance(message, Mapping)
+            or not isinstance(data, str)
+            or not 1 <= len(data.encode("utf-8")) <= 64
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        actor_id = actor.get("id")
+        message_id = message.get("message_id")
+        chat = message.get("chat")
+        if (
+            isinstance(actor_id, bool)
+            or not isinstance(actor_id, int)
+            or actor_id <= 0
+            or actor.get("is_bot") is not False
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(chat, Mapping)
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        update_chat_id = chat.get("id")
+        chat_type = str(chat.get("type") or "")
+        if isinstance(update_chat_id, bool) or not isinstance(update_chat_id, int) or not chat_type:
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        return TelegramTradingUpdate(
+            update_id=update_id,
+            callback_query_id=callback_id,
+            actor_user_id=actor_id,
+            chat_id=update_chat_id,
+            chat_type=chat_type,
+            message_id=message_id,
+            data=data,
+            authorized=(
+                chat_type == "private" and update_chat_id == actor_id and actor_id in self._authorized_user_ids
+            ),
+        )
+
+    def _parse_message_update(self, update_id: int, message: Mapping[str, Any]) -> TelegramTradingUpdate:
+        actor = message.get("from")
+        chat = message.get("chat")
+        message_id = message.get("message_id")
+        text = message.get("text")
+        if (
+            not isinstance(actor, Mapping)
+            or actor.get("is_bot") is not False
+            or not isinstance(chat, Mapping)
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(text, str)
+            or len(text) > 256
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        actor_id = actor.get("id")
+        chat_id = chat.get("id")
+        chat_type = str(chat.get("type") or "")
+        if (
+            isinstance(actor_id, bool)
+            or not isinstance(actor_id, int)
+            or actor_id <= 0
+            or isinstance(chat_id, bool)
+            or not isinstance(chat_id, int)
+            or not chat_type
+        ):
+            raise TelegramDeliveryError("manual_trading_telegram_update_invalid")
+        command = text.strip().split(maxsplit=1)[0].split("@", maxsplit=1)[0].lower()
+        data = {
+            "/start": "tf:help:v1",
+            "/help": "tf:help:v1",
+            "/test_futures": "tf:test:futures",
+            "/test_onchain": "tf:test:onchain",
+            "/positions": "tf:cmd:positions",
+            "/history": "tf:cmd:history",
+            "/trades": "tf:cmd:trades",
+        }.get(command, "tf:message:ignored")
+        authorized = chat_type == "private" and chat_id == actor_id and actor_id in self._authorized_user_ids
+        return TelegramTradingUpdate(
+            update_id=update_id,
+            callback_query_id=f"message:{chat_id}:{message_id}",
+            actor_user_id=actor_id,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            message_id=message_id,
+            data=data,
+            authorized=authorized,
+            update_kind="message",
+        )
+
+    def _interaction_payload(
+        self,
+        *,
+        chat_id: int,
+        text: str,
+        keyboard: Sequence[tuple[str, str]],
+        allow_empty: bool,
+    ) -> dict[str, Any]:
+        message = str(text or "").strip()
+        if not message or len(message) > _TELEGRAM_TEXT_MAX:
+            raise ValueError("manual_trading_telegram_interaction_text_invalid")
+        buttons: list[dict[str, str]] = []
+        for label, callback_data in keyboard:
+            normalized_label = str(label or "").strip()
+            normalized_data = str(callback_data or "").strip()
+            if (
+                not normalized_label
+                or len(normalized_label) > 64
+                or not 1 <= len(normalized_data.encode("utf-8")) <= 64
+            ):
+                raise ValueError("manual_trading_telegram_keyboard_invalid")
+            buttons.append({"text": normalized_label, "callback_data": normalized_data})
+        if (not buttons and not allow_empty) or len(buttons) > 8:
+            raise ValueError("manual_trading_telegram_keyboard_invalid")
+        rows: list[list[dict[str, str]]] = []
+        pending: list[dict[str, str]] = []
+        for button in buttons:
+            if button["callback_data"].startswith("tf:o:c:"):
+                if pending:
+                    rows.append(pending)
+                    pending = []
+                rows.append([button])
+                continue
+            pending.append(button)
+            if len(pending) == 2:
+                rows.append(pending)
+                pending = []
+        if pending:
+            rows.append(pending)
+        if chat_id not in self._authorized_user_ids:
+            raise ValueError("manual_trading_telegram_chat_unauthorized")
+        return {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+            "reply_markup": {"inline_keyboard": rows},
+        }
+
+    def _interaction_message_id(self, value: object, *, expected_chat_id: int, error_prefix: str) -> int:
+        if not isinstance(value, Mapping):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        message_id = value.get("message_id")
+        chat = value.get("chat")
+        if (
+            isinstance(message_id, bool)
+            or not isinstance(message_id, int)
+            or message_id <= 0
+            or not isinstance(chat, Mapping)
+            or chat.get("id") != expected_chat_id
+        ):
+            raise TelegramDeliveryError(f"{error_prefix}_response_invalid")
+        return message_id
+
+    def _call_result(self, method: str, payload: Mapping[str, Any], *, error_prefix: str) -> Any:
+        return _telegram_call_result(
+            client=self._client,
+            monotonic=self._monotonic,
+            method=method,
+            payload=payload,
+            error_prefix=error_prefix,
+            deadline_at=self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS,
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -483,7 +1161,7 @@ def _telegram_message(
         content_lines.remove(market_line)
     facts_line = content_lines.pop() if content_lines else ""
     explanation = "\n".join(content_lines)
-    facts = _telegram_facts(facts_line)
+    facts = telegram_card_facts(facts_line)
     ticker_links = _trade_target_links(trade_targets)
 
     sections = [f"{icon} <b>{_escape_html(_clip(title, 240))}</b>"]
@@ -620,35 +1298,6 @@ def _telegram_scope_html(value: str) -> str:
         "single_name": "暂未验证到具体标的",
     }.get(str(value or ""), "")
     return f"🌐 <b>影响范围</b>  {label}" if label else ""
-
-
-def _telegram_facts(value: str) -> _TelegramFacts:
-    parts = [part.strip() for part in str(value or "").split(" · ") if part.strip()]
-    if not parts:
-        return _TelegramFacts()
-    if _TELEGRAM_TIME_RE.fullmatch(parts[-1]):
-        parts.pop()
-    origin = parts.pop() if parts else ""
-    report_count: int | None = None
-    match = _REPORTING_ORIGIN_RE.fullmatch(origin)
-    if match is not None:
-        origin = match.group("origin")
-        report_count = int(match.group("count"))
-    direction = parts.pop(0) if parts and parts[0] in _DIRECTION_LABELS else ""
-    novelty = parts.pop(0) if parts and parts[0] in _NOVELTY_LABELS else ""
-    magnitude = parts.pop(0) if parts and parts[0] in _MAGNITUDE_LABELS else ""
-    asset_text = " ".join(parts).strip()
-    # Reader assets are code-grounded exchange symbols. Fail closed when a future
-    # presentation-label drift leaves arbitrary metadata in the positional tail.
-    assets = tuple(part for part in asset_text.split() if _LINKABLE_TICKER_RE.fullmatch(part) is not None)
-    return _TelegramFacts(
-        direction=direction,
-        novelty=novelty,
-        magnitude=magnitude,
-        assets=assets,
-        origin=origin if origin != "-" else "",
-        report_count=report_count,
-    )
 
 
 def _telegram_asset_blocks(
@@ -941,4 +1590,9 @@ def _safe_trade_url(value: str) -> bool:
     )
 
 
-__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender"]
+__all__ = [
+    "TelegramDeliveryError",
+    "TelegramNewsPushSender",
+    "TelegramTradingClient",
+    "TelegramTradingUpdate",
+]
