@@ -337,7 +337,9 @@ startup and WSS reconnect, recovery may call only the official bounded
 `/open/strategy_list` and `/open/strategy_hits` interfaces: it reads the
 account's enabled list fresh because the hits endpoint is per-Strategy, then
 repairs audited coverage intervals. It does not verify or maintain a local
-allowlist. Strategy
+allowlist. History payload failures expose only a closed reason code; raw
+response bodies and provider values never enter errors, logs, status, metrics,
+or artifacts. Strategy
 definitions and provider-side enablement remain account authority. A successful
 handshake proves authentication/connectivity only; it does not prove Strategy
 existence, enablement, delivery completeness, or lossless history.

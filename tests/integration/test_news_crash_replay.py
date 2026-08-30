@@ -45,7 +45,12 @@ from tracefold.news.bus import (
     now_ms,
 )
 from tracefold.news.models import TRIAGE_POLICY_VERSION
-from tracefold.news.opennews import _SNOWFLAKE_SHIFT, _X_SNOWFLAKE_EPOCH_MS, source_artifact_identity
+from tracefold.news.opennews import (
+    _SNOWFLAKE_SHIFT,
+    _X_SNOWFLAKE_EPOCH_MS,
+    OpenNewsHistoryError,
+    source_artifact_identity,
+)
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
@@ -258,6 +263,110 @@ class _HistoryClient:
         return {"success": True, "data": [dict(self.hit), dict(self.older)], "page": 1, "limit": 100, "total": 2}
 
 
+class _EmptyHistoryClient:
+    def __init__(self, *, response_page_offset: int = 0) -> None:
+        self.response_page_offset = response_page_offset
+
+    async def get_strategy_list(self, **_kwargs: Any) -> dict[str, Any]:
+        return {"success": True, "data": [{"id": 1018, "name": "empty", "enabled": True}]}
+
+    async def get_strategy_hits(self, *, page: int, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "success": True,
+            "data": [],
+            "page": page + self.response_page_offset,
+            "limit": 100,
+            "usage": {},
+        }
+
+
+def _closed_recovery_incident(conn: Any) -> int:
+    stamp = now_ms()
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        incident_id = repos.news.open_incident(
+            cause_class="broker_unavailable",
+            now_ms=stamp - 1_000,
+        )
+        assert repos.news.close_open_incidents(cause_classes=["broker_unavailable"], now_ms=stamp) == 1
+    return incident_id
+
+
+def _recovery_incident(conn: Any, incident_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        "SELECT * FROM news_opennews_incidents WHERE incident_id = %s",
+        (incident_id,),
+    ).fetchone()
+    assert row is not None
+    return dict(row)
+
+
+def test_official_empty_history_without_total_durably_recovers_the_incident(conn) -> None:
+    incident_id = _closed_recovery_incident(conn)
+    bus = RecordingBus()
+    recovery = RecoveryRunner(
+        bus=bus,
+        db=FaultInjectingDatabase(conn),
+        history_client=_EmptyHistoryClient(),
+    )
+
+    assert asyncio.run(recovery._recover_pending()) == "success"
+    conn.commit()
+
+    incident = _recovery_incident(conn, incident_id)
+    assert (incident["recovery_status"], incident["recovered_count"], incident["last_error_code"]) == (
+        "recovered",
+        0,
+        None,
+    )
+    assert bus.of_kind("raw") == []
+
+
+def test_history_page_mismatch_durably_records_the_bounded_reason(conn) -> None:
+    incident_id = _closed_recovery_incident(conn)
+    recovery = RecoveryRunner(
+        bus=RecordingBus(),
+        db=FaultInjectingDatabase(conn),
+        history_client=_EmptyHistoryClient(response_page_offset=1),
+    )
+
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_page_mismatch$"):
+        asyncio.run(recovery._recover_pending())
+    conn.commit()
+
+    incident = _recovery_incident(conn, incident_id)
+    assert (incident["recovery_status"], incident["last_error_code"]) == (
+        "pending",
+        "opennews_history_payload_page_mismatch",
+    )
+
+
+def test_history_hit_without_timestamp_stays_pending_with_the_bounded_reason(conn) -> None:
+    incident_id = _closed_recovery_incident(conn)
+    hit = {**_one_hit(), "ts": "invalid"}
+    strategy_id = str((hit.get("strategy") or {}).get("id") or "")
+    older = {
+        **hit,
+        "id": f"{hit['id']}-older",
+        "ts": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+    }
+    recovery = RecoveryRunner(
+        bus=RecordingBus(),
+        db=FaultInjectingDatabase(conn),
+        history_client=_HistoryClient(hit, strategy_id=strategy_id, older=older),
+    )
+
+    with pytest.raises(OpenNewsHistoryError, match=r"^opennews_history_payload_hit_contract_invalid$"):
+        asyncio.run(recovery._recover_pending())
+    conn.commit()
+
+    incident = _recovery_incident(conn, incident_id)
+    assert (incident["recovery_status"], incident["last_error_code"]) == (
+        "pending",
+        "opennews_history_payload_hit_contract_invalid",
+    )
+
+
 def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_into_one_event(conn) -> None:
     """Receiver publish failure -> durable incident -> official recovery -> dedupe: one material Event.
 
@@ -297,7 +406,7 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
         "id": f"{hit['id']}-before-the-window",
         "ts": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
     }
-    history = _HistoryClient(hit, strategy_id=strategy_id, older=older)
+    history = _HistoryClient({**hit, "id": f" {hit['id']} "}, strategy_id=strategy_id, older=older)
     recovery = RecoveryRunner(bus=bus, db=db, history_client=history)
     asyncio.run(recovery._recover_pending())
     conn.commit()

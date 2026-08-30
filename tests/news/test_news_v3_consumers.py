@@ -4542,17 +4542,17 @@ def test_recovery_explicit_no_history_after_progress_is_partial_not_unavailable(
         bus=FakeBus(),
         db=FakeWorkerDatabase(news),
         history_client=_HistoryClient(
-            hits=[_history_hit(1, 1_500_000_000_000)],
+            hits=[_history_hit(index, 1_500_000_000_000) for index in range(1, 101)],
             hits_error=OpenNewsHistoryError("opennews_history_unavailable"),
             hits_error_page=2,
-            total=200,
+            total=101,
         ),
     )
 
     assert asyncio.run(recovery._recover_pending()) == "partial"
     completed = news.kwargs_of("complete_recovery")
     assert completed["status"] == "partial"
-    assert completed["recovered_count"] == 1
+    assert completed["recovered_count"] == 100
     assert completed["error_code"] == "opennews_history_unavailable"
 
 
@@ -4585,9 +4585,31 @@ def test_recovery_message_budget_resumes_without_replaying_the_page_prefix() -> 
     assert all(message.routing_key == RK_RAW_RECOVERY.format(strategy_id="1018") for message in bus.published)
 
 
+def test_recovery_indexes_raw_params_by_the_normalized_provider_id() -> None:
+    hit = _history_hit(42, 999_999_970_000)
+    hit["id"] = " 42 "
+    news = RecordingNews(pending_recovery_incidents=[_pending_incident()])
+    bus = FakeBus()
+    recovery = RecoveryRunner(
+        bus=bus,
+        db=FakeWorkerDatabase(news),
+        history_client=_HistoryClient(hits=[hit]),
+    )
+
+    assert asyncio.run(recovery._recover_pending()) == "success"
+    assert [message.message_id for message in bus.published] == ["raw:42"]
+
+
 def test_recovery_provider_call_and_wall_budgets_leave_incident_pending() -> None:
     cases = (
-        (_HistoryClient(total=200), {"max_provider_calls": 2}, "provider_calls"),
+        (
+            _HistoryClient(
+                hits=[_history_hit(index, 1_500_000_000_000) for index in range(1, 101)],
+                total=200,
+            ),
+            {"max_provider_calls": 2},
+            "provider_calls",
+        ),
         (_HistoryClient(hits_delay=0.05), {"max_wall_seconds": 0.005}, "wall_time"),
     )
     for client, kwargs, budget_name in cases:

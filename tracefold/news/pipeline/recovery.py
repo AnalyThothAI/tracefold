@@ -23,6 +23,7 @@ from ..opennews import (
     OpenNewsHistoryError,
     OpenNewsStrategyHistory,
     enabled_strategy_ids,
+    normalize_opennews_wire_id,
     parse_opennews_strategy_hits,
 )
 from ..telemetry import NewsRecoveryBudget, NewsRecoveryOutcome, NewsTelemetryPort, NewsWorkSemantics
@@ -428,10 +429,7 @@ class RecoveryRunner:
                 budget=budget,
             )
             budget.checkpoint()
-            page = parse_opennews_strategy_hits(payload)
-            budget.checkpoint()
-            if page.page != page_number:
-                raise OpenNewsHistoryError("opennews_history_payload_invalid")
+            page = parse_opennews_strategy_hits(payload, expected_page=page_number)
             raw_params_by_id = _raw_params_by_id(payload)
             budget.checkpoint()
             for index, event in enumerate(page.events[cursor.event_index :], start=cursor.event_index):
@@ -511,5 +509,7 @@ def _raw_params_by_id(payload: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     indexed: dict[str, dict[str, Any]] = {}
     for value in payload.get("data") or []:
         if isinstance(value, Mapping):
-            indexed.setdefault(str(value.get("id")), dict(value))
+            provider_record_id = normalize_opennews_wire_id(value.get("id"))
+            if provider_record_id:
+                indexed.setdefault(provider_record_id, dict(value))
     return indexed
