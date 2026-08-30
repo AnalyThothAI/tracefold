@@ -247,18 +247,45 @@ init: ## create ~/.tracefold/config.yaml + PostgreSQL role password files
 config: ## print effective runtime config
 	@$(TRACEFOLD) config
 
-db-migrate: preflight ## apply PostgreSQL migrations
-	@make --no-print-directory _trading-hard-cut-preflight-if-needed
-	@$(TRACEFOLD) db migrate
+db-migrate: preflight github-preflight ## apply PostgreSQL migrations
+	@# The same shape as `up` and `deploy-image`, for the same reason (#373): this applies Alembic
+	@# revisions to the operator's production database from whatever tree it is invoked in. Half of
+	@# that protection would be worse than either half — the exact-main gate without the deployment
+	@# lock would let a migration run concurrently with `up`'s own, and refusing inherited `COMPOSE_*`
+	@# without pinning them would break the checkout whose directory is not named `tracefold`.
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-migrate-locked
+
+_db-migrate-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@uv run python scripts/require_main_ci.py
+	@set -eu; \
+		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
+			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
+			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
+			echo "db-migrate refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
+			exit 2; \
+		fi; \
+		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
+		COMPOSE_PROJECT_NAME=tracefold; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
+		make --no-print-directory _trading-hard-cut-preflight-if-needed; \
+		$(TRACEFOLD) db migrate
 
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
 
-db-provision-nautilus-role: preflight ## offline one-shot provisioning for an existing PostgreSQL volume
+db-provision-nautilus-role: preflight github-preflight ## offline one-shot provisioning for an existing PostgreSQL volume
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-provision-nautilus-role-locked
 
 _db-provision-nautilus-role-locked:
 	@python3 scripts/with_deployment_lock.py --assert-held
+	@# Gated like the others (#373). The entrypoint below reads as an image-owned script, and that is
+	@# how it was first classified — wrongly. `compose.yaml` bind-mounts
+	@# `./docker/postgres-provision-nautilus-role.sh` over that path, so this runs *working-tree*
+	@# source as the `postgres` superuser against the production volume. That is the same hole the
+	@# gate closes for `db-migrate`, reached by a shorter path.
+	@uv run python scripts/require_main_ci.py
 	@set -eu; \
 		running=$$(docker compose ps -q); \
 		if [ -n "$$running" ]; then \

@@ -21,6 +21,35 @@ from tracefold.platform.resource import (
 )
 
 
+async def _rendered_once_active_permits_settle(
+    telemetry: TelemetryRegistry,
+    capability_label: str,
+    *,
+    timeout_seconds: float = 2.0,
+) -> str:
+    """Render the metrics once the accounting the caller is about to assert on has actually landed.
+
+    `change_resource_active(..., -1)` runs inside each future's done-callback, and asyncio schedules
+    those with `call_soon`. `await asyncio.sleep(0)` yields exactly one loop iteration, which is a
+    guess about how many turns the callback queue needs rather than a barrier for it. The guess held
+    on an idle machine — eighty local runs, idle and under load, all read `0.0` — and lost once on a
+    CI runner, on a commit that touched only the Makefile and a deploy test. Re-running that exact
+    commit passed, which is what makes it a race rather than a regression.
+
+    Waiting for the condition keeps the assertion exactly as strong. A gauge that never returns to
+    zero still renders non-zero when the deadline expires, and the caller still fails on it.
+    """
+
+    settled = f'tracefold_worker_resource_active{{capability="{capability_label}"}} 0.0'
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_seconds
+    while True:
+        rendered = telemetry.render_prometheus_text()
+        if settled in rendered or loop.time() >= deadline:
+            return rendered
+        await asyncio.sleep(0.01)
+
+
 def _sleep_and_return(delay_seconds: float, value: int) -> int:
     time.sleep(delay_seconds)
     return value
@@ -137,8 +166,7 @@ def test_finite_permits_follow_underlying_futures_after_callers_time_out() -> No
                 )
                 == "released"
             )
-            await asyncio.sleep(0)
-            return telemetry.render_prometheus_text()
+            return await _rendered_once_active_permits_settle(telemetry, "finite_operation")
         finally:
             release.set()
             capability.close()
