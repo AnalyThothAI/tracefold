@@ -920,7 +920,7 @@ Two `slow` tests restart the broker. They need
 `TRACEFOLD_TEST_RABBITMQ_CONTAINER` to name a container that is safe to bounce
 and skip without it — a test must never decide on its own to restart the
 operator's own deployment. CI names its service container in the
-`runtime-process` job and fails if it cannot find one.
+`runtime-broker` job and fails if it cannot find one.
 
 ```bash
 uv run pytest -q tests/news tests/integration/test_news_v3_pipeline.py \

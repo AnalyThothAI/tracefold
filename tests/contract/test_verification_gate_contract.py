@@ -17,7 +17,9 @@ REQUIRED_JOBS = {
     "python-hermetic",
     "postgres-behavior",
     "migration",
-    "runtime-process",
+    "runtime-broker",
+    "deploy-e2e",
+    "test-integrity",
     "frontend",
 }
 # Report-only (#373 PR 2). It is in the workflow but not in `ci-gate`'s dependencies, and the tests
@@ -163,7 +165,9 @@ def test_ci_gate_is_a_unique_thin_all_success_interface() -> None:
         "PYTHON_HERMETIC_RESULT",
         "POSTGRES_BEHAVIOR_RESULT",
         "MIGRATION_RESULT",
-        "RUNTIME_PROCESS_RESULT",
+        "RUNTIME_BROKER_RESULT",
+        "DEPLOY_E2E_RESULT",
+        "TEST_INTEGRITY_RESULT",
         "FRONTEND_RESULT",
     }
     command = gate["steps"][0]["run"]
@@ -237,12 +241,15 @@ def test_ci_and_runtime_install_the_same_pinned_uv_from_validated_locks() -> Non
     for image in ("node:22-bookworm-slim", "python:3.13-slim-bookworm"):
         assert re.search(rf"FROM {re.escape(image)}@sha256:[0-9a-f]{{64}}", dockerfile)
 
-    for job_name in ("postgres-behavior", "migration", "runtime-process", "frontend"):
+    for job_name in ("postgres-behavior", "migration", "runtime-broker", "deploy-e2e", "frontend"):
         image = workflow["jobs"][job_name]["services"]["postgres"]["image"]
         assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
-    for job_name in ("postgres-behavior", "runtime-process", "frontend"):
+    for job_name in ("postgres-behavior", "runtime-broker", "frontend"):
         image = workflow["jobs"][job_name]["services"]["rabbitmq"]["image"]
         assert re.fullmatch(r"[^@]+@sha256:[0-9a-f]{64}", image)
+    assert set(workflow["jobs"]["runtime-broker"]["services"]) == {"postgres", "rabbitmq"}
+    assert set(workflow["jobs"]["deploy-e2e"]["services"]) == {"postgres"}
+    assert "services" not in workflow["jobs"]["test-integrity"]
 
 
 def test_locked_sync_rejects_pyproject_lock_drift(tmp_path: Path) -> None:
@@ -286,10 +293,13 @@ def test_make_complete_verification_uses_native_reports_and_strict_runner_policy
         "ci-python-hermetic",
         "ci-postgres-behavior",
         "ci-migration",
-        "ci-runtime-process",
+        "ci-runtime-broker",
+        "ci-deploy-e2e",
+        "ci-test-integrity",
         "ci-frontend",
     ):
         assert target in commands
+    assert "ci-runtime-process" not in commands
     assert "PYTEST_ADDOPTS=" in commands
     assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in commands
     assert "TRACEFOLD_HYPOTHESIS_PROFILE=ci" in commands
