@@ -122,6 +122,99 @@ def test_the_retired_compile_and_propose_commands_are_gone_without_an_alias() ->
             build_parser().parse_args(retired)
 
 
+def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_endpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The public command keeps the direct teacher alias on the production Qwen endpoint."""
+
+    from tracefold.app.cli.commands import news_learning_baseline
+    from tracefold.news.review import desk as review_desk
+    from tracefold.news.review import drafter as review_drafter
+
+    primary = SimpleNamespace(
+        api_key="primary-key",
+        base_url="https://primary.test/v1",
+        news_triage_model="qwen3.8-27b",
+        request=None,
+        news_compiler_reflection=SimpleNamespace(
+            configured=True,
+            api_key="reflection-key",
+            base_url="https://reflection.test/v1",
+            request=None,
+        ),
+        news_triage_fallback=SimpleNamespace(configured=False),
+    )
+    settings = SimpleNamespace(llm=primary)
+    captured: dict[str, Any] = {}
+
+    class _Desk:
+        def __init__(self, _conn: Any) -> None:
+            pass
+
+        def open(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "tasks": [{"task_id": "evt.1", "task_version": "1" * 64, "event_id": "2" * 64}],
+                "next_cursor": "",
+            }
+
+        def evidence(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"agent": {"verdict": {"headline_zh": "一条待复核新闻"}}}
+
+    class _Context:
+        evidence = SimpleNamespace(source="")
+
+        @staticmethod
+        def event_semantics_payload() -> dict[str, Any]:
+            return {}
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    def fake_build_drafter_lm(**kwargs: Any) -> object:
+        captured.update(kwargs)
+        return object()
+
+    fake_batch = SimpleNamespace(
+        model_dump=lambda mode="json": {"schema_id": "draft", "drafter": {}, "drafts": []},
+        batch_sha256="b" * 64,
+        drafter={},
+        drafts=(),
+    )
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: settings)
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: object())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr(review_desk, "ReviewDesk", _Desk)
+    monkeypatch.setattr(news_learning_baseline, "_drafter_context", lambda _view: _Context())
+    monkeypatch.setattr("tracefold.news.program.artifact.render_model_evidence_json", lambda *_args, **_kwargs: "{}")
+    monkeypatch.setattr(review_drafter, "build_drafter_lm", fake_build_drafter_lm)
+    monkeypatch.setattr(review_drafter, "ReviewDrafter", lambda lm: lm)
+    monkeypatch.setattr(review_drafter, "build_draft_batch", lambda _drafter, _tasks: fake_batch)
+
+    args = build_parser().parse_args(
+        [
+            "news",
+            "learning",
+            "draft-reviews",
+            "--model",
+            "qwen3.8-27b:thinking",
+            "--limit",
+            "1",
+            "--out",
+            str(tmp_path / "drafts.json"),
+        ]
+    )
+    code, payload = _handle_learning(args)
+
+    assert code == 0 and payload["data"]["tasks"] == 1
+    assert captured["api_base"] == "https://primary.test/v1"
+    assert captured["api_key"] == "primary-key"
+    assert captured["model_name"] == "openai/qwen3.8-27b:thinking"
+    assert captured["model_kwargs"] == {}
+    assert captured["structured_output"] == "prompt_json"
+
+
 def test_learning_evaluation_exposes_program_live_opt_in_not_legacy_model_flag() -> None:
     parser = build_parser()
     args = parser.parse_args(

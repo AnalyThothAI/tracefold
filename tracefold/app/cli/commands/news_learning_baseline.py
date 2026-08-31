@@ -406,31 +406,44 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
     )
 
 
+def _drafting_endpoint(settings: Any, model_name: str) -> Any:
+    from tracefold.app.llm import configured_lm_endpoint
+
+    primary_model = str(settings.llm.news_triage_model)
+    if model_name.removesuffix(":thinking") == primary_model.removesuffix(":thinking"):
+        return configured_lm_endpoint(settings, model_name=model_name)
+    reflection = getattr(settings.llm, "news_compiler_reflection", None)
+    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
+    if not source.configured:
+        raise ValueError("news_review_drafter_endpoint_not_configured")
+    return configured_lm_endpoint(
+        settings,
+        model_name=model_name,
+        api_key=source.api_key,
+        base_url=source.base_url,
+        request_config=source.request,
+    )
+
+
 def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """Propose `news_review_v6` rubrics with exact taxonomy Gold. The output is a file, never a review.
 
     `ReviewDesk.submit` appends an acceptance row unconditionally, so a draft written through that path would
-    be accepted release evidence the instant it landed. The human stays the acceptance authority; this only
-    turns "compose a judgment from scratch" into "confirm or reject one".
+    be accepted release evidence the instant it landed. The owner stays the acceptance authority and may name
+    an AI adjudicator honestly; this only turns "compose a judgment from scratch" into "confirm or reject one".
 
     Tasks come from the ReviewDesk queue rather than from `baseline_episodes`, which starts at
     `news_reviews` and therefore only ever returns Events that already have one — 170 against 6,186
     unreviewed. Drafting is for the ones nobody has judged yet, and the queue is also what gives the drafter
-    the same task identity and the same evidence view a human reviewer opens.
+    the same task identity and the same evidence view an authorized reviewer opens.
     """
 
     del stable
-    from tracefold.app.llm import configured_lm_endpoint
     from tracefold.app.repository_session import postgres_connection
     from tracefold.news import source_authority_from_evidence
     from tracefold.news.program.artifact import render_model_evidence_json
     from tracefold.news.review.desk import DeskQuery, Principal, ReviewDesk, TaskRef
     from tracefold.news.review.drafter import ReviewDrafter, build_draft_batch, build_drafter_lm
-
-    reflection = getattr(settings.llm, "news_compiler_reflection", None)
-    source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback
-    if not source.configured:
-        raise ValueError("news_review_drafter_endpoint_not_configured")
 
     principal = Principal(subject="operator")
     hours = int(args.hours)
@@ -501,13 +514,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
         return 2, {"ok": False, "error": {"code": "news_review_drafter_nothing_to_draft"}}
 
     # Same endpoint plumbing as the judge: a drafting model is a metric-side tool, not a Program route.
-    endpoint = configured_lm_endpoint(
-        settings,
-        model_name=str(args.model),
-        api_key=source.api_key,
-        base_url=source.base_url,
-        request_config=source.request,
-    )
+    endpoint = _drafting_endpoint(settings, str(args.model))
     batch = build_draft_batch(
         ReviewDrafter(
             build_drafter_lm(
@@ -539,6 +546,6 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
             "unique_tasks": len({entry.task_id for entry in batch.drafts}),
             "with_gold": len(with_gold),
             "failed": len(batch.drafts) - len(drafted),
-            "note": "proposals only - a human must accept each one through `tracefold news review submit`",
+            "note": "proposals only - an owner-authorized reviewer accepts through `tracefold news review submit`",
         },
     }

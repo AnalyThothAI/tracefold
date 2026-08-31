@@ -364,7 +364,7 @@ tracefold.news
     storage.py         instrument, quote, Event Reaction, and bounded review persistence composition
   review/
     desk.py           ReviewDesk queues, evidence views, rubrics, acceptance receipts
-    drafter.py        model-proposed rubrics a human accepts or rewrites; writes a file, never the DB
+    drafter.py        model-proposed rubrics an authorized reviewer accepts or rewrites; never writes the DB
   learning/
     dataset.py        freeze / load / project the immutable corpora; holds no release authority
     objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
@@ -1574,7 +1574,7 @@ multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
 entity grounding, novelty, direction, magnitude, copy value, timeliness and
 first bad owner). Current `news_review_v6` retains exact gold for the seven
 TradeRelevance fields from v4 and adds exact taxonomy Gold plus draft/reviewer
-provenance. One operator acceptance is sufficient taxonomy Gold; no taxonomy-specific
+provenance. One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
 second reviewer or adjudication is required. A failed scored dimension without expected
 gold is not scored. A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
