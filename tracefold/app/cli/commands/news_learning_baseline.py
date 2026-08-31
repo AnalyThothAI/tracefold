@@ -407,10 +407,12 @@ def _drafter_context(view: Mapping[str, Any]) -> Any:
 
 
 def _drafting_endpoint(settings: Any, model_name: str) -> Any:
-    from tracefold.app.llm import configured_lm_endpoint
+    from tracefold.app.llm import configured_lm_endpoint, litellm_proxy_model_name
 
-    primary_model = str(settings.llm.news_triage_model)
-    if model_name.removesuffix(":thinking") == primary_model.removesuffix(":thinking"):
+    primary_base_url = str(settings.llm.base_url)
+    primary_model = litellm_proxy_model_name(str(settings.llm.news_triage_model), base_url=primary_base_url)
+    requested_model = litellm_proxy_model_name(model_name, base_url=primary_base_url)
+    if requested_model.removesuffix(":thinking") == primary_model.removesuffix(":thinking"):
         return configured_lm_endpoint(settings, model_name=model_name)
     reflection = getattr(settings.llm, "news_compiler_reflection", None)
     source = reflection if reflection is not None and reflection.configured else settings.llm.news_triage_fallback

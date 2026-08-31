@@ -134,7 +134,9 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
     primary = SimpleNamespace(
         api_key="primary-key",
         base_url="https://primary.test/v1",
-        news_triage_model="qwen3.8-27b",
+        # Operator configs may persist the provider-qualified spelling while
+        # the documented CLI keeps the direct alias unqualified.
+        news_triage_model="openai/qwen3.8-27b",
         request=None,
         news_compiler_reflection=SimpleNamespace(
             configured=True,
