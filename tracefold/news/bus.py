@@ -1,4 +1,4 @@
-"""Bus contract: envelope, routing keys, queue names, publisher/consumer protocols (no aio-pika)."""
+"""Bus contract: envelope, routing keys, queue names, settlement vocabulary (no aio-pika)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal, Protocol
+from typing import Any, Final, Literal
 
 from .models import NEWS_BUS_SCHEMA_VERSION
 
@@ -25,8 +25,12 @@ RK_RAW_RECOVERY: Final = "raw.recovery.{strategy_id}"
 RK_EVENT: Final = "event.{dedupe_family}.{queue_priority}"
 RK_VERDICT_PUSH: Final = "verdict.push"
 
-# RabbitMQ 4.3 quorum queues count failed deliveries themselves; the header below is broker-written and
-# read-only for Tracefold. It is absent on the first delivery of a message.
+# RabbitMQ 4.3 quorum queues count deliveries themselves; both headers below are broker-written and
+# read-only for Tracefold. `x-delivery-count` counts only counted failures and is absent on the first
+# delivery, so it is what an attempt number is derived from. `x-acquired-count` counts every time a
+# consumer took the message, including the uncounted defer returns — measured present on every 4.3.5
+# dead letter. The two diverge exactly when a message was deferred rather than failing, which is the
+# one thing an operator reading `news dlq inspect` cannot tell from the delivery count alone.
 DELIVERY_COUNT_HEADER: Final = "x-delivery-count"
 ACQUIRED_COUNT_HEADER: Final = "x-acquired-count"
 _BODY_FIELDS: Final = frozenset({"schema_version", "kind", "message_id", "trace_id", "occurred_at_ms", "payload"})
@@ -171,16 +175,7 @@ class PermanentError(RuntimeError):
     """Non-retryable failure; message is dead-lettered after settlement."""
 
 
-class Publisher(Protocol):
-    async def publish(self, message: BusMessage) -> None: ...
-
-
 Handler = Callable[[BusMessage], Awaitable[None]]
-
-
-class Consumer(Protocol):
-    async def consume(self, queue: str, handler: Handler, *, prefetch: int, stop_event: Any) -> None: ...
-
 
 __all__ = [
     "ACQUIRED_COUNT_HEADER",
@@ -199,11 +194,9 @@ __all__ = [
     "BrokerUnavailable",
     "BusDecodeError",
     "BusMessage",
-    "Consumer",
     "DeferError",
     "Handler",
     "PermanentError",
-    "Publisher",
     "TransientError",
     "decode_body",
     "new_trace_id",

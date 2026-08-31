@@ -438,6 +438,74 @@ def test_a_broker_outage_becomes_one_incident_that_official_recovery_settles_int
     assert source_artifact_identity(str(stored["canonical_url"])) == (artifact_id, artifact_published_at_ms)
 
 
+def test_a_killed_receiver_becomes_a_process_outage_the_next_one_recovers_into_one_event(conn) -> None:
+    """#425: the provider gap a killed Receiver leaves behind is recovered like any other incident.
+
+    Nothing survives a fatal cancellation in the process that dies — the Workers root has already closed
+    business admission, and a SIGKILL never reaches application code — so the durable row is the only
+    handover. The successor reads `connected` still true, opens the interval at the last write that
+    proves the old process was alive, and its own connection closes it. From there this is the ordinary
+    path: official history refills the window, and a frame that also arrives live is the same fact.
+    """
+
+    hit = _one_hit()
+    strategy_id = str((hit.get("strategy") or {}).get("id") or "")
+    bus = RecordingBus()
+    db = FaultInjectingDatabase(conn)
+
+    # What the killed process left behind: connected, with its last write timestamped.
+    repos = repositories_for_connection(conn)
+    seeded = repos.news.ingest_liveness()
+    assert seeded is not None
+    alive_at_ms = int(seeded["updated_at_ms"])
+    with repos.transaction():
+        repos.news.update_ingest_state(now_ms=alive_at_ms, connected=True)
+    conn.commit()
+
+    successor = OpenNewsReceiver(bus=bus, db=db, ws_client=None, recovery=None)
+    asyncio.run(successor._record_a_predecessor_that_never_reported_a_disconnect())
+    conn.commit()
+
+    opened = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    assert [row["cause_class"] for row in opened] == ["process_outage"]
+    assert opened[0]["opened_at_ms"] == alive_at_ms
+    assert opened[0]["planned"] is False, "a kill is not a planned shutdown"
+    assert opened[0]["closed_at_ms"] is None and opened[0]["recovery_status"] == "pending"
+
+    # The new connection closes the window; that is what makes it visible to Recovery.
+    asyncio.run(successor._connected())
+    conn.commit()
+    closed = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    assert closed[0]["closed_at_ms"] is not None
+
+    older = {
+        **hit,
+        "id": f"{hit['id']}-before-the-window",
+        "ts": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(),
+    }
+    history = _HistoryClient({**hit, "id": f" {hit['id']} "}, strategy_id=strategy_id, older=older)
+    recovery = RecoveryRunner(bus=bus, db=db, history_client=history)
+    asyncio.run(recovery._recover_pending())
+    conn.commit()
+
+    settled = [dict(row) for row in conn.execute("SELECT * FROM news_opennews_incidents").fetchall()]
+    assert settled[0]["recovery_status"] == "recovered" and settled[0]["recovered_count"] == 1
+    recovered = [message for message in bus.of_kind("raw") if message.payload["ingest_mode"] == "recovery"]
+    assert len(recovered) == 1
+
+    deduper = _deduper(db, bus)
+    asyncio.run(deduper.handle(recovered[0]))
+    conn.commit()
+    after_recovery = _events(conn)
+    assert len(after_recovery) == 1
+
+    # The same frame arriving live afterwards is the same material fact, not a second one.
+    asyncio.run(deduper.handle(_raw_message(hit)))
+    conn.commit()
+    assert [row["event_id"] for row in _events(conn)] == [row["event_id"] for row in after_recovery]
+    assert _count(conn, "SELECT count(*) AS n FROM news_items WHERE source_item_key = %s", (str(hit["id"]),)) == 1
+
+
 # ------------------------------------------------------- Deduper: published to the broker, unmarked in the row
 
 
