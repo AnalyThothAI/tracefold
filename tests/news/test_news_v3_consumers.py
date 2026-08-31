@@ -28,6 +28,7 @@ from tracefold.news.bus import (
     DeferError,
     PermanentError,
     TransientError,
+    now_ms,
 )
 from tracefold.news.market_review.pricing import Candle, PriceInstrument, PricePoint
 from tracefold.news.models import (
@@ -4426,6 +4427,140 @@ def test_receiver_surfaces_database_and_unknown_publish_failures() -> None:
 
     asyncio.run(scenario())
     assert not news.open_causes
+
+
+class _StubWsClient:
+    """The provider socket, reduced to what the Receiver loop actually calls."""
+
+    def __init__(self, *, block: bool = True) -> None:
+        self.block = block
+        self.connected = 0
+        self.closed = 0
+
+    async def connect(self) -> None:
+        self.connected += 1
+
+    async def receive(self) -> Any:
+        if self.block:
+            await asyncio.Event().wait()  # a live socket with a quiet provider
+        return None
+
+    async def close(self) -> None:
+        self.closed += 1
+
+
+def test_a_cancelled_receiver_writes_nothing_and_the_next_process_opens_the_outage_interval() -> None:
+    """#425: the process that is killed cannot record its own absence, so the next one does.
+
+    A fatal cancellation reaches this loop after the Workers root has already closed business
+    admission, so nothing it could write would land — and a SIGKILL never runs application code at
+    all. The durable row is the handover: `connected` still true means the last Receiver was killed
+    while connected, and the interval starts at that row's last write.
+    """
+
+    killed_news = _DurableIncidentNews()
+    killed = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(killed_news),
+        ws_client=_StubWsClient(),
+        recovery=None,
+    )
+
+    async def cancelled() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(killed.run(stop_event=stop))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancelled())
+    # The killed process reported no disconnect at all: no `planned_shutdown`, no relabelling.
+    assert killed_news.open_causes == set()
+    assert "close_open_incidents" in killed_news.names()  # it did connect
+
+    wake = _WakeRecovery()
+    successor_news = _DurableIncidentNews()
+    successor_news.responses["ingest_liveness"] = {"connected": True, "updated_at_ms": 1_700_000_000_000}
+    successor = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(successor_news),
+        ws_client=_StubWsClient(),
+        recovery=wake,  # type: ignore[arg-type]
+    )
+
+    async def restarted() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(successor.run(stop_event=stop))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(restarted())
+
+    opened = successor_news.kwargs_of("open_incident")
+    assert opened["cause_class"] == "process_outage"
+    # The interval starts when the killed process was last known to be running, not at this startup.
+    assert opened["now_ms"] == 1_700_000_000_000
+    assert "planned" not in opened or opened["planned"] is False
+    # Connecting closes it and asks Recovery to backfill the window, like any other incident.
+    closed = successor_news.kwargs_of("close_open_incidents")
+    assert "process_outage" in (closed["cause_classes"] or ())
+    assert wake.requests == 1
+
+
+def test_the_outage_interval_never_starts_in_the_future() -> None:
+    """A predecessor whose clock ran ahead must not open a window its successor closes before it began.
+
+    `news_ingest_state.updated_at_ms` only ever moves forward, so a fast clock leaves a timestamp this
+    process has not reached. The incident's own check constraint refuses `closed_at_ms < opened_at_ms`,
+    so trusting it would make the Receiver die on the very row it just wrote, every time it started.
+    """
+
+    news = _DurableIncidentNews()
+    news.responses["ingest_liveness"] = {"connected": True, "updated_at_ms": now_ms() + 3_600_000}
+    receiver = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        ws_client=_StubWsClient(),
+        recovery=None,
+    )
+
+    before = now_ms()
+    asyncio.run(receiver._record_a_predecessor_that_never_reported_a_disconnect())
+
+    opened = news.kwargs_of("open_incident")
+    assert opened["cause_class"] == "process_outage"
+    assert before <= opened["now_ms"] <= now_ms()
+
+
+def test_a_receiver_that_stops_gracefully_records_a_planned_shutdown_and_no_outage() -> None:
+    """The graceful path is unchanged and must stay distinguishable from a kill."""
+
+    news = _DurableIncidentNews()
+    news.responses["ingest_liveness"] = {"connected": False, "updated_at_ms": 1_700_000_000_000}
+    receiver = OpenNewsReceiver(
+        bus=FakeBus(),
+        db=FakeWorkerDatabase(news),
+        ws_client=_StubWsClient(),
+        recovery=None,
+    )
+
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        task = asyncio.create_task(receiver.run(stop_event=stop))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        stop.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(scenario())
+
+    assert news.open_causes == {"planned_shutdown"}
+    opened = news.kwargs_of("open_incident")
+    assert opened["cause_class"] == "planned_shutdown" and opened["planned"] is True
 
 
 def _pending_incident(incident_id: int = 1) -> dict[str, Any]:
