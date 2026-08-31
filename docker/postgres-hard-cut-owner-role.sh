@@ -57,9 +57,7 @@ final_contract() {
 	  OR NOT EXISTS (
 	    SELECT 1 FROM pg_roles
 	     WHERE rolname = 'tracefold_app'
-	       AND NOT rolcanlogin AND rolinherit AND rolsuper
-	       AND rolcreatedb AND rolcreaterole
-	       AND NOT rolreplication AND NOT rolbypassrls
+	       AND NOT rolcanlogin AND rolsuper
 	  )
 	  OR (
 	    SELECT count(*) FROM pg_roles
@@ -209,9 +207,7 @@ old_contract() {
 	  OR NOT EXISTS (
 	    SELECT 1 FROM pg_roles
 	     WHERE rolname = 'tracefold_app'
-	       AND NOT rolcanlogin AND rolinherit AND rolsuper
-	       AND rolcreatedb AND rolcreaterole
-	       AND NOT rolreplication AND NOT rolbypassrls
+	       AND NOT rolcanlogin AND rolsuper
 	  )
 	  OR (
 	    SELECT count(*) FROM pg_roles
