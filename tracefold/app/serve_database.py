@@ -88,8 +88,8 @@ class ServeDatabase:
     def create(cls, settings: Any, *, telemetry: TelemetryRegistry | None = None) -> ServeDatabase:
         postgres = settings.storage.postgres
         dsn = with_password_from_file(
-            settings.postgres_dsn("serve"),
-            settings.postgres_password_file("serve"),
+            postgres.dsn,
+            settings.postgres_password_file(),
         )
         pool = create_pool(
             dsn,

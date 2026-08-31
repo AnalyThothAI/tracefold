@@ -136,7 +136,6 @@ def test_worker_session_applies_dynamic_policy_in_one_local_round_trip() -> None
         "max_parallel_workers_per_gather": "0",
         "jit": "off",
         "work_mem": "16MB",
-        "application_name": "tracefold_workers:news_deduper",
         "statement_timeout": "500ms",
         "transaction_timeout": "500ms",
     }

@@ -2106,11 +2106,12 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
     output_path = tmp_path / "registered.json"
     candidate_path.write_text(json.dumps(stale.model_dump(mode="json")), encoding="utf-8")
     rows_before = int(conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"])
-    roles: list[str] = []
+    connection_count = 0
 
     @contextmanager
-    def registered_connection(_settings: Any, *, role: str):
-        roles.append(role)
+    def registered_connection(_settings: Any):
+        nonlocal connection_count
+        connection_count += 1
         yield conn
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
@@ -2136,7 +2137,7 @@ def test_release_register_rejects_a_stale_optimizer_population_before_any_artifa
 
     assert code == 2
     assert payload["error"] == "news_learning_proposal_optimizer_population_unverified"
-    assert roles == ["serve"]  # The workers writer was never opened.
+    assert connection_count == 1  # Registration failed before opening another database session.
     assert int(conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"]) == rows_before
     assert not artifact_root.exists()
     assert not output_path.exists()

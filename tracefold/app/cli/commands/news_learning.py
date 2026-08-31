@@ -116,7 +116,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
             candidate_artifact = apply_program_patch(parent, prompt.patch.applied_to(parent))
             from tracefold.news.learning.dataset import DevelopmentDatasetStore
 
-            with postgres_connection(settings, role="serve") as export_conn:
+            with postgres_connection(settings) as export_conn:
                 export = DevelopmentDatasetStore(
                     export_conn,
                     stable=stable,
@@ -138,7 +138,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                 candidate_artifact,
                 artifact_root=Path(str(args.artifact_root)),
             )
-            with postgres_connection(settings, role="workers") as conn, conn.transaction():
+            with postgres_connection(settings) as conn, conn.transaction():
                 development = conn.execute(
                     "SELECT artifact_sha FROM news_learning_artifacts "
                     "WHERE artifact_sha = %s AND kind = 'dataset' "
@@ -226,7 +226,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
 
         candidate, artifact_paths = _load_candidate_bundle(str(getattr(args, "candidate", "") or ""))
         catalog = () if candidate is None else (candidate,)
-        with postgres_connection(settings, role="workers") as conn:
+        with postgres_connection(settings) as conn:
             if action == "freeze":
                 if args.role == "validation" and candidate is None:
                     raise ValueError("news_learning_validation_candidate_required")

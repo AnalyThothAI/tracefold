@@ -4,7 +4,7 @@ import json
 import uuid
 
 import pytest
-from psycopg.errors import CheckViolation, InsufficientPrivilege, RaiseException
+from psycopg.errors import CheckViolation, RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.support.news_judgment import news_taxonomy
@@ -1556,56 +1556,3 @@ def test_development_pair_reveals_arm_mapping_and_exact_candidate_diff_after_acc
         "hypothesis": "修复无证据的 priced-in 判断",
         "exact_diff": exact_diff,
     }
-
-
-def test_serve_role_has_only_append_review_write_privileges(conn) -> None:
-    event_id = _open_event(conn)
-    conn.execute("SET ROLE tracefold_serve")
-    try:
-        assert (
-            conn.execute("SELECT event_id FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone()[
-                "event_id"
-            ]
-            == event_id
-        )
-
-        task = ReviewDesk(conn, now_ms=NOW).open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
-        with repositories_for_connection(conn).transaction():
-            receipt = ReviewDesk(conn, now_ms=NOW).submit(
-                TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-                _rubric(),
-                principal=PRINCIPAL,
-                idempotency_key=str(uuid.uuid4()),
-            )
-        assert receipt["receipt"]["review_id"]
-
-        with repositories_for_connection(conn).transaction():
-            external = ReviewDesk(conn, now_ms=NOW).submit(
-                None,
-                ExternalMissSubmission(
-                    source_url="https://example.test/role-miss",
-                    title="External miss through the narrow writer role",
-                    body="Primary source body",
-                    occurred_at_ms=NOW - 1,
-                    rubric=_rubric(),
-                ),
-                principal=PRINCIPAL,
-                idempotency_key=str(uuid.uuid4()),
-            )
-        assert external["receipt"]["external_snapshot_id"]
-
-        conn.execute("BEGIN")
-        conn.execute("SAVEPOINT denied_review_rewrite")
-        with pytest.raises((InsufficientPrivilege, RaiseException)):
-            conn.execute("DELETE FROM news_reviews")
-        conn.execute("ROLLBACK TO SAVEPOINT denied_review_rewrite")
-        conn.execute("RELEASE SAVEPOINT denied_review_rewrite")
-        conn.execute("SAVEPOINT denied_news_write")
-        with pytest.raises(InsufficientPrivilege):
-            conn.execute("INSERT INTO news_events(event_id) VALUES (%s)", ("f" * 64,))
-        conn.execute("ROLLBACK TO SAVEPOINT denied_news_write")
-        conn.execute("RELEASE SAVEPOINT denied_news_write")
-        conn.commit()
-    finally:
-        conn.execute("RESET ROLE")
-        conn.commit()

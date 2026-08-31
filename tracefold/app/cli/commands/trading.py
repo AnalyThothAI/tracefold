@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import yaml
 
@@ -23,7 +23,6 @@ from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"close-only": "CLOSE_ONLY", "paused": "PAUSED"}
 _STATUS_WINDOW_MS = 24 * 3_600_000
-_READ_COMMANDS = frozenset({"status", "cases", "show"})
 
 
 def _now_ms() -> int:
@@ -42,10 +41,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         from .trading_evidence import handle_trading_evidence
 
         return handle_trading_evidence(settings, args, now_ms=now)
-    listing_only = command == "blacklist" and str(getattr(args, "blacklist_action", "list") or "list") == "list"
-    role: Literal["serve", "workers"] = "serve" if (command in _READ_COMMANDS or listing_only) else "workers"
-
-    with repositories(settings, role=role) as repos:
+    with repositories(settings) as repos:
         trading = repos.trading
 
         if command == "status":

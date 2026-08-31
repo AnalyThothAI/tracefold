@@ -88,7 +88,7 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
         configured_bindings.add("BINANCE_USDM")
     if hyperliquid_credentials is not None:
         configured_bindings.add("HYPERLIQUID_PERP")
-    with repositories(settings, role="nautilus") as repos:
+    with repositories(settings, application_name="tracefold_nautilus") as repos:
         now_ms = int(time.time() * 1_000)
         capability_snapshots = {
             binding: repos.trading.active_execution_capability_snapshot(binding=binding)

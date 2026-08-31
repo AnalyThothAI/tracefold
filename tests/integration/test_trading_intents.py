@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from psycopg import OperationalError
-from psycopg.errors import CheckViolation, ForeignKeyViolation, InsufficientPrivilege, RaiseException, UniqueViolation
+from psycopg.errors import CheckViolation, ForeignKeyViolation, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import connect_postgres_test
 from tests.trading_v3_fixtures import (
@@ -747,16 +747,11 @@ def test_capital_console_projection_reads_exact_authority_and_pages_without_dupl
         second_intent.intent_id,
     }
 
-    conn.execute("SET ROLE tracefold_serve")
-    try:
-        assert len(repos.trading.authority_projection()) == 2
-        assert {row["intent_id"] for row in repos.trading.console_capital_evidence(limit=10)} == {
-            first_intent.intent_id,
-            second_intent.intent_id,
-        }
-    finally:
-        conn.execute("RESET ROLE")
-        conn.commit()
+    assert len(repos.trading.authority_projection()) == 2
+    assert {row["intent_id"] for row in repos.trading.console_capital_evidence(limit=10)} == {
+        first_intent.intent_id,
+        second_intent.intent_id,
+    }
 
 
 def test_running_capital_still_blocks_no_key_long_as_credentials_unconfigured(conn: Any) -> None:
@@ -1548,10 +1543,7 @@ def test_expired_blacklist_does_not_kill_a_pending_entry_fence(conn: Any) -> Non
     _allow_entry(conn)
     conn.commit()
 
-    conn.execute("SET ROLE tracefold_nautilus")
     fenced = _fence(repos, intent, engine_identity="nt-1", now_ms=db_now_ms).outcome
-    conn.commit()
-    conn.execute("RESET ROLE")
     conn.commit()
 
     assert fenced is not None
@@ -1680,149 +1672,6 @@ def test_database_allows_only_one_nonterminal_intent_globally(conn: Any) -> None
     with pytest.raises(UniqueViolation):
         _insert_test_intent(repos, second)
     conn.rollback()
-
-
-def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -> None:
-    privileges = dict(
-        conn.execute(
-            """
-            SELECT
-              has_table_privilege('tracefold_workers', 'trading_intents', 'SELECT') AS workers_select,
-              has_table_privilege('tracefold_workers', 'trading_intents', 'INSERT') AS workers_table_insert,
-              has_column_privilege('tracefold_workers', 'trading_intents', 'case_id', 'INSERT')
-                AS workers_intent_insert,
-              has_column_privilege('tracefold_workers', 'trading_intents', 'execution_state', 'INSERT')
-                AS workers_execution_insert,
-              has_table_privilege('tracefold_workers', 'trading_intents', 'UPDATE') AS workers_update,
-              has_column_privilege('tracefold_workers', 'trading_intents', 'execution_state', 'UPDATE')
-                AS workers_execution_update,
-              has_table_privilege('tracefold_nautilus', 'trading_intents', 'SELECT') AS nautilus_select,
-              has_table_privilege('tracefold_nautilus', 'trading_intents', 'INSERT') AS nautilus_insert,
-              has_table_privilege('tracefold_nautilus', 'trading_intents', 'UPDATE') AS nautilus_table_update,
-              has_column_privilege('tracefold_nautilus', 'trading_intents', 'execution_state', 'UPDATE')
-                AS nautilus_execution_update,
-              has_column_privilege('tracefold_nautilus', 'trading_intents', 'case_id', 'UPDATE')
-                AS nautilus_identity_update,
-              has_table_privilege('tracefold_nautilus', 'trading_cases', 'UPDATE') AS nautilus_case_update,
-              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'SELECT')
-                AS nautilus_bindings_select,
-              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'INSERT')
-                AS nautilus_bindings_insert,
-              has_table_privilege('tracefold_nautilus', 'trading_execution_bindings', 'DELETE')
-                AS nautilus_bindings_delete,
-              has_column_privilege(
-                'tracefold_nautilus', 'trading_binding_runtime', 'execution_binding_sha256', 'UPDATE'
-              ) AS nautilus_binding_pointer_update,
-              has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'id', 'SELECT')
-                AS nautilus_runtime_id_select,
-              has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'control', 'SELECT')
-                AS nautilus_control_select,
-              has_column_privilege('tracefold_nautilus', 'trading_runtime_state', 'orders_today', 'SELECT')
-                AS nautilus_counter_select,
-              has_table_privilege('tracefold_nautilus', 'trading_symbol_blacklist', 'DELETE')
-                AS nautilus_blacklist_delete,
-              has_function_privilege(
-                'tracefold_nautilus', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
-              ) AS nautilus_expiry_execute,
-              has_function_privilege(
-                'tracefold_workers', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
-              ) AS workers_expiry_execute,
-              has_function_privilege(
-                'tracefold_serve', 'materialize_trading_blacklist_expiry()', 'EXECUTE'
-              ) AS serve_expiry_execute,
-              has_function_privilege(
-                'tracefold_nautilus', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
-              ) AS nautilus_canonical_json_execute,
-              has_function_privilege(
-                'tracefold_workers', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
-              ) AS workers_canonical_json_execute,
-              has_function_privilege(
-                'tracefold_serve', 'trading_canonical_jsonb(JSONB)', 'EXECUTE'
-              ) AS serve_canonical_json_execute,
-              has_table_privilege('tracefold_serve', 'trading_intents', 'SELECT') AS serve_select,
-              has_table_privilege('tracefold_serve', 'trading_intents', 'INSERT') AS serve_insert
-            """
-        ).fetchone()
-    )
-
-    assert privileges == {
-        "workers_select": True,
-        "workers_table_insert": False,
-        "workers_intent_insert": True,
-        "workers_execution_insert": False,
-        "workers_update": False,
-        "workers_execution_update": False,
-        "nautilus_select": True,
-        "nautilus_insert": False,
-        "nautilus_table_update": False,
-        "nautilus_execution_update": True,
-        "nautilus_identity_update": False,
-        "nautilus_case_update": False,
-        "nautilus_bindings_select": True,
-        "nautilus_bindings_insert": True,
-        "nautilus_bindings_delete": False,
-        "nautilus_binding_pointer_update": True,
-        "nautilus_runtime_id_select": True,
-        "nautilus_control_select": True,
-        "nautilus_counter_select": False,
-        "nautilus_blacklist_delete": False,
-        "nautilus_expiry_execute": True,
-        "workers_expiry_execute": True,
-        "serve_expiry_execute": False,
-        "nautilus_canonical_json_execute": True,
-        "workers_canonical_json_execute": True,
-        "serve_canonical_json_execute": False,
-        "serve_select": True,
-        "serve_insert": False,
-    }
-
-
-def test_real_nautilus_role_can_poll_and_fence_but_not_read_trading_counters(conn: Any) -> None:
-    _case(conn)
-    repos = repositories_for_connection(conn)
-    intent = _intent()
-    assert _insert_test_intent(repos, intent) is True
-    _allow_entry(conn)
-    conn.commit()
-
-    conn.execute("SET ROLE tracefold_nautilus")
-    active = repos.trading.active_intent()
-    assert active is not None and active[0] == intent
-    assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
-    repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=None,
-        now_ms=NOW + 1_000,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
-    conn.commit()
-
-    with pytest.raises(InsufficientPrivilege):
-        conn.execute("SELECT orders_today FROM trading_runtime_state WHERE id = 1").fetchone()
-    conn.rollback()
-    conn.execute("RESET ROLE")
-    conn.commit()
-
-
-def test_real_nautilus_role_can_append_and_activate_but_not_mutate_a_binding(conn: Any) -> None:
-    _case(conn)
-    _set_binance_binding_flat(conn)
-    candidate = EXECUTION_BINDING.model_copy(update={"created_at_ms": NOW + 10})
-    repos = repositories_for_connection(conn)
-    conn.commit()
-
-    conn.execute("SET ROLE tracefold_nautilus")
-    assert repos.trading.append_and_activate_execution_binding(candidate)
-    conn.commit()
-    assert repos.trading.active_execution_binding(binding="BINANCE_USDM") == candidate
-    with pytest.raises(InsufficientPrivilege):
-        conn.execute(
-            "DELETE FROM trading_execution_bindings WHERE binding_sha256 = %s",
-            (candidate.binding_sha256,),
-        )
-    conn.rollback()
-    conn.execute("RESET ROLE")
-    conn.commit()
-    _reset_authority(conn)
 
 
 def test_unfenced_expiry_is_terminal_and_releases_the_single_active_slot(conn: Any) -> None:

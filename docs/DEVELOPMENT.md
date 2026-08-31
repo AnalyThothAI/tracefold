@@ -959,10 +959,35 @@ recovery. Tests prove overlap idempotency, complete/partial/unavailable status,
 and that the provider news-search endpoint never appears in the production
 recovery seam.
 
+## Database development
+
+PostgreSQL and Alembic's single head are the schema authority. The deployment
+has one non-superuser application login, `tracefold`; use stable
+`application_name` values for process attribution and never add a role merely
+to name another process. Runtime code does not execute DDL.
+
+Keep autocommit as the default and open a short transaction only for atomic
+writes or an explicit consistent snapshot. Provider/model/file/broker I/O,
+large JSON preparation, and hashing stay outside it. Bind all values and use
+`psycopg.sql` for dynamic identifiers. Repository methods never hide a commit.
+
+Each production statement has one owner shared with its audit/test coverage.
+Pages, claims, purges, and backfills require a hard limit, deterministic order,
+tie-breaker, and bounded transaction/payload. Natural PK/UNIQUE identities plus
+`ON CONFLICT` or conditional writes own idempotency. Retain cross-process,
+cross-table, economic-state, and append-only database invariants; do not replace
+typed single-process validation with internal permission-denied tests.
+
+New indexes name their production query, predicate/order, measured scale, and
+write/storage cost. Performance claims compare the same revision,
+configuration, parameters, and workload window across application, pool, and
+PostgreSQL evidence. The complete migration checklist is in
+[Migrations](MIGRATIONS.md).
+
 ## Generated contracts
 
 `docs/generated/` contains only reproducible outputs: `README.md`,
-`cli-help.md` (`scripts/regen_cli_help.py`), `db-schema.md`
+`cli-help.md` (`scripts/regen_cli_help.py`), the columns-only `db-schema.md`
 (`scripts/regen_db_schema.py`, needs PostgreSQL), and `openapi.json`
 (`scripts/regen_openapi.py`, paired with `web/src/lib/types/openapi.ts`).
 `docker/rabbitmq/definitions.json` is generated the same way, from

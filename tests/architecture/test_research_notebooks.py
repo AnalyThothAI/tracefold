@@ -26,7 +26,7 @@ WORKSPACE = ROOT / "notebooks"
 DECLARATION_KEYS = {"channel", "purpose", "window", "identity", "safety"}
 CHANNELS = {"A", "B", "C"}
 COMMITTED_SNAPSHOT = "C"
-WRITE_CAPABLE_ROLES = ("tracefold_workers", "tracefold_owner")
+RETIRED_DATABASE_ROLES = ("tracefold_owner", "tracefold_serve", "tracefold_workers", "tracefold_nautilus")
 NETWORKED_CALL_SITES = ("urlopen", "urllib.request", "httpx", "requests.", "aiohttp", "psycopg")
 DECLARATION_BLOCK_RE = re.compile(r"^```yaml\n(?P<body>.*?)^```$", re.DOTALL | re.MULTILINE)
 
@@ -165,13 +165,13 @@ def test_no_notebook_commits_the_wall_clock_of_the_run_that_produced_it() -> Non
     assert stamped == []
 
 
-def test_no_notebook_code_cell_names_a_write_capable_database_role() -> None:
+def test_no_notebook_code_cell_names_a_retired_database_role() -> None:
     named: list[str] = []
     for path in _tracked_notebooks():
         for index, cell in enumerate(_cells(path)):
             if cell["cell_type"] != "code":
                 continue
             source = _source(cell)
-            named.extend(f"{path.name}:cell{index}:{role}" for role in WRITE_CAPABLE_ROLES if role in source)
+            named.extend(f"{path.name}:cell{index}:{role}" for role in RETIRED_DATABASE_ROLES if role in source)
 
     assert named == []

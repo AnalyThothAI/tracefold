@@ -1,8 +1,9 @@
 """#150: the baseline reads. It has no authority to write, deliver, propose, accept or promote anything.
 
 This is a structural guarantee rather than a review convention. The measurement plane runs the same metric
-the optimizer maximizes and, in `runtime_live`, the same Program the Workers run — so the one thing keeping
-it from becoming an unattended release path is that it never acquires the means to write.
+the optimizer maximizes and, in `runtime_live`, the same Program the Workers run, but its CLI call graph has
+no writer, delivery, acceptance, or promotion path. The single-login deployment does not encode that boundary
+as database-role privilege.
 """
 
 from __future__ import annotations
@@ -88,20 +89,21 @@ def test_the_harness_calls_nothing_that_could_write() -> None:
     assert sorted(verb for verb in _WRITE_VERBS if verb in called) == []
 
 
-def test_the_cli_opens_the_database_only_as_serve() -> None:
+def test_the_cli_uses_the_shared_login_without_role_selection() -> None:
     handler = _cli_handler()
     connections = [
         node
         for node in ast.walk(handler)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "postgres_connection"
     ]
-    roles = [
-        keyword.value.value
+    assert connections
+    assert all(keyword.arg != "role" for node in connections for keyword in node.keywords)
+    assert all(
+        keyword.arg != "application_name"
+        or (isinstance(keyword.value, ast.Constant) and keyword.value.value == "tracefold_cli")
         for node in connections
         for keyword in node.keywords
-        if keyword.arg == "role" and isinstance(keyword.value, ast.Constant)
-    ]
-    assert roles == ["serve"] * len(connections), "every baseline branch reads the corpus and nothing else"
+    )
 
 
 def test_the_cli_handler_performs_no_write_action() -> None:

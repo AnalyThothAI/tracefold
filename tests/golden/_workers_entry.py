@@ -42,16 +42,7 @@ def main() -> int:
 
     settings = Settings(
         ws_token="golden-token",
-        storage={
-            "postgres": {
-                "serve_dsn": args.dsn,
-                "workers_dsn": args.dsn,
-                "migrate_dsn": args.dsn,
-                "serve_password_file": None,
-                "workers_password_file": None,
-                "migrate_password_file": None,
-            }
-        },
+        storage={"postgres": {"dsn": args.dsn, "password_file": None}},
         news={
             "enabled": True,
             "broker": {

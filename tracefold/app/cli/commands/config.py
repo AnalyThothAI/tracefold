@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 from tracefold.app.trading_bindings import inspect_binding_credentials
 from tracefold.platform.config.loader import load_settings, write_default_config
@@ -13,19 +13,11 @@ from tracefold.platform.config.models import (
 )
 from tracefold.platform.paths import config_path
 
-# The closed role vocabulary the Settings accessors are keyed by.
-_POSTGRES_ROLES: tuple[Literal["serve", "workers", "migrate", "nautilus"], ...] = (
-    "serve",
-    "workers",
-    "migrate",
-    "nautilus",
-)
-
 
 def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists()
     path = write_default_config(force=args.force)
-    password_paths = {role: _ensure_postgres_password_file(path.parent, role=role) for role in _POSTGRES_ROLES}
+    password_path = _ensure_postgres_password_file(path.parent)
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
     trading_binding_secret_paths = {
@@ -39,7 +31,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
             "data": {
                 "config_path": str(path),
                 "app_home": str(path.parent),
-                "postgres_password_files": {role: str(password_path) for role, password_path in password_paths.items()},
+                "postgres_database_password_file": str(password_path),
                 "postgres_bootstrap_password_file": str(bootstrap_password_path),
                 "telegram_bot_token_file": str(telegram_bot_token_path),
                 "trading_binding_secret_files": {
@@ -73,16 +65,11 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 "store": {
                     "app_home": str(settings.app_home),
                     "engine": "postgresql",
-                    "postgres_roles": {
-                        role: {
-                            "dsn": _redacted_postgres_dsn(settings.postgres_dsn(role)),
-                            "password_file": (
-                                str(settings.postgres_password_file(role))
-                                if settings.postgres_password_file(role)
-                                else None
-                            ),
-                        }
-                        for role in _POSTGRES_ROLES
+                    "postgres": {
+                        "dsn": _redacted_postgres_dsn(settings.storage.postgres.dsn),
+                        "password_file": (
+                            str(settings.postgres_password_file()) if settings.postgres_password_file() else None
+                        ),
                     },
                     "serve_pool_max_size": 7,
                     "workers_pool_max_size": 8,
@@ -148,8 +135,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     )
 
 
-def _ensure_postgres_password_file(app_home: Path, *, role: str) -> Path:
-    path = app_home / f"postgres_{role}_password"
+def _ensure_postgres_password_file(app_home: Path) -> Path:
+    path = app_home / "postgres_database_password"
     return _ensure_password_file(path)
 
 

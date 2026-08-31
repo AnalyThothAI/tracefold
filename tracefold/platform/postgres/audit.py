@@ -8,10 +8,18 @@ from typing import Any, Literal
 from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
-from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
+
+APPLICATION_ROLE = "tracefold"
+BOOTSTRAP_ROLE = "tracefold_app"
+RETIRED_APPLICATION_ROLES = (
+    "tracefold_owner",
+    "tracefold_serve",
+    "tracefold_workers",
+    "tracefold_nautilus",
+)
 
 AmplificationBasis = Literal["returned_rows", "aggregate_input"]
 
@@ -164,7 +172,6 @@ class PostgresOperationalAudit:
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
-        runtime_roles = runtime_role_contract(self.conn)
         database_identity = self._database_identity()
         result = {
             "ok": (
@@ -173,7 +180,6 @@ class PostgresOperationalAudit:
                 and all(count >= 0 for count in row_estimates.values())
                 and bool(news_schema["exact"])
                 and bool(trading_schema["exact"])
-                and bool(runtime_roles["ok"])
             ),
             "engine": "postgresql",
             "mode": "deep" if deep else "fast",
@@ -184,7 +190,6 @@ class PostgresOperationalAudit:
             "row_estimates": row_estimates,
             "news_schema": news_schema,
             "trading_schema": trading_schema,
-            "runtime_roles": runtime_roles,
         }
         if deep:
             counts = self._counts(table_names)
@@ -196,6 +201,7 @@ class PostgresOperationalAudit:
         settings = self.conn.execute(
             """
             SELECT current_setting('server_version_num') AS server_version_num,
+                   current_user AS current_user,
                    current_setting('transaction_isolation') AS transaction_isolation,
                    current_setting('statement_timeout') AS statement_timeout,
                    current_setting('lock_timeout') AS lock_timeout,
@@ -204,6 +210,77 @@ class PostgresOperationalAudit:
             """
         ).fetchone()
         extensions = self.conn.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname").fetchall()
+        role_names = (APPLICATION_ROLE, BOOTSTRAP_ROLE, *RETIRED_APPLICATION_ROLES)
+        role_rows = self.conn.execute(
+            """
+            SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolcanlogin,
+                   rolreplication, rolbypassrls
+              FROM pg_roles
+             WHERE rolname = ANY(%s)
+             ORDER BY rolname
+            """,
+            (list(role_names),),
+        ).fetchall()
+        roles = {
+            str(row["rolname"]): {
+                "superuser": bool(row["rolsuper"]),
+                "create_database": bool(row["rolcreatedb"]),
+                "create_role": bool(row["rolcreaterole"]),
+                "login": bool(row["rolcanlogin"]),
+                "replication": bool(row["rolreplication"]),
+                "bypass_rls": bool(row["rolbypassrls"]),
+            }
+            for row in role_rows
+        }
+        application_role = roles.get(APPLICATION_ROLE)
+        bootstrap_role = roles.get(BOOTSTRAP_ROLE)
+        retired_roles_present = sorted(set(roles) & set(RETIRED_APPLICATION_ROLES))
+        schema_owner_row = self.conn.execute(
+            """
+            SELECT pg_get_userbyid(nspowner) AS owner
+              FROM pg_namespace
+             WHERE nspname = 'public'
+            """
+        ).fetchone()
+        public_schema_owner = str(schema_owner_row["owner"]) if schema_owner_row else None
+        unexpected_owner_rows = self.conn.execute(
+            """
+            WITH application_objects(kind, identity, owner) AS (
+              SELECT 'relation', relation.relname, pg_get_userbyid(relation.relowner)
+                FROM pg_class relation
+                JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+               WHERE namespace.nspname = 'public'
+                 AND relation.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM pg_depend dependency
+                    WHERE dependency.classid = 'pg_class'::regclass
+                      AND dependency.objid = relation.oid
+                      AND dependency.refclassid = 'pg_extension'::regclass
+                      AND dependency.deptype = 'e'
+                 )
+              UNION ALL
+              SELECT 'routine', procedure.oid::regprocedure::text, pg_get_userbyid(procedure.proowner)
+                FROM pg_proc procedure
+                JOIN pg_namespace namespace ON namespace.oid = procedure.pronamespace
+               WHERE namespace.nspname = 'public'
+                 AND NOT EXISTS (
+                   SELECT 1
+                     FROM pg_depend dependency
+                    WHERE dependency.classid = 'pg_proc'::regclass
+                      AND dependency.objid = procedure.oid
+                      AND dependency.refclassid = 'pg_extension'::regclass
+                      AND dependency.deptype = 'e'
+                 )
+            )
+            SELECT kind, identity, owner
+              FROM application_objects
+             WHERE owner <> %s
+             ORDER BY kind, identity
+            """,
+            (APPLICATION_ROLE,),
+        ).fetchall()
+        unexpected_application_object_owners = [dict(row) for row in unexpected_owner_rows]
         server_version_num = int(settings["server_version_num"])
         extension_versions = {str(row["extname"]): str(row["extversion"]) for row in extensions}
         setting_names = {
@@ -217,6 +294,22 @@ class PostgresOperationalAudit:
             "production_major": server_version_num // 10_000 == 18,
             "plpgsql_available": "plpgsql" in extension_versions,
             "session_settings_reported": all(settings[name] is not None for name in setting_names),
+            "application_session": settings["current_user"] == APPLICATION_ROLE,
+            "application_role_exact": application_role
+            == {
+                "superuser": False,
+                "create_database": False,
+                "create_role": False,
+                "login": True,
+                "replication": False,
+                "bypass_rls": False,
+            },
+            "bootstrap_role_no_login_superuser": bool(
+                bootstrap_role and bootstrap_role["superuser"] and not bootstrap_role["login"]
+            ),
+            "retired_roles_absent": not retired_roles_present,
+            "public_schema_owned_by_application": public_schema_owner == APPLICATION_ROLE,
+            "application_objects_owned_by_application": not unexpected_application_object_owners,
         }
         return {
             "ok": all(checks.values()),
@@ -226,6 +319,15 @@ class PostgresOperationalAudit:
             "image_identity_source": "TRACEFOLD_POSTGRES_IMAGE",
             "extensions": extension_versions,
             "settings": {key: str(settings[key]) for key in setting_names},
+            "current_user": str(settings["current_user"]),
+            "role_catalog": {
+                "roles": roles,
+                "retired_roles_present": retired_roles_present,
+            },
+            "ownership": {
+                "public_schema_owner": public_schema_owner,
+                "unexpected_application_object_owners": unexpected_application_object_owners,
+            },
         }
 
     def _row_estimates(self, table_names: tuple[str, ...]) -> dict[str, int]:

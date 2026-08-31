@@ -150,7 +150,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         ):
             raise ValueError("evidence_future_capture_protocol_mismatch")
         candidate_recorded_at_ms = _validate_durable_candidate_receipt(settings, candidate, candidate_receipt)
-        with repositories(settings, role="serve") as repos:
+        with repositories(settings) as repos:
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_capture_already_sealed")
             existing_batches = repos.trading.future_capture_batches(candidate.protocol_sha256)
@@ -206,7 +206,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     catalog_rows: list[TradeEvidenceCatalogProjectionRow] = []
     news_collection_health: TradeEvidenceCollectionHealthRow | None = None
     workers_row: dict[str, Any] | None = None
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         rows = repos.news.trade_evidence_oi_rows(
             metric_version=NEWS_OI_METRIC_VERSION,
@@ -298,7 +298,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
             health=health,
         )
         prepared_batch = prepare_future_capture_batch(batch)
-        with repositories(settings, role="workers") as repos, repos.transaction():
+        with repositories(settings) as repos, repos.transaction():
             advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
             repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
             if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
@@ -321,7 +321,7 @@ def _capture(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
                     "next_batch_start_ms": query_end_ms,
                 },
             }
-        with repositories(settings, role="serve") as repos:
+        with repositories(settings) as repos:
             batches = repos.trading.future_capture_batches(candidate.protocol_sha256)
         return _seal_future_capture_batches(
             settings,
@@ -410,7 +410,7 @@ def _seal_future_capture_batches(
         created_at_ms=now_ms,
     )
     receipt_path, _ = publish_evidence_artifact(root, kind="capture", artifact=receipt)
-    with repositories(settings, role="workers") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
         repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
         if repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256) is not None:
@@ -459,7 +459,7 @@ def _drain(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any
         )
         if now_ms <= capture_receipt.created_at_ms:
             raise ValueError("evidence_future_drain_before_capture_receipt")
-        with repositories(settings, role="serve") as repos:
+        with repositories(settings) as repos:
             if repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256) is not None:
                 raise ValueError("evidence_future_drain_already_sealed")
         max_horizon_ms = candidate.statistics.max_horizon_ms
@@ -515,7 +515,7 @@ def _drain(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, Any
             created_at_ms=now_ms,
         )
         receipt_path, _ = publish_evidence_artifact(root, kind="drain", artifact=receipt)
-        with repositories(settings, role="workers") as repos, repos.transaction():
+        with repositories(settings) as repos, repos.transaction():
             advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
             repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
             if repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256) is not None:
@@ -562,7 +562,7 @@ def _seal_corpus(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[st
         created_at_ms=now_ms,
     )
     receipt_path, _ = publish_evidence_artifact(root, kind="corpus", artifact=receipt)
-    with repositories(settings, role="workers") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         inserted = repos.trading.append_discovery_corpus_receipt(receipt)
     return 0, _receipt_answer(receipt, path, receipt_path, inserted=inserted)
 
@@ -588,7 +588,7 @@ def _register_candidate(settings: Any, args: Any, *, now_ms: int) -> tuple[int, 
         created_at_ms=now_ms,
     )
     receipt_path, _ = publish_evidence_artifact(root, kind="candidate", artifact=receipt)
-    with repositories(settings, role="workers") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         inserted = repos.trading.append_candidate_decision_receipt(receipt, decision)
     return 0, _receipt_answer(receipt, path, receipt_path, inserted=inserted)
 
@@ -619,7 +619,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
     if candidate.execution.protection_contract_sha256 != contract.protection_contract_sha256:
         incidents_set.add("protection_contract_invalid")
     incidents: tuple[EvidenceIncident, ...] = tuple(sorted(incidents_set))
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
             raise ValueError("evidence_future_already_unblinded")
         drain_row = repos.trading.future_drain_receipt_for_protocol(candidate.protocol_sha256)
@@ -661,7 +661,7 @@ def _unblind(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dict[str, A
         created_at_ms=now_ms,
     )
     receipt_path, _ = publish_evidence_artifact(root, kind="future-result", artifact=receipt)
-    with repositories(settings, role="workers") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         advisory_key = int.from_bytes(bytes.fromhex(candidate.protocol_sha256[:16]), byteorder="big", signed=True)
         repos.conn.execute("SELECT pg_advisory_xact_lock(%s)", (advisory_key,))
         if repos.trading.future_holdout_receipt_for_protocol(candidate.protocol_sha256) is not None:
@@ -694,7 +694,7 @@ def _register_release(settings: Any, args: Any) -> tuple[int, dict[str, Any]]:
     release = ProductionReleaseCandidateV1.model_validate(_mapping_file(str(args.file)))
     serve = _observe_serve_runtime(settings)
     prepared = prepare_production_release_registration(release, serve)
-    with repositories(settings, role="workers") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         registration = repos.trading.register_production_release(prepared)
     return 0, {
         "ok": True,
@@ -725,7 +725,7 @@ def _observe_serve_runtime(settings: Any) -> ServeRuntimeObservationV1:
 def _verify_receipt_chain(settings: Any, receipt_sha256: str, *, now_ms: int) -> tuple[int, dict[str, Any]]:
     chain: list[dict[str, Any]] = []
     seen: set[str] = set()
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         current: str | None = receipt_sha256
         while current is not None and current not in seen and len(chain) < 5:
@@ -743,7 +743,7 @@ def _verify_receipt_chain(settings: Any, receipt_sha256: str, *, now_ms: int) ->
 
 
 def _verify_case(settings: Any, case_id: str, *, now_ms: int) -> tuple[int, dict[str, Any]]:
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.case_verification_snapshot(case_id)
     checks = case_verification_checks(snapshot)
@@ -757,7 +757,7 @@ def _verify_window(
     now_ms: int,
 ) -> tuple[int, dict[str, Any]]:
     serve = _observe_serve_runtime(settings)
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         source_rows = repos.news.trade_fixed_window_oi_sources(
             metric_version=NEWS_OI_METRIC_VERSION,
@@ -791,7 +791,7 @@ def _verify_release(
 ) -> tuple[int, dict[str, Any]]:
     evidence_receipts = tuple(sorted(release.corpus_receipt_sha256s + release.future_result_receipt_sha256s))
     serve = _observe_serve_runtime(settings)
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.release_verification_snapshot(
             evidence_receipts=evidence_receipts,
@@ -874,7 +874,7 @@ def _verify_rollback(
 ) -> tuple[int, dict[str, Any]]:
     release = ProductionReleaseCandidateV1.model_validate(_mapping_file(receipt.release_candidate_artifact_path))
     serve = _observe_serve_runtime(settings)
-    with repositories(settings, role="serve") as repos, repos.transaction():
+    with repositories(settings) as repos, repos.transaction():
         repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         snapshot = repos.trading.rollback_verification_snapshot(receipt)
     checks = rollback_verification_checks(receipt, release, snapshot, serve=serve, now_ms=now_ms)
@@ -1206,7 +1206,7 @@ def _validate_durable_candidate_receipt(
     candidate: CandidateLockedV1,
     receipt: CandidateDecisionReceiptV1,
 ) -> int:
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         row = repos.trading.evidence_clock_receipt(receipt.receipt_sha256)
     if row is None:
         raise ValueError("evidence_future_candidate_receipt_not_durable")
@@ -1236,7 +1236,7 @@ def _load_durable_future_capture_receipt(
     *,
     capture_path: Path,
 ) -> FutureCaptureReceiptV1:
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         row = repos.trading.future_capture_receipt_for_protocol(candidate.protocol_sha256)
     if row is None:
         raise ValueError("evidence_future_capture_receipt_missing")
@@ -1284,7 +1284,7 @@ def _validated_future_drain_receipt(
 def _database_now_ms(settings: Any) -> int:
     """Use PostgreSQL's clock for every irreversible evidence transition."""
 
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         row = repos.conn.execute(
             "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now_ms"
         ).fetchone()
@@ -1294,7 +1294,7 @@ def _database_now_ms(settings: Any) -> int:
 
 
 def _validate_candidate_registration(settings: Any, decision: CandidateDecisionV1) -> None:
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         row = repos.trading.evidence_clock_receipt_for_artifact(
             decision.sealed_corpus_sha256,
             kind="DISCOVERY_CORPUS",

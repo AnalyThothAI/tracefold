@@ -152,7 +152,7 @@ def _handle_learning_readiness(args: Namespace, settings: Any, stable: Any) -> t
     # `identity` names the current stable bundle. Publishing them here would file another arm's corpus
     # under this arm's name, which is a worse answer than "unknown".
     coverage: dict[str, Any] = dataset_coverage({})
-    with postgres_connection(settings, role="serve") as conn:
+    with postgres_connection(settings) as conn:
         datasets = DevelopmentDatasetStore(conn, stable=stable)
         try:
             export = datasets.development_compile_export(dataset_sha)
@@ -262,7 +262,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if dataset_sha and mode == "recorded":
         from tracefold.news.learning.taxonomy_metric import recorded_taxonomy_baseline_report
 
-        with postgres_connection(settings, role="serve") as conn:
+        with postgres_connection(settings) as conn:
             export = DevelopmentDatasetStore(conn, stable=stable).development_compile_export(dataset_sha)
         taxonomy_report = recorded_taxonomy_baseline_report(
             export.episodes,
@@ -297,7 +297,7 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     plan = None
     dataset_identity: dict[str, Any] = {}
     retrieval_population: tuple[Any, ...] | None = None
-    with postgres_connection(settings, role="serve") as conn:
+    with postgres_connection(settings) as conn:
         datasets = DevelopmentDatasetStore(conn, stable=stable)
         if dataset_sha:
             episodes, retrieval_population, plan, dataset_identity = _dataset_corpus(datasets, dataset_sha)
@@ -451,7 +451,7 @@ def _handle_learning_draft_reviews(args: Namespace, settings: Any, stable: Any) 
     hours = int(args.hours)
     tasks: list[dict[str, Any]] = []
     wanted = int(args.limit)
-    with postgres_connection(settings, role="serve") as conn:
+    with postgres_connection(settings) as conn:
         desk = ReviewDesk(conn)
         # The queue pages at 100 and applies its own deterministic stratified sampling. Paginating through
         # it keeps that stratification — which is what makes a corpus carry the boundary/negative/retention

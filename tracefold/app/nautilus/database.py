@@ -167,7 +167,7 @@ class NautilusDatabaseBridge:
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                with self._repository_factory(self._settings, role="nautilus") as repos:
+                with self._repository_factory(self._settings, application_name="tracefold_nautilus") as repos:
                     self._set_db_connected(True)
                     while not self._stop_event.is_set():
                         self._cycle(repos)

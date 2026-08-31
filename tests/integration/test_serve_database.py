@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import psycopg
 import pytest
 
 from tests.postgres_test_utils import postgres_settings_storage
@@ -24,6 +25,31 @@ def test_serve_session_policy_is_applied_at_connect_time() -> None:
             "max_parallel_workers_per_gather": "0",
             "work_mem": "8MB",
         }
+    finally:
+        asyncio.run(database.aclose())
+
+
+def test_serve_pool_uses_the_shared_login_with_stable_read_only_attribution() -> None:
+    database = ServeDatabase.create(
+        Settings(storage=postgres_settings_storage()),
+        telemetry=None,
+    )
+    try:
+        with database.api_pool.connection() as conn:
+            identity = conn.execute(
+                "SELECT current_user AS role_name, "
+                "current_setting('application_name') AS application_name, "
+                "current_setting('default_transaction_read_only') AS read_only"
+            ).fetchone()
+            assert identity == {
+                "role_name": "tracefold",
+                "application_name": "tracefold_serve",
+                "read_only": "on",
+            }
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                conn.execute(
+                    "UPDATE news_ingest_state SET updated_at_ms = updated_at_ms WHERE singleton_key = 'opennews'"
+                )
     finally:
         asyncio.run(database.aclose())
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from tracefold.news.market_review.storage import InstrumentsRepository, PriceRepository
 from tracefold.news.search import NewsSearchPlan, compile_news_search
@@ -53,15 +53,19 @@ def repositories_for_connection(conn: Any) -> RepositorySession:
 def postgres_connection(
     settings: Any,
     *,
-    role: Literal["serve", "workers", "migrate", "nautilus"],
+    application_name: str = "tracefold_cli",
 ) -> Iterator[Any]:
     """Open the short-lived PostgreSQL connection used by application operations."""
     postgres = settings.storage.postgres
     dsn = with_password_from_file(
-        settings.postgres_dsn(role),
-        settings.postgres_password_file(role),
+        postgres.dsn,
+        settings.postgres_password_file(),
     )
-    conn = connect_postgres(dsn, connect_timeout_seconds=postgres.connect_timeout_seconds)
+    conn = connect_postgres(
+        dsn,
+        connect_timeout_seconds=postgres.connect_timeout_seconds,
+        application_name=application_name,
+    )
     try:
         yield conn
     finally:
@@ -72,10 +76,10 @@ def postgres_connection(
 def repositories(
     settings: Any,
     *,
-    role: Literal["serve", "workers", "nautilus"] = "workers",
+    application_name: str = "tracefold_cli",
 ) -> Iterator[RepositorySession]:
     """Open one short-lived repository session for a CLI/application operation."""
-    with postgres_connection(settings, role=role) as conn:
+    with postgres_connection(settings, application_name=application_name) as conn:
         yield repositories_for_connection(conn)
 
 

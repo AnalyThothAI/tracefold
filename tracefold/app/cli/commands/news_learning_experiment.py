@@ -72,7 +72,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
         raise ValueError("news_learning_optimize_stable_program_mismatch")
     # The one database read, before anything is spent, as `serve`. Nothing after this line holds a
     # connection: the optimization has no write credential and no promotion authority (#202 §3.2).
-    with postgres_connection(settings, role="serve") as conn:
+    with postgres_connection(settings) as conn:
         export = DevelopmentDatasetStore(conn, stable=stable).development_compile_export(str(args.development))
     dataset = FrozenDevelopmentDataset.bind(
         dataset_payload=export.dataset_payload,

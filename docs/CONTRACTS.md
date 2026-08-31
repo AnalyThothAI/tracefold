@@ -8,7 +8,7 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 The active operator-owned application file is
 `~/.tracefold/config.yaml`. It contains deployment/domain choices,
-PostgreSQL role DSNs and password-file references, credentials, API bind/auth,
+one PostgreSQL DSN and password-file reference, credentials, API bind/auth,
 and News and Trading settings. Worker topology,
 cadence, deadlines, resource limits, batches, leases, retries, and model
 reservations are code-owned and are not configuration fields.
@@ -21,7 +21,7 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-an empty Telegram bot-token placeholder, and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
+an empty Telegram bot-token placeholder, and bootstrap/application PostgreSQL password files. The operator directory is
 mode `0700`; config, Telegram placeholder, and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
@@ -273,8 +273,9 @@ reason is control, credentials, catalog, exposure, binding readiness, or
 new Intent is created. #360 is the sole future owner of grant, arm, daily risk,
 reservation, and Intent creation in one transaction.
 
-`storage.postgres.nautilus_dsn` and `nautilus_password_file` retain the
-least-privilege role for existing Intent recovery evidence. Serve is read-only.
+All database consumers use `storage.postgres.dsn` and `password_file`. Process
+identity is the connection's stable `application_name`; Serve's HTTP pool is
+connection-level read-only.
 Legacy `trading_orders` and
 `trading_order_observations` are retained read-only for audit and have no
 product or writer surface.
@@ -842,8 +843,8 @@ no operator control plane: pause and mute were removed with
 `news_control_state`, which had never withheld a card, so the only things that
 can withhold one are `decide()` and duplicate evidence.
 
-The Alembic chain is `20260818_0275` (the root baseline: it executes
-`current_schema_20260818_0275.sql` plus `runtime_roles.sql`) followed by
+Before the #449 current-schema baseline squash, the now Git-only migration
+chronology began at `20260818_0275` and was followed by
 `20260818_0276_review_49_hard_cut` (drops the retired News title table, the
 DEX discovery/token-profile/token-image tables, and the unused LangGraph
 `checkpoint_*` tables), `20260818_0277_gmgn_lane_removal` (drops the
@@ -930,9 +931,8 @@ nonterminal Intent, rejects every new V1 insert, and has no downgrade.
 `20260828_0321` is #314's computed-identity cut and the last epoch migration
 there will be: `news_learning_epochs` gains `bundle_sha` and `envelope_sha256`,
 `epoch_id` is tied to `left(bundle_sha, 8)` by CHECK, `program_factory_id`
-becomes nullable, and `tracefold_workers` gains INSERT so the running deployment
-opens its own epoch at the startup barrier. UPDATE and DELETE stay revoked and
-the append-only trigger stays.
+becomes nullable, and the running deployment opens its own epoch at the startup
+barrier. The append-only trigger remains the durable mutation boundary.
 `20260828_0322` adds the News delivery edit-intent columns and stale-intent
 index used to distinguish a desired, confirmed, or ambiguous in-place Telegram
 update without changing the initial `sent` state.
@@ -941,9 +941,10 @@ reason, settlement timestamps, and stale-intent index used only after
 authoritative single-name tradeability absence.
 `20260828_0324` makes the edit and delete lifecycle shape checks two-valued and
 refuses to advance if any existing delivery row has a partial lifecycle shape.
-A database
-at an earlier revision upgrades with `tracefold db migrate`; a fresh database
-runs the complete chain. The exact
+A database on that retired chain must be restored with its exact pre-#449
+image/source, advanced to the old terminal head, and cut over before current
+source is used. Current source does not consume an earlier revision; a fresh
+database runs the single `20260831_0340` baseline. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1083,14 +1084,10 @@ Intent contract.
 maintenance lock, so operators can inspect the running singleton without
 interrupting it.
 
-`db audit` reports the migration revision, catalog row estimates for every table in the
-code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
-and the small business-bearing runtime-role readiness contract: bootstrap
-NOLOGIN, direct ordinary owner/object ownership, Serve read boundary, Workers
-no-DDL/evidence append without rewrite/execution denial, and Nautilus
-projection-only authority (current at migration `20260831_0340`). The complete
-ACL matrix remains real-PostgreSQL integration evidence rather than a repeated
-production audit query. `db audit --deep`
+`db audit` reports the migration revision, PostgreSQL identity/settings,
+catalog row estimates for every table in the code-owned `NEWS_TABLES` contract,
+and exact News/Trading table sets. Role/ACL readiness is not a business health
+check under the single `tracefold` application identity. `db audit --deep`
 adds exact table counts for offline migration or restore evidence. Since
 #104 it also reports `trading_schema` over the code-owned `TRADING_TABLES`
 contract; the two registries stay separate so "exactly these tables" remains a
@@ -1105,9 +1102,9 @@ no-SQL routes.
 per-queue message/consumer counts.
 `news review queue|evidence|submit|external-miss` is the whole ReviewDesk
 contract since #256; submissions require the task version and an idempotency
-key, and open one explicit read-write transaction under `tracefold_serve`,
-which PostgreSQL permits to INSERT only the two append-only review fact tables
-and still denies every News/control rewrite.
+key, and open one short transaction under the shared `tracefold`
+login. Append-only triggers and business constraints reject review rewrites;
+the public Serve HTTP pool remains read-only and has no write route.
 
 `news learning baseline (--dataset SHA | --from-ms N --to-ms N)
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
@@ -1383,8 +1380,9 @@ development dataset is the only research entry.
 --max-metric-judge-model-calls N --max-cost-microusd N
 --max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#202) is
 the one optimization entry point in the repository. It reads the frozen
-development corpus once as `serve` and then holds three model endpoints and a
-typed budget — no database write credential, no broker, no delivery, no canary,
+development corpus once through the shared application login and then holds
+three model endpoints and a typed budget — no database writer call path,
+broker, delivery, canary,
 no promotion, no Docker, no compiler image, no sandbox, no proxy sidecar, no
 tariff. The task LM is the configured production Program route rather than a
 command-line model, because a number optimized against a different route

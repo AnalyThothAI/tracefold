@@ -75,9 +75,8 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     }
-    # Reads only. `trading` has three operator mutations and every one of them stays on the CLI, where it
-    # runs as `workers` — `tracefold_serve` carries `default_transaction_read_only = on` precisely so the
-    # internet-facing role cannot reach them.
+    # Reads only. Trading mutations stay on the CLI. The internet-facing Serve pool enforces
+    # connection-level read-only mode under the shared application login.
     for path in (
         "/api/trading/status",
         "/api/trading/cases",

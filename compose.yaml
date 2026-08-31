@@ -48,17 +48,14 @@ services:
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --data-checksums"
     secrets:
       - postgres_password
-      - postgres_serve_password
-      - postgres_workers_password
-      - postgres_migrate_password
-      - postgres_nautilus_password
+      - postgres_database_password
     ports:
       - "${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"
     volumes:
       - tracefold-postgres:/var/lib/postgresql
-      - ./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro
+      - ./docker/postgres-init-single-login.sh:/docker-entrypoint-initdb.d/10-tracefold-single-login.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tracefold_workers -d tracefold"]
+      test: ["CMD-SHELL", "pg_isready -U tracefold -d tracefold"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -138,7 +135,7 @@ services:
         condition: service_completed_successfully
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_migrate_password:/root/.tracefold/postgres_migrate_password:ro
+      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "db", "migrate"]
 
@@ -155,7 +152,7 @@ services:
       - "${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_serve_password:/root/.tracefold/postgres_serve_password:ro
+      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${HOME}/.tracefold/cache:/root/.tracefold/cache:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
     command: ["tracefold", "serve"]
@@ -197,7 +194,7 @@ services:
       - "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_workers_password:/root/.tracefold/postgres_workers_password:ro
+      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro
       - ${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro
       - ${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
@@ -248,7 +245,7 @@ services:
       - "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     volumes:
       - ${HOME}/.tracefold/config.yaml:/root/.tracefold/config.yaml:ro
-      - ${HOME}/.tracefold/postgres_nautilus_password:/root/.tracefold/postgres_nautilus_password:ro
+      - ${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro
       - ${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro
       - ${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro
       - ${HOME}/.tracefold/logs:/root/.tracefold/logs
@@ -280,13 +277,7 @@ volumes:
 secrets:
   postgres_password:
     file: ${HOME}/.tracefold/postgres_password
-  postgres_serve_password:
-    file: ${HOME}/.tracefold/postgres_serve_password
-  postgres_workers_password:
-    file: ${HOME}/.tracefold/postgres_workers_password
-  postgres_migrate_password:
-    file: ${HOME}/.tracefold/postgres_migrate_password
-  postgres_nautilus_password:
-    file: ${HOME}/.tracefold/postgres_nautilus_password
+  postgres_database_password:
+    file: ${HOME}/.tracefold/postgres_database_password
   github_token:
     environment: GITHUB_TOKEN

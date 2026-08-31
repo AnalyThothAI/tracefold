@@ -24,8 +24,8 @@ def _database_url() -> str:
     settings = load_settings(require_ws_token=False)
     return local_docker_host_dsn(
         with_password_from_file(
-            settings.postgres_dsn("migrate"),
-            settings.postgres_password_file("migrate"),
+            settings.storage.postgres.dsn,
+            settings.postgres_password_file(),
         )
     )
 
@@ -55,9 +55,10 @@ def run_migrations_online() -> None:
         section,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args={"application_name": "tracefold_migrate"},
     )
     with connectable.connect() as connection:
-        if connection.exec_driver_sql("SELECT current_user").scalar() != "tracefold_owner":
+        if connection.exec_driver_sql("SELECT current_user").scalar() != "tracefold":
             raise RuntimeError("migration_owner_identity_required")
         connection.commit()
         acquired = bool(

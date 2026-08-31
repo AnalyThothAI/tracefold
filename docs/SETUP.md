@@ -88,16 +88,13 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
-token (`ws_token`) but no external credentials, five independent PostgreSQL
-password files, and an empty Telegram token placeholder:
+token (`ws_token`) but no external credentials, two PostgreSQL password files,
+and an empty Telegram token placeholder:
 
 ```text
 telegram_bot_token
 postgres_password
-postgres_serve_password
-postgres_workers_password
-postgres_migrate_password
-postgres_nautilus_password
+postgres_database_password
 ```
 
 The config, Telegram token placeholder, and all password files are mode `0600`.
@@ -116,15 +113,16 @@ disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
-The generated PostgreSQL DSNs are container-network addresses. The fresh-volume
-bootstrap runs only during PostgreSQL `initdb`: it creates the migration-only
-`tracefold_owner` LOGIN plus Serve, Workers, and Nautilus, then revokes the
-`tracefold_app` bootstrap login before owner-direct migration. The owner uses
-the existing `postgres_migrate_password`; no second migration role or owner
-secret exists. It never attempts to reinterpret or hard-cut an unknown
-non-empty volume. The one supported pre-0339 volume must use the exact offline
-procedure in [Operations](OPERATIONS.md#postgresql-owner-role-hard-cut-0339-one-time)
-before ordinary startup; every other non-empty role shape fails closed.
+The generated PostgreSQL DSN is a container-network address. The fresh-volume
+bootstrap runs only during PostgreSQL `initdb`: it creates the single
+non-superuser `tracefold` application LOGIN, assigns the public schema to it,
+creates the required extensions, and revokes the `tracefold_app` bootstrap
+login. Alembic, Serve, Workers, Nautilus, and CLI share that DSN and
+`postgres_database_password`; the bootstrap password remains separate and is
+never mounted into application containers. Unknown non-empty volumes are not
+reinterpreted or repaired by startup. A pre-baseline backup must first be
+restored with its recorded pre-cut source/image and advanced to the old terminal
+head before the #449 stopped-writer cutover.
 
 ### Credential-dependent capabilities
 
@@ -417,14 +415,13 @@ and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
 paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
-The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260823_0299_news_source_artifact_id`. A new empty database applies
-the complete chain without replaying retired runtime tables. A database
-stamped at an earlier revision migrates forward with `tracefold db migrate`;
-all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
-before applying them and start Workers only after the migration is current.
-An existing 0283 volume uses the backup/stop/migrate/redeploy sequence
-documented in `OPERATIONS.md`; #112/#129 add no login role or password.
+Alembic has one root and one head: the irreversible current-schema baseline
+`20260831_0340`. A new empty PostgreSQL 18 database applies that baseline once.
+Current source intentionally has no upgrade path from an earlier revision. To
+recover a pre-#449 backup, use the exact pre-cut image/source to restore and
+advance it to the old terminal `20260831_0340`, take a verified backup, perform
+the documented one-time role cutover, and only then deploy current source. See
+`OPERATIONS.md` and `MIGRATIONS.md`; do not improvise old-head repair SQL.
 
 Retired routes return `404`; there is no compatibility alias.
 

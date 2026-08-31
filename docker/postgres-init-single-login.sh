@@ -35,21 +35,8 @@ read_role_password() {
   printf '%s' "$password"
 }
 
-serve_password=$(read_role_password postgres_serve_password)
-workers_password=$(read_role_password postgres_workers_password)
-migrate_password=$(read_role_password postgres_migrate_password)
-nautilus_password=$(read_role_password postgres_nautilus_password)
-trap 'unset serve_password workers_password migrate_password nautilus_password' EXIT
-
-if [ "$serve_password" = "$workers_password" ] \
-  || [ "$serve_password" = "$migrate_password" ] \
-  || [ "$serve_password" = "$nautilus_password" ] \
-  || [ "$workers_password" = "$migrate_password" ] \
-  || [ "$workers_password" = "$nautilus_password" ] \
-  || [ "$migrate_password" = "$nautilus_password" ]; then
-  echo "Tracefold PostgreSQL runtime role passwords must be distinct" >&2
-  exit 1
-fi
+database_password=$(read_role_password postgres_database_password)
+trap 'unset database_password' EXIT
 
 if [ "${POSTGRES_USER:-}" != "tracefold_app" ] || [ "${POSTGRES_DB:-}" != "tracefold" ]; then
   echo "Tracefold PostgreSQL bootstrap identity is invalid" >&2
@@ -58,31 +45,19 @@ fi
 
 # The official image runs this file only while initializing an empty PGDATA.
 # Install the non-trusted extension before revoking the bootstrap superuser's
-# login, then hand all application DDL to the direct migration owner role.
+# login, then hand all application DDL and data access to one login role.
 psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
 	BEGIN;
 
 	CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public;
 	CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
 
-	CREATE ROLE tracefold_owner
+	CREATE ROLE tracefold
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-	  PASSWORD '${migrate_password}';
-	CREATE ROLE tracefold_serve
-	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-	  PASSWORD '${serve_password}';
-	ALTER ROLE tracefold_serve SET default_transaction_read_only = on;
-	CREATE ROLE tracefold_workers
-	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-	  PASSWORD '${workers_password}';
-	CREATE ROLE tracefold_nautilus
-	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-	  PASSWORD '${nautilus_password}';
+	  PASSWORD '${database_password}';
 
 	REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-	ALTER SCHEMA public OWNER TO tracefold_owner;
-	ALTER VIEW public.pg_stat_statements OWNER TO tracefold_owner;
-	ALTER VIEW public.pg_stat_statements_info OWNER TO tracefold_owner;
+	ALTER SCHEMA public OWNER TO tracefold;
 	ALTER ROLE tracefold_app NOLOGIN;
 
 	COMMIT;

@@ -59,15 +59,14 @@ as material facts.
 The deployment composition has four required boundaries: PostgreSQL, one
 successful migration job, Serve, and Workers. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
-On an empty PostgreSQL volume, the image's `initdb` hook creates the ordinary
-direct-login migration owner plus least-privilege Serve, Workers, and Nautilus
-roles from separate password files. The owner reuses
-`postgres_migrate_password`; no second migrator role exists. The hook then
-revokes the bootstrap login before the migration job runs and is never replayed
-against a non-empty cluster. Repeated
-startup therefore preserves the database and operator-owned credentials, while
-an unknown existing schema or missing role fails instead of being implicitly
-hard-cut.
+On an empty PostgreSQL volume, the image's `initdb` hook creates one ordinary,
+non-superuser application login, `tracefold`, from
+`postgres_database_password`. It owns the public application schema and is
+shared by Alembic, Serve, Workers, Nautilus, and CLI processes. The hook creates
+the required extensions, revokes the `tracefold_app` bootstrap login, and is
+never replayed against a non-empty cluster. Process attribution remains in
+stable `application_name` values; the HTTP Serve pool separately enforces
+connection-level read-only transactions.
 
 The same project-scoped application image contains the Python service and a
 production React build. Migration, Serve, and Workers use that exact image and
@@ -1688,9 +1687,10 @@ separate facts, and unavailable means failure-as-zero rather than byte equality,
 hidden retry or cache.
 
 What bounds the offline job now is what it holds, not what surrounds it: a
-frozen corpus read once as `serve`, three model endpoints, and a typed in-process
-budget whose per-call ceiling is also the rate an unpriced call is charged at.
-No database write credential, no broker, no delivery, no canary, no promotion.
+frozen corpus read once through the shared application login, three model
+endpoints, and a typed in-process budget whose per-call ceiling is also the rate
+an unpriced call is charged at. It has no database writer call path, broker,
+delivery, canary, or promotion authority; role separation is not that boundary.
 If dynamic code generation ever becomes a candidate again, the sandbox threat
 model is rebuilt with it under a new Issue rather than kept warm for it.
 
@@ -1832,11 +1832,10 @@ provider-hits Deduper+Gate regression; `tracefold news why <event_id>` prints a
 single production chain. The retired single-label evaluator, policy-only
 corpus gate, label-copy UI and `news_event_labels` table no longer exist.
 
-Migration history begins at a squashed root. `20260818_0275_baseline` is the single root
-revision: it executes the frozen `current_schema_20260818_0275.sql` dump
-(every table, index, constraint, seed row of the schema as it stood after the
-News V3 hard cut and Radar removal) plus `runtime_roles.sql`, and it is
-irreversible. The first chained hard cuts follow. `20260818_0276_review_49_hard_cut`
+Before the #449 baseline squash, Git history began at
+`20260818_0275_baseline` and carried the following hard-cut chronology. These
+files and their role bootstrap are recovery evidence only; they are not part of
+the current Alembic tree. `20260818_0276_review_49_hard_cut`
 drops the retired title-translation, DEX discovery, token profile, token
 image, and Radar-era checkpoint tables. `20260818_0277_gmgn_lane_removal`
 drops the whole GMGN lane: the social evidence tables (`raw_frames`, `events`,
@@ -1897,10 +1896,9 @@ either — how a compile is serialized says nothing about whether an accepted
 review is true.
 `20260828_0320` ends the practice these rows document (#314): it gives
 `news_learning_epochs` a `bundle_sha` and an `envelope_sha256`, relaxes
-`program_factory_id` to nullable, and grants `tracefold_workers` the INSERT that
-lets a deployment open its own epoch. UPDATE and DELETE stay revoked and the
-append-only trigger stays, so a runtime writer may add history and still cannot
-rewrite it. No migration appends an epoch row after this one.
+`program_factory_id` to nullable, and lets a deployment open its own epoch. The
+append-only trigger remains the durable rewrite boundary. No migration appends
+an epoch row after this one.
 
 `20260827_0315` persists the #288 exact source-contract route and Event-kind
 hard cut, trips open canary activations, and records the factory-v6 to
@@ -1932,42 +1930,19 @@ obligation; removing it would erase the exact state the no-key binding projectio
 Program v7/taxonomy-v1 epoch hard cut.
 `20260829_0329` installs Intent-level Q1/fence/Q2 quote authority after a
 paused, zero-recovery-obligation cutover.
-`20260830_0331` hard-cuts current execution truth to per-binding Capability V2,
-immutable ExecutionBinding V1, source-native routing, and TradeIntent V3 while
-retaining only terminal V1/V2 rows as archive facts.
-`20260830_0332` installs Trading capital authority, UTC risk reservation, and
-the arm epoch after a paused cutover.
-`20260830_0333` adds the partial index that bounds the Verdict-to-Delivery
-handoff repair/status scan.
-`20260830_0334` installs the Trading evidence clock, frozen News handoff clocks,
-append-only future-capture batches, database-stamped evidence receipts, exact
-release/window preregistration, and the promotion/verification hard links. It
-also rejects any attempt to revive a terminal Intent after rollback.
-`20260830_0335` makes PostgreSQL the sole owner of open-incident truth: a
-partial unique index over `news_opennews_incidents(cause_class) WHERE
-closed_at_ms IS NULL`, preceded by a preflight that refuses rather than repairs
-pre-existing duplicates.
-`20260830_0336` performs the one-time News current-contract genesis: it empties
-the Event/Review/Learning/ReaderHistory/Delivery evidence plane, removes the
-archive columns, guards and compatibility view, preserves the Price and
-instrument tables plus every Trading/Capital owner, and appends one
-content-addressed genesis receipt. Its only rollback is restoring the verified
-pre-cut snapshot.
-`20260830_0337` grants the Nautilus runtime role only the canonical-JSON
-function required by its existing capital risk-event append authority; it does
-not recreate any News compatibility object.
-`20260831_0338` removes the retired global Nautilus heartbeat/readiness
-projection; per-binding runtime rows and the live readiness endpoint remain the
-only current execution-readiness facts.
-`20260831_0339` removes the non-isolating migrator/SET ROLE seam: the
-migration-only `tracefold_owner` is the direct ordinary LOGIN and sole owner of
-application objects/default privileges, while bootstrap remains NOLOGIN and
-Serve, Workers, and Nautilus retain their existing capability boundaries.
-No chained revision has a downgrade. Exact-image replacement requires the
-source, image and live database to share the current migration head; a schema
-change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
-cuts live only in Git history, never in a compatibility loader. A fresh database
-and a database upgraded through the chain reach byte-identical schemas.
+`20260831_0340` is the current-schema Alembic baseline, single root, and single
+head. The operator-authorized #449 hard cut first advanced the supported live
+database to the exact old terminal revision, then reused that identity with
+`down_revision = None`. A fresh PostgreSQL 18 database creates the complete
+current schema in one step; an already-stamped database does not replay the
+baseline or rewrite business data. Earlier revisions and role bootstrap logic
+live only in Git history and the pre-cut image.
+
+Every new schema change is again a normal linear, immutable, forward-only
+revision after the baseline. Exact-image replacement requires source, image,
+and live database to share the current head. Downgrade of an irreversible cut
+is a verified backup restore. See [Migrations](MIGRATIONS.md) for the authoring
+and evidence contract.
 
 See [Public Contracts](CONTRACTS.md), [Operations](OPERATIONS.md), and
 [Frontend Architecture](FRONTEND.md) for the other current authority surfaces.
@@ -2168,8 +2143,9 @@ an unknown outcome.
 
 The one `trading_intents` row is simultaneously the durable inbox, immutable
 instruction, entry fence, restart checkpoint, current execution projection, and
-audit identity. Workers may insert its immutable columns; the Nautilus role may
-read the row and update only the execution projection; Serve is read-only.
+audit identity. Workers may insert its immutable columns; the Nautilus process
+may read the row and update only the execution projection through the shared
+`tracefold` login; Serve is connection-level read-only.
 Database constraints enforce the Demo environment, V2 capability/blacklist
 identity, immutable Intent columns,
 Case-to-Intent one-to-one identity, and one nonterminal row globally.
@@ -2285,11 +2261,11 @@ reported not required while Capital remains PAUSED. Decision starts
 schema/wiring/policy/generation fault fails Workers startup or records
 `FAULTED` rather than becoming observer mode.
 
-The one-time PR 2 cutover is run only while control is `PAUSED`.
-`make trading-hard-cut-preflight` proves one ready Nautilus replica (whose
-readiness includes authoritative flat/no unexpected exposure) and checks that
-legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy active/unknown
-Orders are all zero. Migration `20260828_0317` repeats the database predicates
+Before the #449 baseline, the retired one-time PR 2 cutover ran only while
+control was `PAUSED`. Its deleted preflight required one ready Nautilus replica
+(whose readiness included authoritative flat/no unexpected exposure) and
+checked that legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy
+active/unknown Orders were all zero. Migration `20260828_0317` repeated the database predicates
 inside the authority-changing transaction, adds `INTENT_EMITTED`, and revokes
 legacy order/observation and retired runtime-counter mutations from Workers.
 Migration `20260829_0327` requires PAUSED with no undecided Case, preserves any nonterminal Intent as

@@ -8,7 +8,6 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -20,7 +19,6 @@ from psycopg.sql import Composable
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import upgrade_head
-from tracefold.platform.postgres.runtime_roles import MIGRATION_ROLE
 
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 TEST_DATABASE_NAME = "tracefold_test"
@@ -28,7 +26,8 @@ _CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case|migration
 _GENESIS_TEST_GIT_SHA = "1" * 40
 _GENESIS_TEST_IMAGE_DIGEST = "sha256:" + "2" * 64
 _GENESIS_TEST_RUNTIME_MANIFEST_SHA = "3" * 64
-_TEST_MIGRATION_PASSWORD = "tracefold-test-owner-password-0001"
+APPLICATION_ROLE = "tracefold"
+_TEST_DATABASE_PASSWORD = "tracefold-test-database-password-0001"
 
 
 @contextmanager
@@ -90,26 +89,47 @@ def postgres_migration_test_dsn(dsn: str | None = None) -> str:
         raise RuntimeError("postgres_test_migration_url_required")
     host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
     port = f":{parsed.port}" if parsed.port is not None else ""
-    auth = f"{quote(MIGRATION_ROLE, safe='')}:{quote(_TEST_MIGRATION_PASSWORD, safe='')}@"
+    auth = f"{quote(APPLICATION_ROLE, safe='')}:{quote(_TEST_DATABASE_PASSWORD, safe='')}@"
     return urlunsplit((parsed.scheme, f"{auth}{host}{port}", parsed.path, parsed.query, parsed.fragment))
 
 
 def prepare_test_migration_database(dsn: str) -> None:
-    """Bootstrap the production role shape before Alembic connects as its direct owner."""
+    """Bootstrap the production single-login shape before Alembic connects."""
 
-    runtime_roles = (Path(__file__).parents[1] / "tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(
-        encoding="utf-8"
-    )
     with connect_postgres(dsn) as conn:
+        conn.execute(
+            """
+            DO $block$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_app') THEN
+                CREATE ROLE tracefold_app SUPERUSER NOLOGIN;
+              END IF;
+            END
+            $block$
+            """
+        )
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
-        conn.execute(runtime_roles)
+        conn.execute(
+            """
+            DO $block$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold') THEN
+                CREATE ROLE tracefold
+                  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+              END IF;
+            END
+            $block$
+            """
+        )
         conn.execute(
             sql.SQL("ALTER ROLE {} PASSWORD {}").format(
-                sql.Identifier(MIGRATION_ROLE),
-                sql.Literal(_TEST_MIGRATION_PASSWORD),
+                sql.Identifier(APPLICATION_ROLE),
+                sql.Literal(_TEST_DATABASE_PASSWORD),
             )
         )
+        conn.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+        conn.execute(sql.SQL("ALTER SCHEMA public OWNER TO {}").format(sql.Identifier(APPLICATION_ROLE)))
 
 
 def ensure_migrated_postgres_resource(dsn: str, *, resource_name: str) -> None:
@@ -140,19 +160,8 @@ def connect_postgres_test(*_: Any, read_only: bool = False, dsn: str | None = No
 
 
 def postgres_settings_storage() -> dict[str, Any]:
-    dsn = test_postgres_dsn()
-    return {
-        "postgres": {
-            "serve_dsn": dsn,
-            "workers_dsn": dsn,
-            "migrate_dsn": dsn,
-            "nautilus_dsn": dsn,
-            "serve_password_file": None,
-            "workers_password_file": None,
-            "migrate_password_file": None,
-            "nautilus_password_file": None,
-        }
-    }
+    dsn = postgres_migration_test_dsn()
+    return {"postgres": {"dsn": dsn, "password_file": None}}
 
 
 def seed_current_news_evidence(conn: Any, *, limit: int | None = None) -> None:

@@ -1,4 +1,4 @@
-"""Replay command authorization at the real PostgreSQL role seam (#286)."""
+"""Replay command behavior at the real PostgreSQL seam (#286)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 import yaml
-from psycopg import conninfo, sql
 
 from tests.postgres_test_utils import connect_postgres_test, postgres_settings_storage
 from tests.trading_v3_fixtures import binance_capability, binance_catalog, store_catalog_fixture
@@ -54,16 +53,8 @@ def _db_now_ms(connection: Any) -> int:
 
 
 def _runtime_role_storage(connection: Any) -> dict[str, Any]:
-    password = "tracefold-integration-role-password"
-    for role in ("tracefold_workers", "tracefold_serve"):
-        connection.execute(sql.SQL("ALTER ROLE {} PASSWORD {}").format(sql.Identifier(role), sql.Literal(password)))
-    connection.commit()
-    storage = postgres_settings_storage()
-    for role in ("workers", "serve"):
-        parts = conninfo.conninfo_to_dict(storage["postgres"][f"{role}_dsn"])
-        parts.update(user=f"tracefold_{role}", password=password)
-        storage["postgres"][f"{role}_dsn"] = conninfo.make_conninfo(**parts)
-    return storage
+    del connection
+    return postgres_settings_storage()
 
 
 def _expire_sol(connection: Any, *, now_ms: int) -> None:
@@ -129,22 +120,3 @@ def test_replay_handler_materializes_expiry_before_the_serve_snapshot(conn: Any,
     ).fetchone()
     assert evidence == {"blacklist_revision": 2, "sol_present": False}
     assert conn.execute("SELECT count(*) AS n FROM trading_replay_runs").fetchone()["n"] == 1
-
-
-def test_replay_handler_returns_stable_error_when_workers_cannot_materialize_expiry(
-    conn: Any,
-    tmp_path: Any,
-) -> None:
-    now_ms = _db_now_ms(conn)
-    _expire_sol(conn, now_ms=now_ms)
-    receipts_before = conn.execute("SELECT count(*) AS n FROM trading_replay_runs").fetchone()["n"]
-    conn.execute("REVOKE EXECUTE ON FUNCTION materialize_trading_blacklist_expiry() FROM tracefold_workers")
-    conn.commit()
-    try:
-        code, payload, stderr = _run_replay(conn, tmp_path)
-    finally:
-        conn.execute("GRANT EXECUTE ON FUNCTION materialize_trading_blacklist_expiry() TO tracefold_workers")
-        conn.commit()
-
-    assert (code, payload) == (1, {"ok": False, "error": "replay_authority_unavailable"}), stderr
-    assert conn.execute("SELECT count(*) AS n FROM trading_replay_runs").fetchone()["n"] == receipts_before
