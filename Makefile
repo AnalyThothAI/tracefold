@@ -22,7 +22,21 @@ CI_QUALITY_SELECTION := tests/architecture tests/contract -m "not live and not s
 CI_PYTHON_HERMETIC_SELECTION := tests -m "not architecture and not contract and not integration and not deploy and not e2e and not golden and not live and not slow and not scheduled and not external_codegen"
 CI_POSTGRES_BEHAVIOR_SELECTION := tests/integration -m "integration and not migration and not slow and not scheduled"
 CI_MIGRATION_SELECTION := tests/integration -m "migration and not slow and not scheduled"
-CI_RUNTIME_PROCESS_SELECTION := tests -m "(deploy or e2e or golden or slow) and not live and not scheduled"
+CI_RUNTIME_BROKER_SELECTION := tests/golden \
+	tests/integration/test_news_bus_rabbitmq.py \
+	tests/integration/test_news_durable_event_plane.py \
+	tests/integration/test_workers_runtime_v2.py \
+	tests/test_workers_probe.py \
+	-m "(golden or slow) and not live and not scheduled"
+CI_DEPLOY_E2E_SELECTION := tests/deploy tests/e2e \
+	tests/integration/test_news_status_scale.py \
+	tests/integration/test_news_v3_price_scale.py \
+	tests/integration/test_nautilus_config.py \
+	-m "(deploy or e2e or slow) and not live and not scheduled"
+CI_TEST_INTEGRITY_SELECTION := tests/contract/test_hook_installer.py \
+	tests/slow/test_frontend_harness_fail_closed.py \
+	tests/slow/test_required_pytest_fail_closed.py \
+	-m "slow and not live and not scheduled"
 CI_FRONTEND_PYTHON_SELECTION := tests/contract/test_openapi_codegen.py -m external_codegen
 
 TRACEFOLD_COVERAGE_DIR ?= artifacts/coverage
@@ -42,7 +56,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-process ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -100,11 +114,23 @@ ci-migration:
 	@$(call RUN_REQUIRED_PYTEST,$(CI_MIGRATION_SELECTION),junit-migration.xml)
 	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-migration.xml"
 
-ci-runtime-process:
+ci-runtime-broker:
 	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
-	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
-	@$(call RUN_REQUIRED_PYTEST,$(CI_RUNTIME_PROCESS_SELECTION),junit-runtime-process.xml)
-	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-process.xml"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-broker.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_RUNTIME_BROKER_SELECTION),junit-runtime-broker.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-runtime-broker.xml"
+
+ci-deploy-e2e:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-deploy-e2e.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_DEPLOY_E2E_SELECTION),junit-deploy-e2e.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-deploy-e2e.xml"
+
+ci-test-integrity:
+	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
+	@rm -f "$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml"
+	@$(call RUN_REQUIRED_PYTEST,$(CI_TEST_INTEGRITY_SELECTION),junit-test-integrity.xml)
+	@uv run python scripts/require_test_reports.py --junit "$(TRACEFOLD_TEST_RESULT_DIR)/junit-test-integrity.xml"
 
 ci-frontend:
 	@mkdir -p "$(TRACEFOLD_TEST_RESULT_DIR)" "$(TRACEFOLD_COVERAGE_DIR)"
@@ -140,7 +166,9 @@ test-ci: ## optional complete local preflight for declared high-risk changes; no
 	@$(MAKE) --no-print-directory ci-python-hermetic
 	@$(MAKE) --no-print-directory ci-postgres-behavior
 	@$(MAKE) --no-print-directory ci-migration
-	@$(MAKE) --no-print-directory ci-runtime-process
+	@$(MAKE) --no-print-directory ci-runtime-broker
+	@$(MAKE) --no-print-directory ci-deploy-e2e
+	@$(MAKE) --no-print-directory ci-test-integrity
 	@$(MAKE) --no-print-directory ci-frontend
 	@$(MAKE) --no-print-directory ci-test-effectiveness
 
