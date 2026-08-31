@@ -39,8 +39,10 @@ MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identit
 # submission, distinct from the derived one the column holds. A v3 projection cannot answer "did a human
 # blame the Prompt", so an Objective Plan built from one would grant GEPA every derived owner in the
 # corpus — the exact permission #199 exists to withdraw.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v4"] = (
-    "tracefold.news.development_compile_episode.v4"
+# v5 (#437): accepted Review v6 taxonomy now contributes its four model-owned axes to the projection
+# root. A v4 compile record cannot claim the same frozen Gold because taxonomy did not address its root.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v5"] = (
+    "tracefold.news.development_compile_episode.v5"
 )
 OptimizerRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,

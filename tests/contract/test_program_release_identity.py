@@ -5,7 +5,9 @@ from typing import Any
 import pytest
 
 from tracefold.news.artifact_identity import canonical_sha
+from tracefold.news.learning.contracts import COMPILE_EPISODE_PROJECTION_SCHEMA
 from tracefold.news.learning.metric import METRIC_ID
+from tracefold.news.learning.taxonomy_metric import taxonomy_metric_identity
 from tracefold.news.models import TRIAGE_POLICY_VERSION
 from tracefold.news.program.artifact import load_stable_program_artifact
 from tracefold.news.program.identity import (
@@ -27,6 +29,11 @@ NEWS_EXECUTION_ENVELOPE_SHA256 = "2a3d7306a902b4f687c177bbb491dae6c60fb7ee67b188
 NEWS_PREDICTOR_INSTRUCTION_SHA256 = "2ef4c11bc55f2a425956ea40c2368fd6affa6f70be0810b469ebd5b06a1b3b71"
 
 NEWS_STABLE_PROGRAM_SHA256 = "404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f3a6030607aaefc"
+
+# #437 changes Gold projection and introduces a pure recorded-taxonomy ruler. Both are release evidence:
+# a behavior edit must visibly re-pin these names instead of silently changing a hash printed in a report.
+NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v5"
+NEWS_RECORDED_TAXONOMY_METRIC_SHA256 = "df11839888f8587cc556a54bfebef8b7f18eefa807fefe38f369e17ca20c5d6d"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -82,6 +89,16 @@ def test_current_predictor_bytes_keep_the_reviewed_instruction_identity() -> Non
     }
 
     assert canonical_sha(bound) == NEWS_PREDICTOR_INSTRUCTION_SHA256
+
+
+def test_recorded_taxonomy_measurement_identity_is_pinned() -> None:
+    assert {
+        "episode_projection_schema": COMPILE_EPISODE_PROJECTION_SCHEMA,
+        "metric_sha256": taxonomy_metric_identity()["metric_sha256"],
+    } == {
+        "episode_projection_schema": NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA,
+        "metric_sha256": NEWS_RECORDED_TAXONOMY_METRIC_SHA256,
+    }
 
 
 def test_the_envelope_names_every_code_owned_surface_it_claims_to_cover() -> None:

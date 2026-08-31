@@ -112,6 +112,8 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     minimum = float(args.min_confidence)
     only = tuple(part.strip() for part in str(args.only).split(",") if part.strip())
     exclude = tuple(part.strip() for part in str(args.exclude).split(",") if part.strip())
+    if not args.dry_run and not only:
+        raise ValueError("news_review_accept_drafts_only_required")
 
     planned: list[tuple[str, str, dict[str, Any], float]] = []
     skipped: dict[str, int] = {}

@@ -19,56 +19,6 @@ from tracefold.news.program.resources import candidates as candidate_programs
 from tracefold.news.program.runtime import PROGRAM_PRIMARY_BREAKER_FAILURES, PROGRAM_VERSION
 
 
-def test_taxonomy_evaluate_has_one_frozen_input_and_one_report_output() -> None:
-    args = build_parser().parse_args(
-        ["news", "learning", "taxonomy-evaluate", "--file", "gold.json", "--out", "report.json"]
-    )
-
-    assert args.learning_command == "taxonomy-evaluate"
-    assert args.file == "gold.json"
-    assert args.out == "report.json"
-
-
-def test_taxonomy_register_pins_candidate_code_and_model_before_holdout() -> None:
-    args = build_parser().parse_args(["news", "learning", "taxonomy-register"])
-
-    assert args.learning_command == "taxonomy-register"
-    assert not hasattr(args, "tested_git_sha")
-    assert not hasattr(args, "taxonomy_program_sha")
-    assert not hasattr(args, "taxonomy_model_binding_sha")
-
-
-def test_taxonomy_shadow_has_bounded_input_and_receipt_output() -> None:
-    args = build_parser().parse_args(
-        [
-            "news",
-            "learning",
-            "taxonomy-shadow",
-            "--file",
-            "contexts.json",
-            "--limit",
-            "12",
-            "--out",
-            "shadow.json",
-        ]
-    )
-
-    assert args.learning_command == "taxonomy-shadow"
-    assert (args.file, args.limit, args.out) == ("contexts.json", 12, "shadow.json")
-
-
-def test_taxonomy_shadow_command_never_reflects_unknown_program_exception_text() -> None:
-    secret = "sk-secret-that-must-not-leak"
-
-    def broken_program(_context: object) -> object:
-        raise RuntimeError(f"provider echoed API key: {secret}")
-
-    with pytest.raises(RuntimeError, match=r"^news_taxonomy_shadow_program_failed$") as caught:
-        news_commands._execute_taxonomy_shadow_cases(broken_program, [("case-1", object())])
-
-    assert secret not in str(caught.value)
-
-
 def test_learning_optimize_requires_every_budget_and_takes_no_model_flags() -> None:
     """The one optimization entry point (#202 §7).
 
@@ -131,6 +81,9 @@ def test_the_retired_compile_and_propose_commands_are_gone_without_an_alias() ->
     """
 
     for retired in (
+        ["news", "learning", "taxonomy-register"],
+        ["news", "learning", "taxonomy-shadow", "--file", "c.json", "--out", "s.json"],
+        ["news", "learning", "taxonomy-evaluate", "--file", "g.json", "--out", "r.json"],
         ["news", "learning", "compile", "--development", "d" * 64],
         ["news", "learning", "propose", "--development", "d" * 64, "--file", "c.json", "--out", "o.json"],
         ["news", "learning", "experiment", "snapshot", "--out", "runs/a"],
@@ -777,15 +730,12 @@ def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_sc
     assert payload["error"] == "news_program_baseline_dataset_requires_full_corpus_budget:3"
 
 
-@pytest.mark.parametrize("mode", ["recorded", "runtime_live"])
+@pytest.mark.parametrize("mode", ["runtime_live"])
 def test_dataset_evidence_only_comes_from_the_graph_the_optimizer_runs(monkeypatch: Any, mode: str) -> None:
     """`subsets.development_selection` is the formal before value, so it has to measure the cold graph.
 
-    `recorded` scores the action that shipped while the Objective Plan classifies under a replayed
-    `decide()`, so the same report would call a case a control and zero it. `runtime_live` measures the
-    four-slot production route with retry, fallback, deadline and circuit — a reliability question, not a
-    number a candidate selected on `DspyCompileProgram` can be compared against. Both stay available in
-    the moving-window form.
+    `runtime_live` measures the four-slot production route with retry, fallback, deadline and circuit — a
+    reliability question, not a number a candidate selected on `DspyCompileProgram` can be compared against.
     """
 
     def refuse(*_args: Any, **_kwargs: Any) -> None:
@@ -808,6 +758,92 @@ def test_dataset_evidence_only_comes_from_the_graph_the_optimizer_runs(monkeypat
     )
     assert code == 2
     assert payload["error"] == "news_program_baseline_dataset_requires_compile_live"
+
+
+def test_recorded_dataset_mode_scores_persisted_taxonomy_without_a_provider_call(monkeypatch: Any) -> None:
+    from tracefold.app.cli.commands import news_learning_baseline as baseline_commands
+    from tracefold.news.taxonomy import ModelTaxonomyV1, NewsTaxonomyV1
+
+    taxonomy = NewsTaxonomyV1(
+        subject_codes=("medtop:20001279",),
+        event_family="market_access",
+        change_state="effective",
+        assertion_status="confirmed",
+        source_authority="reputable_secondary",
+    ).model_dump(mode="json")
+    gold = {field: taxonomy[field] for field in ModelTaxonomyV1.model_fields}
+    episode = {
+        "case_id": "case-1",
+        "cluster_id": "cluster-1",
+        "context": {"now_ms": 1},
+        "accepted_review": {"taxonomy": gold},
+        "production_judgment": {"editorial": {"taxonomy": taxonomy}},
+    }
+    cohort = {
+        "bundle_sha": "b" * 64,
+        "program_version": "news_semantic_program_v8",
+        "program_sha256": "p" * 64,
+        "runtime_model_bindings_sha256": "r" * 64,
+    }
+
+    class _Datasets:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+        def development_compile_export(self, dataset_sha: str) -> Any:
+            assert dataset_sha == "a" * 64
+            return SimpleNamespace(episodes=(episode,), dataset_payload={"agent_cohort": cohort})
+
+    @contextmanager
+    def fake_postgres_connection(_settings: Any, *, role: str):
+        assert role == "serve"
+        yield object()
+
+    def provider_call(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("recorded taxonomy must not compose a provider route")
+
+    monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
+    monkeypatch.setattr(learning_runtime, "active_arm_manifest", lambda _settings: SimpleNamespace())
+    monkeypatch.setattr("tracefold.app.repository_session.postgres_connection", fake_postgres_connection)
+    monkeypatch.setattr("tracefold.news.learning.dataset.DevelopmentDatasetStore", _Datasets)
+    monkeypatch.setattr(baseline_commands, "_baseline_model_route", provider_call)
+
+    code, payload = _handle_learning(
+        _baseline_args(
+            dataset="a" * 64,
+            from_ms=None,
+            to_ms=None,
+            mode="recorded",
+            action_source="recorded",
+        )
+    )
+    assert code == 0
+    data = payload["data"]
+    assert {key: value for key, value in data["identity"].items() if key != "metric_sha256"} == {
+        "dataset_sha": "a" * 64,
+        "stable_bundle_sha": cohort["bundle_sha"],
+        "stable_program_version": cohort["program_version"],
+        "stable_program_sha256": cohort["program_sha256"],
+        "recorded_runtime_model_bindings_sha256": cohort["runtime_model_bindings_sha256"],
+        "metric_id": "tracefold.news.recorded_taxonomy_v1",
+    }
+    assert len(data["identity"]["metric_sha256"]) == 64
+    assert (data["case_n"], data["independent_cluster_n"], data["scored_case_n"]) == (1, 1, 1)
+    assert data["primary"] == {"event_family_supported_label_macro_f1": 1.0}
+    assert data["outcome"] == "INSUFFICIENT_DATA"
+    assert set(data) == {
+        "schema_id",
+        "identity",
+        "case_n",
+        "independent_cluster_n",
+        "scored_case_n",
+        "primary",
+        "diagnostics",
+        "source_authority_registry_coverage",
+        "outcome",
+        "report_sha256",
+        "report_written_to",
+    }
 
 
 def test_a_dataset_baseline_refuses_to_be_judged_by_a_different_ruler(monkeypatch: Any) -> None:

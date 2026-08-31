@@ -90,14 +90,18 @@ def test_the_harness_calls_nothing_that_could_write() -> None:
 
 def test_the_cli_opens_the_database_only_as_serve() -> None:
     handler = _cli_handler()
-    roles = [
-        keyword.value.value
+    connections = [
+        node
         for node in ast.walk(handler)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "postgres_connection"
+    ]
+    roles = [
+        keyword.value.value
+        for node in connections
         for keyword in node.keywords
         if keyword.arg == "role" and isinstance(keyword.value, ast.Constant)
     ]
-    assert roles == ["serve"], "the baseline reads the corpus and nothing else"
+    assert roles == ["serve"] * len(connections), "every baseline branch reads the corpus and nothing else"
 
 
 def test_the_cli_handler_performs_no_write_action() -> None:
@@ -121,6 +125,11 @@ def test_the_database_connection_closes_before_any_model_call() -> None:
             for item in node.items
         )
     ]
-    assert len(with_blocks) == 1
-    assert "run_baseline" not in _called_names(with_blocks[0])
-    assert "run_baseline" in _called_names(handler)
+    model_calls = [
+        node
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "run_baseline"
+    ]
+    assert with_blocks and len(model_calls) == 1
+    assert all("run_baseline" not in _called_names(block) for block in with_blocks)
+    assert all(block.end_lineno < model_calls[0].lineno for block in with_blocks)
