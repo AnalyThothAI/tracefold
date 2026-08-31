@@ -308,7 +308,7 @@ def test_exact_old_volume_hard_cut_is_atomic_idempotent_and_preserves_acl_and_da
             conn.execute("CREATE EXTENSION pg_trgm WITH SCHEMA public")
             conn.execute(runtime_roles)
             conn.execute(f"ALTER ROLE tracefold_owner PASSWORD '{_OWNER_PASSWORD}'")
-        _upgrade(owner_dsn, "20260830_0337")
+        _upgrade(owner_dsn, "20260831_0338")
         with connect_postgres(owner_dsn) as conn:
             conn.execute("CREATE TABLE hard_cut_marker (id integer PRIMARY KEY, value text NOT NULL)")
             conn.execute("INSERT INTO hard_cut_marker VALUES (1, 'preserved')")
@@ -324,8 +324,8 @@ def test_exact_old_volume_hard_cut_is_atomic_idempotent_and_preserves_acl_and_da
         assert _default_acl_entries(admin_dsn) == _DEFAULT_ACL_ENTRIES
         acl_before = _acl_fingerprint(admin_dsn)
 
-        backup = tmp_path / "tracefold-0337.dump"
-        receipt = tmp_path / "tracefold-0337-preflight.json"
+        backup = tmp_path / "tracefold-0338.dump"
+        receipt = tmp_path / "tracefold-0338-preflight.json"
         _docker(
             "exec",
             container,
@@ -333,12 +333,12 @@ def test_exact_old_volume_hard_cut_is_atomic_idempotent_and_preserves_acl_and_da
             "--username=postgres",
             f"--dbname={_DATABASE}",
             "--format=custom",
-            "--file=/tmp/tracefold-0337.dump",
+            "--file=/tmp/tracefold-0338.dump",
         )
-        _docker("cp", f"{container}:/tmp/tracefold-0337.dump", str(backup))
+        _docker("cp", f"{container}:/tmp/tracefold-0338.dump", str(backup))
         record_preflight(backup, receipt)
         receipt_payload = receipt.read_text(encoding="utf-8")
-        assert '"migration_head": "20260830_0337"' in receipt_payload
+        assert '"migration_head": "20260831_0338"' in receipt_payload
         assert '"public_schema_owner": "tracefold_owner"' in receipt_payload
         assert '"owner_default_acl_count": 2' in receipt_payload
         assert '"default_acl_privilege_mismatches": 0' in receipt_payload
@@ -446,7 +446,7 @@ def test_exact_old_volume_hard_cut_is_atomic_idempotent_and_preserves_acl_and_da
         with connect_postgres(owner_dsn) as conn:
             assert conn.execute("SELECT value FROM hard_cut_marker WHERE id = 1").fetchone()["value"] == "preserved"
             assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == (
-                "20260830_0337"
+                "20260831_0338"
             )
         with pytest.raises(OperationalError):
             connect_postgres(_dsn(port, "tracefold_migrate", _OLD_MIGRATE_PASSWORD))

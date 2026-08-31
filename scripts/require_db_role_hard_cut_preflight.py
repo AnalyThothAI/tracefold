@@ -40,7 +40,7 @@ _EXPECTED_KEYS = {
 }
 _EXPECTED_VALUES = {
     "schema": "tracefold_db_role_hard_cut_preflight_v1",
-    "migration_head": "20260830_0337",
+    "migration_head": "20260831_0338",
     "restore_image_identity": POSTGRES_PRODUCTION_IMAGE,
     "capital_control": "PAUSED",
     "pending_cases": 0,
@@ -344,7 +344,7 @@ def main() -> int:
     except (OSError, json.JSONDecodeError, psycopg.Error, subprocess.SubprocessError, RuntimeError, ValueError) as exc:
         print(f"PostgreSQL role hard-cut preflight refused: {exc}", file=sys.stderr)
         return 1
-    print("PostgreSQL role hard-cut preflight verified: backup restored; Capital PAUSED; old head 20260830_0337.")
+    print("PostgreSQL role hard-cut preflight verified: backup restored; Capital PAUSED; old head 20260831_0338.")
     return 0
 
 

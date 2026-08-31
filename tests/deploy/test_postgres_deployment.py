@@ -401,7 +401,7 @@ def test_role_hard_cut_preflight_requires_exact_sanitized_backup_evidence(
     receipt = tmp_path / "preflight.json"
     payload = {
         "schema": "tracefold_db_role_hard_cut_preflight_v1",
-        "migration_head": "20260830_0337",
+        "migration_head": "20260831_0338",
         "backup_path": str(backup),
         "backup_created_at_ms": backup.stat().st_mtime_ns // 1_000_000,
         "backup_sha256": hashlib.sha256(backup.read_bytes()).hexdigest(),
