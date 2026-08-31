@@ -10,14 +10,14 @@ were answered in three different places that disagreed:
                 one is caught. A wrong answer nobody blamed the Prompt for is not a control: it is a
                 low-scoring trajectory the reflection model reads and tries to fix by rewriting an
                 instruction it cannot fix anything with.
-``excluded``    everything else — retrieval, Gate, storyline, policy, delivery, taxonomy, provider
+``excluded``    everything else — retrieval, Gate, storyline, policy, delivery, provider
                 failures, derived-only owners, failed dimensions with no stated correct value, and copy
                 failures the metric has no way to score. They stay visible in readiness and baseline
                 diagnostics and never enter a reflective minibatch.
 
 The module is framework-neutral on purpose: no DSPy, no database, no provider, no promotion, no
-container. `readiness`, the dataset-bound baseline, `run_gepa`, the experiment loop and
-`CandidateEvaluator` all build the same plan from the same episodes, which is the only way the corpus a
+container. `readiness`, `run_gepa`, the run command and `CandidateEvaluator` all build the same plan from
+the same episodes, which is the only way the corpus a
 release gate re-derives can be the corpus an optimizer actually saw.
 
 It also owns the corpus vocabulary the metric reads — the dimension groups, the exact-gold lookup, the
@@ -38,8 +38,10 @@ from ..artifact_identity import canonical_sha
 from ..events.storyline import final_storyline_key
 from ..models import base_symbol
 from ..program.contracts import ScoredJudgment, TriageContext
+from ..taxonomy import ModelTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .card_lint import lint_reader_card
+from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 
 
 class _ExactModel(BaseModel):
@@ -83,6 +85,15 @@ _RELEVANCE_DIMENSIONS = (
 _SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DELIVERY_DIMENSIONS = ("timeliness",)
+_TAXONOMY_REVIEW_DIMENSIONS: Final = frozenset(
+    {
+        "taxonomy_subject_codes",
+        "taxonomy_event_family",
+        "taxonomy_change_state",
+        "taxonomy_source_authority",
+        "taxonomy_assertion_status",
+    }
+)
 
 
 # A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
@@ -634,7 +645,11 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
 
     review = dict(episode.accepted_review or {})
     dimensions = {str(key): str(value) for key, value in dict(review.get("dimensions") or {}).items()}
-    failed = frozenset(name for name, value in dimensions.items() if value == "fail")
+    # Taxonomy pass/fail dimensions remain review audit metadata. The exact accepted taxonomy below is the
+    # only Gold and the only way taxonomy participates in the Objective or Metric.
+    failed = frozenset(
+        name for name, value in dimensions.items() if value == "fail" and name not in _TAXONOMY_REVIEW_DIMENSIONS
+    )
     expected = dict(review.get("expected") or {})
     correction = bool(str(review.get("expected_correction") or "").strip())
     has_evidence_refs = bool([str(ref) for ref in (review.get("evidence_refs") or ()) if str(ref).strip()])
@@ -644,6 +659,27 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
     duplicate_of = str(novelty.get("duplicate_of") or "")
     owner, owner_source = _owner_identity(review)
     explicit_prompt_owned = owner_source == "explicit" and owner == PROMPT_OWNER
+
+    judgment = episode.production_judgment
+    taxonomy_valid = False
+    taxonomy_recorded = False
+    taxonomy_mismatch = False
+    try:
+        if isinstance(review.get("taxonomy"), Mapping):
+            gold_taxonomy = ModelTaxonomyV1.model_validate(review["taxonomy"])
+            taxonomy_valid = True
+            if judgment is not None and judgment.editorial.taxonomy is not None:
+                taxonomy_recorded = True
+                taxonomy_mismatch = not compare_taxonomy(gold_taxonomy, judgment.editorial.taxonomy).exact
+    except ValueError:
+        taxonomy_valid = False
+    taxonomy_target = (
+        taxonomy_valid
+        and taxonomy_recorded
+        and taxonomy_mismatch
+        and owner_source == "explicit"
+        and owner == "taxonomy"
+    )
 
     semantics_targets = tuple(
         name
@@ -680,7 +716,6 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
             {**gold_facts, "reason": reason, "disposition": disposition},
         )
 
-    judgment = episode.production_judgment
     policy_verifiable = True
     try:
         verify_policy_projection(episode.policy_metric)
@@ -699,7 +734,7 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
         should_push in {"must_hold", "should_hold"} and reaches_reader
     )
     novelty_failed = accepted_novelty not in ("uncertain", production_novelty)
-    observed_failure = bool(failed) or decision_failed or novelty_failed or correction
+    observed_failure = bool(failed) or decision_failed or novelty_failed or correction or taxonomy_mismatch
     observed_dimensions = set(failed)
     if decision_failed:
         observed_dimensions.add("should_push")
@@ -707,6 +742,8 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
         observed_dimensions.add("novelty")
     if correction and not failed:
         observed_dimensions.add("factual_fidelity")
+    if taxonomy_mismatch:
+        observed_dimensions.update(TAXONOMY_TARGET_DIMENSIONS)
     gold_facts["observed_failure"] = observed_failure
     gold_facts["observed_dimensions"] = tuple(sorted(observed_dimensions))
 
@@ -719,7 +756,9 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
         duplicate_of=duplicate_of,
         production_novelty=production_novelty,
     )
-    would_be_target = explicit_prompt_owned and bool(semantics_targets or card_targets or novelty_target)
+    would_be_target = taxonomy_target or (
+        explicit_prompt_owned and bool(semantics_targets or card_targets or novelty_target)
+    )
 
     # A case with no stable output is out of scope rather than broken: the accepted external miss is a fact
     # the Gate never admitted, so its `TriageContext` is synthesized rather than replayed, there is no
@@ -728,6 +767,10 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
     # marks to any candidate at all, which is the one thing a control must never do.
     if judgment is None:
         return _case("excluded", reason="stable_output_absent")
+    if not taxonomy_valid:
+        return _case("excluded", reason="accepted_taxonomy_gold_invalid")
+    if not taxonomy_recorded:
+        return _case("excluded", reason="recorded_stable_taxonomy_absent")
     # An unverifiable policy projection is different: the case *is* in scope and the metric will raise on
     # it mid-compile, after the budget is spent. If it would otherwise have been a target, that blocks the
     # run rather than shrinking it, which is exactly what a zero-call readiness exists to say in advance.
@@ -745,6 +788,14 @@ def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any
         if gate:
             return _case("excluded", reason=f"stable_hard_gate:{gate}")
         return _case("control", reason="stable_correct_under_accepted_review")
+
+    if taxonomy_target:
+        return _case(
+            "target",
+            reason="explicit_taxonomy_owner_with_exact_mismatch",
+            predictors=("event_semantics",),
+            dims=TAXONOMY_TARGET_DIMENSIONS,
+        )
 
     if not explicit_prompt_owned:
         if owner_source == "explicit":
@@ -1013,11 +1064,20 @@ def _strata_coverage(episodes: Sequence[DevelopmentEpisode]) -> dict[str, int]:
 def _half_counts(plan: GepaObjectivePlan, half: Sequence[DevelopmentEpisode]) -> dict[str, Any]:
     targets = set(plan.target_case_ids)
     controls = set(plan.control_case_ids)
+    taxonomy_targets = {
+        case.case_id
+        for case in plan.cases
+        if case.disposition == "target" and set(case.dimensions) & set(TAXONOMY_TARGET_DIMENSIONS)
+    }
     return {
         "case_n": len(half),
         "cluster_n": len({episode.cluster_id for episode in half}),
         "target_case_n": sum(1 for episode in half if episode.case_id in targets),
         "target_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in targets}),
+        "taxonomy_target_case_n": sum(1 for episode in half if episode.case_id in taxonomy_targets),
+        "taxonomy_target_cluster_n": len(
+            {episode.cluster_id for episode in half if episode.case_id in taxonomy_targets}
+        ),
         "control_case_n": sum(1 for episode in half if episode.case_id in controls),
         "control_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in controls}),
         "strata": _strata_coverage(half),

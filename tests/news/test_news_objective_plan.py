@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.objective import (
     DevelopmentEpisode,
@@ -71,6 +71,8 @@ def _episode(
     derived_owner: str | None = None,
     production_magnitude: int = 2,
     production_novelty: str = "new_fact",
+    gold_taxonomy: dict[str, Any] | None = None,
+    production_taxonomy: dict[str, Any] | None = None,
     reader_value: str = "realtime",
     told_rows: tuple[dict[str, Any], ...] = (),
     seen_rows: tuple[dict[str, Any], ...] = (),
@@ -114,6 +116,15 @@ def _episode(
         "expected": dict(expected or {}),
         "expected_correction": expected_correction,
         "note": "",
+        "taxonomy": dict(
+            gold_taxonomy
+            or {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            }
+        ),
     }
     return DevelopmentEpisode(
         case_id=f"case-{index}",
@@ -127,6 +138,7 @@ def _episode(
             scored_judgment(
                 {**_VERDICT, "magnitude": production_magnitude, "novelty": production_novelty},
                 relevance=trade_relevance(reader_value=reader_value),
+                taxonomy=news_taxonomy(**dict(production_taxonomy or {})),
             )
             if production
             else None
@@ -180,6 +192,109 @@ def test_explicit_prompt_owner_with_exact_typed_gold_is_an_event_semantics_targe
         )
     )
     assert (disposition, predictors, dimensions) == ("target", ("event_semantics",), ("magnitude",))
+
+
+def test_only_explicit_taxonomy_owner_turns_an_exact_taxonomy_mismatch_into_a_target() -> None:
+    mismatch = {
+        "subject_codes": ["medtop:20000178"],
+        "event_family": "financial_results",
+        "change_state": "reported",
+        "assertion_status": "confirmed",
+    }
+    owned = _disposition(_episode(2, should_push="should_push", explicit_owner="taxonomy", gold_taxonomy=mismatch))
+    unowned = _disposition(_episode(3, should_push="should_push", derived_owner="taxonomy", gold_taxonomy=mismatch))
+
+    assert owned == (
+        "target",
+        "explicit_taxonomy_owner_with_exact_mismatch",
+        ("event_semantics",),
+        (
+            "taxonomy.subject_codes",
+            "taxonomy.event_family",
+            "taxonomy.change_state",
+            "taxonomy.assertion_status",
+        ),
+    )
+    assert unowned[:2] == ("excluded", "owner_derived_only:taxonomy")
+
+
+def test_taxonomy_review_dimension_labels_do_not_create_or_suppress_the_target() -> None:
+    gold = {
+        "subject_codes": ["medtop:20001279"],
+        "event_family": "market_access",
+        "change_state": "effective",
+        "assertion_status": "confirmed",
+    }
+    labelled_pass = _disposition(
+        _episode(
+            4,
+            dimensions={"factual_fidelity": "pass", "taxonomy_event_family": "pass"},
+            explicit_owner="taxonomy",
+            gold_taxonomy=gold,
+        )
+    )
+    exact_but_labelled_fail = _disposition(
+        _episode(
+            5,
+            dimensions={"factual_fidelity": "pass", "taxonomy_event_family": "fail"},
+            explicit_owner="taxonomy",
+        )
+    )
+
+    assert labelled_pass[0:3] == (
+        "target",
+        "explicit_taxonomy_owner_with_exact_mismatch",
+        ("event_semantics",),
+    )
+    assert exact_but_labelled_fail[0:2] == ("control", "stable_correct_under_accepted_review")
+
+
+def test_taxonomy_target_requires_valid_gold_and_a_recorded_stable_taxonomy() -> None:
+    mismatch = {
+        "subject_codes": ["medtop:20001279"],
+        "event_family": "market_access",
+        "change_state": "effective",
+        "assertion_status": "confirmed",
+    }
+    invalid = _disposition(
+        _episode(
+            6,
+            explicit_owner="taxonomy",
+            gold_taxonomy={**mismatch, "subject_codes": ["not-an-iptc-code"]},
+        )
+    )
+    recorded_missing = _episode(7, explicit_owner="taxonomy", gold_taxonomy=mismatch)
+    assert recorded_missing.production_judgment is not None
+    recorded_missing = recorded_missing.model_copy(
+        update={
+            "production_judgment": recorded_missing.production_judgment.model_copy(
+                update={
+                    "editorial": recorded_missing.production_judgment.editorial.model_copy(update={"taxonomy": None})
+                }
+            )
+        }
+    )
+
+    assert invalid[0:2] == ("excluded", "accepted_taxonomy_gold_invalid")
+    assert _disposition(recorded_missing)[0:2] == ("excluded", "recorded_stable_taxonomy_absent")
+
+
+def test_unreplayable_explicit_taxonomy_target_blocks_before_provider_work() -> None:
+    case = _episode(
+        8,
+        explicit_owner="taxonomy",
+        gold_taxonomy={
+            "subject_codes": ["medtop:20001279"],
+            "event_family": "market_access",
+            "change_state": "effective",
+            "assertion_status": "confirmed",
+        },
+        policy_metric={},
+    )
+    plan = build_gepa_objective_plan((case,))
+
+    assert plan.cases[0].reason == "non_replayable_target"
+    assert "non_replayable_target" in plan.blocking_reasons
 
 
 def test_explicit_prompt_owner_with_evidence_and_correction_is_a_reader_card_target() -> None:
@@ -928,12 +1043,12 @@ def test_run_gepa_hands_the_optimizer_exactly_the_plan_it_published() -> None:
         )
         optimized.detailed_results = SimpleNamespace(
             parents=[[None], [0]],
-            val_aggregate_scores=[0.5],
+            val_aggregate_scores=[0.5, 0.6],
             discovery_eval_counts=[1],
             total_metric_calls=1,
             num_full_val_evals=1,
             seed=129,
-            best_idx=0,
+            best_idx=1,
         )
         return optimized
 
@@ -1015,3 +1130,37 @@ def test_readiness_explains_the_same_plan_without_asking_a_model_anything() -> N
     assert report["train"]["target_case_n"] + report["development_selection"]["target_case_n"] == 4
     assert report["call_envelope"]["task_model_calls_per_metric_call"] == 2
     assert len(report["case_dispositions"]) == len(corpus)
+
+
+def test_readiness_counts_taxonomy_targets_in_each_split_half() -> None:
+    corpus = list(_mixed_corpus())
+    mismatch = {
+        "subject_codes": ["medtop:20000178"],
+        "event_family": "financial_results",
+        "change_state": "reported",
+        "assertion_status": "confirmed",
+    }
+    for index in (0, 15):
+        old = corpus[index]
+        review = {
+            **old.accepted_review,
+            "dimensions": {"factual_fidelity": "pass"},
+            "expected": {},
+            "first_bad_owner_explicit": "taxonomy",
+            "first_bad_owner": "taxonomy",
+            "taxonomy": mismatch,
+        }
+        corpus[index] = old.model_copy(update={"accepted_review": review})
+    plan = build_gepa_objective_plan(corpus)
+    report = build_readiness_report(
+        plan,
+        episodes=corpus,
+        identity={"development_dataset_sha": "0" * 64},
+        coverage={},
+    )
+
+    assert report["train"]["taxonomy_target_case_n"] == 1
+    assert report["development_selection"]["taxonomy_target_case_n"] == 1
+    assert {episode.cluster_id for episode in plan.train_episodes}.isdisjoint(
+        episode.cluster_id for episode in plan.development_selection_episodes
+    )

@@ -494,14 +494,12 @@ class OptimizationRunReport(BaseModel):
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
     objective: dict[str, Any]
-    # Absent on a run the Objective Plan refused before any model call: there was no split, no metric and no
-    # trajectory, and writing an empty object for each would make an unspent refusal look like a spent run.
+    # Absent on a run the Objective Plan refused before any model call: there was no split or metric, and
+    # writing an empty object for either would make an unspent refusal look like a spent run.
     split: dict[str, Any] | None = None
     retrieval: dict[str, Any] | None = None
     metric: dict[str, Any] | None = None
     optimizer: dict[str, Any] | None = None
-    trajectory: dict[str, Any] | None = None
-    checkpoint: dict[str, Any] | None = None
     model_identities: dict[str, Any] = Field(default_factory=dict)
     budget: dict[str, Any]
     usage: dict[str, Any]

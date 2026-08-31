@@ -29,7 +29,7 @@ from tracefold.news.learning.objective import DevelopmentEpisode, _honest_split,
 from tracefold.news.learning.optimizer import (
     INSTRUCTION_GROWTH_BUDGET_TOKENS,
     InstructionGrowthBudget,
-    InstructionProposer,
+    ObjectiveComponentSelector,
     _BudgetMeter,
     _candidate_guard,
     _MeteredLearningLM,
@@ -367,6 +367,12 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
                     "evidence_refs": ["filing#timetable"],
                     "expected": {"direction": "bullish"},
                     "expected_correction": "The direction must follow the filing's actual mechanism.",
+                    "taxonomy": {
+                        "subject_codes": [],
+                        "event_family": "other",
+                        "change_state": "unknown",
+                        "assertion_status": "unknown",
+                    },
                 },
                 {"direction": "neutral"},
             ),
@@ -380,6 +386,12 @@ def _episode_payloads() -> tuple[dict[str, Any], ...]:
                     "evidence_refs": [],
                     "expected": {},
                     "expected_correction": "",
+                    "taxonomy": {
+                        "subject_codes": [],
+                        "event_family": "other",
+                        "change_state": "unknown",
+                        "assertion_status": "unknown",
+                    },
                 },
                 {},
             ),
@@ -512,25 +524,27 @@ def test_the_core_returns_only_the_typed_two_instruction_write_set() -> None:
     assert "source" in receipts["metric"]["implementation"]
 
 
-def test_non_json_trajectory_value_fails_closed() -> None:
-    class _UnsafeCompile(_FakeGepaCompile):
+@pytest.mark.parametrize(("best_idx", "scores"), [(0, [0.4, 0.7]), (1, [0.4, 0.4])])
+def test_candidate_zero_or_a_non_strict_winner_is_no_op(best_idx: int, scores: list[float]) -> None:
+    class _NoImprovementCompile(_FakeGepaCompile):
         def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
             optimized = super().__call__(student, trainset=trainset, valset=valset)
-            optimized.detailed_results.parents = [[object()]]
+            optimized.detailed_results.best_idx = best_idx
+            optimized.detailed_results.val_aggregate_scores = scores
             return optimized
 
-    with pytest.raises(TypeError, match="non_json_receipt_value"):
-        _run(compile_fn=_UnsafeCompile())
+    with pytest.raises(ValueError, match="news_program_compile_no_program_change"):
+        _run(compile_fn=_NoImprovementCompile())
 
 
-def test_nonfinite_trajectory_value_fails_closed() -> None:
+def test_nonfinite_candidate_score_fails_closed() -> None:
     class _NonfiniteCompile(_FakeGepaCompile):
         def __call__(self, student: Any, *, trainset: list[dspy.Example], valset: list[dspy.Example]) -> Any:
             optimized = super().__call__(student, trainset=trainset, valset=valset)
             optimized.detailed_results.val_aggregate_scores = [float("nan")]
             return optimized
 
-    with pytest.raises(TypeError, match="nonfinite_receipt_value"):
+    with pytest.raises(TypeError, match="nonfinite_score"):
         _run(compile_fn=_NonfiniteCompile())
 
 
@@ -688,7 +702,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         constructor=constructor,
         task_lm=_MeteredTaskLM("task/model"),
         reflection_lm=_MeteredFakeReflectionLM(),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
+        component_selector=ObjectiveComponentSelector(("event_semantics",)),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -698,7 +712,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         constructor={**constructor, "seed": 18},
         task_lm=_MeteredTaskLM("task/model"),
         reflection_lm=_MeteredFakeReflectionLM(),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
+        component_selector=ObjectiveComponentSelector(("event_semantics",)),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -708,7 +722,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         constructor=constructor,
         task_lm=_MeteredTaskLM("task/other-model"),
         reflection_lm=_MeteredFakeReflectionLM(),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
+        component_selector=ObjectiveComponentSelector(("event_semantics",)),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -718,7 +732,7 @@ def test_optimizer_config_receipt_hash_binds_every_scalar_and_both_model_identit
         constructor=constructor,
         task_lm=_MeteredTaskLM("task/model", api_base="https://other-compiler.test/v1"),
         reflection_lm=_MeteredFakeReflectionLM(),
-        proposer=InstructionProposer(reflection_lm=_MeteredFakeReflectionLM()),
+        component_selector=ObjectiveComponentSelector(("event_semantics",)),
         metric_sha256=metric_sha,
         example_count=1,
         train_count=1,
@@ -738,6 +752,12 @@ def _metric_gold(**overrides: Any) -> Any:
             "should_push": "should_push",
             "dimensions": {},
             "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+            "taxonomy": {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            },
         },
         "production_judgment": None,
         "policy_metric": {
@@ -797,6 +817,7 @@ def _score(
     pred_name: str | None = None,
     *,
     relevance: TradeRelevanceV1 | None = None,
+    taxonomy: Any = None,
 ) -> Any:
     return accepted_review_metric(
         gold,
@@ -804,11 +825,50 @@ def _score(
             verdict=verdict,
             editorial=EditorialEnvelope.issue(
                 relevance=relevance or _relevance(),
-                taxonomy=news_taxonomy(),
+                taxonomy=taxonomy or news_taxonomy(),
             ),
         ),
         pred_name=pred_name,
     )
+
+
+def test_taxonomy_is_one_subscore_of_semantics_novelty_and_feedback_names_exact_errors() -> None:
+    gold = _metric_gold(
+        accepted_review={
+            "should_push": "uncertain",
+            "dimensions": {},
+            "novelty": {"judgment": "uncertain", "duplicate_of": ""},
+            "taxonomy": {
+                "subject_codes": ["medtop:20000178", "medtop:20001279"],
+                "event_family": "financial_results",
+                "change_state": "reported",
+                "assertion_status": "confirmed",
+            },
+        }
+    )
+    prediction = news_taxonomy(
+        subject_codes=["medtop:20001279", "medtop:20001164"],
+        event_family="market_access",
+        change_state="reported",
+        assertion_status="claimed",
+        source_authority="regulatory_filing",
+    )
+
+    outcome = _score(gold, _metric_verdict(), "event_semantics", taxonomy=prediction)
+
+    assert outcome.component_scores["semantics_novelty"] == 0.375
+    assert "missing subjects: medtop:20000178" in outcome.feedback
+    assert "extra subjects: medtop:20001164" in outcome.feedback
+    assert "event_family" in outcome.feedback and "assertion_status" in outcome.feedback
+    assert "source_authority" not in outcome.feedback
+
+    other_source = _score(
+        gold,
+        _metric_verdict(),
+        "event_semantics",
+        taxonomy=prediction.model_copy(update={"source_authority": "issuer_first_party"}),
+    )
+    assert (outcome.score, outcome.feedback) == (other_source.score, other_source.feedback)
 
 
 def test_metric_sees_the_stale_source_withhold_production_applies() -> None:
@@ -929,11 +989,11 @@ def test_metric_does_not_guess_a_failed_dimension_without_exact_gold() -> None:
     changed = _score(labelled, _metric_verdict(direction="bullish"))
     unchanged = _score(labelled, _metric_verdict(direction="neutral"))
     # Identical, and identically unearned: the reviewer's rejection carries no correct value, so neither
-    # answer enters the `semantics_novelty` denominator. The two cards are byte-identical apart from
-    # `direction`, so whatever `reader_card_lint` says about them it says about both.
+    # answer enters the typed-semantics denominator. The taxonomy subscore still enters
+    # `semantics_novelty`, and both predictions preserve it exactly.
     assert changed.score == unchanged.score
-    assert changed.component_scores["semantics_novelty"] is None
-    assert changed.component_denominators["semantics_novelty"] == 0
+    assert changed.component_scores["semantics_novelty"] == 1.0
+    assert changed.component_denominators["semantics_novelty"] == 1
     assert changed.dimension_outcomes[0] == ("direction", "not_scored_no_gold")
 
 
@@ -1048,6 +1108,7 @@ def test_metric_receipt_binds_the_weights_the_policy_and_the_rubric() -> None:
         # #306 Phase 1: the deterministic card contract is a scored component and a hard gate, so its
         # bytes are part of what "better" means.
         "tracefold.news.learning.card_lint",
+        "tracefold.news.learning.taxonomy_metric",
         "tracefold.news.models.base_symbol",
         "tracefold.news.events.storyline",
         "tracefold.news.triage_rules",
@@ -1297,7 +1358,7 @@ def test_a_request_that_never_arrived_is_not_charged() -> None:
 
 
 def test_the_growth_floor_rejects_a_merged_fat_candidate_before_any_provider_call() -> None:
-    """#334: merge combines two lineages per predictor without ever calling `InstructionProposer`.
+    """#334: merge combines two lineages per predictor without using a proposal re-ask.
 
     Each component here grew within what a per-component allowance would forgive; their sum blows the
     shared envelope. The floor in `_program` is where every candidate must pass, so the merged one dies

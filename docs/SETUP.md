@@ -217,7 +217,7 @@ llm:
     api_key: "<reader fallback secret>"
     base_url: "https://reader-fallback.example/v1"
     model: "reader-fallback-model"
-  # Required only for `news learning run` / `optimize`. Reflection uses this endpoint with
+  # Required only for `news learning run`. Reflection uses this endpoint with
   # code-owned 32k/300s/temperature-1; metric_judge derives a distinct sealed
   # role from it with its own schema, budget, tariff and accounted calls.
   news_compiler_reflection:
@@ -305,10 +305,10 @@ bounded GEPA with no database write, broker, delivery, canary or promotion
 credential, and emits at most a typed patch carrying the two Predictor
 instructions. It requires explicit metric/task/reflection/metric-judge call
 limits, a total and a per-call cost limit and a seed; it cannot register,
-accept, deploy or promote. `tracefold news learning run` is the recommended
-entry: it runs readiness, the standalone baseline and the one optimization over
-that corpus, composed in one process over one dataset SHA and one configured
-judge route, into one directory. Migration
+accept, deploy or promote. `tracefold news learning run` is the only candidate
+entry: it writes zero-call readiness and invokes stock GEPA exactly once over
+that corpus into a new empty directory. Candidate zero supplies the sole
+optimization baseline. Migration
 `0292` records the initial `program_v1`
 epoch; migration `0293` preserves it and starts the corrected `program_v2`
 epoch; migration `0294` preserves both prior rows and starts the expert-quality

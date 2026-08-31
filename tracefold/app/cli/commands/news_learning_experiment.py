@@ -1,13 +1,12 @@
-"""`news learning optimize`: the one optimization entry.
+"""The optimization leg owned by `news learning run`.
 
 This is the one News CLI module that loads the optimizer in process. The release seam — `register`,
 `evaluate`, `canary` — still refuses to import DSPy, GEPA or the optimizer, because that process holds
 promotion authority. This one does not: it reads the corpus once as `serve`, writes only into a directory
 the operator names, and produces at most a proposal.
 
-Until #202 `optimize` lived under an `experiment` group and produced its own candidate type; #343 then
-deleted the rest of that research loop (`snapshot`/`compare` and the run-directory plane), so the module
-name is historical and the surface is exactly one action.
+The module name is historical. #453 removes the standalone public `optimize` route: callers enter through
+`run`, whose zero-call readiness and new-empty-directory checks happen before this leg.
 
 No Docker, no compiler image, no sandbox, no proxy sidecar, no tariff, no promotion.
 """
@@ -23,13 +22,7 @@ from tracefold.app.learning_runtime import compose_news_program_runtime
 from tracefold.app.llm import configured_lm_endpoint
 
 
-def handle_research(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    if str(args.learning_command) == "optimize":
-        return _optimize(args, settings, stable)
-    raise ValueError("news_learning_research_action_unsupported")
-
-
-def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
+def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
     """The one optimization: a frozen development dataset in, a terminal report out.
 
     The endpoints are the configured ones, not command-line models. That is deliberate: the task LM has to
@@ -149,6 +142,7 @@ def _optimize(args: Any, settings: Any, stable: Any) -> tuple[int, dict[str, Any
                 max_wall_clock_seconds=float(args.max_wall_clock_seconds),
                 seed=int(args.seed),
             ),
+            gepa_log_dir=str(Path(str(args.out)) / "gepa"),
         ),
     )
     report_path, candidate_path = write_run_outputs(Path(str(args.out)), result)
@@ -206,4 +200,4 @@ def _write_exact_json(path: Path, payload: Mapping[str, Any]) -> None:
         os.fsync(handle.fileno())
 
 
-__all__ = ["handle_research", "write_run_outputs"]
+__all__ = ["execute_optimization", "write_run_outputs"]

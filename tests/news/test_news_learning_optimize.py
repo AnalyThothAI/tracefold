@@ -204,14 +204,13 @@ def test_the_offline_entry_point_runs_the_same_optimization_the_compiler_ran() -
     assert result.report.split == compiled.split
     assert result.report.retrieval == compiled.retrieval
     assert result.report.metric == compiled.metric
-    assert result.report.trajectory == compiled.trajectory
     assert result.report.optimizer == compiled.optimizer_config
     assert result.report.objective["target_failure_cluster_ids"] == list(compiled.failure_cluster_ids)
     assert result.report.objective["target_dimensions"] == list(compiled.target_dimensions)
     constructor = result.report.optimizer["constructor_scalar_arguments"]
     assert constructor["max_metric_calls"] == 3
     assert constructor["reflection_minibatch_size"] == compiled.train_count == 4
-    assert constructor["component_selector"] == "round_robin"
+    assert result.report.optimizer["component_selector"]["allowed"] == ["event_semantics"]
     assert constructor["num_threads"] == 1
     assert constructor["seed"] == 17
     assert result.candidate is not None

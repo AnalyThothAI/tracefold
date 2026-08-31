@@ -38,7 +38,6 @@ from tracefold.news.learning.objective import (
     build_gepa_objective_plan,
 )
 from tracefold.news.learning.optimizer import objective_summary as objective_plan_summary
-from tracefold.news.learning.taxonomy_metric import recorded_taxonomy_baseline_report
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -1272,20 +1271,12 @@ def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_
         )
     )
     export = _datasets(conn, stable).development_compile_export(manifest.artifact_sha)
-    report = recorded_taxonomy_baseline_report(
-        export.episodes,
-        dataset_sha=manifest.artifact_sha,
-        agent_cohort=dict(export.dataset_payload["agent_cohort"]),
-    )
-
     assert manifest.counts["case_n"] == manifest.counts["independent_cluster_n"] == 2
     event_episode = next(episode for episode in export.episodes if episode["production_judgment"] is not None)
     assert event_episode["accepted_review"]["taxonomy"] == taxonomy.model_dump(
         mode="json", include=set(ModelTaxonomyV1.model_fields)
     )
     assert export.episode_projection_root_sha256 == canonical_sha(list(export.episodes))
-    assert (report.case_n, report.independent_cluster_n, report.scored_case_n) == (2, 1, 1)
-    assert report.outcome == "INSUFFICIENT_DATA"
     changed = [dict(episode) for episode in export.episodes]
     changed_event = next(episode for episode in changed if episode["production_judgment"] is not None)
     changed_review = dict(changed_event["accepted_review"])

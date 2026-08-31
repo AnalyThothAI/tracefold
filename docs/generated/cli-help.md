@@ -362,20 +362,18 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,optimize,run,freeze} ...
+                               {readiness,baseline,draft-reviews,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,optimize,run,freeze}
+  {readiness,baseline,draft-reviews,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
-    baseline            score a moving-window Program baseline or frozen
-                        recorded taxonomy (no sandbox, tariff, or writes)
+    baseline            score a moving-window Program baseline (no sandbox,
+                        tariff, or writes)
     draft-reviews       propose news_review_v6 rubrics with exact taxonomy
                         Gold (writes a file, never the DB)
-    optimize            run the one bounded GEPA optimization over a frozen
-                        development dataset; ADVANCE is not a release
-    run                 the recommended path: readiness -> standalone baseline
-                        -> optimize, into one directory
+    run                 the one bounded candidate path: readiness -> stock
+                        GEPA, into a new empty directory
     freeze              freeze accepted reviews into a dataset
 
 options:
@@ -401,8 +399,7 @@ options:
 ## `news learning baseline`
 
 ```
-usage: tracefold news learning baseline [-h] [--from-ms FROM_MS]
-                                        [--to-ms TO_MS] [--dataset SHA]
+usage: tracefold news learning baseline [-h] --from-ms FROM_MS --to-ms TO_MS
                                         [--mode {recorded,compile_live,runtime_live}]
                                         [--action-source {recorded,policy}]
                                         [--max-model-cases MAX_MODEL_CASES]
@@ -413,18 +410,15 @@ options:
   -h, --help            show this help message and exit
   --from-ms FROM_MS
   --to-ms TO_MS
-  --dataset SHA         score the exact frozen development dataset instead of
-                        a moving window; mutually exclusive with --from-
-                        ms/--to-ms
   --mode {recorded,compile_live,runtime_live}
-                        recorded: no model call; score persisted action for a
-                        moving window or persisted taxonomy for --dataset;
-                        compile_live: the graph GEPA optimizes, one task
-                        endpoint, no route fallback/deadline/circuit; per-call
-                        timeout and JSON format fallback remain; runtime_live:
-                        the configured four-slot production Program route
-                        (excludes consumer transaction, advisory lock, stale
-                        re-ask, degraded wire card, broker and delivery)
+                        recorded: no model call; score persisted action for
+                        the moving window; compile_live: the graph GEPA
+                        optimizes, one task endpoint, no route
+                        fallback/deadline/circuit; per-call timeout and JSON
+                        format fallback remain; runtime_live: the configured
+                        four-slot production Program route (excludes consumer
+                        transaction, advisory lock, stale re-ask, degraded
+                        wire card, broker and delivery)
   --action-source {recorded,policy}
                         recorded: the action that shipped, valid only with
                         --mode recorded; policy: re-run decide(), required by
@@ -440,8 +434,7 @@ options:
                         of byte equality, using this model (e.g.
                         deepseek-v4-pro). Enum dimensions stay exact. Moving-
                         window recorded costs nothing because persisted texts
-                        already match; Dataset-recorded taxonomy ignores this
-                        option
+                        already match
   --limit LIMIT
   --out OUT             write the baseline report JSON
 
@@ -466,42 +459,10 @@ options:
 
 ```
 
-## `news learning optimize`
-
-```
-usage: tracefold news learning optimize [-h] --development DEVELOPMENT
-                                        --out OUT
-                                        --max-metric-calls MAX_METRIC_CALLS
-                                        --max-task-model-calls MAX_TASK_MODEL_CALLS
-                                        --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-                                        --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                                        --max-cost-microusd MAX_COST_MICROUSD
-                                        --max-call-cost-microusd MAX_CALL_COST_MICROUSD
-                                        [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
-                                        [--seed SEED]
-
-options:
-  -h, --help            show this help message and exit
-  --development DEVELOPMENT
-                        development dataset artifact SHA
-  --out OUT             directory for the run report and any candidate
-  --max-metric-calls MAX_METRIC_CALLS
-  --max-task-model-calls MAX_TASK_MODEL_CALLS
-  --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-  --max-cost-microusd MAX_COST_MICROUSD
-  --max-call-cost-microusd MAX_CALL_COST_MICROUSD
-  --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
-                        deadline checked before each call
-  --seed SEED
-
-```
-
 ## `news learning run`
 
 ```
 usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
-                                   --max-baseline-model-cases MAX_BASELINE_MODEL_CASES
                                    --max-metric-calls MAX_METRIC_CALLS
                                    --max-task-model-calls MAX_TASK_MODEL_CALLS
                                    --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
@@ -516,18 +477,11 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --out OUT             run directory for every artifact this run writes
-  --max-baseline-model-cases MAX_BASELINE_MODEL_CASES
-                        bound on cases the standalone baseline may send to a
-                        provider; it must cover the whole optimizer corpus,
-                        and readiness checks that before the first call
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
   --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                        judge call ceiling for the optimization only; the
-                        standalone baseline's judge takes no ceiling (reaching
-                        one scores cases zero rather than raising) and is
-                        bounded by --max-baseline-model-cases
+                        judge call ceiling for the optimization
   --max-cost-microusd MAX_COST_MICROUSD
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS

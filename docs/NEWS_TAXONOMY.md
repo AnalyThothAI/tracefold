@@ -113,57 +113,35 @@ shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
 fabricate model taxonomy or enter the generic Review v6 queue.
 
-## Gold and recorded Stable measurement
+## Gold and GEPA measurement
 
 One explicitly accepted `news_review_v6` taxonomy is Gold. Gold is an
-acceptance state, not a claim that an independent human supplied the label. The
-owner may delegate evidence inspection to an identified AI adjudicator, whose
-identity must remain explicit and must never be described as human review.
-There is no taxonomy-specific second-reviewer prerequisite. A model draft still
-records its author and cannot accept itself, and a non-dry-run
-`review accept-drafts` requires a non-empty `--only` list naming the Event or
-task prefixes the owner authorized. An empty selection is preview-only.
+acceptance state, not a claim that an independent human supplied the label. An
+identified teacher model may draft it; an owner-authorized AI adjudicator may
+accept an explicitly reviewed subset and is recorded as AI, never as human.
 
-Freezing the existing development Dataset projects the accepted taxonomy into
-the existing episode beside the production judgment. That projection is part
-of `episode_projection_root_sha256`, so changing Gold changes the root. No
-taxonomy table, Dataset kind, migration, or parallel corpus exists. Connected
-fact clusters are the independent sample and provider duplicates contribute one
-deterministically elected representative.
+The existing development Dataset projects four model-owned axes into each
+episode: `subject_codes`, `event_family`, `change_state`, and
+`assertion_status`. `source_authority` is derived from evidence by code and is
+not model Gold. No taxonomy table, Dataset kind, migration or parallel corpus
+exists.
 
-The owner records `primary_target: ...` on issue #437 before inspecting the
-first production score, authorizes reviewed references, and freezes 60–100
-independent clusters before running:
+`taxonomy_metric.py` is a pure comparison helper. Per case it computes
+subject-code set F1 (both empty is 1; exactly one empty is 0) and exact matches
+for the other three axes, then averages the four values. The score and feedback
+come from that one comparison; feedback lists missing/extra subjects and wrong
+axes, never source authority. Metric v7 folds this result into the existing
+`semantics_novelty` component without adding a top-level weight.
 
-```bash
-uv run tracefold news learning baseline --dataset DATASET_SHA \
-  --mode recorded --out /tmp/taxonomy-baseline.json
-```
+A mismatch is an Objective target only when recorded Stable taxonomy exists,
+accepted Gold is valid, the values differ, the policy projection replays, and
+`first_bad_owner_explicit` is exactly `taxonomy`. That target binds only
+`event_semantics`. Derived ownership and `taxonomy_*` dimension labels are
+audit metadata and grant no optimization authority.
 
-This branch of the existing baseline command makes zero provider calls and
-scores the taxonomy already persisted by the Dataset's recorded Stable cohort.
-Its content-addressed `tracefold.news.recorded_taxonomy_baseline.v1` report
-contains only Dataset, Stable Program, recorded runtime/model, and metric
-identities; `case_n`, `independent_cluster_n`, and actual `scored_case_n`; the
-metrics; and `MEASURED` or `INSUFFICIENT_DATA`. `MEASURED` means the fixed
-minimum of 60 independent clusters was reached; it does not mean a target was
-met. Accepted external misses remain visible in `case_n` and the Dataset root;
-because they have no recorded Stable prediction, they are excluded from the
-independent/scored population and all metric denominators.
-
-The sole primary metric is `event_family` macro-F1 over legal labels with Gold
-support greater than zero. Diagnostics are `subject_codes` micro-F1,
-`change_state` accuracy, `assertion_status` macro-F1 over supported Gold labels,
-and exact match across the four model-owned axes. Every metric publishes the
-complete legal label universe, including support-zero classes, and all use the
-same cluster-deduplicated population. Model non-abstain excludes
-`source_authority`. That fifth, code-owned axis is reported separately as exact
-deterministic registry coverage and never enters a model score.
-
-There is no taxonomy registration, shadow, or separate evaluation lifecycle.
-The former commands, Predictor, verifiers, storage reads, tests, and docs were
-deleted in the #437 hard cut; the existing Dataset and recorded baseline are
-the only measurement path.
+The public chain is the existing `news learning readiness` followed by one
+`news learning run`; Dataset forms of `baseline` and standalone `optimize` do
+not exist. The Candidate still passes the existing evaluator and release path.
 
 ## Non-authority and rollback
 

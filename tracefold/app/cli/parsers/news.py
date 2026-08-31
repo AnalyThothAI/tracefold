@@ -93,10 +93,7 @@ def add_news_commands(
         "learning", help="freeze reviewed datasets and evaluate one-variable Agent candidates"
     )
     learning_subcommands = news_learning.add_subparsers(dest="learning_command", required=True)
-    # #199 P0. The one formal answer to "what would GEPA actually optimize on this corpus, and why is
-    # everything else out" — read-only, and it makes no task, reflection or judge call at all. It is an
-    # explanation in advance, not a bypass: `optimize` rebuilds the same Objective Plan and refuses on
-    # the same conditions, so a blocked corpus is answered for free instead of for a model budget.
+    # #199 P0. The formal zero-call answer to what the one `run` command would optimize.
     learning_readiness = learning_subcommands.add_parser(
         "readiness",
         help="explain the Objective Plan for a frozen development dataset; 0 model calls, 0 writes",
@@ -107,25 +104,12 @@ def add_news_commands(
     )
     learning_baseline = learning_subcommands.add_parser(
         "baseline",
-        help="score a moving-window Program baseline or frozen recorded taxonomy (no sandbox, tariff, or writes)",
+        help="score a moving-window Program baseline (no sandbox, tariff, or writes)",
     )
-    # Two corpora, one command, and the receipt says which. `--from-ms/--to-ms` is a moving window and is
-    # discovery: the population changes with the clock, so a before/after taken across two of them compares
-    # two different corpora. `--dataset` is the exact frozen development dataset `optimize` reads:
-    # `compile_live` uses its Objective Plan and split roots, while `recorded` scores persisted taxonomy
-    # directly with no Objective Plan or provider call.
-    # They are mutually exclusive because a run can only be one of the two (#199 §5).
-    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, default=None)
-    learning_baseline.add_argument("--to-ms", type=_positive_int, default=None)
-    learning_baseline.add_argument(
-        "--dataset",
-        default="",
-        metavar="SHA",
-        help=(
-            "score the exact frozen development dataset instead of a moving window; "
-            "mutually exclusive with --from-ms/--to-ms"
-        ),
-    )
+    # Baseline is discovery over a moving population. The frozen corpus belongs only to `readiness` and
+    # `run`, so there is no second candidate-generating or dataset-baseline route.
+    learning_baseline.add_argument("--from-ms", type=_nonnegative_int, required=True)
+    learning_baseline.add_argument("--to-ms", type=_positive_int, required=True)
     # `live` is gone, not aliased. It answered two different questions under one name: the graph GEPA
     # optimizes, and the production route's reliability. Keeping an alias would keep the ambiguity alive.
     learning_baseline.add_argument(
@@ -133,8 +117,7 @@ def add_news_commands(
         choices=("recorded", "compile_live", "runtime_live"),
         default="recorded",
         help=(
-            "recorded: no model call; score persisted action for a moving window or persisted taxonomy "
-            "for --dataset; "
+            "recorded: no model call; score persisted action for the moving window; "
             "compile_live: the graph GEPA optimizes, one task endpoint, no route fallback/deadline/circuit; "
             "per-call timeout and JSON format fallback remain; "
             "runtime_live: the configured four-slot production Program route (excludes consumer transaction, "
@@ -167,7 +150,7 @@ def add_news_commands(
         help=(
             "score free-text retention anchors by meaning instead of byte equality, using this model "
             "(e.g. deepseek-v4-pro). Enum dimensions stay exact. Moving-window recorded costs nothing "
-            "because persisted texts already match; Dataset-recorded taxonomy ignores this option"
+            "because persisted texts already match"
         ),
     )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
@@ -192,49 +175,14 @@ def add_news_commands(
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for authorized review")
-    # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
-    # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
-    # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,
-    # delivery, canary or promotion authority, and it ends in NO_OP, REJECTED or ADVANCE.
-    learning_optimize = learning_subcommands.add_parser(
-        "optimize",
-        help="run the one bounded GEPA optimization over a frozen development dataset; ADVANCE is not a release",
-    )
-    learning_optimize.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_optimize.add_argument("--out", required=True, help="directory for the run report and any candidate")
-    learning_optimize.add_argument("--max-metric-calls", type=_positive_int, required=True)
-    learning_optimize.add_argument("--max-task-model-calls", type=_positive_int, required=True)
-    learning_optimize.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
-    learning_optimize.add_argument("--max-metric-judge-model-calls", type=_positive_int, required=True)
-    learning_optimize.add_argument("--max-cost-microusd", type=_positive_int, required=True)
-    # The per-call ceiling is also the rate an unpriced call is charged at: neither endpoint this project
-    # runs on reports a resolvable price, and the proxy tariff that used to answer that is gone with the
-    # proxy. Over-charging stops a run early rather than late.
-    learning_optimize.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
-    learning_optimize.add_argument(
-        "--max-wall-clock-seconds", type=_positive_int, default=14_400, help="deadline checked before each call"
-    )
-    learning_optimize.add_argument("--seed", type=_nonnegative_int, default=129)
-    # #253 §7 Phase C. The one recommended path: readiness, the standalone `compile_live` baseline over the
-    # same frozen corpus, and the one optimization, composed in one process over one dataset SHA. It owns
-    # no Objective Plan, Metric, split, budget or optimizer of its own, which is why it carries their
-    # budget flags rather than defaults of its own. It takes no `--semantic-judge`: the judge is the
-    # configured compiler reflection route, so the baseline and GEPA cannot be handed two different rulers.
+    # #453. The only candidate-generating entry point: zero-call readiness followed by exactly one stock
+    # GEPA compile over the frozen development corpus. It owns no release authority.
     learning_run = learning_subcommands.add_parser(
         "run",
-        help="the recommended path: readiness -> standalone baseline -> optimize, into one directory",
+        help="the one bounded candidate path: readiness -> stock GEPA, into a new empty directory",
     )
     learning_run.add_argument("--development", required=True, help="development dataset artifact SHA")
     learning_run.add_argument("--out", required=True, help="run directory for every artifact this run writes")
-    learning_run.add_argument(
-        "--max-baseline-model-cases",
-        type=_positive_int,
-        required=True,
-        help=(
-            "bound on cases the standalone baseline may send to a provider; it must cover the whole "
-            "optimizer corpus, and readiness checks that before the first call"
-        ),
-    )
     learning_run.add_argument("--max-metric-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
@@ -242,18 +190,14 @@ def add_news_commands(
         "--max-metric-judge-model-calls",
         type=_positive_int,
         required=True,
-        help=(
-            "judge call ceiling for the optimization only; the standalone baseline's judge takes no "
-            "ceiling (reaching one scores cases zero rather than raising) and is bounded by "
-            "--max-baseline-model-cases"
-        ),
+        help="judge call ceiling for the optimization",
     )
     learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
     learning_run.add_argument("--seed", type=_nonnegative_int, default=129)
     # #202 §11 PR-E. Two command groups, because there are two lifecycles. `news learning` freezes a
-    # corpus, explains what GEPA may optimize, scores the stable Program and runs the one optimization —
+    # corpus, explains what GEPA may optimize, scores moving windows and runs the one optimization —
     # none of which can ship anything. `news release` admits a candidate, gathers release evidence and
     # moves the canary. An operator reading `--help` sees the boundary the packages have.
     news_release = news_subcommands.add_parser(
