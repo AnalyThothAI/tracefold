@@ -127,7 +127,7 @@ final_contract() {
 	  OR (SELECT count(*) FROM alembic_version) <> 1
 	  OR NOT EXISTS (
 	    SELECT 1 FROM alembic_version
-	     WHERE version_num IN ('20260830_0337', '20260831_0338', '20260831_0339')
+	     WHERE version_num IN ('20260831_0338', '20260831_0339')
 	  )
 	  OR NOT EXISTS (
 	    SELECT 1 FROM trading_runtime_state WHERE id = 1 AND control = 'PAUSED'
@@ -294,7 +294,7 @@ old_contract() {
 	  )
 	  OR (SELECT count(*) FROM alembic_version) <> 1
 	  OR NOT EXISTS (
-	    SELECT 1 FROM alembic_version WHERE version_num = '20260830_0337'
+	    SELECT 1 FROM alembic_version WHERE version_num = '20260831_0338'
 	  )
 	  OR NOT EXISTS (
 	    SELECT 1 FROM trading_runtime_state WHERE id = 1 AND control = 'PAUSED'

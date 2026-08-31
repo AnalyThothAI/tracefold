@@ -1340,7 +1340,7 @@ revision files are immutable; a correction is a forward revision.
 ### PostgreSQL owner-role hard cut (`0339`, one time)
 
 This procedure is only for the supported production volume still at exact head
-`20260830_0337` with `tracefold_owner NOLOGIN` and the single
+`20260831_0338` with `tracefold_owner NOLOGIN` and the single
 `tracefold_migrate LOGIN NOINHERIT ... SET TRUE` membership. It is not a role
 repair tool. A fresh volume already creates the final contract, a final volume
 reports completion without mutation, and every other state is refused.
@@ -1351,7 +1351,7 @@ reports completion without mutation, and every other state is refused.
 2. Take an operator-owned full custom-format PostgreSQL backup. Generate the
    preflight with the one-time verifier; it recomputes the artifact SHA, restores
    that exact dump into an isolated container using the pinned PostgreSQL 18
-   image, verifies the 0337/Capital/object/default-ACL facts, and writes the
+   image, verifies the 0338/Capital/object/default-ACL facts, and writes the
    receipt. It never accepts hand-written `verified=true` claims:
 
    ```bash
@@ -1373,7 +1373,7 @@ reports completion without mutation, and every other state is refused.
      "default_acl_count": 2,
      "default_acl_privilege_mismatches": 0,
      "schema": "tracefold_db_role_hard_cut_preflight_v1",
-     "migration_head": "20260830_0337",
+     "migration_head": "20260831_0338",
      "nonterminal_intents": 0,
      "owner_default_acl_count": 2,
      "pending_cases": 0,
