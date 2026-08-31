@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..adapter_contracts import BINANCE_USDM_ADAPTER_CONTRACT_SHA256
+
 # S608 exemption below composes only fixed catalog capability predicates; all binding values stay bound.
 from ..catalog import PreparedVenueCatalogSnapshot
-from ..contracts import DecisionRuntimeV1, VenueBinding, VenueBindingRuntimeV1
+from ..contracts import BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS, DecisionRuntimeV1, VenueBinding, VenueBindingRuntimeV1
+from ..execution_policy import PROTECTION_CONTRACT_SHA256
+from ..quote_authority import QUOTE_CONTRACT_SHA256
 from .query_sql import BINDING_RUNTIME_ROWS_SQL
 
 
@@ -51,50 +55,32 @@ class CatalogStorage:
     def binding_runtime_rows(self, *, now_ms: int) -> list[VenueBindingRuntimeV1]:
         rows = self.conn.execute(
             BINDING_RUNTIME_ROWS_SQL,
-            {"now": int(now_ms)},
+            {
+                "now": int(now_ms),
+                "heartbeat_floor": int(now_ms) - BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS,
+                "adapter_contract": BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+                "quote_contract": QUOTE_CONTRACT_SHA256,
+                "protection_contract": PROTECTION_CONTRACT_SHA256,
+            },
         ).fetchall()
         return [VenueBindingRuntimeV1(**dict(row)) for row in rows]
 
     def binding_runtime(self, *, binding: VenueBinding, now_ms: int) -> VenueBindingRuntimeV1 | None:
-        row = self.conn.execute(
-            """
-            SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
-                   runtime.runtime_state, runtime.account_state, runtime.account_generation,
-                   CASE
-                     WHEN runtime.catalog_state = 'ready'
-                      AND snapshot.stale_after_ms IS NOT NULL
-                      AND runtime.catalog_captured_at_ms + snapshot.stale_after_ms <= %(now)s
-                     THEN 'stale'
-                     ELSE runtime.catalog_state
-                   END AS catalog_state,
-                   runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
-                   runtime.capability_state, runtime.capability_snapshot_sha256,
-                   runtime.capability_compiled_at_ms, runtime.capability_compile_error,
-                   runtime.execution_binding_sha256, runtime.active_arm_receipt_sha256,
-                   runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
-              FROM trading_binding_runtime runtime
-              LEFT JOIN trading_venue_catalog_snapshots snapshot
-                ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
-             WHERE runtime.binding = %(binding)s
-            """,
-            {"binding": binding, "now": int(now_ms)},
-        ).fetchone()
-        return VenueBindingRuntimeV1(**dict(row)) if row is not None else None
+        return next((row for row in self.binding_runtime_rows(now_ms=now_ms) if row.binding == binding), None)
 
-    def set_binding_runtime(
+    def project_binding_credentials(
         self,
         *,
         binding: VenueBinding,
         credential_state: str,
         credential_fingerprint: str | None,
         runtime_state: str,
-        account_state: str,
         heartbeat_at_ms: int | None,
         reason: str | None,
         now_ms: int,
     ) -> bool:
         current = self.conn.execute(
-            "SELECT credential_state, credential_fingerprint FROM trading_binding_runtime "
+            "SELECT credential_state, credential_fingerprint, account_state FROM trading_binding_runtime "
             "WHERE binding = %s FOR UPDATE",
             (binding,),
         ).fetchone()
@@ -116,29 +102,62 @@ class CatalogStorage:
                 "UPDATE trading_binding_runtime SET active_arm_receipt_sha256 = NULL, updated_at_ms = %s",
                 (int(now_ms),),
             )
-        if credential_state == "unconfigured" and binding == "BINANCE_USDM":
-            recovery = self.conn.execute(
+        exposure_present = current["account_state"] == "exposure_present"
+        recovery = (
+            self.conn.execute(
                 "SELECT 1 FROM trading_intents "
                 "WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW') LIMIT 1"
             ).fetchone()
-            if recovery is not None:
+            if binding == "BINANCE_USDM"
+            else None
+        )
+        recovery_required = exposure_present or recovery is not None
+        current_fingerprint = current["credential_fingerprint"]
+        identity_matches = (
+            credential_state == "configured"
+            and current_fingerprint is not None
+            and credential_fingerprint == current_fingerprint
+        )
+        projected_credential_state = credential_state
+        projected_credential_fingerprint = credential_fingerprint
+        if recovery_required and not identity_matches:
+            projected_credential_fingerprint = current_fingerprint
+            if credential_state == "configured":
+                projected_credential_state = "invalid"
+                reason = (
+                    "recovery_blocked_credential_changed"
+                    if current_fingerprint is not None
+                    else "recovery_blocked_account_identity_unproven"
+                )
+            elif credential_state == "invalid":
+                reason = "recovery_blocked_credentials_invalid"
+            else:
                 reason = "recovery_blocked_credentials_missing"
+        elif recovery_required:
+            reason = "binance_demo_recovery_required"
+        projection_changed = (
+            current["credential_state"],
+            current["credential_fingerprint"],
+        ) != (projected_credential_state, projected_credential_fingerprint)
+        rotate_identity = projection_changed and not recovery_required
         row = self.conn.execute(
             """
             UPDATE trading_binding_runtime AS runtime
                SET credential_state = %(credential_state)s,
                    credential_fingerprint = %(credential_fingerprint)s,
                    account_generation = CASE
-                     WHEN (credential_state, credential_fingerprint)
-                          IS DISTINCT FROM (%(credential_state)s, %(credential_fingerprint)s)
+                     WHEN %(rotate_identity)s
                      THEN account_generation + 1 ELSE account_generation END,
                    execution_binding_sha256 = CASE
-                     WHEN (credential_state, credential_fingerprint)
-                          IS DISTINCT FROM (%(credential_state)s, %(credential_fingerprint)s)
+                     WHEN %(rotate_identity)s
                      THEN NULL ELSE execution_binding_sha256 END,
                    active_arm_receipt_sha256 = NULL,
                    runtime_state = %(runtime_state)s,
-                   account_state = %(account_state)s,
+                   account_state = CASE
+                     WHEN account_state = 'exposure_present' THEN account_state
+                     WHEN %(rotate_identity)s THEN 'unknown'
+                     ELSE account_state
+                   END,
                    heartbeat_at_ms = %(heartbeat)s,
                    reason = %(reason)s,
                    updated_at_ms = %(now)s
@@ -147,10 +166,10 @@ class CatalogStorage:
             """,
             {
                 "binding": binding,
-                "credential_state": credential_state,
-                "credential_fingerprint": credential_fingerprint,
+                "credential_state": projected_credential_state,
+                "credential_fingerprint": projected_credential_fingerprint,
                 "runtime_state": runtime_state,
-                "account_state": account_state,
+                "rotate_identity": rotate_identity,
                 "heartbeat": None if heartbeat_at_ms is None else int(heartbeat_at_ms),
                 "reason": reason,
                 "now": int(now_ms),
@@ -182,6 +201,7 @@ class CatalogStorage:
         self,
         *,
         binding: VenueBinding,
+        expected_capability_snapshot_sha256: str | None,
         heartbeat_at_ms: int,
         ready: bool,
         readiness_reason: str | None,
@@ -201,10 +221,12 @@ class CatalogStorage:
                    reason = %(reason)s,
                    updated_at_ms = %(now)s
              WHERE binding = %(binding)s
+               AND capability_snapshot_sha256 IS NOT DISTINCT FROM %(expected_capability)s
          RETURNING binding
             """,
             {
                 "binding": binding,
+                "expected_capability": expected_capability_snapshot_sha256,
                 "heartbeat": int(heartbeat_at_ms),
                 "ready": bool(ready),
                 "reason": readiness_reason,
@@ -213,9 +235,9 @@ class CatalogStorage:
             },
         ).fetchone()
         if updated is None:
-            raise RuntimeError(f"trading_binding_runtime_missing:{binding}")
+            raise RuntimeError(f"nautilus_capability_snapshot_changed:{binding}")
 
-    def set_binding_bootstrap_account_zero(
+    def set_binding_account_reconciliation(
         self,
         *,
         binding: VenueBinding,
@@ -247,6 +269,57 @@ class CatalogStorage:
                 "verified": None if verified_at_ms is None else int(verified_at_ms),
                 "now": int(now_ms),
                 "expected": expected_capability_snapshot_sha256,
+            },
+        ).fetchone()
+        return row is not None
+
+    def activate_latest_bootstrap_capability(self, *, binding: VenueBinding, now_ms: int) -> bool:
+        """Activate one current Demo capability after bootstrap proved the account flat."""
+
+        if binding != "BINANCE_USDM":
+            raise ValueError(f"execution_binding_disabled:{binding}")
+        row = self.conn.execute(
+            """
+            WITH candidate AS (
+                SELECT snapshot.snapshot_sha256, snapshot.created_at_ms
+                  FROM trading_execution_capability_snapshots snapshot
+                  JOIN trading_binding_runtime current
+                    ON current.binding = snapshot.binding
+                   AND current.catalog_snapshot_sha256 = snapshot.catalog_snapshot_sha256
+                 WHERE current.binding = %(binding)s
+                   AND snapshot.payload ->> 'adapter_contract_sha256' = %(adapter_contract)s
+                   AND snapshot.payload ->> 'quote_contract_sha256' = %(quote_contract)s
+                   AND snapshot.payload ->> 'protection_contract_sha256' = %(protection_contract)s
+                 ORDER BY snapshot.created_at_ms DESC, snapshot.snapshot_sha256 DESC
+                 LIMIT 1
+            )
+            UPDATE trading_binding_runtime runtime
+               SET capability_state = 'ready',
+                   capability_snapshot_sha256 = candidate.snapshot_sha256,
+                   capability_compiled_at_ms = candidate.created_at_ms,
+                   capability_compile_error = NULL,
+                   execution_binding_sha256 = NULL,
+                   runtime_state = 'stale',
+                   reason = 'capability_snapshot_changed',
+                   updated_at_ms = %(now)s
+              FROM candidate, trading_runtime_state capital
+             WHERE runtime.binding = %(binding)s
+               AND capital.id = 1
+               AND capital.control = 'PAUSED'
+               AND runtime.account_state = 'reconciled_flat'
+               AND runtime.capability_snapshot_sha256 IS NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM trading_intents
+                  WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')
+               )
+         RETURNING runtime.binding
+            """,
+            {
+                "adapter_contract": BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+                "quote_contract": QUOTE_CONTRACT_SHA256,
+                "protection_contract": PROTECTION_CONTRACT_SHA256,
+                "binding": binding,
+                "now": int(now_ms),
             },
         ).fetchone()
         return row is not None

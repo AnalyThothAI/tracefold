@@ -1,4 +1,4 @@
-"""The #376 contract receipt is a checked, executable dependency for #377."""
+"""The #429 Demo-only receipt is a checked executable dependency for later evidence."""
 
 from __future__ import annotations
 
@@ -8,20 +8,20 @@ from pathlib import Path
 import pytest
 
 from tracefold.trading.contract_receipt import (
-    ExecutionPolicyContractReceiptV3,
+    ExecutionPolicyContractReceiptV4,
     build_execution_policy_contract_receipt,
 )
 
 pytestmark = pytest.mark.contract
 
 ROOT = Path(__file__).resolve().parents[2]
-RECEIPT = ROOT / "docs/generated/execution-policy-contract-v3.json"
+RECEIPT = ROOT / "docs/generated/execution-policy-contract-v4.json"
 
 
 def test_the_committed_contract_receipt_is_exactly_derived_from_current_code() -> None:
-    committed = ExecutionPolicyContractReceiptV3.model_validate(json.loads(RECEIPT.read_text(encoding="utf-8")))
+    committed = ExecutionPolicyContractReceiptV4.model_validate(json.loads(RECEIPT.read_text(encoding="utf-8")))
     assert committed == build_execution_policy_contract_receipt()
-    assert committed.terminal == "EXECUTION_POLICY_CONTRACT_V3_SEALED"
+    assert committed.terminal == "EXECUTION_POLICY_CONTRACT_V4_SEALED"
 
 
 def test_the_receipt_closes_source_routing_and_freezes_every_execution_identity() -> None:
@@ -30,6 +30,7 @@ def test_the_receipt_closes_source_routing_and_freezes_every_execution_identity(
         "BINANCE_USDM": "binance.usdm",
         "HYPERLIQUID_PERP": "hyperliquid.perp",
     }
+    assert set(receipt.adapter_contract_sha256) == {"BINANCE_USDM"}
     assert receipt.submission_fence_version == "submission_fence_v1"
     assert len(receipt.submission_fence_sha256) == 64
     assert set(receipt.exact_execution_values) == {

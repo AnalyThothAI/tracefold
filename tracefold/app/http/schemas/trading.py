@@ -49,6 +49,8 @@ class TradingCapitalRuntimeData(ExactApiSchema):
 
 class TradingBindingRuntimeData(ExactApiSchema):
     binding: Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    execution_enabled: bool
+    execution_environment: Literal["demo"] | None = None
     credential_state: Literal["unconfigured", "configured", "invalid"]
     credential_fingerprint: str | None = None
     runtime_state: Literal["stopped", "starting", "ready", "stale", "faulted"]
@@ -92,10 +94,21 @@ class TradingPolicyIdentityData(ExactApiSchema):
     config: dict[str, str] = Field(default_factory=dict)
 
 
+class TradingNautilusRuntimePlanData(ExactApiSchema):
+    decision: Literal["blocked", "optional", "required"]
+    reason: str
+    execution_environment: Literal["binance_usdm_demo"]
+    enabled_bindings: list[Literal["BINANCE_USDM"]]
+    disabled_bindings: list[Literal["HYPERLIQUID_PERP"]]
+    ready: bool
+    readiness_reason: str
+
+
 class TradingStatusData(ExactApiSchema):
     budget: TradingBudgetData
     decision: TradingDecisionRuntimeData
     capital: TradingCapitalRuntimeData
+    nautilus: TradingNautilusRuntimePlanData
     bindings: list[TradingBindingRuntimeData]
     policy: TradingPolicyIdentityData
     counts: TradingRuntimeCountsData

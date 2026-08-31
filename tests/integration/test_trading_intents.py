@@ -30,6 +30,7 @@ from tests.trading_v3_fixtures import (
 )
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.trading import (
+    BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
     BlacklistSnapshotV1,
     DailyRiskPolicyV1,
     IntentOutcome,
@@ -78,10 +79,6 @@ EXECUTION_BINDING = binance_binding(catalog=CATALOG_SNAPSHOT, capability=CAPABIL
 def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
     repos = repositories_for_connection(connection)
-    connection.execute(
-        "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
-        (NOW,),
-    )
     store_catalog_fixture(repos.trading, CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
         "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', "
@@ -191,7 +188,7 @@ def _insert_test_intent(repos: Any, intent: TradeIntent) -> bool:
     )
 
 
-def _allow_entry(connection: Any) -> None:
+def _allow_entry(connection: Any, *, now_ms: int = NOW) -> None:
     connection.execute(
         """
         UPDATE trading_runtime_state
@@ -199,7 +196,7 @@ def _allow_entry(connection: Any) -> None:
          WHERE id = 1
         """
     )
-    _set_binance_binding_flat(connection)
+    _set_binance_binding_flat(connection, now_ms=now_ms)
 
 
 def _accepted_q1(
@@ -261,13 +258,9 @@ def _reset_authority(connection: Any) -> None:
     connection.execute(
         """
         UPDATE trading_runtime_state
-           SET control = 'PAUSED', blacklist_revision = 0, arm_epoch = 1,
-               active_capability_snapshot_sha256 = %s,
-               active_capability_included_count = %s,
-               nautilus_bootstrap_account_zero_at_ms = NULL
+           SET control = 'PAUSED', blacklist_revision = 0, arm_epoch = 1
          WHERE id = 1
-        """,
-        (CAPABILITY_SNAPSHOT.snapshot_sha256, len(CAPABILITY_SNAPSHOT.included)),
+        """
     )
     store_catalog_fixture(repositories_for_connection(connection).trading, CATALOG_SNAPSHOT, now_ms=NOW)
     connection.execute(
@@ -285,16 +278,22 @@ def _reset_authority(connection: Any) -> None:
     )
 
 
-def _set_binance_binding_flat(connection: Any, *, runtime_state: str = "ready") -> None:
+def _set_binance_binding_flat(
+    connection: Any,
+    *,
+    runtime_state: str = "ready",
+    now_ms: int = NOW,
+) -> None:
     connection.execute(
         """
         UPDATE trading_binding_runtime
            SET credential_state = 'configured', credential_fingerprint = %s,
                account_generation = 1, runtime_state = %s,
-               account_state = 'reconciled_flat', reason = NULL, updated_at_ms = %s
+               account_state = 'reconciled_flat', heartbeat_at_ms = %s,
+               reason = NULL, updated_at_ms = %s
          WHERE binding = 'BINANCE_USDM'
         """,
-        (EXECUTION_BINDING.credential_fingerprint, runtime_state, NOW),
+        (EXECUTION_BINDING.credential_fingerprint, runtime_state, now_ms, now_ms),
     )
 
 
@@ -1007,6 +1006,62 @@ def test_capability_activation_requires_paused_flat_and_no_nonterminal_intent(co
     _reset_authority(conn)
 
 
+def test_stale_execution_contracts_cannot_be_published_or_bound(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    stale_capability = CAPABILITY_SNAPSHOT.model_copy(update={"adapter_contract_sha256": "0" * 64})
+    stale_binding = EXECUTION_BINDING.model_copy(update={"quote_contract_sha256": "0" * 64})
+
+    with pytest.raises(ValueError, match=r"^execution_contract_mismatch$"):
+        repos.trading.append_and_activate_execution_capability_snapshot(stale_capability, created_at_ms=NOW)
+    with pytest.raises(ValueError, match=r"^execution_contract_mismatch$"):
+        repos.trading.append_and_activate_execution_binding(stale_binding)
+
+    assert repos.trading.execution_capability_snapshot(stale_capability.snapshot_sha256) is None
+    assert repos.trading.execution_binding(stale_binding.binding_sha256) is None
+
+
+def test_active_intent_keeps_its_original_credential_identity_during_rotation(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    _set_binance_binding_flat(conn)
+    assert _insert_test_intent(repos, _intent())
+    before = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW)
+    assert before is not None
+
+    assert repos.trading.project_binding_credentials(
+        binding="BINANCE_USDM",
+        credential_state="configured",
+        credential_fingerprint="e" * 64,
+        runtime_state="stopped",
+        heartbeat_at_ms=None,
+        reason="binance_demo_runtime_required",
+        now_ms=NOW + 1,
+    )
+
+    blocked = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW + 1)
+    assert blocked is not None
+    assert blocked.credential_state == "invalid"
+    assert blocked.credential_fingerprint == before.credential_fingerprint
+    assert blocked.account_generation == before.account_generation
+    assert blocked.execution_binding_sha256 == before.execution_binding_sha256
+    assert blocked.reason == "recovery_blocked_credential_changed"
+    conn.execute("TRUNCATE trading_intents CASCADE")
+    _reset_authority(conn)
+
+
+def test_binding_identity_must_match_the_active_capability(conn: Any) -> None:
+    _case(conn)
+    repos = repositories_for_connection(conn)
+    _set_binance_binding_flat(conn)
+    mismatched = EXECUTION_BINDING.model_copy(
+        update={"client_runtime_identity": "nautilus-trader==1.231.0;wheel=wrong"}
+    )
+
+    assert not repos.trading.append_and_activate_execution_binding(mismatched)
+    assert repos.trading.execution_binding(mismatched.binding_sha256) is None
+    _reset_authority(conn)
+
+
 def test_initial_capability_activation_requires_the_exact_catalog_and_flat_account(conn: Any) -> None:
     repos = repositories_for_connection(conn)
     initial = CAPABILITY_SNAPSHOT.model_copy(update={"app_revision": "initial-revision"})
@@ -1029,6 +1084,48 @@ def test_initial_capability_activation_requires_the_exact_catalog_and_flat_accou
     )
     assert repos.trading.append_and_activate_execution_capability_snapshot(initial, created_at_ms=NOW)
     assert repos.trading.active_execution_capability_snapshot(binding="BINANCE_USDM") == initial
+    _reset_authority(conn)
+
+
+def test_bootstrap_account_projection_and_capability_activation_are_explicit_steps(conn: Any) -> None:
+    repos = repositories_for_connection(conn)
+    demo_capability = binance_capability(
+        catalog=CATALOG_SNAPSHOT,
+        app_revision="demo-bootstrap",
+        adapter_contract_sha256=BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+    )
+    conn.execute("TRUNCATE trading_intents CASCADE")
+    _reset_authority(conn)
+    conn.execute(
+        "UPDATE trading_binding_runtime SET account_state = 'unknown', capability_state = 'missing', "
+        "capability_snapshot_sha256 = NULL, capability_compiled_at_ms = NULL, "
+        "execution_binding_sha256 = NULL WHERE binding = 'BINANCE_USDM'"
+    )
+    assert not repos.trading.append_and_activate_execution_capability_snapshot(
+        demo_capability,
+        created_at_ms=NOW + 1,
+    )
+
+    assert repos.trading.set_binding_account_reconciliation(
+        binding="BINANCE_USDM",
+        verified_at_ms=NOW,
+        now_ms=NOW,
+        expected_capability_snapshot_sha256=None,
+    )
+    reconciled = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW)
+    assert reconciled is not None
+    assert reconciled.account_state == "reconciled_flat"
+    assert reconciled.capability_snapshot_sha256 is None
+
+    assert repos.trading.activate_latest_bootstrap_capability(binding="BINANCE_USDM", now_ms=NOW)
+    activated = repos.trading.binding_runtime(binding="BINANCE_USDM", now_ms=NOW)
+    assert activated is not None
+    assert activated.capability_snapshot_sha256 == demo_capability.snapshot_sha256
+    assert activated.runtime_state == "stale"
+    assert activated.reason == "capability_snapshot_changed"
+
+    with pytest.raises(ValueError, match="execution_binding_disabled:HYPERLIQUID_PERP"):
+        repos.trading.activate_latest_bootstrap_capability(binding="HYPERLIQUID_PERP", now_ms=NOW)
     _reset_authority(conn)
 
 
@@ -1259,6 +1356,11 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     conn.commit()
     not_ready = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_500)
     assert (not_ready.disposition, not_ready.reason) == ("UNAVAILABLE", "runtime_not_ready")
+    conn.commit()
+
+    _allow_entry(conn, now_ms=NOW - 4_000)
+    stale = _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_800)
+    assert (stale.disposition, stale.reason) == ("UNAVAILABLE", "runtime_not_ready")
     conn.commit()
 
     _allow_entry(conn)
@@ -1789,11 +1891,6 @@ def test_real_nautilus_role_can_poll_and_fence_but_not_read_trading_counters(con
     active = repos.trading.active_intent()
     assert active is not None and active[0] == intent
     assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
-    repos.trading.set_nautilus_bootstrap_account_zero(
-        verified_at_ms=None,
-        now_ms=NOW + 1_000,
-        expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
-    )
     conn.commit()
 
     with pytest.raises(InsufficientPrivilege):
@@ -1890,7 +1987,7 @@ def test_fence_attempt_is_charged_to_its_utc_day_while_open_reservation_crosses_
     repos = repositories_for_connection(conn)
     intent = _intent(created_at_ms=created_at_ms)
     assert _insert_test_intent(repos, intent)
-    _allow_entry(conn)
+    _allow_entry(conn, now_ms=boundary)
 
     fence = _fence(repos, intent, engine_identity="nt-midnight", now_ms=boundary + 1_000)
     assert fence.granted

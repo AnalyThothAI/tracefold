@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from psycopg import sql
 
+from ..bindings import EXECUTION_ENABLED_BINDINGS, require_execution_binding_enabled
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
@@ -16,7 +17,7 @@ from ..capital_authority import (
     ProductionPromotionGrantRevocationV1,
     ProductionPromotionGrantV1,
 )
-from ..contracts import VenueBinding
+from ..contracts import BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS, VenueBinding
 from ..evidence_clock import CandidateLockedV1
 from ..intent import TradeIntent
 from .sql_values import _dumps
@@ -70,6 +71,7 @@ class AuthorityStorage:
         *,
         created_at_ms: int,
     ) -> bool:
+        require_execution_binding_enabled(value.binding)
         self._lock_capital_runtime()
         if value.issued_at_ms > created_at_ms:
             raise ValueError("production_grant_issued_in_future")
@@ -200,6 +202,7 @@ class AuthorityStorage:
         return inserted is not None
 
     def append_operator_arm_receipt(self, value: OperatorArmReceiptV1, *, created_at_ms: int) -> bool:
+        require_execution_binding_enabled(value.binding)
         runtime = self.conn.execute(
             "SELECT control, arm_epoch FROM trading_runtime_state WHERE id = 1 FOR UPDATE"
         ).fetchone()
@@ -270,19 +273,26 @@ class AuthorityStorage:
             """
             SELECT binding, credential_state, credential_fingerprint, runtime_state, account_state,
                    account_generation, catalog_state, catalog_snapshot_sha256, capability_state,
-                   capability_snapshot_sha256, execution_binding_sha256
+                   capability_snapshot_sha256, execution_binding_sha256, heartbeat_at_ms
               FROM trading_binding_runtime
              ORDER BY binding
                FOR UPDATE
             """
         ).fetchall()
-        configured = {str(row["binding"]) for row in rows if row["credential_state"] == "configured"}
+        configured = {
+            str(row["binding"])
+            for row in rows
+            if row["credential_state"] == "configured" and row["binding"] in EXECUTION_ENABLED_BINDINGS
+        }
         if any(row["credential_state"] == "invalid" or row["account_state"] == "exposure_present" for row in rows):
             raise ValueError("operator_arm_global_account_unproven")
         arms = tuple(self.operator_arm_receipt(digest) for digest in requested)
         if any(arm is None for arm in arms):
             raise ValueError("operator_arm_receipt_missing")
         typed_arms = cast(tuple[OperatorArmReceiptV1, ...], arms)
+        disabled = sorted({arm.binding for arm in typed_arms}.difference(EXECUTION_ENABLED_BINDINGS))
+        if disabled:
+            raise ValueError(f"execution_binding_disabled:{disabled[0]}")
         if {arm.binding for arm in typed_arms} != configured:
             raise ValueError("operator_arm_configured_binding_set_mismatch")
         by_binding = {str(row["binding"]): row for row in rows}
@@ -314,6 +324,8 @@ class AuthorityStorage:
                 or arm.capability_snapshot_sha256 != row["capability_snapshot_sha256"]
                 or arm.execution_binding_sha256 != row["execution_binding_sha256"]
                 or row["runtime_state"] != "ready"
+                or row["heartbeat_at_ms"] is None
+                or int(row["heartbeat_at_ms"]) < now_ms - BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS
                 or row["account_state"] != "reconciled_flat"
                 or row["catalog_state"] != "ready"
                 or row["capability_state"] != "ready"
@@ -344,10 +356,13 @@ class AuthorityStorage:
     ) -> bool:
         """Insert reservation, receipt, Intent, initial state, and event in the caller's transaction."""
 
+        require_execution_binding_enabled(intent.binding)
         if (
             receipt.reservation_sha256 != reservation.reservation_sha256
             or receipt.case_id != reservation.case_id
             or intent.case_id != reservation.case_id
+            or receipt.binding != reservation.binding
+            or intent.binding != reservation.binding
             or intent.capital_authorization_receipt_sha256 != receipt.authorization_receipt_sha256
             or intent.economic_lifecycle_id != reservation.economic_lifecycle_id
         ):

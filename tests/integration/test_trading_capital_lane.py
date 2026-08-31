@@ -506,7 +506,7 @@ def _apply_authority(conn: Any, manifest: TradingCaseManifest, authority: dict[s
         UPDATE trading_binding_runtime
            SET credential_state = %s, credential_fingerprint = %s, runtime_state = %s,
                account_state = %s, catalog_state = %s, catalog_snapshot_sha256 = %s,
-               catalog_captured_at_ms = %s, updated_at_ms = %s
+               catalog_captured_at_ms = %s, heartbeat_at_ms = %s, updated_at_ms = %s
          WHERE binding = 'BINANCE_USDM'
         """,
         (
@@ -517,6 +517,7 @@ def _apply_authority(conn: Any, manifest: TradingCaseManifest, authority: dict[s
             authority["catalog_state"],
             snapshot_sha,
             NOW if stores_a_snapshot else None,
+            NOW if authority["runtime_state"] == "ready" else None,
             NOW,
         ),
     )

@@ -30,7 +30,7 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
     trading_binding_secret_paths = {
         name: _ensure_optional_secret_file(path.parent / name)
-        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
+        for name in ("binance_demo_api_key", "binance_demo_api_secret")
     }
     return (
         0,
@@ -56,9 +56,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)
     binding_facts = {fact.binding: fact for fact in inspect_binding_credentials(settings)}
-    binance_key_file = settings.trading_binance_usdm_api_key_file()
-    binance_secret_file = settings.trading_binance_usdm_api_secret_file()
-    hyperliquid_private_key_file = settings.trading_hyperliquid_private_key_file()
+    binance_key_file = settings.trading_binance_demo_api_key_file()
+    binance_secret_file = settings.trading_binance_demo_api_secret_file()
     return (
         0,
         {
@@ -128,18 +127,17 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     "bindings": {
                         "BINANCE_USDM": {
+                            "execution_enabled": True,
+                            "execution_environment": "demo",
                             "credential_state": binding_facts["BINANCE_USDM"].state,
                             "api_key_file": None if binance_key_file is None else str(binance_key_file),
                             "api_secret_file": None if binance_secret_file is None else str(binance_secret_file),
                         },
                         "HYPERLIQUID_PERP": {
+                            "execution_enabled": False,
+                            "execution_environment": None,
                             "credential_state": binding_facts["HYPERLIQUID_PERP"].state,
-                            "private_key_file": (
-                                None if hyperliquid_private_key_file is None else str(hyperliquid_private_key_file)
-                            ),
-                            "account_address_configured": bool(
-                                settings.trading.bindings.hyperliquid_perp.account_address
-                            ),
+                            "reason": binding_facts["HYPERLIQUID_PERP"].reason,
                         },
                     },
                 },

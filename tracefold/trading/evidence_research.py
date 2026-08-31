@@ -20,7 +20,7 @@ from typing import Any, Final, cast
 from .admission import AdmissionConfig
 from .bindings import binding_for_source_venue
 from .blacklist import BlacklistSnapshotV1
-from .contract_receipt import ExecutionPolicyContractReceiptV3
+from .contract_receipt import ExecutionPolicyContractReceiptV4
 from .contracts import (
     InstrumentCandidateRow,
     OiCandidateRow,
@@ -456,7 +456,7 @@ def seal_discovery_corpus(
     capture: EvidenceCaptureArtifactV1,
     drain: EvidenceDrainArtifactV1,
     *,
-    contract: ExecutionPolicyContractReceiptV3,
+    contract: ExecutionPolicyContractReceiptV4,
     admission: AdmissionConfig,
     policy: CapitalPolicy,
     price_window: PriceWindow,

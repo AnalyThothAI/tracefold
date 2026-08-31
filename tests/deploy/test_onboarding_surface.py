@@ -72,17 +72,19 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
       printf '%s\\n' PAUSED > "$TRACEFOLD_TEST_TRADING_CONTROL"
       ;;
     *"--entrypoint tracefold migrate config"*)
-      printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
-      printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-      printf '%s' ',"nautilus":{"credentials_configured":'
-      printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
-      printf '}}}}\\n'
+      printf '%s\\n' '{"ok":true,"data":{}}'
       ;;
   esac
   exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "exec" ]; then
   case "$*" in
+    *"tracefold trading status"*)
+      printf '{"ok":true,"data":{"nautilus":{"decision":"%s","reason":"%s","ready":%s}}}\\n' \
+        "$TRACEFOLD_TEST_NAUTILUS_PLAN_DECISION" \
+        "$TRACEFOLD_TEST_NAUTILUS_PLAN_REASON" \
+        "$TRACEFOLD_TEST_NAUTILUS_PLAN_READY"
+      ;;
     *news_learning_artifacts*) printf '%s\\n' "$TRACEFOLD_TEST_RECEIPT" ;;
     *nautilus_bootstrap_account_zero_at_ms*) printf '%s\\n' "$TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO" ;;
     *to_regclass*) printf '%s\\n' "$TRACEFOLD_TEST_SCHEMA_STATE" ;;
@@ -94,6 +96,7 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
+  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ;; esac
   if [ -n "${TRACEFOLD_TEST_DEPLOY_BLOCK:-}" ]; then
     : > "${TRACEFOLD_TEST_DEPLOY_BLOCK}.entered"
     while [ ! -e "${TRACEFOLD_TEST_DEPLOY_BLOCK}.release" ]; do sleep 0.01; done
@@ -119,7 +122,12 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
       elif [ "${TRACEFOLD_TEST_NAUTILUS_PRESENT:-}" = "1" ]; then
         case " $* " in
           *" --all "*) printf '%s\\n' nautilus-id ;;
-          *) if [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then printf '%s\\n' nautilus-id; fi ;;
+          *)
+            if [ ! -e "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ] && \
+               [ "${TRACEFOLD_TEST_NAUTILUS_STATUS:-running}" = "running" ]; then
+              printf '%s\\n' nautilus-id
+            fi
+            ;;
         esac
       fi
       ;;
@@ -167,16 +175,12 @@ if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "scripts/with_deployment_
   exec python3 scripts/with_deployment_lock.py "$@"
 fi
 if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
-  printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
-  printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-  printf '%s' ',"nautilus":{"credentials_configured":'
-  printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
-  printf '}}}}\\n'
+  printf '%s\\n' '{"ok":true,"data":{}}'
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*|*trading*enabled*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
+    *Nautilus*|*nautilus*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
     *runtime_manifest_sha*) shift 2; exec python3 "$@" ;;
   esac
 fi
@@ -230,16 +234,25 @@ esac
         "TRACEFOLD_TEST_SERVE_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_WORKERS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
-        "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
+        "TRACEFOLD_TEST_NAUTILUS_PLAN_DECISION": "optional",
+        "TRACEFOLD_TEST_NAUTILUS_PLAN_REASON": "binance_demo_credentials_unconfigured",
+        "TRACEFOLD_TEST_NAUTILUS_PLAN_READY": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
         "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_NAUTILUS_STOPPED": str(tmp_path / "nautilus-stopped"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
         "TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA": "a" * 64,
     }
     return repo, external_activity, services_stopped, env
+
+
+def _require_nautilus(env: dict[str, str], *, ready: bool = True) -> None:
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_DECISION"] = "required"
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_REASON"] = "binance_demo_credentials_configured"
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_READY"] = str(ready).lower()
 
 
 def test_one_command_onboarding_has_one_public_lifecycle() -> None:
@@ -268,10 +281,10 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     }.isdisjoint(targets)
 
 
-def test_up_never_bootstraps_legacy_capability_or_starts_an_adapter(tmp_path: Path) -> None:
+def test_up_starts_required_demo_adapter_without_legacy_bootstrap(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    _require_nautilus(env)
     env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
 
     result = subprocess.run(
@@ -286,14 +299,14 @@ def test_up_never_bootstraps_legacy_capability_or_starts_an_adapter(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
 @pytest.mark.parametrize("target", ("up", "deploy-image"), ids=("make-up", "deploy-image"))
 def test_deploy_does_not_consult_a_legacy_capability_pointer(tmp_path: Path, target: str) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    _require_nautilus(env)
     control = Path(env["TRACEFOLD_TEST_TRADING_CONTROL"])
     control.write_text("RUNNING\n", encoding="utf-8")
 
@@ -312,14 +325,14 @@ def test_deploy_does_not_consult_a_legacy_capability_pointer(tmp_path: Path, tar
     assert result.returncode == 0, result.stderr
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
-    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert control.read_text(encoding="utf-8").strip() == "RUNNING"
 
 
 def test_up_does_not_wait_for_a_retired_execution_bootstrap(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    _require_nautilus(env)
     env["TRACEFOLD_TEST_ACTIVE_CAPABILITY_SHA"] = ""
     env["TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO"] = ""
 
@@ -335,6 +348,7 @@ def test_up_does_not_wait_for_a_retired_execution_bootstrap(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_REFRESH"]).exists()
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
 def test_up_proves_the_configured_runtime_manifest_after_start(tmp_path: Path) -> None:
@@ -578,10 +592,11 @@ def test_trading_hard_cut_preflight_fails_closed(
     assert message in result.stderr
 
 
-def test_up_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
+def test_up_fails_closed_when_runtime_plan_is_blocked(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_DECISION"] = "blocked"
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_REASON"] = "hyperliquid_execution_state_present"
 
     result = subprocess.run(
         ["make", "up"],
@@ -592,13 +607,13 @@ def test_up_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> 
         text=True,
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert result.returncode != 0
+    assert "Nautilus blocked: hyperliquid_execution_state_present" in result.stderr
+    assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
 
 
 def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tmp_path: Path) -> None:
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f|f"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
@@ -620,7 +635,6 @@ def test_up_automatically_enforces_the_pr2_preflight_before_stopping_services(tm
 
 def test_up_refuses_the_pr2_migration_when_the_automatic_preflight_fails(tmp_path: Path) -> None:
     repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
     env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260828_0316|f|f"
     env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
@@ -796,6 +810,44 @@ def test_db_migrate_does_not_invent_a_cutover_for_a_fresh_database(tmp_path: Pat
     assert "Fresh database: no PR 1 execution authority exists to cut over" in result.stdout
 
 
+def test_db_migrate_stops_writers_before_the_binance_demo_cut(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260831_0339|t|t"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "0|0"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert services_stopped.exists()
+    assert "Binance Demo cut preflight passed" in result.stdout
+
+
+def test_db_migrate_refuses_the_binance_demo_cut_before_stopping_writers(tmp_path: Path) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_MIGRATION_STATE"] = "20260831_0339|t|t"
+    env["TRACEFOLD_TEST_DB_HEAD"] = "1|0"
+
+    result = subprocess.run(
+        ["make", "db-migrate"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "observed 1|0" in result.stderr
+    assert not services_stopped.exists()
+
+
 @pytest.mark.parametrize("target", ("up", "deploy-image"))
 def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     tmp_path: Path,
@@ -813,27 +865,32 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     assert services_stopped.exists()
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert "execution adapters: not required (#356/#357 pending; capital paused)" in result.stdout
+    assert "Nautilus optional: binance_demo_credentials_unconfigured" in result.stdout
 
 
 @pytest.mark.parametrize(
-    ("trading_enabled", "credentials_configured", "expected_ok", "expected_message"),
+    ("decision", "present", "ready", "expected_ok", "expected_message"),
     (
-        ("true", "true", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
-        ("true", "false", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
-        ("false", "false", True, "execution adapters: not required (Trading disabled)"),
+        ("optional", False, False, True, "nautilus: decision=optional"),
+        ("required", True, True, True, "nautilus: decision=required"),
+        ("required", False, True, False, "missing or stopped while required"),
+        ("required", True, False, False, "binding-local readiness failed"),
+        ("blocked", False, False, False, "runtime is blocked"),
     ),
 )
-def test_status_does_not_require_an_adapter_before_its_owner_issue(
+def test_status_enforces_the_runtime_plan(
     tmp_path: Path,
-    trading_enabled: str,
-    credentials_configured: str,
+    decision: str,
+    present: bool,
+    ready: bool,
     expected_ok: bool,
     expected_message: str,
 ) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_DECISION"] = decision
+    env["TRACEFOLD_TEST_NAUTILUS_PLAN_READY"] = str(ready).lower()
+    if present:
+        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
 
     result = subprocess.run(
         ["make", "status"],
@@ -848,10 +905,10 @@ def test_status_does_not_require_an_adapter_before_its_owner_issue(
     assert expected_message in result.stdout + result.stderr
 
 
-def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp_path: Path) -> None:
+def test_exact_image_deploy_recreates_the_required_demo_adapter(tmp_path: Path) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
-    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    _require_nautilus(env)
 
     result = subprocess.run(
         ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
@@ -863,7 +920,8 @@ def test_exact_image_deploy_does_not_start_an_adapter_before_its_owner_issue(tmp
     )
 
     assert result.returncode == 0, result.stderr
-    assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
 
 
 def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(tmp_path: Path) -> None:

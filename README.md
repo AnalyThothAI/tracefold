@@ -60,20 +60,21 @@ make up
 overwriting existing choices, builds one application image containing the
 React console and Python service, bootstraps least-privilege PostgreSQL roles
 on a fresh volume, migrates to the current schema, starts Serve and Workers,
-and waits for both runtimes plus the HTML console. It exits non-zero and points
+conditionally starts Binance Demo Nautilus from the durable runtime plan, and
+waits for every required runtime plus the HTML console. It exits non-zero and points
 to `make logs` if any required boundary is not ready.
 
 Open `http://127.0.0.1:8765/` after it succeeds. The lifecycle is deliberately
 small:
 
 ```bash
-make status  # fail closed unless DB, migration, Serve, Workers, and console are ready
+make status  # fail closed unless DB, migration, required runtimes, and console are ready
 make logs    # follow service logs; Ctrl-C leaves the services running
 make down    # stop containers without deleting PostgreSQL data
 ```
 
 A second `make up` rebuilds that application image and recreates only the
-migration, Serve, and Workers containers so configuration changes take effect.
+migration, Serve, Workers, and conditionally required Nautilus containers so configuration changes take effect.
 An already running PostgreSQL container is not recreated, and its named volume,
 operator configuration, and role passwords are preserved. The generated
 defaults contain no live OpenNews, model, webhook, or bot credential (the

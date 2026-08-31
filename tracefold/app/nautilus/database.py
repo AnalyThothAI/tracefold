@@ -242,9 +242,10 @@ class NautilusDatabaseBridge:
                         outcome_values = adopted_values
                     adopt_values = intent_values, outcome_values
                     self._dispatched_intent_id = intent_id
-            for binding in self._capability_snapshot_sha256s:
+            for binding, capability_sha256 in self._capability_snapshot_sha256s.items():
                 repos.trading.set_binding_execution_runtime(
                     binding=binding,
+                    expected_capability_snapshot_sha256=capability_sha256,
                     heartbeat_at_ms=now_ms,
                     ready=self._engine_ready and self._projection_healthy,
                     readiness_reason=(
@@ -283,17 +284,23 @@ class NautilusDatabaseBridge:
     def _handle_event(self, repos: Any, event: StrategyEvent) -> bool:
         if isinstance(event, BootstrapAccountZeroChanged):
             with repos.transaction():
-                return all(
-                    bool(
-                        repos.trading.set_binding_bootstrap_account_zero(
+                projected = []
+                for binding, capability_sha256 in self._capability_snapshot_sha256s.items():
+                    updated = bool(
+                        repos.trading.set_binding_account_reconciliation(
                             binding=binding,
                             verified_at_ms=event.verified_at_ms,
                             now_ms=event.observed_at_ms,
                             expected_capability_snapshot_sha256=capability_sha256,
                         )
                     )
-                    for binding, capability_sha256 in self._capability_snapshot_sha256s.items()
-                )
+                    projected.append(updated)
+                    if updated and event.verified_at_ms is not None and capability_sha256 is None:
+                        repos.trading.activate_latest_bootstrap_capability(
+                            binding=binding,
+                            now_ms=event.observed_at_ms,
+                        )
+                return all(projected)
 
         if isinstance(event, ReadinessChanged):
             with self._lock:

@@ -8,7 +8,6 @@ from decimal import Decimal
 from typing import Any, Protocol, runtime_checkable
 
 from nautilus_trader.adapters.binance import BINANCE, BINANCE_VENUE
-from nautilus_trader.adapters.hyperliquid import HYPERLIQUID, HYPERLIQUID_VENUE
 from nautilus_trader.model.identifiers import ClientId
 
 from tracefold.trading import (
@@ -17,6 +16,7 @@ from tracefold.trading import (
     SubmissionFenceV1,
     TradeIntent,
     VenueBinding,
+    require_execution_binding_enabled,
 )
 
 from .reconciliation import load_complete_account_reports
@@ -263,31 +263,10 @@ class BinanceExecutionAdapter(_ClosedNautilusExecutionAdapter):
         )
 
 
-class HyperliquidExecutionAdapter(_ClosedNautilusExecutionAdapter):
-    def __init__(
-        self,
-        *,
-        ports: NautilusExecutionPorts | None = None,
-        account_client: Any | None = None,
-        account_report_loader: AccountReportLoader = load_complete_account_reports,
-    ) -> None:
-        super().__init__(
-            binding="HYPERLIQUID_PERP",
-            client_id=ClientId(HYPERLIQUID),
-            venue=HYPERLIQUID_VENUE,
-            ports=ports,
-            account_client=account_client,
-            account_report_loader=account_report_loader,
-        )
-
-
 def strategy_execution_adapters(ports: NautilusExecutionPorts) -> dict[VenueBinding, ExecutionAdapter]:
-    """Construct the exact two-member union; configuration only selects a member, never a plugin."""
+    """Construct the only execution-enabled adapter; this is not a provider registry."""
 
-    return {
-        "BINANCE_USDM": BinanceExecutionAdapter(ports=ports),
-        "HYPERLIQUID_PERP": HyperliquidExecutionAdapter(ports=ports),
-    }
+    return {"BINANCE_USDM": BinanceExecutionAdapter(ports=ports)}
 
 
 def account_execution_adapter(
@@ -296,15 +275,11 @@ def account_execution_adapter(
     *,
     account_report_loader: AccountReportLoader = load_complete_account_reports,
 ) -> ExecutionAdapter:
-    """Bind one provider client to its one compile-time adapter implementation."""
+    """Bind the Binance Demo client or reject a catalog-only binding."""
 
+    require_execution_binding_enabled(binding)
     if binding == "BINANCE_USDM":
         return BinanceExecutionAdapter(
-            account_client=client,
-            account_report_loader=account_report_loader,
-        )
-    if binding == "HYPERLIQUID_PERP":
-        return HyperliquidExecutionAdapter(
             account_client=client,
             account_report_loader=account_report_loader,
         )
@@ -319,7 +294,6 @@ __all__ = [
     "BoundedQuoteProbe",
     "ExecutionAdapter",
     "FlatReceipt",
-    "HyperliquidExecutionAdapter",
     "NautilusExecutionPorts",
     "ProtectionReceipt",
     "SubmitReceipt",

@@ -45,6 +45,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 TRADING_MANIFEST_VERSION: Final = "trading_manifest_v9"
 # Code-owned execution timing shared by the capital lane and the one-attempt protocol.
 TRADING_COLD_WRITE_TIMEOUT_SECONDS = 10.0
+# Binding readiness is a lease renewed by the one-second Nautilus DB bridge. A durable `ready` row
+# without a current lease is displayed and enforced as stale; process exit therefore cannot leave
+# execution authority behind.
+BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS: Final = 5_000
 
 VenueBinding = Literal["BINANCE_USDM", "HYPERLIQUID_PERP"]
 ControlState = Literal["RUNNING", "CLOSE_ONLY", "PAUSED"]

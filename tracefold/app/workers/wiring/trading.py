@@ -33,7 +33,7 @@ from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import InstrumentRef, VenueBinding
+from tracefold.trading import EXECUTION_ENABLED_BINDINGS, InstrumentRef, VenueBinding
 from tracefold.trading.capital_lane import CapitalLane
 from tracefold.trading.catalog import VenueCatalog
 from tracefold.trading.contracts import Bar as TradingBar
@@ -163,7 +163,7 @@ async def run_venue_catalog(
                     await catalog.unavailable(binding=binding, reason=exc.code)
                 else:
                     snapshot = await catalog.publish(binding=binding, instruments=instruments)
-                    if capability_compiler is not None:
+                    if capability_compiler is not None and binding in EXECUTION_ENABLED_BINDINGS:
                         try:
                             if not await _compile_capability_until_stopped(
                                 capability_compiler,

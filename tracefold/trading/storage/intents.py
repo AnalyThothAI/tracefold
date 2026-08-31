@@ -18,6 +18,7 @@ from ..capital_authority import (
     planned_risk_components,
     risk_day_bounds,
 )
+from ..contracts import BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS
 from ..intent import (
     ACTIVE_INTENT_STATES,
     ActiveIntentValues,
@@ -322,6 +323,26 @@ class IntentStorage:
         outcome_values = {name: values[name] for name in IntentOutcome.model_fields}
         return intent_values, outcome_values
 
+    def active_intent_snapshot_values(self) -> ActiveIntentValues | None:
+        """Read the active handoff without taking a writer lock."""
+
+        row = self.conn.execute(
+            f"""
+            SELECT {_IMMUTABLE_COLUMNS}, {_OUTCOME_COLUMNS}
+              FROM trading_intents
+             WHERE intent_version = 'trade_intent_v3' AND execution_state = ANY(%s)
+             ORDER BY created_at_ms, intent_id
+             LIMIT 1
+            """,  # noqa: S608
+            (list(ACTIVE_INTENT_STATES),),
+        ).fetchone()
+        if row is None:
+            return None
+        values = dict(row)
+        intent_values = {name: values[name] for name in TradeIntent.model_fields}
+        outcome_values = {name: values[name] for name in IntentOutcome.model_fields}
+        return intent_values, outcome_values
+
     def mark_intent_adopted(self, intent_id: str, *, now_ms: int) -> IntentOutcome | None:
         values = self.mark_intent_adopted_values(intent_id, now_ms=now_ms)
         return None if values is None else IntentOutcome.model_validate(values)
@@ -557,6 +578,8 @@ class IntentStorage:
             runtime["control"] != "RUNNING"
             or selected is None
             or selected["runtime_state"] != "ready"
+            or selected["heartbeat_at_ms"] is None
+            or int(selected["heartbeat_at_ms"]) < now_ms - BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS
             or selected["account_state"] != "reconciled_flat"
             or selected["capability_state"] != "ready"
         ):
@@ -822,6 +845,7 @@ class IntentStorage:
                AND runtime.control = 'RUNNING'
                AND binding.binding = intent.binding
                AND binding.runtime_state = 'ready'
+               AND binding.heartbeat_at_ms >= %(heartbeat_floor)s
                AND binding.account_state = 'reconciled_flat'
                AND binding.capability_state = 'ready'
                AND intent.execution_capability_snapshot_sha256 = binding.capability_snapshot_sha256
@@ -841,6 +865,7 @@ class IntentStorage:
                 "submission_quantity": submission_quantity,
                 "q1_evidence": prepared.q1_payload_json,
                 "now": int(now_ms),
+                "heartbeat_floor": int(now_ms) - BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS,
                 "blacklist_revision": prepared.blacklist_revision,
                 "blacklist_sha": prepared.blacklist_sha256,
                 "blacklist_payload": prepared.blacklist_payload_json,

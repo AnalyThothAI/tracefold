@@ -984,9 +984,6 @@
 | `control` | `TEXT` | False | `None` |
 | `orders_today` | `INTEGER` | False | `0` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `active_capability_snapshot_sha256` | `TEXT` | True | `None` |
-| `active_capability_included_count` | `INTEGER` | False | `0` |
-| `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
 | `blacklist_revision` | `BIGINT` | False | `0` |
 | `arm_epoch` | `BIGINT` | False | `1` |
 

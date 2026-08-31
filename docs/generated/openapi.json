@@ -5551,6 +5551,22 @@
             ],
             "title": "Execution Binding Sha256"
           },
+          "execution_enabled": {
+            "title": "Execution Enabled",
+            "type": "boolean"
+          },
+          "execution_environment": {
+            "anyOf": [
+              {
+                "const": "demo",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Execution Environment"
+          },
           "heartbeat_at_ms": {
             "anyOf": [
               {
@@ -5587,6 +5603,7 @@
         },
         "required": [
           "binding",
+          "execution_enabled",
           "credential_state",
           "runtime_state",
           "account_state",
@@ -7712,6 +7729,64 @@
         "title": "TradingIntentsData",
         "type": "object"
       },
+      "TradingNautilusRuntimePlanData": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "blocked",
+              "optional",
+              "required"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "disabled_bindings": {
+            "items": {
+              "const": "HYPERLIQUID_PERP",
+              "type": "string"
+            },
+            "title": "Disabled Bindings",
+            "type": "array"
+          },
+          "enabled_bindings": {
+            "items": {
+              "const": "BINANCE_USDM",
+              "type": "string"
+            },
+            "title": "Enabled Bindings",
+            "type": "array"
+          },
+          "execution_environment": {
+            "const": "binance_usdm_demo",
+            "title": "Execution Environment",
+            "type": "string"
+          },
+          "readiness_reason": {
+            "title": "Readiness Reason",
+            "type": "string"
+          },
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "reason",
+          "execution_environment",
+          "enabled_bindings",
+          "disabled_bindings",
+          "ready",
+          "readiness_reason"
+        ],
+        "title": "TradingNautilusRuntimePlanData",
+        "type": "object"
+      },
       "TradingPolicyCheckData": {
         "additionalProperties": false,
         "description": "One frozen condition: what was required, what was measured, and whether it passed.",
@@ -7937,6 +8012,9 @@
             "title": "Measured At Ms",
             "type": "integer"
           },
+          "nautilus": {
+            "$ref": "#/components/schemas/TradingNautilusRuntimePlanData"
+          },
           "policy": {
             "$ref": "#/components/schemas/TradingPolicyIdentityData"
           },
@@ -7949,6 +8027,7 @@
           "budget",
           "decision",
           "capital",
+          "nautilus",
           "bindings",
           "policy",
           "counts",

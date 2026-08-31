@@ -27,10 +27,10 @@ from .execution_policy import (
 from .quote_authority import QUOTE_CONTRACT_SHA256, ExecutionQuoteAuditV1, QuoteRejectionReason
 
 TRADE_INTENT_VERSION: Final[Literal["trade_intent_v3"]] = "trade_intent_v3"
-INTENT_POLICY_VERSION = "trade_intent_policy_v4"
+INTENT_POLICY_VERSION = "trade_intent_policy_v5"
 INTENT_POLICY_PAYLOAD: Final = {
     "version": INTENT_POLICY_VERSION,
-    "bindings": ["BINANCE_USDM", "HYPERLIQUID_PERP"],
+    "bindings": ["BINANCE_USDM"],
     "source_native": True,
     "side": "long",
     "leverage_ceiling": "1",

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..bindings import require_current_execution_contracts, require_execution_binding_enabled
+
 # S608 exemption below chooses only the fixed optional FOR UPDATE clause; binding remains a parameter.
 from ..blacklist import Blacklist, BlacklistSnapshotV1
 from ..capabilities import ExecutionCapabilitySnapshotV2
@@ -93,6 +95,13 @@ class CapabilityStorage:
     ) -> bool:
         """Append complete truth, then activate only while globally paused and account-flat."""
 
+        require_execution_binding_enabled(snapshot.binding)
+        require_current_execution_contracts(
+            binding=snapshot.binding,
+            adapter_contract_sha256=snapshot.adapter_contract_sha256,
+            quote_contract_sha256=snapshot.quote_contract_sha256,
+            protection_contract_sha256=snapshot.protection_contract_sha256,
+        )
         digest = snapshot.snapshot_sha256
         self.conn.execute(
             """
@@ -189,6 +198,7 @@ class CapabilityStorage:
         reason: str,
         now_ms: int,
     ) -> None:
+        require_execution_binding_enabled(binding)
         if not reason or len(reason) > 128:
             raise ValueError("execution_capability_compile_error_invalid")
         self.conn.execute(

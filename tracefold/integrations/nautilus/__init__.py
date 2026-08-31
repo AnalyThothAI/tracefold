@@ -1,15 +1,13 @@
-"""Pinned NautilusTrader configuration for the two closed execution bindings."""
+"""Pinned Binance Demo runtime plus provider-neutral historical/research helpers."""
 
 from .capabilities import (
     instrument_matches_capability,
     load_binance_usdm_execution_evidence,
-    load_hyperliquid_perp_execution_evidence,
 )
 from .config import (
     NAUTILUS_LINUX_WHEELS,
     NAUTILUS_RELEASE,
     BinanceCredentials,
-    HyperliquidCredentials,
     NautilusRelease,
     build_node_config,
     installed_nautilus_wheel_identity,
@@ -22,7 +20,6 @@ from .execution_adapter import (
     BoundedQuoteProbe,
     ExecutionAdapter,
     FlatReceipt,
-    HyperliquidExecutionAdapter,
     ProtectionReceipt,
     SubmitReceipt,
     account_execution_adapter,
@@ -42,8 +39,6 @@ __all__ = [
     "BoundedQuoteProbe",
     "ExecutionAdapter",
     "FlatReceipt",
-    "HyperliquidCredentials",
-    "HyperliquidExecutionAdapter",
     "NautilusRelease",
     "ProtectionReceipt",
     "SubmitReceipt",
@@ -55,7 +50,6 @@ __all__ = [
     "load_binance_usdm_execution_evidence",
     "load_complete_account_reports",
     "load_funding_cashflows",
-    "load_hyperliquid_perp_execution_evidence",
     "single_execution_client",
     "strategy_execution_adapters",
 ]

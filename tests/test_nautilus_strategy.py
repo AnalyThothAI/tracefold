@@ -717,15 +717,12 @@ def test_quote_stream_state_is_not_global_execution_readiness() -> None:
     assert strategy._readiness().ready is True
 
 
-def test_hyperliquid_gap_does_not_invalidate_an_active_binance_quote() -> None:
+def test_disabled_execution_binding_cannot_enter_quote_stream_state() -> None:
     strategy, queues = _registered_strategy()
     queues.commands.put_nowait(QuoteStreamChanged(binding="HYPERLIQUID_PERP", connected=False, generation=0))
-    strategy.on_timer(None)
 
-    request = _adopt_and_request_fence(strategy, queues, _intent(case_id="case-hl-gap"))
-
-    assert request.q1_evidence.stream_generation == 0
-    assert strategy._readiness().ready is True
+    with pytest.raises(ValueError, match="execution_binding_disabled:HYPERLIQUID_PERP"):
+        strategy.on_timer(None)
 
 
 def test_entry_preflight_refuses_quantity_below_the_venue_min_notional() -> None:

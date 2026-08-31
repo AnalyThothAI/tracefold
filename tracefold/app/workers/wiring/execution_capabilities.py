@@ -7,7 +7,6 @@ import time
 from tracefold.app.workers.wiring.database import WorkerTradingDatabase
 from tracefold.integrations.nautilus.capabilities import (
     load_binance_usdm_execution_evidence,
-    load_hyperliquid_perp_execution_evidence,
 )
 from tracefold.integrations.nautilus.config import (
     NAUTILUS_RELEASE,
@@ -16,7 +15,6 @@ from tracefold.integrations.nautilus.config import (
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import (
     BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-    HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
     PROTECTION_CONTRACT_SHA256,
     QUOTE_CONTRACT_SHA256,
     VenueInstrumentCatalogSnapshotV1,
@@ -42,6 +40,10 @@ class ExecutionCapabilityCompiler:
         self,
         catalog: VenueInstrumentCatalogSnapshotV1,
     ) -> ExecutionCapabilitySnapshotV2:
+        if catalog.binding != "BINANCE_USDM":
+            raise ExecutionCapabilityCompileError(
+                f"execution_capability_compile_failed:{catalog.binding}:execution_binding_disabled"
+            )
         try:
             evidence, adapter_contract = await self._load(catalog)
             identity = runtime_identity()
@@ -91,11 +93,6 @@ class ExecutionCapabilityCompiler:
             return (
                 await load_binance_usdm_execution_evidence(catalog),
                 BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-            )
-        if catalog.binding == "HYPERLIQUID_PERP":
-            return (
-                await load_hyperliquid_perp_execution_evidence(catalog),
-                HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
             )
         raise ValueError("execution_capability_binding_unsupported")
 

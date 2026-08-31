@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -9,11 +10,11 @@ from typing import Any, Literal
 import yaml
 
 from tracefold.app.repository_session import repositories
+from tracefold.app.trading_status import TRADING_STATUS_WINDOW_MS, read_trading_runtime_status
 from tracefold.platform.config.loader import load_settings
 from tracefold.trading import (
-    CapitalRuntimeV1,
+    EXECUTION_ENABLED_BINDINGS,
     DailyRiskPolicyV1,
-    DecisionRuntimeV1,
     OperatorArmReceiptV1,
     ProductionPromotionGrantRevocationV1,
     ProductionPromotionGrantV1,
@@ -22,7 +23,6 @@ from tracefold.trading import (
 from tracefold.trading.contracts import canonical_base_symbol
 
 _CONTROL = {"close-only": "CLOSE_ONLY", "paused": "PAUSED"}
-_STATUS_WINDOW_MS = 24 * 3_600_000
 _READ_COMMANDS = frozenset({"status", "cases", "show"})
 
 
@@ -49,42 +49,35 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
         trading = repos.trading
 
         if command == "status":
-            decision = trading.decision_runtime() or DecisionRuntimeV1(
-                state="FAULTED",
-                heartbeat_at_ms=None,
-                reason="decision_runtime_missing",
-                updated_at_ms=now,
-            )
-            capital = trading.capital_runtime() or CapitalRuntimeV1(
-                control="PAUSED", blacklist_revision=0, arm_epoch=1, updated_at_ms=now
-            )
+            status = read_trading_runtime_status(trading, now_ms=now)
             return 0, {
                 "ok": True,
                 "data": {
                     "decision": {
-                        "state": decision.state,
-                        "heartbeat_at_ms": decision.heartbeat_at_ms,
-                        "reason": decision.reason,
+                        "state": status.decision.state,
+                        "heartbeat_at_ms": status.decision.heartbeat_at_ms,
+                        "reason": status.decision.reason,
                     },
                     "capital": {
-                        "control": capital.control,
-                        "blacklist_revision": capital.blacklist_revision,
-                        "arm_epoch": capital.arm_epoch,
+                        "control": status.capital.control,
+                        "blacklist_revision": status.capital.blacklist_revision,
+                        "arm_epoch": status.capital.arm_epoch,
                     },
-                    "bindings": [_binding_runtime(binding) for binding in trading.binding_runtime_rows(now_ms=now)],
+                    "nautilus": asdict(status.nautilus),
+                    "bindings": [_binding_runtime(binding) for binding in status.bindings],
                     "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
                     # #211: where the 24 h of work actually spent its time, stage by stage. `n` per
                     # stage says how much evidence each number rests on.
-                    "stage_latency_ms": trading.stage_latency_ms(since_ms=now - _STATUS_WINDOW_MS),
+                    "stage_latency_ms": trading.stage_latency_ms(since_ms=now - TRADING_STATUS_WINDOW_MS),
                     # The durable admission ledger and the durable Case/Intent aggregates. Every
                     # number here survives a restart and a UTC midnight, which is what the retired
                     # in-memory funnel could not do (#331).
                     **trading.candidate_admission_report(now_ms=now),
-                    **trading.runtime_summary(since_ms=now - _STATUS_WINDOW_MS, now_ms=now),
-                    "cases_by_state_24h": trading.case_counts(since_ms=now - _STATUS_WINDOW_MS),
-                    "case_reasons_24h": trading.case_reason_counts(since_ms=now - _STATUS_WINDOW_MS),
-                    "capital_reasons_24h": trading.case_capital_reason_counts(since_ms=now - _STATUS_WINDOW_MS),
-                    "intents_24h": trading.intent_counts(since_ms=now - _STATUS_WINDOW_MS),
+                    **status.summary,
+                    "cases_by_state_24h": trading.case_counts(since_ms=now - TRADING_STATUS_WINDOW_MS),
+                    "case_reasons_24h": trading.case_reason_counts(since_ms=now - TRADING_STATUS_WINDOW_MS),
+                    "capital_reasons_24h": trading.case_capital_reason_counts(since_ms=now - TRADING_STATUS_WINDOW_MS),
+                    "intents_24h": trading.intent_counts(since_ms=now - TRADING_STATUS_WINDOW_MS),
                 },
             }
 
@@ -191,6 +184,8 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
 def _binding_runtime(binding: VenueBindingRuntimeV1) -> dict[str, Any]:
     return {
         "binding": binding.binding,
+        "execution_enabled": binding.binding in EXECUTION_ENABLED_BINDINGS,
+        "execution_environment": "demo" if binding.binding == "BINANCE_USDM" else None,
         "credential_state": binding.credential_state,
         "credential_fingerprint": binding.credential_fingerprint,
         "runtime_state": binding.runtime_state,

@@ -378,8 +378,7 @@ def test_real_workers_process_gracefully_stops_and_closes_probe() -> None:
     [
         ("none", ("unconfigured", "unconfigured"), ("stopped", "stopped")),
         ("single", ("configured", "unconfigured"), ("stopped", "stopped")),
-        ("dual", ("configured", "configured"), ("stopped", "stopped")),
-        ("invalid", ("invalid", "invalid"), ("faulted", "faulted")),
+        ("invalid", ("invalid", "unconfigured"), ("faulted", "stopped")),
     ],
 )
 def test_real_workers_process_projects_each_credential_matrix_without_leaking_secrets(
@@ -785,14 +784,10 @@ def _free_port() -> int:
 
 def _write_trading_binding_secrets(path: Path, variant: str) -> tuple[str, ...]:
     values: list[tuple[str, str]] = []
-    if variant in {"single", "dual", "invalid"}:
-        values.append(("binance_usdm_api_key", "process-binance-key"))
-    if variant in {"single", "dual"}:
-        values.append(("binance_usdm_api_secret", "process-binance-secret"))
-    if variant == "dual":
-        values.append(("hyperliquid_private_key", "11" * 32))
-    elif variant == "invalid":
-        values.append(("hyperliquid_private_key", "invalid-private-key"))
+    if variant in {"single", "invalid"}:
+        values.append(("binance_demo_api_key", "process-binance-key"))
+    if variant == "single":
+        values.append(("binance_demo_api_secret", "process-binance-secret"))
     for name, value in values:
         secret = path / name
         secret.write_text(value, encoding="utf-8")

@@ -182,6 +182,9 @@ class _Trading:
             "latest_position_closed_at_ms": None,
         }
 
+    def active_intent_snapshot_values(self):
+        return ({"binding": "BINANCE_USDM"}, {})
+
     def candidate_admission_report(self, **kwargs: Any) -> dict[str, Any]:
         self.calls.append(("candidate_admission_report", kwargs))
         return {
@@ -279,6 +282,17 @@ def test_status_publishes_orthogonal_durable_runtime_facts_and_policy_identity(c
     assert data["capital"] == {"control": "PAUSED", "blacklist_revision": 3, "arm_epoch": 1}
     assert [row["binding"] for row in data["bindings"]] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
     assert all(row["credential_state"] == "unconfigured" for row in data["bindings"])
+    assert data["bindings"][0]["execution_environment"] == "demo"
+    assert data["bindings"][1]["execution_enabled"] is False
+    assert data["nautilus"] == {
+        "decision": "blocked",
+        "reason": "recovery_blocked_credentials_missing",
+        "execution_environment": "binance_usdm_demo",
+        "enabled_bindings": ["BINANCE_USDM"],
+        "disabled_bindings": ["HYPERLIQUID_PERP"],
+        "ready": False,
+        "readiness_reason": "credentials_unconfigured",
+    }
     assert data["counts"]["active_intents"] == 1
     assert data["counts"]["cases_24h"] == 2
     # The identity of the policy a *new* Case would be frozen under. Never applied to an existing one.

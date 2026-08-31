@@ -46,6 +46,7 @@ CAPITAL_PATH: tuple[str, ...] = (
     "trading/bindings.py",
     "trading/capabilities.py",
     "trading/contract_receipt.py",
+    "trading/runtime_plan.py",
     "trading/catalog.py",
     "trading/intent.py",
     "trading/execution_policy.py",
@@ -488,6 +489,16 @@ def test_live_wiring_reaches_both_source_native_bars_and_no_model_or_shadow_runn
     assert not any("dspy" in module.lower() for module in modules)
 
 
+def test_nautilus_runtime_has_no_hyperliquid_execution_path() -> None:
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in (SRC / "integrations/nautilus").rglob("*.py")
+        if "hyperliquid" in path.read_text(encoding="utf-8").lower()
+    ]
+
+    assert offenders == []
+
+
 def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
     from tracefold import trading
 
@@ -495,9 +506,11 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ACTIVE_INTENT_STATES",
         "BAR_FIDELITY_VERSION",
         "BINANCE_USDM_ADAPTER_CONTRACT_SHA256",
-        "HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256",
+        "EXECUTION_DISABLED_BINDINGS",
+        "EXECUTION_ENABLED_BINDINGS",
         "INTENT_POLICY_SHA256",
         "MAX_RECEIVE_AGE_NS",
+        "NAUTILUS_EXECUTION_ENVIRONMENT",
         "PROTECTION_CONTRACT_SHA256",
         "QUOTE_CONTRACT_SHA256",
         "ActiveIntentValues",
@@ -527,6 +540,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "InstrumentRef",
         "IntentOutcome",
         "IntentReasonCode",
+        "NautilusRuntimePlanV1",
         "NautilusRuntimeStartV1",
         "OperatorArmReceiptV1",
         "ProductionPromotionGrantRevocationV1",
@@ -555,6 +569,8 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "materialize_active_intent",
         "materialize_entry_fence",
         "materialize_intent_outcome",
+        "nautilus_runtime_plan",
+        "require_execution_binding_enabled",
         "validate_close_submission_identity",
         "validate_entry_quote",
         "validate_stop_submission_identity",

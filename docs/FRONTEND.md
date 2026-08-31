@@ -318,10 +318,12 @@ the route components into the eager shell chunk.
   alternate backend affordance.
 
   The header names the independent Decision and Capital facts, configured
-  notional, both closed bindings, and current nonterminal Intent count. Each
-  binding shows redacted credential/runtime/account/catalog state, catalog
-  digest, heartbeat, and exact reason. The browser never derives an execution
-  readiness boolean from these orthogonal facts.
+  notional, Binance Demo execution, the catalog-only Hyperliquid binding, the
+  server-derived Nautilus runtime decision, and current nonterminal Intent
+  count. Each binding shows whether execution is enabled, its environment,
+  redacted credential/runtime/account/catalog state, catalog digest, heartbeat,
+  and exact reason. The browser displays the server decision and never derives
+  an execution readiness boolean from these orthogonal facts.
 
   When Decision is RUNNING, Capital is PAUSED, and a binding is unconfigured,
   the exact banner is “决策运行、资本暂停、凭证未配置，当前无法交易”. Catalog

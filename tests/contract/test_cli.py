@@ -430,14 +430,17 @@ class CliTests(unittest.TestCase):
             trading["bindings"],
             {
                 "BINANCE_USDM": {
+                    "execution_enabled": True,
+                    "execution_environment": "demo",
                     "credential_state": "unconfigured",
-                    "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
-                    "api_secret_file": str(home / ".tracefold" / "binance_usdm_api_secret"),
+                    "api_key_file": str(home / ".tracefold" / "binance_demo_api_key"),
+                    "api_secret_file": str(home / ".tracefold" / "binance_demo_api_secret"),
                 },
                 "HYPERLIQUID_PERP": {
+                    "execution_enabled": False,
+                    "execution_environment": None,
                     "credential_state": "unconfigured",
-                    "private_key_file": str(home / ".tracefold" / "hyperliquid_private_key"),
-                    "account_address_configured": False,
+                    "reason": "execution_binding_disabled",
                 },
             },
         )
@@ -519,13 +522,9 @@ class CliTests(unittest.TestCase):
                 "enabled": False,
                 "order": {"fixed_notional_usd": 10},
                 "bindings": {
-                    "binance_usdm": {
-                        "api_key_file": "binance_usdm_api_key",
-                        "api_secret_file": "binance_usdm_api_secret",
-                    },
-                    "hyperliquid_perp": {
-                        "private_key_file": "hyperliquid_private_key",
-                        "account_address": None,
+                    "binance_demo": {
+                        "api_key_file": "binance_demo_api_key",
+                        "api_secret_file": "binance_demo_api_secret",
                     },
                 },
             },
@@ -538,7 +537,7 @@ class CliTests(unittest.TestCase):
             app_home = home / ".tracefold"
             key = "demo-key-value"
             secret = "demo-secret-value"
-            for name, value in (("binance_usdm_api_key", key), ("binance_usdm_api_secret", secret)):
+            for name, value in (("binance_demo_api_key", key), ("binance_demo_api_secret", secret)):
                 path = app_home / name
                 path.write_text(value, encoding="utf-8")
                 path.chmod(0o600)
@@ -639,9 +638,8 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert directory.stat().st_mode & 0o777 == 0o700
     for name in (
         "telegram_bot_token",
-        "binance_usdm_api_key",
-        "binance_usdm_api_secret",
-        "hyperliquid_private_key",
+        "binance_demo_api_key",
+        "binance_demo_api_secret",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",
@@ -652,10 +650,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
-    assert all(
-        (app_home / name).read_bytes() == b""
-        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
-    )
+    assert all((app_home / name).read_bytes() == b"" for name in ("binance_demo_api_key", "binance_demo_api_secret"))
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -668,9 +663,8 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     tracked_names = (
         "config.yaml",
         "telegram_bot_token",
-        "binance_usdm_api_key",
-        "binance_usdm_api_secret",
-        "hyperliquid_private_key",
+        "binance_demo_api_key",
+        "binance_demo_api_secret",
         "postgres_password",
         "postgres_serve_password",
         "postgres_workers_password",

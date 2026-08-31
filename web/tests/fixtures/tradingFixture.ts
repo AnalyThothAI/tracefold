@@ -31,6 +31,8 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     bindings: [
       {
         binding: "BINANCE_USDM",
+        execution_enabled: true,
+        execution_environment: "demo",
         account_generation: 0,
         credential_state: "unconfigured",
         credential_fingerprint: null,
@@ -45,6 +47,8 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
       },
       {
         binding: "HYPERLIQUID_PERP",
+        execution_enabled: false,
+        execution_environment: null,
         account_generation: 0,
         credential_state: "unconfigured",
         credential_fingerprint: null,
@@ -55,9 +59,18 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
         catalog_captured_at_ms: TRADING_NOW_MS - 60_000,
         capability_state: "missing",
         heartbeat_at_ms: null,
-        reason: "credentials_unconfigured",
+        reason: "execution_binding_disabled",
       },
     ],
+    nautilus: {
+      decision: "optional",
+      disabled_bindings: ["HYPERLIQUID_PERP"],
+      enabled_bindings: ["BINANCE_USDM"],
+      execution_environment: "binance_usdm_demo",
+      readiness_reason: "runtime_not_required",
+      ready: false,
+      reason: "binance_demo_credentials_unconfigured",
+    },
     counts: {
       active_intents: 1,
       cases_24h: 7,

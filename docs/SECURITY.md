@@ -35,8 +35,8 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
 and password-file references, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
-provider/name. `trading.bindings` has closed file references for Binance USD-M
-and Hyperliquid credentials. Workers reads them only to project a redacted
+provider/name. `trading.bindings.binance_demo` has the only execution secret
+references. Workers reads them only to project a redacted
 fingerprint/state; it never constructs an execution provider client. Serve has
 no mount and no secret-reading path.
 
@@ -49,12 +49,10 @@ fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
 `news.push.telegram_bot_token_file`, the five PostgreSQL password files
-(bootstrap, Serve, Workers, migrate, Nautilus), the Binance files named by
-`trading.bindings.binance_usdm.api_key_file` / `api_secret_file`, and the
-Hyperliquid file named by
-`trading.bindings.hyperliquid_perp.private_key_file`. The corresponding
-Hyperliquid account address is public identity, not a secret. There is no other
-provider key or credential.
+(bootstrap, Serve, Workers, migrate, Nautilus), and the Binance Demo files named
+by `trading.bindings.binance_demo.api_key_file` / `api_secret_file`. There is no
+Hyperliquid execution key or account-address setting in the current contract.
+There is no other provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
 `~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
@@ -63,8 +61,8 @@ secret files with mode `0600`; reruns repair those permissions. Without
 only the generated config and does not rotate existing PostgreSQL passwords.
 Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create an empty mode-`0600`
-`telegram_bot_token`, `binance_usdm_api_key`, `binance_usdm_api_secret`, and
-`hyperliquid_private_key` placeholders so Workers' read-only bind mounts are
+`telegram_bot_token`, `binance_demo_api_key`, and
+`binance_demo_api_secret` placeholders so Workers' read-only bind mounts are
 stable; an empty file is `unconfigured`, never a credential. They do not create
 or populate an execution key. A live
 operator populates each required provider file as a regular,
@@ -79,11 +77,11 @@ explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
 
-Workers mounts the three optional execution secret files read-only and records
+Workers mounts the two optional Demo execution secret files read-only and records
 only `unconfigured|configured|invalid` plus a one-way SHA-256 fingerprint.
 Neither plaintext nor path enters PostgreSQL, HTTP, logs, artifacts, or Issues.
-The dormant Nautilus container also has the Binance pair for recovery of
-existing Intent obligations, but is not a required deployment runtime. No
+Nautilus receives the same Demo pair and is required whenever they are validly
+configured. No Hyperliquid execution secret is created or mounted. No
 execution credential is exposed to Serve, News, RabbitMQ, or public HTTP.
 
 Worker topology, clocks, deadlines, batches, leases, retries, timeouts,

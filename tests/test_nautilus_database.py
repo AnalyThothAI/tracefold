@@ -156,7 +156,7 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
     queues = strategy_queues()
     bridge = NautilusDatabaseBridge(_settings(), queues, now_ms=lambda: NOW_MS)
     repos = _Repositories()
-    repos.trading.set_binding_bootstrap_account_zero.return_value = True
+    repos.trading.set_binding_account_reconciliation.return_value = True
 
     assert bridge._handle_event(
         repos,
@@ -166,11 +166,15 @@ def test_bootstrap_account_zero_is_projected_without_changing_engine_readiness()
         ),
     )
 
-    repos.trading.set_binding_bootstrap_account_zero.assert_called_once_with(
+    repos.trading.set_binding_account_reconciliation.assert_called_once_with(
         binding="BINANCE_USDM",
         verified_at_ms=NOW_MS - 1,
         now_ms=NOW_MS,
         expected_capability_snapshot_sha256=None,
+    )
+    repos.trading.activate_latest_bootstrap_capability.assert_called_once_with(
+        binding="BINANCE_USDM",
+        now_ms=NOW_MS,
     )
     assert bridge.readiness()["engine_ready"] is False
 
@@ -184,7 +188,7 @@ def test_failed_bootstrap_clears_the_proof_before_projecting_unexpected_exposure
         now_ms=lambda: NOW_MS,
     )
     repos = _Repositories()
-    repos.trading.set_binding_bootstrap_account_zero.return_value = True
+    repos.trading.set_binding_account_reconciliation.return_value = True
 
     assert bridge._handle_event(
         repos,
@@ -195,12 +199,13 @@ def test_failed_bootstrap_clears_the_proof_before_projecting_unexpected_exposure
         ReadinessChanged(ready=False, reason="external_exposure", unexpected_exposure=True),
     )
 
-    repos.trading.set_binding_bootstrap_account_zero.assert_called_once_with(
+    repos.trading.set_binding_account_reconciliation.assert_called_once_with(
         binding="BINANCE_USDM",
         verified_at_ms=None,
         now_ms=NOW_MS,
         expected_capability_snapshot_sha256="c" * 64,
     )
+    repos.trading.activate_latest_bootstrap_capability.assert_not_called()
     assert bridge.readiness()["unexpected_exposure"] is True
 
 

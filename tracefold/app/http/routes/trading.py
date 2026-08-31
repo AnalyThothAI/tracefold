@@ -23,6 +23,7 @@ import base64
 import json
 import re
 import time
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Annotated, Any, Final
 
@@ -30,11 +31,11 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
 from tracefold.app.trading_config import ADMISSION_VERSION, capital_lane_config
+from tracefold.app.trading_status import TRADING_STATUS_WINDOW_MS, read_trading_runtime_status
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import (
-    CapitalRuntimeV1,
+    EXECUTION_ENABLED_BINDINGS,
     DailyRiskPolicyV1,
-    DecisionRuntimeV1,
     OperatorArmReceiptV1,
     ProductionPromotionGrantV1,
     VenueBindingRuntimeV1,
@@ -56,7 +57,7 @@ _GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceD
 _CapabilitiesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCapabilitiesData]
 _EvidenceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingEvidenceData]
 
-_WINDOW_MS: Final = 24 * 3_600_000
+_WINDOW_MS: Final = TRADING_STATUS_WINDOW_MS
 _ROW_LIMIT: Final = 100
 _GATE_LIMIT: Final = 400
 _OI_METRIC_VERSION: Final = OI_METRIC_VERSION
@@ -84,17 +85,7 @@ def get_trading_status(request: Request) -> Response:
     settings = runtime.settings
     now_ms = int(time.time() * 1000)
     with runtime.repositories() as repos:
-        decision = repos.trading.decision_runtime() or DecisionRuntimeV1(
-            state="FAULTED",
-            heartbeat_at_ms=None,
-            reason="decision_runtime_missing",
-            updated_at_ms=now_ms,
-        )
-        capital = repos.trading.capital_runtime() or CapitalRuntimeV1(
-            control="PAUSED", blacklist_revision=0, arm_epoch=1, updated_at_ms=now_ms
-        )
-        bindings = repos.trading.binding_runtime_rows(now_ms=now_ms)
-        counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
+        status = read_trading_runtime_status(repos.trading, now_ms=now_ms)
     policy = capital_lane_config(settings).policy
     return _etagged(
         {
@@ -102,23 +93,24 @@ def get_trading_status(request: Request) -> Response:
                 "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
             },
             "decision": {
-                "state": decision.state,
-                "heartbeat_at_ms": decision.heartbeat_at_ms,
-                "reason": decision.reason,
+                "state": status.decision.state,
+                "heartbeat_at_ms": status.decision.heartbeat_at_ms,
+                "reason": status.decision.reason,
             },
             "capital": {
-                "control": capital.control,
-                "blacklist_revision": capital.blacklist_revision,
-                "arm_epoch": capital.arm_epoch,
+                "control": status.capital.control,
+                "blacklist_revision": status.capital.blacklist_revision,
+                "arm_epoch": status.capital.arm_epoch,
             },
-            "bindings": [_binding_runtime(row) for row in bindings],
+            "nautilus": asdict(status.nautilus),
+            "bindings": [_binding_runtime(row) for row in status.bindings],
             "policy": {
                 "policy_id": policy.policy_id,
                 "policy_version": policy.policy_version,
                 "config_digest": policy.config_digest,
                 "config": {key: str(value) for key, value in sorted(policy.config_snapshot.items())},
             },
-            "counts": counts,
+            "counts": status.summary,
             "window_hours": _WINDOW_MS // 3_600_000,
             "measured_at_ms": now_ms,
         },
@@ -611,6 +603,8 @@ def _capital_lifecycle(row: dict[str, Any]) -> dict[str, Any]:
 def _binding_runtime(row: VenueBindingRuntimeV1) -> dict[str, Any]:
     return {
         "binding": row.binding,
+        "execution_enabled": row.binding in EXECUTION_ENABLED_BINDINGS,
+        "execution_environment": "demo" if row.binding == "BINANCE_USDM" else None,
         "credential_state": row.credential_state,
         "credential_fingerprint": row.credential_fingerprint,
         "runtime_state": row.runtime_state,

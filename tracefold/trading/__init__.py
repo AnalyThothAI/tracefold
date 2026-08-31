@@ -7,11 +7,16 @@ runner invites a caller to build one somewhere other than the composition seam.
 
 from __future__ import annotations
 
-from .adapter_contracts import (
-    BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-    HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
+from .adapter_contracts import BINANCE_USDM_ADAPTER_CONTRACT_SHA256
+from .bindings import (
+    EXECUTION_DISABLED_BINDINGS,
+    EXECUTION_ENABLED_BINDINGS,
+    ExecutionBindingV1,
+    ExecutionVenue,
+    binding_for_source_venue,
+    require_execution_binding_enabled,
+    venue_for_binding,
 )
-from .bindings import ExecutionBindingV1, ExecutionVenue, binding_for_source_venue, venue_for_binding
 from .blacklist import BlacklistSnapshotV1
 from .capabilities import (
     ExecutionCapabilityExclusionV2,
@@ -87,14 +92,21 @@ from .replay import (
     ReplaySpecV1,
     ReplayTerminalOutcomeV1,
 )
+from .runtime_plan import (
+    NAUTILUS_EXECUTION_ENVIRONMENT,
+    NautilusRuntimePlanV1,
+    nautilus_runtime_plan,
+)
 
 __all__ = [
     "ACTIVE_INTENT_STATES",
     "BAR_FIDELITY_VERSION",
     "BINANCE_USDM_ADAPTER_CONTRACT_SHA256",
-    "HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256",
+    "EXECUTION_DISABLED_BINDINGS",
+    "EXECUTION_ENABLED_BINDINGS",
     "INTENT_POLICY_SHA256",
     "MAX_RECEIVE_AGE_NS",
+    "NAUTILUS_EXECUTION_ENVIRONMENT",
     "PROTECTION_CONTRACT_SHA256",
     "QUOTE_CONTRACT_SHA256",
     "ActiveIntentValues",
@@ -124,6 +136,7 @@ __all__ = [
     "InstrumentRef",
     "IntentOutcome",
     "IntentReasonCode",
+    "NautilusRuntimePlanV1",
     "NautilusRuntimeStartV1",
     "OperatorArmReceiptV1",
     "ProductionPromotionGrantRevocationV1",
@@ -152,6 +165,8 @@ __all__ = [
     "materialize_active_intent",
     "materialize_entry_fence",
     "materialize_intent_outcome",
+    "nautilus_runtime_plan",
+    "require_execution_binding_enabled",
     "validate_close_submission_identity",
     "validate_entry_quote",
     "validate_stop_submission_identity",

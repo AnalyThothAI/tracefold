@@ -1,4 +1,4 @@
-"""Closed Production V3 execution-binding identities.
+"""Closed source-binding identities and the smaller enabled execution set.
 
 A binding is durable release evidence, not provider discovery.  It freezes the exact account
 generation and the exact catalogue, capability, adapter, quote, protection, and client identities
@@ -12,10 +12,19 @@ from typing import Final, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from .adapter_contracts import BINANCE_USDM_ADAPTER_CONTRACT_SHA256
 from .contracts import VenueBinding, canonical_sha256
+from .execution_policy import PROTECTION_CONTRACT_SHA256
+from .quote_authority import QUOTE_CONTRACT_SHA256
 
 EXECUTION_BINDING_VERSION: Final[Literal["execution_binding_v1"]] = "execution_binding_v1"
 ExecutionVenue = Literal["binance.usdm", "hyperliquid.perp"]
+
+# Hyperliquid remains a source-native research/catalog binding, but it is deliberately not a private
+# execution binding in the Demo-first runtime.  Keeping this one closed set at the domain seam avoids
+# config, Workers, Nautilus and authority each inventing a different answer.
+EXECUTION_ENABLED_BINDINGS: Final[frozenset[VenueBinding]] = frozenset({"BINANCE_USDM"})
+EXECUTION_DISABLED_BINDINGS: Final[frozenset[VenueBinding]] = frozenset({"HYPERLIQUID_PERP"})
 
 BINDING_VENUE: Final[dict[VenueBinding, ExecutionVenue]] = {
     "BINANCE_USDM": "binance.usdm",
@@ -39,6 +48,29 @@ def binding_for_source_venue(value: object) -> VenueBinding | None:
 
 def venue_for_binding(binding: VenueBinding) -> ExecutionVenue:
     return BINDING_VENUE[binding]
+
+
+def require_execution_binding_enabled(binding: VenueBinding) -> None:
+    if binding not in EXECUTION_ENABLED_BINDINGS:
+        raise ValueError(f"execution_binding_disabled:{binding}")
+
+
+def require_current_execution_contracts(
+    *,
+    binding: VenueBinding,
+    adapter_contract_sha256: str,
+    quote_contract_sha256: str,
+    protection_contract_sha256: str,
+) -> None:
+    """Reject execution evidence from any contract other than this release."""
+
+    require_execution_binding_enabled(binding)
+    if (
+        adapter_contract_sha256 != BINANCE_USDM_ADAPTER_CONTRACT_SHA256
+        or quote_contract_sha256 != QUOTE_CONTRACT_SHA256
+        or protection_contract_sha256 != PROTECTION_CONTRACT_SHA256
+    ):
+        raise ValueError("execution_contract_mismatch")
 
 
 class ExecutionBindingV1(BaseModel):
@@ -74,8 +106,12 @@ class ExecutionBindingV1(BaseModel):
 __all__ = [
     "BINDING_VENUE",
     "EXECUTION_BINDING_VERSION",
+    "EXECUTION_DISABLED_BINDINGS",
+    "EXECUTION_ENABLED_BINDINGS",
     "ExecutionBindingV1",
     "ExecutionVenue",
     "binding_for_source_venue",
+    "require_current_execution_contracts",
+    "require_execution_binding_enabled",
     "venue_for_binding",
 ]

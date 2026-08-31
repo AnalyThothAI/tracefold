@@ -27,14 +27,23 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     snapshot_missing: bool,
     forced_bootstrap: bool,
 ) -> None:
+    from tracefold.app import trading_bindings
     from tracefold.app.nautilus import root
 
     settings = Settings()
     settings.set_config_dir(tmp_path)
-    _secure_secret(tmp_path / "binance_usdm_api_key", "demo-key")
-    _secure_secret(tmp_path / "binance_usdm_api_secret", "demo-secret")
+    _secure_secret(tmp_path / "binance_demo_api_key", "demo-key")
+    _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
     calls: list[str] = []
     captured: dict[str, object] = {}
+    secret_reads: list[Path] = []
+    original_read_secret = trading_bindings.read_secure_secret_text
+
+    def read_secret_once(path: Path) -> str:
+        secret_reads.append(path)
+        return original_read_secret(path)
+
+    monkeypatch.setattr(trading_bindings, "read_secure_secret_text", read_secret_once)
 
     class FakeTrader:
         def add_strategy(self, strategy: object) -> None:
@@ -142,12 +151,18 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     )
     monkeypatch.setattr(root, "_install_signal_handlers", install_signal_handlers)
     frozen_snapshot = SimpleNamespace(
+        binding="BINANCE_USDM",
+        venue="binance.usdm",
         included={
             "sol": SimpleNamespace(instrument_id="SOLUSDT-PERP.BINANCE"),
             "btc": SimpleNamespace(instrument_id="BTCUSDT-PERP.BINANCE"),
         },
         snapshot_sha256="c" * 64,
         catalog_snapshot_sha256="d" * 64,
+        adapter_contract_sha256=root.BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+        quote_contract_sha256=root.QUOTE_CONTRACT_SHA256,
+        protection_contract_sha256=root.PROTECTION_CONTRACT_SHA256,
+        client_runtime_identity="nautilus-trader==1.231.0;wheel=cp313-cp313-manylinux_2_35_aarch64@sha256:e536",
     )
     capability_snapshot = None if snapshot_missing else frozen_snapshot
 
@@ -183,7 +198,6 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     assert captured["node_config_args"] == {
         "instrument_ids_by_binding": {"BINANCE_USDM": expected_instruments},
         "binance_credentials": root.BinanceCredentials(api_key="demo-key", api_secret="demo-secret"),
-        "hyperliquid_credentials": None,
     }
     assert captured["bridge_settings"] is settings
     assert captured["pending_execution_bindings"] == {}
@@ -210,6 +224,10 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
     assert "wheel@cp313-cp313-manylinux_2_35_aarch64@sha256:e536" in str(strategy_args["engine_identity"])
     assert "config@" in str(strategy_args["engine_identity"])
     assert root.INTENT_POLICY_SHA256 in str(strategy_args["engine_identity"])
+    assert secret_reads == [
+        tmp_path / "binance_demo_api_key",
+        tmp_path / "binance_demo_api_secret",
+    ]
     assert calls.index("build") < calls.index("database-start") < calls.index("run")
     assert calls.index("probe-stop") < calls.index("dispose")
     assert calls.index("database-stop") < calls.index("database-join") < calls.index("dispose")
@@ -270,55 +288,33 @@ def test_binance_reconnect_callbacks_advance_quote_generation_before_resnapshot(
     assert calls == ["resnapshot", "market-returned", "resnapshot"]
 
 
-def test_hyperliquid_connection_segments_invalidate_only_hyperliquid_quotes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_hyperliquid_has_no_private_runtime_factory() -> None:
     from tracefold.app.nautilus import root
 
-    calls: list[str] = []
+    assert not hasattr(root, "HyperliquidLiveDataClientFactory")
+    assert not hasattr(root, "HyperliquidLiveExecClientFactory")
+    assert not hasattr(root, "_hyperliquid_quote_stream_data_client_factory")
 
-    async def connect() -> None:
-        calls.append("connect")
 
-    async def disconnect() -> None:
-        calls.append("disconnect")
+def test_pending_binding_rejects_a_stale_demo_contract() -> None:
+    from tracefold.app.nautilus import root
+    from tracefold.app.trading_bindings import BindingCredentialFact
 
-    client = SimpleNamespace(_connect=connect, _disconnect=disconnect)
-    monkeypatch.setattr(root.HyperliquidLiveDataClientFactory, "create", lambda **_kwargs: client)
-    queues = root.strategy_queues()
-    generation = root._QuoteStreamGeneration()
-    factory = root._hyperliquid_quote_stream_data_client_factory(queues, generation)
-    factory_loop = asyncio.new_event_loop()
-    try:
-        assert (
-            factory.create(
-                loop=factory_loop,
-                name="HYPERLIQUID",
-                config=object(),
-                msgbus=object(),
-                cache=object(),
-                clock=object(),
-            )
-            is client
+    with pytest.raises(RuntimeError, match=r"^nautilus_capability_contract_mismatch$"):
+        root._pending_execution_binding(
+            binding="BINANCE_USDM",
+            credential=BindingCredentialFact("BINANCE_USDM", "configured", "f" * 64, "configured"),
+            runtime=SimpleNamespace(),
+            capability_snapshot=SimpleNamespace(
+                binding="BINANCE_USDM",
+                venue="binance.usdm",
+                adapter_contract_sha256="0" * 64,
+                quote_contract_sha256=root.QUOTE_CONTRACT_SHA256,
+                protection_contract_sha256=root.PROTECTION_CONTRACT_SHA256,
+                client_runtime_identity="stale",
+            ),
+            active=None,
         )
-    finally:
-        factory_loop.close()
-    asyncio.run(client._connect())
-    asyncio.run(client._disconnect())
-    asyncio.run(client._connect())
-
-    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
-        binding="HYPERLIQUID_PERP", connected=True, generation=1
-    )
-    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
-        binding="HYPERLIQUID_PERP", connected=False, generation=2
-    )
-    assert queues.commands.get_nowait() == root.QuoteStreamChanged(
-        binding="HYPERLIQUID_PERP", connected=True, generation=3
-    )
-    assert generation.current("HYPERLIQUID_PERP") == 3
-    assert generation.current("BINANCE_USDM") == 0
-    assert calls == ["connect", "disconnect", "connect"]
 
 
 def test_nautilus_root_supports_a_zero_client_node_when_credentials_are_unconfigured(
@@ -348,7 +344,6 @@ def test_nautilus_root_supports_a_zero_client_node_when_credentials_are_unconfig
     assert captured == {
         "instrument_ids_by_binding": {},
         "binance_credentials": None,
-        "hyperliquid_credentials": None,
     }
 
 
@@ -370,8 +365,8 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
 
     settings = Settings()
     settings.set_config_dir(tmp_path)
-    _secure_secret(tmp_path / "binance_usdm_api_key", "demo-key")
-    _secure_secret(tmp_path / "binance_usdm_api_secret", "demo-secret")
+    _secure_secret(tmp_path / "binance_demo_api_key", "demo-key")
+    _secure_secret(tmp_path / "binance_demo_api_secret", "demo-secret")
 
     @contextmanager
     def fake_repositories(*_args: object, **_kwargs: object):

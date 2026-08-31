@@ -4,12 +4,14 @@ import asyncio
 from typing import Any
 
 import pytest
+from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 
 from tests.trading_v3_fixtures import binance_catalog
 from tracefold.app.workers.wiring.execution_capabilities import (
     ExecutionCapabilityCompileError,
     ExecutionCapabilityCompiler,
 )
+from tracefold.integrations.nautilus import capabilities as nautilus_capabilities
 from tracefold.trading import ExecutionInstrumentEvidenceV1
 
 
@@ -55,6 +57,41 @@ def _evidence(catalog: Any) -> ExecutionInstrumentEvidenceV1:
     )
 
 
+def test_binance_capability_evidence_uses_demo_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: dict[str, Any] = {}
+
+    def http_base_url(_account_type: Any, environment: Any, *, is_us: bool) -> str:
+        selected.update(environment=environment, is_us=is_us)
+        return "https://demo.example.invalid"
+
+    class Provider:
+        def __init__(self, **values: Any) -> None:
+            selected["provider_client"] = values["client"]
+
+        async def load_all_async(self) -> None:
+            return None
+
+        def list_all(self) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(nautilus_capabilities, "get_http_base_url", http_base_url)
+    monkeypatch.setattr(
+        nautilus_capabilities,
+        "BinanceHttpClient",
+        lambda **values: values,
+    )
+    monkeypatch.setattr(nautilus_capabilities, "BinanceFuturesInstrumentProvider", Provider)
+
+    rows = asyncio.run(nautilus_capabilities.load_binance_usdm_execution_evidence(binance_catalog()))
+
+    assert rows == []
+    assert selected["environment"] is BinanceEnvironment.DEMO
+    assert selected["is_us"] is False
+    assert selected["provider_client"]["base_url"] == "https://demo.example.invalid"
+
+
 def test_compiler_publishes_one_complete_v2_partition(monkeypatch: pytest.MonkeyPatch) -> None:
     catalog = binance_catalog(captured_at_ms=1_900_000_000_000, symbols=("BTCUSDT",))
     trading = _Trading()
@@ -94,3 +131,16 @@ def test_compiler_persists_a_secret_free_error_code_before_raising(
     assert trading.errors[0]["binding"] == "BINANCE_USDM"
     assert trading.errors[0]["reason"] == "execution_capability_runtimeerror_failed"
     assert "must-not-be-persisted" not in str(trading.errors)
+
+
+def test_compiler_rejects_disabled_hyperliquid_before_database_work() -> None:
+    trading = _Trading()
+    database = _Database(trading)
+    disabled_catalog = binance_catalog().model_copy(update={"binding": "HYPERLIQUID_PERP"})
+
+    with pytest.raises(ExecutionCapabilityCompileError, match="execution_binding_disabled"):
+        asyncio.run(ExecutionCapabilityCompiler(database).compile(disabled_catalog))  # type: ignore[arg-type]
+
+    assert database.operations == []
+    assert trading.published == []
+    assert trading.errors == []

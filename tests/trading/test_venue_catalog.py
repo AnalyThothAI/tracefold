@@ -124,7 +124,7 @@ def test_catalog_loop_measures_each_provider_and_retains_one_venue_when_the_othe
     assert 'tracefold_external_data_target_count{name="trading_venue_catalog"} 1.0' in metrics
 
 
-def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_venue(
+def test_capability_compile_is_attempted_only_for_the_enabled_execution_binding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     compiled: list[str] = []
@@ -143,10 +143,10 @@ def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_v
         async def compile(self, snapshot: Any) -> None:
             compiled.append(snapshot.binding)
             if snapshot.binding == "BINANCE_USDM":
+                stop.set()
                 raise ExecutionCapabilityCompileError(
                     "execution_capability_compile_failed:BINANCE_USDM:provider_parse_failed"
                 )
-            stop.set()
 
     async def binance() -> tuple[VenueInstrumentCatalogEntryV1, ...]:
         return (_row("BTCUSDT", raw="binance"),)
@@ -173,7 +173,7 @@ def test_capability_compile_failure_is_per_binding_and_does_not_skip_the_other_v
         )
     )
 
-    assert compiled == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
+    assert compiled == ["BINANCE_USDM"]
     assert 'tracefold_external_data_turn_total{name="trading_venue_catalog",outcome="partial"} 1.0' in (
         telemetry.render_prometheus_text()
     )

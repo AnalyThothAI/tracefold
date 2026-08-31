@@ -9,7 +9,7 @@ from pathlib import Path
 from tracefold.trading.contract_receipt import build_execution_policy_contract_receipt
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "docs/generated/execution-policy-contract-v3.json"
+TARGET = ROOT / "docs/generated/execution-policy-contract-v4.json"
 
 
 def rendered_receipt() -> str:

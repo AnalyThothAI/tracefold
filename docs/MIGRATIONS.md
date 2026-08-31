@@ -110,6 +110,13 @@ real-PostgreSQL seams are
 | `trading_risk_event_sha_check`<br>`trading_risk_event_kind_check`<br>`trading_risk_event_amount_check`<br>`trading_risk_event_settlement_check`<br>`trading_risk_event_payload_check` | Append-only capital events have typed kind, signed/positive amount semantics, settlement identity, and matching payload. | Workers authorization plus Nautilus execution/settlement. | A bounded handful per Intent; small payload, permanent ledger. | Retain: capital ledger integrity. |
 | `trg_trading_daily_risk_policies_append_only`<br>`trg_trading_promotion_grants_append_only`<br>`trg_trading_grant_revocations_append_only`<br>`trg_trading_operator_arm_receipts_append_only`<br>`trg_trading_risk_reservations_append_only`<br>`trg_trading_authorization_receipts_append_only`<br>`trg_trading_capital_risk_events_append_only` | Policy, promotion, revocation, arm, reservation, authorization, and capital-event evidence cannot be rewritten or deleted. | Operator, Workers, Nautilus, and restore/import paths. | O(1) trigger per append-only mutation attempt; normal path only inserts. | Retain: immutable capital truth is a database invariant. |
 
+### 0338–0339 — Binding-local readiness and Binance Demo-only execution
+
+| Database objects | Table/write path and protected invariant | Independent writers and matching Python owner | History, frequency, payload, and cost | Decision |
+|---|---|---|---|---|
+| `trading_binding_runtime` | Runtime readiness, heartbeat, capability, execution binding, arm, and account truth are owned per binding; no global Nautilus readiness/capability/bootstrap projection remains. | Workers projects credentials/catalog/capability; Nautilus projects only its binding-local execution/account heartbeat. | Two current rows, bounded updates, five-second readiness lease. | Retain: process liveness cannot become execution permission. |
+| `store_trading_venue_catalog_snapshot` | Hyperliquid catalog publication can move only its public catalog pointer and always clears/refuses execution pointers with `execution_binding_disabled`. | Workers catalog publisher; Trading storage/materializer. | One catalog refresh per binding every six hours or retry cadence. | Retain while Hyperliquid execution is disabled. |
+
 ### Audit disposition
 
 - Retained: every current 0330–0332 identity, append-only ledger, cross-table

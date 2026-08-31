@@ -2362,6 +2362,10 @@ export interface components {
             credential_state: "unconfigured" | "configured" | "invalid";
             /** Execution Binding Sha256 */
             execution_binding_sha256?: string | null;
+            /** Execution Enabled */
+            execution_enabled: boolean;
+            /** Execution Environment */
+            execution_environment?: "demo" | null;
             /** Heartbeat At Ms */
             heartbeat_at_ms?: number | null;
             /** Reason */
@@ -2993,6 +2997,29 @@ export interface components {
             /** Window Hours */
             window_hours: number;
         };
+        /** TradingNautilusRuntimePlanData */
+        TradingNautilusRuntimePlanData: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "blocked" | "optional" | "required";
+            /** Disabled Bindings */
+            disabled_bindings: "HYPERLIQUID_PERP"[];
+            /** Enabled Bindings */
+            enabled_bindings: "BINANCE_USDM"[];
+            /**
+             * Execution Environment
+             * @constant
+             */
+            execution_environment: "binance_usdm_demo";
+            /** Readiness Reason */
+            readiness_reason: string;
+            /** Ready */
+            ready: boolean;
+            /** Reason */
+            reason: string;
+        };
         /**
          * TradingPolicyCheckData
          * @description One frozen condition: what was required, what was measured, and whether it passed.
@@ -3095,6 +3122,7 @@ export interface components {
             decision: components["schemas"]["TradingDecisionRuntimeData"];
             /** Measured At Ms */
             measured_at_ms: number;
+            nautilus: components["schemas"]["TradingNautilusRuntimePlanData"];
             policy: components["schemas"]["TradingPolicyIdentityData"];
             /** Window Hours */
             window_hours: number;

@@ -1008,12 +1008,14 @@ def test_a_recovered_dead_letter_queue_receives_the_held_message() -> None:
                 except BrokerUnavailable:  # a loaded broker may drop one management read; keep waiting
                     await asyncio.sleep(5)
                     continue
-                if snapshot[bus.queue_name(Q_DEAD)]["messages"] >= 1:
+                if (
+                    snapshot[bus.queue_name(Q_DEAD)]["messages"] >= 1
+                    and snapshot[bus.queue_name(Q_TRIAGE)]["dead_letter_pending"] == 0
+                ):
                     transferred = True
                     break
                 await asyncio.sleep(5)
             assert transferred, "the held dead letter never reached the recovered dead-letter queue"
-            assert (await bus.broker_snapshot())[bus.queue_name(Q_TRIAGE)]["dead_letter_pending"] == 0
             dead = await bus.dead_letters(limit=5)
             assert [row["message_id"] for row in dead] == ["orphan:1"]
 

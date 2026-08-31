@@ -317,7 +317,9 @@ def test_worker_statement_budget_does_not_cancel_a_multi_statement_transaction()
 def test_idle_transaction_timeout_is_recoverable_only_on_the_business_lane() -> None:
     pool = create_pool(
         _test_postgres_dsn(),
-        min_size=1,
+        # Match the production Worker pool: one killed session must not make
+        # recovery depend on how quickly psycopg replenishes its only connection.
+        min_size=2,
         max_size=4,
         max_waiting=3,
         connect_timeout_seconds=5.0,

@@ -11,7 +11,6 @@ from tracefold.integrations.nautilus.execution_adapter import (
     AuthoritativeExecutionState,
     BinanceExecutionAdapter,
     ExecutionAdapter,
-    HyperliquidExecutionAdapter,
     account_execution_adapter,
     strategy_execution_adapters,
 )
@@ -28,12 +27,15 @@ class _Ports:
 def test_strategy_adapter_union_is_closed_and_provider_qualified() -> None:
     adapters = strategy_execution_adapters(_Ports())  # type: ignore[arg-type]
 
-    assert set(adapters) == {"BINANCE_USDM", "HYPERLIQUID_PERP"}
+    assert set(adapters) == {"BINANCE_USDM"}
     assert isinstance(adapters["BINANCE_USDM"], BinanceExecutionAdapter)
-    assert isinstance(adapters["HYPERLIQUID_PERP"], HyperliquidExecutionAdapter)
     assert all(isinstance(adapter, ExecutionAdapter) for adapter in adapters.values())
     assert adapters["BINANCE_USDM"].client_id.value == "BINANCE"
-    assert adapters["HYPERLIQUID_PERP"].client_id.value == "HYPERLIQUID"
+
+
+def test_catalog_only_hyperliquid_cannot_select_an_execution_adapter() -> None:
+    with pytest.raises(ValueError, match="execution_binding_disabled:HYPERLIQUID_PERP"):
+        account_execution_adapter("HYPERLIQUID_PERP", object())
 
 
 def test_adapter_refuses_cross_venue_intent_and_account_scope() -> None:
@@ -72,14 +74,14 @@ def test_account_reconciliation_distinguishes_known_empty_from_query_failure() -
         raise RuntimeError("provider_unavailable")
 
     failed_adapter = account_execution_adapter(
-        "HYPERLIQUID_PERP",
+        "BINANCE_USDM",
         client,
         account_report_loader=failed,
     )
     with pytest.raises(RuntimeError, match="provider_unavailable"):
-        asyncio.run(failed_adapter.reconcile_account("HYPERLIQUID_PERP"))
-    with pytest.raises(ValueError, match="execution_adapter_account_binding_mismatch"):
         asyncio.run(failed_adapter.reconcile_account("BINANCE_USDM"))
+    with pytest.raises(ValueError, match="execution_adapter_account_binding_mismatch"):
+        asyncio.run(failed_adapter.reconcile_account("HYPERLIQUID_PERP"))
 
 
 def test_lifecycle_methods_are_real_ports_not_decorative_protocol_members() -> None:

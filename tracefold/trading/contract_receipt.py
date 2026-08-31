@@ -1,4 +1,4 @@
-"""Deterministic Production V3 execution-policy contract receipt (#376/#377)."""
+"""Deterministic Binance Demo execution-policy contract receipt (#429)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .adapter_contracts import (
     BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-    HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
 )
 from .bindings import BINDING_VENUE, ExecutionBindingV1
 from .capabilities import ExecutionCapabilitySnapshotV2
@@ -28,13 +27,13 @@ from .quote_authority import (
 )
 
 
-class ExecutionPolicyContractReceiptV3(BaseModel):
+class ExecutionPolicyContractReceiptV4(BaseModel):
     """Content-addressed proof that research can bind the exact executable contract."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    receipt_version: Literal["execution_policy_contract_receipt_v3"] = "execution_policy_contract_receipt_v3"
-    terminal: Literal["EXECUTION_POLICY_CONTRACT_V3_SEALED"] = "EXECUTION_POLICY_CONTRACT_V3_SEALED"
+    receipt_version: Literal["execution_policy_contract_receipt_v4"] = "execution_policy_contract_receipt_v4"
+    terminal: Literal["EXECUTION_POLICY_CONTRACT_V4_SEALED"] = "EXECUTION_POLICY_CONTRACT_V4_SEALED"
     execution_capability_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     execution_binding_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     trade_intent_schema_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -61,12 +60,12 @@ class ExecutionPolicyContractReceiptV3(BaseModel):
         return self
 
 
-def build_execution_policy_contract_receipt() -> ExecutionPolicyContractReceiptV3:
+def build_execution_policy_contract_receipt() -> ExecutionPolicyContractReceiptV4:
     """Build the only current sealed contract receipt from code-owned values."""
 
     payload = {
-        "receipt_version": "execution_policy_contract_receipt_v3",
-        "terminal": "EXECUTION_POLICY_CONTRACT_V3_SEALED",
+        "receipt_version": "execution_policy_contract_receipt_v4",
+        "terminal": "EXECUTION_POLICY_CONTRACT_V4_SEALED",
         "execution_capability_schema_sha256": canonical_sha256(ExecutionCapabilitySnapshotV2.model_json_schema()),
         "execution_binding_schema_sha256": canonical_sha256(ExecutionBindingV1.model_json_schema()),
         "trade_intent_schema_sha256": canonical_sha256(TradeIntent.model_json_schema()),
@@ -81,20 +80,19 @@ def build_execution_policy_contract_receipt() -> ExecutionPolicyContractReceiptV
         "protection_contract_sha256": PROTECTION_CONTRACT_SHA256,
         "adapter_contract_sha256": {
             "BINANCE_USDM": BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-            "HYPERLIQUID_PERP": HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
         },
         "source_native_routing": {binding: venue for binding, venue in BINDING_VENUE.items()},
         "economic_lifecycle_identity": "economic_lifecycle_v1",
         "economic_leg_identity": "economic_leg_v1",
         "exact_execution_values": INTENT_POLICY_PAYLOAD,
     }
-    return ExecutionPolicyContractReceiptV3(
+    return ExecutionPolicyContractReceiptV4(
         **payload,
         receipt_sha256=canonical_sha256(payload),
     )
 
 
 __all__ = [
-    "ExecutionPolicyContractReceiptV3",
+    "ExecutionPolicyContractReceiptV4",
     "build_execution_policy_contract_receipt",
 ]

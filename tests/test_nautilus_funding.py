@@ -4,7 +4,6 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from tracefold.integrations.nautilus import funding
@@ -105,84 +104,13 @@ def test_binance_empty_success_is_known_zero_but_duplicate_identity_fails_closed
         )
 
 
-def test_hyperliquid_funding_ledger_filters_exact_core_or_hip3_coin() -> None:
-    seen: list[dict[str, object]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(json.loads(request.content))
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "time": 1_100,
-                    "hash": "0x1",
-                    "delta": {"type": "funding", "coin": "xyz:CL", "usdc": "-0.3"},
-                },
-                {
-                    "time": 1_200,
-                    "hash": "0x2",
-                    "delta": {"type": "funding", "coin": "SOL", "usdc": "4"},
-                },
-            ],
-        )
-
-    client = SimpleNamespace(
-        _account_address="0x" + "1" * 40,
-        _config=SimpleNamespace(proxy_url=None),
-    )
-    value = asyncio.run(
-        funding._hyperliquid_funding_cashflows(
-            client,  # type: ignore[arg-type]
-            coin="xyz:CL",
-            opened_at_ms=1_000,
-            verified_at_ms=1_500,
-            transport=httpx.MockTransport(handler),
-        )
-    )
-
-    assert value == {"USDC": "-0.3"}
-    assert seen == [
-        {
-            "type": "userFunding",
-            "user": "0x" + "1" * 40,
-            "startTime": 1_000,
-            "endTime": 1_500,
-        }
-    ]
-    assert funding._hyperliquid_coin("main:SOL") == "SOL"
-    assert funding._hyperliquid_coin("dex:xyz:XYZ-CL") == "xyz:CL"
-
-
-def test_hyperliquid_transport_or_truncation_never_becomes_known_zero() -> None:
-    client = SimpleNamespace(
-        _account_address="0x" + "1" * 40,
-        _config=SimpleNamespace(proxy_url=None),
-    )
-
-    def truncated(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=[{}] * 500)
-
-    with pytest.raises(RuntimeError, match="nautilus_hyperliquid_funding_coverage_unproven"):
+def test_non_binance_funding_client_is_rejected_before_provider_io() -> None:
+    with pytest.raises(RuntimeError, match="nautilus_funding_client_unsupported"):
         asyncio.run(
-            funding._hyperliquid_funding_cashflows(
-                client,  # type: ignore[arg-type]
-                coin="SOL",
+            funding.load_funding_cashflows(
+                SimpleNamespace(),
+                provider_instrument_id="SOLUSDT",
                 opened_at_ms=1_000,
                 verified_at_ms=1_500,
-                transport=httpx.MockTransport(truncated),
-            )
-        )
-
-    def failed(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(503)
-
-    with pytest.raises(httpx.HTTPStatusError):
-        asyncio.run(
-            funding._hyperliquid_funding_cashflows(
-                client,  # type: ignore[arg-type]
-                coin="SOL",
-                opened_at_ms=1_000,
-                verified_at_ms=1_500,
-                transport=httpx.MockTransport(failed),
             )
         )

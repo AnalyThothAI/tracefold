@@ -11,6 +11,8 @@ the reconciler refuses to manage it.
 from __future__ import annotations
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -1527,6 +1529,9 @@ def test_0338_drops_unowned_global_nautilus_readiness() -> None:
                 "nautilus_ready",
                 "nautilus_readiness_reason",
                 "nautilus_unexpected_exposure",
+                "active_capability_snapshot_sha256",
+                "active_capability_included_count",
+                "nautilus_bootstrap_account_zero_at_ms",
             }
         )
         runtime = conn.execute(
@@ -1545,3 +1550,137 @@ def test_0338_drops_unowned_global_nautilus_readiness() -> None:
     finally:
         if conn is not None:
             conn.close()
+
+
+def test_0340_hard_cuts_active_execution_to_binance_demo_only() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260831_0339")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute("UPDATE trading_runtime_state SET control = 'RUNNING' WHERE id = 1")
+        conn.execute(
+            """
+            UPDATE trading_binding_runtime
+               SET credential_state = 'configured', credential_fingerprint = repeat('a', 64),
+                   runtime_state = 'ready', account_state = 'reconciled_flat',
+                   heartbeat_at_ms = %s, reason = NULL
+            """,
+            (NOW,),
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        capital = conn.execute("SELECT control, arm_epoch FROM trading_runtime_state WHERE id = 1").fetchone()
+        assert dict(capital) == {"control": "PAUSED", "arm_epoch": 2}
+        rows = conn.execute(
+            """
+            SELECT binding, credential_state, credential_fingerprint, runtime_state,
+                   account_state, capability_state, capability_snapshot_sha256,
+                   execution_binding_sha256, active_arm_receipt_sha256, heartbeat_at_ms, reason
+              FROM trading_binding_runtime
+             ORDER BY binding
+            """
+        ).fetchall()
+        assert [dict(row) for row in rows] == [
+            {
+                "binding": "BINANCE_USDM",
+                "credential_state": "unconfigured",
+                "credential_fingerprint": None,
+                "runtime_state": "stopped",
+                "account_state": "unknown",
+                "capability_state": "missing",
+                "capability_snapshot_sha256": None,
+                "execution_binding_sha256": None,
+                "active_arm_receipt_sha256": None,
+                "heartbeat_at_ms": None,
+                "reason": "binance_demo_contract_cutover",
+            },
+            {
+                "binding": "HYPERLIQUID_PERP",
+                "credential_state": "unconfigured",
+                "credential_fingerprint": None,
+                "runtime_state": "stopped",
+                "account_state": "unknown",
+                "capability_state": "missing",
+                "capability_snapshot_sha256": None,
+                "execution_binding_sha256": None,
+                "active_arm_receipt_sha256": None,
+                "heartbeat_at_ms": None,
+                "reason": "execution_binding_disabled",
+            },
+        ]
+        definition = conn.execute(
+            "SELECT pg_get_functiondef("
+            "'store_trading_venue_catalog_snapshot(text,text,bigint,bigint,integer,jsonb,bigint)'::regprocedure"
+            ") AS definition"
+        ).fetchone()["definition"]
+        assert "p_binding = 'HYPERLIQUID_PERP'" in definition
+        assert "execution_binding_disabled" in definition
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0340_refuses_cutover_with_reported_exposure() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at("20260831_0339")
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            "UPDATE trading_binding_runtime SET account_state = 'exposure_present' WHERE binding = 'BINANCE_USDM'"
+        )
+        conn.commit()
+        conn.close()
+        conn = None
+
+        with pytest.raises(DBAPIError, match="binance_demo_execution_cut_requires_flat_drained_runtime"):
+            _upgrade("head")
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0340_rechecks_flatness_after_waiting_for_an_earlier_binding_writer() -> None:
+    writer: Any | None = None
+    observer: Any | None = None
+    try:
+        _fresh_schema_at("20260831_0339")
+        writer = connect_postgres_test(read_only=False)
+        observer = connect_postgres_test(read_only=False)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with writer.transaction():
+                writer.execute(
+                    "UPDATE trading_binding_runtime SET account_state = 'exposure_present' "
+                    "WHERE binding = 'BINANCE_USDM'"
+                )
+                upgrading = pool.submit(_upgrade, "head")
+                deadline = time.monotonic() + 0.8
+                while time.monotonic() < deadline:
+                    waiting = observer.execute(
+                        """
+                        SELECT 1
+                          FROM pg_stat_activity
+                         WHERE datname = current_database()
+                           AND pid <> pg_backend_pid()
+                           AND %s = ANY(pg_blocking_pids(pid))
+                         LIMIT 1
+                        """,
+                        (writer.info.backend_pid,),
+                    ).fetchone()
+                    if waiting is not None:
+                        break
+                    time.sleep(0.01)
+                else:
+                    pytest.fail("0339 did not wait behind the earlier binding writer")
+
+            with pytest.raises(DBAPIError, match="binance_demo_execution_cut_requires_flat_drained_runtime"):
+                upgrading.result(timeout=5)
+    finally:
+        if writer is not None:
+            writer.close()
+        if observer is not None:
+            observer.close()

@@ -7,7 +7,7 @@ import pytest
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
-def test_production_v3_binance_node_is_mainnet_reconciling_and_in_memory() -> None:
+def test_binance_demo_node_is_reconciling_and_in_memory() -> None:
     from nautilus_trader.adapters.binance import BINANCE, BinanceAccountType
     from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
     from nautilus_trader.live.node import TradingNode
@@ -22,8 +22,7 @@ def test_production_v3_binance_node_is_mainnet_reconciling_and_in_memory() -> No
 
     instrument_id = InstrumentId.from_str("SOLUSDT-PERP.BINANCE")
     config = build_node_config(
-        binance_credentials=BinanceCredentials(api_key="mainnet-key", api_secret="mainnet-secret"),
-        hyperliquid_credentials=None,
+        binance_credentials=BinanceCredentials(api_key="demo-key", api_secret="demo-secret"),
         instrument_ids_by_binding={"BINANCE_USDM": [instrument_id, InstrumentId.from_str("BTCUSDT-PERP.BINANCE")]},
     )
 
@@ -54,11 +53,11 @@ def test_production_v3_binance_node_is_mainnet_reconciling_and_in_memory() -> No
     assert config.data_clients[BINANCE].instrument_provider.query_commission_rates is False
     assert execution.instrument_provider.query_commission_rates is False
     assert execution.account_type == BinanceAccountType.USDT_FUTURES
-    assert execution.environment == BinanceEnvironment.LIVE
+    assert execution.environment == BinanceEnvironment.DEMO
     assert execution.use_reduce_only is True
     assert execution.max_retries is None
-    assert execution.api_key == "mainnet-key"
-    assert execution.api_secret == "mainnet-secret"
+    assert execution.api_key == "demo-key"
+    assert execution.api_secret == "demo-secret"
 
 
 def test_public_v1_node_config_allows_zero_claim_bootstrap() -> None:
@@ -74,8 +73,7 @@ def test_public_v1_node_config_allows_zero_claim_bootstrap() -> None:
     from tracefold.integrations.nautilus import BinanceCredentials, build_node_config, single_execution_client
 
     config = build_node_config(
-        binance_credentials=BinanceCredentials(api_key="mainnet-key", api_secret="mainnet-secret"),
-        hyperliquid_credentials=None,
+        binance_credentials=BinanceCredentials(api_key="demo-key", api_secret="demo-secret"),
         instrument_ids_by_binding={"BINANCE_USDM": []},
     )
 
@@ -93,49 +91,23 @@ def test_public_v1_node_config_allows_zero_claim_bootstrap() -> None:
         loop.close()
 
 
-@pytest.mark.parametrize(
-    ("mode", "binance", "hyperliquid", "expected"),
-    [
-        ("zero", False, False, set()),
-        ("binance", True, False, {"BINANCE"}),
-        ("hyperliquid", False, True, {"HYPERLIQUID"}),
-        ("dual", True, True, {"BINANCE", "HYPERLIQUID"}),
-    ],
-)
-def test_closed_startup_graphs_have_no_dynamic_provider_registry(
-    mode: str,
-    binance: bool,
-    hyperliquid: bool,
-    expected: set[str],
-) -> None:
-    del mode
-    from nautilus_trader.adapters.hyperliquid import HYPERLIQUID
+@pytest.mark.parametrize(("binance", "expected"), [(False, set()), (True, {"BINANCE"})])
+def test_closed_startup_graph_has_only_the_demo_client(binance: bool, expected: set[str]) -> None:
     from nautilus_trader.model.identifiers import InstrumentId
 
-    from tracefold.integrations.nautilus import (
-        BinanceCredentials,
-        HyperliquidCredentials,
-        build_node_config,
-    )
+    from tracefold.integrations.nautilus import BinanceCredentials, build_node_config
 
     config = build_node_config(
-        binance_credentials=(
-            BinanceCredentials(api_key="mainnet-key", api_secret="mainnet-secret") if binance else None
-        ),
-        hyperliquid_credentials=(
-            HyperliquidCredentials(private_key="1" * 64, account_address="0x" + "2" * 40) if hyperliquid else None
-        ),
-        instrument_ids_by_binding={
-            "BINANCE_USDM": [InstrumentId.from_str("BTCUSDT-PERP.BINANCE")],
-            "HYPERLIQUID_PERP": [InstrumentId.from_str("BTC-PERP.HYPERLIQUID")],
-        },
+        binance_credentials=(BinanceCredentials(api_key="demo-key", api_secret="demo-secret") if binance else None),
+        instrument_ids_by_binding={"BINANCE_USDM": [InstrumentId.from_str("BTCUSDT-PERP.BINANCE")]},
     )
 
     assert set(config.data_clients) == expected
     assert set(config.exec_clients) == expected
-    if hyperliquid:
-        execution = config.exec_clients[HYPERLIQUID]
-        assert execution.max_retries == 3
-        assert execution.retry_delay_initial_ms == 250
-        assert execution.retry_delay_max_ms == 2_000
-        assert execution.normalize_prices is True
+
+
+def test_hyperliquid_cannot_enter_the_private_runtime_graph() -> None:
+    from tracefold.integrations.nautilus import build_node_config
+
+    with pytest.raises(ValueError, match="nautilus_binding_set_invalid"):
+        build_node_config(binance_credentials=None, instrument_ids_by_binding={"HYPERLIQUID_PERP": []})

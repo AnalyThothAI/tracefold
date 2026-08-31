@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from queue import Full
 from threading import Lock
-from types import MethodType
 from typing import Any, cast
 
 import uvicorn
@@ -23,20 +22,17 @@ from nautilus_trader.adapters.binance import (
     BinanceLiveDataClientFactory,
     BinanceLiveExecClientFactory,
 )
-from nautilus_trader.adapters.hyperliquid import (
-    HYPERLIQUID,
-    HyperliquidLiveDataClientFactory,
-    HyperliquidLiveExecClientFactory,
-)
 from nautilus_trader.live.node import TradingNode
 from nautilus_trader.model.identifiers import ClientOrderId, InstrumentId
 
 from tracefold.app.repository_session import repositories
-from tracefold.app.trading_bindings import inspect_binding_credentials
+from tracefold.app.trading_bindings import (
+    BindingCredentialFact,
+    load_binance_demo_credential_snapshot,
+)
 from tracefold.integrations.nautilus import (
     NAUTILUS_RELEASE,
     BinanceCredentials,
-    HyperliquidCredentials,
     account_execution_adapter,
     build_node_config,
     execution_clients,
@@ -57,16 +53,15 @@ from tracefold.integrations.nautilus.messages import (
 )
 from tracefold.integrations.nautilus.strategy import TracefoldNautilusStrategy
 from tracefold.platform.config.models import Settings
-from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.platform.runtime_identity import runtime_identity
 from tracefold.trading import (
     BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
-    HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256,
     PROTECTION_CONTRACT_SHA256,
     QUOTE_CONTRACT_SHA256,
     ExecutionBindingV1,
     VenueBinding,
     canonical_sha256,
+    require_execution_binding_enabled,
 )
 from tracefold.trading.intent import INTENT_POLICY_SHA256
 
@@ -80,14 +75,20 @@ _BOOTSTRAP_CAPABILITY_IDENTITY = "bootstrap-zero-claims-v1"
 
 
 def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> None:
-    """Build and run the single zero/Binance/Hyperliquid/dual-client mainnet node."""
+    """Build and run the single zero-claim or Binance USD-M Demo node."""
 
-    binance_credentials, hyperliquid_credentials = _read_credentials(settings)
-    configured_bindings: set[VenueBinding] = set()
-    if binance_credentials is not None:
-        configured_bindings.add("BINANCE_USDM")
-    if hyperliquid_credentials is not None:
-        configured_bindings.add("HYPERLIQUID_PERP")
+    credential_snapshot = load_binance_demo_credential_snapshot(settings)
+    binance_credentials = (
+        BinanceCredentials(
+            api_key=credential_snapshot.api_key,
+            api_secret=credential_snapshot.api_secret,
+        )
+        if credential_snapshot.fact.state == "configured"
+        and credential_snapshot.api_key is not None
+        and credential_snapshot.api_secret is not None
+        else None
+    )
+    configured_bindings: set[VenueBinding] = {"BINANCE_USDM"} if binance_credentials is not None else set()
     with repositories(settings, role="nautilus") as repos:
         now_ms = int(time.time() * 1_000)
         capability_snapshots = {
@@ -105,13 +106,16 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
                 raise RuntimeError("nautilus_bootstrap_requires_paused")
             if repos.trading.active_intent_values() is not None:
                 raise RuntimeError("nautilus_bootstrap_requires_no_active_intent")
+        for snapshot in capability_snapshots.values():
+            if snapshot is not None:
+                _require_current_capability_contract(snapshot)
     pending_execution_bindings = {
         binding: value
         for binding in configured_bindings
         if (
             value := _pending_execution_binding(
-                settings=settings,
                 binding=binding,
+                credential=credential_snapshot.fact,
                 runtime=binding_runtimes[binding],
                 capability_snapshot=capability_snapshots[binding],
                 active=active_execution_bindings[binding],
@@ -145,7 +149,6 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
             config=build_node_config(
                 instrument_ids_by_binding=instrument_ids_by_binding,
                 binance_credentials=binance_credentials,
-                hyperliquid_credentials=hyperliquid_credentials,
             ),
             loop=loop,
         )
@@ -194,12 +197,6 @@ def run_nautilus(settings: Settings, *, bootstrap_zero_claims: bool = False) -> 
                 _quote_stream_data_client_factory(queues, quote_stream),
             )
             node.add_exec_client_factory(BINANCE, BinanceLiveExecClientFactory)
-        if hyperliquid_credentials is not None:
-            node.add_data_client_factory(
-                HYPERLIQUID,
-                _hyperliquid_quote_stream_data_client_factory(queues, quote_stream),
-            )
-            node.add_exec_client_factory(HYPERLIQUID, HyperliquidLiveExecClientFactory)
         node.build()
         server = _probe_server(bridge.readiness)
         loop.run_until_complete(_run_runtime(node=node, bridge=bridge, server=server))
@@ -273,7 +270,7 @@ async def _supervise(
 
 @dataclass(slots=True)
 class _QuoteStreamGeneration:
-    generations: dict[VenueBinding, int] = field(default_factory=lambda: {"BINANCE_USDM": 0, "HYPERLIQUID_PERP": 0})
+    generations: dict[VenueBinding, int] = field(default_factory=lambda: {"BINANCE_USDM": 0})
     lock: Lock = field(default_factory=Lock)
 
     def current(self, binding: VenueBinding) -> int:
@@ -324,69 +321,6 @@ def _quote_stream_data_client_factory(
     return QuoteStreamBinanceLiveDataClientFactory
 
 
-def _hyperliquid_quote_stream_data_client_factory(
-    queues: StrategyQueues,
-    generation: _QuoteStreamGeneration,
-) -> type[HyperliquidLiveDataClientFactory]:
-    async def on_connect() -> None:
-        await _enqueue_strategy_command(queues, generation.reconnected("HYPERLIQUID_PERP"))
-
-    async def on_disconnect() -> None:
-        await _enqueue_strategy_command(queues, generation.disconnected("HYPERLIQUID_PERP"))
-
-    class QuoteStreamHyperliquidLiveDataClientFactory(HyperliquidLiveDataClientFactory):
-        @staticmethod
-        def create(
-            loop: asyncio.AbstractEventLoop,
-            name: str,
-            config: Any,
-            msgbus: Any,
-            cache: Any,
-            clock: Any,
-        ) -> Any:
-            client = HyperliquidLiveDataClientFactory.create(
-                loop=loop,
-                name=name,
-                config=config,
-                msgbus=msgbus,
-                cache=cache,
-                clock=clock,
-            )
-            _chain_hyperliquid_connection_callbacks(
-                client,
-                on_connect=on_connect,
-                on_disconnect=on_disconnect,
-            )
-            return client
-
-    return QuoteStreamHyperliquidLiveDataClientFactory
-
-
-def _chain_hyperliquid_connection_callbacks(
-    client: Any,
-    *,
-    on_connect: Callable[[], Awaitable[None]],
-    on_disconnect: Callable[[], Awaitable[None]],
-) -> None:
-    """Make every pinned Hyperliquid connection segment invalidate the prior quote generation."""
-
-    original_connect = getattr(client, "_connect", None)
-    original_disconnect = getattr(client, "_disconnect", None)
-    if not callable(original_connect) or not callable(original_disconnect):
-        raise RuntimeError("nautilus_hyperliquid_connection_callback_unavailable")
-
-    async def connected(_client: Any) -> None:
-        await original_connect()
-        await on_connect()
-
-    async def disconnected(_client: Any) -> None:
-        await on_disconnect()
-        await original_disconnect()
-
-    client._connect = MethodType(connected, client)
-    client._disconnect = MethodType(disconnected, client)
-
-
 def _chain_binance_reconnect_callbacks(
     client: Any,
     on_reconnect: Callable[[], Awaitable[None]],
@@ -422,49 +356,15 @@ def _probe_server(readiness: Callable[[], dict[str, Any]]) -> uvicorn.Server:
     return server
 
 
-def _read_credentials(
-    settings: Settings,
-) -> tuple[BinanceCredentials | None, HyperliquidCredentials | None]:
-    facts = {fact.binding: fact for fact in inspect_binding_credentials(settings)}
-    binance = None
-    if facts["BINANCE_USDM"].state == "configured":
-        binance = BinanceCredentials(
-            api_key=_read_secret(settings.trading_binance_usdm_api_key_file(), "binance_api_key"),
-            api_secret=_read_secret(settings.trading_binance_usdm_api_secret_file(), "binance_api_secret"),
-        )
-    hyperliquid = None
-    if facts["HYPERLIQUID_PERP"].state == "configured":
-        address = settings.trading.bindings.hyperliquid_perp.account_address
-        if address is None:  # pragma: no cover - the credential inspector established this
-            raise ValueError("nautilus_hyperliquid_account_address_missing")
-        hyperliquid = HyperliquidCredentials(
-            private_key=_read_secret(
-                settings.trading_hyperliquid_private_key_file(),
-                "hyperliquid_private_key",
-            ),
-            account_address=address,
-        )
-    return binance, hyperliquid
-
-
-def _read_secret(path: Any, name: str) -> str:
-    if path is None:
-        raise ValueError(f"nautilus_{name}_file_missing")
-    try:
-        return read_secure_secret_text(path)
-    except SecretFileError as exc:
-        raise ValueError(f"nautilus_{name}_file_{exc.code}") from None
-
-
 def _engine_identity(settings: Settings, capability_snapshot_sha256s: dict[VenueBinding, str]) -> str:
     del settings
     identity = runtime_identity()
     config_payload = {
-        "version": "nautilus_dual_binding_mainnet_config_v1",
+        "version": "nautilus_binance_usdm_demo_config_v1",
         "release": NAUTILUS_RELEASE.version,
         "capability_snapshot_sha256s": dict(sorted(capability_snapshot_sha256s.items())),
         "poll_seconds": str(NAUTILUS_POLL_SECONDS),
-        "environment": "MAINNET",
+        "environment": "DEMO",
         "cache": "memory",
         "reconciliation": True,
         "reconciliation_scope": "dedicated_account",
@@ -486,15 +386,16 @@ def _engine_identity(settings: Settings, capability_snapshot_sha256s: dict[Venue
 
 def _pending_execution_binding(
     *,
-    settings: Settings,
     binding: VenueBinding,
+    credential: BindingCredentialFact,
     runtime: Any,
     capability_snapshot: Any,
     active: ExecutionBindingV1 | None,
 ) -> ExecutionBindingV1 | None:
+    require_execution_binding_enabled(binding)
     if runtime is None or capability_snapshot is None:
         return None
-    credential = next(fact for fact in inspect_binding_credentials(settings) if fact.binding == binding)
+    _require_current_capability_contract(capability_snapshot)
     if (
         credential.state != "configured"
         or credential.fingerprint is None
@@ -505,7 +406,7 @@ def _pending_execution_binding(
         return None
     value = ExecutionBindingV1(
         binding=binding,
-        venue="binance.usdm" if binding == "BINANCE_USDM" else "hyperliquid.perp",
+        venue="binance.usdm",
         account_identity_sha256=canonical_sha256(
             {
                 "identity_version": "credential_scoped_account_v1",
@@ -517,11 +418,7 @@ def _pending_execution_binding(
         credential_fingerprint=credential.fingerprint,
         catalog_snapshot_sha256=capability_snapshot.catalog_snapshot_sha256,
         capability_snapshot_sha256=capability_snapshot.snapshot_sha256,
-        adapter_contract_sha256=(
-            BINANCE_USDM_ADAPTER_CONTRACT_SHA256
-            if binding == "BINANCE_USDM"
-            else HYPERLIQUID_PERP_ADAPTER_CONTRACT_SHA256
-        ),
+        adapter_contract_sha256=BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
         quote_contract_sha256=QUOTE_CONTRACT_SHA256,
         protection_contract_sha256=PROTECTION_CONTRACT_SHA256,
         client_runtime_identity=(
@@ -534,6 +431,19 @@ def _pending_execution_binding(
     ):
         return None
     return value
+
+
+def _require_current_capability_contract(capability_snapshot: Any) -> None:
+    if (
+        capability_snapshot.binding != "BINANCE_USDM"
+        or capability_snapshot.venue != "binance.usdm"
+        or capability_snapshot.adapter_contract_sha256 != BINANCE_USDM_ADAPTER_CONTRACT_SHA256
+        or capability_snapshot.quote_contract_sha256 != QUOTE_CONTRACT_SHA256
+        or capability_snapshot.protection_contract_sha256 != PROTECTION_CONTRACT_SHA256
+        or capability_snapshot.client_runtime_identity
+        != f"nautilus-trader=={NAUTILUS_RELEASE.version};wheel={installed_nautilus_wheel_identity()}"
+    ):
+        raise RuntimeError("nautilus_capability_contract_mismatch")
 
 
 def _schedule_venue_flat_proof(

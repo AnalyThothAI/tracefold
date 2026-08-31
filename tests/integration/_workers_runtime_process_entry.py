@@ -401,16 +401,11 @@ async def _main() -> None:
         "trading_missing_authority",
         "trading_wiring_fault",
     }
-    binding_variant = os.environ.get("TRACEFOLD_TEST_BINDING_VARIANT", "none")
     settings = Settings(
         news={"enabled": arguments.mode == "manifest_barrier"},
         trading={
             "enabled": trading_process,
-            "bindings": {
-                "hyperliquid_perp": {
-                    "account_address": "0x" + "22" * 20 if binding_variant in {"dual", "invalid"} else None,
-                }
-            },
+            "bindings": {"binance_demo": {}},
         },
         storage={
             "postgres": {

@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from tracefold.trading import (
+    BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
     BlacklistSnapshotV1,
     CapitalAuthorizationReceiptV1,
     CapitalRiskReservationV1,
@@ -61,7 +62,7 @@ from tracefold.trading.policy import CapitalPolicy
 from tracefold.trading.quote_authority import QUOTE_CONTRACT_SHA256
 
 NOW = 1_900_000_000_000
-ADAPTER_SHA = "a" * 64
+ADAPTER_SHA = BINANCE_USDM_ADAPTER_CONTRACT_SHA256
 TEST_RELEASE = "test-release"
 TEST_COST_MODEL = {
     "fee_model": {"version": "nautilus_bar_taker_fee_v1", "per_side_bps": "5"},
@@ -550,6 +551,7 @@ def binance_capability(
     app_revision: str = "revision",
     symbol: str = "SOLUSDT",
     symbols: Sequence[str] | None = None,
+    adapter_contract_sha256: str = BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
 ) -> ExecutionCapabilitySnapshotV2:
     catalog = catalog or binance_catalog(symbol=symbol, symbols=symbols)
     return build_execution_capability_snapshot(
@@ -573,7 +575,7 @@ def binance_capability(
         ],
         app_revision=app_revision,
         app_image_digest="sha256:image",
-        adapter_contract_sha256=ADAPTER_SHA,
+        adapter_contract_sha256=adapter_contract_sha256,
         quote_contract_sha256=QUOTE_CONTRACT_SHA256,
         protection_contract_sha256=PROTECTION_CONTRACT_SHA256,
         client_runtime_identity="nautilus-trader==1.231.0",

@@ -1,4 +1,4 @@
-"""One Nautilus lifecycle coordinator for both closed Production V3 bindings."""
+"""One Nautilus lifecycle coordinator for the Binance USD-M Demo binding."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ from tracefold.trading import (
     TradeIntent,
     VenueBinding,
     deterministic_client_order_id,
+    require_execution_binding_enabled,
     validate_entry_quote,
 )
 from tracefold.trading.execution_policy import evaluate_entry, max_holding_due, stop_price
@@ -145,14 +146,8 @@ class TracefoldNautilusStrategy(Strategy):
         self._latest_entry_quote: ExecutionQuote | None = None
         self._last_accepted_quote_ts_event_ns: int | None = None
         self._quote_wait_started_at_ns: int | None = None
-        self._quote_stream_generations: dict[VenueBinding, int] = {
-            "BINANCE_USDM": 0,
-            "HYPERLIQUID_PERP": 0,
-        }
-        self._quote_stream_connected: dict[VenueBinding, bool] = {
-            "BINANCE_USDM": True,
-            "HYPERLIQUID_PERP": True,
-        }
+        self._quote_stream_generations: dict[VenueBinding, int] = {"BINANCE_USDM": 0}
+        self._quote_stream_connected: dict[VenueBinding, bool] = {"BINANCE_USDM": True}
         self._orders: dict[str, tuple[str, OrderLeg]] = {}
         self._position_id: PositionId | None = None
         self._position_quantity: Decimal | None = None
@@ -663,6 +658,7 @@ class TracefoldNautilusStrategy(Strategy):
         )
 
     def _change_quote_stream(self, command: QuoteStreamChanged) -> None:
+        require_execution_binding_enabled(command.binding)
         if command.generation > self._authoritative_quote_generation(command.binding):
             raise ValueError("nautilus_quote_stream_generation_unowned")
         previous_generation = self._quote_stream_generations[command.binding]

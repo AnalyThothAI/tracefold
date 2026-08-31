@@ -25,6 +25,7 @@ from decimal import Decimal
 from typing import Any, TypedDict, cast
 
 from ..admission import AdmissionRow
+from ..bindings import EXECUTION_ENABLED_BINDINGS
 from ..blacklist import Blacklist
 from ..capital_authority import (
     CapitalAuthorizationReceiptV1,
@@ -325,6 +326,8 @@ class LaneStorage:
             reason = "capital_paused"
         elif runtime["control"] == "CLOSE_ONLY":
             reason = "capital_close_only"
+        elif manifest.instrument.binding not in EXECUTION_ENABLED_BINDINGS:
+            reason = "execution_binding_disabled"
         elif any(row["account_state"] == "exposure_present" for row in binding_rows):
             reason = "unexpected_exposure"
         elif binding.credential_state == "unconfigured":

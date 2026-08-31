@@ -223,14 +223,14 @@ catalog remain active Workers responsibilities. The accepted keys are only:
   is selectivity, which the policy already owns;
 - `order.fixed_notional_usd`, the sole operator execution value, validated as
   `0 < value <= 10`;
-- `bindings.binance_usdm.api_key_file` / `api_secret_file`;
-- `bindings.hyperliquid_perp.private_key_file` / `account_address`.
+- `bindings.binance_demo.api_key_file` / `api_secret_file`.
 
 Secret-file paths are resolved relative to the operator config directory
 unless absolute. Missing files are the legal `unconfigured` state. Partial,
 malformed, insecure, or unreadable inputs are `invalid`; neither state exposes
-secret contents. A configured binding is still `stopped/unknown` until its
-later adapter-owned read-only preflight exists (#356/#357).
+secret contents. A configured Demo binding makes Nautilus required.
+Hyperliquid is catalog-only and always reports `execution_enabled=false` with
+`execution_binding_disabled`.
 
 There is no mode, live symbol, account, venue, OpenTrade, approval, backend
 selector, or Intent-acceptance configuration, and since #331 no `regime.*`,
@@ -286,15 +286,18 @@ product lane.
 The fresh-clone operator contract is `make up`. It preflights `uv`, Docker,
 Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
 initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
-one-shot migration; starts Serve and Workers; and waits for required health and
-console boundaries. Execution credentials are not a deployment prerequisite,
-and no execution adapter is started (#356/#357 pending). A repeated invocation preserves config, passwords, and
+one-shot migration; starts Serve and Workers; derives the durable Nautilus
+runtime plan; conditionally starts Binance Demo Nautilus; and waits for every
+required health and console boundary. Demo credentials are optional only in the
+paused observer state. A repeated invocation preserves config, passwords, and
 named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
 required runtime readiness endpoint, or console HTML is missing or unhealthy.
-It reports execution adapters as not required while Capital is PAUSED.
-`make logs` follows the bounded startup services. `make down` stops the stack
+For `required`, it verifies the Nautilus container is running and healthy, uses
+the Workers image, passes `/readyz`, and has fresh binding-local readiness. For
+`optional`, it rejects a still-running stale adapter; `blocked` is always
+non-zero. `make logs` includes Nautilus. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
 
@@ -306,7 +309,8 @@ stack selectors, `.env`, Compose overrides, and untracked or ignored Alembic
 revisions. Before stopping Serve or Workers it requires source, image, and live
 database Alembic heads to match and requires the target image to parse the
 active config. It never builds, pulls, or downgrades. Success additionally
-requires the recreated migration, Serve, and Workers containers, Workers
+requires the recreated migration, Serve, Workers, and conditionally required
+Nautilus containers, Workers
 readiness identity, runtime manifest, and linked active/deployment receipt to
 prove that exact image. `make up` and `make deploy-image` share one
 process-lifetime deployment lock; concurrent mutation is refused and process
@@ -1082,7 +1086,8 @@ code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the small business-bearing runtime-role readiness contract: bootstrap
 NOLOGIN, direct ordinary owner/object ownership, Serve read boundary, Workers
 no-DDL/evidence append without rewrite/execution denial, and Nautilus
-projection-only authority (current at migration `20260831_0339`). The complete
+projection-only authority (established at migration `20260831_0339` and retained
+at the current `20260831_0340` head). The complete
 ACL matrix remains real-PostgreSQL integration evidence rather than a repeated
 production audit query. `db audit --deep`
 adds exact table counts for offline migration or restore evidence. Since

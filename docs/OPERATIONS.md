@@ -16,9 +16,12 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading no-key Decision/Capital operation (#350)
+### Trading Binance Demo runtime plan (#429)
 
-Execution credentials are optional for deployment. The supported observer state is:
+Binance USD-M Demo is the only execution-enabled binding. Hyperliquid remains
+a credential-free public-catalog input and is deliberately disabled for
+capability, binding, arm, Intent, and provider-client execution. The supported
+no-key observer state is:
 
 ```text
 Decision RUNNING
@@ -27,15 +30,15 @@ BINANCE_USDM.credentials unconfigured
 HYPERLIQUID_PERP.credentials unconfigured
 ```
 
-Run `uv run tracefold config` to inspect only redacted per-binding credential
-states and resolved paths. Missing files are `unconfigured`; partial,
+Run `uv run tracefold config` to inspect only the redacted Demo credential
+state and resolved paths. Missing files are `unconfigured`; partial,
 malformed, insecure, or unreadable inputs are `invalid`. Never print or copy a
-credential. `make up`, migration, Serve, Workers, Web, and the public venue
-catalog must remain green without either binding credential.
+credential. `make up`, migration, Serve, Workers, Web, and both public venue
+catalogs remain green without Demo credentials while Capital is `PAUSED`.
 
-`trading.enabled` controls only the Decision Plane. Workers always project both
-closed bindings and refresh the credential-free Binance USD-M and Hyperliquid
-perp catalogs. Verify with:
+`trading.enabled` controls only the Decision Plane. Workers projects the Demo
+credential fact, forces Hyperliquid to `execution_binding_disabled`, and
+refreshes both credential-free public catalogs. Verify with:
 
 ```text
 make up
@@ -43,17 +46,21 @@ make status
 uv run tracefold trading status
 ```
 
-The status must show Decision lifecycle/heartbeat, Capital control, and both
-bindings' redacted credential/runtime/account/catalog/heartbeat/reason facts.
+The status must show Decision lifecycle/heartbeat, Capital control, both
+bindings' redacted runtime/account/catalog facts, and one Nautilus decision:
+`optional`, `required`, or `blocked`. Valid Demo credentials mean `required`;
+missing credentials mean `optional` only when Capital is paused and there is
+no recovery obligation; invalid credentials or any Hyperliquid execution state
+mean `blocked`.
 A provider catalog failure marks only that binding stale/error and preserves
 last-known-good. Serve reads these PostgreSQL facts and never secret files or a
 provider client.
 
-Every Workers start reprojects credentials and forces Capital `PAUSED`. Do not
-set `RUNNING` to test activation: before #360, even configured/ready facts end
-in `promotion_authority_unavailable` and zero new Intent. A pure-policy LONG
-must remain LONG with independent `capital_disposition=blocked`; NO_TRADE has
-Capital `not_applicable`.
+Every Workers start reprojects credentials and forces Capital `PAUSED`.
+Nautilus readiness is per binding and expires five seconds after its durable
+heartbeat; container liveness, `/healthz`, or a removed global singleton field
+cannot substitute for it. A capability pointer change also invalidates a late
+heartbeat write from the old engine generation.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
 composition is invalid, Workers must fail startup/readiness or record Decision
@@ -163,9 +170,9 @@ PostgreSQL cluster carrying that same current role contract.
 
 The remaining PR 1/PR 2 Demo activation notes in this subsection describe the
 immutable pre-#350 Intent/replay era. The current CLI rejects
-`trading refresh-capabilities`, deployment does not start Nautilus, and these
-steps cannot authorize a new Intent. They remain only as recovery context for
-existing durable rows.
+`trading refresh-capabilities`; these steps cannot authorize a new Intent and
+do not describe the #429 Binance Demo lifecycle. They remain only as audit
+context for existing durable rows.
 
 The one-time PR 2 cutover from the PR 1 dark slice is:
 
@@ -194,7 +201,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260831_0339`
+5. Deploy the exact reviewed image at the current Alembic head (`20260831_0340`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -228,46 +235,21 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
 7. Set control to `RUNNING`. The capital lane can now atomically write a fresh
    Intent; there is no `accept_intents` flag or per-order approval.
 
-For the first V2 capability activation, keep Trading `PAUSED` and require zero
-nonterminal Intents. When no active snapshot exists, `make up` starts a bounded
-zero-claim Nautilus process, waits for its fresh account-wide
-`nautilus_bootstrap_account_zero_at_ms` proof while `/readyz` correctly remains
-red, activates the first snapshot, stops that process, and recreates the normal
-capability-governed Nautilus service. The proof remains valid for the bounded
-provider load (at most five minutes) and activation clears it.
-
-Once an active snapshot exists, `make up` and `make deploy-image` reuse it and
-only recreate normal Nautilus. They do not refresh capability or write Trading
-control; stale-but-valid is an accepted deployment state. A later replacement
-is an explicit paused-window operation:
-
-```text
-uv run tracefold trading control paused
-uv run tracefold trading refresh-capabilities
-make up
-uv run tracefold trading status
-uv run tracefold trading control running
-```
-
-Before refresh, require zero nonterminal Intents and current Nautilus readiness
-with no unexpected exposure; leave Nautilus running so that proof stays fresh.
-The refresh command fails before provider I/O unless control is already
-`PAUSED`, and it never pauses or resumes Trading itself. Record the new snapshot
-digest/count and blacklist revision, and restore `RUNNING` only after recreated
-Nautilus is ready and has revalidated every included instrument. A failed load
-or activation leaves the old active snapshot unchanged and the operator-chosen
-`PAUSED` control intact. If the old snapshot cannot load, keep Trading `PAUSED`
-and use the bounded `tracefold nautilus run --bootstrap-zero-claims` recovery
-process before retrying refresh; that process refuses active Intents, never
-claims readiness, and never consumes an Intent.
+Migration `0340` retires that global bootstrap/capability path. It pauses
+Capital, clears both active execution rows, permanently leaves Hyperliquid
+execution disabled, and makes a reconciled Binance Demo process activate only
+the matching binding-local capability/binding chain. There is no global
+Nautilus readiness or bootstrap timestamp and no operator refresh command.
 
 Do not seed a production Case or Intent to make the console non-empty. A normal
 source must produce the Case, and only a frozen long/non-shadow Case admitted by
 the active snapshot and current blacklist may emit an Intent.
 
-Current `make up` and `make deploy-image` idempotently create empty 0600
-credential placeholders, do not require execution credentials, and do not start an execution adapter. `make status` reports adapters as
-not required while Capital is PAUSED. The browser and HTTP surface expose
+Current `make up` and `make deploy-image` idempotently create empty 0600 Demo
+credential placeholders and derive the same runtime plan from PostgreSQL. They
+start same-image Nautilus when `required`, leave it stopped when `optional`, and
+fail when `blocked`. `make status` enforces the same decision and `make logs`
+includes Nautilus. The browser and HTTP surface expose
 durable Decision/Capital/binding facts and independent Case policy/capital
 attribution; existing Intent/Outcome history remains read-only.
 
@@ -289,11 +271,11 @@ closed.
 
 The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it
 proves atomic Case/Intent handoff, fences, restart/outcome projection, and
-role constraints, not venue behavior. The opt-in real Demo closure/restart
-drill is `tests/live/test_nautilus_binance_demo.py`; use its isolated
-database/config/container contract and exact committed image. Its terminal is
-`DEMO_CLOSED_FLAT`, otherwise the run must preserve the recoverable state and
-report failure or `MANUAL_REVIEW`.
+role constraints, not venue behavior. The real Demo receipt is an operator-run
+`make up` followed by `make status` and redacted Nautilus logs from the exact
+committed image. This read-only startup/reconciliation receipt must not arm
+Capital or submit an order. Any non-flat result must preserve the recoverable
+state and report failure or `MANUAL_REVIEW`.
 
 ## Operator lifecycle
 
@@ -310,9 +292,8 @@ make down
 CLI, and daemon access, runs
 idempotent initialization, builds one shared Python/React image, starts
 PostgreSQL when absent, requires the one-shot migration to succeed, starts
-Serve and Workers, and then runs the same fail-closed status gate. Execution
-credentials do not participate in deployment readiness, and no Nautilus
-process is recreated. It
+Serve and Workers, derives the Nautilus runtime plan, conditionally recreates
+Binance Demo Nautilus, and then runs the same fail-closed status gate. It
 does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
 password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
@@ -328,8 +309,9 @@ unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
-HTML console all pass. Execution-adapter absence is expected at #350 and does
-not weaken those required boundaries.
+HTML console all pass. It additionally enforces the runtime plan: required
+Nautilus must be healthy, same-image, `/readyz` green, and binding-ready;
+optional Nautilus must be stopped; blocked never passes.
 It must not be replaced by a liveness-only `curl` or a
 Compose command whose exit status ignores an unhealthy Worker.
 
@@ -414,7 +396,7 @@ runtime.
 | Workers `/readyz` | root running, singleton session healthy, latest O(1) heartbeat persisted within 15 s, and (when News is enabled) the runtime manifest plus linked active/deployment receipt committed, plus the `runtime_revision` / `image_digest` this process can prove | no queue inspection |
 | `/api/status` | `{measured_at_ms, runtime}`: database probe plus the Workers heartbeat row | bounded control read |
 | `/api/news/status` | four-layer News state (`ingest`, `broker`, `pipeline`, `delivery`) plus `control` | bounded News reads |
-| `make status` | PostgreSQL, migration, Serve, Workers, readiness, and console | fail-closed lifecycle check |
+| `make status` | PostgreSQL, migration, Serve, Workers, conditional Nautilus, readiness, and console | fail-closed lifecycle check |
 | `tracefold ops validate-projections` | bounded News singleton and delivery-state invariants | strict Serve-role read |
 
 Source degradation does not make the HTTP process unready. `/api/status` has no
@@ -1317,7 +1299,7 @@ creates the direct-login `tracefold_owner`, `tracefold_serve`,
 `tracefold_workers`, and `tracefold_nautilus` roles when run by the bootstrap
 superuser, verifies the role contract, and applies the Serve read / Workers
 write grants) followed by the linear revisions through the current
-`20260831_0339` head. The #112 chain
+`20260831_0340` head. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -1424,7 +1406,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260831_0339`; zero rows in every cleared
+After deployment, require Alembic head `20260831_0340`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

@@ -9,6 +9,12 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.trading import (
+    BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+    PROTECTION_CONTRACT_SHA256,
+    QUOTE_CONTRACT_SHA256,
+)
+from tracefold.trading.contracts import BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS
 from tracefold.trading.storage.query_sql import (
     AUTHORITY_PROJECTION_SQL,
     BINDING_RUNTIME_ROWS_SQL,
@@ -200,7 +206,13 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
         ReadQuerySpec(
             name="trading_capability_bindings",
             sql=BINDING_RUNTIME_ROWS_SQL,
-            params={"now": int(now_ms)},
+            params={
+                "now": int(now_ms),
+                "heartbeat_floor": int(now_ms) - BINDING_RUNTIME_HEARTBEAT_STALE_AFTER_MS,
+                "adapter_contract": BINANCE_USDM_ADAPTER_CONTRACT_SHA256,
+                "quote_contract": QUOTE_CONTRACT_SHA256,
+                "protection_contract": PROTECTION_CONTRACT_SHA256,
+            },
             max_read_return_amplification=4.0,
         ),
         ReadQuerySpec(

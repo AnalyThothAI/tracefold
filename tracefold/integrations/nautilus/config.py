@@ -1,4 +1,4 @@
-"""The one closed Nautilus mainnet runtime shape for both Production V3 bindings."""
+"""The one closed Binance USD-M Demo Nautilus runtime shape."""
 
 from __future__ import annotations
 
@@ -18,13 +18,6 @@ from nautilus_trader.adapters.binance import (
 )
 from nautilus_trader.adapters.binance.common.enums import BinanceEnvironment
 from nautilus_trader.adapters.binance.common.symbol import BinanceSymbol
-from nautilus_trader.adapters.hyperliquid import (
-    HYPERLIQUID,
-    HyperliquidDataClientConfig,
-    HyperliquidExecClientConfig,
-    HyperliquidProductType,
-)
-from nautilus_trader.common.config import InstrumentProviderConfig
 from nautilus_trader.config import (
     CacheConfig,
     LiveDataEngineConfig,
@@ -68,12 +61,6 @@ class BinanceCredentials:
     api_secret: str
 
 
-@dataclass(frozen=True, slots=True)
-class HyperliquidCredentials:
-    private_key: str
-    account_address: str
-
-
 def linux_release_wheel_identity(machine: str) -> str:
     try:
         tag, sha256 = NAUTILUS_LINUX_WHEELS[machine]
@@ -100,15 +87,13 @@ def build_node_config(
     *,
     instrument_ids_by_binding: Mapping[VenueBinding, Sequence[InstrumentId]],
     binance_credentials: BinanceCredentials | None,
-    hyperliquid_credentials: HyperliquidCredentials | None,
 ) -> TradingNodeConfig:
-    """Build zero, one, or two clients inside the single lifecycle process."""
+    """Build either a zero-claim bootstrap node or one Binance Demo client."""
 
-    unknown = set(instrument_ids_by_binding).difference({"BINANCE_USDM", "HYPERLIQUID_PERP"})
+    unknown = set(instrument_ids_by_binding).difference({"BINANCE_USDM"})
     if unknown:
         raise ValueError("nautilus_binding_set_invalid")
     binance_ids = frozenset(instrument_ids_by_binding.get("BINANCE_USDM", ()))
-    hyperliquid_ids = frozenset(instrument_ids_by_binding.get("HYPERLIQUID_PERP", ()))
     data_clients: dict[str, object] = {}
     exec_clients: dict[str, object] = {}
     external_clients: list[ClientId] = []
@@ -122,40 +107,20 @@ def build_node_config(
             api_key=binance_credentials.api_key,
             api_secret=binance_credentials.api_secret,
             account_type=BinanceAccountType.USDT_FUTURES,
-            environment=BinanceEnvironment.LIVE,
+            environment=BinanceEnvironment.DEMO,
             instrument_provider=provider,
         )
         exec_clients[BINANCE] = BinanceExecClientConfig(
             api_key=binance_credentials.api_key,
             api_secret=binance_credentials.api_secret,
             account_type=BinanceAccountType.USDT_FUTURES,
-            environment=BinanceEnvironment.LIVE,
+            environment=BinanceEnvironment.DEMO,
             instrument_provider=provider,
             use_reduce_only=True,
             futures_leverages={BinanceSymbol(item.symbol.value.removesuffix("-PERP")): 1 for item in binance_ids},
             max_retries=None,
         )
         external_clients.append(ClientId(BINANCE))
-    if hyperliquid_credentials is not None:
-        provider = InstrumentProviderConfig(load_ids=hyperliquid_ids, log_warnings=True)
-        products = (HyperliquidProductType.PERP, HyperliquidProductType.PERP_HIP3)
-        data_clients[HYPERLIQUID] = HyperliquidDataClientConfig(
-            instrument_provider=provider,
-            product_types=products,
-        )
-        exec_clients[HYPERLIQUID] = HyperliquidExecClientConfig(
-            instrument_provider=provider,
-            private_key=hyperliquid_credentials.private_key,
-            account_address=hyperliquid_credentials.account_address,
-            product_types=products,
-            # These transport retries belong to the pinned adapter contract. The coordinator still
-            # query-first reconciles an ambiguous submit and never emits a second economic entry.
-            max_retries=3,
-            retry_delay_initial_ms=250,
-            retry_delay_max_ms=2_000,
-            normalize_prices=True,
-        )
-        external_clients.append(ClientId(HYPERLIQUID))
     return TradingNodeConfig(
         trader_id=TraderId("TRACEFOLD-001"),
         logging=LoggingConfig(log_level="WARNING", log_colors=False, use_pyo3=True),
@@ -182,7 +147,6 @@ __all__ = [
     "NAUTILUS_LINUX_WHEELS",
     "NAUTILUS_RELEASE",
     "BinanceCredentials",
-    "HyperliquidCredentials",
     "NautilusRelease",
     "build_node_config",
     "installed_nautilus_wheel_identity",

@@ -45,7 +45,7 @@ export function TradingPage({ token }: { token: string }) {
 
   const coldFailure = statusQuery.isError && !status;
   return (
-    <TradingShell label="Decision / Capital · 双场地 observer">
+    <TradingShell label="Decision / Capital · Binance Demo execution">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
           <h1>Decision / Capital</h1>
@@ -55,7 +55,8 @@ export function TradingPage({ token }: { token: string }) {
           <div className="trading-heading-aside" data-tone={runtimeTone(status)}>
             <span>{status.counts.day_key || "日期未知"} · UTC 预算日</span>
             <small>
-              DECISION {status.decision.state} · CAPITAL {status.capital.control}
+              DECISION {status.decision.state} · CAPITAL {status.capital.control} · NAUTILUS{" "}
+              {status.nautilus.decision.toUpperCase()}
             </small>
           </div>
         ) : null}
@@ -94,8 +95,8 @@ export function TradingPage({ token }: { token: string }) {
               />
               <Metric
                 eyebrow="BINDINGS"
-                value={`${configuredBindings(status)} / ${status.bindings.length}`}
-                caption="凭证已配置"
+                value={`${configuredBindings(status)} / ${enabledBindings(status)}`}
+                caption="Demo execution 凭证"
               />
               <Metric
                 eyebrow="NOTIONAL"
@@ -423,13 +424,18 @@ function BindingList({ status }: { status: TradingStatus }) {
   return (
     <Card
       flush
-      hint="PostgreSQL durable projection；不含 secret、provider client 或推断 readiness"
+      hint={`Nautilus ${status.nautilus.decision} · ${status.nautilus.readiness_reason}`}
       title="Execution bindings"
     >
       <div className="trading-table">
         {status.bindings.map((binding) => (
           <article className="trading-binding-row" key={binding.binding}>
             <b>{binding.binding}</b>
+            <span>
+              {binding.execution_enabled
+                ? `execution ${binding.execution_environment}`
+                : "execution disabled"}
+            </span>
             <span>credentials {binding.credential_state}</span>
             <span>runtime {binding.runtime_state}</span>
             <span>account {binding.account_state}</span>
@@ -526,7 +532,13 @@ function outcome(intent: TradingIntent): string {
 type TradingStatus = NonNullable<ReturnType<typeof useTradingStatusWithToken>["data"]>;
 
 function configuredBindings(status: TradingStatus): number {
-  return status.bindings.filter((binding) => binding.credential_state === "configured").length;
+  return status.bindings.filter(
+    (binding) => binding.execution_enabled && binding.credential_state === "configured",
+  ).length;
+}
+
+function enabledBindings(status: TradingStatus): number {
+  return status.bindings.filter((binding) => binding.execution_enabled).length;
 }
 
 function hasUnexpectedExposure(status: TradingStatus): boolean {
@@ -534,10 +546,18 @@ function hasUnexpectedExposure(status: TradingStatus): boolean {
 }
 
 function observerNotice(status: TradingStatus): string | undefined {
+  if (status.nautilus.decision === "blocked") {
+    return `Nautilus 启动被阻止：${status.nautilus.reason}`;
+  }
+  if (status.nautilus.decision === "required" && !status.nautilus.ready) {
+    return `Binance Demo 执行端尚未就绪：${status.nautilus.readiness_reason}`;
+  }
   if (
     status.decision.state === "RUNNING" &&
     status.capital.control === "PAUSED" &&
-    status.bindings.some((binding) => binding.credential_state === "unconfigured")
+    status.bindings.some(
+      (binding) => binding.execution_enabled && binding.credential_state === "unconfigured",
+    )
   ) {
     return "决策运行、资本暂停、凭证未配置，当前无法交易";
   }

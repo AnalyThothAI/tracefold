@@ -30,7 +30,10 @@ LATEST_GATE_DECISION_PER_SOURCE_SQL: Final = """
 """
 BINDING_RUNTIME_ROWS_SQL: Final = """
     SELECT runtime.binding, runtime.credential_state, runtime.credential_fingerprint,
-           runtime.runtime_state, runtime.account_state, runtime.account_generation,
+           CASE WHEN runtime.runtime_state = 'ready'
+                     AND (runtime.heartbeat_at_ms IS NULL OR runtime.heartbeat_at_ms < %(heartbeat_floor)s)
+                THEN 'stale' ELSE runtime.runtime_state END AS runtime_state,
+           runtime.account_state, runtime.account_generation,
            CASE
              WHEN runtime.catalog_state = 'ready'
               AND snapshot.stale_after_ms IS NOT NULL
@@ -39,13 +42,61 @@ BINDING_RUNTIME_ROWS_SQL: Final = """
              ELSE runtime.catalog_state
            END AS catalog_state,
            runtime.catalog_snapshot_sha256, runtime.catalog_captured_at_ms,
-           runtime.capability_state, runtime.capability_snapshot_sha256,
+           CASE
+             WHEN runtime.binding = 'BINANCE_USDM'
+              AND runtime.capability_snapshot_sha256 IS NOT NULL
+              AND (
+                capability.snapshot_sha256 IS NULL
+                OR capability.payload ->> 'adapter_contract_sha256' IS DISTINCT FROM %(adapter_contract)s
+                OR capability.payload ->> 'quote_contract_sha256' IS DISTINCT FROM %(quote_contract)s
+                OR capability.payload ->> 'protection_contract_sha256' IS DISTINCT FROM %(protection_contract)s
+              )
+             THEN 'stale'
+             ELSE runtime.capability_state
+           END AS capability_state,
+           runtime.capability_snapshot_sha256,
            runtime.capability_compiled_at_ms, runtime.capability_compile_error,
-           runtime.execution_binding_sha256, runtime.active_arm_receipt_sha256,
-           runtime.heartbeat_at_ms, runtime.reason, runtime.updated_at_ms
+           CASE
+             WHEN runtime.binding = 'BINANCE_USDM'
+              AND runtime.execution_binding_sha256 IS NOT NULL
+              AND (
+                execution.binding_sha256 IS NULL
+                OR execution.payload ->> 'adapter_contract_sha256' IS DISTINCT FROM %(adapter_contract)s
+                OR execution.payload ->> 'quote_contract_sha256' IS DISTINCT FROM %(quote_contract)s
+                OR execution.payload ->> 'protection_contract_sha256' IS DISTINCT FROM %(protection_contract)s
+                OR execution.payload ->> 'capability_snapshot_sha256'
+                   IS DISTINCT FROM runtime.capability_snapshot_sha256
+                OR execution.payload ->> 'client_runtime_identity'
+                   IS DISTINCT FROM capability.payload ->> 'client_runtime_identity'
+              )
+             THEN NULL
+             ELSE runtime.execution_binding_sha256
+           END AS execution_binding_sha256,
+           runtime.active_arm_receipt_sha256,
+           runtime.heartbeat_at_ms,
+           CASE
+             WHEN runtime.binding = 'BINANCE_USDM'
+              AND runtime.capability_snapshot_sha256 IS NOT NULL
+              AND (
+                capability.snapshot_sha256 IS NULL
+                OR capability.payload ->> 'adapter_contract_sha256' IS DISTINCT FROM %(adapter_contract)s
+                OR capability.payload ->> 'quote_contract_sha256' IS DISTINCT FROM %(quote_contract)s
+                OR capability.payload ->> 'protection_contract_sha256' IS DISTINCT FROM %(protection_contract)s
+              )
+             THEN 'capability_contract_mismatch'
+             WHEN runtime.runtime_state = 'ready'
+                     AND (runtime.heartbeat_at_ms IS NULL OR runtime.heartbeat_at_ms < %(heartbeat_floor)s)
+             THEN 'binding_heartbeat_stale'
+             ELSE runtime.reason
+           END AS reason,
+           runtime.updated_at_ms
       FROM trading_binding_runtime runtime
       LEFT JOIN trading_venue_catalog_snapshots snapshot
         ON snapshot.snapshot_sha256 = runtime.catalog_snapshot_sha256
+      LEFT JOIN trading_execution_capability_snapshots capability
+        ON capability.snapshot_sha256 = runtime.capability_snapshot_sha256
+      LEFT JOIN trading_execution_bindings execution
+        ON execution.binding_sha256 = runtime.execution_binding_sha256
      ORDER BY runtime.binding
 """
 EXECUTION_CAPABILITY_SNAPSHOT_SQL: Final = """

@@ -18,8 +18,8 @@ from tracefold.trading.intent import INTENT_POLICY_PAYLOAD, INTENT_POLICY_SHA256
 
 pytestmark = pytest.mark.contract
 
-EXPECTED_VERSION = "trade_intent_policy_v4"
-EXPECTED_SHA256 = "3dd0c0acaf97b8dbeada593625e8709802634b69fc36133fadfd8614a90d3c09"
+EXPECTED_VERSION = "trade_intent_policy_v5"
+EXPECTED_SHA256 = "c797b92fadc3a14383a19effb89e40f11ad14cb541ee23a64d40f76cafc171d7"
 
 
 def test_the_execution_policy_identity_is_the_one_this_release_signed_for() -> None:
@@ -27,9 +27,10 @@ def test_the_execution_policy_identity_is_the_one_this_release_signed_for() -> N
     assert INTENT_POLICY_SHA256 == EXPECTED_SHA256
 
 
-def test_the_payload_carries_source_native_v3_execution_ceilings() -> None:
+def test_the_payload_carries_demo_only_execution_ceilings() -> None:
 
     assert "max_entries_per_utc_day" not in INTENT_POLICY_PAYLOAD
+    assert INTENT_POLICY_PAYLOAD["bindings"] == ["BINANCE_USDM"]
     assert set(INTENT_POLICY_PAYLOAD) == {
         "version",
         "bindings",

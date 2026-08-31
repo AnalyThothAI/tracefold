@@ -1,25 +1,17 @@
-"""Project operator credential presence into redacted durable binding facts (#350).
-
-This module never constructs a provider client.  #356 and #357 own read-only preflight and adapter
-construction; this seam only distinguishes absent, locally valid, and invalid operator inputs.
-"""
+"""Project the Demo-only credential contract into redacted durable binding facts."""
 
 from __future__ import annotations
 
 import hashlib
-import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from tracefold.platform.config.models import Settings
 from tracefold.platform.config.secret_file import SecretFileError, read_secure_secret_text
 from tracefold.trading import VenueBinding
 from tracefold.trading.storage.root import TradingRepositories
-
-_ETH_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
-_ETH_PRIVATE_KEY = re.compile(r"^(?:0x)?[0-9a-fA-F]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,12 +22,29 @@ class BindingCredentialFact:
     reason: str
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class BinanceDemoCredentialSnapshot:
+    """One redacted identity and its exact in-memory secret values."""
+
+    fact: BindingCredentialFact
+    api_key: str | None = field(repr=False)
+    api_secret: str | None = field(repr=False)
+
+
 class BindingDatabasePort(Protocol):
     async def tx[T](self, name: str, fn: Callable[[TradingRepositories], T], *, timeout_seconds: float) -> T: ...
 
 
 def inspect_binding_credentials(settings: Settings) -> tuple[BindingCredentialFact, BindingCredentialFact]:
-    return (_binance_credentials(settings), _hyperliquid_credentials(settings))
+    return (
+        load_binance_demo_credential_snapshot(settings).fact,
+        BindingCredentialFact(
+            "HYPERLIQUID_PERP",
+            "unconfigured",
+            None,
+            "execution_binding_disabled",
+        ),
+    )
 
 
 async def project_binding_credentials(settings: Settings, db: BindingDatabasePort) -> None:
@@ -44,12 +53,11 @@ async def project_binding_credentials(settings: Settings, db: BindingDatabasePor
     def _write(repos: TradingRepositories) -> None:
         now_ms = int(time.time() * 1_000)
         for fact in facts:
-            updated = repos.trading.set_binding_runtime(
+            updated = repos.trading.project_binding_credentials(
                 binding=fact.binding,
                 credential_state=fact.state,
                 credential_fingerprint=fact.fingerprint,
                 runtime_state="faulted" if fact.state == "invalid" else "stopped",
-                account_state="unknown",
                 heartbeat_at_ms=None,
                 reason=fact.reason,
                 now_ms=now_ms,
@@ -60,38 +68,32 @@ async def project_binding_credentials(settings: Settings, db: BindingDatabasePor
     await db.tx("trading_binding_credentials", _write, timeout_seconds=10.0)
 
 
-def _binance_credentials(settings: Settings) -> BindingCredentialFact:
-    key = _read(settings.trading_binance_usdm_api_key_file())
-    secret = _read(settings.trading_binance_usdm_api_secret_file())
+def load_binance_demo_credential_snapshot(settings: Settings) -> BinanceDemoCredentialSnapshot:
+    """Read each Demo secret once so the client and fingerprint share one identity."""
+
+    key = _read(settings.trading_binance_demo_api_key_file())
+    secret = _read(settings.trading_binance_demo_api_secret_file())
     if key[0] == secret[0] == "missing":
-        return BindingCredentialFact("BINANCE_USDM", "unconfigured", None, "credentials_unconfigured")
+        return BinanceDemoCredentialSnapshot(
+            BindingCredentialFact("BINANCE_USDM", "unconfigured", None, "credentials_unconfigured"),
+            None,
+            None,
+        )
     if key[0] != "value" or secret[0] != "value":
-        return BindingCredentialFact("BINANCE_USDM", "invalid", None, "credentials_invalid")
-    return BindingCredentialFact(
-        "BINANCE_USDM",
-        "configured",
-        _fingerprint("BINANCE_USDM", key[1], secret[1]),
-        "binding_adapter_unavailable",
-    )
-
-
-def _hyperliquid_credentials(settings: Settings) -> BindingCredentialFact:
-    private_key = _read(settings.trading_hyperliquid_private_key_file())
-    address = settings.trading.bindings.hyperliquid_perp.account_address
-    if private_key[0] == "missing" and address is None:
-        return BindingCredentialFact("HYPERLIQUID_PERP", "unconfigured", None, "credentials_unconfigured")
-    if (
-        private_key[0] != "value"
-        or address is None
-        or _ETH_PRIVATE_KEY.fullmatch(private_key[1]) is None
-        or _ETH_ADDRESS.fullmatch(address) is None
-    ):
-        return BindingCredentialFact("HYPERLIQUID_PERP", "invalid", None, "credentials_invalid")
-    return BindingCredentialFact(
-        "HYPERLIQUID_PERP",
-        "configured",
-        _fingerprint("HYPERLIQUID_PERP", private_key[1], address.lower()),
-        "binding_adapter_unavailable",
+        return BinanceDemoCredentialSnapshot(
+            BindingCredentialFact("BINANCE_USDM", "invalid", None, "credentials_invalid"),
+            None,
+            None,
+        )
+    return BinanceDemoCredentialSnapshot(
+        BindingCredentialFact(
+            "BINANCE_USDM",
+            "configured",
+            _fingerprint("BINANCE_USDM", key[1], secret[1]),
+            "binance_demo_runtime_required",
+        ),
+        key[1],
+        secret[1],
     )
 
 
@@ -113,4 +115,10 @@ def _fingerprint(binding: VenueBinding, *parts: str) -> str:
     return digest.hexdigest()
 
 
-__all__ = ["BindingCredentialFact", "inspect_binding_credentials", "project_binding_credentials"]
+__all__ = [
+    "BinanceDemoCredentialSnapshot",
+    "BindingCredentialFact",
+    "inspect_binding_credentials",
+    "load_binance_demo_credential_snapshot",
+    "project_binding_credentials",
+]

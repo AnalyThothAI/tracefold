@@ -504,13 +504,13 @@ class TradingOrderSettings(BaseModel):
         return self
 
 
-class TradingBinanceUsdmSettings(BaseModel):
-    """Operator-owned credential paths; #356 owns any provider client that may use them."""
+class TradingBinanceDemoSettings(BaseModel):
+    """Operator-owned Binance USD-M Demo credential paths."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    api_key_file: str | None = "binance_usdm_api_key"
-    api_secret_file: str | None = "binance_usdm_api_secret"
+    api_key_file: str | None = "binance_demo_api_key"
+    api_secret_file: str | None = "binance_demo_api_secret"
 
     @field_validator("api_key_file", "api_secret_file", mode="before")
     @classmethod
@@ -521,32 +521,14 @@ class TradingBinanceUsdmSettings(BaseModel):
         return normalized or None
 
 
-class TradingHyperliquidPerpSettings(BaseModel):
-    """Agent-wallet inputs only; #357 owns account preflight and adapter construction."""
-
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    private_key_file: str | None = "hyperliquid_private_key"
-    account_address: str | None = None
-
-    @field_validator("private_key_file", "account_address", mode="before")
-    @classmethod
-    def parse_optional_value(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-
 class TradingBindingsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    binance_usdm: TradingBinanceUsdmSettings = Field(default_factory=TradingBinanceUsdmSettings)
-    hyperliquid_perp: TradingHyperliquidPerpSettings = Field(default_factory=TradingHyperliquidPerpSettings)
+    binance_demo: TradingBinanceDemoSettings = Field(default_factory=TradingBinanceDemoSettings)
 
 
 class TradingSettings(BaseModel):
-    """Decision Plane configuration plus two closed, credential-optional bindings (#350)."""
+    """Decision Plane configuration plus the Binance Demo execution credential seam."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -593,14 +575,11 @@ class Settings(BaseModel):
     def news_telegram_bot_token_file(self) -> Path | None:
         return self._configured_path(self.news.push.telegram_bot_token_file)
 
-    def trading_binance_usdm_api_key_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.binance_usdm.api_key_file)
+    def trading_binance_demo_api_key_file(self) -> Path | None:
+        return self._configured_path(self.trading.bindings.binance_demo.api_key_file)
 
-    def trading_binance_usdm_api_secret_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.binance_usdm.api_secret_file)
-
-    def trading_hyperliquid_private_key_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.hyperliquid_perp.private_key_file)
+    def trading_binance_demo_api_secret_file(self) -> Path | None:
+        return self._configured_path(self.trading.bindings.binance_demo.api_secret_file)
 
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:

@@ -32,7 +32,7 @@ from tracefold.integrations.nautilus.messages import (
     StartupAccountReconciliationUnproven,
     strategy_queues,
 )
-from tracefold.integrations.nautilus.reconciliation import load_complete_account_reports
+from tracefold.integrations.nautilus.reconciliation import execution_clients, load_complete_account_reports
 
 
 @pytest.fixture
@@ -96,6 +96,33 @@ def _empty_account(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(BinanceFuturesAccountHttpAPI, "query_futures_position_risk", no_positions)
     monkeypatch.setattr(BinanceAccountHttpAPI, "query_open_orders", no_regular_orders)
+
+
+def test_execution_client_graph_rejects_hyperliquid_and_multiple_clients() -> None:
+    first_id = object()
+    hyperliquid = type("Client", (), {"venue": type("Venue", (), {"value": "HYPERLIQUID"})()})()
+    hyper_engine = type(
+        "Engine",
+        (),
+        {"registered_clients": [first_id], "_clients": {first_id: hyperliquid}},
+    )()
+
+    with pytest.raises(RuntimeError, match="nautilus_execution_client_unsupported"):
+        execution_clients(hyper_engine)
+
+    second_id = object()
+    binance = type("Client", (), {"venue": type("Venue", (), {"value": "BINANCE"})()})()
+    multiple_engine = type(
+        "Engine",
+        (),
+        {
+            "registered_clients": [first_id, second_id],
+            "_clients": {first_id: binance, second_id: binance},
+        },
+    )()
+
+    with pytest.raises(RuntimeError, match="nautilus_execution_client_ambiguous"):
+        execution_clients(multiple_engine)
 
 
 def test_complete_account_reports_proves_empty_provider_account(

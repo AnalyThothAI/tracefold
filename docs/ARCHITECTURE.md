@@ -42,10 +42,14 @@ separate persisted answers: before #360, every LONG is capital-blocked and the
 lane creates no Intent. It shares Event Reaction's one-slot heavy database
 admission rather than the four News lane slots.
 
-No execution adapter is part of the required deployment. Existing Intent rows
-remain durable recovery evidence; #355 owns the new execution contract, #356
-and #357 own read-only adapter preflight, and #360 uniquely owns permission,
-risk reservation, and future Intent creation. RabbitMQ remains News-only.
+The execution process has one current boundary: Binance USD-M Demo. Public
+Hyperliquid catalog facts remain available to Decision, but Hyperliquid has no
+credential setting, client factory, capability activation, execution binding,
+arm, or Intent writer. One pure runtime plan derives `required | optional |
+blocked` from PostgreSQL binding/Capital/Intent facts: configured Demo
+credentials require Nautilus; a flat paused no-key observer makes it optional;
+invalid credentials, disabled-binding residue, or an unserviceable recovery
+obligation block the deployment. RabbitMQ remains News-only.
 
 `tracefold serve` initializes only public HTTP/static, read repositories, and
 serve telemetry. `tracefold workers` initializes the bounded external
@@ -56,9 +60,10 @@ projection/EDF coordinator, no CPU-process lane, and no in-memory correctness
 dependency. Provider raw frames remain inputs until normalized and persisted
 as material facts.
 
-The deployment composition has four required boundaries: PostgreSQL, one
-successful migration job, Serve, and Workers. `make up` is only their
-fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
+The deployment composition always requires PostgreSQL, one successful
+migration job, Serve, and Workers, and conditionally requires Nautilus exactly
+when the runtime plan says `required`. `make up` is their fail-closed lifecycle
+orchestrator; it does not merge the two runtime roots.
 On an empty PostgreSQL volume, the image's `initdb` hook creates the ordinary
 direct-login migration owner plus least-privilege Serve, Workers, and Nautilus
 roles from separate password files. The owner reuses
@@ -73,7 +78,8 @@ The same project-scoped application image contains the Python service and a
 production React build. Migration, Serve, and Workers use that exact image and
 build revision with different commands and credentials.
 `make up` builds the image once and recreates migration, Serve, and Workers;
-missing execution credentials are a legal product state. It
+it then starts or leaves stopped the same-image Nautilus service according to
+the runtime plan. Missing Demo credentials are a legal paused observer state. It
 starts PostgreSQL when absent but does not recreate a running PostgreSQL
 container. Serve owns the static console and public HTTP
 boundary; Workers exposes only its loopback operational boundary. Image
@@ -407,7 +413,7 @@ tracefold.trading
   market_context.py   the price window a Case is frozen against
   blacklist.py        the canonical deny-list
   routing.py          source-venue identity and the provider-native replay catalogue resolver
-  capabilities.py     the frozen Binance Demo instrument universe
+  capabilities.py     Binance Demo client evidence and runtime revalidation
   intent.py           immutable TradeIntent and current Outcome contract
   storage/            lifecycle-owned trading_* persistence behind one concrete repository
   evidence_clock.py   immutable discovery, finite selection and periodic blind-holdout contracts
@@ -511,9 +517,10 @@ into a business-package protocol. The adapters are OpenNews (the authenticated
 Strategy WSS plus the official Strategy list/hits endpoints), RabbitMQ
 (`aio-pika`), Feishu (the custom-bot webhook), Telegram (one operator-bound
 channel via the Bot API; fixed origin and configured target), and the isolated
-public venue catalog/price adapters. The dormant Nautilus Binance Demo boundary
-is retained only for existing Intent recovery evidence and is not a required
-runtime. No provider owns a durable queue. Expected
+public venue catalog/price adapters. The Nautilus Binance Demo boundary is a
+conditionally required process with binding-local readiness and a five-second
+heartbeat lease; it is never inferred from process liveness or a global
+singleton flag. No provider owns a durable queue. Expected
 provider failures stay inside the owning bounded
 loop; an unhandled child exception is deliberately a Workers-root failure and
 the container restarts the single process.
@@ -1943,6 +1950,9 @@ only current execution-readiness facts.
 migration-only `tracefold_owner` is the direct ordinary LOGIN and sole owner of
 application objects/default privileges, while bootstrap remains NOLOGIN and
 Serve, Workers, and Nautilus retain their existing capability boundaries.
+`20260831_0340` pauses Capital, removes the remaining global
+capability/bootstrap projection, resets active execution pointers, and hard-cuts
+current execution to Binance USD-M Demo while Hyperliquid remains catalog-only.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
@@ -2009,7 +2019,9 @@ bounded OI projection snapshot
 **Editorial News does not trigger automatic capital (#331).** It remains a
 sibling bounded context; the App seam maps one public OI projection into the
 lane and nothing else. Binance and Hyperliquid sources each bind only to their
-matching provider-native catalog and execution binding. There is no online
+matching provider-native catalog; only Binance sources can proceed to the
+Binance USD-M Demo execution binding. Hyperliquid remains catalog/research-only.
+There is no online
 liquidation shadow runner, no Trading DSPy program, no strategy registry, and no
 venue priority or cross-venue fallback.
 
@@ -2227,10 +2239,11 @@ failed check; no App handler may reinterpret it as success.
 
 ### Runtime and cutover
 
-A deployment with `trading.enabled=true` requires no execution credential and
-no execution-adapter replica. `make up`, `make deploy-image`, and `make status`
-require PostgreSQL, migration, Serve, Workers, and Web; execution adapters are
-reported not required while Capital remains PAUSED. Decision starts
+A deployment with `trading.enabled=true` may run without Demo credentials only
+as a paused observer. `make up`, `make deploy-image`, and `make status` always
+require PostgreSQL, migration, Serve, Workers, and Web, and use the same
+PostgreSQL-derived runtime plan to require or stop Binance Demo Nautilus.
+Decision starts
 `STARTING`, advances to `RUNNING` with a durable heartbeat, and a real
 schema/wiring/policy/generation fault fails Workers startup or records
 `FAULTED` rather than becoming observer mode.
@@ -2275,6 +2288,12 @@ capability pointer is per closed binding, the complete provider universe is an
 included/excluded V2 partition, and a verified mainnet process activates an
 immutable binding before any TradeIntent V3 can exist. Older V1/V2 facts remain
 readable only through archive projections.
+
+Migration `20260831_0340` is the later current hard cut: Capital is paused,
+obsolete global capability/bootstrap columns are removed, both active binding
+rows are reset, Binance USD-M is execution-enabled only in `DEMO`, and
+Hyperliquid is permanently catalog-only. Fresh binding heartbeats expire after
+five seconds and all arm/fence checks use that same lease.
 
 Rollback is allowed only with venue-proven flat and a schema-compatible image.
 When exposure exists, the only safe direction is roll-forward: Nautilus retains
