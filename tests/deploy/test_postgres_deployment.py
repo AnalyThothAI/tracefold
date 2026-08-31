@@ -101,9 +101,7 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
-    assert services["workers"]["ports"] == [
-        "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
-    ]
+    assert services["workers"]["ports"] == ["${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"]
     assert services["nautilus"]["ports"] == [
         "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
     ]

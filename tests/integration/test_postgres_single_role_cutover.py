@@ -126,8 +126,7 @@ def _reconstruct_exact_pre_cut_terminal_role_catalog(conn: Any) -> None:
     conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO tracefold_workers")
     conn.execute("GRANT SELECT, UPDATE ON trading_binding_runtime TO tracefold_nautilus")
     conn.execute(
-        "ALTER DEFAULT PRIVILEGES FOR ROLE tracefold_owner IN SCHEMA public "
-        "GRANT SELECT ON TABLES TO tracefold_serve"
+        "ALTER DEFAULT PRIVILEGES FOR ROLE tracefold_owner IN SCHEMA public GRANT SELECT ON TABLES TO tracefold_serve"
     )
 
 
