@@ -170,8 +170,8 @@ def test_draft_reviews_routes_the_qwen_thinking_alias_through_the_primary_cli_en
             return {}
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     def fake_build_drafter_lm(**kwargs: Any) -> object:
@@ -483,8 +483,8 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
             raise ValueError("news_learning_dataset_agent_cohort_mismatch")
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     _readiness_settings(monkeypatch)
@@ -551,8 +551,8 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
             return SimpleNamespace(episodes=(), dataset_payload={"counts": counts})
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     _readiness_settings(monkeypatch)
@@ -582,8 +582,8 @@ def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any)
             raise ValueError("news_learning_compile_requires_development_dataset")
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     _readiness_settings(monkeypatch)
@@ -766,8 +766,8 @@ def test_the_provider_bound_caps_the_corpus_read_rather_than_being_advisory(monk
             return []
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
@@ -791,8 +791,8 @@ def test_a_dataset_baseline_will_not_publish_split_roots_for_cases_it_did_not_sc
     from tracefold.news.learning.objective import GepaObjectivePlan
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
@@ -890,8 +890,8 @@ def test_recorded_dataset_mode_scores_persisted_taxonomy_without_a_provider_call
             return SimpleNamespace(episodes=(episode,), dataset_payload={"agent_cohort": cohort})
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     def provider_call(*_args: Any, **_kwargs: Any) -> None:
@@ -980,8 +980,8 @@ def test_a_blocked_objective_plan_does_not_become_an_empty_before_number(monkeyp
     from tracefold.news.learning.objective import GepaObjectivePlan
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())
@@ -1028,8 +1028,8 @@ def test_a_live_baseline_reads_only_the_current_cohort(monkeypatch: Any) -> None
             return []
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, *, application_name: str = "tracefold_cli"):
+        assert application_name == "tracefold_cli"
         yield object()
 
     monkeypatch.setattr(news_commands, "load_settings", lambda **_kwargs: object())

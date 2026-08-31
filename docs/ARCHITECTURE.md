@@ -2261,11 +2261,11 @@ reported not required while Capital remains PAUSED. Decision starts
 schema/wiring/policy/generation fault fails Workers startup or records
 `FAULTED` rather than becoming observer mode.
 
-The one-time PR 2 cutover is run only while control is `PAUSED`.
-`make trading-hard-cut-preflight` proves one ready Nautilus replica (whose
-readiness includes authoritative flat/no unexpected exposure) and checks that
-legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy active/unknown
-Orders are all zero. Migration `20260828_0317` repeats the database predicates
+Before the #449 baseline, the retired one-time PR 2 cutover ran only while
+control was `PAUSED`. Its deleted preflight required one ready Nautilus replica
+(whose readiness included authoritative flat/no unexpected exposure) and
+checked that legacy `PENDING/RUNNING` Cases, nonterminal Intents, and legacy
+active/unknown Orders were all zero. Migration `20260828_0317` repeated the database predicates
 inside the authority-changing transaction, adds `INTENT_EMITTED`, and revokes
 legacy order/observation and retired runtime-counter mutations from Workers.
 Migration `20260829_0327` requires PAUSED with no undecided Case, preserves any nonterminal Intent as
