@@ -175,7 +175,13 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.trading.contracts",
         "tracefold.trading.storage.root",
     ),
-    "app.nautilus": ("tracefold.trading.intent",),
+    "app.nautilus": (
+        "tracefold.trading.intent",
+        # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
+        # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
+        # integration. Nautilus adapters receive only public values and narrow callables.
+        "tracefold.trading.storage.execution_stream",
+    ),
     "integrations.opennews": ("tracefold.news.opennews",),
     "integrations.rabbitmq": (
         "tracefold.news.bus",

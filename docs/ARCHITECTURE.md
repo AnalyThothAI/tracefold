@@ -2049,6 +2049,26 @@ a savepoint, so an identity or unique-disposition conflict rolls back the whole
 batch rather than leaving a committable prefix. The query-plan audit imports
 the same two unresolved-read statements used by the repository.
 
+#433-B adds a separate dormant `integrations.nautilus.oi_runtime` package. Its
+Signal client uses `LISTEN/NOTIFY` only as a wake hint and keeps a count-and-byte
+bounded pending set until a unique Signal disposition is durably appended. The
+Nautilus callback reads only Cache/Portfolio and bounded in-memory queues;
+PostgreSQL polling, Observation batches, daily-start baseline recovery, and the
+account-slot advisory-lock monitor stay outside that callback. Binance USD-M
+paper and live configurations share the same Strategy/Risk/OMS/reconciliation
+code and differ only by cold profile, credential/cache/client-order identity,
+and `DEMO` versus `LIVE` environment. Restart reconciliation reclaims only
+durable deterministic Order/Position identities present in Nautilus Cache;
+unowned exposure halts admission. Protection replacement keeps the old stop
+until the new fixed-quantity reduce-only stop is accepted, while a failed or
+ambiguous protection result initiates a deterministic full flatten. Audit
+overflow remains unhealthy until its durable `audit_gap` is appended. The new
+App root accepts only `disabled` and constructs no TradingNode, so this stage
+has no CLI/deploy selector, no provider write route, no old `TradeIntent`
+consumer, and no dual writer. The
+legacy Runtime remains unchanged solely for pre-cutover recovery; #433-C owns
+the atomic deletion and unique-root switch.
+
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is

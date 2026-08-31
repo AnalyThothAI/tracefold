@@ -1,0 +1,155 @@
+"""At-least-once Signal reader with bounded in-process admission."""
+
+from __future__ import annotations
+
+import re
+from collections import deque
+from collections.abc import Callable, Sequence
+from threading import Event, Lock
+from typing import Any
+
+from tracefold.trading import TradeSignalV1
+
+_DEFAULT_MAX_COUNT = 256
+_DEFAULT_MAX_BYTES = 1_048_576
+_POSTGRES_CHANNEL = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+
+type SignalReader = Callable[[str, str, int], Sequence[TradeSignalV1]]
+
+
+class ExecutionSignalClient:
+    """Keep only unresolved, non-pending Signals in a bounded callback queue."""
+
+    def __init__(
+        self,
+        *,
+        runtime_profile_id: str,
+        execution_strategy: str,
+        max_count: int = _DEFAULT_MAX_COUNT,
+        max_bytes: int = _DEFAULT_MAX_BYTES,
+    ) -> None:
+        if max_count <= 0 or max_bytes <= 0:
+            raise ValueError("oi_runtime_signal_bounds_invalid")
+        self.runtime_profile_id = runtime_profile_id
+        self.execution_strategy = execution_strategy
+        self._max_count = max_count
+        self._max_bytes = max_bytes
+        self._values: deque[tuple[TradeSignalV1, int]] = deque()
+        self._pending_ids: set[str] = set()
+        self._bytes = 0
+        self._lock = Lock()
+
+    @property
+    def queued_count(self) -> int:
+        with self._lock:
+            return len(self._values)
+
+    @property
+    def queued_bytes(self) -> int:
+        with self._lock:
+            return self._bytes
+
+    @property
+    def pending_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._pending_ids)
+
+    def poll_once(self, reader: SignalReader) -> int:
+        with self._lock:
+            free_count = self._max_count - len(self._values)
+        if free_count <= 0:
+            return 0
+        values = reader(
+            self.runtime_profile_id,
+            self.execution_strategy,
+            free_count,
+        )
+        admitted = 0
+        for value in values:
+            size = len(value.model_dump_json().encode())
+            with self._lock:
+                if value.signal_id in self._pending_ids:
+                    continue
+                if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
+                    break
+                self._values.append((value, size))
+                self._pending_ids.add(value.signal_id)
+                self._bytes += size
+                admitted += 1
+        return admitted
+
+    def next_nowait(self) -> TradeSignalV1 | None:
+        with self._lock:
+            if not self._values:
+                return None
+            value, size = self._values.popleft()
+            self._bytes -= size
+            return value
+
+    def mark_durable(self, signal_id: str) -> None:
+        with self._lock:
+            if signal_id not in self._pending_ids:
+                raise RuntimeError("oi_runtime_signal_not_pending")
+            self._pending_ids.remove(signal_id)
+
+    def retry(self, value: TradeSignalV1) -> None:
+        """Return a popped Signal when its final audit fact could not be buffered."""
+
+        size = len(value.model_dump_json().encode())
+        with self._lock:
+            if value.signal_id not in self._pending_ids:
+                raise RuntimeError("oi_runtime_signal_not_pending")
+            if any(queued.signal_id == value.signal_id for queued, _ in self._values):
+                return
+            if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
+                raise RuntimeError("oi_runtime_signal_retry_overflow")
+            self._values.appendleft((value, size))
+            self._bytes += size
+
+
+def install_execution_stream_listener(conn: Any, *, channel: str) -> None:
+    """LISTEN is a wake hint; every wake and timeout is followed by an indexed poll."""
+
+    if not bool(getattr(conn, "autocommit", False)):
+        raise RuntimeError("oi_runtime_listener_requires_autocommit")
+    if _POSTGRES_CHANNEL.fullmatch(channel) is None:
+        raise ValueError("oi_runtime_listener_channel_invalid")
+    conn.execute(f"LISTEN {channel}")
+
+
+def wait_for_execution_stream_wake(conn: Any, timeout_seconds: float) -> bool:
+    if timeout_seconds <= 0:
+        raise ValueError("oi_runtime_poll_interval_invalid")
+    notification = next(conn.notifies(timeout=timeout_seconds, stop_after=1), None)
+    return notification is not None
+
+
+def run_signal_poll_loop(
+    *,
+    client: ExecutionSignalClient,
+    reader: SignalReader,
+    listener_conn: Any,
+    channel: str,
+    stop: Event,
+    poll_interval_seconds: float,
+    on_failure: Callable[[BaseException], None],
+) -> None:
+    """Own blocking PostgreSQL work outside the TradingNode callback thread."""
+
+    try:
+        install_execution_stream_listener(listener_conn, channel=channel)
+        while not stop.is_set():
+            client.poll_once(reader)
+            if stop.is_set():
+                break
+            wait_for_execution_stream_wake(listener_conn, poll_interval_seconds)
+    except BaseException as exc:
+        on_failure(exc)
+
+
+__all__ = [
+    "ExecutionSignalClient",
+    "install_execution_stream_listener",
+    "run_signal_poll_loop",
+    "wait_for_execution_stream_wake",
+]
