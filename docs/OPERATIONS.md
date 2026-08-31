@@ -156,9 +156,8 @@ and rollback receipts actually exist, #377 remains open and no production
 terminal may be claimed.
 
 On a fresh database, `tracefold init` and `make up` create the Nautilus
-password and role with the other runtime roles. For an existing volume that
-predates `20260828_0316`, stop the entire stack and run
-`make db-provision-nautilus-role` once; it is offline-only.
+password and role with the other runtime roles. Restores land in a fresh
+PostgreSQL cluster carrying that same current role contract.
 
 #### Retired pre-#350 execution cutover record — do not execute
 
@@ -366,20 +365,15 @@ Both `make up` and `make deploy-image` acquire the repository deployment lock,
 then run `verify-main-ci` while that lock is held and before any deployment
 mutation. The private implementation targets verify the inherited lock file
 descriptor, so setting an environment flag or invoking them directly cannot
-bypass either control. `make db-migrate` and `make db-provision-nautilus-role`
-take the same lock and run the same verifier (#373). Both put working-tree source
-in front of production without starting the application image: the first applies
-Alembic revisions to the production database, and the second executes
-`docker/postgres-provision-nautilus-role.sh` — which `compose.yaml` bind-mounts
-into the postgres container rather than baking into the image — as the `postgres`
-superuser against the production volume. Until #373 the only prerequisite for
-either was that git, uv and docker existed.
+bypass either control. `make db-migrate` takes the same lock and runs the same
+verifier (#373) because it applies working-tree Alembic revisions to the
+production database without starting the application image.
 
 Which entries are covered is no longer a list someone maintains:
 `tests/deploy/test_main_ci_gate.py` derives the set from the Makefile by what each
 recipe does. It classifies a recipe that runs `docker compose up`, `build` or
 `run`, that applies Alembic revisions, or that runs the image directly, and it
-asserts the derived set still contains the four known entries so a derivation that
+asserts the derived set still contains the known entries so a derivation that
 stopped matching cannot pass by finding nothing. The three read-only preflights
 and the observe-or-stop targets (`down`, `status`, `logs`, the `*-shell` pair) are
 not classified, because they change nothing.
@@ -1336,83 +1330,6 @@ Workers hold the steady lock).
 The normative authoring checklist, required evidence, and 0330–0332 object
 authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
 revision files are immutable; a correction is a forward revision.
-
-### PostgreSQL owner-role hard cut (`0339`, one time)
-
-This procedure is only for the supported production volume still at exact head
-`20260831_0338` with `tracefold_owner NOLOGIN` and the single
-`tracefold_migrate LOGIN NOINHERIT ... SET TRUE` membership. It is not a role
-repair tool. A fresh volume already creates the final contract, a final volume
-reports completion without mutation, and every other state is refused.
-
-1. Work only from the clean primary checkout at the exact reviewed `main` SHA
-   whose complete CI is green. Keep Capital `PAUSED`; require zero pending or
-   running Cases, nonterminal Intents, and active legacy Orders.
-2. Take an operator-owned full custom-format PostgreSQL backup. Generate the
-   preflight with the one-time verifier; it recomputes the artifact SHA, restores
-   that exact dump into an isolated container using the pinned PostgreSQL 18
-   image, verifies the 0338/Capital/object/default-ACL facts, and writes the
-   receipt. It never accepts hand-written `verified=true` claims:
-
-   ```bash
-   uv run python scripts/require_db_role_hard_cut_preflight.py \
-     --record /absolute/path/to/tracefold.dump \
-     /absolute/path/to/preflight.json
-   ```
-
-   The machine-produced JSON has exactly these keys (never a DSN or secret):
-
-   ```json
-   {
-     "active_legacy_orders": 0,
-     "application_object_owner_violations": 0,
-     "backup_created_at_ms": 1788000000000,
-     "backup_path": "/absolute/path/to/tracefold.dump",
-     "backup_sha256": "<64 lowercase hex>",
-     "capital_control": "PAUSED",
-     "default_acl_count": 2,
-     "default_acl_privilege_mismatches": 0,
-     "schema": "tracefold_db_role_hard_cut_preflight_v1",
-     "migration_head": "20260831_0338",
-     "nonterminal_intents": 0,
-     "owner_default_acl_count": 2,
-     "pending_cases": 0,
-     "public_schema_owner": "tracefold_owner",
-     "restore_image_identity": "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
-     "restore_verified_at_ms": 1788000001000
-   }
-   ```
-
-3. Change only `storage.postgres.migrate_dsn` in the operator-owned config to
-   `postgresql://tracefold_owner@postgres:5432/tracefold`. Keep
-   `migrate_password_file: postgres_migrate_password`; do not rename or rotate
-   that file. `uv run tracefold config` must show the owner username in the
-   redacted migrate DSN, and no steady runtime gains the file mount.
-4. Run `make down`, require `docker compose ps -q` to be empty, and invoke:
-
-   ```bash
-   make db-role-hard-cut PREFLIGHT=/absolute/path/to/preflight.json
-   ```
-
-   The target holds the deployment lock, rechecks exact-main CI and the
-   preflight, runs PostgreSQL single-user mode with no network superuser login,
-   validates the exact old contract, changes owner login/password, revokes and
-   drops the retired role in one transaction, then starts the exact stack and
-   migrates through `20260831_0338` to `20260831_0339`. Any dependency or SQL
-   failure leaves the old transaction intact. The password is never written to
-   argv, output, logs, or receipts.
-5. Require the final `db audit`, owner-direct migration, Serve/Workers/Nautilus
-   credential smoke, and readiness checks to pass while Capital remains
-   `PAUSED`. Attach a sanitized Issue #419 receipt containing only: exact main
-   SHA/image, preflight backup SHA, `old_contract_verified=true`,
-   `tracefold_migrate_absent=true`, owner ordinary LOGIN/object ownership,
-   head `20260831_0339`, all three runtime readiness results, and
-   `capital_control=PAUSED`.
-
-Keep the one-time target/script/verifier and the older Nautilus provisioner only until
-every supported local/LAN volume has that receipt. The follow-up deletion must
-remove both offline helpers, their mounts/targets/old-contract tests, and this
-branch of the runbook without changing schema, data, or ACL again.
 
 ### News current-contract genesis (`0336`, one time)
 

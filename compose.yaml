@@ -57,8 +57,6 @@ services:
     volumes:
       - tracefold-postgres:/var/lib/postgresql
       - ./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro
-      - ./docker/postgres-hard-cut-owner-role.sh:/usr/local/bin/tracefold-hard-cut-owner-role:ro
-      - ./docker/postgres-provision-nautilus-role.sh:/usr/local/bin/tracefold-provision-nautilus-role:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tracefold_workers -d tracefold"]
       interval: 10s

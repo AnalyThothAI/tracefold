@@ -378,7 +378,6 @@ def test_boolean_environment_flag_cannot_invoke_the_private_deployment_target() 
     [
         ("up", "_up-locked"),
         ("deploy-image", "_deploy-image-locked"),
-        ("db-role-hard-cut", "_db-role-hard-cut-locked"),
     ],
 )
 def test_the_locked_deployment_entries_hold_the_lock_and_the_gate(target: str, private_target: str) -> None:
@@ -411,13 +410,6 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
     whatever tree invoked it, and its only prerequisite was that git, uv and docker existed — but it
     was not in the list, so nothing looked. Classifying by what a recipe *does* removes the list.
 
-    There is no exemption list, and the first draft of this test is why. It exempted
-    `db-provision-nautilus-role` on the grounds that its entrypoint is "a script baked into the
-    postgres image" — which `compose.yaml` disproves in one line, by bind-mounting
-    `./docker/postgres-provision-nautilus-role.sh` over that path. It runs working-tree source as the
-    `postgres` superuser against the production volume. An exemption is a claim about code someone
-    has to keep re-verifying; not having one is cheaper and was, in this case, also correct.
-
     Still out of scope, because they are not classified in the first place: the `*-preflight` targets
     are read-only proofs, and `down`, `status`, `logs` and the `*-shell` targets observe or stop what
     is already running.
@@ -438,13 +430,11 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
 
     assert ungated == []
     # A classifier that stopped recognising anything would satisfy the line above by finding nothing
-    # to check, which is the failure mode this whole test exists to remove. These three are what puts
-    # this repository's code in front of production today; a fourth is welcome, a missing one means
+    # to check, which is the failure mode this whole test exists to remove. These targets put
+    # this repository's code in front of production today; a missing one means
     # the patterns stopped matching the Makefile rather than that the risk went away.
     assert set(classified) >= {
         "_up-locked",
         "_deploy-image-locked",
         "_db-migrate-locked",
-        "_db-role-hard-cut-locked",
-        "_db-provision-nautilus-role-locked",
     }

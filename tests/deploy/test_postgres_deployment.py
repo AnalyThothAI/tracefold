@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -76,18 +74,11 @@ def test_compose_separates_migration_serve_and_workers() -> None:
     assert (
         "./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro"
     ) in services["postgres"]["volumes"]
-    assert ("./docker/postgres-hard-cut-owner-role.sh:/usr/local/bin/tracefold-hard-cut-owner-role:ro") in services[
-        "postgres"
-    ]["volumes"]
-    assert (
-        "./docker/postgres-provision-nautilus-role.sh:/usr/local/bin/tracefold-provision-nautilus-role:ro"
-    ) in services["postgres"]["volumes"]
-    assert len(services["postgres"]["volumes"]) == 4
+    assert len(services["postgres"]["volumes"]) == 2
     assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
     postgres_healthcheck = services["postgres"]["healthcheck"]["test"][1]
     assert "pg_isready" in postgres_healthcheck
     assert "tracefold_workers" in postgres_healthcheck
-    assert "tracefold_migrate" not in postgres_healthcheck
     assert "tracefold_app" not in postgres_healthcheck
     assert services["postgres"]["secrets"] == [
         "postgres_password",
@@ -194,7 +185,6 @@ def test_postgres_init_script_provisions_distinct_runtime_roles_without_outputti
     assert "tracefold_review" not in sql
     assert "LOGIN NOSUPERUSER" in sql[sql.index("CREATE ROLE tracefold_owner") :]
     assert "CREATE ROLE tracefold_nautilus" in sql
-    assert "CREATE ROLE tracefold_migrate" not in sql
     assert "GRANT tracefold_owner TO" not in sql
     assert "ALTER SCHEMA public OWNER TO tracefold_owner" in sql
     assert "ALTER VIEW public.pg_stat_statements OWNER TO tracefold_owner" in sql
@@ -234,7 +224,7 @@ def test_postgres_init_script_rejects_invalid_password_charset_without_echoing_v
     assert invalid_password not in result.stderr
 
 
-def test_runtime_role_migration_validates_direct_owner_and_rejects_retired_role() -> None:
+def test_runtime_role_migration_validates_the_current_role_contract() -> None:
     migration = Path("tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(encoding="utf-8")
 
     assert "IF current_user <> 'tracefold_owner' THEN" in migration
@@ -243,90 +233,15 @@ def test_runtime_role_migration_validates_direct_owner_and_rejects_retired_role(
         "tracefold_owner",
         "tracefold_serve",
         "tracefold_workers",
-        "tracefold_migrate_present",
         "tracefold_nautilus",
-        "runtime_owner_membership",
         "public_schema_owner",
         "bootstrap_login_disabled",
     ):
         assert f"tracefold_runtime_role_contract_invalid:{contract_part}" in migration
     assert "CREATE ROLE tracefold_owner LOGIN" in migration
-    assert "CREATE ROLE tracefold_migrate" not in migration
     assert "GRANT tracefold_owner TO" not in migration
     assert "AND NOT rolcreaterole" in migration
     assert "AND NOT rolsuper" in migration
-
-
-def test_offline_nautilus_role_provisioning_is_narrow_and_keeps_the_password_out_of_output(tmp_path: Path) -> None:
-    secrets_dir = tmp_path / "secrets"
-    secrets_dir.mkdir()
-    password = "N" * 43
-    password_file = secrets_dir / "postgres_nautilus_password"
-    password_file.write_text(password + "\n", encoding="utf-8")
-    password_file.chmod(0o600)
-    pgdata = tmp_path / "pgdata"
-    pgdata.mkdir()
-    capture_args_path = tmp_path / "captured.args"
-    capture_path = tmp_path / "captured.sql"
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    fake_postgres = bin_dir / "postgres"
-    fake_postgres.write_text(
-        '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$TRACEFOLD_CAPTURE_ARGS"\ncat > "$TRACEFOLD_CAPTURE_SQL"\n',
-        encoding="utf-8",
-    )
-    fake_postgres.chmod(0o700)
-
-    result = subprocess.run(
-        ["sh", "docker/postgres-provision-nautilus-role.sh", str(secrets_dir)],
-        capture_output=True,
-        check=False,
-        env={
-            **os.environ,
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "PGDATA": str(pgdata),
-            "POSTGRES_DB": "tracefold",
-            "TRACEFOLD_CAPTURE_ARGS": str(capture_args_path),
-            "TRACEFOLD_CAPTURE_SQL": str(capture_path),
-        },
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert password not in result.stdout
-    assert password not in result.stderr
-    assert capture_args_path.read_text(encoding="utf-8").splitlines() == [
-        "--single",
-        "-j",
-        "-D",
-        str(pgdata),
-        "tracefold",
-    ]
-    sql = capture_path.read_text(encoding="utf-8")
-    assert "CREATE ROLE tracefold_nautilus LOGIN" in sql
-    assert "ALTER ROLE tracefold_nautilus" in sql
-    assert "NOCREATEROLE" in sql
-    assert "GRANT tracefold_owner" not in sql
-
-
-def test_offline_nautilus_role_provisioning_refuses_a_running_cluster(tmp_path: Path) -> None:
-    secrets_dir = tmp_path / "secrets"
-    secrets_dir.mkdir()
-    (secrets_dir / "postgres_nautilus_password").write_text("N" * 43 + "\n", encoding="utf-8")
-    pgdata = tmp_path / "pgdata"
-    pgdata.mkdir()
-    (pgdata / "postmaster.pid").write_text("123\n", encoding="utf-8")
-
-    result = subprocess.run(
-        ["sh", "docker/postgres-provision-nautilus-role.sh", str(secrets_dir)],
-        capture_output=True,
-        check=False,
-        env={**os.environ, "PGDATA": str(pgdata), "POSTGRES_DB": "tracefold"},
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert "offline" in result.stderr.lower()
 
 
 def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
@@ -366,90 +281,3 @@ def test_compose_mounts_only_role_credentials_into_steady_runtimes() -> None:
             )
     assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
     assert "tracefold-postgres" in compose["volumes"]
-
-
-def test_role_hard_cut_preflight_requires_exact_sanitized_backup_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from scripts import require_db_role_hard_cut_preflight as preflight
-
-    password_file = tmp_path / "postgres_migrate_password"
-    password_file.write_text("not-read-by-this-check\n", encoding="utf-8")
-    backup = tmp_path / "tracefold.dump"
-    backup.write_bytes(b"verified production backup")
-    configured = {
-        "dsn": "postgresql://tracefold_owner@postgres:5432/tracefold",
-        "password_file": password_file,
-    }
-
-    class Settings:
-        @staticmethod
-        def postgres_dsn(role: str) -> str:
-            assert role == "migrate"
-            return str(configured["dsn"])
-
-        @staticmethod
-        def postgres_password_file(role: str) -> Path:
-            assert role == "migrate"
-            return configured["password_file"]  # type: ignore[return-value]
-
-    def load_settings(*, require_ws_token: bool) -> Settings:
-        assert require_ws_token is False
-        return Settings()
-
-    monkeypatch.setattr(preflight, "load_settings", load_settings)
-    receipt = tmp_path / "preflight.json"
-    payload = {
-        "schema": "tracefold_db_role_hard_cut_preflight_v1",
-        "migration_head": "20260831_0338",
-        "backup_path": str(backup),
-        "backup_created_at_ms": backup.stat().st_mtime_ns // 1_000_000,
-        "backup_sha256": hashlib.sha256(backup.read_bytes()).hexdigest(),
-        "restore_verified_at_ms": backup.stat().st_mtime_ns // 1_000_000 + 1,
-        "restore_image_identity": preflight.POSTGRES_PRODUCTION_IMAGE,
-        "capital_control": "PAUSED",
-        "pending_cases": 0,
-        "nonterminal_intents": 0,
-        "active_legacy_orders": 0,
-        "public_schema_owner": "tracefold_owner",
-        "application_object_owner_violations": 0,
-        "default_acl_count": 2,
-        "owner_default_acl_count": 2,
-        "default_acl_privilege_mismatches": 0,
-    }
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-
-    preflight.require_preflight(receipt)
-
-    payload["nonterminal_intents"] = 1
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="nonterminal_intents_invalid"):
-        preflight.require_preflight(receipt)
-
-    payload["nonterminal_intents"] = False
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="nonterminal_intents_invalid"):
-        preflight.require_preflight(receipt)
-
-    payload["nonterminal_intents"] = 0
-    payload["backup_sha256"] = "a" * 64
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="backup_sha256_mismatch"):
-        preflight.require_preflight(receipt)
-
-    payload["backup_sha256"] = hashlib.sha256(backup.read_bytes()).hexdigest()
-    payload["backup_created_at_ms"] += 1
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="backup_created_at_ms_mismatch"):
-        preflight.require_preflight(receipt)
-
-    payload["backup_created_at_ms"] -= 1
-    configured["dsn"] = "postgresql://tracefold_owner:embedded@postgres:5432/tracefold"
-    receipt.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(ValueError, match="embedded_password_forbidden"):
-        preflight.require_preflight(receipt)
-
-    configured["dsn"] = "postgresql://tracefold_owner@postgres:5432/tracefold"
-    configured["password_file"] = tmp_path / "postgres_owner_password"
-    with pytest.raises(ValueError, match="migrate_password_file_required"):
-        preflight.require_preflight(receipt)
