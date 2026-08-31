@@ -195,6 +195,12 @@ def materialize_operator_intents(rows: Sequence[StoredExecutionPayload]) -> tupl
     return tuple(materialize_operator_intent(row) for row in rows)
 
 
+def materialize_execution_observation(row: StoredExecutionPayload) -> ExecutionObservationV1:
+    seq, payload = row
+    del seq
+    return ExecutionObservationV1.model_validate(payload)
+
+
 class ExecutionStreamStorage:
     conn: Any
 
@@ -445,6 +451,17 @@ class ExecutionStreamStorage:
         self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
+    def execution_observation(self, event_id: str) -> StoredExecutionPayload | None:
+        if _SHA256.fullmatch(event_id) is None:
+            raise ValueError("execution_observation_identity_invalid")
+        row = self.conn.execute(
+            "SELECT seq, payload FROM trading_execution_observations WHERE event_id = %s",
+            (event_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return int(row["seq"]), dict(row["payload"])
+
     def try_acquire_execution_account_slot(self, account_slot: str) -> bool:
         if _IDENTITY.fullmatch(account_slot) is None:
             raise ValueError("execution_account_slot_invalid")
@@ -497,6 +514,7 @@ __all__ = [
     "PreparedOperatorIntent",
     "PreparedTradeSignal",
     "StoredExecutionPayload",
+    "materialize_execution_observation",
     "materialize_operator_intent",
     "materialize_operator_intents",
     "materialize_trade_signal",
