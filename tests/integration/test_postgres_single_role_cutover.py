@@ -70,6 +70,67 @@ def _row_counts(conn: Any) -> dict[str, int]:
     }
 
 
+def _identity_aggregates(conn: Any) -> dict[str, str]:
+    primary_keys = conn.execute(
+        """
+        SELECT table_class.relname AS table_name,
+               array_agg(attribute.attname ORDER BY key.ordinality) AS columns
+          FROM pg_index item
+          JOIN pg_class table_class ON table_class.oid = item.indrelid
+          JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+          CROSS JOIN LATERAL unnest(item.indkey) WITH ORDINALITY AS key(attnum, ordinality)
+          JOIN pg_attribute attribute
+            ON attribute.attrelid = table_class.oid AND attribute.attnum = key.attnum
+         WHERE namespace.nspname = 'public' AND item.indisprimary
+         GROUP BY table_class.relname
+         ORDER BY table_class.relname
+        """
+    ).fetchall()
+    table_names = {
+        str(row["tablename"])
+        for row in conn.execute(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
+        ).fetchall()
+    }
+    keyed_names = {str(row["table_name"]) for row in primary_keys}
+    assert keyed_names == table_names
+
+    aggregates: dict[str, str] = {}
+    for row in primary_keys:
+        table_name = str(row["table_name"])
+        columns = [str(column) for column in row["columns"]]
+        identifiers = sql.SQL(", ").join(sql.Identifier(column) for column in columns)
+        identities = conn.execute(
+            sql.SQL("SELECT {} FROM {} ORDER BY {}").format(
+                identifiers,
+                sql.Identifier(table_name),
+                identifiers,
+            )
+        ).fetchall()
+        document = json.dumps([dict(identity) for identity in identities], sort_keys=True, separators=(",", ":"))
+        aggregates[table_name] = hashlib.sha256(document.encode()).hexdigest()
+    return aggregates
+
+
+def _reconstruct_exact_pre_cut_terminal_role_catalog(conn: Any) -> None:
+    """Give the byte-equivalent terminal schema its retired owner/login catalog."""
+
+    conn.execute("ALTER ROLE tracefold RENAME TO tracefold_owner")
+    for role in OLD_RUNTIME_ROLES:
+        conn.execute(
+            sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS").format(
+                sql.Identifier(role)
+            )
+        )
+    conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve")
+    conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO tracefold_workers")
+    conn.execute("GRANT SELECT, UPDATE ON trading_binding_runtime TO tracefold_nautilus")
+    conn.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE tracefold_owner IN SCHEMA public "
+        "GRANT SELECT ON TABLES TO tracefold_serve"
+    )
+
+
 def _require_cutover_preconditions(conn: Any, *, expected_fingerprint: str) -> None:
     revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"]
     roles = {
@@ -89,20 +150,8 @@ def test_exact_terminal_role_cutover_preserves_schema_rows_and_revision(postgres
     with connect_postgres(postgres_clone_dsn) as conn:
         before_fingerprint = _schema_fingerprint(conn)
         before_counts = _row_counts(conn)
-        conn.execute("ALTER ROLE tracefold RENAME TO tracefold_owner")
-        for role in OLD_RUNTIME_ROLES:
-            conn.execute(
-                sql.SQL("CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS").format(
-                    sql.Identifier(role)
-                )
-            )
-        conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve")
-        conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO tracefold_workers")
-        conn.execute("GRANT SELECT, UPDATE ON trading_binding_runtime TO tracefold_nautilus")
-        conn.execute(
-            "ALTER DEFAULT PRIVILEGES FOR ROLE tracefold_owner IN SCHEMA public "
-            "GRANT SELECT ON TABLES TO tracefold_serve"
-        )
+        before_identities = _identity_aggregates(conn)
+        _reconstruct_exact_pre_cut_terminal_role_catalog(conn)
 
         _require_cutover_preconditions(conn, expected_fingerprint=before_fingerprint)
         with pytest.raises(RuntimeError, match="schema_fingerprint_mismatch"):
@@ -123,6 +172,7 @@ def test_exact_terminal_role_cutover_preserves_schema_rows_and_revision(postgres
         )
         assert _schema_fingerprint(conn) == before_fingerprint
         assert _row_counts(conn) == before_counts
+        assert _identity_aggregates(conn) == before_identities
         assert {
             str(row["rolname"])
             for row in conn.execute(

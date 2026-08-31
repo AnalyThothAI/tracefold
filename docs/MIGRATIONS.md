@@ -12,20 +12,23 @@ application tables, sequences, views, indexes, functions, triggers,
 constraints, and only the structural singleton rows required on an empty
 cluster. Extensions remain the empty-PGDATA bootstrap's responsibility.
 
-This squash is the operator-authorized exception recorded by issue #449. The
-supported pre-cut database was first advanced to exact old terminal head
-`20260831_0340`. The terminal identity was then reused while revisions
+This squash is the operator-authorized exception recorded by issue #449. This
+source may merge or deploy only after every supported pre-cut database is
+advanced with the recorded old image to exact terminal head `20260831_0340`, a
+verified backup receipt is recorded, and the stopped-writer catalog cut passes.
+The terminal identity is then reused while revisions
 `20260818_0275` through `20260831_0339`, the old contents of `0340`, and the
 role/ACL bootstrap SQL were removed. An already-stamped database therefore
 does not replay baseline DDL or rewrite business rows. Git history and the
 recorded pre-cut image remain the recovery authority for a pre-baseline backup.
 
-The stopped-writer one-time catalog cut renamed `tracefold_owner` to
-`tracefold`, removed the Serve/Workers/Nautilus roles and their ACL/default-ACL
-entries, and preserved the terminal revision, normalized schema fingerprint,
-row counts, and business identity aggregates. Its mismatch preflight ran before
-catalog writes. The helper was deleted after the receipt; current source has no
-old-role repair, fallback, dual head, or compatibility path.
+The stopped-writer one-time catalog cut must rename `tracefold_owner` to
+`tracefold`, remove the Serve/Workers/Nautilus roles and their ACL/default-ACL
+entries, and preserve the terminal revision, normalized schema fingerprint,
+row counts, and business identity aggregates. Its mismatch preflight must run
+before catalog writes. The operator records the exact old SHA/image, backup,
+before/after identities, and startup smoke receipt; current source contains no
+cutover helper, old-role repair, fallback, dual head, or compatibility path.
 
 ## Authoring contract
 
@@ -75,9 +78,12 @@ restore, never invented reverse DDL.
 9. A new index names its production query, predicate/order, measured scale,
    and write/storage cost. Zero scans are deletion evidence only after a reset
    and a complete representative business window.
-10. Performance claims compare the same revision, configuration, parameters,
+10. A migration serves an actual schema or durable-data change. The current
+    role model adds no application GRANT matrix. Planned downtime prefers
+    ordinary transactional DDL over compatibility or dual reads.
+11. Performance claims compare the same revision, configuration, parameters,
     and workload window across application, pool, and PostgreSQL evidence.
-11. Every view, trigger, function, gate, timeout, index, and projection names a
-    current correctness or measured-performance owner. Otherwise remove it.
-12. A new database role first proves a distinct trust domain. A process name is
+12. Every view, trigger, function, gate, timeout, index, and projection names a
+    current correctness or measured-performance owner. Otherwise remove it. A
+    new database role first proves a distinct trust domain; a process name is
     not sufficient justification.

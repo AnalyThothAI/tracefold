@@ -32,8 +32,8 @@
 ## Single config source boundary
 
 The only Tracefold application configuration file is the operator-owned
-`~/.tracefold/config.yaml`. It owns application paths, PostgreSQL role DSNs
-and password-file references, the OpenNews token, the RabbitMQ URL, the
+`~/.tracefold/config.yaml`. It owns application paths, the PostgreSQL DSN and
+password-file reference, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
 provider/name. `trading.bindings` has closed file references for Binance USD-M
 and Hyperliquid credentials. Workers reads them only to project a redacted
@@ -48,8 +48,8 @@ the optional `llm.news_reader_card_fallback.api_key` (dedicated ReaderCard
 fallback endpoint),
 `news.broker.url` (carries the broker credentials), `news.push.feishu_webhook_url` and the optional
 `news.push.feishu_signing_secret`, the Telegram bot-token file named by
-`news.push.telegram_bot_token_file`, the five PostgreSQL password files
-(bootstrap, Serve, Workers, migrate, Nautilus), the Binance files named by
+`news.push.telegram_bot_token_file`, the two PostgreSQL password files
+(bootstrap and the shared `tracefold` application login), the Binance files named by
 `trading.bindings.binance_usdm.api_key_file` / `api_secret_file`, and the
 Hyperliquid file named by
 `trading.bindings.hyperliquid_perp.private_key_file`. The corresponding
@@ -57,7 +57,7 @@ Hyperliquid account address is public identity, not a secret. There is no other
 provider key or credential.
 
 `tracefold init` is the sole default-config generator. It creates
-`~/.tracefold/` with mode `0700` and config/bootstrap/Serve/Workers/Nautilus/migrate
+`~/.tracefold/` with mode `0700` and config/bootstrap/application database
 secret files with mode `0600`; reruns repair those permissions. Without
 `--force`, an existing config is preserved byte-for-byte. `--force` replaces
 only the generated config and does not rotate existing PostgreSQL passwords.
@@ -195,11 +195,13 @@ winner that is not exactly those two with empty demos. Proving provenance was
 never what made a candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
-`news learning optimize` reads a frozen development corpus once as `serve` and
-then holds three model endpoints and a typed in-process budget: no database
-write credential, no broker, no delivery, no canary, no promotion, no artifact
-writer. `news learning run` (#253) composes it with `readiness` and the
-standalone baseline and adds no authority of its own: three `serve` reads, the
+`news learning optimize` reads a frozen development corpus once through the
+shared application login and then holds three model endpoints and a typed
+in-process budget: it has no database writer call path, broker, delivery,
+canary, promotion, or artifact writer. Database least privilege is not the
+business boundary in the single-login deployment. `news learning run` (#253)
+composes it with `readiness` and the standalone baseline and adds no authority
+of its own: three bounded database reads, the
 same endpoints, and files in a directory the operator named. The typed budget
 still bounds only the optimization leg — `run_baseline` has no aggregate meter
 or whole-run/whole-route deadline, although each endpoint call keeps its

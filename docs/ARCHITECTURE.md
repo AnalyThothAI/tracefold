@@ -1687,9 +1687,10 @@ separate facts, and unavailable means failure-as-zero rather than byte equality,
 hidden retry or cache.
 
 What bounds the offline job now is what it holds, not what surrounds it: a
-frozen corpus read once as `serve`, three model endpoints, and a typed in-process
-budget whose per-call ceiling is also the rate an unpriced call is charged at.
-No database write credential, no broker, no delivery, no canary, no promotion.
+frozen corpus read once through the shared application login, three model
+endpoints, and a typed in-process budget whose per-call ceiling is also the rate
+an unpriced call is charged at. It has no database writer call path, broker,
+delivery, canary, or promotion authority; role separation is not that boundary.
 If dynamic code generation ever becomes a candidate again, the sandbox threat
 model is rebuilt with it under a new Issue rather than kept warm for it.
 
@@ -2142,8 +2143,9 @@ an unknown outcome.
 
 The one `trading_intents` row is simultaneously the durable inbox, immutable
 instruction, entry fence, restart checkpoint, current execution projection, and
-audit identity. Workers may insert its immutable columns; the Nautilus role may
-read the row and update only the execution projection; Serve is read-only.
+audit identity. Workers may insert its immutable columns; the Nautilus process
+may read the row and update only the execution projection through the shared
+`tracefold` login; Serve is connection-level read-only.
 Database constraints enforce the Demo environment, V2 capability/blacklist
 identity, immutable Intent columns,
 Case-to-Intent one-to-one identity, and one nonterminal row globally.

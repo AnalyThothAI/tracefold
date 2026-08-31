@@ -149,7 +149,7 @@ def connect_postgres_test(*_: Any, read_only: bool = False, dsn: str | None = No
 
 
 def postgres_settings_storage() -> dict[str, Any]:
-    dsn = test_postgres_dsn()
+    dsn = postgres_migration_test_dsn()
     return {"postgres": {"dsn": dsn, "password_file": None}}
 
 

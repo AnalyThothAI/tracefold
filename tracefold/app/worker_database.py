@@ -406,7 +406,6 @@ class WorkerDatabase:
             with conn.transaction():
                 _set_worker_operation_config(
                     conn,
-                    operation_name=name,
                     statement_timeout_seconds=statement_timeout_seconds,
                     transaction_timeout_seconds=transaction_timeout_seconds,
                 )
@@ -593,7 +592,6 @@ def _set_configs(conn: Any, values: dict[str, str], *, local: bool = False) -> N
 def _set_worker_operation_config(
     conn: Any,
     *,
-    operation_name: str,
     statement_timeout_seconds: float | None,
     transaction_timeout_seconds: float | None,
 ) -> None:
@@ -609,7 +607,6 @@ def _set_worker_operation_config(
         conn,
         {
             **_BOUNDED_QUERY_CONFIG,
-            "application_name": f"tracefold_workers:{_normalize_operation_name(operation_name)}",
             "statement_timeout": _statement_timeout_value(effective_statement_timeout_seconds),
             "transaction_timeout": _transaction_timeout_value(effective_transaction_timeout_seconds),
         },

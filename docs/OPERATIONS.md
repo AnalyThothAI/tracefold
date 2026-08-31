@@ -155,9 +155,10 @@ calendar window, human approval, venue receipts, fixed seven-day accounting,
 and rollback receipts actually exist, #377 remains open and no production
 terminal may be claimed.
 
-On a fresh database, `tracefold init` and `make up` create the Nautilus
-password and role with the other runtime roles. Restores land in a fresh
-PostgreSQL cluster carrying that same current role contract.
+On a fresh database, `tracefold init` creates one shared application password
+and the independent bootstrap password. `make up` creates only the `tracefold`
+application login and the NOLOGIN `tracefold_app` bootstrap identity. Restores
+must land in a fresh PostgreSQL cluster carrying that same current login shape.
 
 #### Retired pre-#350 execution cutover record — do not execute
 
@@ -1335,9 +1336,11 @@ snapshot.
 
 Alembic has one root and head: the current-schema baseline
 `20260831_0340`. A fresh PostgreSQL 18 database creates the full schema in one
-step. The supported pre-cut database was first advanced to the old terminal
-revision with its recorded image, then underwent the #449 stopped-writer role
-catalog cut while retaining the same Alembic identity and all business rows.
+step. This source may merge or deploy only after the supported pre-cut database
+is advanced to the old terminal revision with its recorded image, backed up,
+and put through the #449 stopped-writer role catalog cut while retaining the
+same Alembic identity and all business rows. The issue receipt records the old
+SHA/image, backup, before/after identities, and startup smoke.
 Current source has no pre-baseline upgrade or old-role repair path. New schema
 changes resume as immutable linear forward revisions after the baseline; an
 irreversible downgrade is a verified backup restore. Stop Serve, Workers, and
@@ -1554,9 +1557,9 @@ trips open canary activations and appends the factory-v6 to factory-v7 receipt,
 but neither rewrites nor appends the `program_v7` epoch row. Earlier rows and
 bundles remain immutable audit history; exact current-bundle acceptance makes
 prior-factory evidence audit-only, so the factory-v7 cohort starts at zero.
-`0316` adds the #283 immutable Trading Intent handoff and Nautilus execution
-projection; on an existing volume, provision the Nautilus role before applying
-it as described above.
+`0316` added the #283 immutable Trading Intent handoff and Nautilus execution
+projection. Its separate Nautilus role was part of the retired pre-#449 chain;
+current source has only the shared `tracefold` login.
 `0318` is the #306 prompt-layer hard cut. It
 appends `program_v8` for `factory_v8` and trips every armed or active canary.
 Two byte changes land under that one identity migration, deliberately paid once
@@ -1719,13 +1722,13 @@ ships nor retains WAL.
 The weekly scheduled diagnostics run an isolated production-image restore
 test. Run the same entry manually with
 `TRACEFOLD_TEST_POSTGRES_DSN=<dedicated-admin-dsn>` and
-`TRACEFOLD_TEST_POSTGRES_MIGRATION_DSN=<direct-owner-dsn>` set, then run
-`make postgres-restore-drill`. The owner DSN must use the existing migration
-capability credential; it is never emitted in the result.
+`TRACEFOLD_TEST_POSTGRES_MIGRATION_DSN=<application-dsn>` set, then run
+`make postgres-restore-drill`. The application DSN uses the shared `tracefold`
+credential; it is never emitted in the result.
 It creates uniquely named disposable source/target databases, seeds
 representative News current/archive and Trading facts, uses the exact
 PostgreSQL 18 Bookworm client image for custom-format dump/restore, migrates to
-head directly as the ordinary owner, performs deep schema/role/identity audit
+head directly as the ordinary application login, performs deep schema/identity audit
 and bounded smoke, records head,
 duration and identity counts, then drops both databases. It never reads or
 writes the database named by the supplied DSN. This proves the mechanism, not

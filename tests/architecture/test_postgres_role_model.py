@@ -13,7 +13,7 @@ def _read(path: str) -> str:
 
 
 def test_fresh_init_creates_one_application_login_and_disables_bootstrap_login() -> None:
-    source = _read("docker/postgres-init-runtime-roles.sh")
+    source = _read("docker/postgres-init-single-login.sh")
 
     assert re.findall(r"\bCREATE ROLE (tracefold[a-z_]*)\b", source) == ["tracefold"]
     assert "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS" in source

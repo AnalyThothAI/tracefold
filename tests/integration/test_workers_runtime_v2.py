@@ -149,6 +149,14 @@ def test_steady_lock_retains_a_real_control_query_lane_and_excludes_other_runtim
     steady_lock = first.acquire_steady_runtime_lock()
     try:
         assert first.worker_pool.get_stats()["pool_available"] >= 1
+        with first.worker_pool.connection() as conn:
+            assert conn.execute(
+                "SELECT current_user AS role_name, "
+                "current_setting('application_name') AS application_name"
+            ).fetchone() == {
+                "role_name": "tracefold",
+                "application_name": "tracefold_workers",
+            }
         first.prewarm_control_connection()
 
         def control_query() -> int:

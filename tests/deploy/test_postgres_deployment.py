@@ -42,21 +42,73 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
         "serve",
         "workers",
     }
+    assert services["rabbitmq"]["image"].startswith("rabbitmq:4.3")
+    assert "build" not in services["rabbitmq"]
+    assert "tracefold-rabbitmq:/var/lib/rabbitmq" in services["rabbitmq"]["volumes"]
+    assert services["rabbitmq"]["healthcheck"]["test"][0] == "CMD"
+    assert "rabbitmq-diagnostics" in " ".join(services["rabbitmq"]["healthcheck"]["test"])
+    assert services["rabbitmq"]["healthcheck"]["test"][1:4] == ["su", "-s", "/bin/sh"]
+    assert "PATH=/opt/rabbitmq/sbin:/opt/erlang/bin" in services["rabbitmq"]["healthcheck"]["test"][-1]
+    assert "rabbitmq" not in services["serve"]["depends_on"]
+    assert services["workers"]["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    policy = services["rabbitmq-policy"]
+    assert policy["command"] == ["tracefold", "news", "bus-policy", "apply"]
+    assert policy["restart"] == "no"
+    assert policy["depends_on"]["rabbitmq"]["condition"] == "service_healthy"
+    assert services["migrate"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
+    assert services["workers"]["depends_on"]["rabbitmq-policy"]["condition"] == "service_completed_successfully"
     assert services["postgres"]["image"] == POSTGRES_IMAGE
+    assert "build" not in services["postgres"]
+    assert any("pg_stat_statements" in part for part in services["postgres"]["command"])
+    assert all(
+        retired not in str(services["postgres"]["command"])
+        for retired in ("powa", "pg_stat_kcache", "pg_qualstats", "pg_wait_sampling")
+    )
+    assert all("logging_collector" not in str(part) for part in services["postgres"]["command"])
     assert services["postgres"]["secrets"] == ["postgres_password", DATABASE_SECRET]
+    assert "tracefold-postgres:/var/lib/postgresql" in services["postgres"]["volumes"]
     assert "pg_isready -U tracefold -d tracefold" in services["postgres"]["healthcheck"]["test"][1]
+    assert "tracefold_app" not in services["postgres"]["healthcheck"]["test"][1]
     assert services["postgres"]["volumes"] == [
         "tracefold-postgres:/var/lib/postgresql",
-        "./docker/postgres-init-runtime-roles.sh:/docker-entrypoint-initdb.d/10-tracefold-runtime-roles.sh:ro",
+        "./docker/postgres-init-single-login.sh:/docker-entrypoint-initdb.d/10-tracefold-single-login.sh:ro",
     ]
     credential = "${HOME}/.tracefold/postgres_database_password:/root/.tracefold/postgres_database_password:ro"
+    shared_app_image = "${TRACEFOLD_APP_IMAGE:-${COMPOSE_PROJECT_NAME:-tracefold}-app:local}"
+    shared_app_build = {
+        "context": ".",
+        "args": {"TRACEFOLD_BUILD_REVISION": "${TRACEFOLD_BUILD_REVISION:-}"},
+        "secrets": ["github_token"],
+    }
     for service_name in ("migrate", "serve", "workers", "nautilus"):
         assert credential in services[service_name]["volumes"]
         assert services[service_name]["depends_on"]["postgres"]["condition"] == "service_healthy"
+        assert services[service_name]["image"] == shared_app_image
+        assert services[service_name]["build"] == shared_app_build
+    assert services["migrate"]["environment"] == {
+        "TRACEFOLD_IMAGE_DIGEST": "${TRACEFOLD_IMAGE_DIGEST:-}",
+        "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON": "${TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON:-}",
+    }
+    for service_name in ("serve", "workers", "nautilus"):
+        assert "TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON" not in services[service_name]["environment"]
+        assert services[service_name]["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
+        assert "rsshub" not in services[service_name]["depends_on"]
+    assert "rabbitmq" not in services["nautilus"]["depends_on"]
     assert services["migrate"]["command"] == ["tracefold", "db", "migrate"]
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
+    assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
+    assert services["serve"]["healthcheck"]["test"][2] == "-c"
+    assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
+    assert services["workers"]["ports"] == [
+        "${TRACEFOLD_WORKERS_HOST:-127.0.0.1}:${TRACEFOLD_WORKERS_PORT:-8766}:8766"
+    ]
+    assert services["nautilus"]["ports"] == [
+        "${TRACEFOLD_NAUTILUS_HOST:-127.0.0.1}:${TRACEFOLD_NAUTILUS_PORT:-8767}:8767"
+    ]
+    assert "http://127.0.0.1:8767/readyz" in services["nautilus"]["healthcheck"]["test"][3]
+    assert set(compose["secrets"]) == {"postgres_password", DATABASE_SECRET, "github_token"}
     assert compose["secrets"][DATABASE_SECRET]["file"] == "${HOME}/.tracefold/postgres_database_password"
 
 
@@ -71,7 +123,7 @@ def _run_init_script(tmp_path: Path, password: str) -> subprocess.CompletedProce
     fake_psql.write_text('#!/bin/sh\ncat > "$TRACEFOLD_CAPTURE_SQL"\n', encoding="utf-8")
     fake_psql.chmod(0o700)
     return subprocess.run(
-        ["sh", "docker/postgres-init-runtime-roles.sh", str(secrets_dir)],
+        ["sh", "docker/postgres-init-single-login.sh", str(secrets_dir)],
         capture_output=True,
         check=False,
         env={
@@ -115,3 +167,29 @@ def test_postgres_init_script_rejects_invalid_password_without_echoing_it(tmp_pa
 def test_role_capability_matrix_resources_are_deleted() -> None:
     assert not Path("tracefold/platform/postgres/alembic/runtime_roles.sql").exists()
     assert not Path("tracefold/platform/postgres/runtime_roles.py").exists()
+
+
+def test_compose_preserves_non_postgres_secret_isolation() -> None:
+    compose = yaml.safe_load(Path("compose.yaml").read_text())
+    services = compose["services"]
+    serve_volumes = services["serve"].get("volumes", [])
+    worker_volumes = services["workers"].get("volumes", [])
+    nautilus_volumes = services["nautilus"].get("volumes", [])
+
+    assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
+    assert "${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro" in worker_volumes
+    assert "${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro" in worker_volumes
+    assert "${HOME}/.tracefold/hyperliquid_private_key:/root/.tracefold/hyperliquid_private_key:ro" in worker_volumes
+    assert all("telegram_bot_token" not in volume for volume in serve_volumes)
+    assert any("binance_usdm_api_key" in volume for volume in nautilus_volumes)
+    assert any("binance_usdm_api_secret" in volume for volume in nautilus_volumes)
+    for service_name, service in services.items():
+        if service_name not in {"workers", "nautilus"}:
+            assert not any(
+                "binance_usdm_api_key" in volume
+                or "binance_usdm_api_secret" in volume
+                or "hyperliquid_private_key" in volume
+                for volume in service.get("volumes", [])
+            )
+    assert all("/root/.tracefold/data" not in volume for volume in [*serve_volumes, *worker_volumes, *nautilus_volumes])
+    assert "tracefold-postgres" in compose["volumes"]

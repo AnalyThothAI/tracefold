@@ -415,14 +415,13 @@ and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
 paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
-The Alembic chain starts at the `20260818_0275` current-schema baseline and is
-linear through `20260823_0299_news_source_artifact_id`. A new empty database applies
-the complete chain without replaying retired runtime tables. A database
-stamped at an earlier revision migrates forward with `tracefold db migrate`;
-all revisions are irreversible (see `OPERATIONS.md`). Stop Serve and Workers
-before applying them and start Workers only after the migration is current.
-An existing 0283 volume uses the backup/stop/migrate/redeploy sequence
-documented in `OPERATIONS.md`; #112/#129 add no login role or password.
+Alembic has one root and one head: the irreversible current-schema baseline
+`20260831_0340`. A new empty PostgreSQL 18 database applies that baseline once.
+Current source intentionally has no upgrade path from an earlier revision. To
+recover a pre-#449 backup, use the exact pre-cut image/source to restore and
+advance it to the old terminal `20260831_0340`, take a verified backup, perform
+the documented one-time role cutover, and only then deploy current source. See
+`OPERATIONS.md` and `MIGRATIONS.md`; do not improvise old-head repair SQL.
 
 Retired routes return `404`; there is no compatibility alias.
 

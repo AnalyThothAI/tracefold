@@ -8,7 +8,7 @@ There are no compatibility aliases for retired products, tables, worker names, r
 
 The active operator-owned application file is
 `~/.tracefold/config.yaml`. It contains deployment/domain choices,
-PostgreSQL role DSNs and password-file references, credentials, API bind/auth,
+one PostgreSQL DSN and password-file reference, credentials, API bind/auth,
 and News and Trading settings. Worker topology,
 cadence, deadlines, resource limits, batches, leases, retries, and model
 reservations are code-owned and are not configuration fields.
@@ -21,7 +21,7 @@ model and loader implementation.
 Unknown settings or worker keys fail validation.
 
 `tracefold init` creates the operator directory, config, cache/log directories,
-an empty Telegram bot-token placeholder, and bootstrap/Serve/Workers/Nautilus/migrate password files. The operator directory is
+an empty Telegram bot-token placeholder, and bootstrap/application PostgreSQL password files. The operator directory is
 mode `0700`; config, Telegram placeholder, and password files are `0600`. A normal rerun preserves
 existing config and password contents while repairing permissions.
 `tracefold init --force` replaces only `config.yaml`; it does not rotate
@@ -941,9 +941,10 @@ reason, settlement timestamps, and stale-intent index used only after
 authoritative single-name tradeability absence.
 `20260828_0324` makes the edit and delete lifecycle shape checks two-valued and
 refuses to advance if any existing delivery row has a partial lifecycle shape.
-A database
-at an earlier revision upgrades with `tracefold db migrate`; a fresh database
-runs the complete chain. The exact
+A database on that retired chain must be restored with its exact pre-#449
+image/source, advanced to the old terminal head, and cut over before current
+source is used. Current source does not consume an earlier revision; a fresh
+database runs the single `20260831_0340` baseline. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1379,8 +1380,9 @@ development dataset is the only research entry.
 --max-metric-judge-model-calls N --max-cost-microusd N
 --max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#202) is
 the one optimization entry point in the repository. It reads the frozen
-development corpus once as `serve` and then holds three model endpoints and a
-typed budget — no database write credential, no broker, no delivery, no canary,
+development corpus once through the shared application login and then holds
+three model endpoints and a typed budget — no database writer call path,
+broker, delivery, canary,
 no promotion, no Docker, no compiler image, no sandbox, no proxy sidecar, no
 tariff. The task LM is the configured production Program route rather than a
 command-line model, because a number optimized against a different route
