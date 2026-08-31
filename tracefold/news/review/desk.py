@@ -142,7 +142,6 @@ _TAXONOMY_DIMENSIONS: Final[tuple[str, ...]] = (
     "taxonomy_source_authority",
     "taxonomy_assertion_status",
 )
-_TAXONOMY_CRITICAL_FAMILIES = frozenset({"product_service_change", "financial_results", "guidance_outlook"})
 
 _STRATUM_ZH = {
     "local_macro_false_interrupt": "局部宏观误打断",
@@ -1446,12 +1445,10 @@ class ReviewDesk:
             }
         )
         accepted_id = _sha({"kind": "acceptance", "review_id": review_id})
-        critical = _taxonomy_review_requires_adjudication(submission, task.row)
         release_eligible = (
             bool(task.row.get("evidence_release_eligible"))
             and str(task.selection.get("stratum")) != "high_reaction"
             and self._event_matches_current_release(task)
-            and (not critical or provenance.review_role == "adjudication")
         )
         self._conn.execute(
             """
@@ -2226,33 +2223,6 @@ def _rubric_contract(row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _taxonomy_review_requires_adjudication(
-    submission: EventRubricSubmission,
-    row: Mapping[str, Any],
-) -> bool:
-    return taxonomy_requires_independent_adjudication(
-        submission.taxonomy,
-        draft_taxonomy=submission.taxonomy_review.draft_taxonomy,
-    )
-
-
-def taxonomy_requires_independent_adjudication(
-    taxonomy: NewsTaxonomyV1,
-    *,
-    draft_taxonomy: NewsTaxonomyV1 | None = None,
-) -> bool:
-    """The one code-owned predicate for taxonomy-critical review and evaluation."""
-
-    return bool(
-        taxonomy.event_family in _TAXONOMY_CRITICAL_FAMILIES
-        or taxonomy.event_family == "other"
-        or taxonomy.change_state == "unknown"
-        or taxonomy.assertion_status in {"confirmed", "rumor", "unknown"}
-        or taxonomy.source_authority == "unknown"
-        or (draft_taxonomy is not None and draft_taxonomy != taxonomy)
-    )
-
-
 def _verifier_flags(row: Mapping[str, Any]) -> list[dict[str, str]]:
     verdict = dict(row.get("verdict") or {})
     relevance = dict(dict(row.get("model_editorial") or {}).get("relevance") or {})
@@ -2596,5 +2566,4 @@ __all__ = [
     "ReviewSubmission",
     "TaskRef",
     "review_read_statements",
-    "taxonomy_requires_independent_adjudication",
 ]

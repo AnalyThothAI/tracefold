@@ -1055,9 +1055,10 @@ Diagnose News in this order:
    leaving `program_sha256` untouched, and what catches it is the computed
    `envelope_sha256` pin in
    `tests/contract/test_program_release_identity.py` (see
-   `docs/ARCHITECTURE.md`). `--mode recorded` costs
-   nothing and answers "is the metric still wired the way it was"; it makes no
-   provider call, so it cannot see a Prompt change. `--mode compile_live` is the
+   `docs/ARCHITECTURE.md`). Moving-window `--mode recorded` costs nothing and
+   answers "is the Program metric still wired the way it was"; it makes no
+   provider call, so it cannot see a Prompt change. Dataset-bound recorded mode
+   is the separate taxonomy measurement described below. `--mode compile_live` is the
    native Program GEPA optimizes on one endpoint. It has no fallback route, but
    disables the whole-route deadline and cross-case primary breaker that GEPA
    does not run; the endpoint keeps its per-call timeout and DSPy JSONAdapter's
@@ -1148,28 +1149,36 @@ epoch, bound to that exact bundle, enter metric v6, GEPA or release evidence. Ev
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
-two-Predictor trace as proof of higher quality; that claim begins only after
-post-epoch accepted reviews and future holdout/shadow/canary evidence exist.
-Issue #117 deliberately lands the production persistence/read/UI seam before
-those quality denominators exist, by operator sequencing decision. New ordinary
-News judgments therefore carry taxonomy immediately, while taxonomy quality
-stays `UNKNOWN`. Run `taxonomy-register` before opening the future holdout;
-registration derives its exact Git/image/bundle identity from the active
-Workers deployment receipt and computes the Shadow Program/model binding from
-operator configuration. Run bounded `taxonomy-shadow --file CONTEXTS --limit N
---out RECEIPTS` batches next; each case records success, schema invalid,
-provider failure, or budget/deadline failure, with one or two ordered replayable
-physical attempts. Provider I/O is outside the database transaction, and the
-command writes only append-only learning artifacts. `taxonomy-evaluate` then accepts only that
-PostgreSQL-clock registration, database-verified current regression evidence,
-accepted Review v6 Gold and replayable shadow artifacts, and still requires
-complete observation/attempt/recording, development and post-registration
-holdout denominators. Missing Shadow evidence is `UNKNOWN`, never an empty-set
-PASS. Do not use taxonomy to alter Gate,
-delivery or Trading, and do not describe schema deployment as a model-quality PASS.
-The immediate cost is the normal 1 -> 2 provider-call increase. The intended
-future benefit is per-Predictor feedback, demonstrations, routing and
-fine-tuning without widening the consumer's `SemanticJudge.judge()` Interface.
+two-Predictor trace as proof of higher quality. Issue #117 deliberately lands
+the production persistence/read/UI seam before taxonomy denominators exist;
+issue #437 measures them through the existing Review v6, Dataset, and recorded
+baseline only.
+
+Before inspecting the first production taxonomy score, the owner must comment
+`primary_target: ...` on issue #437. Do not derive or revise that target from a
+score already seen. Then:
+
+1. Review 60–100 independent connected-fact clusters. One operator acceptance
+   is Gold; no taxonomy-specific adjudicator is required. A model-drafted batch
+   may be previewed with `news review accept-drafts --file FILE --dry-run`, but
+   every write requires a non-empty explicit `--only EVENT_OR_TASK_PREFIX,...`.
+2. Freeze those accepted reviews with the existing `news learning freeze
+   --role development ...` command. Do not create a taxonomy Dataset or edit
+   the frozen document: accepted taxonomy is part of each existing episode and
+   its projection root.
+3. Run `news learning baseline --dataset DATASET_SHA --mode recorded --out
+   REPORT`. This makes zero provider calls and reads the taxonomy already
+   persisted by that Dataset's Stable cohort.
+
+The report is `MEASURED` only at 60 or more independent clusters and otherwise
+`INSUFFICIENT_DATA`. Read the primary event-family macro-F1 against the target
+recorded before scoring; treat subject-code micro-F1, change-state accuracy,
+assertion-status macro-F1, and four-axis exact match as diagnostics. The report
+includes every legal label with support zero where applicable and the actual
+scored population. Code-owned source-authority registry coverage is separate;
+it is excluded from model score and model non-abstain. `MEASURED` is a
+denominator statement, not a PASS. Do not use taxonomy to alter Gate, Delivery,
+or Trading, and do not describe schema deployment as model-quality evidence.
 
 Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
 the Janitor; judged evidence is retained under the configured 365-day tier and

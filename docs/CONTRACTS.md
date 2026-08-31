@@ -1109,18 +1109,19 @@ and still denies every News/control rewrite.
 `news learning baseline (--dataset SHA | --from-ms N --to-ms N)
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
 [--max-model-cases N] [--semantic-judge MODEL] [--limit N]
-[--out FILE]` scores the
-stable Program over accepted reviews and returns one content-addressed
-`tracefold.news.program_baseline_report.v3`. It is read-only — no dataset write,
-sandbox, tariff or container, no write to any table, and the only database
-contact is one `serve` connection that closes before the first model call.
+[--out FILE]` is read-only: no Dataset write, sandbox, tariff, container, or
+table write. Moving-window runs and `--dataset --mode compile_live` return the
+content-addressed `tracefold.news.program_baseline_report.v3`. Issue #437 reuses
+the same command for `--dataset --mode recorded`, which instead returns the
+smaller `tracefold.news.recorded_taxonomy_baseline.v1` over persisted Stable
+taxonomy and makes zero provider calls.
 
 The two corpus forms are mutually exclusive because a run can only measure one
 of them (#199 §5). `--from-ms/--to-ms` is a moving window anchored to the clock:
 the population changes underneath it, so a before/after taken across two of them
 compares two different corpora, and the receipt says `cohort_scope: current` —
 discovery, never release evidence. `--dataset SHA` is the exact frozen
-development dataset a trusted compile would seal. It re-projects the sealed
+development Dataset. With `--mode compile_live`, it re-projects the sealed
 corpus once, builds the same `GepaObjectivePlan` readiness and `run_gepa` build,
 and scores **only** `target + control`: excluded diagnostics are counted and
 named in the report's `objective` section and never enter a denominator, because
@@ -1138,6 +1139,32 @@ refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
 rather than published with an empty `subsets` block that reads as a measured
 zero — `readiness` explains the same blockers for free.
 
+With `--dataset SHA --mode recorded`, no Objective Plan or optimizer split is
+built. The existing projection contributes the four model-owned axes from
+accepted Review v6 taxonomy and the persisted production judgment, and a change to Gold therefore changes
+`episode_projection_root_sha256`. One deterministic representative per existing
+connected-fact cluster is scored. The report identity contains only the Dataset
+SHA, Stable bundle/Program, recorded runtime-model binding, and pure taxonomy
+metric; its other top-level facts are `case_n`, `independent_cluster_n`, actual
+`scored_case_n`, primary/diagnostic metrics, separate source-authority registry
+coverage, and `MEASURED | INSUFFICIENT_DATA`.
+
+An accepted external miss remains in the Dataset, projection root, and report
+`case_n`, but it has no recorded Stable prediction by definition. It is excluded
+from `independent_cluster_n`, `scored_case_n`, every metric denominator, and the
+60-cluster measurement threshold; the report therefore exposes rather than
+hiding the difference between accepted Gold and scorable recorded Gold.
+
+The sole primary is event-family macro-F1 over legal labels whose Gold support
+is greater than zero. Diagnostics are subject-code micro-F1, change-state
+accuracy, assertion-status macro-F1 over supported Gold labels, and exact match
+across all four model-owned axes. Confusion/per-class output carries the full
+legal universe, including support-zero labels. Model non-abstain covers only
+those four axes. Code-owned `source_authority` is deterministic registry
+coverage, excluded from both model score and model non-abstain. At least 60
+independent clusters yields `MEASURED`; smaller populations yield
+`INSUFFICIENT_DATA`. Neither outcome asserts that an operator target was met.
+
 The equivalence judge gets no admission ceiling of its own here, and #253 tried
 the other way first: a judge that reaches its ceiling does not raise, it returns
 `unavailable`, `retains()` reads that as not retained, a failed
@@ -1146,18 +1173,15 @@ scores zero. An under-sized ceiling would therefore publish a depressed baseline
 that reads as a measurement. `--max-model-cases` pins the corpus and so pins the
 judge's work, which is the bound that exists.
 
-`--dataset` runs `--mode compile_live` and nothing else
-(`news_program_baseline_dataset_requires_compile_live`), and requires
-`--semantic-judge` on the configured reflection route
+`--dataset --mode compile_live` requires `--semantic-judge` on the configured reflection route
 (`news_program_baseline_dataset_requires_semantic_judge`,
 `..._requires_compiler_reflection_judge`). `subsets.development_selection` is
 published as the formal *before* value a Candidate is picked against, so it has
 to measure what the optimizer measures — the production graph on one task
-endpoint, judged by the ruler `run_gepa` refuses to run without. `recorded`
-scores the action that actually shipped while the Objective Plan classifies under
-a replayed `decide()`, so the two disagree on any case whose ledger state
-differed at ingest and the report would call a case a control and zero it in the
-same document; `runtime_live` measures the four-slot production route with retry,
+endpoint, judged by the ruler `run_gepa` refuses to run without. Dataset-bound
+recorded mode is the taxonomy-only branch above and builds no Objective Plan.
+`runtime_live` is rejected for a Dataset
+(`news_program_baseline_dataset_requires_compile_live`): it measures the four-slot production route with retry,
 fallback, deadline and circuit, which is a reliability question and not
 comparable to a candidate selected on the cold graph; and `bind_metric(None)`
 compares free-text retention byte-for-byte and fires `factual_contradiction` on
@@ -1168,12 +1192,13 @@ reason the retrieval receipt in a dataset-bound report is computed over the
 the cases `_retrieval_receipt` counts as misses, so a receipt over
 `target + control` would report a recall biased toward 1.0 by construction.
 
-The three modes answer three different questions and are never interchangeable
-(#150 removed the single ambiguous `live`, with no alias):
+Mode and corpus together name the question; none are interchangeable (#150
+removed the single ambiguous `live`, with no alias):
 
-| Mode | Executes | Question |
+| Mode and corpus | Executes | Question |
 | --- | --- | --- |
-| `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is metric wiring reproducible over history? |
+| moving-window `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is Program metric wiring reproducible over history? |
+| Dataset `recorded` | persisted Stable taxonomy against accepted Gold, with no provider call | how does the active Stable cohort classify this frozen corpus? |
 | `compile_live` | the production native DSPy Program on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
 | `runtime_live` | the configured four-slot native DSPy Program | does the production Program route answer these cases? |
 
@@ -1297,18 +1322,20 @@ values came from: `active_arm_manifest` is the configured current arm, and only
 current-cohort episodes are eligible. An episode with no
 complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
 to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v4`. The projection is recomputed
+`tracefold.news.development_compile_episode.v5`. The projection is recomputed
 from `news_reviews` on every read, so a *dataset* is never stale; what the field
 refuses is a **compile record** written under an older projection — v2 carried no
-policy and would have raised inside every metric call, and v3 could not say
+policy and would have raised inside every metric call, v3 could not say
 whether a human wrote `first_bad_owner` or ReviewDesk derived it, which is
-exactly the difference between a Prompt-owned target and somebody else's defect.
+exactly the difference between a Prompt-owned target and somebody else's defect,
+and v4 did not address accepted taxonomy in the projection root.
 A record naming an older projection fails
 `news_learning_program_compile_record_invalid` rather than being re-read under
 rules it was not produced under.
 
 `--mode recorded` makes no provider call and reads only exact current-contract
-episodes from the active epoch.
+episodes from the active epoch. Its moving-window form remains the Program
+metric; its Dataset form is the taxonomy report above.
 `--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
 byte equality (#148) through the same `CardEquivalenceJudge` contract that the
 the optimization wires through its separate `metric_judge` role. Judge failure is explicit unavailable, enters the affected
@@ -1336,6 +1363,11 @@ v2-v4 rows remain readable audit history but cannot enter current metric/GEPA/re
 evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
+
+One operator acceptance is sufficient taxonomy Gold; no taxonomy-specific
+second reviewer or adjudication is required. Model drafts still cannot
+self-accept. `news review accept-drafts --dry-run` may preview an empty
+selection, while every non-dry-run requires a non-empty explicit `--only` list.
 
 `news learning snapshot|compare` — the #193 research window of frozen run
 directories and student/teacher arm comparison — was deleted in #343 together
@@ -1484,21 +1516,11 @@ dataset or metric-v4 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `taxonomy-register`, `taxonomy-evaluate`, `optimize`, `freeze` — and none of them can ship anything.
-`taxonomy-register` seals the exact tested code, taxonomy shadow Program/model
-binding and active production identities at a PostgreSQL-clock timestamp before
-the future holdout opens. `tested_git_sha` is derived from the current
-content-addressed Workers deployment receipt, never accepted as operator input;
-an unversioned image/revision or mismatched active bundle is rejected.
-`taxonomy-evaluate --file CASES --out REPORT` seals a cluster-deduplicated
-`TaxonomyEvaluationReportV1` and writes it through the existing append-only
-learning artifact ledger. The command accepts only database-verified Review v6
-Gold and exact replayable `shadow_observation` artifacts under that durable
-registration; it reports every preregistered denominator and gate. Insufficient
-development or future holdout evidence forces `UNKNOWN`. The four existing
-regression gates are re-read from PostgreSQL release evidence and must bind one
-exact current candidate, dataset and metric; a file cannot declare their
-outcomes.
+`draft-reviews`, `optimize`, `freeze` — and none of them can ship anything.
+There is no taxonomy registration, shadow, or separate evaluation command.
+Taxonomy quality is the recorded Dataset branch of `baseline`; it reads the
+existing Dataset through `serve`, calls one pure metric, and writes only an
+optional report file.
 `run` is the recommended composition of `readiness`, `baseline` and
 `optimize`; the rest stay callable one at a time. `news release` admits a
 candidate and moves it: `register`,

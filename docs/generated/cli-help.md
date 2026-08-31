@@ -331,8 +331,9 @@ options:
   --min-confidence MIN_CONFIDENCE
                         skip drafts the model was less sure of than this
                         (0.0-1.0)
-  --only ONLY           comma-separated event_id or task_id prefixes to
-                        accept; default is every draft that passes the filters
+  --only ONLY           required for writes: comma-separated event_id or
+                        task_id prefixes explicitly approved; an empty value
+                        is allowed only with --dry-run
   --exclude EXCLUDE     comma-separated event_id or task_id prefixes to skip
                         after you have read them
   --reviewer REVIEWER   reviewer recorded on each row. The default marks these
@@ -361,22 +362,16 @@ options:
 
 ```
 usage: tracefold news learning [-h]
-                               {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-shadow,taxonomy-evaluate,optimize,run,freeze} ...
+                               {readiness,baseline,draft-reviews,optimize,run,freeze} ...
 
 positional arguments:
-  {readiness,baseline,draft-reviews,taxonomy-register,taxonomy-shadow,taxonomy-evaluate,optimize,run,freeze}
+  {readiness,baseline,draft-reviews,optimize,run,freeze}
     readiness           explain the Objective Plan for a frozen development
                         dataset; 0 model calls, 0 writes
-    baseline            score the stable Program over accepted reviews (no
-                        sandbox, no tariff, no writes)
+    baseline            score a moving-window Program baseline or frozen
+                        recorded taxonomy (no sandbox, tariff, or writes)
     draft-reviews       propose news_review_v6 rubrics with exact taxonomy
                         Gold (writes a file, never the DB)
-    taxonomy-register   register one frozen taxonomy shadow candidate before
-                        opening its future holdout
-    taxonomy-shadow     run bounded taxonomy shadow cases and append terminal
-                        observations
-    taxonomy-evaluate   seal a news_taxonomy_v1 evaluation over frozen
-                        Gold/shadow cases
     optimize            run the one bounded GEPA optimization over a frozen
                         development dataset; ADVANCE is not a release
     run                 the recommended path: readiness -> standalone baseline
@@ -422,14 +417,14 @@ options:
                         a moving window; mutually exclusive with --from-
                         ms/--to-ms
   --mode {recorded,compile_live,runtime_live}
-                        recorded: score the persisted verdict against the
-                        action that shipped, no model call; compile_live: the
-                        graph GEPA optimizes, one task endpoint, no route
-                        fallback/deadline/circuit; per-call timeout and JSON
-                        format fallback remain; runtime_live: the configured
-                        four-slot production Program route (excludes consumer
-                        transaction, advisory lock, stale re-ask, degraded
-                        wire card, broker and delivery)
+                        recorded: no model call; score persisted action for a
+                        moving window or persisted taxonomy for --dataset;
+                        compile_live: the graph GEPA optimizes, one task
+                        endpoint, no route fallback/deadline/circuit; per-call
+                        timeout and JSON format fallback remain; runtime_live:
+                        the configured four-slot production Program route
+                        (excludes consumer transaction, advisory lock, stale
+                        re-ask, degraded wire card, broker and delivery)
   --action-source {recorded,policy}
                         recorded: the action that shipped, valid only with
                         --mode recorded; policy: re-run decide(), required by
@@ -443,9 +438,10 @@ options:
   --semantic-judge MODEL
                         score free-text retention anchors by meaning instead
                         of byte equality, using this model (e.g.
-                        deepseek-v4-pro). Enum dimensions stay exact. Costs
-                        nothing under --mode recorded, where the candidate is
-                        the production verdict and the texts already match
+                        deepseek-v4-pro). Enum dimensions stay exact. Moving-
+                        window recorded costs nothing because persisted texts
+                        already match; Dataset-recorded taxonomy ignores this
+                        option
   --limit LIMIT
   --out OUT             write the baseline report JSON
 
@@ -466,42 +462,6 @@ options:
   --include-reviewed  also draft Events that already carry an accepted review
                       (default: only unjudged ones)
   --out OUT           write the draft batch JSON for human review
-
-```
-
-## `news learning taxonomy-register`
-
-```
-usage: tracefold news learning taxonomy-register [-h]
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `news learning taxonomy-shadow`
-
-```
-usage: tracefold news learning taxonomy-shadow [-h] --file FILE
-                                               [--limit LIMIT] --out OUT
-
-options:
-  -h, --help     show this help message and exit
-  --file FILE    JSON/YAML mapping with a cases array
-  --limit LIMIT
-  --out OUT      write the shadow artifact receipt JSON
-
-```
-
-## `news learning taxonomy-evaluate`
-
-```
-usage: tracefold news learning taxonomy-evaluate [-h] --file FILE --out OUT
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE  JSON/YAML mapping with a cases array
-  --out OUT    write TaxonomyEvaluationReportV1 JSON
 
 ```
 

@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import importlib.metadata
 from collections.abc import Mapping, Sequence
-from typing import Any, Final, Literal, cast
+from typing import Any, Final, Literal, Required, TypedDict, cast
 
 import dspy  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..artifact_identity import canonical_sha
 from ..program.contracts import (
@@ -92,10 +92,9 @@ def build_drafter_lm(
     return lm_type(str(model_name), structured_output=structured_output, **request)
 
 
-DRAFTER_ID = "tracefold.news.review_drafter_v4"
-# `Final` is what makes mypy infer the literal type rather than `str`, which is what the
-# `Literal[...]` field below needs as its default.
-DRAFT_SCHEMA: Final = "tracefold.news.review_draft_batch.v3"
+DRAFTER_ID = "tracefold.news.review_drafter_v5"
+ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v4"]
+DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v4"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
 crypto/US-equity trading desk. A human will accept or reject your draft; never assume it is final.
@@ -138,10 +137,13 @@ expected: ONLY for dimensions you marked fail, state the exact correct value —
 trade-relevance dimension. Leave a field out when you are not confident.
 This is the most valuable part of the draft: "wrong" without "and the answer is X" teaches nothing.
 
-taxonomy: state the exact `news_taxonomy_v1` model-owned labels for every Event: at most three allowed IPTC
-subject qcodes, event_family, change_state, and assertion_status. Also judge all five taxonomy dimensions;
-source_authority is computed by code and appears in card_json, so copy that exact value rather than guessing.
-`filing`, `rumor`, `whale`, and `noise` are not event families. Use other/unknown as honest abstentions.
+taxonomy contains exactly four `news_taxonomy_v1` model-owned labels for every Event: at most three allowed
+IPTC subject qcodes, event_family, change_state, and assertion_status. Never put source_authority in taxonomy.
+Also include taxonomy_subject_codes, taxonomy_event_family, taxonomy_change_state,
+taxonomy_source_authority, and taxonomy_assertion_status in dimensions, each judged pass / fail /
+not_applicable. taxonomy_source_authority judges the code-computed value shown in card_json; it is not a
+taxonomy label. `filing`, `rumor`, `whale`, and `noise` are not event families. Use other/unknown as honest
+abstentions.
 
 confidence: 0.0-1.0, how sure you are a human would agree with this draft.
 reasoning: one short sentence a reviewer can check quickly."""
@@ -178,34 +180,37 @@ class DraftNovelty(BaseModel):
     duplicate_of: str = Field(default="", max_length=128)
 
 
+DraftDimensionLabel = Literal["pass", "fail", "not_applicable"]
+
+
+class DraftDimensions(TypedDict, total=False):
+    factual_fidelity: DraftDimensionLabel
+    headline_fidelity: DraftDimensionLabel
+    asset_grounding: DraftDimensionLabel
+    direction: DraftDimensionLabel
+    magnitude: DraftDimensionLabel
+    timeliness: DraftDimensionLabel
+    trade_impact_breadth: DraftDimensionLabel
+    trade_tradability: DraftDimensionLabel
+    trade_surprise: DraftDimensionLabel
+    trade_development_delta: DraftDimensionLabel
+    trade_channels: DraftDimensionLabel
+    trade_affected_markets: DraftDimensionLabel
+    reader_value: DraftDimensionLabel
+    taxonomy_subject_codes: Required[DraftDimensionLabel]
+    taxonomy_event_family: Required[DraftDimensionLabel]
+    taxonomy_change_state: Required[DraftDimensionLabel]
+    taxonomy_source_authority: Required[DraftDimensionLabel]
+    taxonomy_assertion_status: Required[DraftDimensionLabel]
+
+
 # What the drafter is allowed to judge, measured rather than assumed. Agreement with a human reviewer over 25
 # Events they both saw: direction 88%, factual_fidelity 84%, headline_fidelity 84%, magnitude 76%,
 # asset_grounding 70% — against why_support 43% and why_value 42%. Those two also produced 27 of the 46
 # "human passed it, the draft failed it" disagreements, so letting the model touch them would push a large
 # number of failures a reviewer disagrees with into the corpus, where the optimizer would learn from them.
 # They also carry no gold: "the correct Chinese sentence" is not a value a rubric can hold.
-DRAFTABLE_DIMENSIONS = frozenset(
-    {
-        "factual_fidelity",
-        "headline_fidelity",
-        "asset_grounding",
-        "direction",
-        "magnitude",
-        "timeliness",
-        "trade_impact_breadth",
-        "trade_tradability",
-        "trade_surprise",
-        "trade_development_delta",
-        "trade_channels",
-        "trade_affected_markets",
-        "reader_value",
-        "taxonomy_subject_codes",
-        "taxonomy_event_family",
-        "taxonomy_change_state",
-        "taxonomy_source_authority",
-        "taxonomy_assertion_status",
-    }
-)
+DRAFTABLE_DIMENSIONS = frozenset(DraftDimensions.__annotations__)
 
 
 class ReviewDraft(BaseModel):
@@ -214,13 +219,20 @@ class ReviewDraft(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     should_push: Literal["must_push", "should_push", "should_hold", "must_hold", "uncertain"]
-    dimensions: dict[str, Literal["pass", "fail", "not_applicable"]]
+    dimensions: DraftDimensions
     novelty: DraftNovelty
     expected: DraftExpected | None = None
     taxonomy: ModelTaxonomyV1
     expected_correction: str = Field(default="", max_length=2_000)
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = Field(default="", max_length=1_000)
+
+    @field_validator("taxonomy", mode="before")
+    @classmethod
+    def _discard_computed_source_authority(cls, value: Any) -> Any:
+        if not isinstance(value, Mapping) or "source_authority" not in value:
+            return value
+        return {name: label for name, label in value.items() if name != "source_authority"}
 
 
 class _ReviewDraftSignature(dspy.Signature):  # type: ignore[misc]
@@ -247,7 +259,7 @@ class DraftedReview(BaseModel):
 class ReviewDraftBatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_id: Literal["tracefold.news.review_draft_batch.v3"] = DRAFT_SCHEMA
+    schema_id: ReviewDraftBatchSchema = DRAFT_SCHEMA
     drafter: dict[str, Any]
     drafts: tuple[DraftedReview, ...]
 
@@ -404,7 +416,13 @@ def build_draft_batch(
 
 _EMPTY_DRAFT = ReviewDraft(
     should_push="uncertain",
-    dimensions={},
+    dimensions={
+        "taxonomy_subject_codes": "not_applicable",
+        "taxonomy_event_family": "not_applicable",
+        "taxonomy_change_state": "not_applicable",
+        "taxonomy_source_authority": "not_applicable",
+        "taxonomy_assertion_status": "not_applicable",
+    },
     novelty=DraftNovelty(judgment="uncertain"),
     taxonomy=ModelTaxonomyV1(
         subject_codes=(), event_family="other", change_state="unknown", assertion_status="unknown"

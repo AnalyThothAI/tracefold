@@ -63,7 +63,10 @@ def add_news_commands(
     review_accept.add_argument(
         "--only",
         default="",
-        help="comma-separated event_id or task_id prefixes to accept; default is every draft that passes the filters",
+        help=(
+            "required for writes: comma-separated event_id or task_id prefixes explicitly approved; "
+            "an empty value is allowed only with --dry-run"
+        ),
     )
     review_accept.add_argument(
         "--exclude",
@@ -103,12 +106,14 @@ def add_news_commands(
         "--out", default="", help="write the readiness report JSON (per-case dispositions live only here)"
     )
     learning_baseline = learning_subcommands.add_parser(
-        "baseline", help="score the stable Program over accepted reviews (no sandbox, no tariff, no writes)"
+        "baseline",
+        help="score a moving-window Program baseline or frozen recorded taxonomy (no sandbox, tariff, or writes)",
     )
     # Two corpora, one command, and the receipt says which. `--from-ms/--to-ms` is a moving window and is
     # discovery: the population changes with the clock, so a before/after taken across two of them compares
-    # two different corpora. `--dataset` is the exact frozen development dataset `optimize` reads, scored
-    # under the same Objective Plan and publishing the same split roots — that one is release evidence.
+    # two different corpora. `--dataset` is the exact frozen development dataset `optimize` reads:
+    # `compile_live` uses its Objective Plan and split roots, while `recorded` scores persisted taxonomy
+    # directly with no Objective Plan or provider call.
     # They are mutually exclusive because a run can only be one of the two (#199 §5).
     learning_baseline.add_argument("--from-ms", type=_nonnegative_int, default=None)
     learning_baseline.add_argument("--to-ms", type=_positive_int, default=None)
@@ -128,7 +133,8 @@ def add_news_commands(
         choices=("recorded", "compile_live", "runtime_live"),
         default="recorded",
         help=(
-            "recorded: score the persisted verdict against the action that shipped, no model call; "
+            "recorded: no model call; score persisted action for a moving window or persisted taxonomy "
+            "for --dataset; "
             "compile_live: the graph GEPA optimizes, one task endpoint, no route fallback/deadline/circuit; "
             "per-call timeout and JSON format fallback remain; "
             "runtime_live: the configured four-slot production Program route (excludes consumer transaction, "
@@ -160,8 +166,8 @@ def add_news_commands(
         metavar="MODEL",
         help=(
             "score free-text retention anchors by meaning instead of byte equality, using this model "
-            "(e.g. deepseek-v4-pro). Enum dimensions stay exact. Costs nothing under --mode recorded, "
-            "where the candidate is the production verdict and the texts already match"
+            "(e.g. deepseek-v4-pro). Enum dimensions stay exact. Moving-window recorded costs nothing "
+            "because persisted texts already match; Dataset-recorded taxonomy ignores this option"
         ),
     )
     learning_baseline.add_argument("--limit", type=_positive_int, default=500)
@@ -184,23 +190,6 @@ def add_news_commands(
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
     learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
-    learning_subcommands.add_parser(
-        "taxonomy-register",
-        help="register one frozen taxonomy shadow candidate before opening its future holdout",
-    )
-    learning_taxonomy_shadow = learning_subcommands.add_parser(
-        "taxonomy-shadow",
-        help="run bounded taxonomy shadow cases and append terminal observations",
-    )
-    learning_taxonomy_shadow.add_argument("--file", required=True, help="JSON/YAML mapping with a cases array")
-    learning_taxonomy_shadow.add_argument("--limit", type=_positive_int, default=50)
-    learning_taxonomy_shadow.add_argument("--out", required=True, help="write the shadow artifact receipt JSON")
-    learning_taxonomy = learning_subcommands.add_parser(
-        "taxonomy-evaluate",
-        help="seal a news_taxonomy_v1 evaluation over frozen Gold/shadow cases",
-    )
-    learning_taxonomy.add_argument("--file", required=True, help="JSON/YAML mapping with a cases array")
-    learning_taxonomy.add_argument("--out", required=True, help="write TaxonomyEvaluationReportV1 JSON")
     # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
     # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
     # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,

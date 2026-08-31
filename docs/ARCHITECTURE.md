@@ -370,9 +370,7 @@ tracefold.news
     objective.py      framework-neutral: which accepted cases GEPA may optimize, hold as controls, or exclude
     optimizer.py      the one offline entry: role identities, budget, Objective Plan, GEPA, terminal state
     evaluate.py       run both arms over a frozen corpus and return evidence; decides no state
-    taxonomy_shadow.py  bounded 0-2-call taxonomy execution with ordered record/replay observations
-    taxonomy_evaluation.py  taxonomy metrics, complete-population denominators, and quality gates
-    taxonomy.py       taxonomy Gold/registration/deployment/release evidence verification only
+    taxonomy_metric.py  one pure cluster-deduplicated ruler over accepted Gold and recorded Stable taxonomy
     ledger.py / profile.py  the learning plane's own rows, its bundle's epoch, and the release profile
   release/
     candidate.py      admit a Prompt candidate: derive its Program identity, re-derive the Objective Plan
@@ -1575,11 +1573,24 @@ evidence, verdict, policy trace and real sent receipt, then records a
 multi-dimensional rubric (`should_push`, factuality, evidence sufficiency,
 entity grounding, novelty, direction, magnitude, copy value, timeliness and
 first bad owner). Current `news_review_v6` retains exact gold for the seven
-TradeRelevance fields from v4 and adds exact taxonomy Gold, draft/reviewer/adjudicator
-provenance and mandatory independent adjudication for critical boundaries; a failed scored dimension without
-expected gold is not scored. A judgment becomes training/eval truth only after a separate
+TradeRelevance fields from v4 and adds exact taxonomy Gold plus draft/reviewer
+provenance. One operator acceptance is sufficient taxonomy Gold; no taxonomy-specific
+second reviewer or adjudication is required. A failed scored dimension without expected
+gold is not scored. A judgment becomes training/eval truth only after a separate
 acceptance receipt. An important fact missing before Event creation enters as
 an immutable external-miss snapshot, rather than a fake Event id.
+
+Issue #437 reuses that same accepted review and frozen development Dataset for
+taxonomy measurement. `dataset.py` projects the accepted taxonomy into the
+existing episode, so the episode projection root covers Gold. The recorded
+Dataset branch of `news learning baseline` then applies the pure
+`taxonomy_metric.py` ruler to the taxonomy already persisted by Stable, with no
+provider call and no Objective Plan or split participation. It elects one
+representative per existing connected-fact cluster; reports the primary
+event-family macro-F1, the four model-axis diagnostics, complete legal universes
+and actual denominators; and keeps code-owned source-authority registry coverage
+outside model scores. No taxonomy-specific Dataset, table, shadow Program,
+registration, evaluator, or release lifecycle exists.
 
 Issue #129 first starts the immutable `program_v1` learning epoch at migration
 deployment time. Corrective migration `0293` preserves that history and appends
