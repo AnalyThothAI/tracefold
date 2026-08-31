@@ -101,6 +101,7 @@ def run_restore_drill(
         if not audit["ok"] or source_summary != restored_summary or not all(smoke_results.values()):
             evidence = {
                 "audit_ok": audit["ok"],
+                "database_identity": audit["database_identity"],
                 "news_schema": audit["news_schema"],
                 "trading_schema": audit["trading_schema"],
                 "missing_estimates": [name for name, count in audit["row_estimates"].items() if count < 0],
@@ -138,6 +139,12 @@ def _create_database(admin_dsn: str, name: str) -> None:
         conn.execute(
             sql.SQL("CREATE DATABASE {} OWNER {}").format(
                 sql.Identifier(name),
+                sql.Identifier(APPLICATION_ROLE),
+            )
+        )
+    with psycopg.connect(_database_dsn(admin_dsn, name), autocommit=True) as conn:
+        conn.execute(
+            sql.SQL("ALTER SCHEMA public OWNER TO {}").format(
                 sql.Identifier(APPLICATION_ROLE),
             )
         )
