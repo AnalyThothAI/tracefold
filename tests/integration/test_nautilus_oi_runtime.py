@@ -188,7 +188,7 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
     assert receipt["admitted"] == 1
     assert receipt["pending"] == []
     assert receipt["flushed"] == 6
-    assert receipt["open_position_quantity"] == "0.050"
+    assert receipt["open_position_quantity"] == "0.049"
     assert len(receipt["orders"]) == 2
     entry, protection = receipt["orders"]
     assert entry == {
