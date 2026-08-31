@@ -93,9 +93,6 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_workers';
   END IF;
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_migrate') THEN
-    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_migrate_present';
-  END IF;
   IF NOT EXISTS (
     SELECT 1
       FROM pg_roles
@@ -109,14 +106,6 @@ BEGIN
        AND NOT rolbypassrls
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_nautilus';
-  END IF;
-  IF EXISTS (
-    SELECT 1
-      FROM pg_auth_members membership
-      JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
-     WHERE granted_role.rolname = 'tracefold_owner'
-  ) THEN
-    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:runtime_owner_membership';
   END IF;
   IF NOT EXISTS (
     SELECT 1

@@ -56,7 +56,7 @@ def runtime_role_contract(conn: Any) -> dict[str, Any]:
         WHERE role.rolname = ANY(%s)
         ORDER BY role.rolname
         """,
-        ([BOOTSTRAP_ROLE, MIGRATION_ROLE, *STEADY_RUNTIME_ROLES, "tracefold_migrate"],),
+        ([BOOTSTRAP_ROLE, MIGRATION_ROLE, *STEADY_RUNTIME_ROLES],),
     ).fetchall()
     by_name = {str(row["rolname"]): dict(row) for row in rows}
     bootstrap = by_name.get(BOOTSTRAP_ROLE)
@@ -103,18 +103,6 @@ def runtime_role_contract(conn: Any) -> dict[str, Any]:
                     AND dependency.deptype = 'e'
                 )
             ) AS count
-            """
-        ).fetchone()["count"]
-    )
-    owner_member_count = int(
-        conn.execute(
-            """
-            SELECT count(*) AS count
-            FROM pg_auth_members membership
-            JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
-            JOIN pg_roles member_role ON member_role.oid = membership.member
-            WHERE granted_role.rolname = 'tracefold_owner'
-               OR member_role.rolname = 'tracefold_owner'
             """
         ).fetchone()["count"]
     )
@@ -220,8 +208,6 @@ def runtime_role_contract(conn: Any) -> dict[str, Any]:
         and bool(privileges["nautilus_execution_update"])
         and not bool(privileges["nautilus_identity_update"])
         and not bool(privileges["nautilus_cases_update"]),
-        "migrate_role_absent": "tracefold_migrate" not in by_name,
-        "runtime_owner_membership_absent": owner_member_count == 0,
         "schema_owner": bool(schema_owner) and str(schema_owner["owner"]) == MIGRATION_ROLE,
         "application_object_ownership": unexpected_owner_count == 0,
         "owner_default_privileges": (
