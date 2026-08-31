@@ -11,6 +11,7 @@ from .cases import CaseStorage
 from .catalog import CatalogStorage
 from .control import ControlStorage
 from .evidence import EvidenceStorage
+from .execution_stream import ExecutionStreamStorage
 from .gate import CandidateGateStorage
 from .intents import IntentStorage
 from .lane import LaneStorage
@@ -22,6 +23,7 @@ from .verification import VerificationStorage
 class TradingRepository(
     ControlStorage,
     EvidenceStorage,
+    ExecutionStreamStorage,
     AuthorityStorage,
     BindingStorage,
     CatalogStorage,

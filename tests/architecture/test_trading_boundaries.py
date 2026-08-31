@@ -207,8 +207,9 @@ def test_the_capital_path_manifest_is_complete() -> None:
     assert CAPITAL_PATH, "the capital-path manifest may never be empty"
     missing = [relative for relative in CAPITAL_PATH if not (SRC / relative).is_file()]
     assert missing == []
-    # Every `tracefold.trading` module is either on the capital path or a research module. Nothing may
-    # be neither, because "neither" is how a file leaves the scan set without anyone noticing.
+    # Every `tracefold.trading` module is on the current capital path, offline research path, or the
+    # explicitly dormant #433 transport. Nothing may be unclassified, because that is how a file
+    # leaves the scan set without anyone noticing.
     research = {
         "trading/evidence_research.py",
         "trading/evidence_verification.py",
@@ -217,7 +218,13 @@ def test_the_capital_path_manifest_is_complete() -> None:
         "trading/storage/replay.py",
         "trading/storage/verification.py",
     }
-    covered = set(CAPITAL_PATH) | research
+    dormant_execution = {
+        "trading/execution_contracts.py",
+        "trading/storage/execution_stream.py",
+        "trading/storage/execution_stream_query_specs.py",
+        "trading/storage/execution_stream_sql.py",
+    }
+    covered = set(CAPITAL_PATH) | research | dormant_execution
     unclassified = [
         str(path.relative_to(SRC))
         for path in _trading_sources()
@@ -519,6 +526,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "ExecutionCapabilitySnapshotV2",
         "ExecutionInstrumentCapabilityV2",
         "ExecutionInstrumentEvidenceV1",
+        "ExecutionObservationV1",
         "ExecutionQuote",
         "ExecutionQuoteAuditV1",
         "ExecutionQuoteRejectionV1",
@@ -529,6 +537,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "IntentReasonCode",
         "NautilusRuntimeStartV1",
         "OperatorArmReceiptV1",
+        "OperatorIntentV1",
         "ProductionPromotionGrantRevocationV1",
         "ProductionPromotionGrantV1",
         "RejectedReason",
@@ -542,6 +551,7 @@ def test_the_package_root_exports_only_app_facing_values_and_ports() -> None:
         "SettlementRiskLimitV1",
         "SubmissionFenceV1",
         "TradeIntent",
+        "TradeSignalV1",
         "TradingCaseManifest",
         "VenueBinding",
         "VenueBindingRuntimeV1",

@@ -112,6 +112,10 @@ TRADING_TABLES = (
     "trading_evidence_future_capture_batches",
     "trading_nautilus_runtime_starts",
     "trading_production_release_registrations",
+    "trading_trade_signals",
+    "trading_operator_intents",
+    "trading_execution_observations",
+    "trading_execution_profile_activations",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

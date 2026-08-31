@@ -465,6 +465,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0337\|t\|t) echo "Trading evidence-clock hard cut, News current-contract genesis, and the Nautilus canonical-JSON grant are present at database head 20260830_0337." ;; \
 			20260831_0338\|t\|t) echo "Trading per-binding runtime hard cut and News current-contract genesis are present at database head 20260831_0338." ;; \
 			20260831_0339\|t\|t) echo "The direct-owner role hard cut and retained runtime ACL contract are present at database head 20260831_0339." ;; \
+			20260831_0340\|t\|t) echo "The direct-owner role hard cut and dormant Trading execution stream are present at database head 20260831_0340." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac

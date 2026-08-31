@@ -55,6 +55,13 @@ owner membership, restates current schema/default/table/column/function
 privileges without changing business data, and verifies owner/object authority
 before stamping head. Its downgrade is the verified pre-cut backup restore.
 
+Revision `20260831_0340` adds #433-A's four empty, append-only execution-stream
+tables, three bounded JSON validators/guards, unresolved-read indexes, immutable
+activation fences, and exact Serve/Workers/Nautilus grants. It does not touch
+the active Capital/Intent path and has no producer or consumer. Empty-database
+history, head-to-head no-op, exact ACL/index/constraint behavior, advisory-lock
+competition, and restore coverage are the required evidence.
+
 Cost evidence uses PostgreSQL-native statement/transaction timeouts and plan
 rows/blocks rather than shared-runner wall-clock thresholds. The relevant
 real-PostgreSQL seams are
