@@ -517,14 +517,16 @@ marker owns deliberate fault injection across real Vitest/Playwright native
 runs, the runtime-error guard, and the required-test ESLint policy; these
 nested frontend checks do not run from the architecture lane or `make check`.
 
-Repository fast gate:
+Repository hermetic bundle when the changed seam requires it:
 
 - `make check`
 
-Focused development runs select integration, backend E2E, golden, browser and
-visual lanes from the changed seam per `DEVELOPMENT.md`. `make test-ci`
-is the complete local preflight; the successful fixed GitHub Actions workflow
-for the exact main SHA is merge/release evidence. The visual matrix and
+Focused development runs select the exact Vitest and affected lint, type,
+build, browser, or visual seam per `DEVELOPMENT.md`; localized frontend changes
+do not run unrelated backend lanes. `make test-ci` is an optional complete
+local preflight only for declared high-risk changes. The successful fixed
+GitHub Actions `ci-gate` for the exact PR HEAD is merge authority; the exact
+main SHA's fixed workflow is release/deploy evidence. The visual matrix and
 scheduled diagnostics remain explicit separate lanes.
 
 Production bundles ship inside the same Docker image as the Python service and are served by the FastAPI static-file mount.

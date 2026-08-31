@@ -157,18 +157,18 @@ their corrections remain in #319.
 |---|---|---|---|
 | `make check-static` | CI static quality owner | Ruff, format, mypy, generated/router drift, mandatory agent/operator documentation links, compileall | Pytest, Docker, DB, RabbitMQ, Node |
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
-| `make test` / `make test-fast` | default AI/developer loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
+| `make test` / `make test-fast` | broad hermetic final checkpoint; not an edit loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
 | `make trading-smoke` | the Trading PostgreSQL acceptance contract | #350 Decision/Capital attribution and zero-Intent no-key blocks plus retained immutable Intent/recovery evidence on real PostgreSQL | live provider truth and everything outside the focused Trading integration modules; it is a subset of `make test-integration`, never merge evidence on its own |
-| `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | default loop |
+| `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | broad hermetic checkpoint |
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
 | `make test-browser-smoke` | required browser/backend seam | production FastAPI static mount, bootstrap bearer, real API envelope and one Chromium `/news` fact | visual matrix and screenshot baselines |
 | `make test-slow` | explicit process/meta-test diagnostics | shortened injected deadlines and nested fail-closed harness F2P | `make check`, `make test-fast`, live/provider truth |
-| `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the default developer loop |
+| `make test-scheduled` | non-gating production-duration diagnostics | real code-owned timeout envelopes on a fixed runner | merge evidence and the broad hermetic checkpoint |
 | `make test-visual` | explicit visual diagnostics | four viewport projects and screenshot baselines | required per-PR evidence |
 | `make test-all` | local complete-suite convenience | all Python lanes and frontend | exact-HEAD CI or fail-closed evidence claims |
-| `make test-ci` | complete local preflight | the same six owner surfaces as fixed CI, run serially with native reports and fail-closed resources/outcomes | merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
+| `make test-ci` | optional complete local preflight for declared high-risk changes | every fixed owner surface, run serially with native reports and fail-closed resources/outcomes | routine local changes, merge/release authorization, `live`, visual/live/scheduled diagnostics, missing declared resources, skip/xfail/xpass/rerun/maxfail |
 
 Prefer behavior at a maintained public or persistence seam. Do not preserve
 tests that assert private file layout, source text, mock call choreography, or
@@ -193,7 +193,52 @@ Every bug or refactor PR records four pieces of evidence:
 3. the targeted P2P regressions for affected public or persisted boundaries;
 4. the integration, deploy, e2e, or release lane still required.
 
-### Verification Contract v4
+### Risk-tiered local verification
+
+This section is the single owner of stable local verification policy. CI job
+wiring, report formats, resource topology, measured baselines, and historical
+rationale live in [Testing and CI implementation](TESTING.md#fixed-full-ci-implementation).
+
+Use the following levels in order; risk, not diff size, chooses where the final
+local checkpoint stops.
+
+#### Level 0 — edit loop
+
+Run only the smallest command that can directly disprove the current edit: one
+pytest nodeid, one Vitest file, one touched-file static check, or one owning
+generator/checker. Do not automatically run `make test-fast`, `make test-ci`,
+the full frontend build, browser smoke, or migration history after every save,
+commit, or push.
+
+#### Level 1 — affected seam checkpoint
+
+When one logical unit is complete, run the smallest F2P reproducer, the affected
+real production seam, and adjacent P2P regressions. PostgreSQL, RabbitMQ,
+process, browser, and order-adapter risks require those real boundaries; a mock
+does not replace the mechanism under test.
+
+#### Level 2 — final local checkpoint
+
+| Change surface | Required final local checkpoint |
+|---|---|
+| docs/comment/spelling/generated-doc-only | owning checker; do not run `test-fast` or `test-ci` |
+| formatting/import/mechanical rename with unchanged contract | touched static checks plus focused tests; `test-fast` optional |
+| localized ordinary Python behavior | F2P/P2P plus affected seam; `test-fast` optional and at most once |
+| shared Domain, serializer, or public contract | focused contract plus one `test-fast` |
+| PostgreSQL, RabbitMQ, or process behavior | focused real dependency seam; full preflight only when cross-owner risk requires it |
+| localized frontend | exact Vitest plus affected lint/type/build; no unrelated backend preflight |
+| test selection, markers, `conftest`, shared fixtures, report guard, or Make CI targets | one complete `make test-ci` |
+| CI workflow, build/package, deploy/release verifier | one complete `make test-ci` |
+| cross-owner hard cut spanning backend resources/runtime/frontend | affected seams plus one complete `make test-ci` |
+| Capital, Intent, order fence/adapter, migration, or security authority | Issue-declared real seams; full preflight when multiple owners change |
+
+`make test-fast` is a broad hermetic checkpoint, never the per-edit loop. An
+ordinary behavior change runs it at most once. `make test-ci` is an optional,
+serial, complete local preflight and runs at most once only when the table or
+governing Issue declares the change high risk. Reporting `NOT RUN` with focused
+evidence is a valid, honest state; local breadth never authorizes a merge.
+
+#### Level 3 — exact PR HEAD
 
 GitHub Actions runs one fixed, complete verification set for every pull request
 to `main`, every `main` push, release event, and manual dispatch. There is no
@@ -202,11 +247,24 @@ manifest, or evidence aggregate. Test frameworks own execution truth; GitHub
 Actions owns job truth. Native reports are diagnostic artifacts for the exact
 run, not a second release database.
 
-`make test-ci` runs the same owner surfaces serially as a complete local
-preflight. It is useful before pushing, but a local result cannot authorize a
-merge, release, or deployment. The merge/release record is the successful fixed
-CI workflow associated with the exact commit SHA being evaluated; deployment
-requires the successful `main` push workflow for that same SHA.
+The active strict `main-production-verification` Ruleset requires `ci-gate` for
+the latest PR HEAD. Failure, cancellation, skip, or an unknown result fails
+closed.
+
+#### Level 4 — exact main SHA
+
+A squash merge creates a different main commit. Release or deployment requires
+the complete fixed CI workflow and successful `ci-gate` from a `main` push for
+that exact SHA; PR-head or local results do not attest it.
+
+#### Superset rule
+
+On the same unchanged tree, a successful broader command covers its narrower
+subsets. Do not rerun `make check-static` or `make test-fast` after a successful
+`make test-ci` merely to fill a template. Return to focused commands only to
+diagnose a failure.
+
+The following evidence rules apply at every level:
 
 1. **Exact HEAD.** A result belongs only to the full commit SHA it actually
    tested. Any later commit invalidates it and must run the required gate
@@ -243,82 +301,9 @@ requires the successful `main` push workflow for that same SHA.
    the responsibility of frozen corpora, golden evidence,
    `CandidateEvaluator`, shadow/canary runs, and durable production evidence.
 
-The six fixed jobs are `quality-static`, `python-hermetic`,
-`postgres-behavior`, `migration`, `runtime-process`, and `frontend`. They run
-without path conditions. PostgreSQL, RabbitMQ, process, and browser owners use
-isolated job-local services rather than a shared schema or runtime. Each job
-checks out `TESTED_SHA` (`pull_request.head.sha` for a pull request,
-`github.sha` otherwise), installs with `uv sync --locked` and, where needed,
-`npm ci`, and keeps Actions SHA-pinned and service images digest-pinned.
-
-Two of those owners carry the evidence the flat package layout needs (#373).
-`python-hermetic` runs the installed-distribution smoke: it builds the wheel and
-sdist, installs the wheel into a throwaway environment pinned to the locked
-dependency versions outside the repository, and imports the product and its
-packaged resources there. `migration` walks every historical revision one at a
-time from an empty database and compares the reachable revision graph against
-the revision files on disk, so a migration tree that stops resolving from the
-package is a failure rather than a shorter chain. Neither adds a package runner,
-a manifest, or a second release record.
-
-`postgres-behavior` carries the business failure windows (#373).
-`test_news_crash_replay.py` runs the production consumers over real PostgreSQL
-with the broker and the push sender as fault injectors, covering the Receiver
-outage that becomes a durable incident and is recovered officially, the publish
-that succeeds while its mark fails, the evidence that changes while the model is
-thinking, and the begin-send-settle windows where a known-unsent card may retry
-and an unknown remote outcome may not. `test_news_to_trading_seam.py` runs one OI
-frame through News, the App mapper and the capital lane.
-`test_trading_capital_lane.py` drives the Case lifecycle as a Hypothesis
-`RuleBasedStateMachine` against real SQL and walks the whole authority product.
-Assertions there are durable rows, queue outcomes and HTTP projections; a private
-call count is not a contract.
-
-The same run also produces coverage. `test-effectiveness` is report-only: it
-combines what the fixed jobs measured and prints standard coverage.py reports,
-depends on no job result, and `ci-gate` does not depend on it. Percentages are a
-gap signal; the acceptance for a critical state or exception path remains its F2P
-and its state model.
-
-Required pytest runs disable plugin autoload, load only the named plugins they
-need, use the deterministic Hypothesis `ci` profile, and emit JUnit XML under
-`artifacts/test-results/`. Required Vitest runs set `allowOnly=false` and emit
-native JSON; Playwright emits native JSON. Runner configuration and required-
-test lint prohibit expected-failure, focus, retry, repeat, and snapshot-update
-escapes. Required `test`/`it` declarations use unaliased named imports directly
-and have exactly two arguments (case name and callback); namespace/dynamic
-imports, copied/extended bindings, computed modifiers, and literal, computed,
-or runtime-loaded options are inadmissible. This syntax boundary covers every
-executable JavaScript and TypeScript module extension under `web/tests`,
-including helpers/support modules; the one Playwright fixture factory may only
-export `test = base.extend(...)` and may not register a case. A small
-report guard checks only that each native report exists,
-executed at least one test, and contains no failure, error, skipped/pending,
-flaky, retried, snapshot-mutating, or unhandled outcome. For pytest, strict
-xfail plus JUnit's non-green skipped/failure outcomes enforce the same rule. The
-guard may not select tests, maintain an inventory, reinterpret a pass, or write
-plan, profile, provenance, or aggregate manifests. CI uploads these native
-files as `test-results-<job>-<TESTED_SHA>` with missing files treated as an
-error.
-Hypothesis remains a test-only dependency in the uv `dev` group and is resolved
-by `uv.lock`; production images use `uv sync --locked --no-dev`, so test tools
-do not enter the runtime environment.
-
-The stable `ci-gate` is deliberately thin: it reads only the six
-`needs.<job>.result` values and succeeds only when all six equal `success`.
-Failure, cancellation, skip, or an unknown result fails closed. It does not
-checkout code, download artifacts, or invoke a project-owned planner. The
-deployment verifier remains a separate real seam and requires the trusted
-GitHub Actions `ci-gate` from a successful `main` push for the exact SHA.
-
-The repository is private and the organization is currently on GitHub Free;
-as verified for #353 on 2026-08-30, the branch-protection and Rulesets APIs are
-unavailable. The repository therefore does not claim that GitHub currently
-enforces `ci-gate` before merge. `ci-gate` remains the observable full-result
-interface and deployment authorization boundary, and can become the one
-required check if the platform constraint changes. Private artifact
-attestation, branch protection, and Rulesets are separate platform work, not
-substitutes for this test contract.
+The exact fixed owners, resource topology, native report contract, and
+historical rationale are maintained in
+[Fixed full CI implementation](TESTING.md#fixed-full-ci-implementation).
 
 Adopting `pytest-postgresql`, `pytest-alembic`, import-linter, Schemathesis,
 mutation testing, or other generic tooling requires a separate detector-by-
@@ -343,6 +328,8 @@ Every PR uses the repository template and completes these fields:
 - Targeted P2P:
 - Focused / local commands:
 - Local full preflight:
+  - `NOT RUN` — reason focused evidence is sufficient:
+  - or `PASS` — reason full local preflight was required:
 - Exact-head fixed CI run:
 - Skipped / xfail / rerun:
 - Acceptance-test contract changes:
@@ -356,11 +343,10 @@ is the positive example: it parses the real import graph of
 `tracefold.news.learning.optimizer` rather than asserting its docstring.
 
 `make check` is a hermetic static/architecture/contract bundle, not a universal
-completion mandate. Run the additional lanes that cross the changed seam and
-report omitted evidence honestly. It is also the gate: `ruff check` alone is a
-narrower check that passes while `make check` fails, because the bundle runs the
-formatter and the architecture harness too. Green from a command you chose is not
-green from the command the project defines.
+completion mandate. Run the lanes that cross the changed seam and report omitted
+evidence honestly. When `make check` is the selected checkpoint, `ruff check`
+alone is only a narrower subset because the bundle also runs the formatter and
+architecture harness.
 
 **A result binds to the exact commit and its isolated runner.** Editing the tree
 during a local run, sharing one destructive database across CI jobs, or
@@ -405,44 +391,13 @@ uv run pytest -q \
 
 ### Test lanes and speed
 
-`make test` aliases `make test-fast` and never starts an external resource.
-Tests that need PostgreSQL declare an explicit PostgreSQL resource fixture;
-their directory is not a resource trigger. `make test-integration`, `make
-test-deploy`, `make test-e2e`, `make test-golden`, `make test-slow`, `make
-test-scheduled`, and `make test-external-codegen` expose the larger lanes; scheduled
-diagnostics are reported separately and never feed the merge gate. `make trading-smoke` is a named
-subset of the integration lane and never evidence on its own. `make test-all` remains a local
-complete-suite convenience. `make test-ci` is the canonical local
-full-set entry, runs every deterministic owner with fail-closed resource and
-outcome checks, and includes frontend validation. It emits native reports but
-does not mint merge evidence. Pull requests, main, release, and manual runs all
-execute the fixed six-job set; the exact main SHA's successful workflow is the
-merge/release record.
-
-PostgreSQL behavior tests use a run-scoped baseline database migrated once to
-head, then receive a private function- or module-scoped clone. A test that
-drops a schema, commits across connections, exercises roles, or takes locks
-therefore keeps the real PostgreSQL seam without rerunning the Alembic chain or
-sharing `public` with another behavior test. Destructive schema reset remains
-only in the explicit migration-owner modules, which receive an empty private
-database; the retired behavior reset helper has no caller. Historical
-migration-path tests do not use the head clone shortcut: they are narrow and
-explicit, and cover the
-preservation/grant cuts that carry user evidence forward and the `0292` to
-`0293`, `0293` to `0294`, `0294` to `0295`, and `0300` to `0301` append-only Program
-epoch transitions. The Alembic chain is the
-`20260818_0275` current-schema baseline plus the linear revisions through the
-current `20260831_0338` head; schema tests also run against that migrated head.
-The e2e lane
-(`tests/e2e/test_serve_process_smoke.py`) starts one
-uvicorn Serve subprocess against a freshly migrated testcontainers PostgreSQL
-and asserts `/readyz`, `/api/status` and `/api/news/status`; it runs no Workers
-subprocess and makes no broker claim. Retired route absence belongs to the
-OpenAPI/public-route contract. The golden lane separately starts the public
-Workers root, publishes through RabbitMQ, persists the deterministic OI path in
-PostgreSQL and reads it through HTTP. ReviewDesk and CandidateEvaluator have their own integration lanes;
-production shadow/canary evidence is sealed in PostgreSQL rather than inferred
-from the HTTP e2e fixture.
+`make test` aliases the broad hermetic `make test-fast` checkpoint and starts no
+external resource. Larger public targets expose integration, deploy, E2E,
+golden, slow, scheduled, external-codegen, browser, and visual seams; choose
+them from the affected risk instead of running them in a fixed local ladder.
+`make trading-smoke` remains a named integration subset and `make test-all` a
+local convenience, neither merge evidence. Resource and lane wiring is owned by
+[Local lane implementation](TESTING.md#local-lane-implementation).
 
 The #377 Trading evidence clock is verified at three distinct seams. Pure tests
 prove canonical capture/drain/corpus/candidate/future artifacts, exact funding

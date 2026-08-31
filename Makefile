@@ -59,9 +59,9 @@ uninstall: ## uninstall the global CLI installed by uv tool
 tool-path: ## ensure uv tool executables are on PATH
 	@uv tool update-shell
 
-test: test-fast ## hermetic default regression (alias for test-fast)
+test: test-fast ## broad hermetic checkpoint (alias for test-fast); not a per-edit loop
 
-test-fast: ## unit + hermetic contract + semantic architecture; no external resources
+test-fast: ## broad hermetic final checkpoint; no external resources; not per-edit
 	@uv run python -m pytest $(FAST_TEST_SELECTION)
 
 test-all: test-frontend ## local convenience: every Python lane plus frontend; not verification evidence
@@ -134,7 +134,7 @@ ci-frontend:
 	@uv run python scripts/require_test_reports.py \
 		--playwright-json "$(TRACEFOLD_TEST_RESULT_DIR)/playwright.json"
 
-test-ci: ## complete local verification; merge/release authority is exact-SHA main CI
+test-ci: ## optional complete local preflight for declared high-risk changes; no merge authority
 	@$(MAKE) --no-print-directory test-results-prepare
 	@$(MAKE) --no-print-directory ci-quality-static
 	@$(MAKE) --no-print-directory ci-python-hermetic
