@@ -175,7 +175,9 @@ services:
           "from urllib.request import urlopen; urlopen('http://127.0.0.1:8765/healthz', timeout=1).read()",
         ]
       interval: 10s
-      timeout: 2s
+      # Liveness only, so the start period stays short. The timeout covers spawning the interpreter the
+      # probe runs in, which is what exceeded 2 s under load on 2026-08-31.
+      timeout: 5s
       retries: 3
       start_period: 20s
 
@@ -211,6 +213,17 @@ services:
           cpus: "2.0"
           memory: 2G
     healthcheck:
+      # Readiness, not liveness: `make up` waits on this, and a deploy is not finished until Workers is
+      # actually consuming. That makes the whole startup path part of the budget — wiring every Program,
+      # registering the runtime manifest, and verifying the broker's effective policy, which alone may
+      # wait out RabbitMQ's statistics interval (`POLICY_EFFECTIVE_TIMEOUT_SECONDS`, 30 s) on a broker
+      # that has just declared its queues. The old 20 s start period was shorter than that single
+      # documented wait, so a cold image start could be reported unhealthy while it was still correctly
+      # starting: observed on 2026-08-31, where `docker compose up --wait` failed a deploy whose Workers
+      # then went healthy moments later. 90 s + 5 x 10 s is roughly three times the old budget and still
+      # well inside the Compose wait timeout, so a genuinely stuck start is still caught.
+      # `timeout` is 5 s because the probe spawns a Python interpreter before it makes the request; a
+      # 2 s budget for that timed out under load in the same incident.
       test:
         [
           "CMD",
@@ -219,9 +232,9 @@ services:
           "from urllib.request import urlopen; urlopen('http://127.0.0.1:8766/readyz', timeout=1).read()",
         ]
       interval: 10s
-      timeout: 2s
-      retries: 3
-      start_period: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
 
   nautilus:
     <<: *tracefold-app
@@ -256,7 +269,8 @@ services:
           "from urllib.request import urlopen; urlopen('http://127.0.0.1:8767/readyz', timeout=1).read()",
         ]
       interval: 10s
-      timeout: 2s
+      # Same interpreter-spawn cost as the other two probes.
+      timeout: 5s
       retries: 3
       start_period: 30s
 
