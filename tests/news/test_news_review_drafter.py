@@ -11,6 +11,7 @@ import pytest
 
 from tracefold.news.review.desk import EventRubricSubmission
 from tracefold.news.review.drafter import (
+    DRAFT_SCHEMA,
     DRAFTER_ID,
     ConfiguredDrafterLM,
     ReviewDraft,
@@ -19,6 +20,9 @@ from tracefold.news.review.drafter import (
     build_drafter_lm,
     submission_payload,
 )
+
+NEWS_REVIEW_DRAFTER_ID = "tracefold.news.review_drafter_v5"
+NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v4"
 
 _GOOD = {
     "should_push": "should_push",
@@ -98,6 +102,29 @@ def test_a_draft_becomes_a_valid_submission_without_hand_reshaping() -> None:
     assert submission.dimensions["magnitude"] == "fail"
 
 
+def test_draft_contract_requires_every_taxonomy_review_dimension() -> None:
+    dimensions = {name: label for name, label in _GOOD["dimensions"].items() if not name.startswith("taxonomy_")}
+
+    with pytest.raises(ValueError, match="taxonomy_subject_codes"):
+        ReviewDraft.model_validate({**_GOOD, "dimensions": dimensions})
+
+    schema = ReviewDraft.model_json_schema()
+    dimensions_schema = schema["$defs"]["DraftDimensions"]
+    assert set(dimensions_schema["required"]) == {
+        "taxonomy_subject_codes",
+        "taxonomy_event_family",
+        "taxonomy_change_state",
+        "taxonomy_source_authority",
+        "taxonomy_assertion_status",
+    }
+
+
+def test_model_copied_source_authority_cannot_enter_the_taxonomy_labels() -> None:
+    draft = ReviewDraft.model_validate({**_GOOD, "taxonomy": {**_GOOD["taxonomy"], "source_authority": "unknown"}})
+
+    assert draft.taxonomy.model_dump(mode="json") == _GOOD["taxonomy"]
+
+
 def test_gold_on_a_passed_dimension_is_refused_by_the_rubric_not_by_the_drafter() -> None:
     """The safety property lives in one place. A draft that violates it simply cannot be submitted."""
 
@@ -155,7 +182,8 @@ def test_duplicate_task_fails_before_any_model_call() -> None:
 
 def test_batch_names_the_drafter_and_disclaims_authority() -> None:
     batch = build_draft_batch(ReviewDrafter(_ScriptedDrafterLM()), _tasks(2))
-    assert batch.drafter["drafter_id"] == DRAFTER_ID
+    assert batch.drafter["drafter_id"] == DRAFTER_ID == NEWS_REVIEW_DRAFTER_ID
+    assert batch.schema_id == DRAFT_SCHEMA == NEWS_REVIEW_DRAFT_BATCH_SCHEMA
     assert batch.drafter["model"] == "scripted/drafter"
     assert batch.drafter["dspy_version"] == "3.3.1"
     assert len(batch.drafter["signature_sha256"]) == 64
@@ -226,13 +254,10 @@ def test_the_drafter_cannot_judge_the_dimensions_it_disagrees_with_humans_on() -
     assert "why_support" not in DRAFTABLE_DIMENSIONS
     assert "why_value" not in DRAFTABLE_DIMENSIONS
     # A model that answers anyway must not reach the submission.
-    draft = ReviewDraft.model_validate(
-        {**_GOOD, "dimensions": {**_GOOD["dimensions"], "why_support": "fail", "why_value": "fail"}}
-    )
-    payload = submission_payload(draft)
-    assert "why_support" not in payload["dimensions"]
-    assert "why_value" not in payload["dimensions"]
-    assert payload["dimensions"]["magnitude"] == "fail", "the draftable failures still come through"
+    with pytest.raises(ValueError, match="why_support"):
+        ReviewDraft.model_validate(
+            {**_GOOD, "dimensions": {**_GOOD["dimensions"], "why_support": "fail", "why_value": "fail"}}
+        )
 
 
 def test_novelty_is_normalised_so_the_rubric_can_accept_it() -> None:
