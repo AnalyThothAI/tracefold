@@ -194,7 +194,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260831_0339`
+5. Deploy the exact reviewed image at the current Alembic head (`20260831_0340`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -1330,7 +1330,7 @@ creates the direct-login `tracefold_owner`, `tracefold_serve`,
 `tracefold_workers`, and `tracefold_nautilus` roles when run by the bootstrap
 superuser, verifies the role contract, and applies the Serve read / Workers
 write grants) followed by the linear revisions through the current
-`20260831_0339` head. The #112 chain
+`20260831_0340` head. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -1437,7 +1437,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260831_0339`; zero rows in every cleared
+After deployment, require Alembic head `20260831_0340`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

@@ -182,7 +182,34 @@ def runtime_role_contract(conn: Any) -> dict[str, Any]:
                 'tracefold_nautilus', 'public.trading_intents', 'case_id', 'UPDATE'
               ) AS nautilus_identity_update,
               has_table_privilege('tracefold_nautilus', 'public.trading_cases', 'UPDATE')
-                AS nautilus_cases_update
+                AS nautilus_cases_update,
+              has_table_privilege(
+                'tracefold_serve', to_regclass('public.trading_trade_signals'), 'SELECT'
+              )
+                AS serve_execution_stream_select,
+              has_table_privilege(
+                'tracefold_serve', to_regclass('public.trading_trade_signals'), 'INSERT'
+              )
+                AS serve_execution_stream_insert,
+              has_table_privilege(
+                'tracefold_workers', to_regclass('public.trading_trade_signals'), 'INSERT'
+              )
+                AS workers_signal_insert,
+              has_table_privilege(
+                'tracefold_workers', to_regclass('public.trading_execution_observations'), 'INSERT'
+              )
+                AS workers_observation_insert,
+              has_table_privilege(
+                'tracefold_nautilus', to_regclass('public.trading_trade_signals'), 'SELECT'
+              )
+                AS nautilus_signal_select,
+              has_table_privilege(
+                'tracefold_nautilus', to_regclass('public.trading_execution_observations'), 'INSERT'
+              )
+                AS nautilus_observation_insert,
+              has_table_privilege(
+                'tracefold_nautilus', to_regclass('public.trading_execution_profile_activations'), 'INSERT'
+              ) AS nautilus_activation_insert
             """
         ).fetchone()
     )
@@ -208,6 +235,13 @@ def runtime_role_contract(conn: Any) -> dict[str, Any]:
         and bool(privileges["nautilus_execution_update"])
         and not bool(privileges["nautilus_identity_update"])
         and not bool(privileges["nautilus_cases_update"]),
+        "execution_stream_boundary": bool(privileges["serve_execution_stream_select"])
+        and not bool(privileges["serve_execution_stream_insert"])
+        and bool(privileges["workers_signal_insert"])
+        and not bool(privileges["workers_observation_insert"])
+        and bool(privileges["nautilus_signal_select"])
+        and bool(privileges["nautilus_observation_insert"])
+        and not bool(privileges["nautilus_activation_insert"]),
         "schema_owner": bool(schema_owner) and str(schema_owner["owner"]) == MIGRATION_ROLE,
         "application_object_ownership": unexpected_owner_count == 0,
         "owner_default_privileges": (

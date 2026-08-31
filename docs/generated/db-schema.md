@@ -747,6 +747,38 @@
 | `catalog_instrument_count` | `INTEGER` | True | `None` |
 | `partition_sha256` | `TEXT` | True | `None` |
 
+## `trading_execution_observations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `seq` | `BIGINT` | False | `None` |
+| `event_id` | `TEXT` | False | `None` |
+| `runtime_profile_id` | `TEXT` | False | `None` |
+| `runtime_release` | `TEXT` | False | `None` |
+| `execution_strategy` | `TEXT` | False | `None` |
+| `signal_id` | `TEXT` | True | `None` |
+| `command_id` | `TEXT` | True | `None` |
+| `normalized_kind` | `TEXT` | False | `None` |
+| `occurred_at_ns` | `BIGINT` | False | `None` |
+| `observed_at_ns` | `BIGINT` | False | `None` |
+| `native_identity_references` | `JSONB` | False | `None` |
+| `summary` | `JSONB` | False | `None` |
+| `payload_digest` | `TEXT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_execution_profile_activations`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `runtime_profile_id` | `TEXT` | False | `None` |
+| `account_slot` | `TEXT` | False | `None` |
+| `activated_after_signal_seq` | `BIGINT` | False | `None` |
+| `activated_after_command_seq` | `BIGINT` | False | `None` |
+| `mode` | `TEXT` | False | `None` |
+| `runtime_release` | `TEXT` | False | `None` |
+| `config_sha256` | `TEXT` | False | `None` |
+| `created_at_ns` | `BIGINT` | False | `None` |
+
 ## `trading_intents`
 
 | Column | Type | Nullable | Default |
@@ -860,6 +892,25 @@
 | `armed_at_ms` | `BIGINT` | False | `None` |
 | `expires_at_ms` | `BIGINT` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
+
+## `trading_operator_intents`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `seq` | `BIGINT` | False | `None` |
+| `command_id` | `TEXT` | False | `None` |
+| `target_profile_id` | `TEXT` | False | `None` |
+| `action` | `TEXT` | False | `None` |
+| `scope` | `TEXT` | False | `None` |
+| `reason` | `TEXT` | False | `None` |
+| `operator_identity` | `TEXT` | False | `None` |
+| `authentication_identity` | `TEXT` | False | `None` |
+| `requested_at_ns` | `BIGINT` | False | `None` |
+| `expires_at_ns` | `BIGINT` | False | `None` |
+| `confirmation_identity` | `TEXT` | True | `None` |
+| `market_key` | `TEXT` | True | `None` |
+| `direction` | `TEXT` | True | `None` |
 | `payload` | `JSONB` | False | `None` |
 
 ## `trading_order_observations`
@@ -999,6 +1050,22 @@
 | `expires_at_ms` | `BIGINT` | True | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
+
+## `trading_trade_signals`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `seq` | `BIGINT` | False | `None` |
+| `signal_id` | `TEXT` | False | `None` |
+| `case_id` | `TEXT` | False | `None` |
+| `alpha_contract_sha256` | `TEXT` | False | `None` |
+| `market_key` | `TEXT` | False | `None` |
+| `direction` | `TEXT` | False | `None` |
+| `observed_at_ns` | `BIGINT` | False | `None` |
+| `expires_at_ns` | `BIGINT` | False | `None` |
+| `evidence_sha256` | `TEXT` | False | `None` |
+| `alpha_metadata` | `JSONB` | False | `None` |
+| `payload` | `JSONB` | False | `None` |
 
 ## `trading_venue_catalog_snapshots`
 

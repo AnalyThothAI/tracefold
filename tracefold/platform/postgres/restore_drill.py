@@ -93,7 +93,7 @@ def run_restore_drill(
             restore_seconds = time.perf_counter() - restore_started
 
         upgrade_head(restored_migration_dsn)
-        with psycopg.connect(restored_migration_dsn, row_factory=dict_row) as conn:
+        with psycopg.connect(restored_migration_dsn, autocommit=True, row_factory=dict_row) as conn:
             audit = PostgresOperationalAudit(conn).run(deep=True)
             restored_summary = summarize(conn)
             smoke_results = smoke(conn)

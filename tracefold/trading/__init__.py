@@ -1,4 +1,4 @@
-"""Public Case, Intent and capability values for the Trading bounded context.
+"""Public Case, Signal, Intent, Observation, and capability values for Trading.
 
 App-facing values and one business action. The lane itself is imported by the composition root from
 `tracefold.trading.capital_lane`; it is not re-exported here, because a package root that exports a
@@ -47,6 +47,7 @@ from .contracts import (
     canonical_sha256,
 )
 from .evidence_verification import NautilusRuntimeStartV1
+from .execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from .execution_policy import PROTECTION_CONTRACT_SHA256
 from .intent import (
     ACTIVE_INTENT_STATES,
@@ -116,6 +117,7 @@ __all__ = [
     "ExecutionCapabilitySnapshotV2",
     "ExecutionInstrumentCapabilityV2",
     "ExecutionInstrumentEvidenceV1",
+    "ExecutionObservationV1",
     "ExecutionQuote",
     "ExecutionQuoteAuditV1",
     "ExecutionQuoteRejectionV1",
@@ -126,6 +128,7 @@ __all__ = [
     "IntentReasonCode",
     "NautilusRuntimeStartV1",
     "OperatorArmReceiptV1",
+    "OperatorIntentV1",
     "ProductionPromotionGrantRevocationV1",
     "ProductionPromotionGrantV1",
     "RejectedReason",
@@ -139,6 +142,7 @@ __all__ = [
     "SettlementRiskLimitV1",
     "SubmissionFenceV1",
     "TradeIntent",
+    "TradeSignalV1",
     "TradingCaseManifest",
     "VenueBinding",
     "VenueBindingRuntimeV1",

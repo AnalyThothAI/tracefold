@@ -2025,8 +2025,18 @@ venue priority or cross-venue fallback.
 News and Trading remain sibling contexts. Trading reads only the public News
 projections supplied by the app composition root; neither package imports the
 other or reads the other's tables directly. RabbitMQ remains News-only. No
-Trading exchange, queue, outbox, LISTEN/NOTIFY channel, Redis, second database,
-or in-memory correctness ledger exists.
+active Capital-path exchange, queue, outbox, Redis, second database, or
+in-memory correctness ledger exists. Migration `0340` adds #433-A's dormant
+PostgreSQL Signal/OperatorIntent/Observation transport and a `LISTEN/NOTIFY`
+wake hint, but no producer, consumer, or execution route is connected yet;
+bounded anti-join polling remains its future correctness path.
+Callers validate and canonicalize those payloads before entering their explicit
+database transaction. The repository callback then performs only SQL, locks,
+and primitive row checks; readers materialize the three Pydantic contracts only
+after the callback returns. Observation batches use one set-based insert inside
+a savepoint, so an identity or unique-disposition conflict rolls back the whole
+batch rather than leaving a committable prefix. The query-plan audit imports
+the same two unresolved-read statements used by the repository.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

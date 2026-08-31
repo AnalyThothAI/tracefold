@@ -9,6 +9,7 @@ from tracefold.platform.postgres.audit import (
     ReadQuerySpec,
     postgres_query_specs,
 )
+from tracefold.trading.storage.execution_stream_query_specs import execution_stream_query_specs
 from tracefold.trading.storage.query_sql import (
     AUTHORITY_PROJECTION_SQL,
     BINDING_RUNTIME_ROWS_SQL,
@@ -104,6 +105,7 @@ def query_audit_catalog(
         *postgres_query_specs(now_ms=int(now_ms)),
         workers_runtime_read_query(),
         *provider(now_ms=int(now_ms)),
+        *execution_stream_query_specs(),
         *_trading_query_specs(now_ms=int(now_ms)),
     )
     allowed_aggregate_input_queries = {

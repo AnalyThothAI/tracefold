@@ -1085,7 +1085,7 @@ code-owned `NEWS_TABLES` contract, `news_schema` exactness over that same set,
 and the small business-bearing runtime-role readiness contract: bootstrap
 NOLOGIN, direct ordinary owner/object ownership, Serve read boundary, Workers
 no-DDL/evidence append without rewrite/execution denial, and Nautilus
-projection-only authority (current at migration `20260831_0339`). The complete
+projection-only authority (current at migration `20260831_0340`). The complete
 ACL matrix remains real-PostgreSQL integration evidence rather than a repeated
 production audit query. `db audit --deep`
 adds exact table counts for offline migration or restore evidence. Since
