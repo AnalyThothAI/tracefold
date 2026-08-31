@@ -236,6 +236,10 @@ def test_fresh_volume_uses_direct_owner_and_restarts_without_role_repair(tmp_pat
         }
         assert bootstrap["rolcanlogin"] is False
         assert bootstrap["rolsuper"] is True
+        assert bootstrap["rolcreatedb"] is True
+        assert bootstrap["rolcreaterole"] is True
+        assert bootstrap["rolreplication"] is True
+        assert bootstrap["rolbypassrls"] is True
         with connect_postgres(owner_dsn) as conn:
             set_capabilities = conn.execute(
                 """
@@ -263,6 +267,10 @@ def test_fresh_volume_uses_direct_owner_and_restarts_without_role_repair(tmp_pat
         owner_dsn = _dsn(_host_port(container), "tracefold_owner", _OWNER_PASSWORD)
         with connect_postgres(owner_dsn) as conn:
             assert runtime_role_contract(conn)["ok"] is True
+        _stop(container)
+        final = _hard_cut(volume, secrets)
+        assert final.returncode == 0, final.stderr
+        assert "already complete" in final.stdout
     finally:
         _docker("rm", "--force", container, check=False)
         _docker("volume", "rm", "--force", volume, check=False)
@@ -307,6 +315,9 @@ def test_exact_old_volume_hard_cut_is_atomic_idempotent_and_preserves_acl_and_da
             conn.execute("CREATE EXTENSION pg_stat_statements WITH SCHEMA public")
             conn.execute("CREATE EXTENSION pg_trgm WITH SCHEMA public")
             conn.execute(runtime_roles)
+            # The supported volume keeps the official image's bootstrap-superuser
+            # catalog flags; owner-run migrations never rewrite that identity.
+            conn.execute("ALTER ROLE tracefold_app REPLICATION BYPASSRLS")
             conn.execute(f"ALTER ROLE tracefold_owner PASSWORD '{_OWNER_PASSWORD}'")
         _upgrade(owner_dsn, "20260831_0338")
         with connect_postgres(owner_dsn) as conn:
