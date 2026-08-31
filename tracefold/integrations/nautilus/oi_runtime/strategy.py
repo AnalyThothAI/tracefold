@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from threading import Lock
 from typing import Any, Literal
@@ -234,6 +234,7 @@ class OiNautilusStrategy(Strategy):
         self._readiness = readiness
         self._singleton_ready = singleton_ready
         self._day_start = day_start
+        self._day_start_lock = Lock()
         self._startup_reconciliation = startup_reconciliation
         self._continuous_reconciliation = continuous_reconciliation
         self._routes = {route.market_key: route for route in profile.routes}
@@ -289,8 +290,22 @@ class OiNautilusStrategy(Strategy):
         return self._readiness.snapshot(
             singleton_ready=bool(self._singleton_ready()),
             audit_ready=self._audit.can_accept_exposure(),
-            day_start_ready=self._day_start is not None,
+            day_start_ready=self._current_day_start() is not None,
         )
+
+    def update_day_start(self, baseline: DayStartBaseline) -> None:
+        """Accept a baseline already loaded durably by the background owner."""
+
+        with self._day_start_lock:
+            if self._day_start is not None and baseline.utc_day < self._day_start.utc_day:
+                raise ValueError("oi_runtime_day_start_baseline_stale")
+            self._day_start = baseline
+
+    def _current_day_start(self) -> DayStartBaseline | None:
+        utc_day = datetime.fromtimestamp(int(self.clock.timestamp_ns()) // 1_000_000_000, tz=UTC).date().isoformat()
+        with self._day_start_lock:
+            baseline = self._day_start
+        return baseline if baseline is not None and baseline.utc_day == utc_day else None
 
     def _refresh_continuous_reconciliation(self) -> None:
         source = self._continuous_reconciliation
@@ -590,7 +605,7 @@ class OiNautilusStrategy(Strategy):
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._dispose_signal(signal, "replayed_query_first")
             return
-        day_start = self._day_start
+        day_start = self._current_day_start()
         if day_start is None:
             self._dispose_signal(signal, "day_start_baseline_missing")
             return
@@ -1154,7 +1169,7 @@ class OiNautilusStrategy(Strategy):
                 native_identity_references=references,
                 summary={"status": status, "quantity": str(state.position_quantity)},
                 payload={"status": status, "quantity": str(state.position_quantity)},
-                event_identity=f"{status}:{state.position_quantity}",
+                event_identity=f"{status}:{state.position_quantity}:{occurred_at_ns}",
             )
         )
 

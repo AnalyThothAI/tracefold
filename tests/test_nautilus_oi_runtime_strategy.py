@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -20,6 +21,7 @@ from tests.nautilus_oi_runtime_fixtures import (
     trade_signal,
 )
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
@@ -307,6 +309,26 @@ def test_continuous_reconciliation_refreshes_clock_before_stale_entry_check() ->
     assert len(context.strategy.submitted) == 1
 
 
+def test_utc_day_rollover_blocks_until_background_updates_durable_baseline() -> None:
+    context = registered_oi_strategy()
+    rollover_ns = NOW_NS + 86_400_000_000_000
+    context.clock.set_time(rollover_ns)
+
+    assert context.strategy.readiness().reason == "day_start_baseline_missing"
+
+    utc_day = datetime.fromtimestamp(rollover_ns // 1_000_000_000, tz=UTC).date().isoformat()
+    context.strategy.update_day_start(
+        DayStartBaseline(
+            utc_day=utc_day,
+            equity_usd=Decimal("975"),
+            recorded_at_ns=rollover_ns,
+            event_id="5" * 64,
+        )
+    )
+
+    assert context.strategy.readiness().ready is True
+
+
 @pytest.mark.parametrize(
     "callback",
     ["on_order_rejected", "on_order_denied", "on_order_expired", "on_order_canceled"],
@@ -458,6 +480,30 @@ def test_native_partial_fill_is_normalized_without_callback_io() -> None:
         "last_quantity": "0.020",
         "last_price": "10000.0",
     }
+
+
+def test_revisited_position_quantity_has_distinct_audit_identity() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    _, position_id = _open_position(context)
+    for offset, quantity in enumerate(("0.04", "0.05", "0.04"), start=3):
+        context.strategy.on_position_changed(
+            SimpleNamespace(
+                position_id=position_id,
+                quantity=context.instrument.make_qty(Decimal(quantity)),
+                avg_px_open=10_000.0,
+                ts_event=NOW_NS + offset,
+            )
+        )
+
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    changes = [
+        value for value in written if value.normalized_kind == "position" and value.summary["status"] == "changed"
+    ]
+
+    assert len(changes) == 3
+    assert len({value.event_id for value in changes}) == 3
 
 
 @pytest.mark.parametrize("reason", ["503 unavailable", "-1007 timeout", "response unknown"])
