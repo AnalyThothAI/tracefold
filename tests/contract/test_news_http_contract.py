@@ -1021,10 +1021,48 @@ def test_status_reports_unavailable_without_broker_or_token(client) -> None:
         "queues": {},
         "error_code": None,
         "observed_at_ms": None,
+        "last_publish_error_code": None,
+        "last_publish_error_at_ms": None,
     }
     assert data["delivery"]["delivery_available"] is False
     assert "hourly_cap" not in data["delivery"]
     assert isinstance(data["watchlist"], list)
+
+
+def test_status_reports_the_latest_broker_publish_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings.model_validate(
+        {
+            "ws_token": TOKEN,
+            "news": {
+                "broker": {"url": "amqp://guest:guest@127.0.0.1:5672/"},
+            },
+        }
+    )
+    news = _FakeNewsRepository()
+    original = news.status_snapshot
+
+    def status_snapshot(*, now_ms: int) -> dict[str, Any]:
+        snapshot = original(now_ms=now_ms)
+        snapshot["broker"] = {
+            "connected": True,
+            "queues": {},
+            "error_code": None,
+            "observed_at_ms": now_ms,
+            "last_publish_error_code": "news_broker_publish_failed:TimeoutError",
+            "last_publish_error_at_ms": now_ms - 5_000,
+        }
+        return snapshot
+
+    news.status_snapshot = status_snapshot  # type: ignore[method-assign]
+    app = create_app(settings=settings)
+    app.state.service = _FakeRuntime(settings, news)
+
+    response = TestClient(app).get("/api/news/status", params={"token": TOKEN})
+
+    assert response.status_code == 200
+    broker = response.json()["data"]["broker"]
+    assert broker["last_publish_error_code"] == "news_broker_publish_failed:TimeoutError"
+    assert broker["last_publish_error_at_ms"] == broker["observed_at_ms"] - 5_000
 
 
 def test_status_does_not_call_a_declared_target_available_without_running_workers() -> None:

@@ -60,6 +60,8 @@ def get_news_status(request: Request) -> Response:
         "queues": {str(k): v for k, v in (observed.get("queues") or {}).items()},
         "error_code": observed.get("error_code"),
         "observed_at_ms": observed.get("observed_at_ms"),
+        "last_publish_error_code": observed.get("last_publish_error_code"),
+        "last_publish_error_at_ms": observed.get("last_publish_error_at_ms"),
     }
     ingest = {**snapshot["ingest"], "token_configured": bool(settings.news.opennews_token)}
     pipeline = {

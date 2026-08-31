@@ -83,6 +83,8 @@ class NewsBrokerStatusData(ExactApiSchema):
     queues: dict[str, NewsBrokerQueueData] = Field(default_factory=dict)
     error_code: str | None = None
     observed_at_ms: int | None = None
+    last_publish_error_code: str | None = None
+    last_publish_error_at_ms: int | None = None
 
 
 class NewsSourceContractStageCountsData(ExactApiSchema):

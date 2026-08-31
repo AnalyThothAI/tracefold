@@ -70,6 +70,14 @@ class BusMessage:
         ).encode("utf-8")
 
 
+@dataclass(frozen=True, slots=True)
+class BrokerPublishFailure:
+    """Latest confirmed-publish failure observed by one Workers process."""
+
+    error_code: str
+    at_ms: int
+
+
 class BusDecodeError(ValueError):
     pass
 
@@ -191,6 +199,7 @@ __all__ = [
     "RK_RAW_RECOVERY",
     "RK_VERDICT_PUSH",
     "BrokerBackpressure",
+    "BrokerPublishFailure",
     "BrokerUnavailable",
     "BusDecodeError",
     "BusMessage",

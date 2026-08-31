@@ -586,6 +586,10 @@ export interface components {
             connected?: boolean | null;
             /** Error Code */
             error_code?: string | null;
+            /** Last Publish Error At Ms */
+            last_publish_error_at_ms?: number | null;
+            /** Last Publish Error Code */
+            last_publish_error_code?: string | null;
             /** Observed At Ms */
             observed_at_ms?: number | null;
             /** Queues */

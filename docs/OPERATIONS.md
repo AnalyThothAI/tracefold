@@ -484,6 +484,15 @@ against the bound, `consumers`, and `policy_ok`. The broker health item turns
 `bad` on policy drift, a queue with no consumer, any pending dead letter, or a
 queue past 80% of its byte bound.
 
+`/api/news/status.broker.last_publish_error_code` and
+`last_publish_error_at_ms` retain the latest confirmed-publish failure observed
+by the running Workers process; `news_broker_publish_failed:TimeoutError`
+therefore remains visible after the handler delivery has been returned to the
+broker. Prometheus counts the same bounded classes in
+`tracefold_news_rabbitmq_publish_failure_total{reason_class=...}`. The 10-second
+publisher-confirm wait is a local bounded-wait policy, not a RabbitMQ delivery
+contract; RabbitMQ gives no deadline guarantee for asynchronous confirms.
+
 A blocked dead letter is never lost, but it is not instant either: RabbitMQ
 retries the transfer roughly every three minutes, so `dead_letter_pending`
 staying above zero for one tick is expected during a `news.dead` outage and
@@ -732,6 +741,7 @@ tracefold_news_handoff_oldest_age_seconds{stage}
 tracefold_news_handoff_repair_total{stage,outcome}
 tracefold_news_handoff_expired_total{stage}
 tracefold_news_rabbitmq_consumer_fatal_total{queue,reason_class}
+tracefold_news_rabbitmq_publish_failure_total{reason_class}
 tracefold_news_opennews_incident_open{provider,cause}
 tracefold_news_opennews_incident_oldest_age_seconds{provider,cause}
 tracefold_news_opennews_recovery_turn_total{outcome}
@@ -851,8 +861,11 @@ host names resolve to the published loopback ports (`postgres` ->
 `127.0.0.1:${TRACEFOLD_RABBITMQ_PORT:-5672}`), so the same `config.yaml`
 serves `docker compose exec` and host-side CLI runs. Connection/setup faults may
 reconnect before consuming a delivery. Once a message task owns a delivery,
-broker, settlement, or unknown handler failure leaves the consumer scope and
-makes Workers unready; it is never converted into a permanent data error.
+handler-side `BrokerUnavailable` / `BrokerBackpressure` is a counted broker
+return, delayed by the existing policy and terminal only after the shared
+three-attempt budget. Settlement failures and unknown handler exceptions leave
+the consumer scope and make Workers unready; neither is converted into a
+permanent data error.
 While the broker is unreachable the Receiver keeps the WSS open, records every
 failed interval as a durable `broker_unavailable` incident, and Recovery fills
 the closed interval from official Strategy history. Queue overflow on
@@ -862,8 +875,8 @@ causes from PostgreSQL, including incidents created by a previous process.
 
 Dead letters: `q:news.dead` receives permanently failed messages (schema
 errors, explicit `PermanentError`, `TransientError` after 3 attempts, and
-broker delivery-limit hits). Unclassified handler exceptions, retry-lane
-publish failures, and ack/reject failures do not terminally settle the
+handler-side broker publish failures after the same 3 attempts). Unclassified
+handler exceptions and ack/reject failures do not terminally settle the
 delivery; they fail Workers instead. The queue is declared with delivery limit
 1,000,000 so peeking never drops evidence. `tracefold news dlq inspect
 [--limit N]` peeks without consuming, `tracefold news dlq replay [--limit N]`

@@ -50,7 +50,11 @@ from tracefold.news.bus import (
     TransientError,
     decode_body,
 )
-from tracefold.news.telemetry import NewsDurableEventTelemetryPort, NewsRabbitConsumerFatalReason
+from tracefold.news.telemetry import (
+    NewsDurableEventTelemetryPort,
+    NewsRabbitConsumerFatalReason,
+    NewsRabbitPublishFailureReason,
+)
 from tracefold.platform.docker_host import local_docker_host_amqp_url
 
 log = logging.getLogger("tracefold.news.bus")
@@ -72,6 +76,10 @@ _DEFAULT_MANAGEMENT_PORT: Final = 15672
 # consumer attach in Workers bounds its pre-consume verification with this budget, and the broker
 # integration tests settle with the same one.
 POLICY_EFFECTIVE_TIMEOUT_SECONDS: Final = 30.0
+# Local wait policy, not a RabbitMQ guarantee. Publisher confirms are asynchronous and RabbitMQ makes
+# "No guarantees ... as to how soon a message is confirmed": https://www.rabbitmq.com/docs/confirms
+# A timeout is therefore an ambiguous transport outcome that callers must settle recoverably.
+PUBLISH_CONFIRM_WAIT_SECONDS: Final = 10.0
 _QUEUE_COLUMNS: Final = ",".join(
     (
         "name",
@@ -204,11 +212,18 @@ class RabbitMQBus:
         self._connection: AbstractRobustConnection | None = None
         self._publish_channel: AbstractRobustChannel | None = None
         self._exchange: aio_pika.abc.AbstractRobustExchange | None = None
+        self._last_publish_failure: news_bus.BrokerPublishFailure | None = None
         self._lock = asyncio.Lock()
 
     @property
     def prefix(self) -> str:
         return self._prefix
+
+    @property
+    def last_publish_failure(self) -> news_bus.BrokerPublishFailure | None:
+        """Latest confirmed-publish failure observed by this Workers process, if any."""
+
+        return self._last_publish_failure
 
     def queue_name(self, name: str) -> str:
         return _q(self._prefix, name)
@@ -344,13 +359,39 @@ class RabbitMQBus:
 
     async def _publish_confirmed(self, exchange: aio_pika.abc.AbstractExchange, message: BusMessage) -> None:
         try:
-            await exchange.publish(self._amqp_message(message), routing_key=message.routing_key, timeout=10)
+            await exchange.publish(
+                self._amqp_message(message),
+                routing_key=message.routing_key,
+                timeout=PUBLISH_CONFIRM_WAIT_SECONDS,
+            )
         except PublishError as exc:
-            raise news_bus.BrokerUnavailable("news_broker_publish_unroutable") from exc
+            error_code = "news_broker_publish_unroutable"
+            self._record_publish_failure(error_code, "unroutable")
+            raise news_bus.BrokerUnavailable(error_code) from exc
         except DeliveryError as exc:
-            raise news_bus.BrokerBackpressure("news_broker_publish_rejected") from exc
-        except (TimeoutError, AMQPError, ChannelInvalidStateError, OSError) as exc:
-            raise news_bus.BrokerUnavailable(f"news_broker_publish_failed:{type(exc).__name__}") from exc
+            error_code = "news_broker_publish_rejected"
+            self._record_publish_failure(error_code, "backpressure")
+            raise news_bus.BrokerBackpressure(error_code) from exc
+        except TimeoutError as exc:
+            error_code = "news_broker_publish_failed:TimeoutError"
+            self._record_publish_failure(error_code, "confirm_timeout")
+            raise news_bus.BrokerUnavailable(error_code) from exc
+        except (AMQPError, ChannelInvalidStateError, OSError) as exc:
+            error_code = f"news_broker_publish_failed:{type(exc).__name__}"
+            self._record_publish_failure(error_code, "transport")
+            raise news_bus.BrokerUnavailable(error_code) from exc
+
+    def _record_publish_failure(
+        self,
+        error_code: str,
+        reason_class: NewsRabbitPublishFailureReason,
+    ) -> None:
+        self._last_publish_failure = news_bus.BrokerPublishFailure(
+            error_code=error_code,
+            at_ms=news_bus.now_ms(),
+        )
+        if self._telemetry is not None:
+            self._telemetry.record_news_rabbitmq_publish_failure(reason_class)
 
     # ---------------- consume ----------------
     async def consume(self, queue: str, handler: Handler, *, prefetch: int, stop_event: asyncio.Event) -> None:
@@ -432,10 +473,11 @@ class RabbitMQBus:
 
         `reject(requeue=True)` is the broker's counted failure: it increments `x-delivery-count`, is
         delayed by the queue's delayed-retry policy, and becomes terminal once the delivery limit is
-        spent. `nack(requeue=True)` is the uncounted return: delayed the same way, but it never spends
-        the budget, so a process that cannot admit the message can say so indefinitely. An unclassified
-        exception settles nothing and fails the consumer, leaving the message unacked for the broker to
-        return when the channel dies.
+        spent. Business `TransientError` and handler-side `BrokerUnavailable` / `BrokerBackpressure`
+        share that one budget. `nack(requeue=True)` is the uncounted return: delayed the same way, but it
+        never spends the budget, so a process that cannot admit the message can say so indefinitely. An
+        unclassified exception settles nothing and fails the consumer, leaving the message unacked for
+        the broker to return when the channel dies.
         """
 
         try:
@@ -456,15 +498,15 @@ class RabbitMQBus:
         except TransientError:
             await self._settle(queue, incoming.reject(requeue=True))
             return
+        except (news_bus.BrokerBackpressure, news_bus.BrokerUnavailable):
+            await self._settle(queue, incoming.reject(requeue=True))
+            return
         except PermanentError as exc:
             log.warning("news bus permanent failure for %s: %s", message.message_id, exc)
             await self._settle(queue, incoming.reject(requeue=False))
             return
         except Exception as exc:
-            reason: NewsRabbitConsumerFatalReason = (
-                "broker" if isinstance(exc, (news_bus.BrokerBackpressure, news_bus.BrokerUnavailable)) else "handler"
-            )
-            self._record_consumer_fatal(queue, reason)
+            self._record_consumer_fatal(queue, "handler")
             log.error("news bus handler crashed for %s (%s)", message.message_id, type(exc).__name__)
             raise
         await self._settle(queue, incoming.ack())

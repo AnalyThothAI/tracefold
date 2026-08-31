@@ -165,7 +165,7 @@ does not apply.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | OpenNews live frames | provider push; reconnect after 3 s | provider-current | Strategy stream | provider-enabled Strategies; provider-owned | one account / one WSS | one WSS session | receiver idle/provider budgets; broker confirm | history recovery / incident windows / no | disconnect opens a durable incident; a frame is not business truth before Admission persists it |
 | OpenNews history recovery | startup, request, or 300 s fallback scan; 30 s overlap | recover while provider history exists | Strategy + incident window | bounded pending incidents and enabled Strategies | 100 hits/page; shared 60 provider calls and 1,000 confirmed messages/turn | serial Strategies/pages | shared 30 s wall budget plus provider-client budget | yes / requested pass coalesces / no | typed transient failures and budget exhaustion stay pending with bounded backoff; only explicit no-history/retention terminalizes |
-| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, while broker, settlement, and unknown failures reach root supervision |
+| RabbitMQ raw handoff | message delivery | durable backlog | message ID | raw prefetch 1 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / no / no | PostgreSQL Admission is idempotent; decode/permanent/exhausted transient failures are terminal, handler-side broker failures are counted returns, and only settlement or unknown failures reach root supervision |
 | RabbitMQ event handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Event marker | Event ID | configured bounded Triage prefetch; repair batch 50 | one queue delivery | configured bounded consumer | broker connection/confirm budgets | yes / stable-ID duplicates coalesce at Triage / expired is explicit | confirmed publish precedes Event marker; PostgreSQL repairs marker-null Events while relevant and projects older rows as expired |
 | RabbitMQ verdict handoff | message delivery plus 60 s repair scan inside a 30 min relevance window | durable Verdict marker | Event ID + delivery kind | delivery prefetch 1; repair batch 50 | one queue delivery | broker prefetch 1 | broker connection/confirm budgets | yes / stable-ID duplicates converge on the delivery ledger / expired is explicit | confirmed publish precedes Verdict marker; PostgreSQL repairs push/escalate Verdicts while relevant, while external delivery remains at-most-once |
 | Binance spot quote/day quote | start-based 20 s current; 300 s day reference | current <=45 s; reference <=360 s | `binance.spot` source group | shared cap 256 symbols | shared cap 12 current groups; at most 2 due Binance day calls/turn; 100 requested symbols where supported | current 4; due day calls parallel after store | 10 s current turn / 8 s provider | no / yes / yes | completed current answers commit together; failed/pending source keeps its previous row; day failure cannot undo current |
@@ -589,12 +589,18 @@ per-message ack are their fences.
 The loopback Workers readiness probe classifies a fatal News task as
 `news_consumer_fatal`, `news_receiver_fatal`, `news_broker_unavailable`, or
 `news_recovery_fatal` instead of flattening every child failure to
-`runtime_failed`. Recoverable Receiver broker incidents and Recovery
-provider/broker/database faults do not kill the process: their durable rows and
-`/api/news/status` recovery summary keeps product health degraded until the
-history gap closes. That summary exposes `reason=recovery_pending` before an
-attempt and `reason=recovery_transient` after a typed failed attempt; neither is
-a false process-readiness failure.
+`runtime_failed`. Recoverable Receiver broker incidents, Recovery
+provider/broker/database faults, and consumer-handler `BrokerUnavailable` /
+`BrokerBackpressure` failures do not kill the process. Receiver and Recovery
+keep durable incident rows and `/api/news/status` recovery state until the
+history gap closes; a consumer handler returns the delivery through the same
+counted broker settlement as `TransientError`, so RabbitMQ delays it and
+dead-letters it after the shared budget. The status broker layer retains the
+latest confirmed-publish failure code and timestamp from the running Workers
+process. Unclassified handler and settlement failures still reach root
+supervision. Recovery exposes `reason=recovery_pending` before an attempt and
+`reason=recovery_transient` after a typed failed attempt; neither is a false
+process-readiness failure.
 
 ## Workers task set
 
@@ -687,14 +693,17 @@ failed delivery, so a process that cannot admit a message may say so
 indefinitely. A `TransientError` is `basic.reject(requeue=true)`, which
 increments the broker's `x-delivery-count` and becomes terminal once the queue's
 `delivery-limit` is spent. A decode error or `PermanentError` is
-`basic.reject(requeue=false)`. An unclassified handler exception, an ack/reject
-failure, or a broker publish failure settles nothing and fails the consumer;
-channel closure releases the delivery and Workers root supervision turns
-readiness unhealthy. The application therefore holds no retry counter, no timer
-and no republish path: `BusMessage.attempt` is read from the broker's counter
-and is one greater than it. This deliberately permits duplicates at the
-confirm-to-marker crash window and relies on the existing stable message IDs
-and PostgreSQL idempotency keys to converge.
+`basic.reject(requeue=false)`. A handler-side `BrokerUnavailable` or
+`BrokerBackpressure` is the same counted `basic.reject(requeue=true)` as a
+`TransientError`; it shares the one delivery budget and never fails Workers
+root by itself. An unclassified handler exception or an ack/reject failure
+settles nothing and fails the consumer; channel closure releases the delivery
+and Workers root supervision turns readiness unhealthy. The application
+therefore holds no retry counter, no timer and no republish path:
+`BusMessage.attempt` is read from the broker's counter and is one greater than
+it. This deliberately permits duplicates at the confirm-to-marker crash window
+and relies on the existing stable message IDs and PostgreSQL idempotency keys to
+converge.
 
 Retry configuration is a RabbitMQ policy, generated from
 `tracefold.news.broker_policy` into `docker/rabbitmq/definitions.json` and
