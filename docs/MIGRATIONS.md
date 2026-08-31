@@ -41,10 +41,10 @@ head `20260830_0333`. The implementation was reconciled with
 `main@30b924abd61f42302314626d4270e962c5db9cd9` / `20260830_0336`, whose #398
 genesis deliberately removed the retired News archive compatibility plane.
 Revision `20260830_0337` adds only the missing Nautilus canonical-JSON function
-grant. The #375 audit found no additional object that can be removed without
-changing the News current contract or Trading capital/execution truth,
-so no published revision was edited and no forward-removal revision is
-warranted. The matrix records the 0330–0332 audit result and explicitly marks
+grant. Revision `20260831_0338` removes the later-proven unowned global Nautilus
+heartbeat/readiness projection; the per-binding runtime remains the sole current
+execution-readiness truth. No published revision was edited. The matrix records
+the 0330–0332 audit result and explicitly marks
 the compatibility objects subsequently superseded by #398. Objects grouped in
 one row inherit every field in that row; each exact object name is listed so
 the contract test can fail closed on omissions.

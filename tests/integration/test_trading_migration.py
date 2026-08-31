@@ -42,6 +42,7 @@ INTENT_POLICY_SHA256 = "5788964eb8e210bb09b2cfc5d540c4d680bc9982ae023f3d72227194
 BEFORE_SNAPSHOT = "20260825_0307"
 BEFORE_STRATEGY_KERNEL = "20260825_0309"
 BEFORE_INTENT_HARD_CUT = "20260828_0316"
+BEFORE_GLOBAL_NAUTILUS_READINESS_CUT = "20260830_0337"
 
 
 def _upgrade(revision: str) -> None:
@@ -1467,6 +1468,72 @@ def test_0327_persists_orthogonal_decision_binding_and_catalog_truth() -> None:
             "adapter_credential_write": False,
             "adapter_catalog_write": False,
         }
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def test_0338_drops_unowned_global_nautilus_readiness() -> None:
+    conn: Any | None = None
+    try:
+        _fresh_schema_at(BEFORE_GLOBAL_NAUTILUS_READINESS_CUT)
+        conn = connect_postgres_test(read_only=False)
+        conn.execute(
+            """
+            UPDATE trading_runtime_state
+               SET nautilus_heartbeat_at_ms = %s,
+                   nautilus_ready = true,
+                   nautilus_readiness_reason = 'ready',
+                   nautilus_unexpected_exposure = false
+             WHERE id = 1
+            """,
+            (NOW,),
+        )
+        before = conn.execute(
+            "SELECT pg_relation_filenode('trading_runtime_state'::regclass) AS relfilenode, "
+            "(SELECT count(*) FROM trading_runtime_state) AS row_count"
+        ).fetchone()
+        conn.commit()
+
+        conn.execute("BEGIN")
+        conn.execute("LOCK TABLE trading_runtime_state IN ACCESS SHARE MODE")
+        with pytest.raises(DBAPIError):
+            _upgrade("head")
+        conn.rollback()
+        conn.close()
+        conn = None
+
+        _upgrade("head")
+
+        conn = connect_postgres_test(read_only=False)
+        columns = {
+            str(row["column_name"])
+            for row in conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'trading_runtime_state'"
+            ).fetchall()
+        }
+        assert columns.isdisjoint(
+            {
+                "nautilus_heartbeat_at_ms",
+                "nautilus_ready",
+                "nautilus_readiness_reason",
+                "nautilus_unexpected_exposure",
+            }
+        )
+        runtime = conn.execute(
+            "SELECT control, blacklist_revision, arm_epoch FROM trading_runtime_state WHERE id = 1"
+        ).fetchone()
+        assert dict(runtime) == {"control": "PAUSED", "blacklist_revision": 0, "arm_epoch": 1}
+        after = conn.execute(
+            "SELECT pg_relation_filenode('trading_runtime_state'::regclass) AS relfilenode, "
+            "(SELECT count(*) FROM trading_runtime_state) AS row_count"
+        ).fetchone()
+        assert dict(after) == dict(before)
+
+        conn.execute("SET ROLE tracefold_nautilus")
+        assert TradingRepository(conn).capital_control() == "PAUSED"
+        conn.execute("RESET ROLE")
     finally:
         if conn is not None:
             conn.close()

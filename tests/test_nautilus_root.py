@@ -158,7 +158,7 @@ def test_nautilus_root_composes_one_node_and_shuts_everything_down_on_signal(
                 active_execution_capability_snapshot=lambda *, binding: capability_snapshot,
                 binding_runtime=lambda *, binding, now_ms: None,
                 active_execution_binding=lambda *, binding: None,
-                nautilus_runtime_state=lambda: {"control": "PAUSED"},
+                capital_control=lambda: "PAUSED",
                 active_intent_values=lambda: None,
             )
         )
@@ -383,7 +383,7 @@ def test_zero_claim_recovery_refuses_live_control_or_an_active_intent(
                 ),
                 binding_runtime=lambda *, binding, now_ms: None,
                 active_execution_binding=lambda *, binding: None,
-                nautilus_runtime_state=lambda: runtime,
+                capital_control=lambda: runtime["control"],
                 active_intent_values=lambda: active_intent,
             )
         )
