@@ -63,4 +63,4 @@ changes; it is not a per-edit step.
 - Follow the canonical lifecycle in `docs/agents/worktrees.md`.
 - Use `EnterWorktree` for a new Claude task worktree and keep an already assigned task worktree. Use the `claude/<issue>-<slug>` branch prefix unless the environment assigned another task prefix.
 - Use Plan mode for non-trivial hard cuts and keep durable scope or decision changes in the GitHub Issue.
-- Run `/code-review` on the final task branch and `/security-review` when the changed surface requires it.
+- Do not require local `/code-review` as a final checkpoint; code review belongs to the PR. Run `/security-review` when the changed surface requires it.
