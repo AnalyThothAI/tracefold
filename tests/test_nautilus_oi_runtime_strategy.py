@@ -165,7 +165,7 @@ def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
     assert restarted.strategy.readiness().unexpected_exposure is True
 
 
-def test_expired_unresolved_signal_reclaims_cached_entry_before_protection() -> None:
+def test_expired_unresolved_signal_reclaims_cached_filled_position_and_flattens() -> None:
     signal = trade_signal(expires_at_ns=NOW_NS)
     first = registered_oi_strategy()
     entry_id = deterministic_client_order_id(
@@ -181,27 +181,31 @@ def test_expired_unresolved_signal_reclaims_cached_entry_before_protection() -> 
         client_order_id=entry_id,
     )
     _accepted(first, entry)
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-EXPIRED-RECOVERY")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=first.instrument,
+        strategy_id=first.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=first.instrument.make_qty(Decimal("0.01")),
+        last_px=first.instrument.make_price(Decimal("10000")),
+        commission=Money(0, first.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    entry.apply(fill)
+    first.cache.update_order(entry)
+    first.cache.add_position(Position(first.instrument, fill), OmsType.NETTING)
     restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
 
     restarted.strategy.on_timer(None)
-    restarted.strategy.on_position_opened(
-        SimpleNamespace(
-            instrument_id=restarted.instrument.id,
-            account_id=ACCOUNT_ID,
-            strategy_id=restarted.strategy.id,
-            opening_order_id=entry.client_order_id,
-            side=PositionSide.LONG,
-            position_id=PositionId("BTCUSDT-PERP.BINANCE-OI-EXPIRED-RECOVERY"),
-            quantity=restarted.instrument.make_qty(Decimal("0.01")),
-            avg_px_open=10_000.0,
-            ts_opened=NOW_NS + 2,
-        )
-    )
 
-    assert restarted.strategy.queried == [entry]
-    protection = restarted.strategy.submitted[0][0]
-    assert protection.order_type == OrderType.STOP_MARKET
-    assert protection.is_reduce_only is True
+    flatten = restarted.strategy.submitted[0][0]
+    assert restarted.strategy.queried == [entry, flatten]
+    assert flatten.order_type == OrderType.MARKET
+    assert flatten.is_reduce_only is True
+    assert restarted.strategy.readiness().unexpected_exposure is True
 
 
 def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
@@ -774,6 +778,63 @@ def test_repeated_flatten_queries_same_exit_instead_of_submitting_again() -> Non
 
     assert len(context.strategy.submitted) == 3
     assert context.strategy.queried == [exit_order]
+
+
+def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    _accepted(context, entry)
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-BAD-EXIT")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 2,
+        )
+    )
+    bad_exit_id = deterministic_client_order_id(
+        namespace=context.profile.client_order_namespace,
+        profile_id=context.profile.profile_id,
+        signal_id=signal.signal_id,
+        leg="exit",
+    )
+    bad_exit = context.strategy.order_factory.market(
+        instrument_id=context.instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=context.instrument.make_qty(Decimal("0.05")),
+        reduce_only=True,
+        client_order_id=bad_exit_id,
+    )
+    _accepted(context, bad_exit, position_id=position_id)
+
+    context.strategy.flatten_position(position_id)
+
+    assert len(context.strategy.submitted) == 2
+    assert context.strategy.queried == []
+    assert context.strategy.readiness().unexpected_exposure is True
 
 
 def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> None:

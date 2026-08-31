@@ -329,6 +329,27 @@ class OiNautilusStrategy(Strategy):
             and entry.quantity.as_decimal() > 0
         )
 
+    def _exit_order_valid(self, *, state: _ExecutionState, exit_order: Any, position: Any) -> bool:
+        expected_id = deterministic_client_order_id(
+            namespace=self._profile.client_order_namespace,
+            profile_id=self._profile.profile_id,
+            signal_id=state.signal.signal_id,
+            leg=_exit_leg(state.exit_generation),
+        )
+        expected_side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        return bool(
+            exit_order is not None
+            and exit_order.client_order_id == expected_id
+            and exit_order.strategy_id == self.id
+            and exit_order.account_id == self._profile.account_id
+            and exit_order.instrument_id == state.route.instrument_id
+            and exit_order.side == expected_side
+            and exit_order.order_type == OrderType.MARKET
+            and exit_order.is_reduce_only
+            and exit_order.quantity.as_decimal() == state.position_quantity
+            and self.cache.position_for_order(exit_order.client_order_id) == position
+        )
+
     def _refresh_continuous_reconciliation(self) -> None:
         source = self._continuous_reconciliation
         if source is None:
@@ -478,15 +499,7 @@ class OiNautilusStrategy(Strategy):
                 if (
                     seed.exit_generation < 0
                     or seed.exit_client_order_id != expected_exit
-                    or exit_order is None
-                    or exit_order.strategy_id != self.id
-                    or exit_order.instrument_id != route.instrument_id
-                    or not exit_order.is_reduce_only
-                    or exit_order.order_type != OrderType.MARKET
-                    or exit_order.side == (OrderSide.BUY if signal.direction == "long" else OrderSide.SELL)
-                    or exit_order.quantity.as_decimal() != state.position_quantity
-                    or exit_order.account_id != self._profile.account_id
-                    or self.cache.position_for_order(exit_order.client_order_id) != position
+                    or not self._exit_order_valid(state=state, exit_order=exit_order, position=position)
                 ):
                     self._readiness.halt_for_unexpected_exposure()
                     return False
@@ -684,6 +697,21 @@ class OiNautilusStrategy(Strategy):
                 self._readiness.halt_for_unexpected_exposure()
                 self._dispose_signal(signal, "cached_entry_invalid")
                 return
+            position = self.cache.position_for_order(existing.client_order_id)
+            expected_position_side = PositionSide.LONG if signal.direction == "long" else PositionSide.SHORT
+            if (
+                position is not None
+                and position.is_open
+                and (
+                    position.account_id != self._profile.account_id
+                    or position.strategy_id != self.id
+                    or position.instrument_id != route.instrument_id
+                    or position.side != expected_position_side
+                )
+            ):
+                self._readiness.halt_for_unexpected_exposure()
+                self._dispose_signal(signal, "cached_position_invalid")
+                return
             self._orders[client_order_id] = (signal.signal_id, "entry")
             state = _ExecutionState(
                 signal=signal,
@@ -691,10 +719,17 @@ class OiNautilusStrategy(Strategy):
                 entry_order=existing,
                 submitted_at_ns=now_ns,
                 disposition_reason="replayed_query_first",
-                active=not existing.is_closed,
+                active=bool(position is not None and position.is_open) or not existing.is_closed,
                 entry_query_pending=bool(existing.is_inflight or existing.is_active_local),
             )
             self._states[signal.signal_id] = state
+            if position is not None and position.is_open:
+                state.position_id = position.id
+                state.position_quantity = abs(Decimal(str(position.quantity)))
+                state.avg_entry_price = Decimal(str(position.avg_px_open))
+                self._positions[position.id] = signal.signal_id
+                self._readiness.halt_for_unexpected_exposure()
+                self.flatten_position(position.id)
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._dispose_signal(signal, "replayed_query_first")
             return
@@ -1237,7 +1272,7 @@ class OiNautilusStrategy(Strategy):
             signal_id=signal_id,
             leg=_exit_leg(state.exit_generation),
         )
-        existing = state.exit_order or self.cache.order(client_order_id)
+        existing = state.exit_order
         if existing is not None:
             if existing.is_closed:
                 state.exit_order = None
@@ -1249,6 +1284,22 @@ class OiNautilusStrategy(Strategy):
             self._orders[client_order_id] = (signal_id, "exit")
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._observe_order(state, existing, "exit", "replayed_query_first")
+            return
+        cached = self.cache.order(client_order_id)
+        if cached is not None:
+            position = self.cache.position(position_id)
+            if position is None or not self._exit_order_valid(state=state, exit_order=cached, position=position):
+                self._readiness.halt_for_unexpected_exposure()
+                return
+            if cached.is_closed:
+                state.exit_generation += 1
+                state.exit_retry_required = True
+                return
+            state.exit_order = cached
+            state.exit_retry_required = False
+            self._orders[client_order_id] = (signal_id, "exit")
+            self.query_order(cached, client_id=ClientId("BINANCE"))
+            self._observe_order(state, cached, "exit", "replayed_query_first")
             return
         order = self.order_factory.market(
             instrument_id=state.route.instrument_id,
