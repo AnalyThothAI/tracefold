@@ -80,13 +80,13 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         return 2, {"ok": False, "error": str(exc)}
 
 
-def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any) -> tuple[int, dict[str, Any]]:
-    """Submit model drafts the operator has read, through the ordinary submit path.
+def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any) -> tuple[int, dict[str, Any]]:
+    """Submit model drafts an owner-authorized reviewer inspected, through the ordinary submit path.
 
-    This is deliberately not a shortcut around review. `ReviewDesk.submit` stays the only writer, every row is
-    still authored by the operator running this command, and the rubric's own validators still decide what is
-    acceptable. What it removes is retyping: the drafter turned "compose 300 judgments" into "read 300 and
-    say which ones are right", and this turns the second half into one command.
+    This is deliberately not a shortcut around review. `ReviewDesk.submit` stays the only writer, every row
+    names the actual accepting reviewer, and the rubric's own validators still decide what is acceptable.
+    What it removes is retyping: the drafter turned "compose judgments" into "read and decide", and this turns
+    the second half into one command.
 
     Measured against 25 Events a human had already judged, the drafter agrees 70-88% on the dimensions it is
     allowed to emit. That is useful and it is not good enough to accept unread — hence `--dry-run`,
@@ -99,13 +99,6 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     from tracefold.news.review.drafter import DRAFT_SCHEMA, DRAFTER_ID, ReviewDraft, submission_payload
     from tracefold.platform.postgres.client import transaction
 
-    # A distinguishable author, on purpose. Measured against 25 Events a human had already judged, the drafter
-    # agrees 70-88% on the dimensions it may emit, so a bulk accept carries roughly 15-20% wrong dimension
-    # labels. That is a reasonable trade for a corpus that is otherwise too small to measure anything — but
-    # only while it stays visible: one `reviewer <> 'model_drafted_operator'` filter takes every one of these
-    # back out, which is impossible if they are indistinguishable from a human's judgment.
-    principal = Principal(subject=str(args.reviewer))
-
     batch = _read_json_or_yaml(str(args.file))
     if str(batch.get("schema_id") or "") != DRAFT_SCHEMA:
         raise ValueError("news_review_accept_drafts_schema_invalid")
@@ -114,6 +107,15 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
     exclude = tuple(part.strip() for part in str(args.exclude).split(",") if part.strip())
     if not args.dry_run and not only:
         raise ValueError("news_review_accept_drafts_only_required")
+    reviewer = str(args.reviewer or "").strip()
+    if not args.dry_run and not reviewer:
+        raise ValueError("news_review_accept_drafts_reviewer_required")
+    # Dry-run creates no acceptance row, so its placeholder identity never becomes provenance.
+    principal = Principal(subject=reviewer or "preview")
+    drafter_identity = dict(batch.get("drafter") or {})
+    drafter_contract = str(drafter_identity.get("drafter_id") or DRAFTER_ID).strip()
+    drafter_model = str(drafter_identity.get("model") or "").strip()
+    draft_author = f"{drafter_contract}@{drafter_model}" if drafter_model else drafter_contract
 
     planned: list[tuple[str, str, dict[str, Any], float]] = []
     skipped: dict[str, int] = {}
@@ -140,7 +142,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, principal: Any)
             payload = submission_payload(
                 draft,
                 source_authority=cast(SourceAuthority, str(entry.get("source_authority") or "unknown")),
-                draft_author=str((batch.get("drafter") or {}).get("drafter_id") or DRAFTER_ID),
+                draft_author=draft_author,
             )
             EventRubricSubmission.model_validate(payload)
         except Exception:

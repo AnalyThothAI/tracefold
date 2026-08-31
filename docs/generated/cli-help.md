@@ -248,8 +248,8 @@ positional arguments:
     queue               open the deterministic operator review queue
     evidence            show the task-scoped evidence view
     submit              append and accept one rubric or pairwise judgment
-    accept-drafts       submit reviewed model drafts through the normal submit
-                        path (operator remains the author)
+    accept-drafts       submit reviewed model drafts through ReviewDesk under
+                        the named reviewer's identity
     external-miss       append an external miss and its rubric
 
 options:
@@ -336,10 +336,10 @@ options:
                         is allowed only with --dry-run
   --exclude EXCLUDE     comma-separated event_id or task_id prefixes to skip
                         after you have read them
-  --reviewer REVIEWER   reviewer recorded on each row. The default marks these
-                        as operator-accepted model drafts so they stay
-                        identifiable — and excludable — if their label noise
-                        later proves to matter
+  --reviewer REVIEWER   required for writes: actual accepting reviewer
+                        recorded on each row, including an identified AI
+                        adjudicator; an empty value is allowed only with
+                        --dry-run
   --dry-run             report exactly what would be submitted, and write
                         nothing
 
@@ -457,11 +457,12 @@ usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
 options:
   -h, --help          show this help message and exit
   --hours HOURS       look back this many hours from now (max 720)
-  --model MODEL       drafting model, e.g. deepseek-v4-pro
+  --model MODEL       direct drafting model, e.g. deepseek-v4-pro or
+                      qwen3.8-27b:thinking
   --limit LIMIT
   --include-reviewed  also draft Events that already carry an accepted review
                       (default: only unjudged ones)
-  --out OUT           write the draft batch JSON for human review
+  --out OUT           write the draft batch JSON for authorized review
 
 ```
 

@@ -1,0 +1,3 @@
+# Keep assisted review provenance honest
+
+The owner may delegate per-row News evidence inspection to an identified AI Adjudicator, while Gold continues to mean an explicitly accepted review reference rather than an independent human label. Teacher and critic outputs remain Proposals, the Review UI is only a replaceable projection, and reported taxonomy results are limited to agreement with owner-authorized model-assisted Gold. This trades independent-human validity for a tractable 60–100-cluster measurement without pretending an AI was human or allowing an annotation tool to become a second truth store.

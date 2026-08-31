@@ -51,7 +51,7 @@ def add_news_commands(
     review_submit.add_argument("--idempotency-key", default="")
     review_accept = review_subcommands.add_parser(
         "accept-drafts",
-        help="submit reviewed model drafts through the normal submit path (operator remains the author)",
+        help="submit reviewed model drafts through ReviewDesk under the named reviewer's identity",
     )
     review_accept.add_argument("--file", required=True, help="draft batch produced by `learning draft-reviews`")
     review_accept.add_argument(
@@ -75,10 +75,10 @@ def add_news_commands(
     )
     review_accept.add_argument(
         "--reviewer",
-        default="model_drafted_operator",
+        default="",
         help=(
-            "reviewer recorded on each row. The default marks these as operator-accepted model drafts so they "
-            "stay identifiable — and excludable — if their label noise later proves to matter"
+            "required for writes: actual accepting reviewer recorded on each row, including an identified AI "
+            "adjudicator; an empty value is allowed only with --dry-run"
         ),
     )
     review_accept.add_argument(
@@ -182,14 +182,16 @@ def add_news_commands(
     learning_draft.add_argument(
         "--hours", type=_positive_int, default=24, help="look back this many hours from now (max 720)"
     )
-    learning_draft.add_argument("--model", required=True, help="drafting model, e.g. deepseek-v4-pro")
+    learning_draft.add_argument(
+        "--model", required=True, help="direct drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
+    )
     learning_draft.add_argument("--limit", type=_positive_int, default=50)
     learning_draft.add_argument(
         "--include-reviewed",
         action="store_true",
         help="also draft Events that already carry an accepted review (default: only unjudged ones)",
     )
-    learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for human review")
+    learning_draft.add_argument("--out", required=True, help="write the draft batch JSON for authorized review")
     # #202. The one optimization entry point. It replaces `compile` (a sealed container against a metered
     # proxy) and `experiment optimize` (the same algorithm in process, behind `promotable=false`), which
     # produced two candidate lifecycles for one two-string write-set. It holds no database write, broker,
