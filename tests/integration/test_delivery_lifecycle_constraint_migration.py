@@ -4,7 +4,11 @@ import pytest
 from alembic import command
 from sqlalchemy.exc import ProgrammingError
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_migration_test_dsn,
+    prepare_test_migration_database,
+)
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.platform.postgres.migrations import alembic_config
 
@@ -16,13 +20,15 @@ def test_0324_refuses_an_invalid_lifecycle_row_admitted_by_0323_without_advancin
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
 
     config = alembic_config()
-    config.attributes["database_url"] = postgres_test_dsn()
+    config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, "20260828_0323")
 
     event_id = "delivery-lifecycle-0324"

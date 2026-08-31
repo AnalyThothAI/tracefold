@@ -89,7 +89,7 @@ def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path, p
 
     assert payload["ok"] is False
     assert payload["runtime_roles"]["ok"] is False
-    assert "workers_evidence_append" in payload["runtime_roles"]["failures"]
+    assert "workers_business_boundary" in payload["runtime_roles"]["failures"]
 
 
 def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path, postgres_clone_dsn: str):

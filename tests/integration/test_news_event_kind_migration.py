@@ -10,7 +10,12 @@ import pytest
 from alembic import command
 from psycopg.errors import CheckViolation, NotNullViolation
 
-from tests.postgres_test_utils import connect_postgres_test, reset_postgres_schema
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_migration_test_dsn,
+    prepare_test_migration_database,
+    reset_postgres_schema,
+)
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.news.events.facts import extract_fact_units
 from tracefold.news.events.identity import dedupe_family
@@ -33,7 +38,7 @@ TAXONOMY_V1_REVIEW_RUBRIC_VERSION = "news_review_v5"
 
 def _upgrade(revision: str) -> None:
     config = alembic_config()
-    config.attributes["database_url"] = postgres_test_dsn()
+    config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, revision)
 
 
@@ -42,10 +47,12 @@ def _fresh_schema_at(revision: str) -> None:
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
     _upgrade(revision)
 
 

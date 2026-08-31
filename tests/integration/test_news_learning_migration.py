@@ -13,6 +13,8 @@ from psycopg.errors import CheckViolation, RaiseException, UniqueViolation
 
 from tests.postgres_test_utils import (
     connect_postgres_test,
+    postgres_migration_test_dsn,
+    prepare_test_migration_database,
     reset_postgres_schema,
 )
 from tests.postgres_test_utils import (
@@ -48,7 +50,7 @@ def _assert_prior_epochs_immutable(
 
 def _upgrade(revision: str) -> None:
     config = alembic_config()
-    config.attributes["database_url"] = postgres_test_dsn()
+    config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, revision)
 
 
@@ -57,10 +59,12 @@ def _fresh_schema_at(revision: str) -> None:
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
     _upgrade(revision)
 
 
@@ -254,7 +258,7 @@ def test_0336_news_current_contract_genesis_is_destructive_current_only_and_irre
 
         with pytest.raises(RuntimeError, match="irreversible News current-contract genesis"):
             config = alembic_config()
-            config.attributes["database_url"] = postgres_test_dsn()
+            config.attributes["database_url"] = postgres_migration_test_dsn()
             command.downgrade(config, "20260830_0335")
     finally:
         if conn is not None:
@@ -292,10 +296,12 @@ def test_0336_fresh_install_is_bound_before_migration_without_row_shape_inferenc
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
 
     monkeypatch.delenv("TRACEFOLD_NEWS_GENESIS_PREFLIGHT_JSON", raising=False)
     monkeypatch.setenv("TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL", "1")

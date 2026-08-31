@@ -27,7 +27,7 @@ class PostgresConfig(BaseModel):
 
     serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
     workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
-    migrate_dsn: str = "postgresql://tracefold_migrate@postgres:5432/tracefold"
+    migrate_dsn: str = "postgresql://tracefold_owner@postgres:5432/tracefold"
     nautilus_dsn: str = "postgresql://tracefold_nautilus@postgres:5432/tracefold"
     serve_password_file: str | None = "postgres_serve_password"
     workers_password_file: str | None = "postgres_workers_password"

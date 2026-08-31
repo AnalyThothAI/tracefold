@@ -34,7 +34,6 @@ from tracefold.platform.config.models import Settings
 from tracefold.platform.postgres.runtime_roles import (
     RUNTIME_LOGIN_ROLES,
     provision_runtime_role_passwords,
-    revoke_legacy_runtime_login,
     runtime_role_contract,
 )
 
@@ -144,7 +143,7 @@ def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None
         conn.close()
 
 
-def test_role_password_provisioning_and_legacy_revoke_are_transactional(tmp_path: Path) -> None:
+def test_direct_role_password_provisioning_is_transactional(tmp_path: Path) -> None:
     conn = connect_postgres_test(read_only=False)
     password_files: dict[str, Path] = {}
     for role in RUNTIME_LOGIN_ROLES:
@@ -152,23 +151,9 @@ def test_role_password_provisioning_and_legacy_revoke_are_transactional(tmp_path
         path.write_text(f"test-only-{role}-password", encoding="utf-8")
         password_files[role] = path
     try:
-        conn.execute(
-            """
-            DO $role$
-            BEGIN
-              IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_app') THEN
-                CREATE ROLE tracefold_app LOGIN;
-              ELSE
-                ALTER ROLE tracefold_app LOGIN;
-              END IF;
-            END
-            $role$
-            """
-        )
         provision_runtime_role_passwords(conn, password_files=password_files)
-        assert runtime_role_contract(conn, expect_legacy_revoked=False)["ok"] is True
-        revoke_legacy_runtime_login(conn)
-        assert runtime_role_contract(conn, expect_legacy_revoked=True)["ok"] is True
+        contract = runtime_role_contract(conn)
+        assert contract["ok"] is True, contract
     finally:
         conn.rollback()
         conn.close()

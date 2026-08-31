@@ -26,7 +26,7 @@ WORKSPACE = ROOT / "notebooks"
 DECLARATION_KEYS = {"channel", "purpose", "window", "identity", "safety"}
 CHANNELS = {"A", "B", "C"}
 COMMITTED_SNAPSHOT = "C"
-WRITE_CAPABLE_ROLES = ("tracefold_workers", "tracefold_migrate")
+WRITE_CAPABLE_ROLES = ("tracefold_workers", "tracefold_owner")
 NETWORKED_CALL_SITES = ("urlopen", "urllib.request", "httpx", "requests.", "aiohttp", "psycopg")
 DECLARATION_BLOCK_RE = re.compile(r"^```yaml\n(?P<body>.*?)^```$", re.DOTALL | re.MULTILINE)
 

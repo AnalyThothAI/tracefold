@@ -58,7 +58,7 @@ fi
 
 # The official image runs this file only while initializing an empty PGDATA.
 # Install the non-trusted extension before revoking the bootstrap superuser's
-# login, then hand all application DDL to the non-login owner role.
+# login, then hand all application DDL to the direct migration owner role.
 psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
 	BEGIN;
 
@@ -66,7 +66,8 @@ psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGR
 	CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
 
 	CREATE ROLE tracefold_owner
-	  NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
+	  PASSWORD '${migrate_password}';
 	CREATE ROLE tracefold_serve
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${serve_password}';
@@ -74,16 +75,10 @@ psql --quiet --set ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGR
 	CREATE ROLE tracefold_workers
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${workers_password}';
-	CREATE ROLE tracefold_migrate
-	  LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
-	  PASSWORD '${migrate_password}';
 	CREATE ROLE tracefold_nautilus
 	  LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 	  PASSWORD '${nautilus_password}';
 
-	GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE;
-	GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE;
-	GRANT tracefold_owner TO tracefold_migrate WITH SET TRUE;
 	REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 	ALTER SCHEMA public OWNER TO tracefold_owner;
 	ALTER VIEW public.pg_stat_statements OWNER TO tracefold_owner;

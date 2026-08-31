@@ -21,6 +21,7 @@ from psycopg.rows import dict_row
 
 from .audit import PostgresOperationalAudit
 from .migrations import upgrade_head
+from .runtime_roles import MIGRATION_ROLE
 
 POSTGRES_PRODUCTION_IMAGE = (
     "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
@@ -29,6 +30,7 @@ POSTGRES_PRODUCTION_IMAGE = (
 
 def run_restore_drill(
     admin_dsn: str,
+    migration_dsn: str,
     *,
     seed_and_summarize: Callable[[str], dict[str, Any]],
     summarize: Callable[[Any], dict[str, Any]],
@@ -39,12 +41,16 @@ def run_restore_drill(
     suffix = uuid.uuid4().hex[:12]
     source_name = f"tracefold_restore_source_{suffix}"
     restored_name = f"tracefold_restore_target_{suffix}"
-    source_dsn = _database_dsn(admin_dsn, source_name)
-    restored_dsn = _database_dsn(admin_dsn, restored_name)
+    source_admin_dsn = _database_dsn(admin_dsn, source_name)
+    restored_admin_dsn = _database_dsn(admin_dsn, restored_name)
+    source_migration_dsn = _database_dsn(migration_dsn, source_name)
+    restored_migration_dsn = _database_dsn(migration_dsn, restored_name)
     started = time.perf_counter()
     _create_database(admin_dsn, source_name)
     _create_database(admin_dsn, restored_name)
     try:
+        _bootstrap_migration_database(source_admin_dsn)
+        _bootstrap_migration_database(restored_admin_dsn)
         fresh_install_evidence = {
             "TRACEFOLD_NEWS_GENESIS_FRESH_INSTALL": "1",
             "TRACEFOLD_RUNTIME_REVISION": "0" * 40,
@@ -55,14 +61,14 @@ def run_restore_drill(
         previous_evidence = {name: os.environ.get(name) for name in fresh_install_evidence}
         os.environ.update(fresh_install_evidence)
         try:
-            upgrade_head(source_dsn)
+            upgrade_head(source_migration_dsn)
         finally:
             for name, value in previous_evidence.items():
                 if value is None:
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
-        source_summary = seed_and_summarize(source_dsn)
+        source_summary = seed_and_summarize(source_migration_dsn)
         with tempfile.TemporaryDirectory(prefix="tracefold-restore-") as directory:
             workspace = Path(directory)
             pgpass = workspace / "pgpass"
@@ -72,7 +78,7 @@ def run_restore_drill(
             dump_seconds = time.perf_counter() - dump_started
             restore_started = time.perf_counter()
             _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_pre")
-            _set_restore_function_search_path(restored_dsn, enabled=True)
+            _set_restore_function_search_path(restored_admin_dsn, enabled=True)
             try:
                 _run_client(
                     admin_dsn,
@@ -82,12 +88,12 @@ def run_restore_drill(
                     action="restore_data",
                 )
             finally:
-                _set_restore_function_search_path(restored_dsn, enabled=False)
+                _set_restore_function_search_path(restored_admin_dsn, enabled=False)
             _run_client(admin_dsn, database=restored_name, workspace=workspace, pgpass=pgpass, action="restore_post")
             restore_seconds = time.perf_counter() - restore_started
 
-        upgrade_head(restored_dsn)
-        with psycopg.connect(restored_dsn, row_factory=dict_row) as conn:
+        upgrade_head(restored_migration_dsn)
+        with psycopg.connect(restored_migration_dsn, row_factory=dict_row) as conn:
             audit = PostgresOperationalAudit(conn).run(deep=True)
             restored_summary = summarize(conn)
             smoke_results = smoke(conn)
@@ -130,7 +136,22 @@ def run_restore_drill(
 
 def _create_database(admin_dsn: str, name: str) -> None:
     with psycopg.connect(admin_dsn, autocommit=True) as conn:
-        conn.execute(sql.SQL("CREATE DATABASE {}").format(sql.Identifier(name)))
+        conn.execute(
+            sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                sql.Identifier(name),
+                sql.Identifier(MIGRATION_ROLE),
+            )
+        )
+
+
+def _bootstrap_migration_database(admin_dsn: str) -> None:
+    with psycopg.connect(admin_dsn) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
+        conn.execute(sql.SQL("ALTER VIEW public.pg_stat_statements OWNER TO {}").format(sql.Identifier(MIGRATION_ROLE)))
+        conn.execute(
+            sql.SQL("ALTER VIEW public.pg_stat_statements_info OWNER TO {}").format(sql.Identifier(MIGRATION_ROLE))
+        )
 
 
 def _database_dsn(dsn: str, database: str) -> str:

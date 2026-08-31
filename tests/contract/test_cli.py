@@ -458,6 +458,11 @@ class CliTests(unittest.TestCase):
 
         settings = Settings.model_validate(payload)
 
+        self.assertEqual(
+            settings.storage.postgres.migrate_dsn,
+            "postgresql://tracefold_owner@postgres:5432/tracefold",
+        )
+        self.assertEqual(settings.storage.postgres.migrate_password_file, "postgres_migrate_password")
         self.assertTrue(settings.news.enabled)
         self.assertNotIn("rss_enabled", payload["news"])
         self.assertNotIn("title_presentation", payload["news"])
@@ -625,6 +630,9 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert config_path.is_file()
     assert app_home.stat().st_mode & 0o777 == 0o700
     assert config_path.stat().st_mode & 0o777 == 0o600
+    assert 'migrate_dsn: "postgresql://tracefold_owner@postgres:5432/tracefold"' in config_path.read_text(
+        encoding="utf-8"
+    )
     for directory_name in ("logs", "cache"):
         directory = app_home / directory_name
         assert directory.is_dir()

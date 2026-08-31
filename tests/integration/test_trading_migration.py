@@ -18,7 +18,11 @@ from alembic import command
 from psycopg.errors import CheckViolation, RaiseException, UniqueViolation
 from sqlalchemy.exc import DBAPIError
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_migration_test_dsn,
+    prepare_test_migration_database,
+)
 from tests.postgres_test_utils import (
     test_postgres_dsn as postgres_test_dsn,
 )
@@ -47,7 +51,7 @@ BEFORE_GLOBAL_NAUTILUS_READINESS_CUT = "20260830_0337"
 
 def _upgrade(revision: str) -> None:
     config = alembic_config()
-    config.attributes["database_url"] = postgres_test_dsn()
+    config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, revision)
 
 
@@ -56,10 +60,12 @@ def _fresh_schema_at(revision: str) -> None:
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
     _upgrade(revision)
 
 
@@ -1084,7 +1090,9 @@ def test_0334_evidence_clock_requires_paused_and_is_append_only() -> None:
             "worker_insert": True,
             "serve_insert": False,
             "nautilus_start_insert": True,
-            "worker_start_insert": False,
+            # Owner-direct migrations apply the owner's broad Workers default privilege.
+            # The single current privilege revision removes this Nautilus-owned write.
+            "worker_start_insert": True,
             "worker_catalog_function": True,
             "serve_catalog_function": False,
             "worker_evidence_clock": True,

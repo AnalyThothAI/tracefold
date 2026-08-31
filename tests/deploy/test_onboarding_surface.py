@@ -255,7 +255,15 @@ def test_one_command_onboarding_has_one_public_lifecycle() -> None:
     targets = {line.split(maxsplit=1)[0] for line in result.stdout.splitlines() if line}
 
     assert result.returncode == 0, result.stderr
-    assert {"up", "status", "logs", "down", "db-provision-nautilus-role", "trading-hard-cut-preflight"} <= targets
+    assert {
+        "up",
+        "status",
+        "logs",
+        "down",
+        "db-role-hard-cut",
+        "db-provision-nautilus-role",
+        "trading-hard-cut-preflight",
+    } <= targets
     assert {
         "docker-up",
         "docker-status",

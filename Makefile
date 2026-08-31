@@ -56,7 +56,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-provision-nautilus-role _db-provision-nautilus-role-locked news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health db-role-hard-cut _db-role-hard-cut-locked db-provision-nautilus-role _db-provision-nautilus-role-locked news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -371,6 +371,56 @@ _db-migrate-locked:
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
 
+db-role-hard-cut: preflight github-preflight ## one-time offline owner/migrator hard cut for the supported old volume
+	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-role-hard-cut-locked PREFLIGHT="$(PREFLIGHT)"
+
+_db-role-hard-cut-locked:
+	@python3 scripts/with_deployment_lock.py --assert-held
+	@uv run python scripts/require_main_ci.py
+	@set -eu; \
+		if [ "$(origin PREFLIGHT)" != "command line" ] || [ -z "$(PREFLIGHT)" ]; then \
+			echo "Pass the verified backup receipt explicitly: make db-role-hard-cut PREFLIGHT=/absolute/path.json" >&2; \
+			exit 2; \
+		fi; \
+		uv run python scripts/require_db_role_hard_cut_preflight.py "$(PREFLIGHT)"; \
+		if [ -n "$${COMPOSE_FILE:-}" ] || [ -n "$${COMPOSE_PROJECT_NAME:-}" ] || \
+			[ -n "$${COMPOSE_ENV_FILES:-}" ] || [ -n "$${COMPOSE_PROFILES:-}" ] || \
+			[ -n "$${COMPOSE_PATH_SEPARATOR:-}" ] || [ -n "$${COMPOSE_DISABLE_ENV_FILE:-}" ]; then \
+			echo "db-role-hard-cut refuses inherited Compose stack variables; rerun without COMPOSE_* overrides." >&2; \
+			exit 2; \
+		fi; \
+		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
+		COMPOSE_PROJECT_NAME=tracefold; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
+		running=$$(docker compose ps -q); \
+		if [ -n "$$running" ]; then \
+			echo "PostgreSQL role hard cut is offline-only; stop the entire Tracefold stack first." >&2; \
+			exit 1; \
+		fi; \
+		docker compose run --rm --no-deps --user postgres \
+			--entrypoint /usr/local/bin/tracefold-hard-cut-owner-role postgres
+	@$(MAKE) --no-print-directory _up-locked
+	@set -eu; \
+		COMPOSE_FILE="$$(pwd -P)/compose.yaml"; \
+		COMPOSE_PROJECT_NAME=tracefold; \
+		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
+		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
+		docker compose exec -T workers tracefold db audit; \
+		nautilus_role=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_nautilus_password); export PGPASSWORD; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -U tracefold_nautilus -d tracefold \
+			-c "SELECT current_user"'); \
+		capital_control=$$(docker compose exec -T postgres sh -eu -c \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); export PGPASSWORD; \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -U tracefold_serve -d tracefold \
+			-c "SELECT control FROM trading_runtime_state WHERE id = 1"'); \
+		if [ "$$nautilus_role" != "tracefold_nautilus" ] || [ "$$capital_control" != "PAUSED" ]; then \
+			echo "PostgreSQL role hard cut smoke failed; keep the stack paused." >&2; \
+			exit 1; \
+		fi; \
+		echo "PostgreSQL role hard cut verified: migration/audit/readiness green; Capital remains PAUSED."
+
 db-provision-nautilus-role: preflight github-preflight ## offline one-shot provisioning for an existing PostgreSQL volume
 	@uv run python scripts/with_deployment_lock.py make --no-print-directory _db-provision-nautilus-role-locked
 
@@ -484,6 +534,7 @@ _trading-hard-cut-preflight-if-needed:
 			20260830_0336\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0336; News current-contract genesis is present." ;; \
 			20260830_0337\|t\|t) echo "Trading evidence-clock hard cut, News current-contract genesis, and the Nautilus canonical-JSON grant are present at database head 20260830_0337." ;; \
 			20260831_0338\|t\|t) echo "Trading per-binding runtime hard cut and News current-contract genesis are present at database head 20260831_0338." ;; \
+			20260831_0339\|t\|t) echo "The direct-owner role hard cut and retained runtime ACL contract are present at database head 20260831_0339." ;; \
 			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
 			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
 		esac

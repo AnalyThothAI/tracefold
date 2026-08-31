@@ -59,10 +59,12 @@ as material facts.
 The deployment composition has four required boundaries: PostgreSQL, one
 successful migration job, Serve, and Workers. `make up` is only their
 fail-closed lifecycle orchestrator; it does not merge the two runtime roots.
-On an empty PostgreSQL volume, the image's `initdb` hook creates the
-non-login owner plus least-privilege Serve, Workers, Nautilus, and migrate roles from
-separate password files, then revokes the bootstrap login before the migration
-job runs. That hook is never replayed against a non-empty cluster. Repeated
+On an empty PostgreSQL volume, the image's `initdb` hook creates the ordinary
+direct-login migration owner plus least-privilege Serve, Workers, and Nautilus
+roles from separate password files. The owner reuses
+`postgres_migrate_password`; no second migrator role exists. The hook then
+revokes the bootstrap login before the migration job runs and is never replayed
+against a non-empty cluster. Repeated
 startup therefore preserves the database and operator-owned credentials, while
 an unknown existing schema or missing role fails instead of being implicitly
 hard-cut.
@@ -1937,6 +1939,10 @@ not recreate any News compatibility object.
 `20260831_0338` removes the retired global Nautilus heartbeat/readiness
 projection; per-binding runtime rows and the live readiness endpoint remain the
 only current execution-readiness facts.
+`20260831_0339` removes the non-isolating migrator/SET ROLE seam: the
+migration-only `tracefold_owner` is the direct ordinary LOGIN and sole owner of
+application objects/default privileges, while bootstrap remains NOLOGIN and
+Serve, Workers, and Nautilus retain their existing capability boundaries.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard
