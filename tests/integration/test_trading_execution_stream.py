@@ -48,6 +48,30 @@ def _prepare_signal(*, suffix: str, case_id: str | None = None, **updates: objec
     return prepare_trade_signal(**values)
 
 
+def _append_signal(repo: TradingRepository, prepared: PreparedTradeSignal) -> dict[str, object]:
+    """Give the dormant execution stream a Signal produced by the current Case owner."""
+
+    case_id = prepared.value.case_id
+    repo.conn.execute(
+        """
+        INSERT INTO trading_cases (
+          case_id, underlying_key, trigger_kind, primary_source_key,
+          supplemental_source_keys, manifest, manifest_sha256, state,
+          policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+          updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
+          capital_disposition, capital_reason
+        ) VALUES (
+          %s, %s, 'news', %s, '[]'::jsonb, '{"test":"execution-stream"}'::jsonb,
+          %s, 'SIGNAL_EMITTED', 'long', 'execution_stream_fixture', 1, 1, 1, 1,
+          'execution_stream_fixture', 'v1', %s, 'not_applicable', NULL
+        )
+        ON CONFLICT DO NOTHING
+        """,
+        (case_id, f"stream:{case_id}", f"stream-source:{case_id}", "e" * 64, "f" * 64),
+    )
+    return repo.append_trade_signal(prepared)
+
+
 def _prepare_command(*, suffix: str, **updates: object) -> PreparedOperatorIntent:
     values: dict[str, object] = {
         "command_id": suffix * 64,
@@ -135,13 +159,13 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     try:
         with conn.transaction():
             repo = TradingRepository(conn)
-            first_row = repo.append_trade_signal(signal)
-            identical_row = repo.append_trade_signal(signal)
+            first_row = _append_signal(repo, signal)
+            identical_row = _append_signal(repo, signal)
             assert identical_row == first_row
             assert conn.execute("SELECT count(*) AS n FROM trading_trade_signals").fetchone()["n"] == 1
 
             with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
-                repo.append_trade_signal(conflicting_signal)
+                _append_signal(repo, conflicting_signal)
 
             command_row = repo.append_operator_intent(command)
             assert repo.append_operator_intent(command) == command_row
@@ -220,10 +244,10 @@ def test_concurrent_identical_appends_are_idempotent() -> None:
                 second.execute("SET application_name = 'tracefold-433-signal-retry'")
                 with second.transaction():
                     started.set()
-                    return second_repo.append_trade_signal(signal)
+                    return _append_signal(second_repo, signal)
 
             with first.transaction():
-                first_signal = first_repo.append_trade_signal(signal)
+                first_signal = _append_signal(first_repo, signal)
                 signal_future = executor.submit(second_signal_append)
                 assert started.wait(1)
                 _wait_for_database_lock(observer, application_name="tracefold-433-signal-retry")
@@ -289,7 +313,7 @@ def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() 
     try:
         with conn.transaction():
             repo = TradingRepository(conn)
-            historical_signal_row = repo.append_trade_signal(historical_signal_prepared)
+            historical_signal_row = _append_signal(repo, historical_signal_prepared)
             historical_command_row = repo.append_operator_intent(historical_command_prepared)
 
         historical_signal = materialize_trade_signal(historical_signal_row)
@@ -310,7 +334,7 @@ def test_activation_fence_and_final_disposition_drive_bounded_anti_join_reads() 
             assert repo.append_execution_profile_activation(activation) == activation
             with pytest.raises(RuntimeError, match="execution_stream_identity_conflict"):
                 repo.append_execution_profile_activation(conflicting_activation)
-            signal_row = repo.append_trade_signal(signal_prepared)
+            signal_row = _append_signal(repo, signal_prepared)
             command_row = repo.append_operator_intent(command_prepared)
 
         signal = materialize_trade_signal(signal_row)
@@ -428,7 +452,7 @@ def test_database_rejects_execution_fact_mutation() -> None:
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_trade_signal(signal)
+            _append_signal(repo, signal)
         with (
             pytest.raises(psycopg.errors.RaiseException, match="trading_execution_stream_append_only"),
             conn.transaction(),
@@ -478,7 +502,7 @@ def test_contract_and_postgres_json_bounds_match_at_exact_edges() -> None:
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_trade_signal(signal)
+            _append_signal(repo, signal)
             repo.append_execution_observations(observation_batch)
 
         validators = conn.execute(
@@ -571,7 +595,7 @@ def test_execution_stream_constraints_reject_direct_invalid_facts() -> None:
     try:
         repo = TradingRepository(conn)
         with conn.transaction():
-            repo.append_trade_signal(signal)
+            _append_signal(repo, signal)
             repo.append_operator_intent(command)
             repo.append_execution_profile_activation(activation)
             repo.append_execution_observations(observation_batch)
@@ -835,6 +859,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert set(indexes) == {
         "trading_trade_signals_pkey",
         "trading_trade_signals_case_id_key",
+        "ix_trading_trade_signals_observed_at",
+        "ix_trading_trade_signals_expires_at",
         "ix_trading_trade_signals_unresolved",
         "trading_operator_intents_pkey",
         "trading_operator_intent_profile_unique",
@@ -849,6 +875,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
     assert indexes["ix_trading_trade_signals_unresolved"].endswith(
         "USING btree (seq) INCLUDE (signal_id, alpha_contract_sha256, expires_at_ns, payload)"
     )
+    assert indexes["ix_trading_trade_signals_observed_at"].endswith("USING btree (observed_at_ns)")
+    assert indexes["ix_trading_trade_signals_expires_at"].endswith("USING btree (expires_at_ns)")
     assert indexes["ix_trading_operator_intents_unresolved"].endswith(
         "USING btree (target_profile_id, seq) INCLUDE (command_id, expires_at_ns)"
     )
@@ -860,6 +888,8 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_trade_signals": {
             "trading_trade_signals_pkey",
             "trading_trade_signals_case_id_key",
+            "trading_trade_signals_case_fkey",
+            "trading_trade_signals_case_link",
             "trading_trade_signal_id_check",
             "trading_trade_signal_case_check",
             "trading_trade_signal_alpha_sha_check",
@@ -915,8 +945,14 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trg_trading_operator_intents_append_only",
         "trg_trading_execution_observations_append_only",
         "trg_trading_execution_profile_activations_append_only",
+        "trading_trade_signals_case_link",
     }
-    assert all("BEFORE DELETE OR UPDATE" in definition for definition in triggers.values())
+    assert all(
+        "BEFORE DELETE OR UPDATE" in definition
+        for name, definition in triggers.items()
+        if name != "trading_trade_signals_case_link"
+    )
+    assert "CONSTRAINT TRIGGER trading_trade_signals_case_link" in triggers["trading_trade_signals_case_link"]
     assert functions == {
         "trading_execution_metadata_valid": ("i", "s", False, "boolean"),
         "trading_execution_string_array_valid": ("i", "s", False, "boolean"),
@@ -963,7 +999,7 @@ def test_unresolved_reads_use_the_production_query_specs_and_indexes() -> None:
         with conn.transaction():
             repo.append_execution_profile_activation(activation)
             for signal, command in zip(signals, commands, strict=True):
-                repo.append_trade_signal(signal)
+                _append_signal(repo, signal)
                 repo.append_operator_intent(command)
         conn.execute("ANALYZE trading_trade_signals, trading_operator_intents, trading_execution_observations")
         conn.execute("SET enable_seqscan = off")

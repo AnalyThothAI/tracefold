@@ -12,12 +12,12 @@ positional arguments:
   {serve,workers,nautilus,init,config,db,news,trading,ops}
     serve               run the read-only HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
-    nautilus            run the Production V3 execution authority
+    nautilus            run the single OI Nautilus Runtime
     init                create ~/.tracefold/config.yaml
     config              print effective runtime configuration
     db                  database lifecycle commands
     news                News V3 broker, ReviewDesk, and learning commands
-    trading             Trading Case -> Intent -> Outcome and safety controls
+    trading             read Alpha Cases, Signals, and execution observations
     ops                 maintenance commands
 
 options:
@@ -52,7 +52,7 @@ usage: tracefold nautilus [-h] {run} ...
 
 positional arguments:
   {run}
-    run       run the single Nautilus TradingNode process
+    run       run the configured Runtime (disabled until 433-E)
 
 options:
   -h, --help  show this help message and exit
@@ -62,13 +62,10 @@ options:
 ## `nautilus run`
 
 ```
-usage: tracefold nautilus run [-h] [--bootstrap-zero-claims]
+usage: tracefold nautilus run [-h]
 
 options:
-  -h, --help            show this help message and exit
-  --bootstrap-zero-claims
-                        prove a paused bound account is empty before
-                        activating execution truth
+  -h, --help  show this help message and exit
 
 ```
 
@@ -748,23 +745,14 @@ options:
 ## `trading`
 
 ```
-usage: tracefold trading [-h]
-                         {status,cases,replay-oi,evidence,show,blacklist,control,authority} ...
+usage: tracefold trading [-h] {status,cases,signals,observations} ...
 
 positional arguments:
-  {status,cases,replay-oi,evidence,show,blacklist,control,authority}
-    status              Decision, Capital, binding facts, and durable outcomes
+  {status,cases,signals,observations}
+    status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
-    replay-oi           source-native BAR replay with an audited artifact and
-                        immutable receipt (#286)
-    evidence            capture, seal, preregister, unblind, and verify the
-                        Production V3 evidence clock
-    show                one case with its intent and current outcome
-    blacklist           the canonical deny-list; one row blocks every provider
-                        spelling of that underlying
-    control             set the runtime control state
-    authority           install immutable human authority artifacts and
-                        explicitly re-arm
+    signals             list engine-neutral TradeSignalV1 rows
+    observations        list append-only Runtime observations
 
 options:
   -h, --help            show this help message and exit
@@ -785,300 +773,35 @@ options:
 
 ```
 usage: tracefold trading cases [-h]
-                               [--state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,INTENT_EMITTED,BLOCKED}]
+                               [--state {PENDING,RUNNING,NO_TRADE,SIGNAL_EMITTED,BLOCKED}]
                                [--limit LIMIT]
 
 options:
   -h, --help            show this help message and exit
-  --state {PENDING,RUNNING,NO_TRADE,POLICY_REJECTED,INTENT_EMITTED,BLOCKED}
+  --state {PENDING,RUNNING,NO_TRADE,SIGNAL_EMITTED,BLOCKED}
   --limit LIMIT
 
 ```
 
-## `trading replay-oi`
+## `trading signals`
 
 ```
-usage: tracefold trading replay-oi [-h] [--days DAYS]
-                                   [--strategy {source_native_oi_smart_money_long_v3}]
-                                   [--venues VENUES] [--fidelity {bar_v1}]
-                                   [--out OUT]
+usage: tracefold trading signals [-h] [--limit LIMIT]
 
 options:
-  -h, --help            show this help message and exit
-  --days DAYS           how far back to replay; the OI ledger holds 30 days of
-                        parsed frames
-  --strategy {source_native_oi_smart_money_long_v3}
-                        the one production capital policy; a replay may only
-                        run the identity the lane runs
-  --venues VENUES       comma-separated exact source-native venue scenarios
-  --fidelity {bar_v1}
-  --out OUT             artifact root
+  -h, --help     show this help message and exit
+  --limit LIMIT
 
 ```
 
-## `trading evidence`
+## `trading observations`
 
 ```
-usage: tracefold trading evidence [-h]
-                                  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify} ...
-
-positional arguments:
-  {capture,drain,corpus-seal,candidate-register,release-register,future-unblind,verify}
-    capture             freeze a point-in-time discovery or protocol-locked
-                        future source partition
-    drain               freeze bars and funding only after the capture horizon
-                        can be finalized
-    corpus-seal         deterministically seal a discovery capture and drain;
-                        zero provider I/O
-    candidate-register  durably register one candidate or NO_CANDIDATE before
-                        a future window
-    release-register    bind an approved exact release and fixed window to the
-                        current Workers/Serve generations
-    future-unblind      evaluate one protocol-locked future partition after
-                        its fixed drain cutoff
-    verify              credential-free verification of one evidence chain,
-                        lifecycle, release, window, or rollback
+usage: tracefold trading observations [-h] [--limit LIMIT]
 
 options:
-  -h, --help            show this help message and exit
-
-```
-
-## `trading evidence capture`
-
-```
-usage: tracefold trading evidence capture [-h] --partition {discovery,future}
-                                          --start-ms START_MS --end-ms END_MS
-                                          [--candidate CANDIDATE]
-                                          [--candidate-receipt CANDIDATE_RECEIPT]
-                                          --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --partition {discovery,future}
-  --start-ms START_MS
-  --end-ms END_MS
-  --candidate CANDIDATE
-  --candidate-receipt CANDIDATE_RECEIPT
-  --out OUT             content-addressed evidence artifact root
-
-```
-
-## `trading evidence drain`
-
-```
-usage: tracefold trading evidence drain [-h] --capture CAPTURE
-                                        [--candidate CANDIDATE]
-                                        [--candidate-receipt CANDIDATE_RECEIPT]
-                                        [--max-horizon-ms MAX_HORIZON_MS]
-                                        [--finalization-lag-ms FINALIZATION_LAG_MS]
-                                        [--cost-model COST_MODEL] --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --capture CAPTURE
-  --candidate CANDIDATE
-  --candidate-receipt CANDIDATE_RECEIPT
-  --max-horizon-ms MAX_HORIZON_MS
-  --finalization-lag-ms FINALIZATION_LAG_MS
-  --cost-model COST_MODEL
-  --out OUT             content-addressed evidence artifact root
-
-```
-
-## `trading evidence corpus-seal`
-
-```
-usage: tracefold trading evidence corpus-seal [-h] --capture CAPTURE
-                                              --drain DRAIN --out OUT
-
-options:
-  -h, --help         show this help message and exit
-  --capture CAPTURE
-  --drain DRAIN
-  --out OUT          content-addressed evidence artifact root
-
-```
-
-## `trading evidence candidate-register`
-
-```
-usage: tracefold trading evidence candidate-register [-h] --file FILE
-                                                     --out OUT
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE
-  --out OUT    content-addressed evidence artifact root
-
-```
-
-## `trading evidence release-register`
-
-```
-usage: tracefold trading evidence release-register [-h] --file FILE
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE  approved release candidate YAML/JSON
-
-```
-
-## `trading evidence future-unblind`
-
-```
-usage: tracefold trading evidence future-unblind [-h] --capture CAPTURE
-                                                 --drain DRAIN
-                                                 --candidate CANDIDATE
-                                                 --candidate-receipt CANDIDATE_RECEIPT
-                                                 --out OUT
-
-options:
-  -h, --help            show this help message and exit
-  --capture CAPTURE
-  --drain DRAIN
-  --candidate CANDIDATE
-  --candidate-receipt CANDIDATE_RECEIPT
-  --out OUT             content-addressed evidence artifact root
-
-```
-
-## `trading evidence verify`
-
-```
-usage: tracefold trading evidence verify [-h] (--receipt RECEIPT |
-                                         --case-id CASE_ID | --window WINDOW |
-                                         --release RELEASE |
-                                         --rollback ROLLBACK)
-
-options:
-  -h, --help           show this help message and exit
-  --receipt RECEIPT    durable evidence receipt SHA
-  --case-id CASE_ID    single durable Case/Intent lifecycle
-  --window WINDOW      fixed seven-day acceptance YAML/JSON
-  --release RELEASE    exact approved release candidate YAML/JSON
-  --rollback ROLLBACK  rollback receipt YAML/JSON
-
-```
-
-## `trading show`
-
-```
-usage: tracefold trading show [-h] case_id
-
-positional arguments:
-  case_id
-
-options:
-  -h, --help  show this help message and exit
-
-```
-
-## `trading blacklist`
-
-```
-usage: tracefold trading blacklist [-h] [--reason REASON]
-                                   {list,add,remove} [symbol]
-
-positional arguments:
-  {list,add,remove}
-  symbol
-
-options:
-  -h, --help         show this help message and exit
-  --reason REASON
-
-```
-
-## `trading control`
-
-```
-usage: tracefold trading control [-h] {close-only,paused}
-
-positional arguments:
-  {close-only,paused}
-
-options:
-  -h, --help           show this help message and exit
-
-```
-
-## `trading authority`
-
-```
-usage: tracefold trading authority [-h]
-                                   {risk-policy-install,grant-install,grant-revoke,arm-install,activate} ...
-
-positional arguments:
-  {risk-policy-install,grant-install,grant-revoke,arm-install,activate}
-    risk-policy-install
-                        install one DailyRiskPolicyV1 JSON/YAML artifact
-    grant-install       install one ProductionPromotionGrantV1 JSON/YAML
-                        artifact
-    grant-revoke        append one ProductionPromotionGrantRevocationV1
-                        JSON/YAML artifact
-    arm-install         install one OperatorArmReceiptV1 JSON/YAML artifact
-                        while paused
-    activate            atomically activate the exact arm set for every
-                        configured binding
-
-options:
-  -h, --help            show this help message and exit
-
-```
-
-## `trading authority risk-policy-install`
-
-```
-usage: tracefold trading authority risk-policy-install [-h] --file FILE
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE
-
-```
-
-## `trading authority grant-install`
-
-```
-usage: tracefold trading authority grant-install [-h] --file FILE
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE
-
-```
-
-## `trading authority grant-revoke`
-
-```
-usage: tracefold trading authority grant-revoke [-h] --file FILE
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE
-
-```
-
-## `trading authority arm-install`
-
-```
-usage: tracefold trading authority arm-install [-h] --file FILE
-
-options:
-  -h, --help   show this help message and exit
-  --file FILE
-
-```
-
-## `trading authority activate`
-
-```
-usage: tracefold trading authority activate [-h] --arm ARM
-
-options:
-  -h, --help  show this help message and exit
-  --arm ARM   arm receipt SHA; repeat once per configured binding
+  -h, --help     show this help message and exit
+  --limit LIMIT
 
 ```
 

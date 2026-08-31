@@ -29,6 +29,16 @@ existing database passwords. The generated config has a new API bearer token
 (`ws_token`) but no live provider/model/webhook/bot credential, `news.push.enabled`
 is false, and `news.broker.url` points at the compose RabbitMQ service.
 
+The one content-changing normal-init exception is the #433-C hard cut. An exact
+pre-433-C `trading.order` / `trading.bindings` config is validated, copied
+byte-for-byte to mode-`0600` `config.pre-433c.yaml`, then atomically rewritten
+to disabled `trading.execution`. Operator-owned Binance secret-file references
+are preserved, while the retired notional and Hyperliquid execution binding
+are not carried forward. The result reports only whether migration occurred
+and the backup path. Mixed old/new shapes, unknown former fields, non-regular
+config paths, and conflicting backups fail without replacing the active
+config. Subsequent normal init runs are content-idempotent.
+
 The configuration schema is exactly the top-level keys `ws_token`, `api`
 (`host`, `port`), `storage.postgres`, `llm`, `news`, and `trading`, each a typed nested
 model with `extra=forbid`. `ws_token` is the HTTP
@@ -213,65 +223,51 @@ unchanged; these values travel only in an ephemeral typed delivery presentation.
 When push is disabled, both processes still start and a verdict that reaches a
 delivery consumer settles `terminal/delivery_unavailable`.
 
-`trading.*` is the whole Trading surface (#104, #331, #350) and is
-`enabled: false` by default. `trading.enabled` controls only the Decision
-Plane. Binding credential projection and the credential-free public venue
-catalog remain active Workers responsibilities. The accepted keys are only:
+`trading.*` is the whole Trading surface and is `enabled: false` by default.
+`trading.enabled` controls only the Alpha/Signal lane. The accepted keys are:
 
 - `enabled`;
 - `candidates.*`: `max_age_seconds`, `min_oi_value_usd` — a freshness budget and
   a venue liquidity prior, never sizing and never Alpha. `symbol_cooldown_seconds`
   and `max_rank_in_window` were retired by #348: a per-symbol re-entry delay is
   what a lane needs when several positions can be open at once, and a rank ceiling
-  is selectivity, which the policy already owns;
-- `order.fixed_notional_usd`, the sole operator execution value, validated as
-  `0 < value <= 10`;
-- `bindings.binance_usdm.api_key_file` / `api_secret_file`;
-- `bindings.hyperliquid_perp.private_key_file` / `account_address`.
+  is selectivity, which the policy already owns. Signal TTL is the smaller of
+  180 seconds and this accepted freshness budget, so every valid setting keeps
+  the resulting Signal inside its absolute
+  `source_observed_at + max_age_seconds` deadline; a Case reaching that deadline
+  is `BLOCKED/source_stale` and emits no Signal;
+- `execution.mode`: `disabled|paper|live`, default `disabled`;
+- `execution.profile_id` and `execution.account_slot`, cold immutable
+  identities for the future Runtime;
+- `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
+  Binance USD-M secret references.
 
 Secret-file paths are resolved relative to the operator config directory
-unless absolute. Missing files are the legal `unconfigured` state. Partial,
-malformed, insecure, or unreadable inputs are `invalid`; neither state exposes
-secret contents. A configured binding is still `stopped/unknown` until its
-later adapter-owned read-only preflight exists (#356/#357).
+unless absolute. Config and status may report only the resolved path or whether
+it is configured; they never expose secret contents. In #433-C the App Nautilus
+root accepts only `disabled`; `paper` or `live` fails closed as
+`oi_runtime_activation_not_available_before_433e`.
 
-There is no mode, live symbol, account, venue, OpenTrade, approval, backend
-selector, or Intent-acceptance configuration, and since #331 no `regime.*`,
-no `policy.*` and no model budget: a capital threshold in a YAML file is a rule
+There is no live symbol, route, quantity, notional, leverage, grant, reservation,
+approval, backend selector, or Intent-acceptance configuration, and no
+`regime.*`, `policy.*`, or model budget: an Alpha threshold in YAML is a rule
 with no version and no frozen evidence. Unknown retired keys fail strict
-settings validation. The capital lane's poll cadence is App-owned and the
+settings validation. The Signal lane's poll cadence is App-owned and the
 Nautilus cadence is code-owned.
 
-The one production policy, `source_native_oi_smart_money_long_v3`, is
+The one production policy, `source_native_oi_smart_money_long_v4`, is
 code-owned and frozen onto every Case it decides, together with the per-check
 evidence (`policy_checks`: threshold, operator, measured value, pass/fail).
 It answers `long` or `no_trade` only; it cannot express a permission, an
 execution environment or a venue. There is no Trading model call and no
 `llm.trading_decision_model` key.
 
-`VenueInstrumentCatalogSnapshotV1` is public instrument truth, collected
-without credentials for the closed `BINANCE_USDM` and `HYPERLIQUID_PERP`
-bindings. A content-addressed append-only snapshot conserves every provider
-row, including inactive, duplicate, and unnormalizable rows with an exact
-reason. Each binding owns an atomic active pointer plus
-`ready|stale|error|missing`; a failed refresh retains last-known-good and does
-not affect the other binding. Catalog presence is not execution permission.
-#355 uniquely owns compilation of `catalog + ExecutionBinding` into an
-execution capability partition.
-
-Decision, Capital, and binding runtime are orthogonal durable facts. Decision
-is `DISABLED|STARTING|RUNNING|FAULTED`; Capital control is
-`PAUSED|CLOSE_ONLY|RUNNING`; each binding separately records redacted
-credential fingerprint/state, runtime, account, catalog, heartbeat, and exact
-reason. A Worker start or credential projection forces Capital to `PAUSED`, so
-a restart or credential change never inherits an old activation.
-
-Before #360, a pure-policy LONG is always persisted as
-`policy_decision=long` plus `capital_disposition=blocked`; the exact earliest
-reason is control, credentials, catalog, exposure, binding readiness, or
-`promotion_authority_unavailable`. It is never rewritten as NO_TRADE and no
-new Intent is created. #360 is the sole future owner of grant, arm, daily risk,
-reservation, and Intent creation in one transaction.
+Decision runtime is `DISABLED|STARTING|RUNNING|FAULTED`. A pure-policy LONG is
+committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
+creates no Signal. The Signal is venue-neutral and carries no execution
+authority. Legacy binding, Capital, capability, catalog, Intent, order, replay,
+and evidence-clock tables remain queryable only as immutable historical audit
+after `20260901_0341`; there is no current command, HTTP, worker, or writer path.
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -292,12 +288,12 @@ Compose, `curl`, an authenticated GitHub CLI, and daemon access; runs idempotent
 initialization; builds the frontend and backend image; performs fresh-volume role bootstrap; runs the
 one-shot migration; starts Serve and Workers; and waits for required health and
 console boundaries. Execution credentials are not a deployment prerequisite,
-and no execution adapter is started (#356/#357 pending). A repeated invocation preserves config, passwords, and
+and the profile-gated Nautilus Runtime is not started before #433-E. A repeated invocation preserves config, passwords, and
 named-volume data, including across `make down`.
 
 `make status` fails non-zero when PostgreSQL, migration, Serve, Workers, either
 required runtime readiness endpoint, or console HTML is missing or unhealthy.
-It reports execution adapters as not required while Capital is PAUSED.
+It reports the execution Runtime disabled and rejects `paper|live` before #433-E.
 `make logs` follows the bounded startup services. `make down` stops the stack
 without deleting the named PostgreSQL volume. These targets do not auto-hard-cut
 an unknown non-empty database.
@@ -347,7 +343,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/intents`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate (#331): runtime readiness, frozen Case decisions, immutable Intents and their Outcomes, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and disabled execution readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -943,8 +939,8 @@ authoritative single-name tradeability absence.
 refuses to advance if any existing delivery row has a partial lifecycle shape.
 A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
-source is used. Current source does not consume an earlier revision; a fresh
-database runs the single `20260831_0340` baseline. The exact
+source is used. A fresh database applies baseline `20260831_0340` and then the
+`20260901_0341` Signal hard cut. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -992,62 +988,40 @@ reader/writer.
   is what a reader following one came for. `underlying_key` is deliberately
   absent — `crypto:{BASE}` is a Trading identity owned by
   `tracefold.trading.contracts`, and a News route must not assert it.
-- Workers refresh both public venue catalogs without credentials. Each refresh
-  appends a content-addressed snapshot and atomically moves only that binding's
-  pointer. Provider error marks that binding `error` when no snapshot exists or
-  `stale` while retaining last-known-good; it never empties the catalog or
-  changes the other binding. There is no operator refresh command and no
-  execution authorization in this operation.
-- `tracefold trading replay-oi --days 7 --strategy
-  source_native_oi_smart_money_long_v3 --venues binance.perp,hl.perp --fidelity bar_v1`
-  gives every bounded source fact one terminal source-native BAR outcome. It
-  reports decision, independent capital admission, execution/coverage,
-  gross/fees/net-ex-funding, MFE/MAE, and explicit fidelity limitations. The
-  response names an immutable artifact and PostgreSQL receipt by deterministic
-  `run_id`; funding and portfolio drawdown remain `null`.
-**One HTTP owner per durable aggregate (#331, #350).** Nothing crosses: a Case
-carries frozen evidence plus independent Policy and Capital attribution; an
-Intent carries its lifecycle and a `case_id` back-reference; status carries
-orthogonal durable runtime facts and bounded totals.
+- Trading reads source-native public bars directly for Case evidence. The
+  retired Trading venue-catalog and replay/evidence command surfaces have no
+  current worker, CLI, or HTTP path.
+**One HTTP owner per durable aggregate.** Nothing crosses: a Case carries frozen
+Alpha evidence, a Signal carries the engine-neutral handoff, Observations carry
+Runtime facts, and status carries readiness plus bounded totals.
 
-- `GET /api/trading/status` — `decision`, `capital`, and the two closed
-  `bindings`. Decision exposes state/heartbeat/reason; Capital exposes
-  control/blacklist revision; each binding exposes only durable redacted
-  credential/runtime/account/catalog/heartbeat/reason facts. Serve reads no
-  secret file and constructs no provider client.
-  `policy` names the identity a *new* Case would be frozen under and is never
-  applied to an existing one. `counts` is a bounded aggregation over durable
-  rows — no funnel, no per-poll counter. Money is an exact decimal string.
+- `GET /api/trading/status` — `decision`, `alpha`, `execution`, and `counts`.
+  Decision exposes state/heartbeat/reason; Alpha exposes the current frozen
+  policy identity and content digest; execution exposes only mode/profile/account
+  plus `ready=false` and an exact disabled/not-yet-available reason. Serve reads
+  no secret file and constructs no provider client. Counts are bounded durable
+  Case/Signal aggregations: input rows are the 24-hour window plus exceptional
+  older open Cases or unexpired Signals, backed by their time/state indexes.
 - `GET /api/trading/cases?underlying={base|crypto:BASE}&state={open|no_trade|blocked|emitted}`
   — the Case/Decision aggregate. Each Case carries its raw `state`, its terminal
-  `policy_decision` / `policy_reason`, independent
-  `capital_disposition` / `capital_reason`, the frozen `policy_config` and
+  `policy_decision` / `policy_reason`, the frozen `policy_config` and
   `policy_checks` (check, operator, threshold, measured, passed) it was decided
-  on, the frame's own measurements, and a nullable `intent_id` link. It is the
-  replacement for the retired `intents.cases_without_intents`, and the two
-  never coexisted. Bounded to 100 rows; the response says whether it is complete.
-- `GET /api/trading/intents?underlying={base|crypto:BASE}&state={active|closed|all}&day={YYYY-MM-DD}`
-  — the Intent/Outcome aggregate. `active` means
-  `PENDING | IN_FLIGHT | OPEN_PROTECTED | MANUAL_REVIEW`; `closed` means
-  `TERMINAL`. A day filter keeps every active row and selects terminal rows by
-  authoritative `closed_at_ms` within that UTC day. The response carries
-  immutable Demo identity/policy values, execution state/phase/outcome,
-  authoritative quantity/price/protection/flat timestamps, and PnL/fees when
-  known. It never returns a Case list, a Case manifest, a provider payload, an
-  account identity, or a legacy Order/observation.
+  on, the frame's own measurements, venue-neutral `market_key`, and timestamps.
+  Bounded to 100 rows with an opaque cursor.
+- `GET /api/trading/signals?market={market_key}` — immutable `TradeSignalV1`
+  rows newest first, with TTL/expiry and opaque pagination. It publishes no
+  account, route, quantity, leverage, order, or execution state.
+- `GET /api/trading/execution/observations` — append-only normalized Runtime
+  observations. In #433-C the canonical Runtime is disabled, so an empty result
+  is not evidence of execution or flatness.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
   24-hour window: the admission `config` its rows were filed under, then per
   Source the status, stage, named reason, retryability, version/config digest,
   frozen evidence, timestamps, attempt count, `research_only`, and the linked
   `case_id` when one exists. It publishes no Case state and no execution state.
-- `GET /api/trading/gate/{event_id}?lane=oi` — one Source's admission answer.
-  `joinable` is the honest half: only the deterministic OI lane's source key
-  (`oi:{event_id}:{metric_version}`) is reconstructible from an Event id, the
-  model lane's is a content hash of an artifact and a fingerprint (#154), and
-  for anything but `lane=oi` the answer is `joinable: false` — "this cannot be
-  asked", which is a different fact from `decision: null`, "it was asked and the
-  lane has no row". Joining by symbol and time instead would record a link the
-  ledger does not have.
+- `GET /api/trading/gate/{event_id}` — one deterministic OI Source's admission
+  answer, joined only by `oi:{event_id}:{metric_version}`. Joining by symbol and
+  time would record a link the ledger does not have.
 - `/api/news/feed` and `/api/news/events/{event_id}` additionally carry the
   Event Reaction: the feed the compact event-level aggregate (median signed
   return of the Triage primaries that price, with `state`
@@ -1068,7 +1042,7 @@ orthogonal durable runtime facts and bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|show|replay-oi|blacklist|control`;
+- Trading: `trading status|cases|signals|observations`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -1077,8 +1051,7 @@ execution flag where the parser offers a dry-run mode. They operate from
 persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
 There is no CLI command that creates, approves, rejects, resolves, submits,
-amends, or cancels an execution. Nautilus owns execution from the durable
-Intent contract.
+amends, or cancels an execution. The #433-C CLI is read-only.
 
 `validate-projections` is a strict Serve-role read. It does not acquire the
 maintenance lock, so operators can inspect the running singleton without
@@ -1466,24 +1439,21 @@ queue and ends the batch with a non-zero exit naming the message, the decode
 code and the number already replayed. `purge` is the only command that removes
 evidence.
 
-The `trading` family is read-mostly and has no provider-execution write command.
-`trading status` reports Decision state/heartbeat, Capital control, both
-bindings' durable redacted facts, target notional, durable admission counts,
-stage latency, Case policy/capital reasons, and Intent counts. Unknown outcome
-evidence remains unknown; the CLI does not infer readiness, flat, protection,
-PnL, or fees.
+The `trading` family is read-only and has no provider-execution or operator
+control command. `trading status` reports the Decision state/heartbeat, exact
+Alpha identity/digests, explicit disabled execution profile, and bounded 24-hour
+Case/Signal counts. It never infers readiness, flatness, protection, PnL, or
+fees. `trading cases [--state] [--limit]` lists the Case ledger;
+`trading signals [--limit]` lists engine-neutral `TradeSignalV1` rows; and
+`trading observations [--limit]` lists append-only dormant Runtime observations.
+There is no `show`, blacklist, control, capability, replay, evidence, or manual
+execution subcommand in #433-C.
 
-`trading cases [--state] [--limit]` lists the Case ledger.
-`trading show <case-id>` returns exactly `case`, optional immutable `intent`,
-and optional current `outcome`. Operator control writes are
-`trading blacklist add|remove`, which manages the canonical deny-list, and
-`trading control running|close-only|paused`. `PAUSED` and `CLOSE_ONLY`
-block new economic Intent; existing recovery obligations remain durable.
-The retired `trading refresh-capabilities` command is rejected. `trading
-replay-oi --days N` fetches public source-native BAR data,
-publishes one content-addressed artifact, materializes timed blacklist expiry
-through a short Workers transaction, and inserts one immutable replay receipt;
-it has no execution credentials and performs no provider order write.
+### Historical pre-433-C Trading CLI and manifest (retired)
+
+The following contract records deleted reader/control/replay surfaces and old
+manifest generations for audit only. It does not describe a current command or
+writer.
 
 Trading consumes `news_trade_projection_v10`: exact current
 `news_judgment_v2` OI rows plus the public instrument catalogue. Editorial News

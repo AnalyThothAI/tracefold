@@ -56,3 +56,9 @@ def test_postgres_is_bound_to_loopback_for_host_cli():
     compose_yaml = Path("compose.yaml").read_text()
 
     assert '"${TRACEFOLD_POSTGRES_HOST:-127.0.0.1}:${TRACEFOLD_POSTGRES_PORT:-56532}:5432"' in compose_yaml
+
+
+def test_dormant_execution_runtime_is_excluded_from_the_default_compose_model():
+    compose = yaml.safe_load(Path("compose.yaml").read_text())
+
+    assert compose["services"]["nautilus"]["profiles"] == ["execution"]

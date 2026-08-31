@@ -1,6 +1,7 @@
 """Dormant composition seam for the new OI Runtime.
 
-433-B deliberately exposes no CLI, deployment selector, or TradingNode start.
+433-C exposes only a profile-gated disabled-readiness entry. It still has no TradingNode activation;
+433-E owns paper/live construction and canonical deployment.
 """
 
 from __future__ import annotations

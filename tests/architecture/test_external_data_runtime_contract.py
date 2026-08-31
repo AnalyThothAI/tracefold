@@ -8,12 +8,11 @@ from pathlib import Path
 from typing import get_args, get_type_hints
 
 from tracefold.news.pipeline.root import NewsPipeline
-from tracefold.trading.capital_lane import CapitalLane
-from tracefold.trading.catalog import VenueCatalog
+from tracefold.trading.signal_lane import SignalLane
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "tracefold"
-SEMANTIC_CLASSES = {"capital_truth", "derived_work", "durable_event", "latest_state"}
+SEMANTIC_CLASSES = {"signal_truth", "derived_work", "durable_event", "latest_state"}
 
 
 def _imported_roots(path: Path) -> set[str]:
@@ -41,11 +40,11 @@ def _imported_modules(path: Path) -> set[str]:
 def _production_stage_types() -> set[type[object]]:
     """Every business stage the Workers process composes, discovered rather than listed.
 
-    Trading's capital lane and public venue catalog are deep modules, not a pipeline of runners, so
-    they are named here directly instead of being read off a container's annotations.
+    Trading's Signal lane is a deep module, not a pipeline of runners, so it is named here directly
+    instead of being read off a container's annotations.
     """
 
-    stages: set[type[object]] = {CapitalLane, VenueCatalog}
+    stages: set[type[object]] = {SignalLane}
     for annotation in get_type_hints(NewsPipeline).values():
         for candidate in get_args(annotation) or (annotation,):
             if (

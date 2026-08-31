@@ -1,11 +1,10 @@
-"""Compose the one capital lane, and own its poll loop.
+"""Compose the one engine-neutral Signal lane.
 
 The lane exposes exactly one business action, `advance()`. Polling, the stop event and the process
 lifecycle are App's (#331), which is why the loop lives here rather than inside the business package:
 a bounded context that owns its own scheduler is a service, and this system has one worker process.
 
-A disabled Decision Plane constructs no lane, adapter, or execution client. The credential-free public
-catalog remains a Workers responsibility because `trading.enabled` controls only Decision.
+A disabled Decision Plane constructs no lane, adapter, or execution client.
 """
 
 from __future__ import annotations
@@ -14,62 +13,38 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any
 
 from loguru import logger
 
 from tracefold.app.learning_runtime import active_arm_manifest
-from tracefold.app.trading_config import capital_lane_config
+from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.wiring.database import WorkerNewsColdDatabase, WorkerTradingDatabase
 from tracefold.app.workers.wiring.news_to_trading import news_oi_sources
-from tracefold.integrations.trading_catalog import (
-    VenueExpectedError,
-    fetch_binance_usdm_catalog,
-    fetch_hyperliquid_perp_catalog,
-)
 from tracefold.integrations.venues import fetch_binance_candles, fetch_hyperliquid_candles
 from tracefold.news.learning.contracts import epoch_id_for_bundle
 from tracefold.platform.config.models import Settings
 from tracefold.platform.observability import TelemetryRegistry
 from tracefold.platform.runtime_identity import runtime_identity
-from tracefold.trading import InstrumentRef, VenueBinding
-from tracefold.trading.capital_lane import CapitalLane
-from tracefold.trading.catalog import VenueCatalog
+from tracefold.trading import OiTradeCandidate
 from tracefold.trading.contracts import Bar as TradingBar
 from tracefold.trading.contracts import OiCandidateRow
+from tracefold.trading.signal_lane import SignalLane
 
-from .execution_capabilities import ExecutionCapabilityCompileError, ExecutionCapabilityCompiler
-
-CAPITAL_LANE_TASK_NAME = "trading-capital-lane"
-VENUE_CATALOG_TASK_NAME = "trading-venue-catalog"
+SIGNAL_LANE_TASK_NAME = "trading-signal-lane"
 # The lane moves at the speed of a five-minute OI frame; two seconds is what makes a fresh frame reach
 # a Case well inside its own trigger budget without the scan becoming a busy loop.
-CAPITAL_LANE_POLL_SECONDS = 2.0
-VENUE_CATALOG_PERIOD_SECONDS = 6 * 3_600.0
-VENUE_CATALOG_RETRY_SECONDS = 15 * 60.0
-_CAPITAL_PROJECTION_TIMEOUT_SECONDS = 10.0
+SIGNAL_LANE_POLL_SECONDS = 2.0
+_SIGNAL_PROJECTION_TIMEOUT_SECONDS = 10.0
 
 
-def _wire_venue_catalog(*, db: WorkerDatabase, telemetry: TelemetryRegistry | None = None) -> VenueCatalog:
-    return VenueCatalog(
-        db=WorkerTradingDatabase(db),
-        clock=lambda: int(time.time() * 1_000),
-        stale_after_ms=int(VENUE_CATALOG_PERIOD_SECONDS * 1_000),
-        telemetry=telemetry,
-    )
-
-
-def _wire_execution_capability_compiler(*, db: WorkerDatabase) -> ExecutionCapabilityCompiler:
-    return ExecutionCapabilityCompiler(WorkerTradingDatabase(db))
-
-
-def _wire_capital_lane(
+def _wire_signal_lane(
     *,
     settings: Settings,
     db: WorkerDatabase,
     telemetry: TelemetryRegistry | None = None,
-) -> CapitalLane | None:
+) -> SignalLane | None:
     """#104/#331. Disabled by default; a disabled Trading context constructs nothing.
 
     The lane shares Event Reaction's one-slot heavy admission rather than the four News lane slots, for
@@ -95,12 +70,12 @@ def _wire_capital_lane(
                 after_created_at_ms,
                 until_created_at_ms,
             ),
-            timeout_seconds=_CAPITAL_PROJECTION_TIMEOUT_SECONDS,
+            timeout_seconds=_SIGNAL_PROJECTION_TIMEOUT_SECONDS,
         )
 
-    return CapitalLane(
+    return SignalLane(
         db=WorkerTradingDatabase(db),
-        config=capital_lane_config(settings),
+        config=signal_lane_config(settings),
         bars=_source_native_bars,
         oi_projection=read_news_oi_projection,
         # The one place that may tell Trading which News generation is running (#314). Trading
@@ -112,129 +87,35 @@ def _wire_capital_lane(
     )
 
 
-async def _source_native_bars(instrument: InstrumentRef, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
-    """Fetch only the exact venue frozen by the source-native Case; never reroute or fall back."""
+async def _source_native_bars(candidate: OiTradeCandidate, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
+    """Fetch public bars from the Source's own venue; this is evidence, never an execution route."""
 
-    if instrument.binding == "BINANCE_USDM":
+    if candidate.venue == "binance.usdm":
         candles = await fetch_binance_candles(
-            instrument.provider_symbol,
+            f"{candidate.base_symbol}USDT",
             venue="binance.perp",
             start_ms=start_ms,
             end_ms=end_ms,
         )
-    elif instrument.binding == "HYPERLIQUID_PERP":
+    elif candidate.venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
+        venue_symbol = f"xyz:{candidate.base_symbol}" if candidate.venue == "hyperliquid.xyz" else candidate.base_symbol
         candles = await fetch_hyperliquid_candles(
-            instrument.provider_symbol,
-            venue="hl.perp",
+            venue_symbol,
+            venue="hl.xyz" if candidate.venue == "hyperliquid.xyz" else "hl.perp",
             start_ms=start_ms,
             end_ms=end_ms,
         )
-    else:  # pragma: no cover - InstrumentRef carries the closed union
-        raise RuntimeError("trading_source_binding_unresolved")
+    else:  # pragma: no cover - admission carries the closed source venue
+        raise RuntimeError("trading_source_venue_unresolved")
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
 
 
-async def run_venue_catalog(
-    catalog: VenueCatalog,
-    *,
-    capability_compiler: ExecutionCapabilityCompiler | None = None,
-    stop_event: asyncio.Event,
-    period_seconds: float = VENUE_CATALOG_PERIOD_SECONDS,
-) -> None:
-    """Refresh both public bindings independently; provider errors retain each binding's last-good."""
-
-    fetchers: tuple[tuple[VenueBinding, Any], ...] = (
-        ("BINANCE_USDM", fetch_binance_usdm_catalog),
-        ("HYPERLIQUID_PERP", fetch_hyperliquid_perp_catalog),
-    )
-    while not stop_event.is_set():
-        started = time.perf_counter()
-        complete = True
-        source_count = 0
-        target_count = 0
-        try:
-            for binding, fetch in fetchers:
-                source_count += 1
-                source: Literal["binance", "hyperliquid"] = "binance" if binding == "BINANCE_USDM" else "hyperliquid"
-                try:
-                    instruments = await catalog.observe_provider(source=source, call=fetch())
-                except VenueExpectedError as exc:
-                    complete = False
-                    await catalog.unavailable(binding=binding, reason=exc.code)
-                else:
-                    snapshot = await catalog.publish(binding=binding, instruments=instruments)
-                    if capability_compiler is not None:
-                        try:
-                            if not await _compile_capability_until_stopped(
-                                capability_compiler,
-                                snapshot,
-                                stop_event=stop_event,
-                            ):
-                                return
-                        except ExecutionCapabilityCompileError as exc:
-                            complete = False
-                            logger.warning(
-                                "Execution capability compile failed for binding={}: {}",
-                                binding,
-                                exc,
-                            )
-                    target_count += len(instruments)
-        except BaseException:
-            catalog.record_turn(
-                "error",
-                time.perf_counter() - started,
-                source_count=source_count,
-                target_count=target_count,
-            )
-            raise
-        catalog.record_turn(
-            "success" if complete else "partial",
-            time.perf_counter() - started,
-            source_count=source_count,
-            target_count=target_count,
-        )
-        wait = period_seconds if complete else min(period_seconds, VENUE_CATALOG_RETRY_SECONDS)
-        with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(stop_event.wait(), timeout=max(0.05, float(wait)))
-
-
-async def _compile_capability_until_stopped(
-    compiler: ExecutionCapabilityCompiler,
-    snapshot: Any,
-    *,
-    stop_event: asyncio.Event,
-) -> bool:
-    """Cancel provider-native compilation promptly without interrupting the catalog commit."""
-
-    if stop_event.is_set():
-        return False
-    compile_task = asyncio.create_task(compiler.compile(snapshot))
-    stop_task = asyncio.create_task(stop_event.wait())
-    try:
-        done, _ = await asyncio.wait((compile_task, stop_task), return_when=asyncio.FIRST_COMPLETED)
-        if stop_task in done and compile_task not in done:
-            compile_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await compile_task
-            return False
-        await compile_task
-        return True
-    finally:
-        stop_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await stop_task
-        if not compile_task.done():
-            compile_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await compile_task
-
-
-async def run_capital_lane(
-    lane: CapitalLane,
+async def run_signal_lane(
+    lane: SignalLane,
     *,
     stop_event: asyncio.Event,
     telemetry: Any | None = None,
-    poll_seconds: float = CAPITAL_LANE_POLL_SECONDS,
+    poll_seconds: float = SIGNAL_LANE_POLL_SECONDS,
 ) -> None:
     """Poll `advance()` until the process stops. The lane owns no clock of its own.
 
@@ -249,17 +130,17 @@ async def run_capital_lane(
         try:
             await lane.advance()
         except Exception:
-            logger.exception("capital lane turn failed")
+            logger.exception("signal lane turn failed")
             if telemetry is not None:
                 telemetry.record_external_data_turn(
-                    "trading_capital_lane",
+                    "trading_signal_lane",
                     outcome,
                     time.perf_counter() - started,
                 )
             raise
         if telemetry is not None:
             telemetry.record_external_data_turn(
-                "trading_capital_lane",
+                "trading_signal_lane",
                 "success",
                 time.perf_counter() - started,
             )
@@ -268,9 +149,7 @@ async def run_capital_lane(
 
 
 __all__ = [
-    "CAPITAL_LANE_POLL_SECONDS",
-    "CAPITAL_LANE_TASK_NAME",
-    "VENUE_CATALOG_TASK_NAME",
-    "run_capital_lane",
-    "run_venue_catalog",
+    "SIGNAL_LANE_POLL_SECONDS",
+    "SIGNAL_LANE_TASK_NAME",
+    "run_signal_lane",
 ]

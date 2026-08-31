@@ -16,26 +16,31 @@ from fixtures, examples, `.env`, generated docs, or a new CLI process. Report
 paths, redacted configured booleans, source names, error classes, and command
 results; never secret values.
 
-### Trading no-key Decision/Capital operation (#350)
+### Trading Signal / disabled execution operation (#433-C)
 
-Execution credentials are optional for deployment. The supported observer state is:
+Execution credentials are optional for deployment. The supported state is:
 
 ```text
 Decision RUNNING
-Capital PAUSED
-BINANCE_USDM.credentials unconfigured
-HYPERLIQUID_PERP.credentials unconfigured
+Alpha source_native_oi_smart_money_long_v4
+Execution disabled / ready=false
 ```
 
-Run `uv run tracefold config` to inspect only redacted per-binding credential
-states and resolved paths. Missing files are `unconfigured`; partial,
-malformed, insecure, or unreadable inputs are `invalid`. Never print or copy a
-credential. `make up`, migration, Serve, Workers, Web, and the public venue
-catalog must remain green without either binding credential.
+Before the first #433-C startup, run `uv run tracefold init`; canonical
+`make up` and `make deploy-image` already do so. An exact former
+`trading.order` / `trading.bindings` config is backed up to mode-`0600`
+`~/.tracefold/config.pre-433c.yaml` and atomically moved to the disabled
+execution contract. Treat that backup as sensitive operator configuration and
+report only its path. A mixed/unknown shape or backup conflict stops before the
+active config is replaced. For a direct schema upgrade, require this order:
+`uv run tracefold init`, `uv run tracefold config`, then `make db-migrate`.
 
-`trading.enabled` controls only the Decision Plane. Workers always project both
-closed bindings and refresh the credential-free Binance USD-M and Hyperliquid
-perp catalogs. Verify with:
+Run `uv run tracefold config` to inspect only the execution mode, profile,
+account slot, and resolved secret-file references. Never print or copy a
+credential. `make up`, migration, Serve, Workers, and Web remain green without
+an execution credential because no execution process is active in #433-C.
+
+`trading.enabled` controls only the Alpha/Signal lane. Verify with:
 
 ```text
 make up
@@ -43,24 +48,26 @@ make status
 uv run tracefold trading status
 ```
 
-The status must show Decision lifecycle/heartbeat, Capital control, and both
-bindings' redacted credential/runtime/account/catalog/heartbeat/reason facts.
-A provider catalog failure marks only that binding stale/error and preserves
-last-known-good. Serve reads these PostgreSQL facts and never secret files or a
-provider client.
+The status must show Decision lifecycle/heartbeat, Alpha identity/digest,
+explicit execution mode/profile/account, `ready=false`, and bounded Case/Signal
+counts. Serve reads no secret file and constructs no provider client. A LONG
+must atomically create one `TradeSignalV1`; `NO_TRADE` creates none.
 
-Every Workers start reprojects credentials and forces Capital `PAUSED`. Do not
-set `RUNNING` to test activation: before #360, even configured/ready facts end
-in `promotion_authority_unavailable` and zero new Intent. A pure-policy LONG
-must remain LONG with independent `capital_disposition=blocked`; NO_TRADE has
-Capital `not_applicable`.
+Do not set `execution.mode` to `paper` or `live` to test activation. The App
+root fails closed with `oi_runtime_activation_not_available_before_433e`, and
+the canonical deployment activates no Nautilus service in this slice; the
+Compose definition is isolated behind the explicit `execution` profile.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
 composition is invalid, Workers must fail startup/readiness or record Decision
 `FAULTED`. Do not classify an arbitrary exception as legal no-key observer
 mode.
 
-#### Production V3 evidence clock (#377)
+#### Historical Production V3 evidence clock (#377, retired)
+
+This subsection records the pre-433-C Capital/Intent evidence protocol. Its
+CLI modules and active writers are deleted; migration `0341` makes the retained
+tables immutable. Do not execute these commands on current source.
 
 Keep Capital `PAUSED` while building discovery and future-holdout evidence.
 Use one content-addressed artifact root and record every returned full digest
@@ -267,10 +274,9 @@ source must produce the Case, and only a frozen long/non-shadow Case admitted by
 the active snapshot and current blacklist may emit an Intent.
 
 Current `make up` and `make deploy-image` idempotently create empty 0600
-credential placeholders, do not require execution credentials, and do not start an execution adapter. `make status` reports adapters as
-not required while Capital is PAUSED. The browser and HTTP surface expose
-durable Decision/Capital/binding facts and independent Case policy/capital
-attribution; existing Intent/Outcome history remains read-only.
+Binance credential placeholders, do not require execution credentials, and do
+not start an execution Runtime. The browser and HTTP surface expose durable
+Decision/Alpha/disabled-execution facts plus Case/Signal/Observation ledgers.
 
 If an Intent reaches `MANUAL_REVIEW`, an entry outcome is unknown, protection
 cannot be proved, or flat cannot be proved:
@@ -288,13 +294,9 @@ an image compatible with the live schema. A non-flat incident must roll
 forward: Nautilus remains the sole authority until exposure is protected or
 closed.
 
-The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it
-proves atomic Case/Intent handoff, fences, restart/outcome projection, and
-role constraints, not venue behavior. The opt-in real Demo closure/restart
-drill is `tests/live/test_nautilus_binance_demo.py`; use its isolated
-database/config/container contract and exact committed image. Its terminal is
-`DEMO_CLOSED_FLAT`, otherwise the run must preserve the recoverable state and
-report failure or `MANUAL_REVIEW`.
+The deterministic PostgreSQL acceptance lane is `make trading-smoke`; it proves
+the real News→Case→Signal seam, atomic Case/Signal handoff, and the irreversible
+legacy-writer hard cut. It contacts no execution venue and is not Demo evidence.
 
 ## Operator lifecycle
 
@@ -632,7 +634,7 @@ tracefold workers
      and the News consumer tasks (news-receiver, news-recovery, news-deduper,
      news-triage, news-deliverer, news-janitor); the bounded polling loops
      (news-instruments, and with venues enabled news-quotes, news-reactions);
-     when Trading is enabled, trading-capital-lane;
+     when Trading is enabled, trading-signal-lane;
      workers-control
 ```
 
@@ -1330,9 +1332,9 @@ snapshot.
 
 ## Migrations
 
-Alembic has one root and head: the current-schema baseline
-`20260831_0340`. A fresh PostgreSQL 18 database creates the full schema in one
-step. This source may merge or deploy only after the supported pre-cut database
+Alembic has one root, baseline `20260831_0340`, and current head
+`20260901_0341`. A fresh PostgreSQL 18 database applies both in order. This
+source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
 same Alembic identity and all business rows. The issue receipt records the old
@@ -1440,7 +1442,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260831_0340`; zero rows in every cleared
+After deployment, require Alembic head `20260901_0341`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

@@ -50,13 +50,12 @@ export const queryKeys = {
   newsSymbol: (base: string) => ["news-symbol", base] as const,
   // #88: the quote key is the sorted symbol batch, so the feed and an open Event share one poll.
   newsQuotes: (symbols: readonly string[]) => ["news-quotes", symbols.join(",")] as const,
-  // #207 PR-W4: the capital lane's own keys. Separate from News' so a 15 s trading poll cannot evict the
+  // The Signal lane's own keys. Separate from News so a 15 s trading poll cannot evict the
   // feed page a reader is scrolled into.
   tradingStatus: () => ["trading-status"] as const,
-  tradingIntents: (underlying: string) => ["trading-intents", underlying] as const,
   tradingCases: (underlying: string) => ["trading-cases", underlying] as const,
-  tradingCapabilities: () => ["trading-capabilities"] as const,
-  tradingEvidence: () => ["trading-evidence"] as const,
+  tradingSignals: (market: string) => ["trading-signals", market] as const,
+  tradingObservations: () => ["trading-execution-observations"] as const,
   tradingGateSource: (eventId: string) => ["trading-gate-source", eventId] as const,
   // #269: the admission ledger's own window, shared by the frame table and the leverage list.
   tradingGate: () => ["trading-gate"] as const,

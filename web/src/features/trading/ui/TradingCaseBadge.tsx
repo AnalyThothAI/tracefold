@@ -1,4 +1,4 @@
-import { newsLeveragePath } from "@shared/routing/paths";
+import { newsAlphaPath } from "@shared/routing/paths";
 import { Link } from "react-router-dom";
 
 import { useTradingGateSourceWithToken } from "../api/tradingQueries";
@@ -39,7 +39,7 @@ export function TradingCaseBadge({
   const decision = data.decision;
   if (!decision) {
     return (
-      <span className="trading-case-badge" title="资本通道尚未在任何 gate 版本下评估过这一帧">
+      <span className="trading-case-badge" title="Signal 通道尚未在任何 gate 版本下评估过这一帧">
         未评估
       </span>
     );
@@ -59,7 +59,7 @@ export function TradingCaseBadge({
       {label}
       {key ? <code>{key}</code> : null}
       {decision.case_id ? (
-        <Link to={`${newsLeveragePath()}?case=${encodeURIComponent(decision.case_id)}`}>案例</Link>
+        <Link to={`${newsAlphaPath()}?case=${encodeURIComponent(decision.case_id)}`}>案例</Link>
       ) : null}
     </span>
   );

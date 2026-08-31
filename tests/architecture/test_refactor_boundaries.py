@@ -360,7 +360,7 @@ CROSS_CONTEXT_BOUNDARY_MODULES = (
     "app/workers/wiring/news_to_trading.py",
     "news/pipeline/runtime.py",
     "news/storage/trade_projection.py",
-    "trading/capital_lane.py",
+    "trading/signal_lane.py",
 )
 
 
@@ -390,18 +390,7 @@ def test_cross_context_boundaries_carry_named_typed_rows() -> None:
     assert violations == []
 
 
-CROSS_CONTEXT_TYPED_PARAMETERS = {
-    "app/cli/commands/trading_evidence.py": {"_fetch_blind_market_health": {"capture"}},
-    "trading/evidence_research.py": {
-        "build_future_capture_collection_health": {"collector", "workers", "market"},
-        "summarize_blind_market_health": {"probes"},
-    },
-    "trading/evidence_verification.py": {
-        "fixed_window_verification_checks": {"serve", "sources"},
-        "release_verification_checks": {"observations", "window_sources"},
-        "rollback_verification_checks": {"serve"},
-    },
-}
+CROSS_CONTEXT_TYPED_PARAMETERS: dict[str, dict[str, set[str]]] = {}
 
 
 def test_evidence_cross_context_facts_have_named_annotations() -> None:

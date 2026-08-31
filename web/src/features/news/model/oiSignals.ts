@@ -159,7 +159,7 @@ function trimZeros(value: number): string {
  * trading lane encodes it in configuration (#207).
  *
  * This is an annotation, not a gate: News pushed or withheld this frame on its own thresholds, and whether
- * the capital lane would have opened on it is a separate question with separate numbers. `positive` marks
+ * Alpha would have opened a Case for it is a separate question with separate numbers. `positive` marks
  * the one whale-profit bucket the research measured with a positive mean; `best` and `worst` mark the two
  * ends of the open-interest size buckets. A frame with no measurement gets nothing rather than a guess.
  *
@@ -176,8 +176,8 @@ export type OiBucket = { label: string; title: string; tone: OiBucketTone };
  *
  * `oi-agent-design-2026-08-22.md` §1.5 measured the 95-100% whale-profit bucket as the only one with a
  * positive mean (+1.42% at 4 h, N=219) while 85-95% was -0.60% at N=298. It used to be read off the
- * capital lane's republished floors, which made a *measurement* move whenever an operator edited a
- * threshold — and the capital lane no longer publishes a whale-profit floor at all, because its policy
+ * old Capital lane's republished floors, which made a *measurement* move whenever an operator edited a
+ * threshold — and the Signal lane does not publish a whale-profit floor, because its Alpha policy
  * owns that number and freezes it onto each Case.
  */
 const WHALE_PROFIT_POSITIVE_BUCKET_BPS = 9_500;

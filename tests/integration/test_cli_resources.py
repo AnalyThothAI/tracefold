@@ -57,27 +57,23 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     assert exit_code == 0
     data = response["data"]
     assert data["decision"]["state"] in {"DISABLED", "STARTING", "RUNNING", "FAULTED"}
-    assert data["capital"]["control"] in {"PAUSED", "CLOSE_ONLY", "RUNNING"}
-    assert data["capital"]["blacklist_revision"] >= 0
-    assert [row["binding"] for row in data["bindings"]] == ["BINANCE_USDM", "HYPERLIQUID_PERP"]
-    assert data["target_notional_usd"] == "10"
-    # #211: the stage report is keyed by stage and by nothing else — no symbol, event or order id can
-    # enter it — and every stage says how much evidence it rests on.
-    assert set(data["stage_latency_ms"]) == {
-        "source_observed_to_verdict_persisted",
-        "verdict_persisted_to_case_created",
-        "case_created_to_case_decided",
-        "case_created_to_intent_emitted",
-        "intent_emitted_to_adopted",
-        "intent_emitted_to_entry_fenced",
-        "entry_fence_requested_to_entry_fenced",
-        "entry_fenced_to_entry_submitted",
-        "entry_submitted_to_entry_accepted",
-        "entry_submitted_to_position_opened",
-        "entry_fenced_to_position_opened",
-        "position_opened_to_closed_flat",
+    assert data["alpha"]["policy_id"] == "source_native_oi_smart_money_long_v4"
+    assert len(data["alpha"]["contract_sha256"]) == 64
+    assert data["execution"] == {
+        "mode": "disabled",
+        "profile_id": "binance_usdm_primary",
+        "account_slot": "binance_usdm_primary",
+        "ready": False,
+        "reason": "disabled",
     }
-    assert all(isinstance(stage["n"], int) for stage in data["stage_latency_ms"].values())
+    assert set(data["counts"]) == {
+        "cases_24h",
+        "signals_24h",
+        "no_trade_24h",
+        "blocked_24h",
+        "cases_open",
+        "signals_unexpired",
+    }
 
 
 def _management_url(url: str) -> str:

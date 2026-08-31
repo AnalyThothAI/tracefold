@@ -5,8 +5,7 @@ from argparse import Namespace
 from pathlib import Path
 from typing import Any, cast
 
-from tracefold.app.trading_bindings import inspect_binding_credentials
-from tracefold.platform.config.loader import load_settings, write_default_config
+from tracefold.platform.config.loader import load_settings, migrate_pre_433c_trading_config, write_default_config
 from tracefold.platform.config.models import (
     news_model_availability,
     news_push_availability,
@@ -17,12 +16,13 @@ from tracefold.platform.paths import config_path
 def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
     existed = config_path().exists()
     path = write_default_config(force=args.force)
+    config_backup_path = migrate_pre_433c_trading_config(path) if existed and not args.force else None
     password_path = _ensure_postgres_password_file(path.parent)
     bootstrap_password_path = _ensure_bootstrap_postgres_password_file(path.parent)
     telegram_bot_token_path = _ensure_optional_secret_file(path.parent / "telegram_bot_token")
-    trading_binding_secret_paths = {
+    trading_execution_secret_paths = {
         name: _ensure_optional_secret_file(path.parent / name)
-        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
+        for name in ("binance_usdm_api_key", "binance_usdm_api_secret")
     }
     return (
         0,
@@ -34,10 +34,12 @@ def handle_init(args: Namespace) -> tuple[int, dict[str, Any]]:
                 "postgres_database_password_file": str(password_path),
                 "postgres_bootstrap_password_file": str(bootstrap_password_path),
                 "telegram_bot_token_file": str(telegram_bot_token_path),
-                "trading_binding_secret_files": {
-                    name: str(secret_path) for name, secret_path in trading_binding_secret_paths.items()
+                "trading_execution_secret_files": {
+                    name: str(secret_path) for name, secret_path in trading_execution_secret_paths.items()
                 },
                 "created": args.force or not existed,
+                "config_migrated": config_backup_path is not None,
+                "config_backup_path": None if config_backup_path is None else str(config_backup_path),
             },
         },
     )
@@ -47,10 +49,8 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
     settings = load_settings(require_ws_token=False)
     push_availability = news_push_availability(settings)
     model_availability = news_model_availability(settings)
-    binding_facts = {fact.binding: fact for fact in inspect_binding_credentials(settings)}
     binance_key_file = settings.trading_binance_usdm_api_key_file()
     binance_secret_file = settings.trading_binance_usdm_api_secret_file()
-    hyperliquid_private_key_file = settings.trading_hyperliquid_private_key_file()
     return (
         0,
         {
@@ -112,21 +112,13 @@ def handle_config(_args: Namespace) -> tuple[int, dict[str, Any]]:
                 },
                 "trading": {
                     "enabled": settings.trading.enabled,
-                    "target_notional_usd": str(settings.trading.order.fixed_notional_usd),
-                    "bindings": {
-                        "BINANCE_USDM": {
-                            "credential_state": binding_facts["BINANCE_USDM"].state,
+                    "execution": {
+                        "mode": settings.trading.execution.mode,
+                        "profile_id": settings.trading.execution.profile_id,
+                        "account_slot": settings.trading.execution.account_slot,
+                        "credentials": {
                             "api_key_file": None if binance_key_file is None else str(binance_key_file),
                             "api_secret_file": None if binance_secret_file is None else str(binance_secret_file),
-                        },
-                        "HYPERLIQUID_PERP": {
-                            "credential_state": binding_facts["HYPERLIQUID_PERP"].state,
-                            "private_key_file": (
-                                None if hyperliquid_private_key_file is None else str(hyperliquid_private_key_file)
-                            ),
-                            "account_address_configured": bool(
-                                settings.trading.bindings.hyperliquid_perp.account_address
-                            ),
                         },
                     },
                 },

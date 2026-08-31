@@ -3,45 +3,37 @@ export { TradingCaseBadge } from "./ui/TradingCaseBadge";
 export { TradingSymbolSection } from "./ui/TradingSymbolSection";
 export {
   useTradingCasesWithToken,
-  useTradingCapabilitiesWithToken,
-  useTradingEvidenceWithToken,
   useTradingGateSourceWithToken,
   useTradingGateWithToken,
-  useTradingIntentsWithToken,
+  useTradingObservationsWithToken,
+  useTradingSignalsWithToken,
   useTradingStatusWithToken,
   type TradingCase,
   type TradingCases,
-  type TradingCapabilities,
-  type TradingCapabilityBinding,
-  type TradingCapabilityEntry,
-  type TradingAuthorityEvidence,
-  type TradingCapitalLifecycleEvidence,
-  type TradingEvidence,
+  type TradingExecutionObservation,
+  type TradingExecutionObservations,
   type TradingGate,
   type TradingGateConfig,
   type TradingGateDecision,
-  type TradingIntent,
-  type TradingIntents,
   type TradingPolicyCheck,
   type TradingRuntimeCounts,
+  type TradingSignal,
+  type TradingSignals,
   type TradingStatus,
 } from "./api/tradingQueries";
 /*
- * The capital lane's own words, read by the surfaces News composes over the same ledger (#256). Exported
- * as the lane's vocabulary rather than copied, so a state, a rule or a policy cannot be named one thing
- * on the execution workbench and another on 资本判定.
+ * The Signal lane's own words, read by the surfaces News composes over the same ledger. Exported as the
+ * lane's vocabulary rather than copied, so a state, rule, or policy cannot be named one thing on the
+ * execution workbench and another on Alpha 判定.
  */
 export {
   CASE_STATE_ZH,
   GATE_STATUS_ZH,
-  INTENT_STATE_NOTE,
   bpsPercent,
   caseClock,
   gateReasonLabel,
-  isActiveIntent,
   policyLabel,
   policyReasonLabel,
-  stopVerified,
 } from "./model/tradingLabels";
 export {
   CASE_TABS,

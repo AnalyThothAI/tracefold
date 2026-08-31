@@ -1,14 +1,9 @@
 """Guards the reasoning `mutation-survivors.toml`'s `annotation-union` rule rests on.
 
-That rule accepts a surviving `|` mutation wherever every `|` on the line sits inside an annotation,
-because both mutated modules use `from __future__ import annotations` and never evaluate them. The
-premise is checked per site rather than asserted, and this is why: the `ExecutionQuoteAuditV1`
-alias in `quote_authority.py` builds a runtime type alias, its `|` *is* evaluated at import, and
-the batch kills its mutants. A rule phrased
-as "BitOr is always an annotation" would have accepted those as equivalent and hidden 11 real kills.
-
-So the detector has to be able to tell the two apart, and it has to be able to fail. The first test
-falsifies it in both directions on sources written here; the rest hold the batch's own premises.
+That rule accepts a surviving `|` mutation wherever every `|` on the line sits inside an annotation
+deferred by `from __future__ import annotations`. The premise is checked per site rather than
+asserted. The first test falsifies the detector in both directions on sources written here; the
+rest hold the batch's own premises.
 """
 
 from __future__ import annotations
@@ -73,27 +68,20 @@ def test_the_batch_excludes_no_operator() -> None:
     assert "filters" not in _config()
 
 
-def test_the_batch_mutates_exactly_the_two_kernels_it_documents() -> None:
+def test_the_batch_mutates_exactly_the_current_price_kernel() -> None:
     """Adding a module changes the bound the workflow's shard count was sized against."""
 
-    assert _config()["module-path"] == [
-        "tracefold/trading/quote_authority.py",
-        "tracefold/trading/market_context.py",
-    ]
+    assert _config()["module-path"] == ["tracefold/trading/market_context.py"]
 
 
 @pytest.mark.parametrize(
     "test_file",
-    ["tests/test_execution_quote.py", "tests/trading/test_quote_properties.py", "tests/trading/test_market_context.py"],
+    ["tests/trading/test_market_context.py"],
 )
 def test_the_command_runs_the_tests_that_actually_constrain_the_mutated_modules(test_file: str) -> None:
     """The batch is only worth its runtime if the constraining tests are in it.
 
-    `tests/test_execution_quote.py` is the expensive one — it imports `nautilus_trader` for about
-    3 s a mutant — and it is also the file that pins every quote bound at its exact `==`/`<`/`>`
-    point. Dropping it makes the batch fast and the score meaningless: the run that omitted it
-    reported 46 survivors in `validate_entry_quote`, none of which were about the tests. Shard
-    wider instead.
+    The command must carry the focused suite that pins the selected bar and basis-point arithmetic.
     """
 
     assert test_file in _config()["test-command"]

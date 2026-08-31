@@ -12,9 +12,8 @@ ExternalDataName = Literal[
     "instrument_snapshot",
     "opennews_recovery",
     "quote_snapshot",
-    "trading_capital_lane",
+    "trading_signal_lane",
     "trading_reconcile",
-    "trading_venue_catalog",
 ]
 ExternalDataSource = Literal[
     "binance",

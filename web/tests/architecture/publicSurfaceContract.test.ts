@@ -14,8 +14,8 @@ describe("public browser surface", () => {
     expect(collectRoutePaths(createAppRouteObjects()).sort()).toEqual([
       "*",
       "news",
+      "news/alpha",
       "news/events/:eventId",
-      "news/leverage",
       "news/oi",
       "news/status",
       "news/symbols/:base",
@@ -25,7 +25,7 @@ describe("public browser surface", () => {
     const navigation = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
     expect(navigation.map((item) => item.to)).toEqual([
       "/news",
-      "/news/leverage",
+      "/news/alpha",
       "/trading",
       "/news/oi",
     ]);
@@ -49,12 +49,11 @@ describe("public browser surface", () => {
       "/api/news/status",
       "/api/news/symbols/{base}",
       "/api/status",
-      "/api/trading/capabilities",
       "/api/trading/cases",
-      "/api/trading/evidence",
+      "/api/trading/execution/observations",
       "/api/trading/gate",
       "/api/trading/gate/{event_id}",
-      "/api/trading/intents",
+      "/api/trading/signals",
       "/api/trading/status",
     ]);
 

@@ -52,9 +52,10 @@ def _activate(repo: TradingRepository) -> None:
 
 
 def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
+    case_id = f"case-{suffix}"
     prepared = prepare_trade_signal(
         signal_id=suffix * 64,
-        case_id=f"case-{suffix}",
+        case_id=case_id,
         alpha_contract_sha256="2" * 64,
         market_key="crypto:perp:BTC:USDT",
         direction="long",
@@ -63,6 +64,22 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
         evidence_sha256="3" * 64,
     )
     with repo.conn.transaction():
+        repo.conn.execute(
+            """
+            INSERT INTO trading_cases (
+              case_id, underlying_key, trigger_kind, primary_source_key,
+              supplemental_source_keys, manifest, manifest_sha256, state,
+              policy_decision, policy_reason, observed_at_ms, created_at_ms, decided_at_ms,
+              updated_at_ms, strategy_id, strategy_version, strategy_config_digest,
+              capital_disposition, capital_reason
+            ) VALUES (
+              %s, %s, 'news', %s, '[]'::jsonb, '{"test":"nautilus-runtime"}'::jsonb,
+              %s, 'SIGNAL_EMITTED', 'long', 'nautilus_runtime_fixture', 1, 1, 1, 1,
+              'nautilus_runtime_fixture', 'v1', %s, 'not_applicable', NULL
+            )
+            """,
+            (case_id, f"runtime:{case_id}", f"runtime-source:{case_id}", "4" * 64, "5" * 64),
+        )
         repo.append_trade_signal(prepared)
 
 

@@ -78,9 +78,9 @@ def get_news_status(request: Request) -> Response:
         **snapshot["delivery"],
         "delivery_available": push.delivery_available and workers_state == "running",
     }
-    # No `trade_floors` here (#331). News republished the capital lane's thresholds beside its own
+    # No `trade_floors` here. News once republished the Signal lane's thresholds beside its own
     # gates, which invited a console to compare a Case frozen last week against a floor edited
-    # yesterday. The capital lane's rules belong to `/api/trading/*`, and the ones that decided a Case
+    # yesterday. Alpha rules belong to `/api/trading/*`, and the ones that decided a Case
     # travel with that Case as frozen evidence.
     oi = {
         **snapshot["oi"],

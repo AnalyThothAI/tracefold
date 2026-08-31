@@ -1,6 +1,6 @@
 @layer app.features {
   /*
-   * 资本判定 (#256, geometry re-cut to the v8 artifact in #280, renamed and cut back in #331).
+   * Alpha 判定 (geometry inherited from the earlier Case review surface).
    * A list of Cases beside one Case in full.
    *
    * The measure is deliberately lopsided — the pane is far wider than the list — because the list is a set

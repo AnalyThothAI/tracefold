@@ -1,4 +1,4 @@
-"""The hard-cut migration tree is one irreversible current-schema baseline."""
+"""The migration tree is one irreversible baseline plus ordered hard cuts."""
 
 from __future__ import annotations
 
@@ -19,7 +19,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
-HEAD = "20260831_0340"
+BASELINE = "20260831_0340"
+HEAD = "20260901_0341"
 
 
 def _config():
@@ -55,9 +56,13 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     revisions = list(script.walk_revisions())
 
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
-    assert [revision.revision for revision in revisions] == [HEAD]
-    assert revisions[0].down_revision is None
-    assert [path.name for path in VERSIONS.glob("*.py")] == ["20260831_0340_baseline.py"]
+    assert [revision.revision for revision in revisions] == [HEAD, BASELINE]
+    assert revisions[0].down_revision == BASELINE
+    assert revisions[1].down_revision is None
+    assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
+        "20260831_0340_baseline.py",
+        "20260901_0341_trading_signal_hard_cut.py",
+    ]
 
 
 def test_migration_tree_resolves_outside_the_repository() -> None:
@@ -72,7 +77,7 @@ def test_migration_tree_resolves_outside_the_repository() -> None:
     assert resolved == VERSIONS.parent.resolve()
 
 
-def test_baseline_upgrades_fresh_database_and_head_is_a_noop() -> None:
+def test_fresh_database_upgrades_through_baseline_and_signal_cut() -> None:
     config = _config()
     _empty_the_schema()
     assert _stamped_revision() is None
@@ -83,12 +88,12 @@ def test_baseline_upgrades_fresh_database_and_head_is_a_noop() -> None:
     assert _stamped_revision() == HEAD
 
 
-def test_baseline_downgrade_is_irreversible() -> None:
+def test_signal_hard_cut_downgrade_is_irreversible() -> None:
     config = _config()
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="irreversible current-schema baseline"):
+    with pytest.raises(RuntimeError, match="irreversible Trading hard cut"):
         command.downgrade(config, "base")
 
     assert _stamped_revision() == HEAD

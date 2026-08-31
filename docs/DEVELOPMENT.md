@@ -159,7 +159,7 @@ their corrections remain in #319.
 | `make check` | static and pure drift checks | Ruff, format, mypy, compileall, pure architecture/contract | Docker, DB, RabbitMQ, network, Node, sleeps/process orchestration, duplicate checkers |
 | `make test` / `make test-fast` | broad hermetic final checkpoint; not an edit loop | unit, hermetic contract, semantic architecture, temporary files, controlled local CLI subprocesses | Testcontainers, real PG/RabbitMQ, uvicorn, multiprocess orchestration, external codegen, load/p95 benchmarks |
 | `make test-integration` | targeted real-dependency evidence | PostgreSQL, RabbitMQ, HTTP app/worker integration | unrelated deploy/e2e behavior |
-| `make trading-smoke` | the Trading PostgreSQL acceptance contract | #350 Decision/Capital attribution and zero-Intent no-key blocks plus retained immutable Intent/recovery evidence on real PostgreSQL | live provider truth and everything outside the focused Trading integration modules; it is a subset of `make test-integration`, never merge evidence on its own |
+| `make trading-smoke` | the Trading PostgreSQL acceptance contract | #433-C real News→Case→Signal handoff, atomic Case/Signal settlement, and irreversible old-writer hard cut on real PostgreSQL | live provider truth and everything outside the focused Trading integration modules; it is a subset of `make test-integration`, never merge evidence on its own |
 | `make test-deploy` | deployment and operations behavior | Compose, locks, rollback, receipts, signals, fake executable simulation | broad hermetic checkpoint |
 | `make test-e2e` | Serve-process evidence | real PostgreSQL, uvicorn, readiness and HTTP read surfaces | Workers or broker behavior |
 | `make test-golden` | broker-driven production path | real RabbitMQ, production Workers wiring, PostgreSQL facts and HTTP read projection | provider/paid model truth |
@@ -230,7 +230,7 @@ does not replace the mechanism under test.
 | test selection, markers, `conftest`, shared fixtures, report guard, or Make CI targets | one complete `make test-ci` |
 | CI workflow, build/package, deploy/release verifier | one complete `make test-ci` |
 | cross-owner hard cut spanning backend resources/runtime/frontend | affected seams plus one complete `make test-ci` |
-| Capital, Intent, order fence/adapter, migration, or security authority | Issue-declared real seams; full preflight when multiple owners change |
+| Signal, OperatorIntent, Runtime/order fence, migration, or security authority | Issue-declared real seams; full preflight when multiple owners change |
 
 `make test-fast` is a broad hermetic checkpoint, never the per-edit loop. An
 ordinary behavior change runs it at most once. `make test-ci` is an optional,
@@ -399,7 +399,9 @@ them from the affected risk instead of running them in a fixed local ladder.
 local convenience, neither merge evidence. Resource and lane wiring is owned by
 [Local lane implementation](TESTING.md#local-lane-implementation).
 
-The #377 Trading evidence clock is verified at three distinct seams. Pure tests
+### Historical pre-433-C evidence verification (retired)
+
+The retired #377 Trading evidence clock was verified at three distinct seams. Pure tests
 prove canonical capture/drain/corpus/candidate/future artifacts, exact funding
 scope/sign, actual database-stamped receipt clocks, finite candidate selection,
 append-only blind-batch continuity/health, deterministic block bootstrap and declared
@@ -428,9 +430,8 @@ final fixed-window/rollback terminal.
 ### Scheduled mutation
 
 `make mutation` and `.github/workflows/mutation.yml` run a Cosmic Ray batch over
-`tracefold/trading/quote_authority.py` and `tracefold/trading/market_context.py`,
-the pure kernels that turn two prices into the basis-point move a capital
-decision is made on and that admit or reject an execution quote. `mutation.toml`
+`tracefold/trading/market_context.py`, the remaining pure kernel that turns
+source-native bars into the basis-point move frozen on a Case. `mutation.toml`
 carries the scope, the command and the reasoning behind both. The lane is a
 workflow of its own rather than a job in CI: `scripts/require_main_ci.py` admits
 a deployment only when the whole CI run for the exact main SHA concluded
@@ -473,26 +474,11 @@ with the other shards' jobs marked skipped. Where the union falls short of the
 population the run is reported as partial and only unclassified survivors are
 checked, since "listed but no longer surviving" is a claim about the tests and
 not about which slice happened to run. The
-batch is sized against the 30-minute bound from measured numbers — 628 mutants
-at about 6 s each is roughly an hour sequentially, about 11 minutes across six
-shards — and each shard is capped at 30 minutes so an over-long batch fails
-rather than drifts.
+batch remains partitioned across the fixed six-runner matrix and each shard is
+capped at 30 minutes so an over-long batch fails rather than drifts.
 
-The command runs under `TRACEFOLD_HYPOTHESIS_PROFILE=ci`, which is what makes
-the result reproducible. `tests/trading/test_quote_properties.py` is a Hypothesis
-suite and the default `fast` profile draws fresh examples per run, so without
-`derandomize` a mutant is killed one week and survives the next,
-`mutation-survivors.toml` goes stale on its own, and the lane fails for reasons
-unrelated to the code. Cosmic Ray runs the command through `shlex.split` with no
-shell but inherits the environment, so the setting is an `env` prefix in
-`mutation.toml` rather than a shell assignment.
-
-The command runs the tests that constrain the mutated modules, including
-`tests/test_execution_quote.py` despite its `nautilus_trader` import costing
-around 3 s per mutant. A batch that omits it is much faster and reports
-survivors in `validate_entry_quote` that describe the command rather than the
-tests, since that file is what pins each quote bound at its exact `==`, `<` or
-`>` point.
+The command runs `tests/trading/test_market_context.py`, the focused suite that
+constrains the selected-bar and basis-point arithmetic.
 
 Survivors are classified rather than counted. `mutation-survivors.toml` holds
 two forms and `scripts/mutation_survivors.py` fails on an unclassified survivor,
@@ -502,9 +488,8 @@ on an entry that no longer matches one, and on a rule that matches none. A
 is checked against the source: `annotation-union` accepts a mutated `|` on a
 line where every `|` sits inside an annotation, which
 `from __future__ import annotations` never evaluates. That check is per site
-rather than per operator because the distinction is real —
-`quote_authority.py`'s `ExecutionQuoteAuditV1` builds a runtime type alias whose `|` is evaluated, and
-its mutants are killed while annotation mutants survive.
+rather than per operator so a future runtime-evaluated union cannot be silently
+classified as an inert annotation mutation.
 
 ### News V3 evaluation seams
 

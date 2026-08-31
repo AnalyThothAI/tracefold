@@ -178,10 +178,10 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260831_0340"
+    assert version == latest_migration_version() == "20260901_0341"
 
 
-def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
+def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:
         migrate(conn)
@@ -203,7 +203,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260831_0340"
+    assert version == latest_migration_version() == "20260901_0341"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:

@@ -167,7 +167,7 @@
   }
 
   /*
-   * An environment word rather than a volume. Neutral grey on purpose: `Demo` is a venue fact, not an alarm.
+   * Decision state plus execution mode rather than a volume. Disabled is visible but not presented as ready.
    */
   .cockpit-app-sidebar-badge {
     flex: 0 0 auto;

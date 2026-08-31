@@ -15,11 +15,11 @@ export function newsOiPath(): string {
 }
 
 /**
- * 资本判定 (#256). The capital lane's reading of the deterministic OI frames — a different question from
- * `/news/oi`, which audits whether the frames themselves parsed and cleared the push gates.
+ * Alpha 判定. The Signal lane's reading of deterministic OI frames is separate from `/news/oi`, which
+ * audits whether those source frames parsed and cleared the push gates.
  */
-export function newsLeveragePath(): string {
-  return "/news/leverage";
+export function newsAlphaPath(): string {
+  return "/news/alpha";
 }
 
 /**
@@ -32,7 +32,7 @@ export function newsSymbolPath(base: string): string {
 }
 
 /**
- * The Binance USD-M Demo execution workbench. It is read-only and has no runtime switch.
+ * The read-only Alpha and execution-observation workbench. It has no Runtime switch.
  */
 export function tradingPath(): string {
   return "/trading";

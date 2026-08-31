@@ -1,8 +1,8 @@
-"""The one production capital policy: `source_native_oi_smart_money_long_v3`.
+"""The one production Alpha policy: `source_native_oi_smart_money_long_v4`.
 
 Pure, deterministic, long-only, and the whole of what decides a Case. It answers `long` or `no_trade`
-and nothing else — no permission, no execution environment, no venue. Capital authority is the lane's
-and the durable capability snapshot's; a strategy string was never the place to keep it.
+and nothing else — no permission, no execution environment, no venue. The result is an engine-neutral
+Signal; execution authority belongs to a later Runtime boundary.
 
 **Why a new identity rather than a retuned `oi_smart_money_momentum_v1` (#331).** The arithmetic is
 carried over unchanged, deliberately: this hard cut is not the place to move a threshold. What changed
@@ -35,13 +35,13 @@ pre-move this rule reads: 1-3% returned +1.27% at 4 h, 3-6% returned +0.80%, and
 -0.77% on N=151, with a median 1 h MAE of -3.35%**. The ceiling admits the bottom half of that
 measured-negative bucket. Two things make it a decision an operator may take: the measurement is over
 the *whole* corpus and whether the three smart-money conditions change its sign inside their own
-cohort is unmeasured; and the lane can request capital only through the Production V3 authority.
+cohort is unmeasured. The Signal itself grants no execution authority.
 
 **Inclusivity is in the field names and it is not negotiable.** `min_` reads `>=` and the two `above`
 conditions read `>`: `500` qualifies and `499` does not; `5001` qualifies and `5000` does not; `1`
 qualifies and `0` does not.
 
-**Every condition it executes is written down with the Case.** `CapitalDecision.checks` carries the
+**Every condition it executes is written down with the Case.** `AlphaDecision.checks` carries the
 threshold, the operator, the measured value and the pass/fail for each rule the policy reached, so a
 console holding only today's configuration can still explain a Case frozen a week ago.
 """
@@ -52,18 +52,18 @@ from dataclasses import dataclass
 from typing import Final
 
 from .contracts import (
-    CapitalDecision,
+    AlphaDecision,
     FrozenPolicyContext,
     PolicyCheck,
     PolicyOperator,
     canonical_sha256,
 )
 
-CAPITAL_POLICY_ID: Final = "source_native_oi_smart_money_long_v3"
+ALPHA_POLICY_ID: Final = "source_native_oi_smart_money_long_v4"
 
 
 @dataclass(frozen=True, slots=True)
-class CapitalPolicyConfig:
+class AlphaPolicyConfig:
     """Every number the policy executes, and nothing the Admission Gate already owns.
 
     The absolute OI liquidity floor is absent on purpose: it is a universe/routability rule with one
@@ -103,12 +103,12 @@ class CapitalPolicyConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class CapitalPolicy:
+class AlphaPolicy:
     """The production policy identity. One instance, code-owned, no registry and no lookup order."""
 
-    config: CapitalPolicyConfig = CapitalPolicyConfig()
-    policy_id: str = CAPITAL_POLICY_ID
-    policy_version: str = CAPITAL_POLICY_ID
+    config: AlphaPolicyConfig = AlphaPolicyConfig()
+    policy_id: str = ALPHA_POLICY_ID
+    policy_version: str = ALPHA_POLICY_ID
 
     @property
     def config_digest(self) -> str:
@@ -118,7 +118,7 @@ class CapitalPolicy:
     def config_snapshot(self) -> dict[str, bool | int | str]:
         return self.config.snapshot
 
-    def decide(self, context: FrozenPolicyContext) -> CapitalDecision:
+    def decide(self, context: FrozenPolicyContext) -> AlphaDecision:
         """Frozen numbers in, one named answer plus its evidence out. No clock, no read, no model.
 
         The order is the order an operator reads the template in — source, then the three conditions,
@@ -143,8 +143,8 @@ class CapitalPolicy:
             )
             return passed
 
-        def refuse(rule: str) -> CapitalDecision:
-            return CapitalDecision(
+        def refuse(rule: str) -> AlphaDecision:
+            return AlphaDecision(
                 decision="no_trade",
                 rule=rule,
                 setup="",
@@ -214,7 +214,7 @@ class CapitalPolicy:
 
         # Proved by the two checks above: both refuse when `pre_move` is `None`.
         confirmed = int(pre_move or 0)
-        return CapitalDecision(
+        return AlphaDecision(
             decision="long",
             rule="smart_money_momentum_long",
             setup=(
@@ -229,11 +229,11 @@ class CapitalPolicy:
         )
 
 
-CAPITAL_POLICY: Final = CapitalPolicy()
+ALPHA_POLICY: Final = AlphaPolicy()
 
 __all__ = [
-    "CAPITAL_POLICY",
-    "CAPITAL_POLICY_ID",
-    "CapitalPolicy",
-    "CapitalPolicyConfig",
+    "ALPHA_POLICY",
+    "ALPHA_POLICY_ID",
+    "AlphaPolicy",
+    "AlphaPolicyConfig",
 ]

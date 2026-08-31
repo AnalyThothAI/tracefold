@@ -19,21 +19,19 @@ const oiArchetype = {
   path: "/news/oi",
   ready: (page: Page) => page.locator(".news-oi-row").first(),
   settled: (page: Page) => page.locator(".news-oi-policy").first(),
-  topbarFigure: "成案 · 放行 · 08-25",
+  topbarFigure: "7 · 1",
 } as const;
 
 const tradingArchetype = {
   name: "trading",
   path: "/trading",
-  ready: (page: Page) => page.locator(".trading-exposure-row").first(),
-  // The last thing this page paints is the 24h tally, and it is the page's own markup rather than the
-  // Case table's — /trading stopped carrying Cases in #331.
-  settled: (page: Page) => page.locator(".trading-tally").first(),
+  ready: (page: Page) => page.locator(".trading-current-row").first(),
+  settled: (page: Page) => page.getByRole("heading", { name: "执行观察" }),
 } as const;
 
 const symbolArchetype = {
-  // #207 PR-W1: the token page composes several endpoints into one column, and since #282 two of them
-  // are the capital lane's. The baseline is what keeps the identity band, the rank window, 资本复盘 and
+  // The token page composes several endpoints into one column, including the Signal lane's Case/Signal
+  // projection. The baseline keeps the identity band, rank window, Alpha 复盘 and
   // the mixed events table from drifting apart at a viewport.
   name: "symbol",
   path: "/news/symbols/WIF",
@@ -57,8 +55,8 @@ const archetypes = [
   {
     // #256: a list of cases beside one case in full. The baseline is what keeps the two measures from
     // drifting apart, and what would catch the pane silently disappearing at a viewport.
-    name: "leverage",
-    path: "/news/leverage",
+    name: "alpha",
+    path: "/news/alpha",
     ready: (page: Page) => page.getByRole("region", { name: "案例列表" }),
     settled: (page: Page) => page.getByRole("region", { name: /^案例 / }),
   },
@@ -85,12 +83,12 @@ test("freezes the OI monitor at every project viewport", async ({ page }) => {
 });
 
 /*
- * The two pages that read the capital ledger are frozen on the ledger's own clock, because the trading
+ * The pages that read the Alpha/Signal ledger are frozen on the ledger's own clock, because the trading
  * fixtures are on it and the news fixtures are a hundred days earlier. Under the news clock the token
  * page's newest case — and the frame it was opened from — sat a month in the page's own *future*, which
  * `relativeTime` clamps to 「刚刚」: a baseline of a state the pipeline cannot produce.
  */
-test("freezes the capital-lane pages at every project viewport", async ({ page }) => {
+test("freezes the Alpha and execution pages at every project viewport", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-08-25T12:00:00Z"));
   await freezeArchetypes(page, [symbolArchetype, tradingArchetype]);
 });
@@ -113,7 +111,7 @@ async function freezeArchetypes(
     }
     if (route.name === "oi") await expectOiOverflowContract(page);
     if (route.name === "trading") await expectTradingOverflowContract(page);
-    if (route.name === "leverage") await expectLeverageScrollContract(page);
+    if (route.name === "alpha") await expectLeverageScrollContract(page);
     await waitForSettledFeedCount(page);
     await waitForStableWorkbench(page);
     await expect(page).toHaveScreenshot(`archetype-${route.name}.png`, {

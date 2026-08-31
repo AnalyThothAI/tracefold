@@ -65,12 +65,11 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/bootstrap",
         "/api/status",
         "/api/trading/status",
-        # One route per durable aggregate (#331). `/cases` is the replacement for the retired
-        # `intents.cases_without_intents`, not a second synonym beside it.
+        # One route per durable aggregate: Alpha publishes Cases and engine-neutral Signals;
+        # execution publishes only normalized observations in this slice.
         "/api/trading/cases",
-        "/api/trading/capabilities",
-        "/api/trading/evidence",
-        "/api/trading/intents",
+        "/api/trading/signals",
+        "/api/trading/execution/observations",
         # The admission ledger for a window of frames at once, and one Source at a time.
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
@@ -80,7 +79,8 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
     for path in (
         "/api/trading/status",
         "/api/trading/cases",
-        "/api/trading/intents",
+        "/api/trading/signals",
+        "/api/trading/execution/observations",
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     ):

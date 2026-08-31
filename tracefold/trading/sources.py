@@ -14,17 +14,35 @@ property of the row. Whether it is fresh enough to open a Case is Admission's, w
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
 
-from .bindings import binding_for_source_venue, venue_for_binding
 from .contracts import (
     OiCandidateRow,
     OiTradeCandidate,
     canonical_base_symbol,
 )
+
+_SOURCE_VENUES = {
+    "binance": "binance.usdm",
+    "binance.perp": "binance.usdm",
+    "binance.usdm": "binance.usdm",
+    "hyperliquid": "hyperliquid.perp",
+    "hl.perp": "hyperliquid.perp",
+    "hyperliquid.perp": "hyperliquid.perp",
+    "hl.xyz": "hyperliquid.xyz",
+    "hyperliquid.xyz": "hyperliquid.xyz",
+}
+_PERPETUAL_BASE_SYMBOL = re.compile(r"^[A-Z0-9][A-Z0-9:_-]{0,110}$")
+
+
+def normalize_source_venue(value: object) -> str | None:
+    """Normalize a provider fact's venue without choosing an execution route."""
+
+    return _SOURCE_VENUES.get(str(value or "").strip().lower())
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +75,16 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     symbol = canonical_base_symbol(row.get("symbol"))
     if not symbol:
         return SourceRejected(rule="symbol_not_canonicalisable")
+    # The engine-neutral key is `crypto:perp:{symbol}:USDT`, whose public contract is at most 128
+    # ASCII identity characters. Refuse an unusable key while the source can still receive a durable
+    # admission answer; discovering it after bars are fetched would fault the shared Workers process.
+    if _PERPETUAL_BASE_SYMBOL.fullmatch(symbol) is None:
+        return SourceRejected(rule="market_key_invalid", symbol=symbol)
+    provider_symbol = str(row.get("provider_symbol") or "").strip().upper()
+    if not provider_symbol:
+        return SourceRejected(rule="provider_symbol_missing", symbol=symbol)
+    if canonical_base_symbol(provider_symbol) != symbol:
+        return SourceRejected(rule="provider_symbol_mismatch", symbol=symbol)
     # The reader's push/drop is carried onto the candidate as audit and is not an admission (#264): its
     # rule is `whale_oi_ratio > 80%`, and gating capital on it meant a reader policy edit opened or
     # closed the trading lane without anyone deciding that it should.
@@ -96,10 +124,10 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
     if not isinstance(source_rule, str) or not source_rule.strip():
         return SourceRejected(rule="source_rule_missing", symbol=symbol)
 
-    venue = str(row.get("venue") or "").strip().lower()
-    binding = binding_for_source_venue(venue)
-    if binding is not None:
-        venue = venue_for_binding(binding)
+    raw_venue = str(row.get("venue") or "").strip().lower()
+    venue = normalize_source_venue(raw_venue) or raw_venue
+    if venue == "hyperliquid.perp" and provider_symbol.startswith("XYZ-"):
+        venue = "hyperliquid.xyz"
     try:
         return OiTradeCandidate(
             event_id=str(row.get("event_id") or ""),
@@ -139,4 +167,4 @@ def normalize_oi_source(row: OiCandidateRow) -> OiTradeCandidate | SourceRejecte
         return SourceRejected(rule="generation_invalid", symbol=symbol)
 
 
-__all__ = ["SourceRejected", "normalize_oi_source"]
+__all__ = ["SourceRejected", "normalize_oi_source", "normalize_source_venue"]

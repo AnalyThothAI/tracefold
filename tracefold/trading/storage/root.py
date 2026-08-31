@@ -4,37 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
-from .authority import AuthorityStorage
-from .bindings import BindingStorage
-from .capabilities import CapabilityStorage
 from .cases import CaseStorage
 from .catalog import CatalogStorage
-from .control import ControlStorage
-from .evidence import EvidenceStorage
 from .execution_stream import ExecutionStreamStorage
 from .gate import CandidateGateStorage
-from .intents import IntentStorage
 from .lane import LaneStorage
 from .queries import QueryStorage
-from .replay import ReplayStorage
-from .verification import VerificationStorage
 
 
 class TradingRepository(
-    ControlStorage,
-    EvidenceStorage,
     ExecutionStreamStorage,
-    AuthorityStorage,
-    BindingStorage,
     CatalogStorage,
-    CapabilityStorage,
     CandidateGateStorage,
     CaseStorage,
-    IntentStorage,
     LaneStorage,
     QueryStorage,
-    ReplayStorage,
-    VerificationStorage,
 ):
     """Connection-bound persistence facade; callers continue to own transactions."""
 

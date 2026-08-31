@@ -1,5 +1,5 @@
 @layer app.features {
-  /* The artifact gives this page and 资本判定 1360px, twenty more than the reading surfaces: both carry a
+  /* This page and Alpha 判定 get 1360px, twenty more than the reading surfaces: both carry a
      wide right-hand region — the frame table's trade column here — that a narrower measure clips first. */
   .news-panel.news-oi-shell {
     max-width: 1360px;

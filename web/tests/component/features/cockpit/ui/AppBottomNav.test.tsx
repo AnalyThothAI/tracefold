@@ -19,7 +19,7 @@ describe("AppBottomNav", () => {
     );
     expect(links.map((link) => link.textContent?.trim())).toEqual([
       "事件流",
-      "资本判定",
+      "Alpha 判定",
       // The phone bar shows the label alone: the sidebar's Demo chip is secondary to the 48px thumb
       // target has no room for it. The page states the mode in a labelled figure either way.
       "交易",

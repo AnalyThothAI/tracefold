@@ -6,7 +6,7 @@ import {
   type TradingGate,
   type TradingGateDecision,
 } from "@features/trading";
-import { newsEventPath, newsLeveragePath, newsSymbolPath } from "@shared/routing/paths";
+import { newsAlphaPath, newsEventPath, newsSymbolPath } from "@shared/routing/paths";
 import { useRouteReferrer } from "@shared/routing/routeReferrer";
 import { ActionButton } from "@shared/ui/ActionButton";
 import * as PageState from "@shared/ui/PageState";
@@ -314,9 +314,9 @@ function FrameDetail({
           {caseId ? (
             <Link
               className="news-oi-open"
-              to={`${newsLeveragePath()}?case=${encodeURIComponent(caseId)}`}
+              to={`${newsAlphaPath()}?case=${encodeURIComponent(caseId)}`}
             >
-              资本判定 <ChevronRight aria-hidden />
+              Alpha 判定 <ChevronRight aria-hidden />
             </Link>
           ) : null}
         </span>

@@ -37,7 +37,7 @@ def test_fatal_code_uses_typed_overrun_instead_of_error_text() -> None:
         ("news-receiver", RuntimeError("receiver bug"), "news_receiver_fatal"),
         ("news-recovery", RuntimeError("recovery bug"), "news_recovery_fatal"),
         ("news-janitor", RuntimeError("janitor bug"), "runtime_failed"),
-        ("capital-lane", RuntimeError("capital bug"), "runtime_failed"),
+        ("trading-signal-lane", RuntimeError("signal bug"), "runtime_failed"),
     ],
 )
 def test_news_task_failure_has_specific_live_readiness_reason(

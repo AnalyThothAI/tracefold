@@ -5,7 +5,7 @@ import { CASE_STATE_ZH, bpsPercent, policyReasonLabel } from "./tradingLabels";
 /**
  * The Case/Decision surface's whole model (#331).
  *
- * It is small because it derives nothing. The 988-line module this replaces rebuilt the capital lane in
+ * It is small because it derives nothing. The 988-line module this replaces rebuilt Capital in
  * the browser: it re-ran threshold comparisons against `/api/trading/status`, inferred a phase from an
  * Intent's execution state, and printed 冲突 on rows whose Case had passed — because it was measuring a
  * Case frozen last week with a floor edited yesterday. Every threshold is now frozen onto the Case, so
@@ -15,7 +15,7 @@ export type CaseTab = "all" | "emitted" | "no_trade" | "blocked";
 
 export const CASE_TABS: Record<CaseTab, { label: string; states: readonly string[] }> = {
   all: { label: "全部", states: [] },
-  emitted: { label: "已形成意图", states: ["INTENT_EMITTED"] },
+  emitted: { label: "已发出 Signal", states: ["SIGNAL_EMITTED"] },
   no_trade: { label: "不交易", states: ["NO_TRADE"] },
   blocked: { label: "无法判定", states: ["BLOCKED", "POLICY_REJECTED", "ORDER_PREPARED"] },
 };
@@ -70,9 +70,9 @@ export function caseFigures(data: TradingCases | undefined): CaseFigure[] {
     { key: "cases", label: "24h 成案", value: String(total), tone: "plain" },
     {
       key: "emitted",
-      label: "已形成意图",
-      value: String(states.INTENT_EMITTED ?? 0),
-      tone: (states.INTENT_EMITTED ?? 0) > 0 ? "accent" : "plain",
+      label: "已发出 Signal",
+      value: String(states.SIGNAL_EMITTED ?? 0),
+      tone: (states.SIGNAL_EMITTED ?? 0) > 0 ? "accent" : "plain",
     },
     { key: "no_trade", label: "不交易", value: String(states.NO_TRADE ?? 0), tone: "plain" },
     {
@@ -98,7 +98,7 @@ export function caseStateLabel(item: TradingCase): string {
 
 /** The one sentence a Case's terminal answer deserves, in the vocabulary that decided it. */
 export function caseVerdict(item: TradingCase): string {
-  if (item.state === "INTENT_EMITTED") return "LONG · 已形成意图";
+  if (item.state === "SIGNAL_EMITTED") return "LONG · 已发出 Signal";
   if (item.state === "NO_TRADE") return `不交易 · ${policyReasonLabel(item.policy_reason)}`;
   if (item.state === "BLOCKED") return `无法安全判定 · ${policyReasonLabel(item.policy_reason)}`;
   return `${caseStateLabel(item)}${item.policy_reason ? ` · ${policyReasonLabel(item.policy_reason)}` : ""}`;

@@ -135,7 +135,7 @@ function AppSidebarItem({
        * states the code-owned execution environment in a labelled figure.
        */}
       {badge ? (
-        <span aria-hidden className="cockpit-app-sidebar-badge" title="资本通道执行环境">
+        <span aria-hidden className="cockpit-app-sidebar-badge" title="Alpha 与执行状态">
           {badge}
         </span>
       ) : null}

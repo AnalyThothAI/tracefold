@@ -1,22 +1,9 @@
-import {
-  bpsPercent,
-  isActiveIntent,
-  policyReasonLabel,
-  stopVerified,
-} from "@features/trading/model/tradingLabels";
-import { tradingIntentFixture } from "@tests/fixtures/tradingFixture";
+import { bpsPercent, policyLabel, policyReasonLabel } from "@features/trading/model/tradingLabels";
 import { describe, expect, it } from "vitest";
 
-describe("intent labels", () => {
-  it("recognizes nonterminal intent states", () => {
-    expect(isActiveIntent(tradingIntentFixture({ execution_state: "PENDING" }))).toBe(true);
-    expect(isActiveIntent(tradingIntentFixture({ execution_state: "TERMINAL" }))).toBe(false);
-  });
-
-  it("requires both OPEN_PROTECTED and a protected quantity", () => {
-    expect(stopVerified(tradingIntentFixture())).toBe(true);
-    expect(stopVerified(tradingIntentFixture({ protected_quantity: null }))).toBe(false);
-    expect(stopVerified(tradingIntentFixture({ execution_state: "IN_FLIGHT" }))).toBe(false);
+describe("Alpha labels", () => {
+  it("names the current Alpha identity without falling back to a historical capital label", () => {
+    expect(policyLabel("source_native_oi_smart_money_long_v4")).toBe("来源原生 OI × 聪明钱 · 做多");
   });
 
   it("names a system block and a policy rule from the same lookup, and neither invents a synonym", () => {

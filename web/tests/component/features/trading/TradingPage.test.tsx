@@ -2,10 +2,12 @@ import { TradingPage } from "@features/trading";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen } from "@testing-library/react";
 import {
-  tradingCapabilitiesFixture,
-  tradingEvidenceFixture,
-  tradingIntentFixture,
-  tradingIntentsFixture,
+  tradingCaseFixture,
+  tradingCasesFixture,
+  tradingObservationFixture,
+  tradingObservationsFixture,
+  tradingSignalFixture,
+  tradingSignalsFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
@@ -19,106 +21,92 @@ describe("TradingPage", () => {
       http.get(/.*\/api\/trading\/status$/, () =>
         HttpResponse.json({ ok: true, data: tradingStatusFixture() }),
       ),
-      http.get(/.*\/api\/trading\/intents$/, () =>
-        HttpResponse.json({ ok: true, data: tradingIntentsFixture() }),
+      http.get(/.*\/api\/trading\/cases$/, () =>
+        HttpResponse.json({ ok: true, data: tradingCasesFixture() }),
       ),
-      http.get(/.*\/api\/trading\/capabilities$/, () =>
-        HttpResponse.json({ ok: true, data: tradingCapabilitiesFixture() }),
+      http.get(/.*\/api\/trading\/signals$/, () =>
+        HttpResponse.json({ ok: true, data: tradingSignalsFixture() }),
       ),
-      http.get(/.*\/api\/trading\/evidence$/, () =>
-        HttpResponse.json({ ok: true, data: tradingEvidenceFixture() }),
+      http.get(/.*\/api\/trading\/execution\/observations$/, () =>
+        HttpResponse.json({ ok: true, data: tradingObservationsFixture() }),
       ),
     );
   });
 
   afterEach(cleanup);
 
-  it("renders the no-key observer state and native historical intent state", async () => {
+  it("renders the explicit C boundary without claiming execution readiness", async () => {
     renderTrading();
 
-    expect(await screen.findByRole("heading", { name: "Decision / Capital" })).toBeVisible();
-    expect(await screen.findByText("决策运行、资本暂停、凭证未配置，当前无法交易")).toBeVisible();
-    expect((await screen.findAllByText("BINANCE_USDM")).length).toBeGreaterThan(0);
-    expect((await screen.findAllByText("HYPERLIQUID_PERP")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("credentials unconfigured")).toHaveLength(2);
-    expect(await screen.findByText("OPEN_PROTECTED")).toBeVisible();
-    expect(await screen.findByText("provider_page_incomplete")).toBeVisible();
-    expect(await screen.findByText("PROTECTION_CONTRACT_UNPROVEN")).toBeVisible();
-    expect(screen.getAllByText("absent")).toHaveLength(2);
-    expect(screen.queryByText(/paper|OpenTrade|订单/i)).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Alpha / Execution" })).toBeVisible();
+    expect(await screen.findByText(/当前边界只输出 engine-neutral/)).toBeVisible();
+    expect(screen.getAllByText("disabled").length).toBeGreaterThan(0);
+    expect(screen.getByText("当前 24 小时窗口没有 Observation。")).toBeVisible();
+    expect(screen.queryByText(/Capital|Intent|capability partition/i)).toBeNull();
   });
 
-  it("carries no Case list, and names the upstream totals when there is no Intent", async () => {
-    /*
-     * #331: `/intents` no longer returns `cases_without_intents`, so the page cannot restate decisions.
-     * `0 Intent` is a truthful empty that says what the lane *did* do, with a link to where it did it —
-     * never a blank panel that reads as "the system had no data".
-     */
+  it("shows a Case and its separately read Signal with the same identity", async () => {
     server.use(
-      http.get(/.*\/api\/trading\/intents$/, () =>
-        HttpResponse.json({ ok: true, data: tradingIntentsFixture({ intents: [] }) }),
-      ),
-    );
-
-    renderTrading();
-
-    expect(await screen.findByText(/当前没有非终态 Intent/)).toBeVisible();
-    expect(screen.getByRole("link", { name: "资本判定" })).toBeVisible();
-    expect(screen.queryByText("Cases without Intent")).toBeNull();
-  });
-
-  it("keeps the readiness answer and says the Intent ledger failed", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/intents$/, () =>
-        HttpResponse.json({ ok: false }, { status: 503 }),
-      ),
-    );
-
-    renderTrading();
-
-    expect(await screen.findByRole("heading", { name: "Decision / Capital" })).toBeVisible();
-    expect(await screen.findByText(/Intent 账本读取失败/)).toBeVisible();
-  });
-
-  it("renders terminal outcome from the intent ledger", async () => {
-    server.use(
-      http.get(/.*\/api\/trading\/intents$/, () =>
+      http.get(/.*\/api\/trading\/cases$/, () =>
         HttpResponse.json({
           ok: true,
-          data: tradingIntentsFixture({
-            intents: [
-              tradingIntentFixture({
-                closed_at_ms: Date.now(),
-                execution_phase: "EXIT",
-                execution_state: "TERMINAL",
-                realized_pnl_amount: "0.25",
-                realized_pnl_currency: "USDT",
-                terminal_outcome: "CLOSED_FLAT",
+          data: tradingCasesFixture({
+            cases: [
+              tradingCaseFixture({
+                base_symbol: "SOL",
+                case_id: "case-sol",
+                market_key: "crypto:perp:SOL:USDT",
+                policy_decision: "long",
+                policy_reason: "smart_money_momentum_long",
+                state: "SIGNAL_EMITTED",
+                underlying_key: "crypto:SOL",
               }),
             ],
           }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/signals$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingSignalsFixture({ signals: [tradingSignalFixture({ case_id: "case-sol" })] }),
         }),
       ),
     );
 
     renderTrading();
 
-    // The row and the 24 h outcome distribution both name it; the realised amount appears once.
-    expect((await screen.findAllByText("CLOSED_FLAT")).length).toBeGreaterThan(0);
-    expect(screen.getByText("0.25 USDT")).toBeVisible();
+    expect((await screen.findAllByText("crypto:perp:SOL:USDT")).length).toBeGreaterThan(0);
+    expect(screen.getByText("已发出 Signal")).toBeVisible();
+    expect(screen.getByText("VALID")).toBeVisible();
   });
 
-  it("does not turn a capability API failure into a truthful empty partition", async () => {
+  it("does not turn a Signal read failure into an empty ledger", async () => {
     server.use(
-      http.get(/.*\/api\/trading\/capabilities$/, () =>
-        HttpResponse.json({ ok: false, error: "capability_unavailable" }, { status: 503 }),
+      http.get(/.*\/api\/trading\/signals$/, () =>
+        HttpResponse.json({ ok: false, error: "signal_unavailable" }, { status: 503 }),
       ),
     );
 
     renderTrading();
 
-    expect(await screen.findByText("capability_unavailable")).toBeVisible();
-    expect(screen.queryByText(/当前筛选没有 capability entry/)).toBeNull();
+    expect(await screen.findByText("Signal 账本读取失败，不能据此断言为空。")).toBeVisible();
+    expect(screen.queryByText("当前 24 小时窗口没有 Signal。")).toBeNull();
+  });
+
+  it("renders durable execution observations without inferring an order state", async () => {
+    server.use(
+      http.get(/.*\/api\/trading\/execution\/observations$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingObservationsFixture({ observations: [tradingObservationFixture()] }),
+        }),
+      ),
+    );
+
+    renderTrading();
+
+    expect(await screen.findByText("signal_disposition")).toBeVisible();
+    expect(screen.getAllByText("demo-v1").length).toBeGreaterThan(0);
   });
 });
 
