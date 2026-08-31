@@ -113,7 +113,9 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
     # Dry-run creates no acceptance row, so its placeholder identity never becomes provenance.
     principal = Principal(subject=reviewer or "preview")
     drafter_identity = dict(batch.get("drafter") or {})
-    draft_author = str(drafter_identity.get("model") or drafter_identity.get("drafter_id") or DRAFTER_ID).strip()
+    drafter_contract = str(drafter_identity.get("drafter_id") or DRAFTER_ID).strip()
+    drafter_model = str(drafter_identity.get("model") or "").strip()
+    draft_author = f"{drafter_contract}@{drafter_model}" if drafter_model else drafter_contract
 
     planned: list[tuple[str, str, dict[str, Any], float]] = []
     skipped: dict[str, int] = {}

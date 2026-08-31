@@ -172,6 +172,6 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
 
     assert code == 0 and result["data"]["submitted"] == 1
     assert persisted == {
-        "draft_author": "openai/qwen3.8-27b:thinking",
+        "draft_author": "tracefold.news.review_drafter_v6@openai/qwen3.8-27b:thinking",
         "reviewer": "owner_authorized_codex",
     }
