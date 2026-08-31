@@ -78,7 +78,9 @@ def test_complete_verification_uses_fixed_native_runner_contracts() -> None:
         "ci-python-hermetic",
         "ci-postgres-behavior",
         "ci-migration",
-        "ci-runtime-process",
+        "ci-runtime-broker",
+        "ci-deploy-e2e",
+        "ci-test-integrity",
         "ci-frontend",
     ):
         assert target in commands

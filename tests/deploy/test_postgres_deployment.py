@@ -18,7 +18,8 @@ def test_required_and_scheduled_postgres_evidence_uses_the_production_image() ->
 
     assert ci["jobs"]["postgres-behavior"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
     assert ci["jobs"]["migration"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
-    assert ci["jobs"]["runtime-process"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    assert ci["jobs"]["runtime-broker"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
+    assert ci["jobs"]["deploy-e2e"]["services"]["postgres"]["image"] == POSTGRES_IMAGE
     scheduled_job = scheduled["jobs"]["production-duration"]
     assert scheduled_job["services"]["postgres"]["image"] == POSTGRES_IMAGE
     run_step = next(
