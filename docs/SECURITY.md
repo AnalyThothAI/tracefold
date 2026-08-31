@@ -266,10 +266,14 @@ relabel old evidence or delete it.
 PostgreSQL runtime roles are code-owned:
 `tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
 `20260818_0275` baseline migration and extended by the #112 migrations,
-creates the non-login `tracefold_owner` plus `tracefold_serve`
+creates the direct migration-only `tracefold_owner` LOGIN plus `tracefold_serve`
 (`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
 writes), `tracefold_nautilus` (only the #283 execution projection), and
-`tracefold_migrate`. Serve has SELECT plus INSERT only on
+the NOLOGIN bootstrap superuser `tracefold_app`. The retired
+`tracefold_migrate` role and owner membership do not exist: Alembic connects
+directly as the ordinary, non-superuser owner using the existing
+`postgres_migrate_password` capability secret. No steady runtime is an owner
+member or receives that secret. Serve has SELECT plus INSERT only on
 `news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
 those append-only facts and no write grant on Event, verdict, delivery,
 learning-artifact or control tables. Every ordinary Serve transaction remains

@@ -20,11 +20,12 @@ _CASE_ID = "restore-trading-case"
 _LEGACY_INTENT_ID = "7" * 64
 
 
-def run_restore_drill(admin_dsn: str) -> dict[str, Any]:
+def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
     """Compose the generic isolated restore mechanism with News and Trading evidence."""
 
     return run_platform_restore_drill(
         admin_dsn,
+        migration_dsn,
         seed_and_summarize=_seed_and_summarize,
         summarize=_summary,
         smoke=_smoke,
@@ -148,10 +149,13 @@ def _smoke(conn: Any) -> dict[str, bool]:
 
 
 def main() -> None:
-    dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
-    if not dsn:
+    admin_dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN")
+    migration_dsn = os.environ.get("TRACEFOLD_TEST_POSTGRES_MIGRATION_DSN")
+    if not admin_dsn:
         raise SystemExit("TRACEFOLD_TEST_POSTGRES_DSN is required")
-    print(json.dumps(run_restore_drill(dsn), sort_keys=True))
+    if not migration_dsn:
+        raise SystemExit("TRACEFOLD_TEST_POSTGRES_MIGRATION_DSN is required")
+    print(json.dumps(run_restore_drill(admin_dsn, migration_dsn), sort_keys=True))
 
 
 if __name__ == "__main__":

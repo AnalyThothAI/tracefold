@@ -49,6 +49,12 @@ the compatibility objects subsequently superseded by #398. Objects grouped in
 one row inherit every field in that row; each exact object name is listed so
 the contract test can fail closed on omissions.
 
+Revision `20260831_0339` is the single forward privilege revision for #419. It
+runs only as direct `tracefold_owner`, rejects the retired migrator or runtime
+owner membership, restates current schema/default/table/column/function
+privileges without changing business data, and verifies owner/object authority
+before stamping head. Its downgrade is the verified pre-cut backup restore.
+
 Cost evidence uses PostgreSQL-native statement/transaction timeouts and plan
 rows/blocks rather than shared-runner wall-clock thresholds. The relevant
 real-PostgreSQL seams are

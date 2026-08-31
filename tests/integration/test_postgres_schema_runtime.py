@@ -2,15 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.postgres_test_utils import (
-    connect_postgres_test,
-)
-from tests.postgres_test_utils import (
-    reset_postgres_schema as migrate,
-)
-from tests.postgres_test_utils import (
-    test_postgres_dsn as _test_postgres_dsn,
-)
+from tests.postgres_test_utils import connect_postgres_test, postgres_migration_test_dsn
+from tests.postgres_test_utils import reset_postgres_schema as migrate
 from tracefold.platform.postgres.audit import NEWS_TABLES, TRADING_TABLES
 from tracefold.platform.postgres.maintenance_gate import acquire_steady_gate, release_steady_gate
 from tracefold.platform.postgres.migrations import (
@@ -185,7 +178,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260831_0338"
+    assert version == latest_migration_version() == "20260831_0339"
 
 
 def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -198,7 +191,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
             ).fetchall()
         }
-        upgrade_head(_test_postgres_dsn())
+        upgrade_head(postgres_migration_test_dsn())
         after = {
             row["table_name"]
             for row in conn.execute(
@@ -210,7 +203,7 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260831_0338"
+    assert version == latest_migration_version() == "20260831_0339"
 
 
 def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:
@@ -219,7 +212,7 @@ def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_pa
         migrate(conn)
         acquire_steady_gate(conn)
         with pytest.raises(RuntimeError, match="steady_workers_runtime_active"):
-            upgrade_head(_test_postgres_dsn())
+            upgrade_head(postgres_migration_test_dsn())
     finally:
         release_steady_gate(conn)
         conn.close()

@@ -8,6 +8,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -19,6 +20,7 @@ from psycopg.sql import Composable
 from tracefold.app.repository_session import RepositorySession, repositories_for_connection
 from tracefold.platform.postgres.client import connect_postgres
 from tracefold.platform.postgres.migrations import upgrade_head
+from tracefold.platform.postgres.runtime_roles import MIGRATION_ROLE
 
 DEFAULT_TEST_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 TEST_DATABASE_NAME = "tracefold_test"
@@ -26,6 +28,7 @@ _CLONE_DATABASE_PATTERN = re.compile(r"tracefold_test_(?:baseline|case|migration
 _GENESIS_TEST_GIT_SHA = "1" * 40
 _GENESIS_TEST_IMAGE_DIGEST = "sha256:" + "2" * 64
 _GENESIS_TEST_RUNTIME_MANIFEST_SHA = "3" * 64
+_TEST_MIGRATION_PASSWORD = "tracefold-test-owner-password-0001"
 
 
 @contextmanager
@@ -68,12 +71,45 @@ def news_genesis_test_evidence() -> Iterator[None]:
 
 
 def upgrade_test_head(dsn: str) -> None:
+    with connect_postgres(dsn) as conn:
+        unmigrated = conn.execute("SELECT to_regclass('public.alembic_version') AS relation").fetchone()
+    if unmigrated is None or unmigrated["relation"] is None:
+        prepare_test_migration_database(dsn)
     with news_genesis_test_evidence():
-        upgrade_head(dsn)
+        upgrade_head(postgres_migration_test_dsn(dsn))
 
 
 def test_postgres_dsn() -> str:
     return os.environ.get("TRACEFOLD_TEST_POSTGRES_DSN", DEFAULT_TEST_DSN)
+
+
+def postgres_migration_test_dsn(dsn: str | None = None) -> str:
+    source = dsn or test_postgres_dsn()
+    parsed = urlsplit(source)
+    if not parsed.scheme or parsed.hostname is None:
+        raise RuntimeError("postgres_test_migration_url_required")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    auth = f"{quote(MIGRATION_ROLE, safe='')}:{quote(_TEST_MIGRATION_PASSWORD, safe='')}@"
+    return urlunsplit((parsed.scheme, f"{auth}{host}{port}", parsed.path, parsed.query, parsed.fragment))
+
+
+def prepare_test_migration_database(dsn: str) -> None:
+    """Bootstrap the production role shape before Alembic connects as its direct owner."""
+
+    runtime_roles = (Path(__file__).parents[1] / "tracefold/platform/postgres/alembic/runtime_roles.sql").read_text(
+        encoding="utf-8"
+    )
+    with connect_postgres(dsn) as conn:
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
+        conn.execute(runtime_roles)
+        conn.execute(
+            sql.SQL("ALTER ROLE {} PASSWORD {}").format(
+                sql.Identifier(MIGRATION_ROLE),
+                sql.Literal(_TEST_MIGRATION_PASSWORD),
+            )
+        )
 
 
 def ensure_migrated_postgres_resource(dsn: str, *, resource_name: str) -> None:

@@ -86,7 +86,7 @@ window that produced it — a fixed audit, a before/after baseline.
 ## Red lines
 
 - **Read-only roles only.** `tracefold_serve` for SQL. Never
-  `tracefold_workers`, never `tracefold_migrate`. `make check` fails on either
+  `tracefold_workers`, never `tracefold_owner`. `make check` fails on either
   name appearing in a notebook code cell.
 - **No business writes.** No Review acceptance, dataset freeze, candidate
   registration, promotion, canary arming, or order placement — not even through
@@ -198,7 +198,7 @@ Stripping is `Kernel → Restart Kernel and Clear Outputs of All Cells`, then sa
   `urllib.request`, `httpx`, `requests.`, `aiohttp` or `psycopg` in a code cell;
 - no notebook commits `metadata.execution`, the per-cell wall clock of the run
   that produced it;
-- no notebook code cell names `tracefold_workers` or `tracefold_migrate`.
+- no notebook code cell names `tracefold_workers` or `tracefold_owner`.
 
 Tracked files only, deliberately: an untracked notebook on the operator's disk
 is a draft. It does not fail `make check`, and — by the same reasoning — it does

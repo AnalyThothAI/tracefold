@@ -57,22 +57,8 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
-        owner_role_exists = bool(
-            connection.exec_driver_sql(
-                """
-                SELECT CASE
-                  WHEN current_user = 'tracefold_migrate'
-                    AND EXISTS (
-                    SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner'
-                  )
-                  THEN pg_has_role(current_user, 'tracefold_owner', 'MEMBER')
-                  ELSE false
-                END
-                """
-            ).scalar()
-        )
-        if owner_role_exists:
-            connection.exec_driver_sql("SET ROLE tracefold_owner")
+        if connection.exec_driver_sql("SELECT current_user").scalar() != "tracefold_owner":
+            raise RuntimeError("migration_owner_identity_required")
         connection.commit()
         acquired = bool(
             connection.exec_driver_sql(

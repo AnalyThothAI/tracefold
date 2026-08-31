@@ -373,7 +373,14 @@ def test_boolean_environment_flag_cannot_invoke_the_private_deployment_target() 
     assert "inherited lock fd is missing" in result.stderr
 
 
-@pytest.mark.parametrize(("target", "private_target"), [("up", "_up-locked"), ("deploy-image", "_deploy-image-locked")])
+@pytest.mark.parametrize(
+    ("target", "private_target"),
+    [
+        ("up", "_up-locked"),
+        ("deploy-image", "_deploy-image-locked"),
+        ("db-role-hard-cut", "_db-role-hard-cut-locked"),
+    ],
+)
 def test_the_locked_deployment_entries_hold_the_lock_and_the_gate(target: str, private_target: str) -> None:
     public = subprocess.run(
         ["make", "--dry-run", target],
@@ -438,5 +445,6 @@ def test_every_entry_that_deploys_application_source_requires_the_exact_main_gat
         "_up-locked",
         "_deploy-image-locked",
         "_db-migrate-locked",
+        "_db-role-hard-cut-locked",
         "_db-provision-nautilus-role-locked",
     }

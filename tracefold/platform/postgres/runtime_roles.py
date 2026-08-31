@@ -6,13 +6,14 @@ from typing import Any
 
 from psycopg import sql
 
-RUNTIME_LOGIN_ROLES = (
+BOOTSTRAP_ROLE = "tracefold_app"
+MIGRATION_ROLE = "tracefold_owner"
+STEADY_RUNTIME_ROLES = (
     "tracefold_serve",
     "tracefold_workers",
-    "tracefold_migrate",
     "tracefold_nautilus",
 )
-LEGACY_RUNTIME_ROLE = "tracefold_app"
+RUNTIME_LOGIN_ROLES = (MIGRATION_ROLE, *STEADY_RUNTIME_ROLES)
 
 
 def provision_runtime_role_passwords(
@@ -20,7 +21,7 @@ def provision_runtime_role_passwords(
     *,
     password_files: Mapping[str, Path],
 ) -> None:
-    """Set runtime passwords without placing secret values in output."""
+    """Set direct-login role passwords without placing secret values in output."""
 
     if set(password_files) != set(RUNTIME_LOGIN_ROLES):
         raise ValueError("runtime_role_password_file_set_invalid")
@@ -34,14 +35,14 @@ def provision_runtime_role_passwords(
         )
 
 
-def runtime_role_contract(
-    conn: Any,
-    *,
-    expect_legacy_revoked: bool = True,
-) -> dict[str, Any]:
+def runtime_role_contract(conn: Any) -> dict[str, Any]:
+    """Return only the business-bearing production readiness checks."""
+
     rows = conn.execute(
         """
-        SELECT role.rolname, role.rolcanlogin, role.rolinherit,
+        SELECT role.rolname, role.rolcanlogin, role.rolinherit, role.rolsuper,
+               role.rolcreatedb, role.rolcreaterole, role.rolreplication,
+               role.rolbypassrls,
                COALESCE(
                  (
                    SELECT setting
@@ -55,22 +56,15 @@ def runtime_role_contract(
         WHERE role.rolname = ANY(%s)
         ORDER BY role.rolname
         """,
-        (
-            [
-                "tracefold_owner",
-                *RUNTIME_LOGIN_ROLES,
-                LEGACY_RUNTIME_ROLE,
-            ],
-        ),
+        ([BOOTSTRAP_ROLE, MIGRATION_ROLE, *STEADY_RUNTIME_ROLES, "tracefold_migrate"],),
     ).fetchall()
     by_name = {str(row["rolname"]): dict(row) for row in rows}
-    owner = by_name.get("tracefold_owner")
+    bootstrap = by_name.get(BOOTSTRAP_ROLE)
+    owner = by_name.get(MIGRATION_ROLE)
     serve = by_name.get("tracefold_serve")
     workers = by_name.get("tracefold_workers")
-    migrate = by_name.get("tracefold_migrate")
     nautilus = by_name.get("tracefold_nautilus")
-    legacy = by_name.get(LEGACY_RUNTIME_ROLE)
-    schema_owner_row = conn.execute(
+    schema_owner = conn.execute(
         """
         SELECT owner.rolname AS owner
         FROM pg_namespace namespace
@@ -78,252 +72,178 @@ def runtime_role_contract(
         WHERE namespace.nspname = 'public'
         """
     ).fetchone()
+    unexpected_owner_count = int(
+        conn.execute(
+            """
+            SELECT (
+              SELECT count(*)
+              FROM pg_class object
+              JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
+              JOIN pg_roles owner ON owner.oid = object.relowner
+              WHERE namespace.nspname = 'public'
+                AND object.relkind IN ('r', 'p', 'S', 'v', 'm')
+                AND owner.rolname <> 'tracefold_owner'
+                AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend dependency
+                  WHERE dependency.classid = 'pg_class'::regclass
+                    AND dependency.objid = object.oid
+                    AND dependency.deptype = 'e'
+                )
+            ) + (
+              SELECT count(*)
+              FROM pg_proc object
+              JOIN pg_namespace namespace ON namespace.oid = object.pronamespace
+              JOIN pg_roles owner ON owner.oid = object.proowner
+              WHERE namespace.nspname = 'public'
+                AND owner.rolname <> 'tracefold_owner'
+                AND NOT EXISTS (
+                  SELECT 1 FROM pg_depend dependency
+                  WHERE dependency.classid = 'pg_proc'::regclass
+                    AND dependency.objid = object.oid
+                    AND dependency.deptype = 'e'
+                )
+            ) AS count
+            """
+        ).fetchone()["count"]
+    )
+    owner_member_count = int(
+        conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM pg_auth_members membership
+            JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+            JOIN pg_roles member_role ON member_role.oid = membership.member
+            WHERE granted_role.rolname = 'tracefold_owner'
+               OR member_role.rolname = 'tracefold_owner'
+            """
+        ).fetchone()["count"]
+    )
+    owner_default_acl_count = int(
+        conn.execute(
+            """
+            SELECT count(*) AS count
+            FROM pg_default_acl defaults
+            JOIN pg_roles owner ON owner.oid = defaults.defaclrole
+            WHERE owner.rolname = 'tracefold_owner'
+              AND defaults.defaclnamespace = 'public'::regnamespace
+              AND defaults.defaclobjtype IN ('r', 'S')
+            """
+        ).fetchone()["count"]
+    )
+    default_acl_count = int(conn.execute("SELECT count(*) AS count FROM pg_default_acl").fetchone()["count"])
+    default_acl_mismatch_count = int(
+        conn.execute(
+            """
+            WITH actual(object_type, grantor_name, grantee_name, privilege_type, is_grantable) AS (
+              SELECT defaults.defaclobjtype::text,
+                     grantor.rolname::text,
+                     COALESCE(grantee.rolname::text, 'PUBLIC'),
+                     privilege.privilege_type,
+                     privilege.is_grantable
+              FROM pg_default_acl defaults
+              CROSS JOIN LATERAL aclexplode(defaults.defaclacl) privilege
+              LEFT JOIN pg_roles grantor ON grantor.oid = privilege.grantor
+              LEFT JOIN pg_roles grantee ON grantee.oid = privilege.grantee
+            ),
+            expected(object_type, grantor_name, grantee_name, privilege_type, is_grantable) AS (
+              VALUES
+                ('r', 'tracefold_owner', 'tracefold_serve', 'SELECT', false),
+                ('r', 'tracefold_owner', 'tracefold_workers', 'DELETE', false),
+                ('r', 'tracefold_owner', 'tracefold_workers', 'INSERT', false),
+                ('r', 'tracefold_owner', 'tracefold_workers', 'SELECT', false),
+                ('r', 'tracefold_owner', 'tracefold_workers', 'UPDATE', false),
+                ('S', 'tracefold_owner', 'tracefold_workers', 'SELECT', false),
+                ('S', 'tracefold_owner', 'tracefold_workers', 'USAGE', false)
+            )
+            SELECT count(*) AS count
+            FROM (
+              (SELECT * FROM actual EXCEPT SELECT * FROM expected)
+              UNION ALL
+              (SELECT * FROM expected EXCEPT SELECT * FROM actual)
+            ) mismatch
+            """
+        ).fetchone()["count"]
+    )
     privileges = dict(
         conn.execute(
             """
             SELECT
+              has_table_privilege('tracefold_serve', 'public.news_events', 'SELECT') AS serve_select,
+              has_table_privilege('tracefold_serve', 'public.news_events', 'INSERT') AS serve_core_insert,
+              has_table_privilege('tracefold_serve', 'public.news_reviews', 'INSERT')
+                AS serve_review_insert,
+              has_schema_privilege('tracefold_workers', 'public', 'CREATE') AS workers_create,
               has_table_privilege(
-                'tracefold_serve',
-                'public.news_events',
-                'SELECT'
-              ) AS serve_select,
-              has_table_privilege(
-                'tracefold_serve',
-                'public.news_events',
-                'INSERT'
-              ) AS serve_insert,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_events',
-                'SELECT'
-              ) AS workers_select,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_events',
-                'INSERT'
-              ) AS workers_insert,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_events',
-                'UPDATE'
-              ) AS workers_update,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_events',
-                'DELETE'
-              ) AS workers_delete,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_event_evidence_snapshots',
-                'SELECT'
-              ) AS workers_evidence_select,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_event_evidence_snapshots',
-                'INSERT'
+                'tracefold_workers', 'public.news_event_evidence_snapshots', 'INSERT'
               ) AS workers_evidence_insert,
               has_table_privilege(
-                'tracefold_workers',
-                'public.news_event_evidence_snapshots',
-                'UPDATE'
-              ) AS workers_evidence_update,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.news_event_evidence_snapshots',
-                'DELETE'
-              ) AS workers_evidence_delete,
-              has_schema_privilege(
-                'tracefold_workers',
-                'public',
-                'CREATE'
-              ) AS workers_create,
-              has_table_privilege(
-                'tracefold_serve',
-                'public.news_reviews',
-                'INSERT'
-              ) AS serve_review_insert,
-              has_table_privilege(
-                'tracefold_serve',
-                'public.news_external_miss_snapshots',
-                'INSERT'
-              ) AS serve_external_miss_insert,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.trading_intents',
-                'SELECT'
-              ) AS workers_intents_select,
+                'tracefold_workers', 'public.news_event_evidence_snapshots', 'UPDATE, DELETE'
+              ) AS workers_evidence_rewrite,
               has_column_privilege(
-                'tracefold_workers',
-                'public.trading_intents',
-                'case_id',
-                'INSERT'
-              ) AS workers_intents_identity_insert,
+                'tracefold_workers', 'public.trading_intents', 'execution_state', 'UPDATE'
+              ) AS workers_execution_update,
+              has_table_privilege(
+                'tracefold_workers', 'public.trading_nautilus_runtime_starts', 'INSERT, UPDATE, DELETE'
+              ) AS workers_nautilus_start_write,
+              has_table_privilege('tracefold_nautilus', 'public.trading_intents', 'SELECT')
+                AS nautilus_intents_select,
               has_column_privilege(
-                'tracefold_workers',
-                'public.trading_intents',
-                'execution_state',
-                'INSERT'
-              ) AS workers_intents_execution_insert,
-              has_column_privilege(
-                'tracefold_workers',
-                'public.trading_intents',
-                'execution_state',
-                'UPDATE'
-              ) AS workers_intents_execution_update,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.trading_orders',
-                'SELECT'
-              ) AS workers_legacy_orders_select,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.trading_orders',
-                'INSERT, UPDATE, DELETE'
-              ) AS workers_legacy_orders_write,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.trading_order_observations',
-                'SELECT'
-              ) AS workers_legacy_observations_select,
-              has_table_privilege(
-                'tracefold_workers',
-                'public.trading_order_observations',
-                'INSERT, UPDATE, DELETE'
-              ) AS workers_legacy_observations_write,
-              has_column_privilege(
-                'tracefold_workers',
-                'public.trading_runtime_state',
-                'control',
-                'UPDATE'
-              ) AS workers_runtime_control_update,
-              has_column_privilege(
-                'tracefold_workers',
-                'public.trading_runtime_state',
-                'orders_today',
-                'UPDATE'
-              ) AS workers_runtime_legacy_counter_update,
-              has_table_privilege(
-                'tracefold_serve',
-                'public.trading_intents',
-                'SELECT'
-              ) AS serve_intents_select,
-              has_table_privilege(
-                'tracefold_serve',
-                'public.trading_intents',
-                'INSERT'
-              ) AS serve_intents_insert,
-              has_table_privilege(
-                'tracefold_nautilus',
-                'public.trading_intents',
-                'SELECT'
-              ) AS nautilus_intents_select,
-              has_table_privilege(
-                'tracefold_nautilus',
-                'public.trading_intents',
-                'INSERT'
-              ) AS nautilus_intents_insert,
-              has_column_privilege(
-                'tracefold_nautilus',
-                'public.trading_intents',
-                'execution_state',
-                'UPDATE'
+                'tracefold_nautilus', 'public.trading_intents', 'execution_state', 'UPDATE'
               ) AS nautilus_execution_update,
               has_column_privilege(
-                'tracefold_nautilus',
-                'public.trading_intents',
-                'case_id',
-                'UPDATE'
+                'tracefold_nautilus', 'public.trading_intents', 'case_id', 'UPDATE'
               ) AS nautilus_identity_update,
-              has_table_privilege(
-                'tracefold_nautilus',
-                'public.trading_cases',
-                'UPDATE'
-              ) AS nautilus_cases_update,
-              has_column_privilege(
-                'tracefold_nautilus',
-                'public.trading_runtime_state',
-                'id',
-                'SELECT'
-              ) AS nautilus_runtime_id_select,
-              has_column_privilege(
-                'tracefold_nautilus',
-                'public.trading_runtime_state',
-                'control',
-                'SELECT'
-              ) AS nautilus_runtime_control_select,
-              has_column_privilege(
-                'tracefold_nautilus',
-                'public.trading_runtime_state',
-                'orders_today',
-                'SELECT'
-              ) AS nautilus_runtime_counter_select,
-              pg_has_role(
-                'tracefold_migrate',
-                'tracefold_owner',
-                'MEMBER'
-              ) AS migrate_owner_member
+              has_table_privilege('tracefold_nautilus', 'public.trading_cases', 'UPDATE')
+                AS nautilus_cases_update
             """
         ).fetchone()
     )
-    if expect_legacy_revoked:
-        legacy_login_state = legacy is None or not bool(legacy["rolcanlogin"])
-    else:
-        legacy_login_state = legacy is not None and bool(legacy["rolcanlogin"])
     checks = {
-        "owner_no_login": owner is not None and not bool(owner["rolcanlogin"]),
-        "serve_login": serve is not None and bool(serve["rolcanlogin"]),
-        "serve_read_only": serve is not None and str(serve["read_only_setting"]).endswith("=on"),
-        "workers_login": workers is not None and bool(workers["rolcanlogin"]),
-        "migrate_login_noinherit": (
-            migrate is not None and bool(migrate["rolcanlogin"]) and not bool(migrate["rolinherit"])
-        ),
-        "nautilus_login": nautilus is not None and bool(nautilus["rolcanlogin"]),
-        "legacy_login_state": legacy_login_state,
-        "schema_owner": bool(schema_owner_row) and str(schema_owner_row["owner"]) == "tracefold_owner",
-        "serve_select": bool(privileges["serve_select"]),
-        "serve_insert_denied": not bool(privileges["serve_insert"]),
-        "workers_dml": all(
-            bool(privileges[name]) for name in ("workers_select", "workers_insert", "workers_update", "workers_delete")
-        ),
-        "workers_evidence_append": bool(privileges["workers_evidence_select"])
-        and bool(privileges["workers_evidence_insert"]),
-        "workers_evidence_rewrite_denied": not bool(privileges["workers_evidence_update"])
-        and not bool(privileges["workers_evidence_delete"]),
-        "workers_create_denied": not bool(privileges["workers_create"]),
-        "serve_review_append": bool(privileges["serve_review_insert"])
-        and bool(privileges["serve_external_miss_insert"]),
-        "workers_intents_append": bool(privileges["workers_intents_select"])
-        and bool(privileges["workers_intents_identity_insert"])
-        and not bool(privileges["workers_intents_execution_insert"])
-        and not bool(privileges["workers_intents_execution_update"]),
-        "workers_legacy_execution_read_only": bool(privileges["workers_legacy_orders_select"])
-        and bool(privileges["workers_legacy_observations_select"])
-        and not bool(privileges["workers_legacy_orders_write"])
-        and not bool(privileges["workers_legacy_observations_write"]),
-        "workers_runtime_current_columns_only": bool(privileges["workers_runtime_control_update"])
-        and not bool(privileges["workers_runtime_legacy_counter_update"]),
-        "serve_intents_read_only": bool(privileges["serve_intents_select"])
-        and not bool(privileges["serve_intents_insert"]),
-        "nautilus_intents_projection_only": bool(privileges["nautilus_intents_select"])
-        and not bool(privileges["nautilus_intents_insert"])
+        "bootstrap_no_login_superuser": bootstrap is not None
+        and not bool(bootstrap["rolcanlogin"])
+        and bool(bootstrap["rolsuper"]),
+        "owner_direct_login": _ordinary_login(owner),
+        "serve_read_boundary": serve is not None
+        and _ordinary_login(serve)
+        and str(serve["read_only_setting"]).endswith("=on")
+        and bool(privileges["serve_select"])
+        and bool(privileges["serve_review_insert"])
+        and not bool(privileges["serve_core_insert"]),
+        "workers_business_boundary": _ordinary_login(workers)
+        and not bool(privileges["workers_create"])
+        and bool(privileges["workers_evidence_insert"])
+        and not bool(privileges["workers_evidence_rewrite"])
+        and not bool(privileges["workers_execution_update"])
+        and not bool(privileges["workers_nautilus_start_write"]),
+        "nautilus_projection_boundary": _ordinary_login(nautilus)
+        and bool(privileges["nautilus_intents_select"])
         and bool(privileges["nautilus_execution_update"])
         and not bool(privileges["nautilus_identity_update"])
-        and not bool(privileges["nautilus_cases_update"])
-        and bool(privileges["nautilus_runtime_id_select"])
-        and bool(privileges["nautilus_runtime_control_select"])
-        and not bool(privileges["nautilus_runtime_counter_select"]),
-        "migrate_owner_member": bool(privileges["migrate_owner_member"]),
+        and not bool(privileges["nautilus_cases_update"]),
+        "migrate_role_absent": "tracefold_migrate" not in by_name,
+        "runtime_owner_membership_absent": owner_member_count == 0,
+        "schema_owner": bool(schema_owner) and str(schema_owner["owner"]) == MIGRATION_ROLE,
+        "application_object_ownership": unexpected_owner_count == 0,
+        "owner_default_privileges": (
+            default_acl_count == owner_default_acl_count == 2 and default_acl_mismatch_count == 0
+        ),
     }
     failures = [name for name, passed in checks.items() if not passed]
-    return {
-        "ok": not failures,
-        "failures": failures,
-        "checks": checks,
-    }
+    return {"ok": not failures, "failures": failures, "checks": checks}
 
 
-def revoke_legacy_runtime_login(conn: Any) -> None:
-    conn.execute(sql.SQL("ALTER ROLE {} NOLOGIN").format(sql.Identifier(LEGACY_RUNTIME_ROLE)))
+def _ordinary_login(role: dict[str, Any] | None) -> bool:
+    return role is not None and all(
+        (
+            bool(role["rolcanlogin"]),
+            bool(role["rolinherit"]),
+            not bool(role["rolsuper"]),
+            not bool(role["rolcreatedb"]),
+            not bool(role["rolcreaterole"]),
+            not bool(role["rolreplication"]),
+            not bool(role["rolbypassrls"]),
+        )
+    )
 
 
 def _read_password(path: Path) -> str:
@@ -337,9 +257,10 @@ def _read_password(path: Path) -> str:
 
 
 __all__ = [
-    "LEGACY_RUNTIME_ROLE",
+    "BOOTSTRAP_ROLE",
+    "MIGRATION_ROLE",
     "RUNTIME_LOGIN_ROLES",
+    "STEADY_RUNTIME_ROLES",
     "provision_runtime_role_passwords",
-    "revoke_legacy_runtime_login",
     "runtime_role_contract",
 ]

@@ -195,7 +195,7 @@ The one-time PR 2 cutover from the PR 1 dark slice is:
    exists, readiness proves venue flat, legacy `PENDING/RUNNING` Cases are
    zero, nonterminal Intents are zero, and legacy active/unknown Orders are
    zero.
-5. Deploy the exact reviewed image at the current Alembic head (`20260831_0338`
+5. Deploy the exact reviewed image at the current Alembic head (`20260831_0339`
    at this release). Both
    `make up` and `make db-migrate` detect the PR 1 head and automatically repeat
    the full preflight before migration or service shutdown; migration `0317`
@@ -319,11 +319,13 @@ password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
 
 Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
-creates a non-login owner plus the separate Serve, Workers, Nautilus, and migrate roles
-from their mode-`0600` password files, revokes the bootstrap login, and only
-then permits migration. It is not a periodic reconciler and will not mutate an
-unknown non-empty cluster. Such a cluster must already satisfy the role/schema
-contract; startup never repairs an unknown role/schema boundary.
+creates the ordinary direct-login migration owner plus the separate Serve,
+Workers, and Nautilus roles from their mode-`0600` password files. The owner
+reuses `postgres_migrate_password`; no second migrator role exists. Bootstrap
+then revokes its own login and permits owner-direct migration. It is not a
+periodic reconciler and will not mutate an unknown non-empty cluster. Such a
+cluster must already satisfy the role/schema contract; startup never repairs an
+unknown role/schema boundary.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
@@ -1317,10 +1319,11 @@ snapshot.
 
 The Alembic chain is the `20260818_0275` baseline (root; it executes
 `current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
-creates the `tracefold_owner`, `tracefold_serve`, `tracefold_workers`, and
-`tracefold_migrate` roles when run by the bootstrap superuser, verifies the
-role contract, and applies the Serve read / Workers write grants) followed by
-the linear revisions through the current `20260831_0338` head. The #112 chain
+creates the direct-login `tracefold_owner`, `tracefold_serve`,
+`tracefold_workers`, and `tracefold_nautilus` roles when run by the bootstrap
+superuser, verifies the role contract, and applies the Serve read / Workers
+write grants) followed by the linear revisions through the current
+`20260831_0339` head. The #112 chain
 adds ReviewDesk tables and grants the existing Serve role only their
 append-only INSERT capability. It adds no login role or password. A live
 database stamped at an earlier revision upgrades with `tracefold db migrate`;
@@ -1333,6 +1336,83 @@ Workers hold the steady lock).
 The normative authoring checklist, required evidence, and 0330–0332 object
 authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
 revision files are immutable; a correction is a forward revision.
+
+### PostgreSQL owner-role hard cut (`0339`, one time)
+
+This procedure is only for the supported production volume still at exact head
+`20260830_0337` with `tracefold_owner NOLOGIN` and the single
+`tracefold_migrate LOGIN NOINHERIT ... SET TRUE` membership. It is not a role
+repair tool. A fresh volume already creates the final contract, a final volume
+reports completion without mutation, and every other state is refused.
+
+1. Work only from the clean primary checkout at the exact reviewed `main` SHA
+   whose complete CI is green. Keep Capital `PAUSED`; require zero pending or
+   running Cases, nonterminal Intents, and active legacy Orders.
+2. Take an operator-owned full custom-format PostgreSQL backup. Generate the
+   preflight with the one-time verifier; it recomputes the artifact SHA, restores
+   that exact dump into an isolated container using the pinned PostgreSQL 18
+   image, verifies the 0337/Capital/object/default-ACL facts, and writes the
+   receipt. It never accepts hand-written `verified=true` claims:
+
+   ```bash
+   uv run python scripts/require_db_role_hard_cut_preflight.py \
+     --record /absolute/path/to/tracefold.dump \
+     /absolute/path/to/preflight.json
+   ```
+
+   The machine-produced JSON has exactly these keys (never a DSN or secret):
+
+   ```json
+   {
+     "active_legacy_orders": 0,
+     "application_object_owner_violations": 0,
+     "backup_created_at_ms": 1788000000000,
+     "backup_path": "/absolute/path/to/tracefold.dump",
+     "backup_sha256": "<64 lowercase hex>",
+     "capital_control": "PAUSED",
+     "default_acl_count": 2,
+     "default_acl_privilege_mismatches": 0,
+     "schema": "tracefold_db_role_hard_cut_preflight_v1",
+     "migration_head": "20260830_0337",
+     "nonterminal_intents": 0,
+     "owner_default_acl_count": 2,
+     "pending_cases": 0,
+     "public_schema_owner": "tracefold_owner",
+     "restore_image_identity": "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296",
+     "restore_verified_at_ms": 1788000001000
+   }
+   ```
+
+3. Change only `storage.postgres.migrate_dsn` in the operator-owned config to
+   `postgresql://tracefold_owner@postgres:5432/tracefold`. Keep
+   `migrate_password_file: postgres_migrate_password`; do not rename or rotate
+   that file. `uv run tracefold config` must show the owner username in the
+   redacted migrate DSN, and no steady runtime gains the file mount.
+4. Run `make down`, require `docker compose ps -q` to be empty, and invoke:
+
+   ```bash
+   make db-role-hard-cut PREFLIGHT=/absolute/path/to/preflight.json
+   ```
+
+   The target holds the deployment lock, rechecks exact-main CI and the
+   preflight, runs PostgreSQL single-user mode with no network superuser login,
+   validates the exact old contract, changes owner login/password, revokes and
+   drops the retired role in one transaction, then starts the exact stack and
+   migrates through `20260831_0338` to `20260831_0339`. Any dependency or SQL
+   failure leaves the old transaction intact. The password is never written to
+   argv, output, logs, or receipts.
+5. Require the final `db audit`, owner-direct migration, Serve/Workers/Nautilus
+   credential smoke, and readiness checks to pass while Capital remains
+   `PAUSED`. Attach a sanitized Issue #419 receipt containing only: exact main
+   SHA/image, preflight backup SHA, `old_contract_verified=true`,
+   `tracefold_migrate_absent=true`, owner ordinary LOGIN/object ownership,
+   head `20260831_0339`, all three runtime readiness results, and
+   `capital_control=PAUSED`.
+
+Keep the one-time target/script/verifier and the older Nautilus provisioner only until
+every supported local/LAN volume has that receipt. The follow-up deletion must
+remove both offline helpers, their mounts/targets/old-contract tests, and this
+branch of the runbook without changing schema, data, or ACL again.
 
 ### News current-contract genesis (`0336`, one time)
 
@@ -1427,7 +1507,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260831_0338`; zero rows in every cleared
+After deployment, require Alembic head `20260831_0339`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;
@@ -1449,8 +1529,9 @@ complete the current evidence/verdict/delivery path, and a restart to preserve
 that result without recovering any pre-genesis identifier. Open a new review,
 dataset, candidate and canary epoch only from post-genesis evidence; the
 migration receipt is not evidence of model quality. The subsequent `0337`
-revision only grants Nautilus execution on `trading_canonical_jsonb(JSONB)`; it
-does not alter or reintroduce any News schema object.
+revision only grants Nautilus execution on `trading_canonical_jsonb(JSONB)`;
+`0338` removes the retired global readiness fields; `0339` then hard-cuts the
+migration identity without altering or reintroducing any News schema object.
 
 An existing volume at 0283 needs no new password or offline role bootstrap.
 Before its first 0284–0295 upgrade, take a restorable volume backup, stop Serve
@@ -1703,11 +1784,15 @@ ships nor retains WAL.
 
 The weekly scheduled diagnostics run an isolated production-image restore
 test. Run the same entry manually with
-`TRACEFOLD_TEST_POSTGRES_DSN=<dedicated-admin-dsn> make postgres-restore-drill`.
+`TRACEFOLD_TEST_POSTGRES_DSN=<dedicated-admin-dsn>` and
+`TRACEFOLD_TEST_POSTGRES_MIGRATION_DSN=<direct-owner-dsn>` set, then run
+`make postgres-restore-drill`. The owner DSN must use the existing migration
+capability credential; it is never emitted in the result.
 It creates uniquely named disposable source/target databases, seeds
 representative News current/archive and Trading facts, uses the exact
 PostgreSQL 18 Bookworm client image for custom-format dump/restore, migrates to
-head, performs deep schema/role/identity audit and bounded smoke, records head,
+head directly as the ordinary owner, performs deep schema/role/identity audit
+and bounded smoke, records head,
 duration and identity counts, then drops both databases. It never reads or
 writes the database named by the supplied DSN. This proves the mechanism, not
 the freshness of a live operator backup.

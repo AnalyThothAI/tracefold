@@ -7,7 +7,11 @@ from typing import Any
 import pytest
 from alembic import command
 
-from tests.postgres_test_utils import connect_postgres_test
+from tests.postgres_test_utils import (
+    connect_postgres_test,
+    postgres_migration_test_dsn,
+    prepare_test_migration_database,
+)
 from tests.postgres_test_utils import test_postgres_dsn as postgres_test_dsn
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import alembic_config
@@ -21,7 +25,7 @@ HOUR = 3_600_000
 
 def _upgrade(revision: str) -> None:
     config = alembic_config()
-    config.attributes["database_url"] = postgres_test_dsn()
+    config.attributes["database_url"] = postgres_migration_test_dsn()
     command.upgrade(config, revision)
 
 
@@ -30,10 +34,12 @@ def _fresh_schema_at(revision: str) -> None:
     try:
         conn.execute("DROP SCHEMA IF EXISTS public CASCADE")
         conn.execute("CREATE SCHEMA public")
+        conn.execute("ALTER SCHEMA public OWNER TO tracefold_owner")
         conn.execute("GRANT ALL ON SCHEMA public TO public")
         conn.commit()
     finally:
         conn.close()
+    prepare_test_migration_database(postgres_test_dsn())
     _upgrade(revision)
 
 

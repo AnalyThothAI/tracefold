@@ -8,8 +8,11 @@ BEGIN
       RAISE EXCEPTION 'tracefold_runtime_role_bootstrap_superuser_required';
     END IF;
 
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_app') THEN
+      CREATE ROLE tracefold_app NOLOGIN;
+    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_owner') THEN
-      CREATE ROLE tracefold_owner NOLOGIN;
+      CREATE ROLE tracefold_owner LOGIN;
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_serve') THEN
       CREATE ROLE tracefold_serve LOGIN;
@@ -17,15 +20,15 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_workers') THEN
       CREATE ROLE tracefold_workers LOGIN;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_migrate') THEN
-      CREATE ROLE tracefold_migrate LOGIN NOINHERIT;
-    END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_nautilus') THEN
       CREATE ROLE tracefold_nautilus LOGIN;
     END IF;
 
+    ALTER ROLE tracefold_app
+      NOLOGIN INHERIT SUPERUSER CREATEDB CREATEROLE
+      NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_owner
-      NOLOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
+      LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_serve
       LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -34,19 +37,15 @@ BEGIN
     ALTER ROLE tracefold_workers
       LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
-    ALTER ROLE tracefold_migrate
-      LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
-      NOREPLICATION NOBYPASSRLS;
     ALTER ROLE tracefold_nautilus
       LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE
       NOREPLICATION NOBYPASSRLS;
-
-    GRANT tracefold_owner TO tracefold_migrate WITH ADMIN FALSE;
-    GRANT tracefold_owner TO tracefold_migrate WITH INHERIT FALSE;
-    GRANT tracefold_owner TO tracefold_migrate WITH SET TRUE;
   END IF;
 END
 $roles$;
+
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+ALTER SCHEMA public OWNER TO tracefold_owner;
 
 DO $role_contract$
 BEGIN
@@ -54,7 +53,7 @@ BEGIN
     SELECT 1
       FROM pg_roles
      WHERE rolname = 'tracefold_owner'
-       AND NOT rolcanlogin
+       AND rolcanlogin
        AND rolinherit
        AND NOT rolsuper
        AND NOT rolcreatedb
@@ -94,19 +93,8 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_workers';
   END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_roles
-     WHERE rolname = 'tracefold_migrate'
-       AND rolcanlogin
-       AND NOT rolinherit
-       AND NOT rolsuper
-       AND NOT rolcreatedb
-       AND NOT rolcreaterole
-       AND NOT rolreplication
-       AND NOT rolbypassrls
-  ) THEN
-    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_migrate';
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'tracefold_migrate') THEN
+    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_migrate_present';
   END IF;
   IF NOT EXISTS (
     SELECT 1
@@ -122,20 +110,15 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_nautilus';
   END IF;
-  IF NOT EXISTS (
+  IF EXISTS (
     SELECT 1
       FROM pg_auth_members membership
       JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
-      JOIN pg_roles member_role ON member_role.oid = membership.member
      WHERE granted_role.rolname = 'tracefold_owner'
-       AND member_role.rolname = 'tracefold_migrate'
-       AND NOT membership.admin_option
-       AND NOT membership.inherit_option
-       AND membership.set_option
   ) THEN
-    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:tracefold_migrate_owner_membership';
+    RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:runtime_owner_membership';
   END IF;
-  IF current_user = 'tracefold_owner' AND NOT EXISTS (
+  IF NOT EXISTS (
     SELECT 1
       FROM pg_namespace namespace
       JOIN pg_roles owner_role ON owner_role.oid = namespace.nspowner
@@ -144,7 +127,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'tracefold_runtime_role_contract_invalid:public_schema_owner';
   END IF;
-  IF current_user = 'tracefold_owner' AND NOT EXISTS (
+  IF NOT EXISTS (
     SELECT 1
       FROM pg_roles
      WHERE rolname = 'tracefold_app'
@@ -154,9 +137,6 @@ BEGIN
   END IF;
 END
 $role_contract$;
-
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-ALTER SCHEMA public OWNER TO tracefold_owner;
 
 DO $ownership$
 DECLARE

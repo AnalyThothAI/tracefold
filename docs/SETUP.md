@@ -117,12 +117,14 @@ disabled. Edit only the operator-owned
 terminal output, docs, tests, and commits.
 
 The generated PostgreSQL DSNs are container-network addresses. The fresh-volume
-bootstrap runs only during PostgreSQL `initdb`: it creates the non-login owner
-plus Serve, Workers, and migrate roles, then revokes the temporary bootstrap
-login before ordinary migration. It never attempts to reinterpret or hard-cut
-an unknown non-empty volume. Existing deployments must already have the
-least-privilege roles; startup fails closed when the migrate role or schema
-contract is not valid.
+bootstrap runs only during PostgreSQL `initdb`: it creates the migration-only
+`tracefold_owner` LOGIN plus Serve, Workers, and Nautilus, then revokes the
+`tracefold_app` bootstrap login before owner-direct migration. The owner uses
+the existing `postgres_migrate_password`; no second migration role or owner
+secret exists. It never attempts to reinterpret or hard-cut an unknown
+non-empty volume. The one supported pre-0339 volume must use the exact offline
+procedure in [Operations](OPERATIONS.md#postgresql-owner-role-hard-cut-0339-one-time)
+before ordinary startup; every other non-empty role shape fails closed.
 
 ### Credential-dependent capabilities
 
