@@ -77,6 +77,16 @@ def test_qwen_disables_thinking_via_chat_template_kwargs() -> None:
     assert endpoint.model_kwargs["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
 
 
+def test_qwen_thinking_alias_is_called_without_a_disable_override() -> None:
+    settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://models.test/v1"))
+
+    endpoint = configured_lm_endpoint(settings, model_name="qwen3.8-27b:thinking")
+
+    assert endpoint.model_name == "openai/qwen3.8-27b:thinking"
+    assert endpoint.model_kwargs == {}
+    assert endpoint.structured_output == "prompt_json"
+
+
 def test_minimax_m3_disables_thinking_for_structured_outputs() -> None:
     settings = SimpleNamespace(llm=SimpleNamespace(api_key="test-key", base_url="https://api.minimaxi.com/v1"))
 

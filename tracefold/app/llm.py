@@ -86,6 +86,8 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
         # so it must be placed in the HTTP request body via ``extra_body``;
         # a top-level LiteLLM kwarg is filtered before the proxy request.
         return {"extra_body": {"thinking": {"type": "disabled"}}}
+    if leaf.startswith("qwen") and leaf.endswith(":thinking"):
+        return {}
     if leaf.startswith("qwen") and not thinking:
         # Qwen3 on llama.cpp / vLLM thinks by default and spends the whole ``max_tokens`` budget on reasoning
         # before the tool call; ``chat_template_kwargs`` is the OpenAI-compatible switch both servers honour.
@@ -103,6 +105,8 @@ def _provider_model_kwargs(model_name: str, *, thinking: bool = False) -> dict[s
 
 def _provider_request_defaults(model_name: str) -> tuple[float | None, StructuredOutputMode]:
     leaf = str(model_name or "").rsplit("/", maxsplit=1)[-1].lower()
+    if leaf.startswith("qwen") and leaf.endswith(":thinking"):
+        return 0.0, "prompt_json"
     if leaf == "minimax-m3":
         # MiniMax-M3 rejects temperature=0 and does not advertise response_format support. Keep the exact JSON
         # schema in the system message, then validate the bare JSON reply locally like every other route.

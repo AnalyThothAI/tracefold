@@ -115,11 +115,14 @@ fabricate model taxonomy or enter the generic Review v6 queue.
 
 ## Gold and recorded Stable measurement
 
-One operator-accepted `news_review_v6` taxonomy is Gold. There is no
-taxonomy-specific second-reviewer or adjudication prerequisite. A model draft
-still records its author and cannot accept itself, and a non-dry-run
+One explicitly accepted `news_review_v6` taxonomy is Gold. Gold is an
+acceptance state, not a claim that an independent human supplied the label. The
+owner may delegate evidence inspection to an identified AI adjudicator, whose
+identity must remain explicit and must never be described as human review.
+There is no taxonomy-specific second-reviewer prerequisite. A model draft still
+records its author and cannot accept itself, and a non-dry-run
 `review accept-drafts` requires a non-empty `--only` list naming the Event or
-task prefixes the operator actually approved. An empty selection is preview-only.
+task prefixes the owner authorized. An empty selection is preview-only.
 
 Freezing the existing development Dataset projects the accepted taxonomy into
 the existing episode beside the production judgment. That projection is part
@@ -128,9 +131,9 @@ taxonomy table, Dataset kind, migration, or parallel corpus exists. Connected
 fact clusters are the independent sample and provider duplicates contribute one
 deterministically elected representative.
 
-The operator records `primary_target: ...` on issue #437 before inspecting the
-first production score, reviews and freezes 60–100 independent clusters, then
-runs:
+The owner records `primary_target: ...` on issue #437 before inspecting the
+first production score, authorizes reviewed references, and freezes 60–100
+independent clusters before running:
 
 ```bash
 uv run tracefold news learning baseline --dataset DATASET_SHA \

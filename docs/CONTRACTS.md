@@ -65,9 +65,12 @@ fallback, and compiler endpoint also accepts a provider-neutral `request` block:
 `send_temperature` (`true|false|null`), `temperature`, `structured_output`
 (`auto|json_schema|json_object|prompt_json`), and bounded `extra_body` fields.
 Transport-owned fields cannot be overridden. `auto` keeps known provider defaults;
-there is no URL-specific or Kimi-for-Coding compatibility branch. `qwen*` models are
-called with `chat_template_kwargs.enable_thinking=false` (code-owned): Qwen3
-otherwise spends the Triage token budget on reasoning before the tool call.
+there is no URL-specific or Kimi-for-Coding compatibility branch. Ordinary `qwen*`
+models are called with `chat_template_kwargs.enable_thinking=false` (code-owned):
+Qwen3 otherwise spends the Triage token budget on reasoning before the tool call.
+A directly configured `qwen*:thinking` model alias is preserved without that
+override and uses prompt-only JSON plus local schema validation because its
+endpoint does not support response-schema grammar.
 `llm.news_reader_card` (`api_key`, `base_url`, `model`; all-or-nothing and only
 valid next to a complete primary triple) optionally binds ReaderCard to a
 different direct endpoint. When absent, ReaderCard inherits the Triage endpoint.
@@ -1364,10 +1367,11 @@ evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
-One operator acceptance is sufficient taxonomy Gold; no taxonomy-specific
+One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
 second reviewer or adjudication is required. Model drafts still cannot
 self-accept. `news review accept-drafts --dry-run` may preview an empty
-selection, while every non-dry-run requires a non-empty explicit `--only` list.
+selection, while every non-dry-run requires a non-empty explicit `--only` list
+and `--reviewer` identity. An AI adjudicator is recorded as AI, never as human.
 
 `news learning snapshot|compare` — the #193 research window of frozen run
 directories and student/teacher arm comparison — was deleted in #343 together
@@ -1446,8 +1450,8 @@ not by itself evidence that a dataset identity is wrong. Exit `0` is `ADVANCE`;
 `1` is `NO_OP` or `REJECTED`, both complete answers.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
-[--include-reviewed]` proposes `news_review_v6` rubrics for
-a human to accept and writes a file, never a review. It drafts from the
+[--include-reviewed]` proposes `news_review_v6` rubrics for an owner-authorized
+reviewer to accept and writes a file, never a review. It drafts from the
 ReviewDesk queue over the `--hours` look-back window — the `--events-from` form
 that drafted the Events a #193 experiment run had frozen went with that loop in
 #343. A batch refuses duplicate task identities before its first model call

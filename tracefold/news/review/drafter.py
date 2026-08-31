@@ -1,4 +1,4 @@
-"""Model-drafted `news_review_v6` rubrics, for a human to accept or reject (#117, #148).
+"""Model-drafted `news_review_v6` rubrics, for an authorized reviewer to accept or reject (#117, #148).
 
 Two facts set the whole shape of this module.
 
@@ -10,10 +10,10 @@ to another wrong one. Stating the right answer is worth more than any amount of 
 Second, `ReviewDesk.submit` writes an `acceptance` row unconditionally — there is no draft state. Anything
 written through that path is accepted release evidence the instant it lands.
 
-Therefore a draft is **not** a review and never touches `news_reviews`. This produces a file. A human reads it,
-edits what is wrong, and submits the approved subset through the existing `review submit` — which stays the
-one and only writer. The model's job is to turn "compose a judgment from scratch" into "confirm or reject one",
-not to become an author of record.
+Therefore a draft is **not** a review and never touches `news_reviews`. This produces a file. An
+owner-authorized reviewer reads it, edits what is wrong, and submits the approved subset through the existing
+review writer. The model's job is to turn "compose a judgment from scratch" into "confirm or reject one", not
+to acquire acceptance authority from drafting alone.
 """
 
 from __future__ import annotations
@@ -92,12 +92,13 @@ def build_drafter_lm(
     return lm_type(str(model_name), structured_output=structured_output, **request)
 
 
-DRAFTER_ID = "tracefold.news.review_drafter_v5"
+DRAFTER_ID = "tracefold.news.review_drafter_v6"
 ReviewDraftBatchSchema = Literal["tracefold.news.review_draft_batch.v4"]
 DRAFT_SCHEMA: Final[ReviewDraftBatchSchema] = "tracefold.news.review_draft_batch.v4"
 
 _INSTRUCTION = """You are drafting a quality review of one already-published Chinese news card for a
-crypto/US-equity trading desk. A human will accept or reject your draft; never assume it is final.
+crypto/US-equity trading desk. An owner-authorized reviewer will accept or reject your draft; never assume it
+is final.
 
 You see the original evidence and the card the system produced. Judge the card against the evidence only.
 
@@ -122,7 +123,7 @@ For each dimension answer pass / fail / not_applicable:
 - trade_affected_markets: the exact directly or causally affected market surfaces.
 - reader_value: escalate / realtime / background / none under the typed trade-attention contract.
 
-Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely — the human reviewer writes
+Do NOT judge why_support or why_value. Leave them out of `dimensions` entirely — the accepting reviewer writes
 those. Measured against 25 human-reviewed Events you agree with a reviewer 76-88% of the time on the
 dimensions above, but only 42-43% on those two, and 27 of 46 total false failures came from them alone.
 
@@ -145,7 +146,7 @@ not_applicable. taxonomy_source_authority judges the code-computed value shown i
 taxonomy label. `filing`, `rumor`, `whale`, and `noise` are not event families. Use other/unknown as honest
 abstentions.
 
-confidence: 0.0-1.0, how sure you are a human would agree with this draft.
+confidence: 0.0-1.0, how sure you are the accepting reviewer would agree with this draft.
 reasoning: one short sentence a reviewer can check quickly."""
 
 
@@ -214,7 +215,7 @@ DRAFTABLE_DIMENSIONS = frozenset(DraftDimensions.__annotations__)
 
 
 class ReviewDraft(BaseModel):
-    """What the model proposes. Shaped so a human edit turns it into an `EventRubricSubmission`."""
+    """What the model proposes. Shaped so a reviewer edit turns it into an `EventRubricSubmission`."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -239,11 +240,11 @@ class _ReviewDraftSignature(dspy.Signature):  # type: ignore[misc]
     evidence_json: str = dspy.InputField(desc="Bounded original evidence for the Event")
     card_json: str = dspy.InputField(desc="The verdict and card the system produced")
     told_json: str = dspy.InputField(desc="Cards already sent in the 4 h window, newest first")
-    draft: ReviewDraft = dspy.OutputField(desc="Proposed rubric; a human decides")
+    draft: ReviewDraft = dspy.OutputField(desc="Proposed rubric; an owner-authorized reviewer decides")
 
 
 class DraftedReview(BaseModel):
-    """One draft plus everything a human needs to accept it through `review submit`."""
+    """One draft plus everything an authorized reviewer needs to accept it through ReviewDesk."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -307,7 +308,7 @@ class ReviewDrafter:
                 "response_format": "response_format" in supported,
                 "supports_response_schema": bool(getattr(self._lm, "supports_response_schema", False)),
             },
-            "authority": "proposal_only; a human accepts it through ReviewDesk.submit",
+            "authority": "proposal_only; an owner-authorized reviewer accepts it through ReviewDesk.submit",
         }
 
     def draft(self, *, evidence_json: str, card_json: str, told_json: str) -> ReviewDraft | str:
@@ -334,7 +335,7 @@ def submission_payload(
     source_authority: SourceAuthority = "unknown",
     draft_author: str = DRAFTER_ID,
 ) -> dict[str, Any]:
-    """The `EventRubricSubmission` a human would send after accepting this draft, unchanged.
+    """The `EventRubricSubmission` a reviewer would send after accepting this draft, unchanged.
 
     Built here so the accept step never has to reshape model output by hand, and so the rubric's own
     validators — gold only on failed dimensions, evidence refs required for a fail — are what decide whether
@@ -375,9 +376,9 @@ def submission_payload(
     if expected:
         payload["expected"] = expected
     if any(label == "fail" for label in dimensions.values()):
-        # The rubric refuses a `fail` without one; the drafter cannot invent an operator's citation, so it
+        # The rubric refuses a `fail` without one; the drafter cannot invent a reviewer's citation, so it
         # points at the two things it did read.
-        payload["evidence_refs"] = ["source:leader:title", f"draft:{DRAFTER_ID}"]
+        payload["evidence_refs"] = ["source:leader:title", f"draft:{draft_author}"]
     return payload
 
 

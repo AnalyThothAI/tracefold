@@ -21,7 +21,7 @@ from tracefold.news.review.drafter import (
     submission_payload,
 )
 
-NEWS_REVIEW_DRAFTER_ID = "tracefold.news.review_drafter_v5"
+NEWS_REVIEW_DRAFTER_ID = "tracefold.news.review_drafter_v6"
 NEWS_REVIEW_DRAFT_BATCH_SCHEMA = "tracefold.news.review_draft_batch.v4"
 
 _GOOD = {
@@ -158,6 +158,13 @@ def test_a_failed_dimension_carries_evidence_refs() -> None:
         )
     )
     assert "evidence_refs" not in payload_all_pass
+
+
+def test_a_failed_dimension_names_the_batch_drafter_that_actually_proposed_it() -> None:
+    payload = submission_payload(ReviewDraft.model_validate(_GOOD), draft_author="teacher/qwen:thinking")
+
+    assert "draft:teacher/qwen:thinking" in payload["evidence_refs"]
+    assert f"draft:{DRAFTER_ID}" not in payload["evidence_refs"]
 
 
 def test_one_failed_event_does_not_end_the_batch() -> None:

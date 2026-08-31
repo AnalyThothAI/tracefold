@@ -541,13 +541,14 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 uv run tracefold news learning baseline --from-ms START --to-ms END \
   --mode runtime_live --max-model-cases 30 --out /tmp/baseline-runtime.json
 
-# Draft the cases nobody has judged, over the ReviewDesk look-back window; a
-# human accepts or rewrites every rubric before it becomes truth.
+# Draft the cases nobody has judged over the ReviewDesk look-back window. The
+# owner authorizes an explicit reviewed subset before it becomes truth; any AI
+# adjudicator is named honestly and is never described as human review.
 uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
   --hours 24 --out /tmp/drafts.json
 uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \
-  --only EVENT_OR_TASK_PREFIX[,PREFIX...]
+  --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex
 
 # The golden path (#253). Freeze once, then `run` — readiness, the standalone
 # `compile_live` baseline over that exact corpus, and the one optimization,
@@ -633,7 +634,7 @@ audit-only and starts the factory-v7 eligible cohort at zero.
 Current Review v6 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
 `trade_affected_markets` and `reader_value`, and adds exact Gold for all five
-`news_taxonomy_v1` axes. One operator acceptance is taxonomy Gold; there is no
+`news_taxonomy_v1` axes. One explicit ReviewDesk acceptance by an owner-authorized reviewer is taxonomy Gold; there is no
 taxonomy-specific second-reviewer or adjudication requirement. Work the fixed targeted strata
 `local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
 `regional_direct_exception`, `scheduled_or_in_line_macro`,

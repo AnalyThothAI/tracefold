@@ -276,7 +276,9 @@ compatibility hacks. In `auto`, MiniMax M3 uses temperature 1, `top_p: 0.95`,
 thinking disabled, and prompt-only JSON; DeepSeek uses JSON-object mode. Explicit
 operator values take precedence. These request semantics enter
 `configured_endpoint_model_v3`, so two endpoints with different request contracts
-cannot reuse the same evidence cohort.
+cannot reuse the same evidence cohort. A directly callable `qwen*:thinking` alias
+is sent unchanged without the ordinary Qwen disable override and uses
+`prompt_json`; no operator-side thinking flag is required.
 
 `news.gate` controls admission and `news.policy` exposes only four duplicate/
 safety knobs; trade-relevance action eligibility is code-owned. The
