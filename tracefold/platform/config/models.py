@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -448,10 +447,10 @@ class NewsSettings(BaseModel):
 
 
 class TradingCandidateSettings(BaseModel):
-    """What may be admitted to the capital lane at all (#104/#331).
+    """What may be admitted to the Signal lane at all.
 
     Every bound here is a universe or timing filter, never sizing and never Alpha. The policy's own
-    thresholds are code-owned and frozen onto each Case, so an operator cannot move a capital rule
+    thresholds are code-owned and frozen onto each Case, so an operator cannot move an Alpha rule
     without a versioned identity moving with it.
     """
 
@@ -470,30 +469,8 @@ class TradingCandidateSettings(BaseModel):
         return self
 
 
-class TradingOrderSettings(BaseModel):
-    """The sole operator execution value left after the #283 authority hard cut."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    fixed_notional_usd: Decimal = Decimal("10")
-
-    @field_validator("fixed_notional_usd", mode="before")
-    @classmethod
-    def parse_notional(cls, value: Any) -> Decimal:
-        try:
-            return Decimal(str(value))
-        except (ArithmeticError, ValueError) as exc:
-            raise ValueError("trading_order_notional_invalid") from exc
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> TradingOrderSettings:
-        if not Decimal("0") < self.fixed_notional_usd <= Decimal("10"):
-            raise ValueError("trading_order_notional_invalid")
-        return self
-
-
-class TradingBinanceUsdmSettings(BaseModel):
-    """Operator-owned credential paths; #356 owns any provider client that may use them."""
+class TradingExecutionCredentialsSettings(BaseModel):
+    """Operator-owned Binance USD-M credential references; values never enter config output."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
@@ -509,39 +486,32 @@ class TradingBinanceUsdmSettings(BaseModel):
         return normalized or None
 
 
-class TradingHyperliquidPerpSettings(BaseModel):
-    """Agent-wallet inputs only; #357 owns account preflight and adapter construction."""
+class TradingExecutionSettings(BaseModel):
+    """The single cold execution profile. 433-C still permits only disabled activation."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
-    private_key_file: str | None = "hyperliquid_private_key"
-    account_address: str | None = None
+    mode: Literal["disabled", "paper", "live"] = "disabled"
+    profile_id: str = "binance_usdm_primary"
+    account_slot: str = "binance_usdm_primary"
+    credentials: TradingExecutionCredentialsSettings = Field(default_factory=TradingExecutionCredentialsSettings)
 
-    @field_validator("private_key_file", "account_address", mode="before")
+    @field_validator("profile_id", "account_slot")
     @classmethod
-    def parse_optional_value(cls, value: Any) -> str | None:
-        if value is None:
-            return None
-        normalized = str(value).strip()
-        return normalized or None
-
-
-class TradingBindingsSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
-
-    binance_usdm: TradingBinanceUsdmSettings = Field(default_factory=TradingBinanceUsdmSettings)
-    hyperliquid_perp: TradingHyperliquidPerpSettings = Field(default_factory=TradingHyperliquidPerpSettings)
+    def validate_identity(cls, value: str) -> str:
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}", value) is None:
+            raise ValueError("trading_execution_identity_invalid")
+        return value
 
 
 class TradingSettings(BaseModel):
-    """Decision Plane configuration plus two closed, credential-optional bindings (#350)."""
+    """Alpha producer plus one cold Binance USD-M Runtime profile (#433)."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
-    order: TradingOrderSettings = Field(default_factory=TradingOrderSettings)
-    bindings: TradingBindingsSettings = Field(default_factory=TradingBindingsSettings)
+    execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
 
 
 class Settings(BaseModel):
@@ -576,13 +546,10 @@ class Settings(BaseModel):
         return self._configured_path(self.news.push.telegram_bot_token_file)
 
     def trading_binance_usdm_api_key_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.binance_usdm.api_key_file)
+        return self._configured_path(self.trading.execution.credentials.api_key_file)
 
     def trading_binance_usdm_api_secret_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.binance_usdm.api_secret_file)
-
-    def trading_hyperliquid_private_key_file(self) -> Path | None:
-        return self._configured_path(self.trading.bindings.hyperliquid_perp.private_key_file)
+        return self._configured_path(self.trading.execution.credentials.api_secret_file)
 
     def _configured_path(self, value: str | None) -> Path | None:
         if not value:

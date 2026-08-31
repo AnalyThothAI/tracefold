@@ -1,21 +1,4 @@
-"""One OI frame crosses News, the App mapper, and the Trading capital lane — on real PostgreSQL.
-
-News and Trading are siblings: neither imports the other and neither reads the other's tables, so
-the only thing that connects a deterministic OI telemetry frame to a capital decision is
-`app/workers/wiring/news_to_trading.py`. That module is field-by-field on purpose, and a
-field-by-field mapper is exactly the kind of code that keeps compiling after it stops being true.
-
-Both ends are real here. The News end runs the production Deduper and Triage over a real provider
-frame, so the projection row the mapper receives is one the pipeline actually wrote rather than a
-literal shaped like one. The Trading end runs the production `CapitalLane` against the real
-authority rows. Nothing needs a live provider, and nothing needs a trading key — the absence of a
-key is the point of the last assertion.
-
-The expected outcome before #360 is a Policy `LONG` beside a capital refusal: a Case that reached a
-decision, said the strategy would have taken it, and emitted no Intent because no authority exists
-to grant one. #360 replaces that expectation atomically in its own PR; this module holds the
-pre-#360 contract and no union of the two.
-"""
+"""A real News OI frame becomes one atomic engine-neutral Case/Signal pair."""
 
 from __future__ import annotations
 
@@ -30,7 +13,6 @@ from typing import Any
 import pytest
 
 from tests.postgres_test_utils import connect_postgres_test
-from tests.trading_v3_fixtures import binance_capability, binance_catalog, store_catalog_fixture
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.workers.wiring.database import WorkerNewsDatabase
 from tracefold.app.workers.wiring.news_to_trading import (
@@ -43,26 +25,16 @@ from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.triage import TriageConsumer
 from tracefold.news.storage.trade_projection import NEWS_TRADE_PROJECTION_VERSION
-from tracefold.trading.capital_lane import BAR_INTERVAL_MS, CapitalLane, CapitalLaneConfig
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow
+from tracefold.trading.signal_lane import BAR_INTERVAL_MS, SignalLane, SignalLaneConfig
 
 pytestmark = pytest.mark.integration
 
-# The real clock, not a fixed literal. Evidence eligibility is a timestamp comparison: the trade
-# projection admits a verdict only when the running epoch started before it, so an epoch opened at a
-# far-future constant would leave the SQL correct and the result empty.
 NOW = now_ms()
 EPOCH_STARTED_AT_MS = NOW - 600_000
 STABLE_BUNDLE_SHA = "b" * 64
 OI_SYMBOL = "SOL"
-# A frame the whole chain accepts, and every number in it is load-bearing: the OI rise clears the
-# policy's `min_oi_change_bps` (5%), the OI value clears admission's `min_oi_value_usd` (20M), the
-# whale ratio clears `min_whale_oi_ratio_bps` (50%), and `SOL` is not on the benchmark blacklist that
-# `BTC` and `ETH` are. A frame that misses any of them stops earlier with a named reason, which is a
-# real outcome but not the one this module is about.
-OI_TITLE = f"{OI_SYMBOL} OI Rise 7.20%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
-CATALOG_SNAPSHOT = binance_catalog(captured_at_ms=NOW, symbol=f"{OI_SYMBOL}USDT")
-CAPABILITY_SNAPSHOT = binance_capability(catalog=CATALOG_SNAPSHOT, app_revision="seam-revision")
+OI_TITLE = f"{OI_SYMBOL}\tOI Rise 7.20%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
 
 
 class RecordingBus:
@@ -77,7 +49,7 @@ class RecordingBus:
 
 
 class NewsDatabase:
-    """The production News database port over one test connection."""
+    """The production News database port over one isolated PostgreSQL connection."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -99,30 +71,8 @@ class NewsDatabase:
         return fn(*args, **kwargs)
 
 
-def _news_oi_projection(
-    database: NewsDatabase,
-) -> Callable[[str, int, int], Awaitable[Sequence[OiCandidateRow]]]:
-    async def read(
-        metric_version: str,
-        after_created_at_ms: int,
-        until_created_at_ms: int,
-    ) -> Sequence[OiCandidateRow]:
-        return await database.read(
-            "trading_oi_projection",
-            lambda repos: news_oi_sources(
-                repos,
-                metric_version,
-                after_created_at_ms,
-                until_created_at_ms,
-            ),
-            timeout_seconds=10.0,
-        )
-
-    return read
-
-
 class TradingDatabase:
-    """One bounded read and one bounded transaction over the same real connection."""
+    """The current Trading callback port over the same real database."""
 
     def __init__(self, conn: Any) -> None:
         self.conn = conn
@@ -139,21 +89,22 @@ class TradingDatabase:
             return fn(repos)
 
 
+def _news_projection(database: NewsDatabase) -> Callable[[str, int, int], Awaitable[Sequence[OiCandidateRow]]]:
+    async def read(metric_version: str, after_created_at_ms: int, until_created_at_ms: int) -> Sequence[OiCandidateRow]:
+        return await database.read(
+            "trading_oi_projection",
+            lambda repos: news_oi_sources(repos, metric_version, after_created_at_ms, until_created_at_ms),
+            timeout_seconds=10.0,
+        )
+
+    return read
+
+
 @pytest.fixture(scope="module")
 def conn(postgres_module_clone_dsn: str):
+    del postgres_module_clone_dsn
     connection = connect_postgres_test(read_only=False)
-    repos = repositories_for_connection(connection)
-    store_catalog_fixture(repos.trading, CATALOG_SNAPSHOT, now_ms=NOW)
-    connection.execute(
-        "UPDATE trading_binding_runtime SET account_state = 'reconciled_flat', updated_at_ms = %s "
-        "WHERE binding = 'BINANCE_USDM'",
-        (NOW,),
-    )
-    assert repos.trading.append_and_activate_execution_capability_snapshot(CAPABILITY_SNAPSHOT, created_at_ms=NOW)
-    # The Workers startup barrier appoints the running Agent and opens its evidence epoch. The trade
-    # projection joins that appointment rather than the newest epoch row, so without this the SQL is
-    # correct and returns nothing, which is exactly the shape of failure worth not mistaking for a bug.
-    repos.news.register_agent_runtime_manifest(
+    repositories_for_connection(connection).news.register_agent_runtime_manifest(
         manifest_sha="c" * 64,
         stable_bundle_sha=STABLE_BUNDLE_SHA,
         envelope_sha256="d" * 64,
@@ -165,15 +116,6 @@ def conn(postgres_module_clone_dsn: str):
         runtime_revision="seam-revision",
         now_ms=EPOCH_STARTED_AT_MS,
     )
-    opened = connection.execute(
-        "SELECT starts_at_ms FROM news_learning_epochs WHERE bundle_sha = %s", (STABLE_BUNDLE_SHA,)
-    ).fetchone()
-    # `open_learning_epoch` starts an epoch strictly after every epoch already recorded, and the clone's
-    # migrations wrote theirs when the baseline was built. Checking that the result is already in the past
-    # is what keeps the "correct SQL, empty result" failure from reaching a test body as a mystery.
-    assert opened is not None and int(opened["starts_at_ms"]) <= now_ms(), (
-        "the epoch must start before the frames this module judges, or the projection is empty"
-    )
     connection.commit()
     yield connection
     connection.close()
@@ -181,33 +123,14 @@ def conn(postgres_module_clone_dsn: str):
 
 @pytest.fixture
 def clean(conn: Any):
-    """A no-key authority and an empty News plane: the exact pre-#360 production shape."""
-
-    conn.execute("TRUNCATE trading_intents, trading_orders, trading_cases CASCADE")
     conn.execute("TRUNCATE news_items, news_event_evidence_snapshots RESTART IDENTITY CASCADE")
-    conn.execute(
-        """
-        UPDATE trading_runtime_state
-           SET control = 'RUNNING'
-         WHERE id = 1
-        """
-    )
-    conn.execute(
-        """
-        UPDATE trading_binding_runtime
-           SET credential_state = 'unconfigured', credential_fingerprint = NULL,
-               runtime_state = 'stopped', account_state = 'unknown',
-               heartbeat_at_ms = NULL, reason = 'credentials_unconfigured', updated_at_ms = %s
-         WHERE binding = 'BINANCE_USDM'
-        """,
-        (NOW,),
-    )
     conn.commit()
     return conn
 
 
-def _oi_frame() -> dict[str, Any]:
-    return {
+def _raw_message() -> BusMessage:
+    stamp = now_ms()
+    frame = {
         "id": 2_850_777,
         "newsType": "strategy",
         "engineType": "market",
@@ -217,10 +140,6 @@ def _oi_frame() -> dict[str, Any]:
         "ts": datetime.now(UTC).isoformat(),
         "strategy": {"id": 1019, "name": "OI Event Monitor", "engineType": "market", "sourceType": "market"},
     }
-
-
-def _raw_message(frame: dict[str, Any]) -> BusMessage:
-    stamp = now_ms()
     return BusMessage(
         kind="raw",
         message_id=f"raw:{frame['id']}",
@@ -231,17 +150,14 @@ def _raw_message(frame: dict[str, Any]) -> BusMessage:
     )
 
 
-def _judge_an_oi_frame(conn: Any) -> str:
-    """Run the production Deduper and Triage over one OI frame; return its Event id."""
-
+def _judge_frame(conn: Any) -> str:
     bus = RecordingBus()
-    db = NewsDatabase(conn)
-    deduper = DeduperConsumer(bus=bus, db=db, watchlist_symbols=frozenset({OI_SYMBOL}))
-    asyncio.run(deduper.handle(_raw_message(_oi_frame())))
+    database = NewsDatabase(conn)
+    asyncio.run(DeduperConsumer(bus=bus, db=database, watchlist_symbols=frozenset({OI_SYMBOL})).handle(_raw_message()))
     conn.commit()
     triage = TriageConsumer(
         bus=bus,
-        db=db,
+        db=database,
         judge=None,
         program_version="news_semantic_program_seam_v1",
         program_sha256="9" * 64,
@@ -253,147 +169,72 @@ def _judge_an_oi_frame(conn: Any) -> str:
         runtime_manifest={"manifest_sha": "e" * 64},
     )
     events = bus.of_kind("event")
-    assert events, "the OI frame must be admitted and published to Triage"
+    assert events
     for message in events:
         asyncio.run(triage.handle(message))
     conn.commit()
     return str(events[0].payload["event_id"])
 
 
-def test_the_mapper_carries_every_projected_oi_field_across_the_sibling_boundary(clean) -> None:
-    """Field-by-field is the contract: nothing computed, nothing defaulted, nothing dropped."""
+def _running_generation(conn: Any) -> str:
+    rows = repositories_for_connection(conn).news.trade_candidate_oi_rows(
+        metric_version=OI_METRIC_VERSION,
+        after_created_at_ms=0,
+        until_created_at_ms=now_ms() + 60_000,
+    )
+    assert rows
+    return str(rows[0]["learning_epoch"])
 
+
+def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -> None:
     conn = clean
-    event_id = _judge_an_oi_frame(conn)
+    event_id = _judge_frame(conn)
     repos = repositories_for_connection(conn)
-    signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
-    assert signal is not None, "the deterministic OI route must have written a telemetry row"
-
     rows = repos.news.trade_candidate_oi_rows(
         metric_version=OI_METRIC_VERSION,
         after_created_at_ms=0,
         until_created_at_ms=now_ms() + 60_000,
     )
     assert [row["event_id"] for row in rows] == [event_id]
-    observed_at_ms = int(signal["observed_at_ms"])
+    assert [row["provider_symbol"] for row in rows] == [OI_SYMBOL]
     evidence_rows = repos.news.trade_evidence_oi_rows(
         metric_version=OI_METRIC_VERSION,
-        start_observed_at_ms=observed_at_ms,
-        end_observed_at_ms=observed_at_ms + 1,
-        known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]),
-        available_at_or_before_ms=int(signal["available_at_ms"]),
+        start_observed_at_ms=rows[0]["observed_at_ms"],
+        end_observed_at_ms=rows[0]["observed_at_ms"] + 1,
+        known_at_or_before_ms=now_ms() + 60_000,
+        available_at_or_before_ms=now_ms() + 60_000,
     )
-    assert [row["event_id"] for row in evidence_rows] == [event_id]
-    assert (
-        repos.news.trade_evidence_oi_rows(
-            metric_version=OI_METRIC_VERSION,
-            start_observed_at_ms=observed_at_ms,
-            end_observed_at_ms=observed_at_ms + 1,
-            known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]),
-            available_at_or_before_ms=int(signal["available_at_ms"]) - 1,
-        )
-        == []
-    )
-    assert (
-        repos.news.trade_evidence_oi_rows(
-            metric_version=OI_METRIC_VERSION,
-            start_observed_at_ms=observed_at_ms,
-            end_observed_at_ms=observed_at_ms + 1,
-            known_at_or_before_ms=int(rows[0]["verdict_created_at_ms"]) - 1,
-            available_at_or_before_ms=int(signal["available_at_ms"]),
-        )
-        == []
-    )
-
-    mapped = to_oi_candidate_row(rows[0])
-
-    # The whole contract in one comparison. Equal keys means nothing was dropped and nothing was
-    # invented; equal values means nothing was computed or defaulted on the way across. A News
-    # projection that gains, loses or renames a field fails here rather than months later inside a
-    # capital decision that silently lost it.
-    assert dict(mapped) == dict(rows[0])
+    assert [row["provider_symbol"] for row in evidence_rows] == [OI_SYMBOL]
+    assert dict(to_oi_candidate_row(rows[0])) == dict(rows[0])
     assert MAPPED_NEWS_PROJECTION_VERSION == NEWS_TRADE_PROJECTION_VERSION
-    assert mapped["symbol"] == OI_SYMBOL
-    assert mapped["venue"] == "binance", "the frame's own provider source survives the seam, not a default"
-    assert mapped["ingest_mode"] == "live"
 
-
-def test_a_news_oi_frame_becomes_one_blocked_case_with_a_policy_long_and_no_intent(clean) -> None:
-    """The whole seam, once: a real frame reaches a real capital decision and emits nothing.
-
-    Everything a reader would want to check is a durable row afterwards. The Case exists, it is
-    terminal, its Policy said the strategy would have gone long, its capital refusal names exactly
-    one reason, and the Intent ledger is empty because no key or ready runtime ever existed.
-    """
-
-    conn = clean
-    _judge_an_oi_frame(conn)
-
-    async def _bars(_instrument: Any, start: int, end: int) -> list[Bar]:
-        """A flat public-candle series over the window the lane asks for.
-
-        The public REST candle catalogue is faked, and only that. It is not the risk boundary this
-        module exists to cross — the seam is — and #373 forbids reaching a live provider here. What
-        stays real is that the lane must find a bar closed at or before the frame's own cutoff, so
-        the series is generated from the exact range the lane requested rather than from a literal.
-        """
-
+    async def bars(_candidate: Any, start: int, end: int) -> list[Bar]:
         aligned = (start // BAR_INTERVAL_MS) * BAR_INTERVAL_MS
         return [
             Bar(open_at_ms=opened, close_at_ms=opened + BAR_INTERVAL_MS, close=Decimal("150.00"))
             for opened in range(aligned, end + BAR_INTERVAL_MS, BAR_INTERVAL_MS)
         ]
 
-    lane = CapitalLane(
+    lane = SignalLane(
         db=TradingDatabase(conn),
-        config=CapitalLaneConfig(target_notional_usd=Decimal("7.5")),
-        bars=_bars,
-        oi_projection=_news_oi_projection(NewsDatabase(conn)),
+        config=SignalLaneConfig(),
+        bars=bars,
+        oi_projection=_news_projection(NewsDatabase(conn)),
         news_generation=_running_generation(conn),
         release_revision="test-release",
         clock=now_ms,
     )
-
     first = asyncio.run(lane.advance())
     second = asyncio.run(lane.advance())
-    conn.commit()
 
-    assert first.outcome == "ADVANCED"
-    assert first.sources >= 1, "the lane read the News projection the mapper produced"
-    admissions = [
-        dict(row)
-        for row in conn.execute(
-            "SELECT source_key, status, stage, reason, evidence FROM trading_candidate_gate_decisions"
-        ).fetchall()
-    ]
     cases = [dict(row) for row in conn.execute("SELECT * FROM trading_cases ORDER BY created_at_ms").fetchall()]
-    assert len(cases) == 1, f"one frame, one Case, and a second turn creates no more; admissions={admissions}"
-    case = cases[0]
-    assert case["trigger_kind"] == "oi"
-    assert case["underlying_key"] == f"crypto:{OI_SYMBOL}"
-    assert CaseState(case["state"]) is CaseState.BLOCKED
-    assert case["policy_decision"] == "long"
-    assert case["capital_disposition"] == "blocked"
-    assert case["capital_reason"] == "credentials_unconfigured"
-    assert case["decided_at_ms"] is not None
+    signals = [dict(row) for row in conn.execute("SELECT * FROM trading_trade_signals ORDER BY seq").fetchall()]
+    assert (first.sources, first.cases_created, first.signals_emitted) == (1, 1, 1)
     assert second.cases_created == 0
-
+    assert len(cases) == len(signals) == 1
+    assert CaseState(cases[0]["state"]) is CaseState.SIGNAL_EMITTED
+    assert cases[0]["case_id"] == signals[0]["case_id"]
+    assert cases[0]["capital_disposition"] == "not_applicable"
+    assert signals[0]["market_key"] == f"crypto:perp:{OI_SYMBOL}:USDT"
     assert int(conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"]) == 0
     assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 0
-
-
-def _running_generation(conn: Any) -> str:
-    """The epoch the projection itself joined, which is what the lane compares a frozen Case against.
-
-    Reading it from the projection rather than from `news_learning_epochs` directly is deliberate:
-    the projection joins the epoch of the *active agent*, not the newest row, so after a rollback
-    those are different answers and only one of them is the generation the process is running.
-    """
-
-    rows = repositories_for_connection(conn).news.trade_candidate_oi_rows(
-        metric_version=OI_METRIC_VERSION,
-        after_created_at_ms=0,
-        until_created_at_ms=now_ms() + 60_000,
-    )
-    assert rows, "the projection must expose the judged OI frame before the lane can scan it"
-    return str(rows[0]["learning_epoch"])

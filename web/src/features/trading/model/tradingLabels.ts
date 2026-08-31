@@ -1,21 +1,3 @@
-import type { TradingIntent } from "../api/tradingQueries";
-
-/** Nautilus execution states and the exact fact each one proves. */
-export const INTENT_STATE_NOTE: Record<string, string> = {
-  PENDING: "等待 Nautilus 领取",
-  IN_FLIGHT: "Nautilus 正在执行",
-  OPEN_PROTECTED: "仓位与交易所原生保护均已证明",
-  MANUAL_REVIEW: "交易所事实无法自动收敛，等待人工处置",
-  TERMINAL: "执行已终结并写入 Outcome",
-};
-
-export const ACTIVE_INTENT_STATES: readonly string[] = [
-  "PENDING",
-  "IN_FLIGHT",
-  "OPEN_PROTECTED",
-  "MANUAL_REVIEW",
-];
-
 /**
  * The three answers a Case may end in, plus the two historical states that stay readable (#331).
  *
@@ -26,11 +8,12 @@ export const ACTIVE_INTENT_STATES: readonly string[] = [
 export const CASE_STATE_ZH: Record<string, string> = {
   BLOCKED: "无法安全判定",
   NO_TRADE: "不交易",
-  INTENT_EMITTED: "已形成意图",
+  SIGNAL_EMITTED: "已发出 Signal",
   PENDING: "待决",
   RUNNING: "判定中",
   POLICY_REJECTED: "历史 · 地板拒绝",
   ORDER_PREPARED: "历史 · 已备单",
+  INTENT_EMITTED: "历史 · 已形成意图",
 };
 
 /**
@@ -69,10 +52,11 @@ export function policyReasonLabel(reason: string | null | undefined): string {
   return BLOCKED_REASON_ZH[reason] ?? POLICY_RULE_ZH[reason] ?? reason;
 }
 
-/** The one production capital policy, and the historical identities a stored Case may still name. */
+/** The one production Alpha policy, and historical identities a stored Case may still name. */
 export const POLICY_ZH: Record<string, string> = {
-  source_native_oi_smart_money_long_v3: "来源原生 OI × 聪明钱 · 做多",
-  // Historical Case identity; current writers use the source-native V3 identity above.
+  source_native_oi_smart_money_long_v4: "来源原生 OI × 聪明钱 · 做多",
+  // Historical Case identities; current writers use V4 above.
+  source_native_oi_smart_money_long_v3: "来源原生 OI × 聪明钱 · 做多（历史）",
   binance_oi_smart_money_long_v2: "Binance OI × 聪明钱 · 做多",
   liquidation_continuation_shadow_v1: "清算延续（影子）",
   liquidation_exhaustion_shadow_v1: "清算衰竭（影子）",
@@ -96,7 +80,7 @@ export const GATE_REASON_ZH: Record<string, string> = {
   "capability:capability_absent": "当前能力快照没有这个标的",
   "eligibility:already_consumed": "同一来源已成案",
   "eligibility:blacklisted": "标的在拒绝名单",
-  "eligibility:lane_capacity_exhausted": "通道已有在场仓位",
+  "eligibility:lane_capacity_exhausted": "本轮成案预算已满",
   "eligibility:oi_value_below_floor": "持仓额低于流动性地板",
   "eligibility:superseded_by_newer_trigger": "被同标的更新的帧合并",
   "eligibility:underlying_busy": "该标的已被占用",
@@ -135,15 +119,6 @@ export const GATE_STATUS_ZH: Record<string, string> = {
 
 export function gateReasonLabel(key: string): string {
   return GATE_REASON_ZH[key] ?? key;
-}
-
-export function isActiveIntent(intent: TradingIntent): boolean {
-  return ACTIVE_INTENT_STATES.includes(intent.execution_state);
-}
-
-/** Whether Nautilus has proved both the position and its venue-native protective stop. */
-export function stopVerified(intent: TradingIntent): boolean {
-  return intent.execution_state === "OPEN_PROTECTED" && intent.protected_quantity != null;
 }
 
 /*

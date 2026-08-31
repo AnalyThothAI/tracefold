@@ -202,9 +202,7 @@ async def run_workers(settings: Settings) -> None:
             )
             for task_name, runner in worker_business_runners(
                 news_pipeline=components.news_pipeline,
-                capital_lane=components.capital_lane,
-                venue_catalog=components.venue_catalog,
-                execution_capability_compiler=components.execution_capability_compiler,
+                signal_lane=components.signal_lane,
                 telemetry=components.telemetry,
             ):
                 business_tasks.append(

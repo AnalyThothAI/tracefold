@@ -10,9 +10,10 @@ import {
   newsSymbolFixture,
 } from "@tests/fixtures/newsFixture";
 import {
+  tradingCaseFixture,
   tradingCasesFixture,
   tradingCasesForUnderlying,
-  tradingIntentsForUnderlying,
+  tradingSignalsForMarket,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
 import { HttpResponse, http } from "msw";
@@ -50,10 +51,10 @@ describe("NewsSymbolPage", () => {
        * read had failed — silently, because the failure surfaced only as `data === undefined` and both
        * sections rendered their empty copy. A test that means to see that state now says so.
        */
-      http.get(/.*\/api\/trading\/intents.*/, ({ request }) =>
+      http.get(/.*\/api\/trading\/signals.*/, ({ request }) =>
         HttpResponse.json({
           ok: true,
-          data: tradingIntentsForUnderlying(new URL(request.url).searchParams.get("underlying")),
+          data: tradingSignalsForMarket(new URL(request.url).searchParams.get("market")),
         }),
       ),
       http.get(/.*\/api\/trading\/cases.*/, ({ request }) =>
@@ -257,10 +258,10 @@ describe("NewsSymbolPage", () => {
     );
     renderSymbol("/news/symbols/HYPE", "HYPE");
 
-    expect(await screen.findByText("资本复盘 · Case → Intent → Outcome")).toBeInTheDocument();
+    expect(await screen.findByText("Alpha 复盘 · Case → Signal")).toBeInTheDocument();
     expect(await screen.findByText("不交易")).toBeInTheDocument();
     expect(screen.getByText("鲸鱼占比未超过地板")).toBeInTheDocument();
-    expect(screen.getByText("未形成")).toBeInTheDocument();
+    expect(screen.getByText("未发出")).toBeInTheDocument();
     // No quadrant, and no threshold comparison recomputed here: the frozen checks live with the Case.
     expect(screen.queryByText("buildup_up")).not.toBeInTheDocument();
     expect(screen.queryByText("过地板")).not.toBeInTheDocument();
@@ -287,8 +288,45 @@ describe("NewsSymbolPage", () => {
     renderSymbol();
 
     expect(
-      await screen.findByText("资本通道账本本轮不可用；不能据此断言没有案例。"),
+      await screen.findByText("Alpha Case 账本本轮不可用；不能据此断言没有案例。"),
     ).toBeInTheDocument();
+  });
+
+  it("keeps an unreadable Signal ledger distinct from a Case with no Signal", async () => {
+    let signalReads = 0;
+    server.use(
+      http.get(/.*\/api\/trading\/cases.*/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingCasesFixture({
+            cases: [
+              tradingCaseFixture({
+                policy_decision: "long",
+                policy_reason: "signal_emitted",
+                state: "SIGNAL_EMITTED",
+              }),
+            ],
+          }),
+        }),
+      ),
+      http.get(/.*\/api\/trading\/signals.*/, () => {
+        signalReads += 1;
+        return signalReads === 1
+          ? HttpResponse.json({ ok: false }, { status: 503 })
+          : HttpResponse.json({ ok: true, data: tradingSignalsForMarket("crypto:perp:HYPE:USDT") });
+      }),
+    );
+    renderSymbol("/news/symbols/HYPE", "HYPE");
+
+    expect(
+      await screen.findByText("Signal 账本本轮不可用；不能据此断言未发出 Signal。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("未发出")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+
+    expect(await screen.findByText("未发出")).toBeInTheDocument();
+    expect(signalReads).toBe(2);
   });
 
   it("prints this window's counts once, in the identity band the artifact puts them in", async () => {

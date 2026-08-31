@@ -18,10 +18,10 @@ describe("frontend documentation contract", () => {
     const navigation = APP_NAVIGATION_GROUPS.flatMap((group) => group.items);
     const targets = navigation.map((item) => item.to);
 
-    expect(targets).toEqual(["/news", "/news/leverage", "/trading", "/news/oi"]);
+    expect(targets).toEqual(["/news", "/news/alpha", "/trading", "/news/oi"]);
     expect(navigation.flatMap((item) => item.children ?? [])).toEqual([]);
     expect(frontendDoc).toContain("`/news`");
-    expect(frontendDoc).toContain("`/news/leverage`");
+    expect(frontendDoc).toContain("`/news/alpha`");
     expect(frontendDoc).toContain("`/trading`");
     expect(frontendDoc).toContain("`/news/oi`");
   });

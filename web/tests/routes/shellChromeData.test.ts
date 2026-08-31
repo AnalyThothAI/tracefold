@@ -25,11 +25,11 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("uses the telemetry and capital ledgers on the OI monitor", () => {
+  it("uses the telemetry and Signal ledgers on the OI monitor", () => {
     const today = Date.parse("2026-08-25T12:00:00Z");
     expect(topbarFigures("/news/oi", news, trading, today)).toEqual([
       { label: "PUSHED 24H", tone: "accent", value: 3 },
-      { label: "24h 成案 · 今日放行", text: "7 · 1" },
+      { label: "24h 成案 · Signal", text: "7 · 1" },
     ]);
 
     expect(
@@ -41,16 +41,14 @@ describe("route-aware shell figures", () => {
         }),
         today,
       )[1],
-    ).toEqual({ label: "24h 成案 · 今日放行", text: "0 · 1" });
+    ).toEqual({ label: "24h 成案 · Signal", text: "0 · 1" });
   });
 
-  it("dates an OI case count when the capital ledger stopped before today", () => {
+  it("uses a rolling 24 h window rather than inventing a UTC budget day", () => {
     expect(topbarFigures("/news/oi", news, trading, Date.parse("2026-08-26T00:01:00Z"))[1]).toEqual(
       {
-        label: "成案 · 放行 · 08-25",
+        label: "24h 成案 · Signal",
         text: "7 · 1",
-        title: "UTC 2026-08-25",
-        tone: "caution",
       },
     );
   });
@@ -62,15 +60,15 @@ describe("route-aware shell figures", () => {
     ]);
   });
 
-  it("keeps Decision, Capital and binding configuration visible on the trading surface", () => {
+  it("keeps Alpha, execution readiness and Signal volume visible on the trading surface", () => {
     expect(topbarFigures("/trading", news, trading)).toEqual([
       {
         label: "DECISION",
         text: "RUNNING",
         tone: undefined,
       },
-      { label: "CAPITAL", text: "PAUSED", tone: "caution" },
-      { label: "BINDINGS", text: "0 / 2" },
+      { label: "EXECUTION", text: "disabled", tone: "caution" },
+      { label: "SIGNALS 24H", value: 1 },
     ]);
   });
 });

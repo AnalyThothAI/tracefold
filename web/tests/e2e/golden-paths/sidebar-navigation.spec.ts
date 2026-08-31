@@ -38,15 +38,15 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "资本判定" })).toBeVisible();
+    await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
     // #256: four working surfaces in two groups, and no ReviewDesk destination at all.
     await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
-    // Durable Decision/Capital control rides beside the label without renaming the destination.
+    // Alpha decision state and explicit execution mode ride beside the label without renaming it.
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText(
-      "RUNNING · PAUSED",
+      "RUNNING · disabled",
     );
     await expect(primaryNavigation.getByRole("link", { name: "Macro" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "Ops" })).toHaveCount(0);

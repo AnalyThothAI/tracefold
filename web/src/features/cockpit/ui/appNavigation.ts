@@ -1,4 +1,4 @@
-import { newsLeveragePath, newsOiPath, newsPath, tradingPath } from "@shared/routing/paths";
+import { newsAlphaPath, newsOiPath, newsPath, tradingPath } from "@shared/routing/paths";
 import {
   EventStreamIcon,
   LeverageGaugeIcon,
@@ -8,7 +8,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 
 export type AppNavigationItem = {
-  /** A short word beside the label rather than a number: the capital lane's environment. */
+  /** Alpha decision state and explicit execution mode beside the Trading destination. */
   badge?: "tradingEnvironment";
   children?: AppNavigationItem[];
   /** Which count from `AppNavigationCounts` this destination shows, if any. */
@@ -43,8 +43,8 @@ export type AppNavigationGroup = {
  * fronted is a CLI lane — `tracefold news review queue / evidence / submit` — writing the same
  * `news_reviews` rows the learning lane reads. One path in, not two.
  *
- * 资本判定 takes a workbench slot beside it. It and OI 来源与准入审计 read the same deterministic lane and answer
- * different questions with different thresholds: what the capital lane decided, versus whether the telemetry
+ * Alpha 判定 takes a workbench slot beside it. It and OI 来源与准入审计 read the same deterministic lane and answer
+ * different questions with different thresholds: what Alpha decided, versus whether the telemetry
  * itself parsed and cleared the push gates.
  *
  * One model, three presentations: the desktop sidebar, the tablet drawer and the phone tab bar all read this
@@ -64,8 +64,8 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
       },
       {
         /*
-         * The capital lane's own 24 h case count, from `counts.cases_by_state` on the `/api/trading/status`
-         * the frame is already reading for the `Demo` badge. It was left blank when the slot landed on the
+         * The Signal lane's own 24 h Case count comes from the existing `/api/trading/status` read. It was
+         * left blank when the slot landed on the
          * theory that the honest figure needed a fourth poll; it does not, and an empty right edge beside
          * three numbered siblings reads as "nothing came through here" rather than as "not counted".
          *
@@ -74,13 +74,13 @@ export const APP_NAVIGATION_GROUPS: AppNavigationGroup[] = [
          */
         count: "cases",
         /* Not 「过去 24 小时」 like its two siblings: their fields are named `*_24h` and the window is part
-           of the field, where `cases_by_state` follows the capital lane's published `window_hours` and a
+           of the field, where the Case aggregate follows the Signal lane's published `window_hours` and a
            tooltip that hard-coded 24 would be wrong the first time an operator changed it. */
-        countTitle: "资本通道成案 · 账本滚动窗口",
+        countTitle: "Alpha 成案 · 账本滚动窗口",
         icon: LeverageGaugeIcon,
-        isActive: (pathname) => pathname === "/news/leverage",
-        label: "资本判定",
-        to: newsLeveragePath(),
+        isActive: (pathname) => pathname === "/news/alpha",
+        label: "Alpha 判定",
+        to: newsAlphaPath(),
       },
       {
         badge: "tradingEnvironment",

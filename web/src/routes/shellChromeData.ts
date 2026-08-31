@@ -23,9 +23,9 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
   [/^\/news\/oi$/, "OI 来源与准入审计"],
-  [/^\/news\/leverage$/, "资本判定"],
+  [/^\/news\/alpha$/, "Alpha 判定"],
   [/^\/news$/, "事件流"],
-  [/^\/trading$/, "执行与持仓"],
+  [/^\/trading$/, "Alpha 与执行"],
 ];
 
 export type ShellRouteContext = {
@@ -48,11 +48,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
   // The same query key the feed header and the status route use, so React Query serves all three from one
   // poll. The sidebar shows the 24 h intake behind the Event feed.
   const newsStatusQuery = useNewsStatusWithToken(session.token);
-  /*
-   * The capital lane's execution environment for the 交易 slot. Its own key and its own 15 s rhythm — the frame reads it
-   * so the badge is right on every route, and the trading page shares the same cache entry rather than
-   * opening a second poll of the same endpoint.
-   */
+  /* The shared Alpha/execution status read gives every route the same explicit disabled-mode badge. */
   const tradingStatusQuery = useTradingStatusWithToken(session.token);
   const status = statusQuery.data?.data ?? null;
   const token = session.token;
@@ -82,9 +78,8 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
           : false,
       navCounts: {
         /*
-         * The capital lane's own 24 h Cases, from the same `/api/trading/status` this shell already reads
-         * for the Demo badge. Every state counts, including the ones that refused: a slot that counted
-         * only Cases which reached an Intent would read `0` on a lane that decided ninety-seven times.
+         * The Signal lane's own 24 h Cases, from the same `/api/trading/status` this shell already reads.
+         * Every terminal outcome counts; this is Alpha throughput, never an order or position count.
          */
         cases: tradingStatusQuery.data?.counts?.cases_24h,
         events: newsStatusQuery.data?.funnel_24h?.received,
@@ -94,7 +89,7 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
       },
       navBadges: {
         tradingEnvironment: tradingStatusQuery.data
-          ? `${tradingStatusQuery.data.decision.state} · ${tradingStatusQuery.data.capital.control}`
+          ? `${tradingStatusQuery.data.decision.state} · ${tradingStatusQuery.data.execution.mode}`
           : undefined,
       },
       outletContext: routeContext,
@@ -140,10 +135,7 @@ export function topbarFigures(
 ): CockpitTopbarFigure[] {
   if (pathname === "/trading") {
     const decision = tradingStatus?.decision;
-    const capital = tradingStatus?.capital;
-    const configured = tradingStatus?.bindings.filter(
-      (binding) => binding.credential_state === "configured",
-    ).length;
+    const execution = tradingStatus?.execution;
     return [
       {
         label: "DECISION",
@@ -151,20 +143,20 @@ export function topbarFigures(
         tone: decision?.state === "FAULTED" ? "caution" : undefined,
       },
       {
-        label: "CAPITAL",
-        text: capital?.control,
-        tone: capital?.control === "PAUSED" ? "caution" : undefined,
+        label: "EXECUTION",
+        text: execution?.mode,
+        tone: execution?.ready ? undefined : "caution",
       },
       {
-        label: "BINDINGS",
-        text: tradingStatus ? `${configured} / ${tradingStatus.bindings.length}` : undefined,
+        label: "SIGNALS 24H",
+        value: tradingStatus?.counts.signals_24h,
       },
     ];
   }
 
-  if (pathname === "/news/leverage") {
+  if (pathname === "/news/alpha") {
     // The lane's own load, from the two status reads the frame already holds: how many frames arrived, and
-    // how many of them the capital lane turned into a case today. Neither is derived in the browser.
+    // how many of them the Signal lane turned into a Case today. Neither is derived in the browser.
     return [
       { label: "OI 帧 24H", value: newsStatus?.pipeline.telemetry_received_24h },
       oiDailyFigure(tradingStatus, nowMs),
@@ -207,29 +199,13 @@ export function topbarFigures(
 
 function oiDailyFigure(
   tradingStatus: TradingStatus | undefined,
-  nowMs: number,
+  _nowMs: number,
 ): CockpitTopbarFigure {
-  if (!tradingStatus) return { label: "今日成案 · 放行", text: undefined };
+  if (!tradingStatus) return { label: "24h 成案 · Signal", text: undefined };
 
-  const dayKey = tradingStatus.counts.day_key;
-  const today = new Date(nowMs).toISOString().slice(0, 10);
-  const stale = dayKey !== today;
   return {
-    label: stale
-      ? `成案 · 放行 · ${/^\d{4}-\d{2}-\d{2}$/.test(dayKey) ? dayKey.slice(5) : "STALE"}`
-      : "24h 成案 · 今日放行",
-    /*
-     * The 24 h Case total beside the day's fenced entries. It used to be `funnel_today.case_created`, a
-     * per-poll counter that reset at UTC midnight and counted a re-read of the same frame as work; both
-     * halves are now bounded aggregations over durable rows (#331).
-     */
-    text: `${tradingStatus.counts.cases_24h} · ${tradingStatus.counts.entries_today}`,
-    ...(stale
-      ? {
-          title: dayKey ? `UTC ${dayKey}` : "UTC 日期未知",
-          tone: "caution" as const,
-        }
-      : {}),
+    label: "24h 成案 · Signal",
+    text: `${tradingStatus.counts.cases_24h} · ${tradingStatus.counts.signals_24h}`,
   };
 }
 

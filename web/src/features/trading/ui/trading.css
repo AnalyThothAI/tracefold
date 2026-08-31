@@ -60,6 +60,24 @@
     overflow-x: auto;
   }
 
+  .trading-current-row {
+    display: grid;
+    grid-template-columns: 110px 130px 150px minmax(210px, 1fr) minmax(180px, 1fr) 150px;
+    gap: 10px;
+    align-items: center;
+    min-width: 980px;
+    min-height: 50px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-faint);
+    color: var(--text-secondary);
+    font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-current-row code {
+    font: 500 var(--font-size-mono-meta)/1.5 var(--font-mono);
+    overflow-wrap: anywhere;
+  }
+
   .trading-exposure-row {
     display: grid;
     /* Eight tracks since #331: the policy identity and the emission clock join the row, because an

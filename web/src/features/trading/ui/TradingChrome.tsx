@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import "./tradingShell.css";
 
 /**
- * The capital lane's frame and provenance line.
+ * The Signal lane's frame and provenance line.
  *
  * Owned here rather than imported from News: the two features are siblings that must not reach into each
  * other's internals, and a shared frame is exactly the kind of import the boundary gate blocks. The shapes

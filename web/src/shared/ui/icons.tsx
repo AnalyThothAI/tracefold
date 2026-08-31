@@ -60,9 +60,9 @@ export const EventStreamIcon = forwardRef<SVGSVGElement, LucideProps>((props, re
 EventStreamIcon.displayName = "EventStreamIcon";
 
 /**
- * 资本判定. A dial with a mark at its centre: the market's leverage *structure*, read at one instant.
+ * Alpha 判定. A dial with a mark at its centre: the market structure read at one instant.
  *
- * Deliberately not an arrow. The page is about open-interest buildup and what the capital lane decided
+ * Deliberately not an arrow. The page is about open-interest buildup and what Alpha decided
  * about it, and an arrow would state a price direction that a single case may or may not have (#104).
  */
 export const LeverageGaugeIcon = forwardRef<SVGSVGElement, LucideProps>((props, ref) => (
@@ -94,7 +94,7 @@ TelemetryPulseIcon.displayName = "TelemetryPulseIcon";
 /**
  * 交易. Two arrows, one down and one up, side by side (#207 PR-W4).
  *
- * Direction-neutral by construction: the destination is the capital lane itself, not a position, and a
+ * Direction-neutral by construction: the destination is the Signal lane itself, not a position, and a
  * navigation icon that leaned bullish would be a market call on a link. Like every icon here it is
  * `currentColor` only, so it takes the sidebar's three states and never red or green.
  */

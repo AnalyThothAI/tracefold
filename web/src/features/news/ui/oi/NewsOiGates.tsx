@@ -7,12 +7,12 @@ import { oiValueZh } from "../../model/oiSignals";
 /**
  * The two independent gates, side by side and never merged.
  *
- * Left: what decides whether a reader is told. Right: what decides whether a Source may be admitted to
- * the capital lane. They read the same frame and answer different questions, and the panel's whole job is
+ * Left: what decides whether a reader is told. Right: what decides whether a Source may reach the Signal
+ * lane. They read the same frame and answer different questions, and the panel's whole job is
  * keeping that visible.
  *
- * **Neither half shows an Alpha threshold (#331).** The capital policy's numbers are frozen onto each
- * Case and are shown beside the Case that executed them, on 资本判定. A panel that printed today's
+ * **Neither half shows an Alpha threshold.** The Alpha policy's numbers are frozen onto each Case and are
+ * shown beside the Case that executed them, on Alpha 判定. A panel that printed today's
  * configuration here invited a reader to measure last week's Case with it — which is exactly what
  * produced 冲突 on rows that had passed.
  */
@@ -63,7 +63,7 @@ export function NewsOiGates({
         hint={
           gateUnread
             ? "SOURCE_NATIVE · 准入规则未读到"
-            : `SOURCE_NATIVE · ${gate?.version ?? "—"} · Alpha 阈值随案例冻结，在资本判定`
+            : `SOURCE_NATIVE · ${gate?.version ?? "—"} · Alpha 阈值随案例冻结，在 Alpha 判定`
         }
         title="准入闸 · TRADING"
       >
@@ -78,9 +78,9 @@ export function NewsOiGates({
            * the gates themselves (#348) — a panel naming a threshold nothing enforces is worse than
            * a shorter panel.
            */
-          label="来源绑定"
-          note="按来源分区 · 禁止跨场所回退"
-          value={sourceBindingLabel(gate?.source_native_bindings)}
+          label="来源场所"
+          note="只决定证据来源，不决定执行路由"
+          value={sourceVenueLabel(gate?.source_venues)}
         />
       </PolicyPanel>
     </>
@@ -134,10 +134,6 @@ function gateCount(value: number | undefined): string {
   return formatCount(value ?? 0);
 }
 
-function sourceBindingLabel(bindings: Record<string, string> | undefined): string {
-  if (!bindings) return "—";
-  const entries = Object.entries(bindings).sort(([left], [right]) => left.localeCompare(right));
-  return entries.length
-    ? entries.map(([binding, venue]) => `${venue} → ${binding}`).join(" · ")
-    : "—";
+function sourceVenueLabel(venues: string[] | undefined): string {
+  return venues?.length ? [...venues].sort().join(" · ") : "—";
 }

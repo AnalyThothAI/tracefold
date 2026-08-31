@@ -96,7 +96,7 @@ def test_paper_and_live_have_disjoint_profile_cache_credential_and_client_namesp
     assert paper_node.instance_id != live_node.instance_id
 
 
-def test_new_root_has_no_canonical_route_and_does_not_import_old_runtime() -> None:
+def test_canonical_root_references_only_new_runtime_and_remains_disabled() -> None:
     repository = Path(__file__).resolve().parents[1]
     source = (repository / "tracefold/app/nautilus/oi_runtime.py").read_text()
     tree = ast.parse(source)
@@ -106,9 +106,8 @@ def test_new_root_has_no_canonical_route_and_does_not_import_old_runtime() -> No
     assert "tracefold.app.nautilus.database" not in imports
     assert "tracefold.integrations.nautilus.strategy" not in imports
     assert "tracefold.trading.intent" not in imports
-    app_root = repository / "tracefold/app"
-    assert not any(
-        "app.nautilus.oi_runtime" in path.read_text()
-        for path in app_root.rglob("*.py")
-        if path != repository / "tracefold/app/nautilus/oi_runtime.py"
-    )
+    root_source = (repository / "tracefold/app/nautilus/root.py").read_text()
+    assert "tracefold.app.nautilus.oi_runtime" in root_source
+    assert "activation_not_available_before_433e" in root_source
+    assert "tracefold.app.nautilus.database" not in root_source
+    assert "tracefold.integrations.nautilus.strategy" not in root_source

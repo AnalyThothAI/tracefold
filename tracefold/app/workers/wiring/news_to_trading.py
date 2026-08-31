@@ -1,53 +1,18 @@
-"""The one place a News projection row becomes a Trading candidate row.
-
-`tracefold.news` and `tracefold.trading` are siblings: neither imports the other, and neither reads the
-other's tables. Both nonetheless describe the same two facts — a deterministic OI telemetry frame and a
-listed instrument — because a capital decision has to be traceable to the exact measurement that caused
-it. This module is where the two vocabularies meet, and it is deliberately dull: every field is named
-on both sides, nothing is computed, nothing is defaulted, and nothing is dropped.
-
-**One live trigger crosses this seam (#331).** The editorial-verdict and liquidation mappers are gone
-with the projections behind them: editorial News no longer triggers automatic capital, and there is no
-online liquidation consumer. What is left is the OI frame the lane triggers on and the catalogue rows
-the *research* replay resolves. Execution capabilities compile only from Trading's complete
-provider-native catalogues.
-
-Field-by-field is the point. A `dict` passed straight through makes a News rename look like a Trading
-bug months later; here the same rename fails `mypy` at this seam, next to the comment explaining what
-the field is for. `MAPPED_NEWS_PROJECTION_VERSION` covers the other direction — a News change that
-keeps every key but changes what one means.
-"""
+"""The sole field-by-field News OI projection to Trading Source seam."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
 
-from tracefold.news.storage.trade_projection import (
-    OiTradeProjectionRow,
-    TradeEvidenceCatalogProjectionRow,
-    TradeEvidenceCollectionHealthRow,
-    TradeFixedWindowOiSourceRow,
-    TradeInstrumentProjectionRow,
-)
-from tracefold.trading.contracts import (
-    FixedWindowSourceFactV1,
-    InstrumentCandidateRow,
-    OiCandidateRow,
-)
+from tracefold.news.storage.trade_projection import OiTradeProjectionRow
+from tracefold.trading.contracts import OiCandidateRow
 
-# The `NEWS_TRADE_PROJECTION_VERSION` this mapping was written against; `tests/architecture` compares
-# them, so a projection bump cannot reach Trading without someone reading these translations again.
-MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v12"
+MAPPED_NEWS_PROJECTION_VERSION = "news_trade_projection_v13"
 
 
 def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
-    """Deterministic telemetry verdict -> the OI scanner's input.
-
-    `venue` stays nullable across the seam. It is the frame's own provider `source`, read through a
-    LEFT JOIN, and the OI research keys on it (Hyperliquid +1.35% vs Binance -0.26% at 4 h) — so an
-    absent one has to reach the funnel's `other` bucket rather than being defaulted to a venue here.
-    """
+    """Map one persisted News OI fact without adding defaults or execution identity."""
 
     return OiCandidateRow(
         event_id=row["event_id"],
@@ -67,6 +32,7 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
         source_strategy_id=row["source_strategy_id"],
         source_contract_version=row["source_contract_version"],
         measurement_window_ms=row["measurement_window_ms"],
+        provider_symbol=row["provider_symbol"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],
@@ -81,60 +47,13 @@ def to_oi_candidate_row(row: OiTradeProjectionRow) -> OiCandidateRow:
     )
 
 
-def to_instrument_candidate_row(row: TradeInstrumentProjectionRow) -> InstrumentCandidateRow:
-    """Instrument universe row -> the venue resolver's input, in the reader's venue order."""
-
-    return InstrumentCandidateRow(
-        venue=row["venue"],
-        venue_symbol=row["venue_symbol"],
-        base_symbol=row["base_symbol"],
-        instrument_class=row["instrument_class"],
-        quote_asset=row["quote_asset"],
-        status=row["status"],
-        last_seen_ms=row["last_seen_ms"],
-    )
-
-
-def to_evidence_catalog_candidate_row(row: TradeEvidenceCatalogProjectionRow) -> InstrumentCandidateRow:
-    """Bulk evidence catalogue row -> the exact Trading instrument candidate shape."""
-
-    return InstrumentCandidateRow(
-        venue=row["venue"],
-        venue_symbol=row["venue_symbol"],
-        base_symbol=row["base_symbol"],
-        instrument_class=row["instrument_class"],
-        quote_asset=row["quote_asset"],
-        status=row["status"],
-        last_seen_ms=row["last_seen_ms"],
-    )
-
-
-def to_fixed_window_source_fact(row: TradeFixedWindowOiSourceRow) -> FixedWindowSourceFactV1:
-    """News fixed-window source identity -> Trading's typed conservation input."""
-
-    return FixedWindowSourceFactV1(
-        event_id=row["event_id"],
-        metric_version=row["metric_version"],
-        source_venue=row["source_venue"],
-        observed_at_ms=row["observed_at_ms"],
-        available_at_ms=row["available_at_ms"],
-        verdict_created_at_ms=row["verdict_created_at_ms"],
-    )
-
-
 def news_oi_sources(
     repos: Any,
     metric_version: str,
     after_created_at_ms: int,
     until_created_at_ms: int,
 ) -> Sequence[OiCandidateRow]:
-    """`OiProjectionReader`: one point-in-time News read, mapped into the capital lane's input.
-
-    The window, the ordering and the generation gate belong to the News projection; this reader adds no
-    filter of its own, so what the lane scans is exactly what the SQL froze. No Trading threshold
-    crosses this seam (#264): a frame the lane rejects and a frame that was never written must not be
-    the same absence on this side.
-    """
+    """Read News-owned rows and cross the sibling boundary once at App composition."""
 
     return [
         to_oi_candidate_row(row)
@@ -146,33 +65,4 @@ def news_oi_sources(
     ]
 
 
-def news_trade_instruments(
-    repos: Any,
-    base_symbol: str,
-    venues: Sequence[str],
-    *,
-    observed_at_ms: int | None = None,
-) -> Sequence[InstrumentCandidateRow]:
-    """`InstrumentProjectionReader`: News instrument facts, mapped into Trading's venue resolver."""
-
-    return [
-        to_instrument_candidate_row(row)
-        for row in repos.news.trade_candidate_instrument(
-            base_symbol=base_symbol,
-            venues=venues,
-            observed_at_ms=observed_at_ms,
-        )
-    ]
-
-
-__all__ = [
-    "MAPPED_NEWS_PROJECTION_VERSION",
-    "TradeEvidenceCatalogProjectionRow",
-    "TradeEvidenceCollectionHealthRow",
-    "news_oi_sources",
-    "news_trade_instruments",
-    "to_evidence_catalog_candidate_row",
-    "to_fixed_window_source_fact",
-    "to_instrument_candidate_row",
-    "to_oi_candidate_row",
-]
+__all__ = ["MAPPED_NEWS_PROJECTION_VERSION", "news_oi_sources", "to_oi_candidate_row"]

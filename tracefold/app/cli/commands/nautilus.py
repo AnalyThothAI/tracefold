@@ -1,4 +1,4 @@
-"""The one process entry point for the Production V3 execution authority."""
+"""Profile-gated OI Runtime entry point; 433-C can only report disabled readiness."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ def handle_nautilus(args: object) -> int:
 
     settings = load_settings(require_ws_token=False)
     setup_logging(settings.log_file)
-    run_nautilus(settings, bootstrap_zero_claims=bool(getattr(args, "bootstrap_zero_claims", False)))
+    run_nautilus(settings)
     return 0
 
 

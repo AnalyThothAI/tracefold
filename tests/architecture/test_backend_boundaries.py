@@ -96,7 +96,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # so replay cannot silently use defaults. These are pure code-owned values; composition is App's,
         # which is why this belongs here rather than in `app.http` or either business package.
         "tracefold.trading.admission",
-        "tracefold.trading.capital_lane",
+        "tracefold.trading.signal_lane",
         "tracefold.trading.contracts",
         "tracefold.trading.market_context",
         "tracefold.trading.policy",
@@ -169,14 +169,11 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # it, and it reads the contract rather than the repository: the SELECTs stay News's business.
         "tracefold.news.storage.trade_projection",
         "tracefold.news.triage_rules",
-        "tracefold.trading.capabilities",
-        "tracefold.trading.capital_lane",
-        "tracefold.trading.catalog",
+        "tracefold.trading.signal_lane",
         "tracefold.trading.contracts",
         "tracefold.trading.storage.root",
     ),
     "app.nautilus": (
-        "tracefold.trading.intent",
         # #433-B: the dormant Runtime composition root materializes Trading-owned execution rows,
         # prepares bounded Observation batches, and supplies the wake channel to the PostgreSQL
         # integration. Nautilus adapters receive only public values and narrow callables.
@@ -321,9 +318,7 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
     family: str | None = None
     if parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("news"):
         family = "app.news_cli"
-    elif (
-        parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("trading")
-    ) or parts == ["tracefold", "app", "cli", "replay_artifacts"]:
+    elif parts[:4] == ["tracefold", "app", "cli", "commands"] and len(parts) > 4 and parts[4].startswith("trading"):
         family = "app.trading_cli"
     elif parts[:3] == ["tracefold", "app", "workers"]:
         family = "app.workers"

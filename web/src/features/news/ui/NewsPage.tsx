@@ -6,7 +6,7 @@ import { NewsStatusPage } from "./status/NewsStatusPage";
 import { NewsSymbolPage } from "./symbol/NewsSymbolPage";
 
 type NewsPageProps = { token: string } & (
-  | { view: "feed" | "leverage" | "status" | "oi" }
+  | { view: "alpha" | "feed" | "status" | "oi" }
   | { eventId: string; view: "event" }
   | { base: string; view: "symbol" }
 );
@@ -15,7 +15,7 @@ type NewsPageProps = { token: string } & (
 export function NewsPage(props: NewsPageProps) {
   if (props.view === "status") return <NewsStatusPage token={props.token} />;
   if (props.view === "oi") return <NewsOiPage token={props.token} />;
-  if (props.view === "leverage") return <NewsLeveragePage token={props.token} />;
+  if (props.view === "alpha") return <NewsLeveragePage token={props.token} />;
   if (props.view === "symbol") return <NewsSymbolPage base={props.base} token={props.token} />;
   if (props.view === "event")
     return <NewsEventDetailPage eventId={props.eventId} token={props.token} />;

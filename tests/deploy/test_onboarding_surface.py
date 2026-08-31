@@ -74,9 +74,7 @@ if [ "$1" = "compose" ] && [ "$2" = "run" ]; then
     *"--entrypoint tracefold migrate config"*)
       printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
       printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-      printf '%s' ',"nautilus":{"credentials_configured":'
-      printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
-      printf '}}}}\\n'
+      printf ',"execution":{"mode":"%s"}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_MODE"
       ;;
   esac
   exit 0
@@ -169,14 +167,12 @@ fi
 if [ "$1" = "run" ] && [ "$2" = "tracefold" ] && [ "$3" = "config" ]; then
   printf '%s' '{"ok":true,"data":{"trading":{"enabled":'
   printf '%s' "$TRACEFOLD_TEST_TRADING_ENABLED"
-  printf '%s' ',"nautilus":{"credentials_configured":'
-  printf '%s' "$TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"
-  printf '}}}}\\n'
+  printf ',"execution":{"mode":"%s"}}}}\\n' "$TRACEFOLD_TEST_EXECUTION_MODE"
   exit 0
 fi
 if [ "$1" = "run" ] && [ "$2" = "python" ] && [ "$3" = "-c" ]; then
   case "$4" in
-    *credentials_configured*|*trading*enabled*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
+    *json.load*|*active_capability_snapshot_sha256*) shift 2; exec python3 "$@" ;;
     *runtime_manifest_sha*) shift 2; exec python3 "$@" ;;
   esac
 fi
@@ -232,6 +228,7 @@ esac
         "TRACEFOLD_TEST_NAUTILUS_IMAGE": TEST_IMAGE_ID,
         "TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED": "false",
         "TRACEFOLD_TEST_TRADING_ENABLED": "false",
+        "TRACEFOLD_TEST_EXECUTION_MODE": "disabled",
         "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
@@ -560,27 +557,30 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     assert services_stopped.exists()
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert "execution adapters: not required (#356/#357 pending; capital paused)" in result.stdout
+    assert "execution runtime: disabled (#433-E activation pending)" in result.stdout
 
 
 @pytest.mark.parametrize(
-    ("trading_enabled", "credentials_configured", "expected_ok", "expected_message"),
+    ("trading_enabled", "credentials_configured", "execution_mode", "expected_ok", "expected_message"),
     (
-        ("true", "true", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
-        ("true", "false", True, "execution adapters: not required (#356/#357 pending; capital paused)"),
-        ("false", "false", True, "execution adapters: not required (Trading disabled)"),
+        ("true", "true", "disabled", True, "execution runtime: disabled (#433-E activation pending)"),
+        ("true", "false", "disabled", True, "execution runtime: disabled (#433-E activation pending)"),
+        ("false", "false", "disabled", True, "execution runtime: disabled (Trading disabled)"),
+        ("true", "true", "paper", False, "execution runtime: mode=paper unavailable before #433-E"),
     ),
 )
 def test_status_does_not_require_an_adapter_before_its_owner_issue(
     tmp_path: Path,
     trading_enabled: str,
     credentials_configured: str,
+    execution_mode: str,
     expected_ok: bool,
     expected_message: str,
 ) -> None:
     repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
+    env["TRACEFOLD_TEST_EXECUTION_MODE"] = execution_mode
 
     result = subprocess.run(
         ["make", "status"],

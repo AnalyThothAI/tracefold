@@ -11,16 +11,14 @@ from tracefold.platform.postgres.audit import (
 )
 from tracefold.trading.storage.execution_stream_query_specs import execution_stream_query_specs
 from tracefold.trading.storage.query_sql import (
-    AUTHORITY_PROJECTION_SQL,
-    BINDING_RUNTIME_ROWS_SQL,
-    CAPITAL_AUTHORITY_SNAPSHOT_SQL,
-    DEFAULT_CONSOLE_INTENT_STATES,
-    EXECUTION_CAPABILITY_SNAPSHOT_SQL,
     GATE_DECISION_FOR_SOURCE_KEY_SQL,
-    TRADING_STATUS_COUNTS_SQL,
-    console_capital_evidence_sql,
-    console_cases_sql,
-    console_intents_sql,
+    TRADING_CASE_COUNTS_SQL,
+    TRADING_CASE_REASON_COUNTS_SQL,
+    TRADING_CONSOLE_CASES_SQL,
+    TRADING_CONSOLE_OBSERVATIONS_SQL,
+    TRADING_CONSOLE_SIGNALS_SQL,
+    TRADING_STATUS_CASE_COUNTS_SQL,
+    TRADING_STATUS_SIGNAL_COUNTS_SQL,
     gate_decisions_since_sql,
 )
 
@@ -68,14 +66,14 @@ PUBLIC_ROUTE_QUERY_COVERAGE: dict[str, tuple[str, ...]] = {
         "news_status_delivery_1h",
         "news_status_learning_retention",
     ),
-    # #207 PR-W4. `trading_runtime_state` is a single row and needs no spec of its own; the two that scan
-    # do, and both are bounded by a 24 h window plus a hard limit.
-    "/api/trading/status": ("trading_status_counts",),
-    "/api/trading/intents": ("trading_console_intents",),
-    # One route per durable aggregate (#331): Cases no longer ride along on the Intent read.
-    "/api/trading/cases": ("trading_console_cases",),
-    "/api/trading/capabilities": ("trading_capability_bindings", "trading_capability_snapshot"),
-    "/api/trading/evidence": ("trading_authority_projection", "trading_console_capital_evidence"),
+    "/api/trading/status": ("trading_status_case_counts", "trading_status_signal_counts"),
+    "/api/trading/cases": (
+        "trading_console_cases",
+        "trading_case_counts",
+        "trading_case_reason_counts",
+    ),
+    "/api/trading/signals": ("trading_console_signals",),
+    "/api/trading/execution/observations": ("trading_console_observations",),
     "/api/trading/gate/{event_id}": ("trading_gate_decision_for_source_key",),
     # #269. The same admission ledger the event endpoint reads one row of, for a whole window — bounded
     # by 24 h and a hard row limit, like the two beside it.
@@ -114,6 +112,10 @@ def query_audit_catalog(
         # input is. Both SQL statements are built by FeedStorage's own production statement builder.
         "news_feed_asset_search_counts",
         "news_feed_text_search_counts",
+        # Status counts are aggregates over a 24 h window plus the exceptional open/unexpired rows.
+        # Their returned row is not the input bound; the production WHERE clauses are.
+        "trading_status_case_counts",
+        "trading_status_signal_counts",
     }
     aggregate_input_queries = {query.name for query in queries if query.amplification_basis == "aggregate_input"}
     if aggregate_input_queries - allowed_aggregate_input_queries:
@@ -149,24 +151,22 @@ def _default_news_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
 
 
 def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
-    """The capital lane's console reads, with the predicates they actually run (#207 PR-W4/#331).
-
-    Declared here rather than in `tracefold.trading`: the specs describe an *app* surface — which HTTP route
-    runs which statement — and the package that owns the tables does not know an HTTP layer exists.
-    """
+    """The bounded Signal console reads with their production predicates."""
 
     since_ms = int(now_ms) - 24 * 3_600_000
     return (
         ReadQuerySpec(
-            name="trading_status_counts",
-            sql=TRADING_STATUS_COUNTS_SQL,
-            params=(since_ms,),
+            name="trading_status_case_counts",
+            sql=TRADING_STATUS_CASE_COUNTS_SQL,
+            params={"since": since_ms},
+            amplification_basis="aggregate_input",
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
-            name="trading_console_intents",
-            sql=console_intents_sql(),
-            params=(list(DEFAULT_CONSOLE_INTENT_STATES), since_ms, 101),
+            name="trading_status_signal_counts",
+            sql=TRADING_STATUS_SIGNAL_COUNTS_SQL,
+            params={"since": since_ms * 1_000_000, "now": int(now_ms) * 1_000_000},
+            amplification_basis="aggregate_input",
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
@@ -191,46 +191,33 @@ def _trading_query_specs(*, now_ms: int) -> tuple[ReadQuerySpec, ...]:
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
-            # The Case aggregate on its own axis. The Intent link is one nullable id, never a joined
-            # lifecycle: `NOT EXISTS (... trading_intents ...)` used to make "no Intent" a property of
-            # the Case read, which is how one contract came to answer two different questions.
             name="trading_console_cases",
-            sql=console_cases_sql(),
-            params=(since_ms, 101),
+            sql=TRADING_CONSOLE_CASES_SQL,
+            params={"since": since_ms, "limit": 101},
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
-            name="trading_capability_bindings",
-            sql=BINDING_RUNTIME_ROWS_SQL,
-            params={"now": int(now_ms)},
-            max_read_return_amplification=4.0,
-        ),
-        ReadQuerySpec(
-            name="trading_capability_snapshot",
-            sql=EXECUTION_CAPABILITY_SNAPSHOT_SQL,
-            params=("0" * 64,),
-            max_read_return_amplification=4.0,
-        ),
-        ReadQuerySpec(
-            name="trading_authority_projection",
-            sql=AUTHORITY_PROJECTION_SQL,
-            max_read_return_amplification=8.0,
-        ),
-        ReadQuerySpec(
-            name="trading_console_capital_evidence",
-            sql=console_capital_evidence_sql(),
-            params=(101,),
+            name="trading_case_counts",
+            sql=TRADING_CASE_COUNTS_SQL,
+            params=(since_ms,),
             max_read_return_amplification=20.0,
         ),
         ReadQuerySpec(
-            name="trading_capital_authority_snapshot",
-            sql=CAPITAL_AUTHORITY_SNAPSHOT_SQL,
-            params={
-                "active_states": list(DEFAULT_CONSOLE_INTENT_STATES),
-                "bindings": ["BINANCE_USDM", "HYPERLIQUID_PERP"],
-                "since_ms": since_ms,
-                "now_ms": int(now_ms),
-            },
+            name="trading_case_reason_counts",
+            sql=TRADING_CASE_REASON_COUNTS_SQL,
+            params=(since_ms,),
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="trading_console_signals",
+            sql=TRADING_CONSOLE_SIGNALS_SQL,
+            params={"since": since_ms * 1_000_000, "limit": 101},
+            max_read_return_amplification=20.0,
+        ),
+        ReadQuerySpec(
+            name="trading_console_observations",
+            sql=TRADING_CONSOLE_OBSERVATIONS_SQL,
+            params={"since": since_ms * 1_000_000, "limit": 101},
             max_read_return_amplification=20.0,
         ),
     )

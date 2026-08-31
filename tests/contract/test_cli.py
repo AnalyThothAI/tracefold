@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from pydantic import ValidationError
 
@@ -84,15 +85,13 @@ class CliTests(unittest.TestCase):
         assert parser.parse_args(["workers"]).command == "workers"
         nautilus = parser.parse_args(["nautilus", "run"])
         assert (nautilus.command, nautilus.nautilus_command) == ("nautilus", "run")
-        bootstrap = parser.parse_args(["nautilus", "run", "--bootstrap-zero-claims"])
-        assert bootstrap.bootstrap_zero_claims is True
 
     def test_representative_command_namespaces_are_stable(self):
         parser = build_parser()
         cases = (
             (
-                ["nautilus", "run", "--bootstrap-zero-claims"],
-                {"command": "nautilus", "nautilus_command": "run", "bootstrap_zero_claims": True},
+                ["nautilus", "run"],
+                {"command": "nautilus", "nautilus_command": "run"},
             ),
             (["db", "audit", "--deep"], {"command": "db", "db_command": "audit", "deep": True}),
             (
@@ -107,33 +106,11 @@ class CliTests(unittest.TestCase):
                 },
             ),
             (
-                [
-                    "trading",
-                    "evidence",
-                    "capture",
-                    "--partition",
-                    "future",
-                    "--start-ms",
-                    "10",
-                    "--end-ms",
-                    "20",
-                    "--candidate",
-                    "candidate.json",
-                    "--candidate-receipt",
-                    "receipt.json",
-                    "--out",
-                    "artifacts/evidence",
-                ],
+                ["trading", "signals", "--limit", "7"],
                 {
                     "command": "trading",
-                    "trading_command": "evidence",
-                    "evidence_command": "capture",
-                    "partition": "future",
-                    "start_ms": 10,
-                    "end_ms": 20,
-                    "candidate": "candidate.json",
-                    "candidate_receipt": "receipt.json",
-                    "out": "artifacts/evidence",
+                    "trading_command": "signals",
+                    "limit": 7,
                 },
             ),
             (
@@ -203,66 +180,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual((parsed[7].news_command, parsed[7].review_command), ("review", "evidence"))
         self.assertEqual((parsed[7].task, parsed[7].version), ("evt.ev-1.1.0123456789abcdef", "a" * 64))
 
-    def test_trading_authority_requires_explicit_artifacts_and_arm_set(self):
+    def test_retired_trading_authority_commands_are_rejected(self):
         parser = build_parser()
-
-        policy = parser.parse_args(["trading", "authority", "risk-policy-install", "--file", "risk-policy.yaml"])
-        activate = parser.parse_args(["trading", "authority", "activate", "--arm", "a" * 64, "--arm", "b" * 64])
-
-        self.assertEqual((policy.trading_command, policy.authority_command), ("authority", "risk-policy-install"))
-        self.assertEqual(policy.file, "risk-policy.yaml")
-        self.assertEqual((activate.authority_command, activate.arm), ("activate", ["a" * 64, "b" * 64]))
-        with self.assertRaises(SystemExit):
-            parser.parse_args(["trading", "control", "running"])
-
-    def test_trading_evidence_clock_commands_expose_each_irreversible_stage(self):
-        parser = build_parser()
-
-        capture = parser.parse_args(
-            [
-                "trading",
-                "evidence",
-                "capture",
-                "--partition",
-                "future",
-                "--start-ms",
-                "10",
-                "--end-ms",
-                "20",
-                "--candidate",
-                "candidate.json",
-                "--candidate-receipt",
-                "candidate-receipt.json",
-                "--out",
-                "artifacts/evidence",
-            ]
-        )
-        drain = parser.parse_args(
-            [
-                "trading",
-                "evidence",
-                "drain",
-                "--capture",
-                "capture.json",
-                "--max-horizon-ms",
-                "14400000",
-                "--finalization-lag-ms",
-                "2100000",
-                "--cost-model",
-                "cost.yaml",
-                "--out",
-                "artifacts/evidence",
-            ]
-        )
-        verify = parser.parse_args(["trading", "evidence", "verify", "--receipt", "a" * 64])
-        verify_window = parser.parse_args(["trading", "evidence", "verify", "--window", "window.yaml"])
-
-        self.assertEqual((capture.trading_command, capture.evidence_command), ("evidence", "capture"))
-        self.assertEqual((capture.start_ms, capture.end_ms), (10, 20))
-        self.assertEqual(drain.evidence_command, "drain")
-        self.assertEqual((drain.max_horizon_ms, drain.finalization_lag_ms), (14_400_000, 2_100_000))
-        self.assertEqual((verify.evidence_command, verify.receipt), ("verify", "a" * 64))
-        self.assertEqual((verify_window.evidence_command, verify_window.window), ("verify", "window.yaml"))
+        for command in (
+            ["trading", "authority", "risk-policy-install", "--file", "risk-policy.yaml"],
+            ["trading", "authority", "activate", "--arm", "a" * 64],
+            ["trading", "control", "running"],
+            ["trading", "evidence", "verify", "--receipt", "a" * 64],
+        ):
+            with self.subTest(command=command), self.assertRaises(SystemExit):
+                parser.parse_args(command)
 
     def test_cli_rejects_retired_hard_cut_commands(self):
         parser = build_parser()
@@ -416,19 +343,15 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("title_presentation", news)
         trading = payload["data"]["trading"]
         self.assertFalse(trading["enabled"])
-        self.assertEqual(trading["target_notional_usd"], "10")
         self.assertEqual(
-            trading["bindings"],
+            trading["execution"],
             {
-                "BINANCE_USDM": {
-                    "credential_state": "unconfigured",
+                "mode": "disabled",
+                "profile_id": "binance_usdm_primary",
+                "account_slot": "binance_usdm_primary",
+                "credentials": {
                     "api_key_file": str(home / ".tracefold" / "binance_usdm_api_key"),
                     "api_secret_file": str(home / ".tracefold" / "binance_usdm_api_secret"),
-                },
-                "HYPERLIQUID_PERP": {
-                    "credential_state": "unconfigured",
-                    "private_key_file": str(home / ".tracefold" / "hyperliquid_private_key"),
-                    "account_address_configured": False,
                 },
             },
         )
@@ -507,15 +430,13 @@ class CliTests(unittest.TestCase):
             payload["trading"],
             {
                 "enabled": False,
-                "order": {"fixed_notional_usd": 10},
-                "bindings": {
-                    "binance_usdm": {
+                "execution": {
+                    "mode": "disabled",
+                    "profile_id": "binance_usdm_primary",
+                    "account_slot": "binance_usdm_primary",
+                    "credentials": {
                         "api_key_file": "binance_usdm_api_key",
                         "api_secret_file": "binance_usdm_api_secret",
-                    },
-                    "hyperliquid_perp": {
-                        "private_key_file": "hyperliquid_private_key",
-                        "account_address": None,
                     },
                 },
             },
@@ -539,8 +460,11 @@ class CliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual(exit_code, 0)
         self.assertEqual(
-            payload["data"]["trading"]["bindings"]["BINANCE_USDM"]["credential_state"],
-            "configured",
+            payload["data"]["trading"]["execution"]["credentials"],
+            {
+                "api_key_file": str(app_home / "binance_usdm_api_key"),
+                "api_secret_file": str(app_home / "binance_usdm_api_secret"),
+            },
         )
         self.assertNotIn(key, stdout.getvalue())
         self.assertNotIn(secret, stdout.getvalue())
@@ -629,7 +553,6 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "telegram_bot_token",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
-        "hyperliquid_private_key",
         "postgres_password",
         "postgres_database_password",
     ):
@@ -637,10 +560,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         assert path.is_file()
         assert path.stat().st_mode & 0o777 == 0o600
     assert (app_home / "telegram_bot_token").read_bytes() == b""
-    assert all(
-        (app_home / name).read_bytes() == b""
-        for name in ("binance_usdm_api_key", "binance_usdm_api_secret", "hyperliquid_private_key")
-    )
+    assert all((app_home / name).read_bytes() == b"" for name in ("binance_usdm_api_key", "binance_usdm_api_secret"))
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -655,7 +575,6 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "telegram_bot_token",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
-        "hyperliquid_private_key",
         "postgres_password",
         "postgres_database_password",
     )
@@ -673,6 +592,127 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
     assert app_home.stat().st_mode & 0o777 == 0o700
     assert all((app_home / name).stat().st_mode & 0o777 == 0o600 for name in tracked_names)
     assert all((app_home / name).stat().st_mode & 0o777 == 0o700 for name in ("logs", "cache"))
+
+
+def test_init_migrates_the_pre_433c_trading_config_without_losing_operator_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_home = tmp_path / ".tracefold"
+    app_home.mkdir(parents=True)
+    config_path = app_home / "config.yaml"
+    old_payload = {
+        "ws_token": "operator-owned-token",
+        "storage": {"postgres": {"dsn": "postgresql://tracefold@postgres:5432/tracefold"}},
+        "news": {"enabled": False},
+        "trading": {
+            "enabled": True,
+            "candidates": {"max_age_seconds": 240, "min_oi_value_usd": 30_000_000},
+            "order": {"fixed_notional_usd": 7},
+            "bindings": {
+                "binance_usdm": {
+                    "api_key_file": "operator-binance-key",
+                    "api_secret_file": "operator-binance-secret",
+                },
+                "hyperliquid_perp": {
+                    "private_key_file": "operator-hyperliquid-key",
+                    "account_address": "0xoperator",
+                },
+            },
+        },
+    }
+    old_bytes = yaml.safe_dump(old_payload, sort_keys=False).encode()
+    config_path.write_bytes(old_bytes)
+
+    stdout = io.StringIO()
+    assert main(["init"], stdout=stdout) == 0
+
+    result = json.loads(stdout.getvalue())["data"]
+    assert result["config_migrated"] is True
+    backup_path = app_home / "config.pre-433c.yaml"
+    assert result["config_backup_path"] == str(backup_path)
+    assert backup_path.read_bytes() == old_bytes
+    assert backup_path.stat().st_mode & 0o777 == 0o600
+    migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert migrated["ws_token"] == "operator-owned-token"
+    assert migrated["news"] == {"enabled": False}
+    assert migrated["trading"] == {
+        "enabled": True,
+        "candidates": {"max_age_seconds": 240, "min_oi_value_usd": 30_000_000},
+        "execution": {
+            "mode": "disabled",
+            "profile_id": "binance_usdm_primary",
+            "account_slot": "binance_usdm_primary",
+            "credentials": {
+                "api_key_file": "operator-binance-key",
+                "api_secret_file": "operator-binance-secret",
+            },
+        },
+    }
+    Settings.model_validate(migrated)
+    migrated_bytes = config_path.read_bytes()
+
+    second_stdout = io.StringIO()
+    assert main(["init"], stdout=second_stdout) == 0
+
+    second_result = json.loads(second_stdout.getvalue())["data"]
+    assert second_result["config_migrated"] is False
+    assert second_result["config_backup_path"] is None
+    assert config_path.read_bytes() == migrated_bytes
+    assert backup_path.read_bytes() == old_bytes
+
+
+def test_init_refuses_a_mixed_pre_and_post_433c_trading_config_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_home = tmp_path / ".tracefold"
+    app_home.mkdir(parents=True)
+    config_path = app_home / "config.yaml"
+    mixed_payload = {
+        "trading": {
+            "order": {"fixed_notional_usd": 10},
+            "execution": {"mode": "disabled"},
+        }
+    }
+    original = yaml.safe_dump(mixed_payload, sort_keys=False).encode()
+    config_path.write_bytes(original)
+
+    with pytest.raises(ValueError, match="trading_config_cutover_mixed_shape"):
+        main(["init"], stdout=io.StringIO())
+
+    assert config_path.read_bytes() == original
+    assert not (app_home / "config.pre-433c.yaml").exists()
+
+
+def test_init_refuses_a_conflicting_pre_433c_backup_without_writing(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_home = tmp_path / ".tracefold"
+    app_home.mkdir(parents=True)
+    config_path = app_home / "config.yaml"
+    original = b"trading:\n  order:\n    fixed_notional_usd: 10\n"
+    config_path.write_bytes(original)
+    backup_path = app_home / "config.pre-433c.yaml"
+    conflicting_backup = b"operator-owned-existing-backup\n"
+    backup_path.write_bytes(conflicting_backup)
+
+    with pytest.raises(ValueError, match="trading_config_cutover_backup_conflict"):
+        main(["init"], stdout=io.StringIO())
+
+    assert config_path.read_bytes() == original
+    assert backup_path.read_bytes() == conflicting_backup
+
+
+def test_init_refuses_a_config_symlink_without_touching_its_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app_home = tmp_path / ".tracefold"
+    app_home.mkdir(parents=True)
+    target = tmp_path / "operator-config-target.yaml"
+    original = b"trading:\n  order:\n    fixed_notional_usd: 10\n"
+    target.write_bytes(original)
+    (app_home / "config.yaml").symlink_to(target)
+
+    with pytest.raises(ValueError, match="config_path_not_regular_file"):
+        main(["init"], stdout=io.StringIO())
+
+    assert target.read_bytes() == original
+    assert not (app_home / "config.pre-433c.yaml").exists()
 
 
 if __name__ == "__main__":

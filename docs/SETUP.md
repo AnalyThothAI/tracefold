@@ -42,6 +42,20 @@ release deletes does not become inert — it fails startup. When release notes
 retire a key, remove it from `~/.tracefold/config.yaml` **between** `git pull`
 and `make up`, or Serve and Workers refuse to start with `extra_forbidden`.
 
+#433-C is the one explicit exception to that manual rule. On its first normal
+run, `tracefold init` recognizes the exact former `trading.order` /
+`trading.bindings` shape, validates it, writes the original bytes to
+`~/.tracefold/config.pre-433c.yaml` with mode `0600`, and atomically replaces
+the active config with the current `trading.execution` shape. Existing Binance
+USD-M secret-file references are preserved; fixed notional and Hyperliquid
+execution inputs are retired, and execution is always reset to `disabled` with
+the cold `binance_usdm_primary` identity. A mixed old/new shape, an unknown
+former key, or a conflicting backup fails before the active config is replaced.
+The backup is as sensitive as the original config: do not print, copy, or
+commit it. `make up` and `make deploy-image` run this initialization step. If
+applying the database migration directly, first run `uv run tracefold init`,
+then `uv run tracefold config`, and only then `make db-migrate`.
+
 `news.opennews_strategy_ids` is retired in #126. Which Strategies feed News is
 now decided in the OpenNews account, so delete the key and its list:
 
@@ -98,11 +112,13 @@ postgres_database_password
 ```
 
 The config, Telegram token placeholder, and all password files are mode `0600`.
-Ordinary `tracefold init` never overwrites an existing config, never rotates an existing password, and
-repairs the required permissions on every run. `tracefold init --force`
-replaces only `config.yaml` with a newly generated default; it still preserves
-all existing PostgreSQL passwords. Back up intentional config changes before
-using `--force`.
+Ordinary `tracefold init` preserves an existing current-schema config, never
+rotates an existing password, and repairs the required permissions on every
+run. The sole content rewrite is the validated, backed-up, one-time #433-C
+Trading cutover described above. `tracefold init --force` replaces only
+`config.yaml` with a newly generated default; it still preserves all existing
+PostgreSQL passwords. Back up intentional config changes before using
+`--force`.
 
 `tracefold init` is the sole default-config authority. There is no maintained
 static example or `.env` fallback. The generated default creates a local API
@@ -415,8 +431,8 @@ and confirm `config_path` points at `~/.tracefold/config.yaml`. Report only
 paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
-Alembic has one root and one head: the irreversible current-schema baseline
-`20260831_0340`. A new empty PostgreSQL 18 database applies that baseline once.
+Alembic has one root: baseline `20260831_0340` and current head
+`20260901_0341`. A new empty PostgreSQL 18 database applies both in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

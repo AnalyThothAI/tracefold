@@ -60,7 +60,7 @@ export function tradingAdmissionCellCopy(lookup: TradingAdmissionLookup): Tradin
     return {
       primary: "未评估",
       title: lookup.complete
-        ? "该帧在本窗口内没有任何准入记录：资本通道从未在任何 gate 版本下评估过它。"
+        ? "该帧在本窗口内没有任何准入记录：Signal 通道从未在任何 gate 版本下评估过它。"
         : "准入台账已截断，这一帧可能不在本页；不能据此断言它未被评估。",
     };
   }

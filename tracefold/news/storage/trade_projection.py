@@ -7,7 +7,7 @@ different value. Nothing outside this module may add, rename or retype a key wit
 which is what makes the App-side mapper break at type-check time instead of at 03:00 in a runner.
 
 They say nothing about *trade* eligibility: freshness, rank and the liquidity floor live in the
-capital lane's own pure rules. This side owns generation identity, the point-in-time boundaries and
+Signal lane's own pure rules. This side owns generation identity, the point-in-time boundaries and
 the deterministic order.
 """
 
@@ -42,7 +42,7 @@ from typing import Any, TypedDict
 #
 # v9 (#331): the editorial-verdict and liquidation reads are gone. Editorial News no longer triggers
 # automatic capital and there is no online liquidation consumer, so publishing either was a projection
-# nothing read — and an invitation for the capital lane to grow a second trigger by accident. The OI
+# nothing read — and an invitation for the Signal lane to grow a second trigger by accident. The OI
 # read and the instrument reads are what remains.
 # v10 (#369): OI carries its typed judgment identity directly.  The retired
 # synthetic Editorial envelope is neither read nor reconstructed.
@@ -52,7 +52,9 @@ from typing import Any, TypedDict
 # v12 (#377): evidence capture and fixed-window verification publish bounded bulk catalogue/source
 # projections. App no longer runs one catalogue query per source or treats Trading's Gate ledger as
 # the universe of News facts that should have reached that Gate.
-NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v12"
+# v13 (#433-C review): publish the immutable title token consumed by the OI parser so the App seam can
+# distinguish Hyperliquid's `XYZ-` builder-DEX market from the main perpetual book.
+NEWS_TRADE_PROJECTION_VERSION = "news_trade_projection_v13"
 
 # One read's ceiling per lane. The consumer's widest configured horizon is `max_age + max(lookback)` —
 # 65 minutes at the shipped configuration — and the measured live rate through these exact predicates
@@ -105,6 +107,10 @@ class OiTradeProjectionRow(TypedDict):
     source_strategy_id: str | None
     source_contract_version: str | None
     measurement_window_ms: int | None
+    # The leading token the deterministic OI parser consumed, before it canonicalised `XYZ-UNITREE`
+    # to the issuer identity `UNITREE`. The App seam needs the source-native spelling to select the
+    # matching Hyperliquid builder-DEX candle key without binding Trading to News's Item schema.
+    provider_symbol: str
     symbol: str
     direction: str
     oi_change_bps: int
@@ -259,6 +265,7 @@ class TradeProjectionStorage:
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
+                   split_part(btrim(i.title), ' ', 1) AS provider_symbol,
                    v.trace #>> '{{judgment,signal,symbol}}' AS symbol,
                    v.trace #>> '{{judgment,signal,direction}}' AS direction,
                    (v.trace #>> '{{judgment,signal,oi_change_bps}}')::bigint AS oi_change_bps,
@@ -344,6 +351,7 @@ class TradeProjectionStorage:
                    s.source_strategy_id,
                    s.source_contract_version,
                    s.measurement_window_ms,
+                   split_part(btrim(i.title), ' ', 1) AS provider_symbol,
                    v.trace #>> '{judgment,signal,symbol}' AS symbol,
                    v.trace #>> '{judgment,signal,direction}' AS direction,
                    (v.trace #>> '{judgment,signal,oi_change_bps}')::bigint AS oi_change_bps,
@@ -716,6 +724,7 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         source_strategy_id=row["source_strategy_id"],
         source_contract_version=row["source_contract_version"],
         measurement_window_ms=row["measurement_window_ms"],
+        provider_symbol=row["provider_symbol"],
         symbol=row["symbol"],
         direction=row["direction"],
         oi_change_bps=row["oi_change_bps"],

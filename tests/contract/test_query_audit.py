@@ -123,19 +123,34 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
         "news_status_delivery_1h",
         "news_status_learning_retention",
     )
-    assert catalog.query_routes["/api/trading/capabilities"] == (
-        "trading_capability_bindings",
-        "trading_capability_snapshot",
-    )
-    assert catalog.query_routes["/api/trading/evidence"] == (
-        "trading_authority_projection",
-        "trading_console_capital_evidence",
-    )
+    assert catalog.query_routes["/api/trading/signals"] == ("trading_console_signals",)
+    assert catalog.query_routes["/api/trading/execution/observations"] == ("trading_console_observations",)
     assert not any(
         route.startswith(("/api/news/stories", "/api/news/brief", "/api/news/sources"))
         for route in catalog.query_routes
     )
-    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == []
+    assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
+        "trading_status_case_counts",
+        "trading_status_signal_counts",
+    ]
+
+
+def test_trading_status_aggregates_bound_input_before_filtering() -> None:
+    queries = {query.name: query for query in query_audit_catalog(now_ms=123_456).queries}
+    case_query = queries["trading_status_case_counts"]
+    signal_query = queries["trading_status_signal_counts"]
+
+    assert re.search(
+        r"WHERE\s+created_at_ms\s*>=\s*%\(since\)s\s+OR\s+state\s+IN",
+        case_query.sql,
+        re.IGNORECASE,
+    )
+    assert re.search(
+        r"WHERE\s+observed_at_ns\s*>=\s*%\(since\)s\s+OR\s+expires_at_ns\s*>\s*%\(now\)s",
+        signal_query.sql,
+        re.IGNORECASE,
+    )
+    assert signal_query.params == {"since": -86_276_544_000_000, "now": 123_456_000_000}
 
 
 def test_default_news_query_specs_cover_every_news_route_query():
@@ -148,6 +163,8 @@ def test_default_news_query_specs_cover_every_news_route_query():
     assert [query.name for query in catalog.queries if query.amplification_basis == "aggregate_input"] == [
         "news_feed_asset_search_counts",
         "news_feed_text_search_counts",
+        "trading_status_case_counts",
+        "trading_status_signal_counts",
     ]
 
 

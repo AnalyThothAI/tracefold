@@ -260,7 +260,7 @@
   /*
    * The quadrant beside the verdict, not stacked above it (#280). Stacked, the cell needed no width and
    * got none; side by side it is what the artifact draws — a classification chip and the sentence the
-   * capital lane wrote about it, in the order a reader asks them.
+   * Signal lane wrote about it, in the order a reader asks them.
    */
   .news-oi-trading-cell {
     display: flex;

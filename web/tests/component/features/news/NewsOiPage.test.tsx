@@ -13,7 +13,6 @@ import {
   gateEvidence,
   tradingGateDecisionFixture,
   tradingGateFixture,
-  tradingIntentsFixture,
   tradingStatusFixture,
 } from "@tests/fixtures/tradingFixture";
 import { server } from "@tests/msw/server";
@@ -37,9 +36,6 @@ describe("NewsOiPage", () => {
       ),
       http.get(/.*\/api\/news\/quotes$/, () =>
         HttpResponse.json({ ok: true, data: { measured_at_ms: NEWS_NOW_MS, quotes: [] } }),
-      ),
-      http.get(/.*\/api\/trading\/intents$/, () =>
-        HttpResponse.json({ ok: true, data: tradingIntentsFixture() }),
       ),
       // #269: the admission ledger the capital column reads for the frames that authored no case, and
       // the rules those rows are filed under — the Candidate Gate's own, not the settings document.
@@ -107,9 +103,11 @@ describe("NewsOiPage", () => {
      */
     renderOi();
     expect(
-      await screen.findByText(/SOURCE_NATIVE · trading_admission_v4 · Alpha 阈值随案例冻结/),
+      await screen.findByText(/SOURCE_NATIVE · trading_admission_v6 · Alpha 阈值随案例冻结/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/binance\.usdm → BINANCE_USDM/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/binance\.usdm · hyperliquid\.perp · hyperliquid\.xyz/),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/min_whale_long_profit/)).toBeNull();
   });
 
@@ -575,10 +573,10 @@ describe("NewsOiPage", () => {
     // rank (`≤ 2 / 4h`, asserted above), and the two must not be confused for one another again.
     expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
     expect(admissionCard).not.toHaveTextContent("冷却");
-    // #376: both closed source-native bindings are visible and there is no venue fallback priority.
-    expect(admissionCard).toHaveTextContent("binance.usdm → BINANCE_USDM");
-    expect(admissionCard).toHaveTextContent("hyperliquid.perp → HYPERLIQUID_PERP");
-    expect(admissionCard).toHaveTextContent("禁止跨场所回退");
+    // Source venues describe evidence provenance only; execution routing belongs to a later owner.
+    expect(admissionCard).toHaveTextContent("binance.usdm · hyperliquid.perp · hyperliquid.xyz");
+    expect(admissionCard).toHaveTextContent("只决定证据来源，不决定执行路由");
+    expect(admissionCard).not.toHaveTextContent("BINANCE_USDM");
     expect(admissionCard).toHaveTextContent("5m");
     expect(admissionCard).toHaveTextContent("Alpha 阈值随案例冻结");
     expect(admissionCard).not.toHaveTextContent("≥95%");

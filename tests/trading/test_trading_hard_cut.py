@@ -1,52 +1,82 @@
-"""The retired execution authority cannot re-enter through config or public surfaces."""
+"""The 433-C cut has one Signal producer and no Tracefold execution authority."""
 
 from __future__ import annotations
+
+import ast
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from tests.trading_v3_fixtures import trade_intent
 from tracefold.app.http.app import create_app
 from tracefold.platform.config.models import Settings
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.parametrize(
     "retired",
     (
-        {"mode": "paper"},
-        {"mode": "live_reviewed"},
-        {"live_symbol": "SOL"},
-        {"account_ref": "canary"},
-        {"venues": {"binance_enabled": True}},
-        {"opentrade": {"base_url": "https://example.invalid"}},
+        {"order": {"fixed_notional_usd": "10"}},
+        {"bindings": {"binance": {}}},
+        {"capital": {"mode": "paused"}},
+        {"venues": {"hyperliquid_enabled": True}},
         {"nautilus": {"accept_intents": True}},
     ),
 )
-def test_retired_backend_switches_are_rejected_by_settings(retired: dict[str, object]) -> None:
+def test_retired_execution_configuration_fails_closed(retired: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
         Settings.model_validate({"trading": retired})
 
 
-@pytest.mark.parametrize("value", ("0", "-1", "10.01"))
-def test_target_notional_is_the_only_bounded_execution_value(value: str) -> None:
-    with pytest.raises(ValidationError):
-        Settings.model_validate({"trading": {"order": {"fixed_notional_usd": value}}})
-
-
-def test_intent_policy_owns_every_other_execution_value() -> None:
-    intent = trade_intent()
-    assert (intent.source_venue, intent.binding) == ("binance.usdm", "BINANCE_USDM")
-    assert intent.instrument_id == "SOLUSDT-PERP.BINANCE"
-    assert intent.side == "long"
-    assert intent.valid_until_ms - intent.created_at_ms == 60_000
-    assert (intent.stop_loss_bps, intent.max_holding_ms) == (200, 180_000)
-    assert (intent.max_entry_drift_bps, intent.max_spread_bps) == (25, 30)
-
-
-def test_http_contract_is_case_intent_outcome_only() -> None:
+def test_public_http_is_case_signal_observation_and_readiness_only() -> None:
     schema = create_app(settings=Settings(ws_token="schema-test")).openapi()
-    assert "/api/trading/intents" in schema["paths"]
-    assert "/api/trading/orders" not in schema["paths"]
-    public_fields = set(schema["components"]["schemas"]["TradingIntentData"]["properties"])
-    for retired in ("payload", "account_ref", "remote_order_id", "mode", "quantity", "order_id"):
-        assert retired not in public_fields
+    paths = set(schema["paths"])
+
+    assert "/api/trading/signals" in paths
+    assert "/api/trading/execution/observations" in paths
+    assert "/api/trading/intents" not in paths
+    assert "/api/trading/capabilities" not in paths
+    assert "/api/trading/evidence" not in paths
+
+
+def test_active_signal_path_has_no_execution_or_nautilus_import() -> None:
+    paths = (
+        ROOT / "tracefold/trading/signal_lane.py",
+        ROOT / "tracefold/trading/policy.py",
+        ROOT / "tracefold/trading/storage/lane.py",
+    )
+    forbidden = (
+        "nautilus",
+        "capital_authority",
+        "intent",
+        "execution_policy",
+        "quote_authority",
+        "capabilities",
+        "bindings",
+    )
+    for path in paths:
+        modules = {
+            node.module or ""
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+            if isinstance(node, ast.ImportFrom)
+        }
+        assert not any(token in module for module in modules for token in forbidden)
+
+
+def test_legacy_execution_modules_are_deleted_instead_of_forwarded() -> None:
+    retired = (
+        "tracefold/trading/capital_authority.py",
+        "tracefold/trading/intent.py",
+        "tracefold/trading/execution_policy.py",
+        "tracefold/trading/quote_authority.py",
+        "tracefold/trading/adapter_contracts.py",
+        "tracefold/trading/capabilities.py",
+        "tracefold/trading/bindings.py",
+        "tracefold/trading/contract_receipt.py",
+        "tracefold/app/nautilus/database.py",
+        "tracefold/integrations/nautilus/strategy.py",
+        "tracefold/integrations/nautilus/messages.py",
+        "tracefold/integrations/nautilus/execution_adapter.py",
+    )
+    assert [name for name in retired if (ROOT / name).exists()] == []

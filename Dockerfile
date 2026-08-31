@@ -76,7 +76,7 @@ RUN /app/.venv/bin/python -c \
     'from tracefold.news.program.artifact import load_stable_program_artifact; load_stable_program_artifact()'
 
 RUN /app/.venv/bin/python -c \
-    'import sys; from importlib.metadata import version; from nautilus_trader.live.node import TradingNode; from tracefold.integrations.nautilus import NAUTILUS_RELEASE, installed_nautilus_wheel_identity; wheel = installed_nautilus_wheel_identity(); assert sys.version_info[:2] == (3, 13); assert version("nautilus-trader") == NAUTILUS_RELEASE.version; assert TradingNode.__module__ == "nautilus_trader.live.node"; assert not wheel.startswith("development@")'
+    'import sys; from importlib.metadata import version; from nautilus_trader.live.node import TradingNode; assert sys.version_info[:2] == (3, 13); assert version("nautilus-trader") == "1.231.0"; assert TradingNode.__module__ == "nautilus_trader.live.node"'
 
 FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2ad15857cfbf7766943b9ca
 

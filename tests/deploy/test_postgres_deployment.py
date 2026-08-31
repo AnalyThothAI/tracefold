@@ -98,6 +98,7 @@ def test_compose_keeps_processes_separate_but_uses_one_postgres_login() -> None:
     assert services["serve"]["command"] == ["tracefold", "serve"]
     assert services["workers"]["command"] == ["tracefold", "workers"]
     assert services["nautilus"]["command"] == ["tracefold", "nautilus", "run"]
+    assert services["nautilus"]["profiles"] == ["execution"]
     assert services["serve"]["ports"] == ["${TRACEFOLD_API_HOST:-127.0.0.1}:${TRACEFOLD_API_PORT:-8765}:8765"]
     assert services["serve"]["healthcheck"]["test"][2] == "-c"
     assert "/healthz" in services["serve"]["healthcheck"]["test"][3]
@@ -175,14 +176,13 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     nautilus_volumes = services["nautilus"].get("volumes", [])
 
     assert "${HOME}/.tracefold/telegram_bot_token:/root/.tracefold/telegram_bot_token:ro" in worker_volumes
-    assert "${HOME}/.tracefold/binance_usdm_api_key:/root/.tracefold/binance_usdm_api_key:ro" in worker_volumes
-    assert "${HOME}/.tracefold/binance_usdm_api_secret:/root/.tracefold/binance_usdm_api_secret:ro" in worker_volumes
-    assert "${HOME}/.tracefold/hyperliquid_private_key:/root/.tracefold/hyperliquid_private_key:ro" in worker_volumes
+    assert all("binance_usdm_api_" not in volume for volume in worker_volumes)
+    assert all("hyperliquid_private_key" not in volume for volume in worker_volumes)
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert any("binance_usdm_api_key" in volume for volume in nautilus_volumes)
     assert any("binance_usdm_api_secret" in volume for volume in nautilus_volumes)
     for service_name, service in services.items():
-        if service_name not in {"workers", "nautilus"}:
+        if service_name != "nautilus":
             assert not any(
                 "binance_usdm_api_key" in volume
                 or "binance_usdm_api_secret" in volume

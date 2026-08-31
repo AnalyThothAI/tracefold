@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import secrets
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -33,10 +35,152 @@ def write_default_config(*, force: bool = False) -> Path:
         directory = home / directory_name
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError("config_path_not_regular_file")
     if force or not path.exists():
         path.write_text(default_config_yaml(), encoding="utf-8")
     path.chmod(0o600)
     return path
+
+
+def migrate_pre_433c_trading_config(path: Path) -> Path | None:
+    """Atomically hard-cut the exact pre-433-C Trading config shape once."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("config_path_not_regular_file")
+    original = path.read_bytes()
+    loaded = yaml.safe_load(original)
+    if loaded is None:
+        loaded = {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"{path.name} must contain a mapping at {path}")
+    current = dict(loaded)
+    trading_value = current.get("trading")
+    if not isinstance(trading_value, Mapping):
+        return None
+    trading = dict(trading_value)
+    retired = {"order", "bindings"}.intersection(trading)
+    if not retired:
+        return None
+    if "execution" in trading:
+        raise ValueError("trading_config_cutover_mixed_shape")
+    _require_exact_keys(
+        trading,
+        allowed={"enabled", "candidates", "order", "bindings"},
+        error_code="trading_config_cutover_unknown_key",
+    )
+    if "order" in trading:
+        order = _require_mapping(trading["order"], error_code="trading_config_cutover_order_invalid")
+        _require_exact_keys(
+            order,
+            allowed={"fixed_notional_usd"},
+            error_code="trading_config_cutover_order_invalid",
+        )
+    bindings = _require_mapping(
+        trading.get("bindings", {}),
+        error_code="trading_config_cutover_bindings_invalid",
+    )
+    _require_exact_keys(
+        bindings,
+        allowed={"binance_usdm", "hyperliquid_perp"},
+        error_code="trading_config_cutover_bindings_invalid",
+    )
+    binance = _require_mapping(
+        bindings.get("binance_usdm", {}),
+        error_code="trading_config_cutover_binance_invalid",
+    )
+    _require_exact_keys(
+        binance,
+        allowed={"api_key_file", "api_secret_file"},
+        error_code="trading_config_cutover_binance_invalid",
+    )
+    if "hyperliquid_perp" in bindings:
+        hyperliquid = _require_mapping(
+            bindings["hyperliquid_perp"],
+            error_code="trading_config_cutover_hyperliquid_invalid",
+        )
+        _require_exact_keys(
+            hyperliquid,
+            allowed={"private_key_file", "account_address"},
+            error_code="trading_config_cutover_hyperliquid_invalid",
+        )
+
+    migrated_trading = {key: value for key, value in trading.items() if key not in retired}
+    migrated_trading["execution"] = {
+        "mode": "disabled",
+        "profile_id": "binance_usdm_primary",
+        "account_slot": "binance_usdm_primary",
+        "credentials": {
+            "api_key_file": binance.get("api_key_file", "binance_usdm_api_key"),
+            "api_secret_file": binance.get("api_secret_file", "binance_usdm_api_secret"),
+        },
+    }
+    migrated = {**current, "trading": migrated_trading}
+    Settings.model_validate(migrated)
+    rendered = yaml.safe_dump(migrated, sort_keys=False, allow_unicode=True).encode()
+    if path.is_symlink() or path.read_bytes() != original:
+        raise ValueError("trading_config_cutover_source_changed")
+    backup_path = path.parent / "config.pre-433c.yaml"
+    _write_private_backup(backup_path, original)
+    if path.is_symlink() or path.read_bytes() != original:
+        raise ValueError("trading_config_cutover_source_changed")
+    _replace_private_file(path, rendered)
+    return backup_path
+
+
+def _require_mapping(value: object, *, error_code: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(error_code)
+    return dict(value)
+
+
+def _require_exact_keys(value: Mapping[str, Any], *, allowed: set[str], error_code: str) -> None:
+    if not set(value).issubset(allowed):
+        raise ValueError(error_code)
+
+
+def _write_private_backup(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".config-pre-433c-", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as backup_file:
+            backup_file.write(content)
+            backup_file.flush()
+            os.fsync(backup_file.fileno())
+        temporary_path.chmod(0o600)
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
+                raise ValueError("trading_config_cutover_backup_conflict") from None
+            path.chmod(0o600)
+            return
+        _sync_directory(path.parent)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _replace_private_file(path: Path, content: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".config-433c-", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as config_file:
+            config_file.write(content)
+            config_file.flush()
+            os.fsync(config_file.fileno())
+        temporary_path.chmod(0o600)
+        os.replace(temporary_path, path)
+        _sync_directory(path.parent)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def default_config_yaml() -> str:
@@ -134,15 +278,13 @@ news:
 
 trading:
   enabled: false
-  order:
-    fixed_notional_usd: 10
-  bindings:
-    binance_usdm:
+  execution:
+    mode: disabled
+    profile_id: binance_usdm_primary
+    account_slot: binance_usdm_primary
+    credentials:
       api_key_file: "binance_usdm_api_key"
       api_secret_file: "binance_usdm_api_secret"
-    hyperliquid_perp:
-      private_key_file: "hyperliquid_private_key"
-      account_address:
 """
 
 

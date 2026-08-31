@@ -27,17 +27,17 @@ import { NewsPageHeader, NewsPageShell } from "../chrome/NewsChrome";
 import "./newsLeverage.css";
 
 /**
- * 资本判定 — every frozen Case and the frozen evidence it was decided on (#331).
+ * Alpha 判定 — every frozen Case and the frozen evidence it was decided on.
  *
  * One read. `/api/trading/cases` is the Case/Decision aggregate, and this page renders it: the Case's own
  * `policy_config` and `policy_checks` are what a threshold argument is settled from, not the running
  * configuration.
  *
- * **What it no longer does.** The page it replaces re-implemented the capital lane in the browser: it
+ * **What it no longer does.** The page it replaces re-implemented Capital in the browser: it
  * joined the News feed to an Intent batch, inferred a phase from an execution state, re-ran threshold
  * comparisons against `/api/trading/status` and printed 冲突 on rows the Case had passed — because it was
  * measuring a Case frozen last week with a floor edited yesterday. Frames and admission answers belong to
- * the OI audit; execution belongs to 执行与持仓; both are linked rather than restated.
+ * the OI audit; execution observations belong to the Trading surface; both are linked rather than restated.
  *
  * The four states are explicit. A cold failure is an error with a retry, a failed refresh keeps the last
  * answer, and an empty window is a *truthful* empty that names the durable totals beside it — `0 成案` is
@@ -62,12 +62,12 @@ export function NewsLeveragePage({ token }: { token: string }) {
   const coldFailure = casesQuery.isError && !data;
 
   return (
-    <NewsPageShell archetype="scan" className="news-leverage-shell" label="资本判定">
+    <NewsPageShell archetype="scan" className="news-leverage-shell" label="Alpha 判定">
       <NewsPageHeader
-        subtitle="每个案例的终局答案与它被判定时冻结的证据；帧与准入在 OI 来源审计，执行在执行与持仓"
-        title="资本判定"
+        subtitle="每个 Alpha 案例的终局答案与冻结证据；Signal 不包含账户、数量、杠杆或订单"
+        title="Alpha 判定"
       >
-        <dl aria-label="资本通道 24 小时判定" className="news-leverage-figures">
+        <dl aria-label="Alpha 24 小时判定" className="news-leverage-figures">
           {figures.map((figure) => (
             <div className="news-leverage-figure" key={figure.key}>
               <dt>{figure.label}</dt>
@@ -99,7 +99,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
 
       {casesQuery.isLoading && !data ? (
         <div className="news-leverage-body">
-          <PageState.Loading label="正在读取资本案例" layout="panel" rows={3} />
+          <PageState.Loading label="正在读取 Alpha 案例" layout="panel" rows={3} />
           <PageState.Loading label="正在读取案例证据" layout="panel" rows={7} />
         </div>
       ) : null}
@@ -111,7 +111,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
         <PageState.Empty
           hint={
             <>
-              过去 {data.window_hours} 小时资本通道成案 {figures[0].value} 个。0
+              过去 {data.window_hours} 小时 Alpha 成案 {figures[0].value} 个。0
               成案是当前规则的正常输出； 上游看见了多少来源、卡在哪条规则，在{" "}
               <Link to={newsOiPath()}>OI 来源与准入审计</Link>。
             </>
@@ -136,7 +136,7 @@ export function NewsLeveragePage({ token }: { token: string }) {
                   {caseClock(item.observed_at_ms)}
                 </time>
                 <span>{caseStateLabel(item)}</span>
-                <span>{item.intent_id ? "已交接 Intent" : "无 Intent"}</span>
+                <span>{item.state === "SIGNAL_EMITTED" ? "已发出 Signal" : "无 Signal"}</span>
                 <code>{item.policy_reason ?? "判定中"}</code>
               </button>
             ))}
@@ -172,8 +172,8 @@ export function NewsLeveragePage({ token }: { token: string }) {
 
       <p className="news-leverage-source">
         读自 <code>GET /api/trading/cases</code>；帧与准入在{" "}
-        <Link to={newsOiPath()}>OI 来源与准入审计</Link>，执行与持仓在{" "}
-        <Link to={tradingPath()}>执行与持仓</Link>。
+        <Link to={newsOiPath()}>OI 来源与准入审计</Link>，执行状态与 Observation 在{" "}
+        <Link to={tradingPath()}>Alpha / Execution</Link>。
       </p>
     </NewsPageShell>
   );
@@ -217,8 +217,8 @@ function CaseDetail({ item }: { item: TradingCase }) {
             <dd>{caseClock(item.decided_at_ms)}</dd>
           </div>
           <div className="news-leverage-reason">
-            <dt>合约</dt>
-            <dd>{item.provider_symbol ?? "—"}</dd>
+            <dt>市场</dt>
+            <dd>{item.market_key ?? "—"}</dd>
           </div>
           <div className="news-leverage-reason">
             <dt>冻结标记价</dt>
@@ -229,14 +229,12 @@ function CaseDetail({ item }: { item: TradingCase }) {
             <dd>{bpsPercent(item.pre_move_bps)}</dd>
           </div>
           <div className="news-leverage-reason">
-            <dt>Intent</dt>
+            <dt>Signal</dt>
             <dd>
-              {item.intent_id ? (
-                <Link to={tradingPath()}>
-                  <code>{item.intent_id.slice(0, 16)}</code>
-                </Link>
+              {item.state === "SIGNAL_EMITTED" ? (
+                <Link to={tradingPath()}>查看 Signal</Link>
               ) : (
-                "未形成"
+                "未发出"
               )}
             </dd>
           </div>

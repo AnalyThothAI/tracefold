@@ -110,7 +110,7 @@ function EventDocument({
             <NewsOutcomeBadge outcome={outcome} size="lg" variant="chip" />
             {outcome.reason_zh ? <span>{outcome.reason_zh}</span> : null}
             {/*
-             * Did the capital lane take this? (#207 PR-W4) It renders nothing at all for a model-lane Event,
+             * Did the Signal lane admit this? It renders nothing at all for a model-lane Event,
              * because that question genuinely cannot be asked there — only the deterministic lane's source
              * key is reconstructible from an `event_id`, and a 未成案 chip would report a refusal that never
              * happened.

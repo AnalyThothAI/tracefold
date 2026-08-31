@@ -137,26 +137,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/capabilities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Trading Capabilities
-         * @description Current durable V2 partition; never compiles capabilities or contacts a venue.
-         */
-        get: operations["get_trading_capabilities_api_trading_capabilities_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/trading/cases": {
         parameters: {
             query?: never;
@@ -164,10 +144,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Cases
-         * @description Frozen Cases and the frozen evidence each was decided on.
-         */
+        /** Get Trading Cases */
         get: operations["get_trading_cases_api_trading_cases_get"];
         put?: never;
         post?: never;
@@ -177,18 +154,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/evidence": {
+    "/api/trading/execution/observations": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Evidence
-         * @description Redacted grant/arm/risk proof and bounded capital lifecycle rows from PostgreSQL.
-         */
-        get: operations["get_trading_evidence_api_trading_evidence_get"];
+        /** Get Execution Observations */
+        get: operations["get_execution_observations_api_trading_execution_observations_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -204,10 +178,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Gate
-         * @description Every Source the lane saw in the window, and the one durable answer each received.
-         */
+        /** Get Trading Gate */
         get: operations["get_trading_gate_api_trading_gate_get"];
         put?: never;
         post?: never;
@@ -224,14 +195,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Gate Source
-         * @description One Source's admission answer. `joinable=false` when the question cannot be asked at all.
-         *
-         *     Only the deterministic OI lane's source key is reconstructible from an Event id
-         *     (`oi:{event_id}:{metric_version}`), so a caller asking about anything else is told the question is
-         *     unanswerable rather than shown a refusal that never happened.
-         */
+        /** Get Trading Gate Source */
         get: operations["get_trading_gate_source_api_trading_gate__event_id__get"];
         put?: never;
         post?: never;
@@ -241,18 +205,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/trading/intents": {
+    "/api/trading/signals": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Intents
-         * @description Immutable capital requests and their execution outcomes. Cases live at `/trading/cases`.
-         */
-        get: operations["get_trading_intents_api_trading_intents_get"];
+        /** Get Trading Signals */
+        get: operations["get_trading_signals_api_trading_signals_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -268,10 +229,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /**
-         * Get Trading Status
-         * @description Durable Decision, Capital and per-binding runtime facts. No secret or provider reads.
-         */
+        /** Get Trading Status */
         get: operations["get_trading_status_api_trading_status_get"];
         put?: never;
         post?: never;
@@ -406,16 +364,6 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingCapabilitiesData] */
-        ApiEnvelope_TradingCapabilitiesData_: {
-            data?: components["schemas"]["TradingCapabilitiesData"] | null;
-            /** Error */
-            error?: string | null;
-            /** Field */
-            field?: string | null;
-            /** Ok */
-            ok: boolean;
-        };
         /** ApiEnvelope[TradingCasesData] */
         ApiEnvelope_TradingCasesData_: {
             data?: components["schemas"]["TradingCasesData"] | null;
@@ -426,9 +374,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingEvidenceData] */
-        ApiEnvelope_TradingEvidenceData_: {
-            data?: components["schemas"]["TradingEvidenceData"] | null;
+        /** ApiEnvelope[TradingExecutionObservationsData] */
+        ApiEnvelope_TradingExecutionObservationsData_: {
+            data?: components["schemas"]["TradingExecutionObservationsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -456,9 +404,9 @@ export interface components {
             /** Ok */
             ok: boolean;
         };
-        /** ApiEnvelope[TradingIntentsData] */
-        ApiEnvelope_TradingIntentsData_: {
-            data?: components["schemas"]["TradingIntentsData"] | null;
+        /** ApiEnvelope[TradingSignalsData] */
+        ApiEnvelope_TradingSignalsData_: {
+            data?: components["schemas"]["TradingSignalsData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2292,282 +2240,25 @@ export interface components {
             serve_runtime: components["schemas"]["ServeRuntimeData"];
             workers_runtime: components["schemas"]["WorkersRuntimeData"];
         };
-        /** TradingAuthorityEvidenceData */
-        TradingAuthorityEvidenceData: {
-            /** Active Arm Receipt Sha256 */
-            active_arm_receipt_sha256?: string | null;
-            /** Approved Release */
-            approved_release?: string | null;
-            /** Arm Expires At Ms */
-            arm_expires_at_ms?: number | null;
-            /**
-             * Binding
-             * @enum {string}
-             */
-            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
-            /** Grant Expires At Ms */
-            grant_expires_at_ms?: number | null;
-            /** Grant Sha256 */
-            grant_sha256?: string | null;
-            /** Risk Policy Expires At Ms */
-            risk_policy_expires_at_ms?: number | null;
-            /** Risk Policy Sha256 */
-            risk_policy_sha256?: string | null;
-            /** Settlement Limits */
-            settlement_limits?: components["schemas"]["TradingSettlementRiskLimitData"][];
-            /**
-             * Status
-             * @enum {string}
-             */
-            status: "absent" | "active" | "expired" | "revoked" | "invalid";
-        };
-        /** TradingBindingRuntimeData */
-        TradingBindingRuntimeData: {
-            /** Account Generation */
-            account_generation: number;
-            /**
-             * Account State
-             * @enum {string}
-             */
-            account_state: "unknown" | "reconciled_flat" | "exposure_present";
-            /** Active Arm Receipt Sha256 */
-            active_arm_receipt_sha256?: string | null;
-            /**
-             * Binding
-             * @enum {string}
-             */
-            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
-            /** Capability Compile Error */
-            capability_compile_error?: string | null;
-            /** Capability Compiled At Ms */
-            capability_compiled_at_ms?: number | null;
-            /** Capability Snapshot Sha256 */
-            capability_snapshot_sha256?: string | null;
-            /**
-             * Capability State
-             * @enum {string}
-             */
-            capability_state: "missing" | "ready" | "stale" | "error";
-            /** Catalog Captured At Ms */
-            catalog_captured_at_ms?: number | null;
-            /** Catalog Snapshot Sha256 */
-            catalog_snapshot_sha256?: string | null;
-            /**
-             * Catalog State
-             * @enum {string}
-             */
-            catalog_state: "missing" | "ready" | "stale" | "error";
-            /** Credential Fingerprint */
-            credential_fingerprint?: string | null;
-            /**
-             * Credential State
-             * @enum {string}
-             */
-            credential_state: "unconfigured" | "configured" | "invalid";
-            /** Execution Binding Sha256 */
-            execution_binding_sha256?: string | null;
-            /** Heartbeat At Ms */
-            heartbeat_at_ms?: number | null;
-            /** Reason */
-            reason?: string | null;
-            /**
-             * Runtime State
-             * @enum {string}
-             */
-            runtime_state: "stopped" | "starting" | "ready" | "stale" | "faulted";
-        };
-        /**
-         * TradingBudgetData
-         * @description What one thesis may cost. The lane's bound is serialisation, not a daily count (#348).
-         *
-         *     `max_entries_per_utc_day` is gone rather than set to some larger number: there is no daily count any
-         *     more, and publishing a ceiling nobody enforces is worse than publishing none.
-         */
-        TradingBudgetData: {
-            /** Target Notional Usd */
-            target_notional_usd: string;
-        };
-        /** TradingCapabilitiesData */
-        TradingCapabilitiesData: {
-            /** Bindings */
-            bindings?: components["schemas"]["TradingCapabilityBindingData"][];
-            /** Complete */
-            complete: boolean;
-            /** Entries */
-            entries?: components["schemas"]["TradingCapabilityEntryData"][];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** TradingCapabilityBindingData */
-        TradingCapabilityBindingData: {
-            /**
-             * Binding
-             * @enum {string}
-             */
-            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
-            /**
-             * Capability State
-             * @enum {string}
-             */
-            capability_state: "missing" | "ready" | "stale" | "error";
-            /**
-             * Catalog Instrument Count
-             * @default 0
-             */
-            catalog_instrument_count: number;
-            /** Catalog Snapshot Sha256 */
-            catalog_snapshot_sha256?: string | null;
-            /** Compile Error */
-            compile_error?: string | null;
-            /** Compiled At Ms */
-            compiled_at_ms?: number | null;
-            /**
-             * Excluded Count
-             * @default 0
-             */
-            excluded_count: number;
-            /**
-             * Included Count
-             * @default 0
-             */
-            included_count: number;
-            /**
-             * Last Known Good
-             * @default false
-             */
-            last_known_good: boolean;
-            /** Partition Sha256 */
-            partition_sha256?: string | null;
-            /** Snapshot Sha256 */
-            snapshot_sha256?: string | null;
-        };
-        /** TradingCapabilityEntryData */
-        TradingCapabilityEntryData: {
-            /**
-             * Binding
-             * @enum {string}
-             */
-            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
-            /** Canonical Asset */
-            canonical_asset?: string | null;
-            /** Canonical Namespace */
-            canonical_namespace?: string | null;
-            /** Catalog Entry Id */
-            catalog_entry_id: string;
-            /**
-             * Disposition
-             * @enum {string}
-             */
-            disposition: "included" | "excluded";
-            /** Exclusion Reason */
-            exclusion_reason?: string | null;
-            /** Instrument Id */
-            instrument_id?: string | null;
-            /** Min Notional */
-            min_notional?: string | null;
-            /** Min Quantity */
-            min_quantity?: string | null;
-            /** Price Increment */
-            price_increment?: string | null;
-            /** Provider Instrument Id */
-            provider_instrument_id: string;
-            /** Settlement Asset */
-            settlement_asset?: string | null;
-            /** Size Increment */
-            size_increment?: string | null;
-        };
-        /** TradingCapitalLifecycleEvidenceData */
-        TradingCapitalLifecycleEvidenceData: {
-            /** Arm Receipt Sha256 */
-            arm_receipt_sha256: string;
-            /** Attempt Consumed */
-            attempt_consumed: boolean;
-            /** Attempt Day End Ms */
-            attempt_day_end_ms?: number | null;
-            /** Attempt Day Start Ms */
-            attempt_day_start_ms?: number | null;
-            /** Authorization Receipt Sha256 */
-            authorization_receipt_sha256: string;
-            /**
-             * Binding
-             * @enum {string}
-             */
-            binding: "BINANCE_USDM" | "HYPERLIQUID_PERP";
-            /** Case Id */
-            case_id: string;
-            /** Current Planned Risk Amount */
-            current_planned_risk_amount: string;
-            /** Economic Lifecycle Id */
-            economic_lifecycle_id: string;
-            /** Execution Phase */
-            execution_phase?: ("ENTRY" | "PROTECTION" | "EXIT") | null;
-            /**
-             * Execution State
-             * @enum {string}
-             */
-            execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
-            /** Flat Verified At Ms */
-            flat_verified_at_ms?: number | null;
-            /** Grant Sha256 */
-            grant_sha256: string;
-            /** Initial Planned Risk Amount */
-            initial_planned_risk_amount: string;
-            /** Intent Id */
-            intent_id: string;
-            /** Reason Code */
-            reason_code?: string | null;
-            /** Reservation Sha256 */
-            reservation_sha256: string;
-            /** Risk Day End Ms */
-            risk_day_end_ms: number;
-            /** Risk Day Start Ms */
-            risk_day_start_ms: number;
-            /** Risk Policy Sha256 */
-            risk_policy_sha256: string;
-            /**
-             * Risk Status
-             * @enum {string}
-             */
-            risk_status: "RESERVED" | "FENCED" | "OPEN" | "MANUAL_REVIEW" | "RELEASED" | "SETTLED";
-            /**
-             * Settlement Asset
-             * @enum {string}
-             */
-            settlement_asset: "USDT" | "USDC";
-            /** Settlement Known */
-            settlement_known: boolean;
-            /** Target Notional */
-            target_notional: string;
-            /** Terminal Outcome */
-            terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
-            /** Updated At Ms */
-            updated_at_ms: number;
-        };
-        /** TradingCapitalRuntimeData */
-        TradingCapitalRuntimeData: {
-            /** Arm Epoch */
-            arm_epoch: number;
-            /** Blacklist Revision */
-            blacklist_revision: number;
-            /**
-             * Control
-             * @enum {string}
-             */
-            control: "RUNNING" | "CLOSE_ONLY" | "PAUSED";
+        /** TradingAlphaIdentityData */
+        TradingAlphaIdentityData: {
+            /** Config */
+            config?: {
+                [key: string]: string;
+            };
+            /** Config Digest */
+            config_digest: string;
+            /** Contract Sha256 */
+            contract_sha256: string;
+            /** Policy Id */
+            policy_id: string;
+            /** Policy Version */
+            policy_version: string;
         };
         /** TradingCaseData */
         TradingCaseData: {
             /** Base Symbol */
             base_symbol: string;
-            /**
-             * Capital Disposition
-             * @enum {string}
-             */
-            capital_disposition: "allowed" | "blocked" | "not_applicable";
-            /** Capital Reason */
-            capital_reason?: string | null;
             /** Case Id */
             case_id: string;
             /** Created At Ms */
@@ -2576,12 +2267,12 @@ export interface components {
             decided_at_ms?: number | null;
             /** Event Id */
             event_id?: string | null;
-            /** Intent Id */
-            intent_id?: string | null;
             /** Manifest Version */
             manifest_version?: string | null;
             /** Mark Price */
             mark_price?: string | null;
+            /** Market Key */
+            market_key?: string | null;
             /** Observed At Ms */
             observed_at_ms: number;
             /** Oi Change Bps */
@@ -2609,8 +2300,8 @@ export interface components {
             policy_version: string;
             /** Pre Move Bps */
             pre_move_bps?: number | null;
-            /** Provider Symbol */
-            provider_symbol?: string | null;
+            /** Source Venue */
+            source_venue?: string | null;
             /** State */
             state: string;
             /** Trigger Kind */
@@ -2624,10 +2315,6 @@ export interface components {
         };
         /** TradingCasesData */
         TradingCasesData: {
-            /** Capital Reason Counts 24H */
-            capital_reason_counts_24h?: {
-                [key: string]: number;
-            };
             /** Cases */
             cases?: components["schemas"]["TradingCaseData"][];
             /** Complete */
@@ -2659,18 +2346,68 @@ export interface components {
              */
             state: "DISABLED" | "STARTING" | "RUNNING" | "FAULTED";
         };
-        /** TradingEvidenceData */
-        TradingEvidenceData: {
-            /** Authorities */
-            authorities?: components["schemas"]["TradingAuthorityEvidenceData"][];
+        /** TradingExecutionObservationData */
+        TradingExecutionObservationData: {
+            /** Command Id */
+            command_id?: string | null;
+            /** Event Id */
+            event_id: string;
+            /** Execution Strategy */
+            execution_strategy: string;
+            /** Native Identity References */
+            native_identity_references?: string[];
+            /** Normalized Kind */
+            normalized_kind: string;
+            /** Observed At Ns */
+            observed_at_ns: number;
+            /** Occurred At Ns */
+            occurred_at_ns: number;
+            /** Payload Digest */
+            payload_digest: string;
+            /** Runtime Profile Id */
+            runtime_profile_id: string;
+            /** Runtime Release */
+            runtime_release: string;
+            /** Seq */
+            seq: number;
+            /** Signal Id */
+            signal_id?: string | null;
+            /** Summary */
+            summary?: {
+                [key: string]: unknown;
+            };
+        };
+        /** TradingExecutionObservationsData */
+        TradingExecutionObservationsData: {
             /** Complete */
             complete: boolean;
-            /** Lifecycles */
-            lifecycles?: components["schemas"]["TradingCapitalLifecycleEvidenceData"][];
             /** Measured At Ms */
             measured_at_ms: number;
             /** Next Cursor */
             next_cursor?: string | null;
+            /** Observations */
+            observations?: components["schemas"]["TradingExecutionObservationData"][];
+            /** Window Hours */
+            window_hours: number;
+        };
+        /** TradingExecutionReadinessData */
+        TradingExecutionReadinessData: {
+            /** Account Slot */
+            account_slot: string;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "disabled" | "paper" | "live";
+            /** Profile Id */
+            profile_id: string;
+            /** Ready */
+            ready: boolean;
+            /**
+             * Reason
+             * @enum {string}
+             */
+            reason: "disabled" | "activation_not_available_before_433e";
         };
         /** TradingGateConfigData */
         TradingGateConfigData: {
@@ -2680,10 +2417,8 @@ export interface components {
             max_age_ms: number;
             /** Min Oi Value Usd */
             min_oi_value_usd: number;
-            /** Source Native Bindings */
-            source_native_bindings: {
-                [key: string]: string;
-            };
+            /** Source Venues */
+            source_venues: string[];
             /** Version */
             version: string;
         };
@@ -2822,13 +2557,7 @@ export interface components {
             /** Whale Oi Ratio Bps */
             whale_oi_ratio_bps?: number | null;
         };
-        /**
-         * TradingGateSourceData
-         * @description One Source's admission answer, plus the Case it authored if it authored one.
-         *
-         *     `joinable` is `false` when the question cannot be asked at all: only the deterministic OI lane's
-         *     source key is reconstructible from an Event id.
-         */
+        /** TradingGateSourceData */
         TradingGateSourceData: {
             decision?: components["schemas"]["TradingGateDecisionData"] | null;
             /** Event Id */
@@ -2836,171 +2565,7 @@ export interface components {
             /** Joinable */
             joinable: boolean;
         };
-        /** TradingIntentData */
-        TradingIntentData: {
-            /** Account Generation */
-            account_generation?: number | null;
-            /** Actual Quantity */
-            actual_quantity?: string | null;
-            /** Avg Entry Price */
-            avg_entry_price?: string | null;
-            /** Avg Exit Price */
-            avg_exit_price?: string | null;
-            /** Base Symbol */
-            base_symbol: string;
-            /** Binding */
-            binding?: ("BINANCE_USDM" | "HYPERLIQUID_PERP") | null;
-            /** Blacklist Revision At Emission */
-            blacklist_revision_at_emission?: number | null;
-            /** Blacklist Snapshot Sha256 At Emission */
-            blacklist_snapshot_sha256_at_emission?: string | null;
-            /** Canonical Asset */
-            canonical_asset?: string | null;
-            /** Capability Entry Id */
-            capability_entry_id?: string | null;
-            /** Capital Authorization Receipt Sha256 */
-            capital_authorization_receipt_sha256?: string | null;
-            /** Case Id */
-            case_id: string;
-            /** Close Leg Id */
-            close_leg_id?: string | null;
-            /** Closed At Ms */
-            closed_at_ms?: number | null;
-            /** Commissions By Currency */
-            commissions_by_currency?: {
-                [key: string]: string;
-            } | null;
-            /** Created At Ms */
-            created_at_ms: number;
-            /** Economic Lifecycle Id */
-            economic_lifecycle_id?: string | null;
-            /** Entry Fenced At Ms */
-            entry_fenced_at_ms?: number | null;
-            /** Entry Leg Id */
-            entry_leg_id?: string | null;
-            /** Event Id */
-            event_id?: string | null;
-            /** Execution Binding Sha256 */
-            execution_binding_sha256?: string | null;
-            /** Execution Capability Snapshot Sha256 */
-            execution_capability_snapshot_sha256?: string | null;
-            /** Execution Environment */
-            execution_environment?: "BINANCE_USDM_DEMO" | null;
-            /** Execution Phase */
-            execution_phase?: ("ENTRY" | "PROTECTION" | "EXIT") | null;
-            /** Execution Policy Sha256 */
-            execution_policy_sha256?: string | null;
-            /**
-             * Execution State
-             * @enum {string}
-             */
-            execution_state: "PENDING" | "IN_FLIGHT" | "OPEN_PROTECTED" | "MANUAL_REVIEW" | "TERMINAL";
-            /** Flat Verified At Ms */
-            flat_verified_at_ms?: number | null;
-            /** Funding By Currency */
-            funding_by_currency?: {
-                [key: string]: string;
-            } | null;
-            /** Instrument Id */
-            instrument_id: string;
-            /** Intent Id */
-            intent_id: string;
-            /** Intent Policy Sha256 */
-            intent_policy_sha256?: string | null;
-            /**
-             * Intent Version
-             * @enum {string}
-             */
-            intent_version: "trade_intent_v1" | "trade_intent_v2" | "trade_intent_v3";
-            /** Leverage */
-            leverage?: number | null;
-            /** Max Risk Amount */
-            max_risk_amount?: string | null;
-            /** Opened At Ms */
-            opened_at_ms?: number | null;
-            /** Policy Id */
-            policy_id: string;
-            /** Policy Version */
-            policy_version: string;
-            /** Protected At Ms */
-            protected_at_ms?: number | null;
-            /** Protected Quantity */
-            protected_quantity?: string | null;
-            /** Protection Contract Sha256 */
-            protection_contract_sha256?: string | null;
-            /** Protection Leg Id */
-            protection_leg_id?: string | null;
-            /** Provider Instrument Id */
-            provider_instrument_id?: string | null;
-            /** Quote Contract Sha256 */
-            quote_contract_sha256?: string | null;
-            /** Realized Pnl Amount */
-            realized_pnl_amount?: string | null;
-            /** Realized Pnl Currency */
-            realized_pnl_currency?: string | null;
-            /** Reason Code */
-            reason_code?: string | null;
-            /** Reference Price */
-            reference_price: string;
-            /** Risk Currency */
-            risk_currency?: string | null;
-            /** Settlement Asset */
-            settlement_asset?: string | null;
-            /**
-             * Side
-             * @constant
-             */
-            side: "long";
-            /** Source Identity */
-            source_identity?: string | null;
-            /** Source Venue */
-            source_venue?: ("binance.usdm" | "hyperliquid.perp") | null;
-            /** Stop Price */
-            stop_price?: string | null;
-            /** Target Notional */
-            target_notional?: string | null;
-            /** Target Notional Usd */
-            target_notional_usd?: string | null;
-            /** Terminal Outcome */
-            terminal_outcome?: ("EXPIRED" | "REJECTED" | "CLOSED_FLAT") | null;
-            /** Underlying Key */
-            underlying_key: string;
-            /** Updated At Ms */
-            updated_at_ms: number;
-            /** Valid Until Ms */
-            valid_until_ms: number;
-            /** Venue Catalog Snapshot Sha256 */
-            venue_catalog_snapshot_sha256?: string | null;
-        };
-        /** TradingIntentsData */
-        TradingIntentsData: {
-            /** Complete */
-            complete: boolean;
-            /** Intents */
-            intents?: components["schemas"]["TradingIntentData"][];
-            /** Measured At Ms */
-            measured_at_ms: number;
-            /** Next Cursor */
-            next_cursor?: string | null;
-            /** Outcome Counts 24H */
-            outcome_counts_24h?: {
-                [key: string]: number;
-            };
-            /** Reason Counts 24H */
-            reason_counts_24h?: {
-                [key: string]: number;
-            };
-            /** State Counts 24H */
-            state_counts_24h?: {
-                [key: string]: number;
-            };
-            /** Window Hours */
-            window_hours: number;
-        };
-        /**
-         * TradingPolicyCheckData
-         * @description One frozen condition: what was required, what was measured, and whether it passed.
-         */
+        /** TradingPolicyCheckData */
         TradingPolicyCheckData: {
             /** Check */
             check: string;
@@ -3013,93 +2578,90 @@ export interface components {
             /** Threshold */
             threshold: string;
         };
-        /**
-         * TradingPolicyIdentityData
-         * @description Which policy the lane would freeze onto a *new* Case. Never applied to an existing one.
-         */
-        TradingPolicyIdentityData: {
-            /** Config */
-            config?: {
-                [key: string]: string;
-            };
-            /** Config Digest */
-            config_digest: string;
-            /** Policy Id */
-            policy_id: string;
-            /** Policy Version */
-            policy_version: string;
-        };
-        /**
-         * TradingRuntimeCountsData
-         * @description Bounded aggregation over durable rows. No funnel, no per-poll counter, no threshold.
-         */
+        /** TradingRuntimeCountsData */
         TradingRuntimeCountsData: {
             /**
-             * Active Intents
+             * Blocked 24H
              * @default 0
              */
-            active_intents: number;
+            blocked_24h: number;
             /**
              * Cases 24H
              * @default 0
              */
             cases_24h: number;
             /**
-             * Closed Intents Today
+             * Cases Open
              * @default 0
              */
-            closed_intents_today: number;
+            cases_open: number;
             /**
-             * Day Key
-             * @default
-             */
-            day_key: string;
-            /**
-             * Entries Today
+             * No Trade 24H
              * @default 0
              */
-            entries_today: number;
+            no_trade_24h: number;
             /**
-             * Intents 24H
+             * Signals 24H
              * @default 0
              */
-            intents_24h: number;
-            /** Latest Case Created At Ms */
-            latest_case_created_at_ms?: number | null;
-            /** Latest Entry Fenced At Ms */
-            latest_entry_fenced_at_ms?: number | null;
-            /** Latest Intent Emitted At Ms */
-            latest_intent_emitted_at_ms?: number | null;
-            /** Latest Position Closed At Ms */
-            latest_position_closed_at_ms?: number | null;
-            /** Latest Position Opened At Ms */
-            latest_position_opened_at_ms?: number | null;
+            signals_24h: number;
+            /**
+             * Signals Unexpired
+             * @default 0
+             */
+            signals_unexpired: number;
         };
-        /** TradingSettlementRiskLimitData */
-        TradingSettlementRiskLimitData: {
-            /** Fee Slippage Reserve Bps */
-            fee_slippage_reserve_bps: number;
-            /** Max Planned Risk Amount */
-            max_planned_risk_amount: string;
-            /** Max Realized Loss Amount */
-            max_realized_loss_amount: string;
+        /** TradingSignalData */
+        TradingSignalData: {
+            /** Alpha Contract Sha256 */
+            alpha_contract_sha256: string;
+            /** Alpha Metadata */
+            alpha_metadata?: {
+                [key: string]: string | number | boolean;
+            };
+            /** Case Id */
+            case_id: string;
             /**
-             * Settlement Asset
+             * Direction
              * @enum {string}
              */
-            settlement_asset: "USDT" | "USDC";
+            direction: "long" | "short";
+            /** Evidence Sha256 */
+            evidence_sha256: string;
+            /** Expired */
+            expired: boolean;
+            /** Expires At Ns */
+            expires_at_ns: number;
+            /** Market Key */
+            market_key: string;
+            /** Observed At Ns */
+            observed_at_ns: number;
+            /** Seq */
+            seq: number;
+            /** Signal Id */
+            signal_id: string;
+        };
+        /** TradingSignalsData */
+        TradingSignalsData: {
+            /** Complete */
+            complete: boolean;
+            /** Measured At Ms */
+            measured_at_ms: number;
+            /** Next Cursor */
+            next_cursor?: string | null;
+            /** Signals */
+            signals?: components["schemas"]["TradingSignalData"][];
+            /** Window Hours */
+            window_hours: number;
         };
         /** TradingStatusData */
         TradingStatusData: {
-            /** Bindings */
-            bindings: components["schemas"]["TradingBindingRuntimeData"][];
-            budget: components["schemas"]["TradingBudgetData"];
-            capital: components["schemas"]["TradingCapitalRuntimeData"];
+            alpha: components["schemas"]["TradingAlphaIdentityData"];
             counts: components["schemas"]["TradingRuntimeCountsData"];
             decision: components["schemas"]["TradingDecisionRuntimeData"];
+            execution: components["schemas"]["TradingExecutionReadinessData"];
             /** Measured At Ms */
             measured_at_ms: number;
-            policy: components["schemas"]["TradingPolicyIdentityData"];
             /** Window Hours */
             window_hours: number;
         };
@@ -3358,40 +2920,6 @@ export interface operations {
             };
         };
     };
-    get_trading_capabilities_api_trading_capabilities_get: {
-        parameters: {
-            query?: {
-                binding?: string;
-                disposition?: string;
-                detail?: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingCapabilitiesData_"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     get_trading_cases_api_trading_cases_get: {
         parameters: {
             query?: {
@@ -3425,12 +2953,11 @@ export interface operations {
             };
         };
     };
-    get_trading_evidence_api_trading_evidence_get: {
+    get_execution_observations_api_trading_execution_observations_get: {
         parameters: {
             query?: {
-                binding?: string;
-                state?: string;
-                detail?: string;
+                profile?: string;
+                kind?: string;
                 cursor?: string;
             };
             header?: never;
@@ -3445,7 +2972,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingEvidenceData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_TradingExecutionObservationsData_"];
                 };
             };
             /** @description Validation Error */
@@ -3510,12 +3037,10 @@ export interface operations {
             };
         };
     };
-    get_trading_intents_api_trading_intents_get: {
+    get_trading_signals_api_trading_signals_get: {
         parameters: {
             query?: {
-                day?: string;
-                underlying?: string;
-                state?: string;
+                market?: string;
                 cursor?: string;
             };
             header?: never;
@@ -3530,7 +3055,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiEnvelope_TradingIntentsData_"];
+                    "application/json": components["schemas"]["ApiEnvelope_TradingSignalsData_"];
                 };
             };
             /** @description Validation Error */

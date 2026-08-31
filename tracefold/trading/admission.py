@@ -1,21 +1,20 @@
-"""The one place a Source is admitted to the live capital lane, and the one vocabulary it refuses in.
+"""The one place a Source is admitted to the live Signal lane, and the one vocabulary it refuses in.
 
 Every rule here used to be executed somewhere else as well — the rank ceiling and the liquidity floor
 in News's SELECT, the floor again inside the strategy, the venue check in two places. That is what made
 `oi_rows = 0` unanswerable: a frame filtered out upstream and a frame that never existed were the same
 absence.
 
-**One trigger kind, two closed source-native bindings (#376).** A Binance OI frame binds only to
-`BINANCE_USDM`; a Hyperliquid OI frame binds only to `HYPERLIQUID_PERP`. Unknown venues fail before a
-Case exists, and there is no cross-venue fallback. Editorial News frames are not admitted at all: they
-are not a Source of this lane and no code path offers one.
+**One trigger kind, two supported source venues.** Binance and Hyperliquid OI frames keep their own
+venue identity for source-native public market context. Unknown venues fail before a Case exists.
+This provenance never chooses an execution route. Editorial News frames are not admitted at all:
+they are not a Source of this lane and no code path offers one.
 
 **What this module owns** is whether a Source may become a *trigger* now:
 
     source          the row is a usable, current-generation, live OI fact at all
-    venue           the frame's own venue resolves to exactly one closed binding
-    eligibility     liquidity floor, blacklist, freshness, idempotency, one live thesis per underlying
-    catalog         that binding's public snapshot names an exact provider-native instrument
+    venue           the frame's own venue is supported for source-native public context
+    eligibility     liquidity floor, blacklist, freshness, idempotency, one undecided Case per underlying
     market_context  there is a candle at the cutoff to freeze a mark and a pre-move from
     freeze          the immutable Case was written
 
@@ -37,15 +36,15 @@ from collections.abc import Container, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Literal, TypedDict
 
-from .bindings import BINDING_VENUE, binding_for_source_venue
-from .blacklist import Blacklist
 from .contracts import OiTradeCandidate, TriggerKind, canonical_sha256, underlying_key
-from .sources import SourceRejected
+from .sources import SourceRejected, normalize_source_venue
 
 # Bumped when a rule is added, removed, or changes what it means. It is half of the durable row's key,
 # so a new version re-decides every source rather than inheriting an answer from a rule that is gone.
-# v4 is #350: credential-free public catalogue truth replaces execution capability at Decision freeze.
-ADMISSION_VERSION: Final = "trading_admission_v4"
+# v5 is #433-C: source venue is evidence provenance, not an execution binding or catalogue lookup.
+# v6 keeps Hyperliquid's `xyz` builder DEX distinct so source-native candles cannot silently fall
+# back to the main perpetual book.
+ADMISSION_VERSION: Final = "trading_admission_v6"
 
 AdmissionStatus = Literal["DEFERRED", "REJECTED", "CASE_CREATED", "EXPIRED"]
 AdmissionStage = Literal["source", "venue", "eligibility", "catalog", "market_context", "freeze"]
@@ -57,27 +56,23 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
         "source_contract_invalid",
         "source_generation_mismatch",
         "source_not_live",
-        # An unknown source venue has no closed execution binding. Terminal and explicit; fallback to
-        # another venue would silently change the fact being evaluated.
+        # An unknown source venue has no supported public context adapter. Terminal and explicit;
+        # borrowing another venue would silently change the fact being evaluated.
         "venue_unresolved",
         "trigger_stale",
         "oi_value_below_floor",
         "blacklisted",
-        # One name for "this issuer is already busy", whether a live Intent or an undecided Case holds
-        # it. `cooldown` is gone with the same edit (#348): a per-symbol re-entry delay is what you
-        # need when several positions can be open at once, and the lane serialises to one held at most
-        # three minutes. It refused two frames in seven days.
+        # One name for "this issuer already has an undecided Case". `cooldown` remains retired; Signal
+        # TTL and execution risk belong to later boundaries.
         "underlying_busy",
-        # The last-known-good public catalogue has no exact instrument for this issuer. Retryable: a
-        # later credential-free refresh can add one.
+        # Read-only history from the retired catalogue gate. Current writers never emit it.
         "catalog_absent",
         "market_data_unavailable",
         "market_data_invalid",
         "already_consumed",
         "superseded_by_newer_trigger",
-        # The per-turn Case budget and the lane's one live thesis refuse a Source that passed every
-        # rule about itself; calling that `underlying_busy` would blame the frame's own issuer for a
-        # different name being in the way.
+        # The per-turn Case budget refuses a Source that passed every rule about itself; calling that
+        # `underlying_busy` would blame the frame's own issuer for a different name being ahead of it.
         "lane_capacity_exhausted",
         "case_created",
     }
@@ -87,6 +82,7 @@ ADMISSION_REASONS: Final[frozenset[str]] = frozenset(
 # into the durable vocabulary — one place, so a new source rule cannot reach the ledger unnamed.
 _SOURCE_REASONS: Final[Mapping[str, str]] = {
     "symbol_not_canonicalisable": "source_contract_invalid",
+    "market_key_invalid": "source_contract_invalid",
     "observed_at_missing": "source_contract_invalid",
     "verdict_time_missing": "source_contract_invalid",
     "rank_missing": "source_contract_invalid",
@@ -104,8 +100,8 @@ class AdmissionConfig:
     of what the previous threshold decided — it starts a new record — which is the difference between a
     ledger and a mutable status field.
 
-    No `venue_priority`: source venue selects one code-owned binding. An operator priority list would
-    authorize cross-venue fallback in a settings file.
+    No `venue_priority`: source venue names evidence provenance only. Execution route selection does
+    not belong to Admission.
     """
 
     max_age_ms: int = 300_000
@@ -116,7 +112,7 @@ class AdmissionConfig:
         return {
             "max_age_ms": self.max_age_ms,
             "min_oi_value_usd": self.min_oi_value_usd,
-            "source_native_bindings": dict(BINDING_VENUE),
+            "source_venues": ["binance.usdm", "hyperliquid.perp", "hyperliquid.xyz"],
         }
 
     @property
@@ -249,17 +245,13 @@ def source_rejected(
 
 
 def admit_venue(candidate: OiTradeCandidate) -> AdmissionResult | None:
-    """Whether the frame's own venue tag names a book this lane may commit capital against.
+    """Whether the frame's venue names a supported source-native public context adapter.
 
-    Source-aligned (#211): an OI frame is a claim about *one venue's* open interest, so no operator
-    priority may answer it. A Hyperliquid frame resolved to a Binance perp produced an order against a
-    book whose open interest did nothing of the kind. The measured venue split (Hyperliquid +1.35% vs
-    Binance -0.26% at 4 h) is why the distinction is not cosmetic — and why the frames are kept as
-    research rather than discarded.
+    An OI frame is a claim about *one venue's* open interest, so no fallback may answer it with another
+    venue's bars. This check says nothing about where a future Runtime executes.
     """
 
-    binding = binding_for_source_venue(candidate.venue)
-    if binding is None:
+    if normalize_source_venue(candidate.venue) is None:
         return _result(
             candidate=candidate,
             status="REJECTED",
@@ -303,14 +295,12 @@ def admit_trigger(
     *,
     now_ms: int,
     config: AdmissionConfig,
-    blacklist: Blacklist,
-    active_underlyings: Container[str] = (),
     underlyings_in_flight: Container[str] = (),
     cased_source_keys: Container[str] = (),
 ) -> AdmissionResult | None:
     """Whether this fact may start a Case *now*, or the one named reason it may not.
 
-    `None` means "carry on to capability resolution". The order is deliberate. Idempotency first,
+    `None` means "carry on to Case freeze". The order is deliberate. Idempotency first,
     because a Source that already produced a Case has a terminal answer and every rule below it would
     be describing work that is already done. Then the frame's own frozen properties. The reversible
     conditions come last.
@@ -328,24 +318,6 @@ def admit_trigger(
     frame = admit_frame(candidate, config=config)
     if frame is not None:
         return frame
-    blocked = blacklist.blocked(candidate.base_symbol, now_ms=now_ms)
-    if blocked is not None:
-        # `DEFERRED`, always. The deny list is the one input here that is *mutable while the frame is
-        # still actionable*: an operator can remove an entry, and a timed entry can reach its
-        # `expires_at_ms`, both well inside the five-minute trigger budget. A terminal `REJECTED` froze
-        # the row — the ledger only advances a row out of `DEFERRED` — so the next scan would create a
-        # Case while the ledger went on claiming `blacklisted` with no Case link.
-        #
-        # The expiry sweep is what stops these accumulating: a frame nobody un-blocked goes `EXPIRED`
-        # the moment it is past the trigger budget, keeping its reason.
-        return _result(
-            candidate=candidate,
-            status="DEFERRED",
-            stage="eligibility",
-            reason="blacklisted",
-            retryable=True,
-            evidence={"blacklist_reason": str(blocked.reason)},
-        )
     if now_ms - candidate.observed_at_ms > config.max_age_ms:
         # The clock only moves one way, so this is terminal on arrival. It is `EXPIRED` rather than
         # `REJECTED` because nothing about the fact was wrong — the lane simply was not looking when it
@@ -358,19 +330,15 @@ def admit_trigger(
             retryable=False,
             evidence={"age_ms": now_ms - candidate.observed_at_ms, "max_age_ms": config.max_age_ms},
         )
-    # One reason, because it is one fact: this issuer is already busy. It used to be two — an
-    # `active_underlying` for a live Intent and a `case_in_flight` for an undecided Case — which read
-    # as two rules to satisfy when it is one, and made the ledger's own aggregation answer a question
-    # nobody asks (of the frames refused because the name was busy, how many were busy *which way*).
-    # The evidence still carries which set matched, for anyone who does ask (#348).
-    if key in active_underlyings or key in underlyings_in_flight:
+    # One reason for one current fact: this issuer already has an undecided Case.
+    if key in underlyings_in_flight:
         return _result(
             candidate=candidate,
             status="DEFERRED",
             stage="eligibility",
             reason="underlying_busy",
             retryable=True,
-            evidence={"holds": "intent" if key in active_underlyings else "case"},
+            evidence={"holds": "case"},
         )
     return None
 

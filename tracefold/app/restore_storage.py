@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -13,7 +12,7 @@ from psycopg.rows import dict_row
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.platform.postgres.migrations import latest_migration_version
 from tracefold.platform.postgres.restore_drill import run_restore_drill as run_platform_restore_drill
-from tracefold.trading import DailyRiskPolicyV1, ExecutionObservationV1, SettlementRiskLimitV1
+from tracefold.trading import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
     materialize_operator_intents,
@@ -24,16 +23,13 @@ from tracefold.trading.storage.execution_stream import (
 
 _CURRENT_EVENT_ID = "restore-current-event"
 _CASE_ID = "restore-trading-case"
-_LEGACY_INTENT_ID = "7" * 64
-_EXECUTION_SIGNAL_ID = "8" * 64
-_EXECUTION_COMMAND_ID = "9" * 64
-_EXECUTION_EVENT_ID = "a" * 64
-_EXECUTION_PROFILE_ID = "restore-disabled"
+_SIGNAL_ID = "8" * 64
+_COMMAND_ID = "9" * 64
+_OBSERVATION_ID = "a" * 64
+_PROFILE_ID = "restore-disabled"
 
 
 def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
-    """Compose the generic isolated restore mechanism with News and Trading evidence."""
-
     return run_platform_restore_drill(
         admin_dsn,
         migration_dsn,
@@ -44,29 +40,11 @@ def run_restore_drill(admin_dsn: str, migration_dsn: str) -> dict[str, Any]:
 
 
 def _seed_and_summarize(dsn: str) -> dict[str, Any]:
-    policy = DailyRiskPolicyV1(
-        approved_release="restore-release",
-        cost_model_sha256="c" * 64,
-        max_committed_entry_attempts=1,
-        max_target_notional=Decimal("10"),
-        settlement_limits=(
-            SettlementRiskLimitV1(
-                settlement_asset="USDT",
-                max_planned_risk_amount=Decimal("1"),
-                max_realized_loss_amount=Decimal("1"),
-                fee_slippage_reserve_bps=10,
-            ),
-        ),
-        issuer="restore-drill",
-        issued_at_ms=10,
-        effective_from_ms=10,
-        expires_at_ms=100,
-    )
     signal = prepare_trade_signal(
-        signal_id=_EXECUTION_SIGNAL_ID,
-        case_id="restore-execution-case",
+        signal_id=_SIGNAL_ID,
+        case_id=_CASE_ID,
         alpha_contract_sha256="b" * 64,
-        market_key="crypto:perp:BTC:USDT",
+        market_key="crypto:perp:RESTORE:USDT",
         direction="long",
         observed_at_ns=1_000,
         expires_at_ns=10_000,
@@ -74,8 +52,8 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         alpha_metadata={"restore": True},
     )
     command = prepare_operator_intent(
-        command_id=_EXECUTION_COMMAND_ID,
-        target_profile_id=_EXECUTION_PROFILE_ID,
+        command_id=_COMMAND_ID,
+        target_profile_id=_PROFILE_ID,
         action="pause_entries",
         scope="account",
         reason="restore drill",
@@ -87,14 +65,14 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         market_key=None,
         direction=None,
     )
-    observation = prepare_execution_observations(
+    observations = prepare_execution_observations(
         (
             ExecutionObservationV1(
-                event_id=_EXECUTION_EVENT_ID,
-                runtime_profile_id=_EXECUTION_PROFILE_ID,
+                event_id=_OBSERVATION_ID,
+                runtime_profile_id=_PROFILE_ID,
                 runtime_release="restore-release",
                 execution_strategy="oi-nautilus-v1",
-                signal_id=_EXECUTION_SIGNAL_ID,
+                signal_id=_SIGNAL_ID,
                 normalized_kind="signal_disposition",
                 occurred_at_ns=2_000,
                 observed_at_ns=2_100,
@@ -104,7 +82,7 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         )
     )
     activation = ExecutionProfileActivation(
-        runtime_profile_id=_EXECUTION_PROFILE_ID,
+        runtime_profile_id=_PROFILE_ID,
         account_slot="restore-account",
         activated_after_signal_seq=0,
         activated_after_command_seq=0,
@@ -118,23 +96,11 @@ def _seed_and_summarize(dsn: str) -> dict[str, Any]:
         repos = repositories_for_connection(conn)
         with conn.transaction():
             repos.news.seed_restore_drill_facts(current_event_id=_CURRENT_EVENT_ID)
-            repos.trading.blacklist_upsert(
-                base_symbol="RESTORE",
-                reason="restore_drill",
-                expires_at_ms=None,
-                now_ms=10,
-            )
             repos.trading.seed_restore_drill_case(case_id=_CASE_ID)
-            repos.trading.seed_restore_drill_archive_intent(
-                intent_id=_LEGACY_INTENT_ID,
-                case_id=_CASE_ID,
-            )
-            if not repos.trading.append_daily_risk_policy(policy, created_at_ms=10):
-                raise RuntimeError("postgres_restore_drill_risk_policy_seed_conflict")
             repos.trading.append_trade_signal(signal)
             repos.trading.append_operator_intent(command)
             repos.trading.append_execution_profile_activation(activation)
-            repos.trading.append_execution_observations(observation)
+            repos.trading.append_execution_observations(observations)
         return _summary(conn)
 
 
@@ -157,23 +123,17 @@ def _summary(conn: Any) -> dict[str, Any]:
                      AS evidence_sha256,
                    (SELECT count(*) FROM news_deliveries WHERE event_id = %s AND state = 'terminal')
                      AS delivery_rows,
-                   (SELECT count(*) FROM trading_cases WHERE case_id = %s AND state = 'NO_TRADE') AS case_rows,
+                   (SELECT count(*) FROM trading_cases
+                     WHERE case_id = %s AND state = 'SIGNAL_EMITTED') AS case_rows,
                    (SELECT max(manifest_sha256) FROM trading_cases WHERE case_id = %s) AS case_manifest_sha256,
-                   (SELECT count(*) FROM trading_intents
-                     WHERE intent_id = %s AND intent_version = 'trade_intent_v1') AS legacy_intent_rows,
-                   (SELECT count(*) FROM trading_symbol_blacklist WHERE base_symbol = 'RESTORE') AS blacklist_rows,
-                   (SELECT count(*) FROM trading_daily_risk_policies
-                     WHERE approved_release = 'restore-release') AS risk_policy_rows,
-                   (SELECT max(risk_policy_sha256) FROM trading_daily_risk_policies
-                     WHERE approved_release = 'restore-release') AS risk_policy_sha256,
                    (SELECT count(*) FROM trading_trade_signals
-                     WHERE signal_id = %s AND payload ->> 'signal_id' = signal_id) AS execution_signal_rows,
+                     WHERE signal_id = %s AND case_id = %s AND payload ->> 'signal_id' = signal_id) AS signal_rows,
                    (SELECT count(*) FROM trading_operator_intents
-                     WHERE command_id = %s AND payload ->> 'command_id' = command_id) AS execution_command_rows,
+                     WHERE command_id = %s AND payload ->> 'command_id' = command_id) AS command_rows,
                    (SELECT count(*) FROM trading_execution_observations
-                     WHERE event_id = %s AND payload ->> 'event_id' = event_id) AS execution_observation_rows,
+                     WHERE event_id = %s AND payload ->> 'event_id' = event_id) AS observation_rows,
                    (SELECT count(*) FROM trading_execution_profile_activations
-                     WHERE runtime_profile_id = %s AND config_sha256 = %s) AS execution_activation_rows
+                     WHERE runtime_profile_id = %s AND config_sha256 = %s) AS activation_rows
             """,
             (
                 _CURRENT_EVENT_ID,
@@ -182,11 +142,11 @@ def _summary(conn: Any) -> dict[str, Any]:
                 _CURRENT_EVENT_ID,
                 _CASE_ID,
                 _CASE_ID,
-                _LEGACY_INTENT_ID,
-                _EXECUTION_SIGNAL_ID,
-                _EXECUTION_COMMAND_ID,
-                _EXECUTION_EVENT_ID,
-                _EXECUTION_PROFILE_ID,
+                _SIGNAL_ID,
+                _CASE_ID,
+                _COMMAND_ID,
+                _OBSERVATION_ID,
+                _PROFILE_ID,
                 "e" * 64,
             ),
         ).fetchone()
@@ -198,13 +158,10 @@ def _summary(conn: Any) -> dict[str, Any]:
         "evidence_rows",
         "delivery_rows",
         "case_rows",
-        "legacy_intent_rows",
-        "blacklist_rows",
-        "risk_policy_rows",
-        "execution_signal_rows",
-        "execution_command_rows",
-        "execution_observation_rows",
-        "execution_activation_rows",
+        "signal_rows",
+        "command_rows",
+        "observation_rows",
+        "activation_rows",
     }
     return {key: int(value) if key in numeric else str(value) for key, value in row.items()}
 
@@ -215,13 +172,13 @@ def _smoke(conn: Any) -> dict[str, bool]:
     evidence = repos.news.latest_evidence_snapshot(_CURRENT_EVENT_ID)
     delivery = repos.news.delivery(event_id=_CURRENT_EVENT_ID, kind="first")
     case = repos.trading.case(case_id=_CASE_ID)
-    policy = repos.trading.daily_risk_policy(summary["risk_policy_sha256"])
-    command_rows = repos.trading.unresolved_operator_intents(
-        runtime_profile_id=_EXECUTION_PROFILE_ID,
-        execution_strategy="oi-nautilus-v1",
-        limit=10,
+    commands = materialize_operator_intents(
+        repos.trading.unresolved_operator_intents(
+            runtime_profile_id=_PROFILE_ID,
+            execution_strategy="oi-nautilus-v1",
+            limit=10,
+        )
     )
-    commands = materialize_operator_intents(command_rows)
     return {
         "migration_head": summary["migration_head"] == latest_migration_version(),
         "news_current_fact": repos.news.event_card(_CURRENT_EVENT_ID) is not None,
@@ -229,22 +186,13 @@ def _smoke(conn: Any) -> dict[str, bool]:
         "news_delivery_terminal": delivery is not None and delivery["state"] == "terminal",
         "pre_genesis_compatibility_absent": summary["retired_compatibility_objects"] == 0,
         "trading_case_fact": case is not None
-        and case["state"] == "NO_TRADE"
+        and case["state"] == "SIGNAL_EMITTED"
         and case["manifest_sha256"] == summary["case_manifest_sha256"],
-        "trading_legacy_archive_preserved": summary["legacy_intent_rows"] == 1,
-        "trading_legacy_archive_excluded": repos.trading.intent(_LEGACY_INTENT_ID) is None,
-        "trading_blacklist_fact": summary["blacklist_rows"] == 1,
-        "trading_risk_policy_fact": policy is not None and policy.risk_policy_sha256 == summary["risk_policy_sha256"],
+        "trading_signal_fact": summary["signal_rows"] == 1,
         "trading_execution_stream_facts": all(
-            summary[key] == 1
-            for key in (
-                "execution_signal_rows",
-                "execution_command_rows",
-                "execution_observation_rows",
-                "execution_activation_rows",
-            )
+            summary[key] == 1 for key in ("command_rows", "observation_rows", "activation_rows")
         ),
-        "trading_execution_stream_read": len(commands) == 1 and commands[0].command_id == _EXECUTION_COMMAND_ID,
+        "trading_execution_stream_read": len(commands) == 1 and commands[0].command_id == _COMMAND_ID,
     }
 
 

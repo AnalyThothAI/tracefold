@@ -3,6 +3,7 @@ export UV_CACHE_DIR
 
 TRACEFOLD := uv run tracefold
 READ_TRADING_ENABLED := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["enabled"]; print(str(value).lower()) if type(value) is bool else sys.exit("invalid trading enabled")'
+READ_TRADING_EXECUTION_MODE := uv run python -c 'import json, sys; value = json.load(sys.stdin)["data"]["trading"]["execution"]["mode"]; print(value) if value in {"disabled", "paper", "live"} else sys.exit("invalid trading execution mode")'
 TRACEFOLD_API_HOST ?= 127.0.0.1
 TRACEFOLD_API_PORT ?= 8765
 TRACEFOLD_WORKERS_HOST ?= 127.0.0.1
@@ -31,7 +32,6 @@ CI_RUNTIME_BROKER_SELECTION := tests/golden \
 CI_DEPLOY_E2E_SELECTION := tests/deploy tests/e2e \
 	tests/integration/test_news_status_scale.py \
 	tests/integration/test_news_v3_price_scale.py \
-	tests/integration/test_nautilus_config.py \
 	-m "(deploy or e2e or slow) and not live and not scheduled"
 CI_TEST_INTEGRITY_SELECTION := tests/contract/test_hook_installer.py \
 	tests/slow/test_frontend_harness_fail_closed.py \
@@ -296,7 +296,6 @@ check-static: ## run hermetic static and generated drift checks without pytest
 	@uv run mypy tracefold
 	@uv run python scripts/regen_cli_help.py --check
 	@uv run python scripts/regen_rabbitmq_definitions.py --check
-	@uv run python scripts/regen_trading_contract_receipt.py --check
 	@uv run python scripts/sync_agent_router.py --check
 	@uv run python scripts/check_mandatory_docs_links.py
 	@uv run python -m compileall tracefold tests
@@ -307,10 +306,10 @@ check: check-static ## static checks plus local architecture/contract regression
 test-integration: ## run only tests/integration/ (real PostgreSQL boundary), excluding slow
 	@uv run python -m pytest tests/integration -m "integration and not slow and not scheduled"
 
-trading-smoke: ## Decision/Capital no-key plus retained Intent evidence on real PostgreSQL (#350)
-	@echo "This focused lane proves no-key binding projection, Policy/Capital attribution, and retained Intent evidence."
+trading-smoke: ## News Source -> Case -> TradeSignalV1 plus hard-cut invariants on real PostgreSQL (#433-C)
+	@echo "This focused lane proves atomic Case/Signal emission and the irreversible execution-writer hard cut."
 	@echo "It does not contact a venue and is not a substitute for the complete verification entry."
-	@uv run python -m pytest tests/integration/test_trading_intents.py tests/integration/test_trading_binding_projection.py -m integration
+	@uv run python -m pytest tests/integration/test_news_to_trading_seam.py tests/integration/test_trading_signal_hard_cut.py -m integration
 
 test-deploy: ## run deploy/operations subprocess and lifecycle tests
 	@uv run python -m pytest tests/deploy -m deploy
@@ -645,6 +644,7 @@ status: preflight ## fail closed unless every enabled runtime is ready
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
+		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
 		failed=0; \
 		for service in postgres rabbitmq serve workers; do \
 			container_id=$$(docker compose ps -q "$$service"); \
@@ -660,10 +660,13 @@ status: preflight ## fail closed unless every enabled runtime is ready
 				failed=1; \
 			fi; \
 		done; \
-		if [ "$$trading_enabled" = true ]; then \
-			echo "execution adapters: not required (#356/#357 pending; capital paused)"; \
+		if [ "$$execution_mode" != disabled ]; then \
+			echo "execution runtime: mode=$$execution_mode unavailable before #433-E" >&2; \
+			failed=1; \
+		elif [ "$$trading_enabled" = true ]; then \
+			echo "execution runtime: disabled (#433-E activation pending)"; \
 		else \
-			echo "execution adapters: not required (Trading disabled)"; \
+			echo "execution runtime: disabled (Trading disabled)"; \
 		fi; \
 		migrate_id=$$(docker compose ps --all -q migrate); \
 		if [ -z "$$migrate_id" ]; then \

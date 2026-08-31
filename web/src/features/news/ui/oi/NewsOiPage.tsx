@@ -1,5 +1,5 @@
 import { useTradingGateWithToken } from "@features/trading";
-import { newsLeveragePath } from "@shared/routing/paths";
+import { newsAlphaPath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useState } from "react";
@@ -27,8 +27,8 @@ import "./newsOi.css";
  * OI 来源与准入审计 — the deterministic open-interest lane, frame by frame (#207, #256, #331).
  *
  * Two questions, and this page asks both about the *Source*: did the telemetry parse and clear the push
- * gates, and did the capital lane admit it. Whether the capital lane then decided to trade is a third
- * question with its own frozen evidence, and it is answered on 资本判定 — this page links there rather
+ * gates, and did the Signal lane admit it. Whether Alpha then emitted a Signal is a third question with
+ * its own frozen evidence, and it is answered on Alpha 判定 — this page links there rather
  * than restating it.
  *
  * Bounded reads: `/api/news/status` for the push gates and 24 h counts, `/api/news/feed` filtered to the
@@ -120,7 +120,7 @@ export function NewsOiPage({ token }: { token: string }) {
         subtitle={
           <>
             遥测帧、解析、推送闸门与资本准入——这一页只答「来源发生了什么」；判定与冻结证据在{" "}
-            <Link to={newsLeveragePath()}>资本判定</Link>
+            <Link to={newsAlphaPath()}>Alpha 判定</Link>
           </>
         }
         title="OI 来源与准入审计"

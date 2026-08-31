@@ -14,7 +14,7 @@ class CaseStorage:
     conn: Any
 
     def seed_restore_drill_case(self, *, case_id: str) -> None:
-        """Seed one terminal Case for the isolated application restore drill."""
+        """Seed one current Signal Case for the isolated application restore drill."""
 
         self.conn.execute(
             """
@@ -26,7 +26,8 @@ class CaseStorage:
               capital_disposition, capital_reason
             ) VALUES (
               %s, 'restore:RESTORE', 'news', 'restore-source', '[]'::jsonb,
-              '{"restore":"case"}'::jsonb, %s, 'NO_TRADE', 'no_trade', 'restore_drill',
+              '{"restore":"case","manifest_version":"trading_manifest_v10","market_key":"crypto:perp:RESTORE:USDT"}'::jsonb,
+              %s, 'SIGNAL_EMITTED', 'long', 'restore_drill',
               10, 10, 10, 'restore_strategy', 'restore_v1', %s, 'not_applicable', NULL
             )
             """,

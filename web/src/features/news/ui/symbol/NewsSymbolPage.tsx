@@ -42,7 +42,7 @@ import "./newsSymbol.css";
  * open-interest curve — the same reason the OI monitor has none. The design's 交易视角 panel — the OI/price
  * quadrant and the pre-frame 1 h move — is still absent for the reason the OI monitor's is: both need the
  * price one hour before the frame, and the News price plane stores only the Event-anchored p0/p1/p4.
- * 交易复盘 is here, reading the capital lane's own endpoint.
+ * Alpha 复盘 is here, reading the Signal lane's own endpoint.
  */
 export function NewsSymbolPage({ base, token }: { base: string; token: string }) {
   const normalized = base.trim().toUpperCase().replace(/^XYZ-/, "");
@@ -71,7 +71,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
   );
   const feedQuery = useNewsFeedWithToken(token, filters);
   const statusQuery = useNewsStatusWithToken(token);
-  /* One batch for both capital sections: `交易视角` reads its newest case and `交易复盘` lists them all. */
+  /* One Case batch feeds both compact Alpha summaries on this symbol page. */
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
   /*
@@ -158,7 +158,7 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
         />
 
         {/*
-         * 资本复盘 sits above the event list, as the artifact draws 交易视角 (#282). The list is the long
+         * Alpha 复盘 sits above the event list. The list is the long
          * tail; this is the answer a reader arriving from a frame came for.
          *
          * The separate 交易视角 quadrant panel is gone with the quadrant itself (#331). It re-derived a
