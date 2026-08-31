@@ -188,7 +188,7 @@ def clean(conn: Any):
     conn.execute(
         """
         UPDATE trading_runtime_state
-           SET control = 'RUNNING', nautilus_ready = false, nautilus_unexpected_exposure = false
+           SET control = 'RUNNING'
          WHERE id = 1
         """
     )
