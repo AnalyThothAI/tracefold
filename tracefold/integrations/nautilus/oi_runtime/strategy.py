@@ -649,17 +649,23 @@ class OiNautilusStrategy(Strategy):
             self._dispose_signal(signal, decision.reason)
             return
         price = (Decimal(str(quote.bid_price)) + Decimal(str(quote.ask_price))) / Decimal(2)
-        raw_quantity = fixed_risk_quantity(
-            price=price,
-            stop_distance_bps=route.stop_distance_bps,
-            allowed_risk_usd=decision.allowed_risk_usd,
-            equity_usd=facts.equity_usd,
-            max_leverage=self._profile.risk.max_leverage,
-            existing_notional_usd=(
-                facts.gross_position_notional_usd + facts.open_order_notional_usd + facts.inflight_order_notional_usd
-            ),
-            size_increment=instrument.size_increment.as_decimal(),
-        )
+        try:
+            raw_quantity = fixed_risk_quantity(
+                price=price,
+                stop_distance_bps=route.stop_distance_bps,
+                allowed_risk_usd=decision.allowed_risk_usd,
+                equity_usd=facts.equity_usd,
+                max_leverage=self._profile.risk.max_leverage,
+                existing_notional_usd=(
+                    facts.gross_position_notional_usd
+                    + facts.open_order_notional_usd
+                    + facts.inflight_order_notional_usd
+                ),
+                size_increment=instrument.size_increment.as_decimal(),
+            )
+        except ValueError as exc:
+            self._dispose_signal(signal, str(exc))
+            return
         quantity = instrument.make_qty(raw_quantity)
         if quantity.as_decimal() <= 0:
             self._dispose_signal(signal, "quantity_below_increment")

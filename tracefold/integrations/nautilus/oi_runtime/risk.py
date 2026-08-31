@@ -97,13 +97,25 @@ class NautilusRiskFacts:
         if total is None:
             raise RuntimeError("oi_runtime_account_balance_missing")
         equity = _decimal(total)
-        market_observed_at_ns = 0
+        positions = tuple(cache.positions_open(account_id=account_id))
+        open_orders = tuple(cache.orders_open(account_id=account_id))
+        inflight_orders = tuple(cache.orders_inflight(account_id=account_id))
+        open_ids = {order.client_order_id for order in open_orders}
+        inflight_orders = tuple(order for order in inflight_orders if order.client_order_id not in open_ids)
+
+        priced_instruments = {
+            candidate_instrument_id,
+            *(position.instrument_id for position in positions),
+            *(order.instrument_id for order in (*open_orders, *inflight_orders)),
+        }
+        market_clocks: list[int] = []
         prices: dict[InstrumentId, Decimal] = {}
-        for instrument_id in routes:
+        for instrument_id in priced_instruments:
+            if instrument_id not in routes:
+                continue
             price, observed_at_ns = _mid_price(cache, instrument_id)
             prices[instrument_id] = price
-            if instrument_id == candidate_instrument_id:
-                market_observed_at_ns = observed_at_ns
+            market_clocks.append(observed_at_ns)
             instrument = cache.instrument(instrument_id)
             if instrument is None:
                 raise RuntimeError("oi_runtime_instrument_missing")
@@ -115,14 +127,9 @@ class NautilusRiskFacts:
             )
             if unrealized is not None:
                 equity += _decimal(unrealized)
-        if market_observed_at_ns == 0:
+        if candidate_instrument_id not in prices:
             raise RuntimeError("oi_runtime_candidate_market_missing")
-
-        positions = tuple(cache.positions_open(account_id=account_id))
-        open_orders = tuple(cache.orders_open(account_id=account_id))
-        inflight_orders = tuple(cache.orders_inflight(account_id=account_id))
-        open_ids = {order.client_order_id for order in open_orders}
-        inflight_orders = tuple(order for order in inflight_orders if order.client_order_id not in open_ids)
+        market_observed_at_ns = min(market_clocks)
 
         gross_position_notional = Decimal(0)
         aggregate_risk = Decimal(0)
@@ -165,7 +172,10 @@ class NautilusRiskFacts:
             open_order_notional_usd=open_notional,
             inflight_order_notional_usd=inflight_notional,
             aggregate_risk_usd=aggregate_risk,
-            current_positions=len(positions),
+            current_positions=len(
+                {position.instrument_id for position in positions}
+                | {order.instrument_id for order in (*open_orders, *inflight_orders) if not bool(order.is_reduce_only)}
+            ),
             market_observed_at_ns=market_observed_at_ns,
             account_observed_at_ns=account_observed_at_ns,
             reconciliation_observed_at_ns=reconciliation_observed_at_ns,

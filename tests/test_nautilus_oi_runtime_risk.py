@@ -10,9 +10,11 @@ from nautilus_trader.model.enums import OmsType, OrderSide
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId, VenueOrderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.position import Position
+from nautilus_trader.test_kit.providers import TestInstrumentProvider
+from nautilus_trader.test_kit.stubs.data import TestDataStubs
 from nautilus_trader.test_kit.stubs.events import TestEventStubs
 
-from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, registered_oi_strategy
+from tests.nautilus_oi_runtime_fixtures import ACCOUNT_ID, NOW_NS, registered_oi_strategy, trade_signal
 from tracefold.integrations.nautilus.oi_runtime.risk import (
     DayStartBaseline,
     NautilusRiskFacts,
@@ -93,6 +95,82 @@ def test_cache_portfolio_snapshot_aggregates_position_open_and_inflight_risk() -
     assert facts.aggregate_risk_usd == Decimal("0.06") * mid * Decimal("0.02")
     assert facts.current_positions == 1
     assert facts.unexpected_exposure is False
+
+
+def test_risk_snapshot_uses_oldest_contributing_quote_and_pending_position_slot() -> None:
+    context = registered_oi_strategy()
+    eth = TestInstrumentProvider.ethusdt_perp_binance()
+    context.cache.add_instrument(eth)
+    context.cache.add_quote_tick(
+        TestDataStubs.quote_tick(
+            instrument=eth,
+            bid_price=1_999,
+            ask_price=2_000,
+            ts_event=NOW_NS - 10_000_000_001,
+            ts_init=NOW_NS - 10_000_000_001,
+        )
+    )
+    pending = context.strategy.order_factory.market(
+        instrument_id=eth.id,
+        order_side=OrderSide.BUY,
+        quantity=eth.make_qty(Decimal("0.01")),
+        client_order_id=ClientOrderId("owned-eth-entry"),
+    )
+    context.cache.add_order(pending, client_id=ClientId("BINANCE"))
+    pending.apply(TestEventStubs.order_submitted(pending, account_id=ACCOUNT_ID, ts_event=NOW_NS))
+    context.cache.update_order(pending)
+
+    facts = NautilusRiskFacts.collect(
+        cache=context.cache,
+        portfolio=context.portfolio,
+        account_id=ACCOUNT_ID,
+        strategy_id=context.strategy.id,
+        routes={context.instrument.id: 200, eth.id: 200},
+        candidate_instrument_id=context.instrument.id,
+        owned_order_ids=frozenset({pending.client_order_id}),
+        owned_position_ids=frozenset(),
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+    )
+
+    assert facts.market_observed_at_ns == NOW_NS - 10_000_000_001
+    assert facts.current_positions == 1
+    stale = OiFuturesRiskPolicy(context.profile.risk).evaluate_entry(
+        facts=facts,
+        baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
+        now_ns=NOW_NS,
+        requested_risk_usd=Decimal("10"),
+        requested_leverage=2,
+        candidate_is_new_position=True,
+    )
+    full = OiFuturesRiskPolicy(replace(context.profile.risk, max_positions=1)).evaluate_entry(
+        facts=replace(facts, market_observed_at_ns=NOW_NS),
+        baseline=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS, "4" * 64),
+        now_ns=NOW_NS,
+        requested_risk_usd=Decimal("10"),
+        requested_leverage=2,
+        candidate_is_new_position=True,
+    )
+
+    assert stale.reason == "market_stale"
+    assert full.reason == "position_limit"
+
+
+def test_exhausted_leverage_capacity_disposes_signal_instead_of_losing_it() -> None:
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,))
+    existing = _submitted_order(context, "owned-capacity", "0.201", accepted=True)
+    context.strategy._orders[existing.client_order_id] = ("existing", "entry")
+    context.strategy._stop_bps[context.instrument.id] = 100
+
+    context.strategy.on_timer(None)
+
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    dispositions = [value for value in written if value.normalized_kind == "signal_disposition"]
+    assert context.strategy.submitted == []
+    assert len(dispositions) == 1
+    assert dispositions[0].summary["disposition"] == "oi_runtime_sizing_capacity_exhausted"
 
 
 def test_unowned_native_order_halts_new_risk() -> None:
