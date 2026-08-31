@@ -63,4 +63,4 @@ changes; it is not a per-edit step.
 - Follow the canonical lifecycle in `docs/agents/worktrees.md`.
 - At task start, use Codex's repository/status tools to identify the current checkout and registered worktrees. Keep an already assigned task worktree; otherwise prefer the Codex app's **Worktree** mode.
 - A detached Codex worktree needs a task branch before edits. Use the `codex/<issue>-<slug>` prefix or the branch already assigned by the app.
-- Record non-trivial scope and changed decisions in the GitHub Issue. Run the `code-review` skill on the final task branch; add the available security review when the changed surface requires it.
+- Record non-trivial scope and changed decisions in the GitHub Issue. Do not require the local `code-review` skill as a final checkpoint; code review belongs to the PR. Add the available security review when the changed surface requires it.
