@@ -17,6 +17,7 @@ from nautilus_trader.test_kit.stubs.events import TestEventStubs
 from tests.nautilus_oi_runtime_fixtures import (
     ACCOUNT_ID,
     NOW_NS,
+    SignalRows,
     registered_oi_strategy,
     trade_signal,
 )
@@ -162,6 +163,75 @@ def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
     assert restarted.strategy.submitted == []
     assert restarted.strategy.queried == []
     assert restarted.strategy.readiness().unexpected_exposure is True
+
+
+def test_expired_unresolved_signal_reclaims_cached_entry_before_protection() -> None:
+    signal = trade_signal(expires_at_ns=NOW_NS)
+    first = registered_oi_strategy()
+    entry_id = deterministic_client_order_id(
+        namespace=first.profile.client_order_namespace,
+        profile_id=first.profile.profile_id,
+        signal_id=signal.signal_id,
+        leg="entry",
+    )
+    entry = first.strategy.order_factory.market(
+        instrument_id=first.instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=first.instrument.make_qty(Decimal("0.01")),
+        client_order_id=entry_id,
+    )
+    _accepted(first, entry)
+    restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
+
+    restarted.strategy.on_timer(None)
+    restarted.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=restarted.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=restarted.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=PositionId("BTCUSDT-PERP.BINANCE-OI-EXPIRED-RECOVERY"),
+            quantity=restarted.instrument.make_qty(Decimal("0.01")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 2,
+        )
+    )
+
+    assert restarted.strategy.queried == [entry]
+    protection = restarted.strategy.submitted[0][0]
+    assert protection.order_type == OrderType.STOP_MARKET
+    assert protection.is_reduce_only is True
+
+
+def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
+    first_signal = trade_signal()
+    next_signal = trade_signal(signal_id="9" * 64)
+    first = registered_oi_strategy()
+    entry_id = deterministic_client_order_id(
+        namespace=first.profile.client_order_namespace,
+        profile_id=first.profile.profile_id,
+        signal_id=first_signal.signal_id,
+        leg="entry",
+    )
+    entry = first.strategy.order_factory.market(
+        instrument_id=first.instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=first.instrument.make_qty(Decimal("0.01")),
+        client_order_id=entry_id,
+    )
+    _accepted(first, entry)
+    canceled = TestEventStubs.order_canceled(entry, account_id=ACCOUNT_ID, ts_event=NOW_NS + 2)
+    entry.apply(canceled)
+    first.cache.update_order(entry)
+    restarted = registered_oi_strategy(values=(first_signal,), cache=first.cache)
+    restarted.strategy.on_timer(None)
+
+    assert restarted.signals.poll_once(SignalRows(next_signal)) == 1
+    restarted.strategy.on_timer(None)
+
+    assert len(restarted.strategy.submitted) == 1
+    assert restarted.strategy.submitted[0][0].client_order_id != entry.client_order_id
 
 
 def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:

@@ -176,6 +176,12 @@ class AuditSink:
         self._gap_started_at_ns = 0
         self._gap_last_observed_at_ns = 0
         self._gap_event_id: str | None = None
+        self._conflict_sequence = 0
+        self._conflict_count = 0
+        self._conflict_first_event_id: str | None = None
+        self._conflict_started_at_ns = 0
+        self._conflict_last_observed_at_ns = 0
+        self._conflict_gap_event_id: str | None = None
         self._lock = Lock()
 
     @property
@@ -216,6 +222,14 @@ class AuditSink:
                     return True
                 self._healthy = False
                 self._failure_reason = "audit_identity_conflict"
+                if self._conflict_count == 0:
+                    self._conflict_first_event_id = value.event_id
+                    self._conflict_started_at_ns = value.occurred_at_ns
+                self._conflict_count += 1
+                self._conflict_last_observed_at_ns = max(
+                    self._conflict_last_observed_at_ns,
+                    value.observed_at_ns,
+                )
                 return False
             if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
                 self._healthy = False
@@ -235,6 +249,7 @@ class AuditSink:
     ) -> tuple[ExecutionObservationV1, ...]:
         with self._lock:
             self._enqueue_gap_when_room()
+            self._enqueue_conflict_gap_when_room()
             batch: list[ExecutionObservationV1] = []
             batch_bytes = 0
             for value, size in self._values:
@@ -260,8 +275,14 @@ class AuditSink:
                 self._bytes -= size
             if self._gap_event_id is not None and self._gap_event_id in event_ids:
                 self._gap_event_id = None
+            if self._conflict_gap_event_id is not None and self._conflict_gap_event_id in event_ids:
+                self._conflict_gap_event_id = None
             self._enqueue_gap_when_room()
-            if self._gap_dropped_count == 0 and self._gap_event_id is None:
+            self._enqueue_conflict_gap_when_room()
+            if self._conflict_count > 0 or self._conflict_gap_event_id is not None:
+                self._healthy = False
+                self._failure_reason = "audit_identity_conflict"
+            elif self._gap_dropped_count == 0 and self._gap_event_id is None:
                 self._healthy = True
                 self._failure_reason = None
             else:
@@ -300,6 +321,40 @@ class AuditSink:
         self._gap_dropped_count = 0
         self._gap_started_at_ns = 0
         self._gap_last_observed_at_ns = 0
+
+    def _enqueue_conflict_gap_when_room(self) -> None:
+        if self._conflict_count == 0 or self._conflict_gap_event_id is not None:
+            return
+        self._conflict_sequence += 1
+        value = self.factory.create(
+            normalized_kind="audit_gap",
+            occurred_at_ns=self._conflict_started_at_ns,
+            observed_at_ns=self._conflict_last_observed_at_ns,
+            summary={
+                "cause": "audit_identity_conflict",
+                "conflict_count": self._conflict_count,
+            },
+            payload={
+                "cause": "audit_identity_conflict",
+                "conflict_count": self._conflict_count,
+                "conflict_sequence": self._conflict_sequence,
+                "first_event_id": self._conflict_first_event_id,
+            },
+            event_identity=(
+                f"identity-conflict:{self._conflict_sequence}:{self._conflict_first_event_id}:"
+                f"{self._conflict_started_at_ns}:{self._conflict_last_observed_at_ns}:{self._conflict_count}"
+            ),
+        )
+        size = len(value.model_dump_json().encode())
+        if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
+            return
+        self._values.append((value, size))
+        self._bytes += size
+        self._conflict_gap_event_id = value.event_id
+        self._conflict_count = 0
+        self._conflict_first_event_id = None
+        self._conflict_started_at_ns = 0
+        self._conflict_last_observed_at_ns = 0
 
 
 __all__ = [

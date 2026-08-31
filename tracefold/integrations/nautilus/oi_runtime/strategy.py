@@ -665,9 +665,6 @@ class OiNautilusStrategy(Strategy):
         if existing_state is not None:
             self._dispose_signal(signal, existing_state.disposition_reason)
             return
-        if signal.expires_at_ns <= now_ns:
-            self._dispose_signal(signal, "expired")
-            return
         route = self._routes.get(signal.market_key)
         if route is None:
             self._dispose_signal(signal, "instrument_unmapped")
@@ -694,10 +691,15 @@ class OiNautilusStrategy(Strategy):
                 entry_order=existing,
                 submitted_at_ns=now_ns,
                 disposition_reason="replayed_query_first",
+                active=not existing.is_closed,
+                entry_query_pending=bool(existing.is_inflight or existing.is_active_local),
             )
             self._states[signal.signal_id] = state
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._dispose_signal(signal, "replayed_query_first")
+            return
+        if signal.expires_at_ns <= now_ns:
+            self._dispose_signal(signal, "expired")
             return
         exposure_ready = self._verify_owned_exposure()
         ready = self.readiness()

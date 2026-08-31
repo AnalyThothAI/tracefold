@@ -106,6 +106,40 @@ def test_audit_flush_failure_keeps_batch_and_blocks_exposure_until_success() -> 
     assert sink.can_accept_exposure() is False
 
 
+def test_audit_identity_conflict_stays_unhealthy_until_gap_is_durable() -> None:
+    factory = _factory()
+    event_id = "f" * 64
+    first = factory.create(
+        normalized_kind="readiness",
+        occurred_at_ns=NOW_NS,
+        observed_at_ns=NOW_NS,
+        payload={"version": 1},
+        fixed_event_id=event_id,
+    )
+    conflicting = factory.create(
+        normalized_kind="readiness",
+        occurred_at_ns=NOW_NS + 1,
+        observed_at_ns=NOW_NS + 1,
+        payload={"version": 2},
+        fixed_event_id=event_id,
+    )
+    sink = AuditSink(factory=factory, max_count=1, max_bytes=20_000)
+
+    assert sink.offer(first) is True
+    assert sink.offer(conflicting) is False
+    assert sink.failure_reason == "audit_identity_conflict"
+    written: list[object] = []
+    assert sink.flush_once(written.extend) == (first,)
+    assert sink.healthy is False
+    gap_batch = sink.flush_once(written.extend)
+
+    assert len(gap_batch) == 1
+    gap = gap_batch[0]
+    assert gap.normalized_kind == "audit_gap"
+    assert gap.summary == {"cause": "audit_identity_conflict", "conflict_count": 1}
+    assert sink.healthy is True
+
+
 def test_audit_overflow_stays_unhealthy_until_a_durable_gap_is_written() -> None:
     factory = _factory()
     sink = AuditSink(factory=factory, max_count=2, max_bytes=20_000)
