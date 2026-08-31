@@ -545,6 +545,9 @@ uv run tracefold news learning baseline --from-ms START --to-ms END \
 # human accepts or rewrites every rubric before it becomes truth.
 uv run tracefold news learning draft-reviews --model deepseek-v4-pro \
   --hours 24 --out /tmp/drafts.json
+uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
+uv run tracefold news review accept-drafts --file /tmp/drafts.json \
+  --only EVENT_OR_TASK_PREFIX[,PREFIX...]
 
 # The golden path (#253). Freeze once, then `run` — readiness, the standalone
 # `compile_live` baseline over that exact corpus, and the one optimization,
@@ -567,6 +570,11 @@ uv run tracefold news learning readiness --development DATASET_SHA \
 uv run tracefold news learning baseline --dataset DATASET_SHA \
   --mode compile_live --max-model-cases 80 \
   --semantic-judge deepseek-v4-pro --out /tmp/baseline.json
+# The same frozen Dataset also owns taxonomy measurement. This recorded branch
+# reads persisted Stable taxonomy, makes zero provider calls, and does not use
+# the GEPA Objective Plan or its split.
+uv run tracefold news learning baseline --dataset DATASET_SHA \
+  --mode recorded --out /tmp/taxonomy-baseline.json
 uv run tracefold news learning optimize --development DATASET_SHA \
   --out artifacts/optimize-1 \
   --max-metric-calls 100 --max-task-model-calls 150 \
@@ -625,8 +633,8 @@ audit-only and starts the factory-v7 eligible cohort at zero.
 Current Review v6 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
 `trade_affected_markets` and `reader_value`, and adds exact Gold for all five
-`news_taxonomy_v1` axes. Critical taxonomy cases require an independent
-adjudication receipt before they enter release denominators. Work the fixed targeted strata
+`news_taxonomy_v1` axes. One operator acceptance is taxonomy Gold; there is no
+taxonomy-specific second-reviewer or adjudication requirement. Work the fixed targeted strata
 `local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
 `regional_direct_exception`, `scheduled_or_in_line_macro`,
 `color_only_progression` and `macro_random_control`. Model drafts remain files;
@@ -776,7 +784,21 @@ object; `runtime_live` is the reader's. The same broken ReaderCard answer is
 fatal to the first and survivable on the second, so their failure rates are not
 comparable and the report says which contract it executed in `execution_scope`.
 
-The report publishes no single ambiguous number. `case_macro_answered` is
+Issue #437 gives `--dataset SHA --mode recorded` one narrower job: score the
+four model-owned taxonomy axes already persisted by the Dataset's Stable cohort.
+It returns `tracefold.news.recorded_taxonomy_baseline.v1`, not the Program
+baseline report, and carries no Objective Plan, split, provider route, judge, or
+candidate identity. The primary is event-family macro-F1 over supported Gold
+labels; diagnostics cover subject-code micro-F1, change-state accuracy,
+assertion-status macro-F1, and four-axis exact match. Complete legal universes,
+cluster-deduplicated denominators, model non-abstain, and separate code-owned
+source-authority registry coverage are always present. Fewer than 60 independent
+clusters is `INSUFFICIENT_DATA`; 60 or more is `MEASURED`, never an inferred
+quality threshold. Accepted external misses remain visible in `case_n` and the
+Dataset root, but without a recorded Stable prediction they enter neither
+`independent_cluster_n` nor `scored_case_n` or any metric denominator.
+
+The Program baseline report publishes no single ambiguous number. `case_macro_answered` is
 quality given an answer; `case_macro_failure_as_zero` is the end-to-end lower
 bound; they differ by exactly the unanswered cases. The v1 report computed only
 the first, so 29 provider failures turned a 0.482 lower bound into a published

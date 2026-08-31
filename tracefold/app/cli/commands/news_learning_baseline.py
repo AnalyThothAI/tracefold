@@ -218,10 +218,10 @@ def _dataset_corpus(datasets: Any, dataset_sha: str) -> tuple[tuple[Any, ...], t
 
 
 def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Score the stable Program offline. Read-only: no sandbox, no tariff, no container, no writes.
+    """Score a moving-window Program or frozen recorded taxonomy. Read-only and write-free.
 
-    The model transport lives behind `program_baseline`; this layer only reads the corpus and prints the
-    receipt, so the architecture boundary that keeps provider plumbing out of the CLI still holds.
+    Live Program modes keep model transport behind `program_baseline`; Dataset-recorded returns through
+    the pure taxonomy metric before any provider route is composed.
     """
 
     from tracefold.app.llm import configured_lm_endpoint
@@ -259,16 +259,26 @@ def _handle_learning_baseline(args: Namespace, settings: Any, stable: Any) -> tu
     if not dataset_sha and len(moving_window) != 2:
         raise ValueError("news_program_baseline_requires_dataset_or_window")
 
+    if dataset_sha and mode == "recorded":
+        from tracefold.news.learning.taxonomy_metric import recorded_taxonomy_baseline_report
+
+        with postgres_connection(settings, role="serve") as conn:
+            export = DevelopmentDatasetStore(conn, stable=stable).development_compile_export(dataset_sha)
+        taxonomy_report = recorded_taxonomy_baseline_report(
+            export.episodes,
+            dataset_sha=dataset_sha,
+            agent_cohort=dict(export.dataset_payload.get("agent_cohort") or {}),
+        )
+        payload = taxonomy_report.model_dump(mode="json")
+        payload["report_sha256"] = taxonomy_report.report_sha256
+        if str(args.out):
+            _write_json(str(args.out), payload)
+        return 0, {"ok": True, "data": {**payload, "report_written_to": str(args.out) or None}}
+
     if dataset_sha and mode != "compile_live":
         # `--dataset` publishes `subsets.development_selection` as the formal *before* value a Candidate is
         # picked against, so it has to measure what the optimizer measures: the production graph on one
         # task endpoint. The other two modes measure something else, each in its own way.
-        #
-        # `recorded` scores the action that actually shipped, while the Objective Plan classifies under a
-        # replayed `decide()` — it has to, because readiness, the trusted compiler and the release gate all
-        # rebuild the plan from the sealed export, which carries no recorded decision. They disagree on any
-        # case whose ledger state differed at ingest, and the report would then call a case a control and
-        # zero it in the same document.
         #
         # `runtime_live` runs the four-slot production route with its retry, fallback, deadline and
         # circuit. That is a reliability question, and a number from it is not comparable to a candidate

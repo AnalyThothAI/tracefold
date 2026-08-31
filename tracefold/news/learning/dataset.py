@@ -30,6 +30,7 @@ from ..review.desk import (
     REVIEW_RUBRIC_VERSIONS,
 )
 from ..storage.root import NewsRepository
+from ..taxonomy import ModelTaxonomyV1
 from .contracts import (
     LEARNING_PROFILE_ID,
     ArmManifest,
@@ -339,6 +340,11 @@ class DevelopmentDatasetStore:
             case = self.load_case(case_ref)
             context = self.build_context(case, state)
             review = dict(case["review"])
+            review_payload = dict(review.get("payload") or {})
+            taxonomy_payload = dict(review_payload.get("taxonomy") or {})
+            model_taxonomy = ModelTaxonomyV1.model_validate(
+                {field: taxonomy_payload[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy_payload}
+            )
             episodes.append(
                 {
                     "case_id": case_ref.case_id,
@@ -355,11 +361,12 @@ class DevelopmentDatasetStore:
                         # The column is `submission.first_bad_owner or _derive_owner(submission)` and cannot
                         # tell the two apart. The submission itself is persisted verbatim, so the payload —
                         # not a new column — is what says whether a human actually blamed the Prompt (#199).
-                        "first_bad_owner_explicit": (dict(review.get("payload") or {}).get("first_bad_owner")),
+                        "first_bad_owner_explicit": review_payload.get("first_bad_owner"),
                         "evidence_refs": list(review.get("evidence_refs") or []),
-                        "expected": dict((dict(review.get("payload") or {}).get("expected")) or {}),
+                        "expected": dict(review_payload.get("expected") or {}),
                         "expected_correction": str(review.get("expected_correction") or ""),
                         "note": str(review.get("note") or ""),
+                        "taxonomy": model_taxonomy.model_dump(mode="json"),
                     },
                     "production_judgment": case.get("production_judgment"),
                 }

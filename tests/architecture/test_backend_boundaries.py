@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import re
 from pathlib import Path
 
@@ -53,11 +54,8 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         # honest, and which ones are somebody else's defect. `readiness` is the CLI that publishes it, so
         # this is the one module here that is neither the optimizer nor the release plane.
         "tracefold.news.learning.objective",
-        # #367: the CLI composes the three explicit taxonomy owners. Evaluation owns metrics/gates,
-        # Release owns durable registration/verification, and Shadow owns the bounded Predictor.
-        "tracefold.news.learning.taxonomy",
-        "tracefold.news.learning.taxonomy_evaluation",
-        "tracefold.news.learning.taxonomy_shadow",
+        # #437: the existing recorded Dataset baseline invokes one pure taxonomy metric.
+        "tracefold.news.learning.taxonomy_metric",
         "tracefold.news.eval.replay",
         "tracefold.news.eval.why",
         "tracefold.news.review.desk",
@@ -81,8 +79,6 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
         "tracefold.news.artifact_identity",
         "tracefold.news.learning.contracts",
         "tracefold.news.learning.evaluate",
-        # #367: App binds the release-neutral Shadow Predictor to the configured News endpoint.
-        "tracefold.news.learning.taxonomy_shadow",
         "tracefold.news.market_review.storage",
         "tracefold.news.storage.query_specs",
         "tracefold.news.program.contracts",
@@ -341,6 +337,33 @@ def _private_import_allowed(importer: str, imported: str) -> bool:
         family = "integrations.rabbitmq"
     allowed_imports = PRIVATE_BUSINESS_IMPORT_RULES.get(family or "", ())
     return any(imported == allowed or imported.startswith(f"{allowed}.") for allowed in allowed_imports)
+
+
+def test_retired_taxonomy_lifecycle_has_no_module_or_runtime_wiring() -> None:
+    for module in (
+        "tracefold.news.learning.taxonomy",
+        "tracefold.news.learning.taxonomy_shadow",
+        "tracefold.news.learning.taxonomy_evaluation",
+    ):
+        try:
+            importlib.import_module(module)
+        except ModuleNotFoundError as exc:
+            assert exc.name == module
+        else:  # pragma: no cover - the assertion describes the retired public import surface
+            raise AssertionError(f"retired taxonomy module remains importable: {module}")
+
+    from tracefold.app.learning_runtime import NewsProgramRuntimeComposition
+    from tracefold.news.storage.learning import LearningStorage
+
+    assert not hasattr(NewsProgramRuntimeComposition, "taxonomy_shadow_program")
+    for retired_storage_read in (
+        "taxonomy_candidate_registration",
+        "taxonomy_active_deployment",
+        "taxonomy_shadow_artifacts",
+        "taxonomy_regression_sources",
+        "taxonomy_gold_sources",
+    ):
+        assert not hasattr(LearningStorage, retired_storage_read)
 
 
 def test_private_business_import_rules_follow_consumer_families() -> None:

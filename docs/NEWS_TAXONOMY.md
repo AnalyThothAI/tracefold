@@ -5,9 +5,10 @@
 Judgment. It is not a second Event truth, a delivery score, or Trading input.
 
 The production rollout for issue #117 intentionally precedes the model-quality
-claim: new judgments carry this contract now, while quality remains `UNKNOWN`
-until the preregistered Gold, future-holdout and rollout denominators are met.
-Schema deployment is not evidence that the classifier passed those gates.
+claim. Issue #437 measures that claim from one frozen development Dataset of
+accepted Gold and the taxonomy already persisted by Stable. Until at least 60
+independent connected-fact clusters are scored, the result is
+`INSUFFICIENT_DATA`; schema deployment is not evidence of model quality.
 
 ## Identities and ownership
 
@@ -112,85 +113,54 @@ shape. Structured listing, OI, and liquidation presentation reads code-owned
 `event_kind`; OI and liquidation use their own typed judgments and do not
 fabricate model taxonomy or enter the generic Review v6 queue.
 
-## Gold, shadow and evaluation
+## Gold and recorded Stable measurement
 
-Only an accepted `news_review_v6` receipt is Gold. A model draft records its
-author; that author cannot accept it. Product/financial/guidance families,
-confirmed-vs-rumor, `other`/`unknown`, draft disagreement and other current-axis
-critical cases require a different adjudicator before release eligibility.
-Connected fact clusters are the independent sample; provider duplicates fold to
-one representative.
+One operator-accepted `news_review_v6` taxonomy is Gold. There is no
+taxonomy-specific second-reviewer or adjudication prerequisite. A model draft
+still records its author and cannot accept itself, and a non-dry-run
+`review accept-drafts` requires a non-empty `--only` list naming the Event or
+task prefixes the operator actually approved. An empty selection is preview-only.
 
-`TaxonomyShadowProgramV2` is a content-addressed, one-Predictor offline program.
-It uses the production-bounded evidence renderer and exact model identity, has
-`release_authority=false`, and can append only shadow/evaluation artifacts to
-the existing learning ledger. It cannot write an Event, verdict, card,
-delivery, canary, promotion, or Trading record.
+Freezing the existing development Dataset projects the accepted taxonomy into
+the existing episode beside the production judgment. That projection is part
+of `episode_projection_root_sha256`, so changing Gold changes the root. No
+taxonomy table, Dataset kind, migration, or parallel corpus exists. Connected
+fact clusters are the independent sample and provider duplicates contribute one
+deterministically elected representative.
 
-Each eligible case appends one terminal observation: `success`,
-`schema_invalid`, `provider_failure`, or `budget_deadline_failure`. The stock
-JSONAdapter may make one format-fallback call, so an observation contains an
-ordered one-or-two-call attempt ledger. Every physical attempt carries its
-request, invocation, terminal disposition and exact `RecordedLM` recording;
-first-invalid/second-success is replayable rather than discarded. Shadow,
-Evaluation and Release live in separate owner modules, with no forwarding
-compatibility surface.
+The operator records `primary_target: ...` on issue #437 before inspecting the
+first production score, reviews and freezes 60–100 independent clusters, then
+runs:
 
-Before opening a future holdout, run `tracefold news learning
-taxonomy-register`. The command constructs the current Shadow Program from the
-operator-owned model configuration and computes its Program/model-binding
-addresses; those identities are not operator input. The command then
-derives the tested Git SHA from the content-addressed Workers deployment
-receipt already stored in PostgreSQL and also binds its active bundle, runtime
-manifest, image digest, candidate set, registration time, and runtime revision.
-The command joins the durable runtime-manifest row and recomputes its address;
-an unversioned image, non-Git runtime revision, mismatched deployment revision,
-or receipt for a different active bundle fails closed. An operator cannot
-declare an unrelated tested commit.
-The workers connection takes the registration time from the PostgreSQL clock
-and appends a content-addressed `candidate_registration` containing the exact
-production Program/envelope/runtime/policy, taxonomy/codebook/Review/metric,
-shadow Program and model-binding identities. The model-binding SHA is over the
-shadow observation's exact `{model_identity, model_binding}` object.
+```bash
+uv run tracefold news learning baseline --dataset DATASET_SHA \
+  --mode recorded --out /tmp/taxonomy-baseline.json
+```
 
-Run `tracefold news learning taxonomy-shadow --file CONTEXTS --limit N --out
-RECEIPTS` with that registration SHA and a bounded `cases` array of exact
-`TriageContext` documents. Registration/deployment verification occurs before
-and after model execution, while provider I/O occurs outside the PostgreSQL
-transaction. The final transaction writes only content-addressed
-`shadow_observation` learning artifacts parented by the registration.
+This branch of the existing baseline command makes zero provider calls and
+scores the taxonomy already persisted by the Dataset's recorded Stable cohort.
+Its content-addressed `tracefold.news.recorded_taxonomy_baseline.v1` report
+contains only Dataset, Stable Program, recorded runtime/model, and metric
+identities; `case_n`, `independent_cluster_n`, and actual `scored_case_n`; the
+metrics; and `MEASURED` or `INSUFFICIENT_DATA`. `MEASURED` means the fixed
+minimum of 60 independent clusters was reached; it does not mean a target was
+met. Accepted external misses remain visible in `case_n` and the Dataset root;
+because they have no recorded Stable prediction, they are excluded from the
+independent/scored population and all metric denominators.
 
-Then run `tracefold news learning taxonomy-evaluate --file CASES --out REPORT`
-over the frozen case document. The document references that registration SHA,
-four PostgreSQL `release_evidence` references for the same current
-candidate/dataset/metric, and one accepted Review v6 Gold plus one
-`shadow_observation` artifact SHA per case. The workers connection re-reads and
-validates every registration, acceptance, judgment, ordinary-News Event,
-evidence version, event time, connected-fact cluster and replayable shadow
-recording from PostgreSQL. The release report carries separate typed evidence
-for production action, asset grounding, novelty, and trade relevance, including
-each denominator and stable/candidate/candidate-only failure counts. The command
-derives each outcome from those counts, rehashes the subdocument, and joins its
-release evidence, evaluation report, candidate, and dataset; a generic report
-PASS or file-declared PASS cannot stand in for a named gate. Case IDs, timing,
-slices, readiness roles and other denominators are projected from durable rows
-rather than trusted from the file. The verified Gold ledger root, shadow
-artifact addresses and complete terminal/attempt population enter the
-population/split roots. Missing or non-PASS regression evidence prevents an
-overall PASS.
+The sole primary metric is `event_family` macro-F1 over legal labels with Gold
+support greater than zero. Diagnostics are `subject_codes` micro-F1,
+`change_state` accuracy, `assertion_status` macro-F1 over supported Gold labels,
+and exact match across the four model-owned axes. Every metric publishes the
+complete legal label universe, including support-zero classes, and all use the
+same cluster-deduplicated population. Model non-abstain excludes
+`source_authority`. That fifth, code-owned axis is reported separately as exact
+deterministic registry coverage and never enters a model score.
 
-`TaxonomyEvaluationReportV1` records those identities, confusion matrices,
-per-class and multilabel metrics, five-axis abstention risk-coverage,
-language/source/audience/scope slices, reviewer agreement, adjudication rate,
-absolute current quality gates, exact Stable/Candidate regression receipts and
-every data-readiness denominator. An unknown split, missing/mismatched durable
-candidate registration, forged Gold receipt, or holdout item at/before
-registration is rejected. A missing or malformed Shadow observation, attempt,
-or recording remains in the eligible population and makes the schema and
-terminal gates plus overall result `UNKNOWN`; a fully observed invalid attempt
-is counted rather than coerced to zero. Only complete development
-and at least 24-hour post-registration future holdout evidence can produce PASS
-or FAIL.
+There is no taxonomy registration, shadow, or separate evaluation lifecycle.
+The former commands, Predictor, verifiers, storage reads, tests, and docs were
+deleted in the #437 hard cut; the existing Dataset and recorded baseline are
+the only measurement path.
 
 ## Non-authority and rollback
 

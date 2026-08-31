@@ -38,6 +38,7 @@ from tracefold.news.learning.objective import (
     build_gepa_objective_plan,
 )
 from tracefold.news.learning.optimizer import objective_summary as objective_plan_summary
+from tracefold.news.learning.taxonomy_metric import recorded_taxonomy_baseline_report
 from tracefold.news.models import TriageVerdict
 from tracefold.news.opennews import parse_opennews_message
 from tracefold.news.pipeline.admission import admit_item
@@ -67,12 +68,15 @@ from tracefold.news.release.canary import (
 from tracefold.news.review.desk import (
     BlindPairwiseSubmission,
     DeskQuery,
+    EventRubricSubmission,
     ExternalMissSubmission,
+    Principal,
     TaskRef,
 )
 from tracefold.news.review.desk import (
     ReviewDesk as _ReviewDesk,
 )
+from tracefold.news.taxonomy import ModelTaxonomyV1
 from tracefold.news.triage_rules import DEFAULT_POLICY
 
 pytestmark = pytest.mark.integration
@@ -1170,6 +1174,126 @@ def _accepted_event(
             idempotency_key=str(uuid.uuid4()),
         )
     return event_id
+
+
+def test_one_operator_taxonomy_freezes_into_the_existing_episode_and_projection_root(conn) -> None:
+    stable = _arm()
+    event_id = _open_event(
+        conn,
+        bundle_sha=stable.bundle_sha,
+        program_version=stable.program_version,
+        program_sha256=stable.program_sha256,
+        hit_id=112099,
+        title="Coinbase makes a new institutional custody service generally available",
+    )
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    taxonomy = news_taxonomy(
+        event_family="product_service_change",
+        change_state="effective",
+        assertion_status="confirmed",
+        source_authority="reputable_secondary",
+    )
+    submission = EventRubricSubmission.model_validate(
+        _rubric(why="pass").model_dump(mode="json") | {"taxonomy": taxonomy.model_dump(mode="json")}
+    )
+    mismatched_source = EventRubricSubmission.model_validate(
+        submission.model_dump(mode="json")
+        | {
+            "taxonomy": news_taxonomy(
+                event_family="product_service_change",
+                change_state="effective",
+                assertion_status="confirmed",
+                source_authority="unknown",
+            ).model_dump(mode="json")
+        }
+    )
+    with (
+        repositories_for_connection(conn).transaction(),
+        pytest.raises(ValueError, match="news_review_taxonomy_source_authority_code_mismatch"),
+    ):
+        desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            mismatched_source,
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    self_draft = EventRubricSubmission.model_validate(
+        submission.model_dump(mode="json")
+        | {
+            "taxonomy_review": {
+                "label_source": "model_draft",
+                "draft_author": PRINCIPAL.subject,
+                "review_role": "primary",
+                "draft_taxonomy": taxonomy.model_dump(mode="json"),
+            }
+        }
+    )
+    with (
+        repositories_for_connection(conn).transaction(),
+        pytest.raises(ValueError, match="news_review_taxonomy_self_acceptance_forbidden"),
+    ):
+        desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            self_draft,
+            principal=Principal(subject=PRINCIPAL.subject),
+            idempotency_key=str(uuid.uuid4()),
+        )
+    with repositories_for_connection(conn).transaction():
+        desk.submit(
+            None,
+            ExternalMissSubmission(
+                source_url="https://example.test/taxonomy-miss",
+                title="A separate material fact the receiver never ingested",
+                occurred_at_ms=NOW - 60_000,
+                rubric=submission,
+            ),
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+    with repositories_for_connection(conn).transaction():
+        receipt = desk.submit(
+            TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+            submission,
+            principal=PRINCIPAL,
+            idempotency_key=str(uuid.uuid4()),
+        )
+
+    assert (
+        conn.execute(
+            "SELECT release_eligible FROM news_reviews WHERE review_id = %s",
+            (receipt["receipt"]["review_id"],),
+        ).fetchone()["release_eligible"]
+        is True
+    )
+    manifest = asyncio.run(
+        _datasets(conn, stable).freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    export = _datasets(conn, stable).development_compile_export(manifest.artifact_sha)
+    report = recorded_taxonomy_baseline_report(
+        export.episodes,
+        dataset_sha=manifest.artifact_sha,
+        agent_cohort=dict(export.dataset_payload["agent_cohort"]),
+    )
+
+    assert manifest.counts["case_n"] == manifest.counts["independent_cluster_n"] == 2
+    event_episode = next(episode for episode in export.episodes if episode["production_judgment"] is not None)
+    assert event_episode["accepted_review"]["taxonomy"] == taxonomy.model_dump(
+        mode="json", include=set(ModelTaxonomyV1.model_fields)
+    )
+    assert export.episode_projection_root_sha256 == canonical_sha(list(export.episodes))
+    assert (report.case_n, report.independent_cluster_n, report.scored_case_n) == (2, 1, 1)
+    assert report.outcome == "INSUFFICIENT_DATA"
+    changed = [dict(episode) for episode in export.episodes]
+    changed_event = next(episode for episode in changed if episode["production_judgment"] is not None)
+    changed_review = dict(changed_event["accepted_review"])
+    changed_taxonomy = dict(changed_review["taxonomy"])
+    changed_taxonomy["event_family"] = "other"
+    changed_review["taxonomy"] = changed_taxonomy
+    changed_event["accepted_review"] = changed_review
+    assert canonical_sha(changed) != export.episode_projection_root_sha256
 
 
 # Six independent facts, in the order the honest split will see them. #199 turned "a compile needs two
