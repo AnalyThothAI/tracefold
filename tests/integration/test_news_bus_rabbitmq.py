@@ -742,6 +742,48 @@ def test_repeated_defer_is_delayed_without_spending_the_transient_budget() -> No
     asyncio.run(scenario())
 
 
+def test_handler_broker_failures_are_delayed_counted_and_terminal_without_stopping_consumption() -> None:
+    """A handler-side publish failure spends the existing broker budget, not the consumer process."""
+
+    async def scenario() -> None:
+        async with _bus() as bus:
+            attempts: list[int] = []
+            peer_queue_handled = asyncio.Event()
+            stop = asyncio.Event()
+
+            async def fail_publish(message: BusMessage) -> None:
+                attempts.append(message.attempt)
+                raise BrokerUnavailable("news_broker_publish_failed:TimeoutError")
+
+            async def handle_peer_queue(_message: BusMessage) -> None:
+                peer_queue_handled.set()
+
+            consumer = asyncio.create_task(bus.consume(Q_TRIAGE, fail_publish, prefetch=1, stop_event=stop))
+            peer_consumer = asyncio.create_task(bus.consume(Q_RAW, handle_peer_queue, prefetch=1, stop_event=stop))
+            await bus.publish(_event("broker-handler:failed", {}))
+            await bus.publish(_event("broker-handler:peer", {}, routing_key="raw.opennews.integration"))
+
+            await asyncio.wait_for(peer_queue_handled.wait(), timeout=10)
+            assert not consumer.done(), "one handler publish failure must not stop the queue consumer"
+            assert not peer_consumer.done(), "another queue must continue consuming during the retry window"
+            await _wait_for_depth(bus, Q_DEAD, 1, timeout=20)
+            assert not consumer.done(), "the consumer must outlive the complete retry/dead-letter sequence"
+            assert not peer_consumer.done()
+
+            stop.set()
+            await asyncio.gather(
+                asyncio.wait_for(consumer, timeout=10),
+                asyncio.wait_for(peer_consumer, timeout=10),
+            )
+            assert attempts == [1, 2, 3]
+            dead = await bus.dead_letters(limit=1)
+            assert dead[0]["message_id"] == "broker-handler:failed"
+            assert dead[0]["reason"] == "delivery_limit"
+            assert dead[0]["delivery_count"] == broker_policy.TOTAL_TRANSIENT_ATTEMPTS
+
+    asyncio.run(scenario())
+
+
 def test_permanent_failure_and_decode_failure_reach_the_dead_letter_queue() -> None:
     async def scenario() -> None:
         async with _bus() as bus:

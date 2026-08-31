@@ -9,7 +9,15 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any, ClassVar, Literal, cast
 
-from ..bus import BrokerBackpressure, BrokerUnavailable, DeferError, TransientError, new_trace_id, now_ms
+from ..bus import (
+    BrokerBackpressure,
+    BrokerPublishFailure,
+    BrokerUnavailable,
+    DeferError,
+    TransientError,
+    new_trace_id,
+    now_ms,
+)
 from ..models import OUTBOX_MAX_AGE_MS
 from ..telemetry import (
     NewsDurableEventTelemetryPort,
@@ -272,7 +280,14 @@ class JanitorLoop:
 
                 await self.cold_db.tx("news_learning_retention_error", _retention_error, timeout_seconds=2.0)
         if self.bus is not None:
-            snapshot: dict[str, Any] = {"configured": True, "connected": False, "queues": {}, "error_code": None}
+            snapshot: dict[str, Any] = {
+                "configured": True,
+                "connected": False,
+                "queues": {},
+                "error_code": None,
+                "last_publish_error_code": None,
+                "last_publish_error_at_ms": None,
+            }
             try:
                 depths = await asyncio.wait_for(self.bus.broker_snapshot(), timeout=_BROKER_SNAPSHOT_DEADLINE_SECONDS)
                 prefix = f"{self.bus.prefix}." if getattr(self.bus, "prefix", "") else ""
@@ -282,9 +297,18 @@ class JanitorLoop:
                 )
             except Exception as exc:
                 snapshot["error_code"] = f"broker_snapshot_failed:{type(exc).__name__}"
+            last_publish_failure = self.bus.last_publish_failure
+            if isinstance(last_publish_failure, BrokerPublishFailure):
+                snapshot["last_publish_error_code"] = last_publish_failure.error_code
+                snapshot["last_publish_error_at_ms"] = last_publish_failure.at_ms
+            broker_observed_at_ms = now_ms()
             with contextlib.suppress(TransientError, DeferError):
 
-                def _snapshot(repos: Any, s: int = stamp, snap: dict[str, Any] = snapshot) -> None:
+                def _snapshot(
+                    repos: Any,
+                    s: int = broker_observed_at_ms,
+                    snap: dict[str, Any] = snapshot,
+                ) -> None:
                     repos.news.update_broker_snapshot(snapshot=snap, now_ms=s)
 
                 await self.db.tx("news_broker_snapshot", _snapshot, timeout_seconds=3.0)

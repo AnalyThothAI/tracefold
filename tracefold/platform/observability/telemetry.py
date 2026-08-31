@@ -35,7 +35,8 @@ NewsSearchResult = Literal["zero", "nonzero"]
 NewsHandoffStage = Literal["event", "verdict"]
 NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
 NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]
-NewsRabbitConsumerFatalReason = Literal["broker", "handler", "settlement", "unknown"]
+NewsRabbitConsumerFatalReason = Literal["handler", "settlement"]
+NewsRabbitPublishFailureReason = Literal["backpressure", "confirm_timeout", "transport", "unroutable"]
 NewsOpenNewsIncidentCause = Literal[
     "authentication",
     "broker_backpressure",
@@ -63,6 +64,7 @@ _NEWS_HANDOFF_STAGES: Final[frozenset[str]] = frozenset(get_args(NewsHandoffStag
 _NEWS_HANDOFF_REPAIR_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(NewsHandoffRepairOutcome))
 _NEWS_RABBIT_QUEUES: Final[frozenset[str]] = frozenset(get_args(NewsRabbitQueue))
 _NEWS_RABBIT_FATAL_REASONS: Final[frozenset[str]] = frozenset(get_args(NewsRabbitConsumerFatalReason))
+_NEWS_RABBIT_PUBLISH_FAILURE_REASONS: Final[frozenset[str]] = frozenset(get_args(NewsRabbitPublishFailureReason))
 _NEWS_OPENNEWS_INCIDENT_CAUSES: Final[frozenset[str]] = frozenset(get_args(NewsOpenNewsIncidentCause))
 _NEWS_RECOVERY_OUTCOMES: Final[frozenset[str]] = frozenset(get_args(NewsRecoveryOutcome))
 _NEWS_RECOVERY_BUDGETS: Final[frozenset[str]] = frozenset(get_args(NewsRecoveryBudget))
@@ -213,6 +215,12 @@ class TelemetryRegistry:
             "tracefold_news_rabbitmq_consumer_fatal_total",
             "RabbitMQ consumer scopes terminated by an unhandled message-task failure.",
             ("queue", "reason_class"),
+            registry=self.registry,
+        )
+        self.news_rabbitmq_publish_failure_total = Counter(
+            "tracefold_news_rabbitmq_publish_failure_total",
+            "RabbitMQ confirmed publishes that failed by bounded transport reason.",
+            ("reason_class",),
             registry=self.registry,
         )
         self.news_opennews_incident_open = Gauge(
@@ -453,6 +461,17 @@ class TelemetryRegistry:
         )
         queue_label = _bounded_label(queue, allowed=_NEWS_RABBIT_QUEUES, field="news_rabbitmq_queue")
         self.news_rabbitmq_consumer_fatal_total.labels(queue=queue_label, reason_class=reason_label).inc()
+
+    def record_news_rabbitmq_publish_failure(
+        self,
+        reason_class: NewsRabbitPublishFailureReason,
+    ) -> None:
+        reason_label = _bounded_label(
+            reason_class,
+            allowed=_NEWS_RABBIT_PUBLISH_FAILURE_REASONS,
+            field="news_rabbitmq_publish_failure_reason",
+        )
+        self.news_rabbitmq_publish_failure_total.labels(reason_class=reason_label).inc()
 
     def set_news_opennews_incident(
         self,

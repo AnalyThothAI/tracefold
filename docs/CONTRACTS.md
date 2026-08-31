@@ -529,7 +529,8 @@ title alone selects a deterministic route.
   token configured; no
   Strategy IDs/counts), `broker`
   (configured, connected, per-queue message/consumer counts when observed,
-  error code), `pipeline` (events and candidates per hour/day, Triage counts,
+  snapshot error code, and the latest confirmed-publish failure code/timestamp
+  observed by the running Workers process), `pipeline` (events and candidates per hour/day, Triage counts,
   `source_classifier_version`, and `source_contracts_24h` keyed by the five
   closed families. Each family counts the same Event cohort opened in the last
   24 h: `received`; `parsed` (durably verified OI/liquidation parses, all
@@ -829,7 +830,9 @@ and an `x-news-trace` header. `BusMessage.attempt` is derived from the broker's
 publisher. Consumer outcomes are typed and each maps to exactly one AMQP
 settlement: success acks, `TransientError` is a counted `reject(requeue=true)`
 that the broker delays and finally dead-letters, `DeferError` is an uncounted
-`nack(requeue=true)` for when the News DB lane cannot admit the message, and
+`nack(requeue=true)` for when the News DB lane cannot admit the message,
+handler-side `BrokerUnavailable` / `BrokerBackpressure` uses the same counted
+`reject(requeue=true)` and shared delivery budget as `TransientError`, and
 `PermanentError` or a decode failure is `reject(requeue=false)`; an
 unclassified handler exception settles nothing and fails the consumer. There is
 no operator control plane: pause and mute were removed with

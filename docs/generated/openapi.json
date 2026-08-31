@@ -973,6 +973,28 @@
             ],
             "title": "Error Code"
           },
+          "last_publish_error_at_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Publish Error At Ms"
+          },
+          "last_publish_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Publish Error Code"
+          },
           "observed_at_ms": {
             "anyOf": [
               {

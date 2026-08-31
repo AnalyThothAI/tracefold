@@ -1,14 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any, cast
 
 import aio_pika
 import pytest
 from aio_pika.exceptions import ChannelInvalidStateError
 
-from tracefold.integrations.rabbitmq import RabbitMQBus
-from tracefold.news.bus import BrokerUnavailable, BusMessage, DeferError, PermanentError, TransientError
+from tracefold.integrations.rabbitmq import PUBLISH_CONFIRM_WAIT_SECONDS, RabbitMQBus
+from tracefold.news.bus import (
+    BrokerBackpressure,
+    BrokerUnavailable,
+    BusMessage,
+    DeferError,
+    PermanentError,
+    TransientError,
+)
 from tracefold.news.telemetry import NewsDurableEventTelemetryPort, NewsRabbitConsumerFatalReason
 
 
@@ -129,6 +137,7 @@ class _ConsumerBus(RabbitMQBus):
 class _Telemetry:
     def __init__(self) -> None:
         self.fatals: list[tuple[str, NewsRabbitConsumerFatalReason]] = []
+        self.publish_failures: list[str] = []
 
     def record_news_rabbitmq_consumer_fatal(
         self,
@@ -136,6 +145,9 @@ class _Telemetry:
         reason_class: NewsRabbitConsumerFatalReason,
     ) -> None:
         self.fatals.append((queue, reason_class))
+
+    def record_news_rabbitmq_publish_failure(self, reason_class: str) -> None:
+        self.publish_failures.append(reason_class)
 
 
 def _leaves(exc: BaseException) -> list[BaseException]:
@@ -237,18 +249,31 @@ def test_undecodable_body_is_terminal_rejection_without_reaching_the_handler() -
 
 
 @pytest.mark.parametrize(
-    ("failure", "reason"),
+    "failure",
     [
-        (RuntimeError("handler bug"), "handler"),
-        (BrokerUnavailable("handler publish failed"), "broker"),
+        BrokerUnavailable("handler publish failed"),
+        BrokerBackpressure("handler publish rejected"),
     ],
 )
-def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
+def test_handler_broker_failure_is_a_counted_return_without_failing_consume(
     failure: RuntimeError,
-    reason: NewsRabbitConsumerFatalReason,
+) -> None:
+    incoming = _Incoming()
+    telemetry = _Telemetry()
+
+    async def handler(_message: BusMessage) -> None:
+        raise failure
+
+    _run_one(handler, incoming, telemetry=telemetry)
+    assert incoming.actions == [("reject", True)]
+    assert telemetry.fatals == []
+
+
+def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     async def scenario() -> None:
+        failure = RuntimeError("handler bug")
         incoming = _Incoming()
         channel = _Channel(incoming)
         telemetry = _Telemetry()
@@ -266,9 +291,59 @@ def test_handler_failure_leaves_the_message_unsettled_and_fails_consume(
         assert failure in _leaves(caught.value)
         assert incoming.actions == []
         assert channel.is_closed
-        assert telemetry.fatals == [("news.triage", reason)]
+        assert telemetry.fatals == [("news.triage", "handler")]
         assert str(failure) not in caplog.text
         assert type(failure).__name__ in caplog.text
+
+    asyncio.run(scenario())
+
+
+def test_publish_confirm_timeout_is_recorded_as_a_distinct_broker_failure() -> None:
+    class TimeoutExchange:
+        async def publish(self, *_args: object, **_kwargs: object) -> None:
+            raise TimeoutError
+
+    class TimeoutBus(RabbitMQBus):
+        async def connect(self) -> None:
+            self._exchange = cast(Any, TimeoutExchange())
+
+    async def scenario() -> None:
+        telemetry = _Telemetry()
+        bus = TimeoutBus(url="amqp://unused", telemetry=cast(NewsDurableEventTelemetryPort, telemetry))
+        started_ms = int(time.time() * 1000)
+
+        with pytest.raises(BrokerUnavailable, match="news_broker_publish_failed:TimeoutError"):
+            await bus.publish(_event())
+
+        assert PUBLISH_CONFIRM_WAIT_SECONDS == 10.0
+        assert telemetry.publish_failures == ["confirm_timeout"]
+        failure = bus.last_publish_failure
+        assert failure is not None
+        assert failure.error_code == "news_broker_publish_failed:TimeoutError"
+        assert failure.at_ms >= started_ms
+
+    asyncio.run(scenario())
+
+
+def test_non_timeout_publish_transport_failure_has_its_own_telemetry_class() -> None:
+    class BrokenExchange:
+        async def publish(self, *_args: object, **_kwargs: object) -> None:
+            raise OSError
+
+    class BrokenBus(RabbitMQBus):
+        async def connect(self) -> None:
+            self._exchange = cast(Any, BrokenExchange())
+
+    async def scenario() -> None:
+        telemetry = _Telemetry()
+        bus = BrokenBus(url="amqp://unused", telemetry=cast(NewsDurableEventTelemetryPort, telemetry))
+
+        with pytest.raises(BrokerUnavailable, match="news_broker_publish_failed:OSError"):
+            await bus.publish(_event())
+
+        assert telemetry.publish_failures == ["transport"]
+        assert bus.last_publish_failure is not None
+        assert bus.last_publish_failure.error_code == "news_broker_publish_failed:OSError"
 
     asyncio.run(scenario())
 

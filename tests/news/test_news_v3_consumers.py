@@ -23,6 +23,7 @@ from tracefold.news.bus import (
     RK_RAW_RECOVERY,
     RK_VERDICT_PUSH,
     BrokerBackpressure,
+    BrokerPublishFailure,
     BrokerUnavailable,
     BusMessage,
     DeferError,
@@ -74,6 +75,7 @@ class FakeBus:
     def __init__(self) -> None:
         self.published: list[BusMessage] = []
         self.consumed: list[str] = []
+        self.last_publish_failure: BrokerPublishFailure | None = None
 
     async def publish(self, message: BusMessage) -> None:
         self.published.append(message)
@@ -3313,6 +3315,44 @@ def test_janitor_contains_typed_handoff_transients_but_unknown_failures_escape()
     broken_db = FakeWorkerDatabase(broken)
     with pytest.raises(RuntimeError, match="repair bug"):
         asyncio.run(JanitorLoop(db=broken_db, cold_db=broken_db.cold_port, bus=FakeBus()).turn())
+
+
+def test_janitor_projects_the_latest_publish_failure_into_broker_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Bus(FakeBus):
+        prefix = ""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_publish_failure = BrokerPublishFailure(
+                error_code="news_broker_publish_failed:TimeoutError",
+                at_ms=NOW_MS + 5_000,
+            )
+
+        async def broker_snapshot(self) -> dict[str, Any]:
+            return {}
+
+    first_read = True
+
+    def clock_ms() -> int:
+        nonlocal first_read
+        if first_read:
+            first_read = False
+            return NOW_MS
+        return NOW_MS + 10_000
+
+    monkeypatch.setattr("tracefold.news.pipeline.maintenance.now_ms", clock_ms)
+    news = RecordingNews(purge_learning_retention={})
+    db = FakeWorkerDatabase(news)
+
+    asyncio.run(JanitorLoop(db=db, cold_db=db.cold_port, bus=Bus()).turn())
+
+    snapshot = news.kwargs_of("update_broker_snapshot")["snapshot"]
+    assert snapshot["connected"] is True
+    assert snapshot["last_publish_error_code"] == "news_broker_publish_failed:TimeoutError"
+    assert snapshot["last_publish_error_at_ms"] == NOW_MS + 5_000
+    assert news.kwargs_of("update_broker_snapshot")["now_ms"] == NOW_MS + 10_000
 
 
 def test_janitor_refreshes_every_fixed_opennews_incident_gauge(monkeypatch: pytest.MonkeyPatch) -> None:

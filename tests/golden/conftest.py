@@ -19,11 +19,17 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING
+from urllib.parse import quote, unquote, urlsplit
 
+import aio_pika
 import httpx
 import psycopg
 import pytest
+from aio_pika import DeliveryMode
+
+if TYPE_CHECKING:
+    from tracefold.news.bus import BusMessage
 
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
@@ -128,7 +134,10 @@ def _isolated_golden_database(server_dsn: str) -> Iterator[str]:
 class GoldenRuntime:
     base_url: str
     amqp_url: str
+    management_url: str
     name_prefix: str
+    postgres_dsn: str
+    workers_ready_url: str
 
     @property
     def headers(self) -> dict[str, str]:
@@ -137,8 +146,32 @@ class GoldenRuntime:
     def publish_opennews(self, params: dict[str, object]) -> None:
         asyncio.run(_publish_opennews(self.amqp_url, self.name_prefix, params))
 
+    def publish_raw_probe(self, *, message_id: str) -> None:
+        asyncio.run(_publish_raw_probe(self.amqp_url, self.name_prefix, message_id=message_id))
+
+    def set_verdict_route(self, *, enabled: bool) -> None:
+        asyncio.run(_set_verdict_route(self.amqp_url, self.name_prefix, enabled=enabled))
+
+    def workers_readiness(self) -> dict[str, object]:
+        response = httpx.get(self.workers_ready_url, timeout=5.0, trust_env=False)
+        response.raise_for_status()
+        return dict(response.json())
+
     def queue_depths(self) -> dict[str, int]:
         return asyncio.run(_wait_for_empty_queues(self.amqp_url, self.name_prefix))
+
+    def wait_for_queue_depth(self, queue: str, expected: int, *, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            depths = _management_queue_depths(self.amqp_url, self.management_url, self.name_prefix)
+            if depths.get(queue) == expected:
+                return
+            time.sleep(0.2)
+        depths = _management_queue_depths(self.amqp_url, self.management_url, self.name_prefix)
+        assert depths.get(queue) == expected
+
+    def dead_letters(self, *, limit: int = 10) -> list[dict[str, object]]:
+        return asyncio.run(_dead_letters(self.amqp_url, self.name_prefix, limit=limit))
 
 
 @pytest.fixture
@@ -204,7 +237,14 @@ def golden_runtime(
         serve_port = _wait_for_logged_port(serve_log, serve, timeout=60.0)
         base_url = f"http://127.0.0.1:{serve_port}"
         _wait_for_http(f"{base_url}/readyz", serve, serve_log, timeout=60.0)
-        yield GoldenRuntime(base_url=base_url, amqp_url=golden_rabbitmq_url, name_prefix=name_prefix)
+        yield GoldenRuntime(
+            base_url=base_url,
+            amqp_url=golden_rabbitmq_url,
+            management_url=management_url,
+            name_prefix=name_prefix,
+            postgres_dsn=golden_postgres_dsn,
+            workers_ready_url=f"http://127.0.0.1:{worker_port}/readyz",
+        )
         _assert_runtime_ready(
             (
                 (f"http://127.0.0.1:{worker_port}/readyz", worker, worker_log),
@@ -312,28 +352,118 @@ def _terminate(
 
 
 async def _publish_opennews(amqp_url: str, name_prefix: str, params: dict[str, object]) -> None:
-    from tracefold.integrations.rabbitmq import RabbitMQBus
     from tracefold.news.bus import RK_RAW_LIVE, BusMessage, new_trace_id, now_ms
 
     stamp = now_ms()
+    await _publish_message(
+        amqp_url,
+        name_prefix,
+        BusMessage(
+            kind="raw",
+            message_id=f"raw:{params['id']}",
+            routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
+            payload={
+                "params": params,
+                "strategy_id": "1019",
+                "ingest_mode": "live",
+                "observed_at_ms": stamp,
+            },
+            trace_id=new_trace_id(),
+            occurred_at_ms=stamp,
+        ),
+    )
+
+
+async def _publish_raw_probe(amqp_url: str, name_prefix: str, *, message_id: str) -> None:
+    from tracefold.news.bus import BusMessage, new_trace_id, now_ms
+
+    stamp = now_ms()
+    await _publish_message(
+        amqp_url,
+        name_prefix,
+        BusMessage(
+            kind="raw",
+            message_id=message_id,
+            routing_key="raw.opennews.integration",
+            payload={},
+            trace_id=new_trace_id(),
+            occurred_at_ms=stamp,
+        ),
+    )
+
+
+async def _publish_message(amqp_url: str, name_prefix: str, message: BusMessage) -> None:
+    from tracefold.integrations.rabbitmq import PUBLISH_CONFIRM_WAIT_SECONDS, topology
+
+    connection = await aio_pika.connect_robust(amqp_url, timeout=5.0)
+    channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+    try:
+        exchange = await channel.get_exchange(topology(name_prefix).exchange, ensure=True)
+        await exchange.publish(
+            aio_pika.Message(
+                message.body(),
+                content_type="application/json",
+                delivery_mode=DeliveryMode.PERSISTENT,
+                priority=message.priority,
+                message_id=message.message_id,
+                headers={**dict(message.headers), "x-news-trace": message.trace_id},
+            ),
+            routing_key=message.routing_key,
+            timeout=PUBLISH_CONFIRM_WAIT_SECONDS,
+        )
+    finally:
+        await channel.close()
+        await connection.close()
+
+
+async def _set_verdict_route(amqp_url: str, name_prefix: str, *, enabled: bool) -> None:
+    from tracefold.integrations.rabbitmq import topology
+    from tracefold.news.bus import Q_DELIVER, RK_VERDICT_PUSH
+
+    spec = topology(name_prefix)
+    connection = await aio_pika.connect_robust(amqp_url, timeout=5.0)
+    channel = await connection.channel(publisher_confirms=True)
+    try:
+        exchange = await channel.get_exchange(spec.exchange, ensure=True)
+        queue = await channel.get_queue(f"{name_prefix}.{Q_DELIVER}", ensure=True)
+        if enabled:
+            await queue.bind(exchange, routing_key=RK_VERDICT_PUSH)
+        else:
+            await queue.unbind(exchange, routing_key=RK_VERDICT_PUSH)
+    finally:
+        await channel.close()
+        await connection.close()
+
+
+def _management_queue_depths(amqp_url: str, management_url: str, name_prefix: str) -> dict[str, int]:
+    parsed = urlsplit(amqp_url)
+    username = unquote(parsed.username or "guest")
+    password = unquote(parsed.password or "guest")
+    vhost = quote(unquote(parsed.path.lstrip("/")) or "/", safe="")
+    response = httpx.get(
+        f"{management_url}/api/queues/{vhost}",
+        auth=(username, password),
+        timeout=5.0,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    assert isinstance(rows, list)
+    prefix = f"{name_prefix}."
+    return {
+        str(row["name"]).removeprefix(prefix): int(row.get("messages") or 0)
+        for row in rows
+        if isinstance(row, dict) and str(row.get("name") or "").startswith(prefix)
+    }
+
+
+async def _dead_letters(amqp_url: str, name_prefix: str, *, limit: int) -> list[dict[str, object]]:
+    from tracefold.integrations.rabbitmq import RabbitMQBus
+
     bus = RabbitMQBus(url=amqp_url, name_prefix=name_prefix, connect_timeout_seconds=5.0)
     await bus.connect()
     try:
-        await bus.publish(
-            BusMessage(
-                kind="raw",
-                message_id=f"raw:{params['id']}",
-                routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
-                payload={
-                    "params": params,
-                    "strategy_id": "1019",
-                    "ingest_mode": "live",
-                    "observed_at_ms": stamp,
-                },
-                trace_id=new_trace_id(),
-                occurred_at_ms=stamp,
-            )
-        )
+        return [dict(row) for row in await bus.dead_letters(limit=limit)]
     finally:
         await bus.close()
 

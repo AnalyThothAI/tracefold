@@ -22,7 +22,8 @@ NewsExternalDataSkipReason = Literal["coalesced", "disabled", "no_work"]
 NewsHandoffStage = Literal["event", "verdict"]
 NewsHandoffRepairOutcome = Literal["marker_pending", "published", "transient"]
 NewsRabbitQueue = Literal["news.deliver", "news.raw", "news.triage"]
-NewsRabbitConsumerFatalReason = Literal["broker", "handler", "settlement", "unknown"]
+NewsRabbitConsumerFatalReason = Literal["handler", "settlement"]
+NewsRabbitPublishFailureReason = Literal["backpressure", "confirm_timeout", "transport", "unroutable"]
 NewsOpenNewsIncidentCause = Literal[
     "authentication",
     "broker_backpressure",
@@ -106,6 +107,11 @@ class NewsDurableEventTelemetryPort(Protocol):
         reason_class: NewsRabbitConsumerFatalReason,
     ) -> None: ...
 
+    def record_news_rabbitmq_publish_failure(
+        self,
+        reason_class: NewsRabbitPublishFailureReason,
+    ) -> None: ...
+
     def set_news_opennews_incident(
         self,
         *,
@@ -139,6 +145,7 @@ __all__ = [
     "NewsHandoffStage",
     "NewsOpenNewsIncidentCause",
     "NewsRabbitConsumerFatalReason",
+    "NewsRabbitPublishFailureReason",
     "NewsRabbitQueue",
     "NewsRecoveryBudget",
     "NewsRecoveryOutcome",
