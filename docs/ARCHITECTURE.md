@@ -1921,6 +1921,9 @@ pre-cut snapshot.
 `20260830_0337` grants the Nautilus runtime role only the canonical-JSON
 function required by its existing capital risk-event append authority; it does
 not recreate any News compatibility object.
+`20260831_0338` removes the retired global Nautilus heartbeat/readiness
+projection; per-binding runtime rows and the live readiness endpoint remain the
+only current execution-readiness facts.
 No chained revision has a downgrade. Exact-image replacement requires the
 source, image and live database to share the current migration head; a schema
 change uses an explicitly reviewed recovery or roll-forward plan. Earlier hard

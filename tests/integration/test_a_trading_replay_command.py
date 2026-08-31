@@ -25,9 +25,7 @@ def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
     now_ms = _db_now_ms(connection)
     connection.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_bootstrap_account_zero_at_ms = %s "
-        "WHERE id = 1",
+        "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
         (now_ms,),
     )
     catalog = binance_catalog(captured_at_ms=now_ms)

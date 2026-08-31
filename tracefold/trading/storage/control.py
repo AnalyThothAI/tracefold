@@ -72,56 +72,9 @@ class ControlStorage:
         ).fetchone()
         return CapitalRuntimeV1(**dict(row)) if row is not None else None
 
-    def runtime_state(self) -> dict[str, Any] | None:
-        row = self.conn.execute(
-            "SELECT control, "
-            "nautilus_heartbeat_at_ms, nautilus_ready, nautilus_readiness_reason, "
-            "nautilus_unexpected_exposure, active_capability_snapshot_sha256, "
-            "active_capability_included_count, nautilus_bootstrap_account_zero_at_ms, "
-            "blacklist_revision, updated_at_ms "
-            "FROM trading_runtime_state WHERE id = 1"
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def nautilus_runtime_state(self, *, for_update: bool = False) -> dict[str, Any] | None:
-        """Read only the control columns granted to the execution process."""
-
-        row = self.conn.execute(
-            "SELECT control, nautilus_heartbeat_at_ms, nautilus_ready, "
-            "nautilus_readiness_reason, nautilus_unexpected_exposure, "
-            "active_capability_snapshot_sha256, active_capability_included_count, "
-            "nautilus_bootstrap_account_zero_at_ms, blacklist_revision "
-            "FROM trading_runtime_state WHERE id = 1" + (" FOR UPDATE" if for_update else "")
-        ).fetchone()
-        return dict(row) if row is not None else None
-
-    def set_nautilus_runtime(
-        self,
-        *,
-        heartbeat_at_ms: int,
-        ready: bool,
-        readiness_reason: str | None,
-        unexpected_exposure: bool,
-        now_ms: int,
-    ) -> None:
-        self.conn.execute(
-            """
-            UPDATE trading_runtime_state
-               SET nautilus_heartbeat_at_ms = %(heartbeat)s,
-                   nautilus_ready = %(ready)s,
-                   nautilus_readiness_reason = %(reason)s,
-                   nautilus_unexpected_exposure = %(unexpected)s,
-                   updated_at_ms = %(now)s
-             WHERE id = 1
-            """,
-            {
-                "heartbeat": int(heartbeat_at_ms),
-                "ready": bool(ready),
-                "reason": readiness_reason,
-                "unexpected": bool(unexpected_exposure),
-                "now": int(now_ms),
-            },
-        )
+    def capital_control(self) -> str | None:
+        row = self.conn.execute("SELECT control FROM trading_runtime_state WHERE id = 1").fetchone()
+        return str(row["control"]) if row is not None else None
 
     def set_nautilus_bootstrap_account_zero(
         self,

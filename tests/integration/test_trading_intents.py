@@ -79,9 +79,7 @@ def conn(postgres_module_clone_dsn: str):
     connection = connect_postgres_test(read_only=False)
     repos = repositories_for_connection(connection)
     connection.execute(
-        "UPDATE trading_runtime_state SET nautilus_ready = false, "
-        "nautilus_unexpected_exposure = false, nautilus_bootstrap_account_zero_at_ms = %s "
-        "WHERE id = 1",
+        "UPDATE trading_runtime_state SET nautilus_bootstrap_account_zero_at_ms = %s WHERE id = 1",
         (NOW,),
     )
     store_catalog_fixture(repos.trading, CATALOG_SNAPSHOT, now_ms=NOW)
@@ -197,7 +195,7 @@ def _allow_entry(connection: Any) -> None:
     connection.execute(
         """
         UPDATE trading_runtime_state
-           SET control = 'RUNNING', nautilus_ready = true, nautilus_unexpected_exposure = false
+           SET control = 'RUNNING'
          WHERE id = 1
         """
     )
@@ -266,7 +264,6 @@ def _reset_authority(connection: Any) -> None:
            SET control = 'PAUSED', blacklist_revision = 0, arm_epoch = 1,
                active_capability_snapshot_sha256 = %s,
                active_capability_included_count = %s,
-               nautilus_ready = false, nautilus_unexpected_exposure = false,
                nautilus_bootstrap_account_zero_at_ms = NULL
          WHERE id = 1
         """,
@@ -1248,7 +1245,7 @@ def test_entry_fence_is_the_single_durable_permission_for_an_exposure_increase(c
     intent = _intent()
     repos = repositories_for_connection(conn)
     assert _insert_test_intent(repos, intent) is True
-    conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED', nautilus_ready = false WHERE id = 1")
+    conn.execute("UPDATE trading_runtime_state SET control = 'PAUSED' WHERE id = 1")
     conn.commit()
 
     # `UNAVAILABLE`, and it says why (#331). The old `None` meant this, a stale dispatch, an expired
@@ -1780,7 +1777,7 @@ def test_runtime_roles_enforce_the_intent_column_ownership_boundary(conn: Any) -
     }
 
 
-def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_counters(conn: Any) -> None:
+def test_real_nautilus_role_can_poll_and_fence_but_not_read_trading_counters(conn: Any) -> None:
     _case(conn)
     repos = repositories_for_connection(conn)
     intent = _intent()
@@ -1792,23 +1789,15 @@ def test_real_nautilus_role_can_poll_fence_and_heartbeat_but_not_read_trading_co
     active = repos.trading.active_intent()
     assert active is not None and active[0] == intent
     assert _fence(repos, intent, engine_identity="nt-1", now_ms=NOW + 1_000).granted
-    repos.trading.set_nautilus_runtime(
-        heartbeat_at_ms=NOW + 1_000,
-        ready=True,
-        readiness_reason="ready",
-        unexpected_exposure=False,
-        now_ms=NOW + 1_000,
-    )
     repos.trading.set_nautilus_bootstrap_account_zero(
         verified_at_ms=None,
         now_ms=NOW + 1_000,
         expected_capability_snapshot_sha256=CAPABILITY_SNAPSHOT.snapshot_sha256,
     )
-    assert repos.trading.nautilus_runtime_state(for_update=True) is not None
     conn.commit()
 
     with pytest.raises(InsufficientPrivilege):
-        repos.trading.runtime_state()
+        conn.execute("SELECT orders_today FROM trading_runtime_state WHERE id = 1").fetchone()
     conn.rollback()
     conn.execute("RESET ROLE")
     conn.commit()
@@ -2104,33 +2093,6 @@ def test_manual_protection_and_close_unknowns_converge_only_from_authoritative_f
         "CLOSED_FLAT",
         None,
     )
-
-
-def test_nautilus_poll_and_runtime_heartbeat_share_the_business_row(conn: Any) -> None:
-    _case(conn)
-    repos = repositories_for_connection(conn)
-    intent = _intent()
-    assert _insert_test_intent(repos, intent) is True
-    repos.trading.set_nautilus_runtime(
-        heartbeat_at_ms=NOW + 500,
-        ready=True,
-        readiness_reason="ready",
-        unexpected_exposure=False,
-        now_ms=NOW + 500,
-    )
-    conn.commit()
-
-    active = repos.trading.active_intent()
-    runtime = repos.trading.runtime_state()
-
-    assert active is not None
-    assert active[0] == intent
-    assert active[1].execution_state == "PENDING"
-    assert runtime is not None
-    assert runtime["nautilus_heartbeat_at_ms"] == NOW + 500
-    assert runtime["nautilus_ready"] is True
-    assert runtime["nautilus_readiness_reason"] == "ready"
-    assert runtime["nautilus_unexpected_exposure"] is False
 
 
 def test_the_case_projection_links_its_intent_without_joining_the_execution_lifecycle(conn: Any) -> None:

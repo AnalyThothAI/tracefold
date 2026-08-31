@@ -984,10 +984,6 @@
 | `control` | `TEXT` | False | `None` |
 | `orders_today` | `INTEGER` | False | `0` |
 | `updated_at_ms` | `BIGINT` | False | `None` |
-| `nautilus_heartbeat_at_ms` | `BIGINT` | True | `None` |
-| `nautilus_ready` | `BOOLEAN` | False | `false` |
-| `nautilus_readiness_reason` | `TEXT` | True | `None` |
-| `nautilus_unexpected_exposure` | `BOOLEAN` | False | `false` |
 | `active_capability_snapshot_sha256` | `TEXT` | True | `None` |
 | `active_capability_included_count` | `INTEGER` | False | `0` |
 | `nautilus_bootstrap_account_zero_at_ms` | `BIGINT` | True | `None` |
