@@ -309,6 +309,26 @@ class OiNautilusStrategy(Strategy):
             baseline = self._day_start
         return baseline if baseline is not None and baseline.utc_day == utc_day else None
 
+    def _entry_order_valid(self, *, signal: TradeSignalV1, route: OiInstrumentRoute, entry: Any) -> bool:
+        expected_id = deterministic_client_order_id(
+            namespace=self._profile.client_order_namespace,
+            profile_id=self._profile.profile_id,
+            signal_id=signal.signal_id,
+            leg="entry",
+        )
+        expected_side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
+        return bool(
+            entry is not None
+            and entry.client_order_id == expected_id
+            and entry.strategy_id == self.id
+            and entry.account_id == self._profile.account_id
+            and entry.instrument_id == route.instrument_id
+            and entry.side == expected_side
+            and entry.order_type == OrderType.MARKET
+            and not entry.is_reduce_only
+            and entry.quantity.as_decimal() > 0
+        )
+
     def _refresh_continuous_reconciliation(self) -> None:
         source = self._continuous_reconciliation
         if source is None:
@@ -344,19 +364,11 @@ class OiNautilusStrategy(Strategy):
                 leg="entry",
             )
             entry = self.cache.order(seed.entry_client_order_id)
-            expected_entry_side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
             if (
                 route is None
                 or signal.signal_id in states
                 or seed.entry_client_order_id != expected_entry
-                or entry is None
-                or entry.strategy_id != self.id
-                or entry.account_id != self._profile.account_id
-                or entry.instrument_id != route.instrument_id
-                or entry.side != expected_entry_side
-                or entry.order_type != OrderType.MARKET
-                or entry.is_reduce_only
-                or entry.quantity.as_decimal() <= 0
+                or not self._entry_order_valid(signal=signal, route=route, entry=entry)
             ):
                 self._readiness.halt_for_unexpected_exposure()
                 return False
@@ -557,7 +569,47 @@ class OiNautilusStrategy(Strategy):
             and protection.quantity.as_decimal() == seed.quantity
         )
 
-    def _verify_owned_exposure(self) -> None:
+    def _protection_order_valid(
+        self,
+        *,
+        state: _ExecutionState,
+        protection: Any,
+        quantity: Decimal,
+        avg_price: Decimal | None,
+        require_open: bool,
+    ) -> bool:
+        instrument = self.cache.instrument(state.route.instrument_id)
+        if instrument is None or protection is None or quantity <= 0:
+            return False
+        current = self.cache.order(protection.client_order_id)
+        expected_side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
+        expected_trigger = (
+            None
+            if avg_price is None
+            else instrument.make_price(
+                avg_price * (Decimal(1) - distance if state.signal.direction == "long" else Decimal(1) + distance)
+            )
+        )
+        return bool(
+            not protection.is_closed
+            and (not require_open or (current is not None and current.is_open))
+            and protection.strategy_id == self.id
+            and (
+                protection.account_id == self._profile.account_id
+                if require_open
+                else protection.account_id in {None, self._profile.account_id}
+            )
+            and protection.instrument_id == state.route.instrument_id
+            and protection.side == expected_side
+            and protection.order_type == OrderType.STOP_MARKET
+            and protection.trigger_type == TriggerType.LAST_PRICE
+            and (expected_trigger is None or protection.trigger_price == expected_trigger)
+            and protection.is_reduce_only
+            and protection.quantity.as_decimal() == quantity
+        )
+
+    def _verify_owned_exposure(self) -> bool:
         owned_orders = frozenset(self._orders)
         owned_positions = frozenset(self._positions)
         if any(
@@ -571,6 +623,39 @@ class OiNautilusStrategy(Strategy):
             for position in self.cache.positions_open(account_id=self._profile.account_id)
         ):
             self._readiness.halt_for_unexpected_exposure()
+            return False
+        safe = True
+        for state in self._states.values():
+            if state.position_id is None or state.position_quantity <= 0:
+                continue
+            active_valid = self._protection_order_valid(
+                state=state,
+                protection=state.stop_order,
+                quantity=state.stop_quantity,
+                avg_price=state.stop_avg_price,
+                require_open=True,
+            )
+            fully_protected = (
+                active_valid
+                and state.stop_quantity == state.position_quantity
+                and state.stop_avg_price == state.avg_entry_price
+            )
+            if fully_protected:
+                continue
+            pending_valid = self._protection_order_valid(
+                state=state,
+                protection=state.pending_stop_order,
+                quantity=state.pending_stop_quantity,
+                avg_price=state.pending_stop_avg_price,
+                require_open=False,
+            )
+            if pending_valid and (state.stop_order is None or active_valid):
+                safe = False
+                continue
+            self._readiness.halt_for_unexpected_exposure()
+            self.flatten_position(state.position_id)
+            safe = False
+        return safe
 
     def _handle_signal(self, signal: TradeSignalV1) -> None:
         now_ns = int(self.clock.timestamp_ns())
@@ -590,10 +675,6 @@ class OiNautilusStrategy(Strategy):
         if any(state.active and state.route.instrument_id == route.instrument_id for state in self._states.values()):
             self._dispose_signal(signal, "instrument_busy")
             return
-        ready = self.readiness()
-        if not ready.ready:
-            self._dispose_signal(signal, ready.reason)
-            return
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
@@ -602,6 +683,10 @@ class OiNautilusStrategy(Strategy):
         )
         existing = self.cache.order(client_order_id)
         if existing is not None:
+            if not self._entry_order_valid(signal=signal, route=route, entry=existing):
+                self._readiness.halt_for_unexpected_exposure()
+                self._dispose_signal(signal, "cached_entry_invalid")
+                return
             self._orders[client_order_id] = (signal.signal_id, "entry")
             state = _ExecutionState(
                 signal=signal,
@@ -613,6 +698,11 @@ class OiNautilusStrategy(Strategy):
             self._states[signal.signal_id] = state
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._dispose_signal(signal, "replayed_query_first")
+            return
+        exposure_ready = self._verify_owned_exposure()
+        ready = self.readiness()
+        if not exposure_ready or not ready.ready:
+            self._dispose_signal(signal, ready.reason if not ready.ready else "protection_unproven")
             return
         day_start = self._current_day_start()
         if day_start is None:

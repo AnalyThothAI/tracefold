@@ -136,6 +136,34 @@ def test_restart_replay_queries_same_deterministic_client_id_without_resubmit() 
     assert entry.client_order_id == first.strategy.submitted[0][0].client_order_id
 
 
+def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
+    signal = trade_signal()
+    first = registered_oi_strategy()
+    entry_id = deterministic_client_order_id(
+        namespace=first.profile.client_order_namespace,
+        profile_id=first.profile.profile_id,
+        signal_id=signal.signal_id,
+        leg="entry",
+    )
+    wrong_entry = first.strategy.order_factory.market(
+        instrument_id=first.instrument.id,
+        order_side=OrderSide.SELL,
+        quantity=first.instrument.make_qty(Decimal("0.01")),
+        client_order_id=entry_id,
+    )
+    _accepted(first, wrong_entry)
+    canceled = TestEventStubs.order_canceled(wrong_entry, account_id=ACCOUNT_ID, ts_event=NOW_NS + 2)
+    wrong_entry.apply(canceled)
+    first.cache.update_order(wrong_entry)
+    restarted = registered_oi_strategy(values=(signal,), cache=first.cache)
+
+    restarted.strategy.on_timer(None)
+
+    assert restarted.strategy.submitted == []
+    assert restarted.strategy.queried == []
+    assert restarted.strategy.readiness().unexpected_exposure is True
+
+
 def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     signal = trade_signal()
     first = registered_oi_strategy()
@@ -645,6 +673,24 @@ def test_canceled_pending_protection_flattens_instead_of_opening_unprotected() -
     flatten = context.strategy.submitted[2][0]
     assert flatten.order_type == OrderType.MARKET
     assert flatten.is_reduce_only is True
+
+
+def test_periodic_cache_check_flattens_when_active_protection_disappears() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    _, position_id = _open_position(context)
+    stop = context.strategy.submitted[1][0]
+    context.strategy.on_order_accepted(_accepted(context, stop, position_id=position_id))
+    canceled = TestEventStubs.order_canceled(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS + 4)
+    stop.apply(canceled)
+    context.cache.update_order(stop)
+
+    context.strategy.on_timer(None)
+
+    flatten = context.strategy.submitted[2][0]
+    assert flatten.order_type == OrderType.MARKET
+    assert flatten.is_reduce_only is True
+    assert context.strategy.readiness().unexpected_exposure is True
 
 
 def test_repeated_flatten_queries_same_exit_instead_of_submitting_again() -> None:
