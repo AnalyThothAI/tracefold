@@ -117,16 +117,16 @@ are in [Setup](docs/SETUP.md).
 
 ## Development
 
-GitHub Issues are the durable specification and acceptance surface. Tests are
-selected by the changed seam; `make check` is a useful fast bundle, not a
-universal completion gate.
+GitHub Issues are the durable specification and acceptance surface. During an
+edit, run only the smallest check that can disprove the change. Select the
+final local checkpoint by the changed seam and risk; broad local suites are not
+a fixed ladder.
 
 ```bash
-make check
-make test            # default regression (~4 min): unit + architecture + contract + integration, no slow/e2e/golden
-make test-slow       # real-process Workers runtime tests
-make test-all        # everything (~6.5 min)
-cd web && npm run lint && npm run typecheck
+uv run pytest -q tests/path/test_module.py::test_exact_case  # edit loop example
+make check       # hermetic static/architecture/contract bundle when affected
+make test-fast   # optional broad hermetic final checkpoint; not per-edit
+make test-ci     # optional once for declared high-risk changes
 ```
 
 The maintained documentation surface is intentionally small:
@@ -137,7 +137,8 @@ The maintained documentation surface is intentionally small:
 | Data and module architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Public config/API/CLI contracts | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
 | Operations and PostgreSQL diagnosis | [docs/OPERATIONS.md](docs/OPERATIONS.md) |
-| Design and testing | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Design and local verification policy | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Test lanes and fixed CI implementation | [docs/TESTING.md](docs/TESTING.md) |
 | Frontend boundaries | [docs/FRONTEND.md](docs/FRONTEND.md) |
 | Secrets and authentication | [docs/SECURITY.md](docs/SECURITY.md) |
 
