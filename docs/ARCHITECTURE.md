@@ -1523,6 +1523,19 @@ ingest state in one transaction. An actual close wakes Recovery. Reconnect does
 the same for transport incidents, so a process restart cannot strand an older
 row.
 
+A Receiver that is killed rather than stopped reports nothing at all: the
+Workers root closes business admission before it cancels the task, and a signal
+kill never reaches application code. The next Receiver records that gap instead.
+`news_ingest_state.connected` is written true only by a live connection and
+false only by a reported disconnect, so finding it still true at startup means
+the previous process died while connected; the successor opens a
+`process_outage` interval starting at that row's last write — the last moment
+the old process is known to have been running, refreshed at least once a minute
+by the Janitor's snapshot — and its own connection closes it. Opening is
+idempotent on the one-open-row-per-cause index, and the start is clamped to the
+successor's own clock so a predecessor whose clock ran ahead cannot open an
+interval that closes before it began.
+
 Recovery scans on startup, explicit wakeup, and a 300-second fallback. It pages
 the official Strategy history for closed pending intervals and publishes
 stable-ID `raw.recovery.*` frames under one turn-wide 30-second / 60-provider-

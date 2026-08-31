@@ -704,6 +704,47 @@ def test_reader_receipt_uses_actual_degraded_card_and_keeps_ambiguous_unknown(co
     conn.commit()
 
 
+def test_ingest_liveness_carries_the_killed_receivers_last_proof_of_life(conn) -> None:
+    """#425: the durable row is what a restarted Receiver reads to find the gap it has to record.
+
+    `connected` stays true across a kill because the process that died never wrote a disconnect, and
+    `updated_at_ms` is the last write of any kind — which is the last moment it is known to have been
+    running, and so where the outage interval has to start.
+    """
+
+    repos = repositories_for_connection(conn)
+    seeded = repos.news.ingest_liveness()
+    assert seeded is not None
+    # `updated_at_ms` only ever moves forward, so the scenario has to start after whatever is there.
+    alive_at_ms = int(seeded["updated_at_ms"]) + 1_000
+    with repos.transaction():
+        repos.news.update_ingest_state(now_ms=alive_at_ms - 500, connected=True, last_frame_at_ms=1_000)
+        # The Janitor keeps this row fresh once a minute, so the interval never widens to however long
+        # the provider happened to be quiet.
+        repos.news.update_broker_snapshot(snapshot={"connected": True, "queues": {}}, now_ms=alive_at_ms)
+    liveness = repos.news.ingest_liveness()
+    assert liveness == {"connected": True, "updated_at_ms": alive_at_ms}
+
+    reconnected_at_ms = alive_at_ms + 30_000
+    with repos.transaction():
+        first = repos.news.open_incident(cause_class="process_outage", now_ms=liveness["updated_at_ms"])
+        # A process that dies again before connecting must converge on the same interval, not start a
+        # later one that would leave the first gap unscanned.
+        assert repos.news.open_incident(cause_class="process_outage", now_ms=alive_at_ms + 20_000) == first
+        summary = {row["cause_class"]: row for row in repos.news.open_incident_summary()}
+        assert summary["process_outage"]["count"] == 1
+        assert summary["process_outage"]["oldest_opened_at_ms"] == alive_at_ms
+        # Connecting closes it, and it reaches Recovery as a pending window like any other cause.
+        assert repos.news.close_open_incidents(cause_classes=["process_outage"], now_ms=reconnected_at_ms) == 1
+        pending = {int(row["incident_id"]): row for row in repos.news.pending_recovery_incidents()}
+        assert pending[first]["opened_at_ms"] == alive_at_ms
+        assert pending[first]["closed_at_ms"] == reconnected_at_ms
+
+    with repos.transaction():
+        repos.news.update_ingest_state(now_ms=reconnected_at_ms, connected=False)
+    assert repos.news.ingest_liveness() == {"connected": False, "updated_at_ms": reconnected_at_ms}
+
+
 def test_incidents_and_broker_snapshot(conn) -> None:
     repos = repositories_for_connection(conn)
     with repos.transaction():

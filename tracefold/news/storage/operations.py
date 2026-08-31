@@ -10,6 +10,11 @@ from .sql_values import _dumps
 
 RECOVERY_BACKLOG_LIMIT = 20
 RAW_RETENTION_BATCH_MAX = 1_000
+INGEST_LIVENESS_SQL = """
+    SELECT connected, updated_at_ms
+      FROM news_ingest_state
+     WHERE singleton_key = 'opennews'
+"""
 _PENDING_RECOVERY_INCIDENTS_SQL = """
     SELECT incident_id, cause_class, opened_at_ms, closed_at_ms, recovery_from_at_ms,
            recovery_to_at_ms, last_error_code, updated_at_ms
@@ -165,6 +170,20 @@ class OperationsStorage:
                 int(now_ms),
             ),
         )
+
+    def ingest_liveness(self) -> dict[str, Any] | None:
+        """What the durable row still claims about the last Receiver process, and when it last wrote.
+
+        `connected` is only ever set true by a live connection and false by a reported disconnect, so a
+        process that starts and finds it still true is reading the trace of one that never reported one.
+        `updated_at_ms` is the last write of any kind — a frame, a connection change, or the Janitor's
+        minute snapshot — which makes it the last moment that process is known to have been running.
+        """
+
+        row = self.conn.execute(INGEST_LIVENESS_SQL).fetchone()
+        if row is None:
+            return None
+        return {"connected": bool(row["connected"]), "updated_at_ms": int(row["updated_at_ms"])}
 
     def update_broker_snapshot(self, *, snapshot: Mapping[str, Any], now_ms: int) -> None:
         self.conn.execute(

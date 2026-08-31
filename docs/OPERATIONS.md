@@ -588,6 +588,16 @@ API () { curl -fsS -u "$USER:$PASS" "$@" http://127.0.0.1:15672/api/queues/%2F; 
    IS NULL GROUP BY 1` — which the `0335` partial unique index now makes
    impossible to exceed one row per cause class.
 
+   This step restarts both containers at once, which is **not** the graceful stop
+   a deployment performs: RabbitMQ closes the AMQP connections underneath live
+   handlers, Workers takes its fatal path, and the Receiver is cancelled without
+   reporting a disconnect. Its receipt is therefore a `process_outage` interval
+   opened by the next Workers process and closed when that process connects,
+   recovered from official Strategy history like any other incident — never a
+   `planned_shutdown`, which only a Receiver loop that exited on its own writes.
+   Both are correct receipts for different events; a run that produces one must
+   not be read as evidence for the other.
+
 Rollback before step 6 may restore the previous image; the policies are additive
 and the old image ignores them. After step 6 the queues carry the new shape and
 after step 8 the old lane is gone, so rolling back would recreate an unconfigured
