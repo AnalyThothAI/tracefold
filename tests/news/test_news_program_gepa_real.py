@@ -24,7 +24,6 @@ from tracefold.news.learning.contracts import (
 )
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.learning.optimizer import (
-    InstructionProposer,
     build_reflection_lm,
     build_task_lm,
 )
@@ -243,6 +242,12 @@ def _episode(
             "first_bad_owner_explicit": "triage_prompt" if magnitude_fail else None,
             "first_bad_owner": "triage_prompt" if magnitude_fail else None,
             "evidence_refs": ["filing#magnitude"] if magnitude_fail else [],
+            "taxonomy": {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            },
         },
         production_judgment=scored_judgment(
             {
@@ -315,6 +320,7 @@ def _optimize_real(
     *,
     budget: OptimizationBudget | None = None,
     compile_fn: Any = None,
+    gepa_log_dir: str | None = None,
 ) -> Any:
     """One real GEPA run through the one entry point, over the scripted corpus.
 
@@ -362,12 +368,22 @@ def _optimize_real(
             judge=_Judge(),
             budget=budget or _budget(),
             compile_fn=compile_fn,
+            gepa_log_dir=gepa_log_dir,
         ),
     )
 
 
-def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() -> None:
+def test_real_gepa_compiles_once_with_stock_proposer_and_objective_selector(monkeypatch: Any, tmp_path: Any) -> None:
     models = _ScriptedModels()
+    compile_calls = 0
+    real_compile = dspy.GEPA.compile
+
+    def counted_compile(self: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal compile_calls
+        compile_calls += 1
+        return real_compile(self, *args, **kwargs)
+
+    monkeypatch.setattr(dspy.GEPA, "compile", counted_compile)
     result = _optimize_real(
         models,
         # `_BudgetMeter.before` reserves `max_call_cost` for every call, so the reachable call count is
@@ -381,8 +397,10 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
             max_call_cost_microusd=1_000,
             seed=143,
         ),
+        gepa_log_dir=str(tmp_path / "gepa"),
     )
 
+    assert compile_calls == 1
     assert result.outcome == "ADVANCE"
     assert result.candidate is not None
     stable = load_stable_program_artifact()
@@ -406,30 +424,19 @@ def test_real_gepa_compiles_this_program_and_produces_a_learned_instruction() ->
     assert 0 < result.report.usage["metric_calls"] <= 40 + val_n + minibatch
     assert result.report.usage["reflection_model_calls"] > 0, "the reflection endpoint was never used"
 
-    assert result.report.checkpoint["schema"] == "tracefold.news.compile_checkpoint_receipt.v3"
-    assert set(result.report.checkpoint["predictors"]) == {"event_semantics", "reader_card"}
-
     receipt = result.report.optimizer
     assert receipt["optimizer"]["implementation"] == "dspy.GEPA"
-    assert receipt["instruction_proposer"]["implementation"].endswith("InstructionProposer")
+    assert receipt["instruction_proposer"] is None
+    assert receipt["component_selector"]["allowed"] == ["event_semantics"]
+    assert (tmp_path / "gepa" / "gepa_state.bin").is_file()
+    report_json = result.report.model_dump_json()
+    assert '"trajectory"' not in report_json
+    assert '"checkpoint"' not in report_json
     assert "wandb_api_key" not in receipt["constructor_scalar_arguments"]
     assert receipt["compile_call"]["valset_identity"] == "disjoint_cluster_split"
     split = result.report.split
     assert split["disjointness"]["shared_case_ids"] == 0
     assert split["train"]["case_n"] > 0 and split["development_selection"]["case_n"] > 0
-
-
-def test_the_reflection_brief_names_the_whole_instruction_as_the_write_set() -> None:
-    """#306 Phase 2: the proposer's job changed from "do not touch this" to "you own all of it"."""
-
-    proposer = InstructionProposer(reflection_lm=lambda prompt: "")
-    brief = proposer.context_for("event_semantics")
-
-    assert "COMPLETE instruction" in brief
-    assert "replaces the whole instruction" in brief
-    # The RulePack stack it used to paste in is the component text now, so the brief must not duplicate it.
-    assert "RULEPACK" not in brief
-    assert "LEARNEDSTRATEGY" not in brief
 
 
 def test_instruction_rejection_becomes_scorable_feedback_not_a_silent_zero() -> None:

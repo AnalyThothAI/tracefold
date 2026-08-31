@@ -1,26 +1,9 @@
-"""`news learning run`: the one recommended GEPA path, end to end (#253 §7 Phase C).
+"""`news learning run`: the only candidate-generating GEPA path (#453).
 
-An operator used to reach a terminal report through three commands, three output files and three sets of
-flags whose values had to agree — the judge model, the corpus bound, the dataset SHA — with nothing but
-care to make them agree. The three steps were right; the composition was the operator's to do by hand, and
-#225 is what that costs: a standalone baseline reading `0.0` beside an in-run seed reading `0.475`, with no
-artifact anywhere that said whether the two numbers even described the same experiment.
-
-This command is that composition and nothing more. It calls the same `readiness`, the same
-`baseline --dataset --mode compile_live` and the same `optimize` an operator can still call one at a time,
-into one directory. The separate `run_summary.json` comparability projection was deleted in #343: with the
-three legs composed in one process over one dataset SHA and one configured judge route, same-population is
-true by construction, and the three underlying reports are the record.
-
-It defines no second Objective Plan, Metric, split, budget or optimizer. What it does own is the wiring
-those three commands could not check about each other:
-
-- the equivalence judge is the configured compiler reflection route, not a name retyped per command, so the
-  standalone baseline and GEPA are scored by one ruler by construction;
-- the corpus bound is checked against readiness *before* anything is spent, instead of failing after the
-  baseline has already paid for a partial corpus;
-- a corpus readiness has already refused skips the baseline entirely and goes straight to the terminal
-  report `optimize` produces for free.
+The command writes zero-call readiness first, then invokes the existing optimizer once over the same frozen
+development dataset. Candidate zero is the Stable baseline inside that GEPA run; no standalone provider
+baseline or public `optimize` route exists. The directory must be new and empty so official GEPA state,
+the existing optimization report, and an optional PromptCandidate cannot be mixed with another run.
 
 It registers nothing, accepts nothing, promotes nothing and deploys nothing.
 """
@@ -33,44 +16,21 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .news_learning_baseline import _handle_learning_baseline, _handle_learning_readiness
+from .news_learning_baseline import _handle_learning_readiness
 
 _READINESS_FILE = "readiness.json"
-_BASELINE_FILE = "baseline-compile-live.json"
 _OPTIMIZATION_DIR = "optimization"
 _OPTIMIZATION_FILE = "optimization_report.json"
 _CANDIDATE_FILE = "prompt_candidate.json"
 
 
 def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
-    """Readiness, standalone baseline, optimization — in that order, into one directory."""
+    """Write readiness and one bounded stock-GEPA result into a new empty directory."""
 
     out = Path(str(args.out))
-    out.mkdir(parents=True, exist_ok=True)
-    # A directory is the record of *one* run. Every artifact of a previous one goes first, because a run
-    # that stops early — a corpus readiness refuses, a provider failure in the baseline — otherwise leaves
-    # a fresh `readiness.json` beside the last run's report and candidate from different corpora.
-    # `optimize` clears its own stale candidate for the same reason.
-    for stale in (
-        out / _BASELINE_FILE,
-        out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE,
-        out / _OPTIMIZATION_DIR / _CANDIDATE_FILE,
-    ):
-        stale.unlink(missing_ok=True)
+    _prepare_new_empty_directory(out)
     development = str(args.development).strip()
-    # Resolved before the corpus work rather than after it: an unconfigured reflection route is the one
-    # identity that would otherwise turn a planned run into an error only once readiness and the baseline
-    # had already been paid for.
-    judge_model = _reflection_judge_model(settings)
-
-    readiness = _readiness(settings, stable, out=out, development=development)
-    baseline: dict[str, Any] | None = None
-    if str(readiness.get("outcome")) == "ready":
-        _require_full_corpus_budget(args, readiness)
-        baseline = _baseline(args, settings, stable, out=out, development=development, judge_model=judge_model)
-    # Run even on a corpus readiness refused: `optimize` rebuilds the same plan and returns a `REJECTED`
-    # terminal report before it touches an endpoint, so the terminal outcome is one the optimizer actually
-    # produced rather than a verdict this command invented from a readiness outcome.
+    _readiness(settings, stable, out=out, development=development)
     optimization = _optimize(args, settings, stable, out=out, development=development)
 
     candidate = out / _OPTIMIZATION_DIR / _CANDIDATE_FILE
@@ -82,19 +42,22 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
             "outcome": optimization.get("outcome"),
             "reasons": list(optimization.get("reasons") or ()),
             "readiness": str(out / _READINESS_FILE),
-            "baseline": str(out / _BASELINE_FILE) if baseline is not None else None,
             "optimization": str(out / _OPTIMIZATION_DIR / _OPTIMIZATION_FILE),
             "prompt_candidate": str(candidate) if candidate.is_file() else None,
         },
     }
 
 
-def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
-    """The zero-call explanation, written to the run directory and read back whole.
+def _prepare_new_empty_directory(out: Path) -> None:
+    if out.exists():
+        if not out.is_dir() or next(out.iterdir(), None) is not None:
+            raise ValueError("news_learning_run_out_must_be_new_empty_directory")
+        return
+    out.mkdir(parents=True)
 
-    The handler returns a summary with `case_dispositions` stripped; the file is the report. Reading the
-    file back is what keeps this command a composition rather than a second reporting path.
-    """
+
+def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
+    """Compose the existing zero-call readiness handler and read its full report."""
 
     path = out / _READINESS_FILE
     code, payload = _handle_learning_readiness(Namespace(development=development, out=str(path)), settings, stable)
@@ -103,72 +66,14 @@ def _readiness(settings: Any, stable: Any, *, out: Path, development: str) -> di
     return _read(path)
 
 
-def _require_full_corpus_budget(args: Namespace, readiness: dict[str, Any]) -> None:
-    """Refuse a bound that cannot cover the corpus, before the first provider call rather than after.
-
-    `baseline --dataset` already refuses a partial corpus — a truncated run would publish split roots for
-    cases it never scored — but it refuses after projecting the corpus and inside a command that has
-    already been paid for by the operator's attention. Readiness has just counted the representatives for
-    free, so the same refusal is available here for nothing.
-    """
-
-    required = int(readiness.get("objective", {}).get("optimizer_case_n") or 0)
-    bound = int(getattr(args, "max_baseline_model_cases", 0) or 0)
-    if bound < required:
-        raise ValueError(f"news_learning_run_baseline_budget_below_corpus:{bound}<{required}")
-
-
-def _baseline(
-    args: Namespace,
-    settings: Any,
-    stable: Any,
-    *,
-    out: Path,
-    development: str,
-    judge_model: str,
-) -> dict[str, Any]:
-    """The standalone `compile_live` baseline over the frozen corpus, judged by the compiler reflection route.
-
-    `--action-source` is left empty so the baseline derives the only value its mode admits, and the window
-    arguments are absent rather than zero: a dataset-bound run refuses to also carry a moving window, and
-    passing `0` would read as one.
-    """
-
-    path = out / _BASELINE_FILE
-    code, payload = _handle_learning_baseline(
-        Namespace(
-            dataset=development,
-            mode="compile_live",
-            action_source="",
-            from_ms=None,
-            to_ms=None,
-            max_model_cases=int(args.max_baseline_model_cases),
-            semantic_judge=judge_model,
-            limit=int(args.max_baseline_model_cases),
-            out=str(path),
-        ),
-        settings,
-        stable,
-    )
-    if code != 0:
-        raise ValueError(_error_code(payload, fallback="news_learning_run_baseline_failed"))
-    return _read(path)
-
-
 def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, development: str) -> dict[str, Any]:
-    """The one optimization, with the operator's declared budget, into `<out>/optimization/`.
+    """Invoke the internal optimization leg once with the operator's declared budget."""
 
-    A non-`ADVANCE` exit is not an error here: `NO_OP` and `REJECTED` are complete terminal answers and the
-    summary is written for all three. Only a raised refusal — an unconfigured route, a stale Program —
-    stops the run.
-    """
-
-    from .news_learning_experiment import handle_research
+    from .news_learning_experiment import execute_optimization
 
     directory = out / _OPTIMIZATION_DIR
-    code, payload = handle_research(
+    code, payload = execute_optimization(
         Namespace(
-            learning_command="optimize",
             development=development,
             out=str(directory),
             max_metric_calls=int(args.max_metric_calls),
@@ -188,29 +93,7 @@ def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, develop
     return _read(directory / _OPTIMIZATION_FILE)
 
 
-def _reflection_judge_model(settings: Any) -> str:
-    """The one equivalence judge both legs are scored by, taken from configuration rather than a flag.
-
-    `optimize` builds its metric judge on `llm.news_compiler_reflection` and cannot be told otherwise;
-    `baseline --dataset` takes the model by name and refuses anything that does not resolve to that same
-    route. Deriving the name here removes the last way the two can be given different rulers — a typo — and
-    is what makes the metric receipts of the two reports comparable byte for byte.
-    """
-
-    reflection = getattr(settings.llm, "news_compiler_reflection", None)
-    if reflection is None or not bool(getattr(reflection, "configured", False)):
-        raise ValueError("news_learning_optimize_reflection_not_configured")
-    return str(reflection.model)
-
-
 def _error_code(payload: Mapping[str, Any], *, fallback: str) -> str:
-    """The refusal's own vocabulary, whether the handler returned a code or a code plus its detail.
-
-    `_handle_learning_baseline` answers an empty optimizer corpus with a mapping — a code and the blocking
-    reasons behind it. Stringifying that put a Python dict repr inside the CLI's `error` field, where every
-    other refusal in this plane puts a stable code an operator can grep for.
-    """
-
     error = payload.get("error")
     if isinstance(error, Mapping):
         return str(error.get("code") or fallback)

@@ -80,7 +80,7 @@ secret-free `reader_card.primary` runtime binding identity, not Program
 identity.
 `llm.news_compiler_tariff` is gone (#202 §6.2). It was the trusted worst-case
 rate table the proxy sidecar reserved against, and the sidecar went with the
-compiler platform; `learning optimize` charges an unpriced provider call at the
+compiler platform; the optimization leg of `learning run` charges an unpriced provider call at the
 operator's declared `--max-call-cost-microusd` instead. `LlmConfig` forbids
 unknown keys, so an operator YAML still carrying the block fails to load with
 the key named — remove it before deploying this revision. Each of the three
@@ -1106,100 +1106,23 @@ key, and open one short transaction under the shared `tracefold`
 login. Append-only triggers and business constraints reject review rewrites;
 the public Serve HTTP pool remains read-only and has no write route.
 
-`news learning baseline (--dataset SHA | --from-ms N --to-ms N)
+`news learning baseline --from-ms N --to-ms N
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]
-[--max-model-cases N] [--semantic-judge MODEL] [--limit N]
-[--out FILE]` is read-only: no Dataset write, sandbox, tariff, container, or
-table write. Moving-window runs and `--dataset --mode compile_live` return the
-content-addressed `tracefold.news.program_baseline_report.v3`. Issue #437 reuses
-the same command for `--dataset --mode recorded`, which instead returns the
-smaller `tracefold.news.recorded_taxonomy_baseline.v1` over persisted Stable
-taxonomy and makes zero provider calls.
+[--max-model-cases N] [--semantic-judge MODEL] [--limit N] [--out FILE]`
+is a moving-window diagnostic. It is read-only: no Dataset write, optimizer,
+candidate, sandbox, tariff, container or table write. The population changes
+with the clock and the receipt says `cohort_scope: current`, so it is discovery
+and never candidate-selection or release evidence. The former `--dataset`
+branches were deleted in #453; a frozen Dataset enters only through `readiness`
+and `run`.
 
-The two corpus forms are mutually exclusive because a run can only measure one
-of them (#199 §5). `--from-ms/--to-ms` is a moving window anchored to the clock:
-the population changes underneath it, so a before/after taken across two of them
-compares two different corpora, and the receipt says `cohort_scope: current` —
-discovery, never release evidence. `--dataset SHA` is the exact frozen
-development Dataset. With `--mode compile_live`, it re-projects the sealed
-corpus once, builds the same `GepaObjectivePlan` readiness and `run_gepa` build,
-and scores **only** `target + control`: excluded diagnostics are counted and
-named in the report's `objective` section and never enter a denominator, because
-a retrieval miss averaged into the "before" number is movement a candidate can
-be credited for without repairing anything. `subsets` publishes three separate
-numbers — `train`, `development_selection` (the formal *before* value a Candidate
-is picked on) and `optimizer_union` (a diagnostic) — and `identity` carries the
-dataset SHA and the `episode_projection_root_sha256` that a candidate's
-`ProposalReceipt` records and `CandidateEvaluator` re-derives, so readiness,
-this baseline, the registration and the release gate can be checked against each
-other. `--max-model-cases` must cover the whole optimizer corpus
-(`news_program_baseline_dataset_requires_full_corpus_budget:N`): a truncated run
-would publish split roots describing cases it never scored. A blocked plan is
-refused outright (`news_program_baseline_dataset_objective_blocked:<reasons>`)
-rather than published with an empty `subsets` block that reads as a measured
-zero — `readiness` explains the same blockers for free.
-
-With `--dataset SHA --mode recorded`, no Objective Plan or optimizer split is
-built. The existing projection contributes the four model-owned axes from
-accepted Review v6 taxonomy and the persisted production judgment, and a change to Gold therefore changes
-`episode_projection_root_sha256`. One deterministic representative per existing
-connected-fact cluster is scored. The report identity contains only the Dataset
-SHA, Stable bundle/Program, recorded runtime-model binding, and pure taxonomy
-metric; its other top-level facts are `case_n`, `independent_cluster_n`, actual
-`scored_case_n`, primary/diagnostic metrics, separate source-authority registry
-coverage, and `MEASURED | INSUFFICIENT_DATA`.
-
-An accepted external miss remains in the Dataset, projection root, and report
-`case_n`, but it has no recorded Stable prediction by definition. It is excluded
-from `independent_cluster_n`, `scored_case_n`, every metric denominator, and the
-60-cluster measurement threshold; the report therefore exposes rather than
-hiding the difference between accepted Gold and scorable recorded Gold.
-
-The sole primary is event-family macro-F1 over legal labels whose Gold support
-is greater than zero. Diagnostics are subject-code micro-F1, change-state
-accuracy, assertion-status macro-F1 over supported Gold labels, and exact match
-across all four model-owned axes. Confusion/per-class output carries the full
-legal universe, including support-zero labels. Model non-abstain covers only
-those four axes. Code-owned `source_authority` is deterministic registry
-coverage, excluded from both model score and model non-abstain. At least 60
-independent clusters yields `MEASURED`; smaller populations yield
-`INSUFFICIENT_DATA`. Neither outcome asserts that an operator target was met.
-
-The equivalence judge gets no admission ceiling of its own here, and #253 tried
-the other way first: a judge that reaches its ceiling does not raise, it returns
-`unavailable`, `retains()` reads that as not retained, a failed
-`factual_fidelity` arms the `factual_contradiction` hard gate, and the case
-scores zero. An under-sized ceiling would therefore publish a depressed baseline
-that reads as a measurement. `--max-model-cases` pins the corpus and so pins the
-judge's work, which is the bound that exists.
-
-`--dataset --mode compile_live` requires `--semantic-judge` on the configured reflection route
-(`news_program_baseline_dataset_requires_semantic_judge`,
-`..._requires_compiler_reflection_judge`). `subsets.development_selection` is
-published as the formal *before* value a Candidate is picked against, so it has
-to measure what the optimizer measures — the production graph on one task
-endpoint, judged by the ruler `run_gepa` refuses to run without. Dataset-bound
-recorded mode is the taxonomy-only branch above and builds no Objective Plan.
-`runtime_live` is rejected for a Dataset
-(`news_program_baseline_dataset_requires_compile_live`): it measures the four-slot production route with retry,
-fallback, deadline and circuit, which is a reliability question and not
-comparable to a candidate selected on the cold graph; and `bind_metric(None)`
-compares free-text retention byte-for-byte and fires `factual_contradiction` on
-every failed `factual_fidelity`. All three remain available in the moving-window
-form, which names itself discovery. For the same
-reason the retrieval receipt in a dataset-bound report is computed over the
-**whole** sealed export rather than the scored subset: the plan excludes exactly
-the cases `_retrieval_receipt` counts as misses, so a receipt over
-`target + control` would report a recall biased toward 1.0 by construction.
-
-Mode and corpus together name the question; none are interchangeable (#150
+Mode names the moving-window question; none are interchangeable (#150
 removed the single ambiguous `live`, with no alias):
 
-| Mode and corpus | Executes | Question |
+| Mode | Executes | Question |
 | --- | --- | --- |
 | moving-window `recorded` | the persisted `ScoredJudgment` against the complete `DecisionResult` that shipped | is Program metric wiring reproducible over history? |
-| Dataset `recorded` | persisted Stable taxonomy against accepted Gold, with no provider call | how does the active Stable cohort classify this frozen corpus? |
-| `compile_live` | the production native DSPy Program on one task endpoint, no fallback slot | what baseline does GEPA optimize against? |
+| `compile_live` | the production native DSPy Program on one task endpoint, no fallback slot | how does the cold graph answer this moving window? |
 | `runtime_live` | the configured four-slot native DSPy Program | does the production Program route answer these cases? |
 
 `compile_live` is exactly the native Program GEPA maximizes and deliberately has
@@ -1255,10 +1178,14 @@ gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v6` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v7` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
-ReaderCard copy lint, normalized over the components a case carries. The lint
+ReaderCard copy lint, normalized over the components a case carries. The four
+model-owned taxonomy axes contribute one subscore inside semantics/novelty:
+subject-code set F1 plus exact event family, change state and assertion status.
+`source_authority` remains code-derived and is absent from target, score and
+feedback. The lint
 publishes eight scored checks (`headline_language`, `headline_length`,
 `headline_number_count`, `banned_filler`, `meta_opening`, `why_length`,
 `why_single_sentence`, `no_emoji`) and its two gates in the metric receipt under
@@ -1370,82 +1297,41 @@ self-accept. `news review accept-drafts --dry-run` may preview an empty
 selection, while every non-dry-run requires a non-empty explicit `--only` list
 and `--reviewer` identity. An AI adjudicator is recorded as AI, never as human.
 
-`news learning snapshot|compare` — the #193 research window of frozen run
-directories and student/teacher arm comparison — was deleted in #343 together
-with the `tracefold.news.learning.experiment` package; `optimize` over a frozen
-development dataset is the only research entry.
+`news learning snapshot|compare` was deleted in #343. #453 also deletes the
+standalone `news learning optimize` route and `news learning baseline
+--dataset`; there is one candidate-generating entry:
 
-`news learning optimize --development SHA --out DIR --max-metric-calls N
+`news learning run --development SHA --out NEW_EMPTY_DIR --max-metric-calls N
 --max-task-model-calls N --max-reflection-model-calls N
 --max-metric-judge-model-calls N --max-cost-microusd N
---max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#202) is
-the one optimization entry point in the repository. It reads the frozen
-development corpus once through the shared application login and then holds
-three model endpoints and a typed budget — no database writer call path,
-broker, delivery, canary,
-no promotion, no Docker, no compiler image, no sandbox, no proxy sidecar, no
-tariff. The task LM is the configured production Program route rather than a
-command-line model, because a number optimized against a different route
-predicts nothing about production.
+--max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]`.
 
-It ends in exactly one of three terminal states, and every one of them writes
-`DIR/optimization_report.json` (`news_optimization_run_report_v1`):
+`run` writes the existing zero-call readiness report and then invokes exactly
+one `dspy.GEPA.compile(trainset, valset)` over the same frozen Objective Plan.
+It uses `instruction_proposer=None`; its component selector can return only
+`GepaObjectivePlan.target_predictors`, so a taxonomy-only Objective can rewrite
+only `event_semantics`. Candidate zero's validation score in that same compile
+is the sole optimization baseline. `best_idx == 0` or a winner that does not
+strictly beat candidate zero returns `NO_OP`.
+
+The command reads the frozen development corpus once through the shared
+application login and then holds three model endpoints and the existing typed
+budget. It has no database writer, broker, delivery, canary or promotion
+authority. Every terminal state writes
+`optimization/optimization_report.json` (`news_optimization_run_report_v1`):
 
 | Outcome | Meaning | Candidate | Exit |
 | --- | --- | --- | --- |
-| `NO_OP` | the optimizer kept the seed; no verifiable improvement | none | 1 |
-| `REJECTED` | the run violated a quality, safety or budget bound, or the Objective Plan refused the corpus before any call | none | 1 |
-| `ADVANCE` | one bounded Prompt patch, still with no production authority | `DIR/prompt_candidate.json` | 0 |
+| `NO_OP` | candidate zero remained best, or no strict improvement | none | 1 |
+| `REJECTED` | Objective, quality, safety or budget refusal | none | 1 |
+| `ADVANCE` | one bounded Prompt patch with no production authority | `optimization/prompt_candidate.json` | 0 |
 
-A `REJECTED` caused by the Objective Plan costs nothing: the plan is built
-before any endpoint is touched, which is the same answer `readiness` gives with
-zero model calls. The per-call cost ceiling is also the rate an unpriced
-provider call is charged at — neither endpoint this project runs on returns a
-price litellm can resolve — so over-charging stops a run early rather than late.
-
-`news learning run --development SHA --out DIR --max-baseline-model-cases N
---max-metric-calls N --max-task-model-calls N --max-reflection-model-calls N
---max-metric-judge-model-calls N --max-cost-microusd N
---max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]` (#253) is
-the one recommended GEPA path. It composes `readiness`, `baseline --dataset
---mode compile_live` and `optimize` into one directory and defines no second
-Objective Plan, Metric, split, budget or optimizer; the budget flags are the
-underlying commands' own, because inventing defaults for them would be a second
-budget. They divide the way those commands do: every ceiling except
-`--max-baseline-model-cases` bounds the optimization leg, and the standalone
-baseline is bounded only by its corpus, which `--max-baseline-model-cases` must
-cover exactly. It registers, accepts, promotes and deploys nothing.
-
-It takes no `--semantic-judge`: the equivalence judge is
-`llm.news_compiler_reflection`, the route `optimize` cannot be told to leave, so
-the two legs cannot be handed two different rulers. It refuses a
-`--max-baseline-model-cases` below the optimizer corpus
-(`news_learning_run_baseline_budget_below_corpus:M<N`) using readiness's own
-free count, before any provider call. A corpus readiness reports as
-`insufficient` skips the baseline — which refuses a blocked plan anyway — and
-goes straight to `optimize`, whose `REJECTED` for that corpus costs nothing.
-
-The directory holds `readiness.json`, `baseline-compile-live.json`,
-`optimization/optimization_report.json`, and
-`optimization/prompt_candidate.json` on `ADVANCE`. Freezing with `--out
-DIR/development.json` makes the same directory loadable by
-`notebooks/news-gepa-frozen-run-evaluation.ipynb`.
-
-The separate `run_summary.json` comparability projection
-(`tracefold.news.gepa_run_summary.v2`) was deleted in #343: with the three legs
-composed in one process over one dataset SHA and one judge route derived from
-`llm.news_compiler_reflection`, same-population is true by construction, so no
-fourth document re-checks the other three. The three baselines keep their own
-homes and their own meanings — the standalone number in
-`baseline-compile-live.json`
-(`subsets.development_selection.case_macro_failure_as_zero`), the GEPA seed
-number in `optimization/optimization_report.json`
-(`trajectory.val_aggregate_scores[0]`, the seed Program's score inside the run
-that proposed against it), and the future test number only ever from `release
-evaluate --stage holdout` against a post-registration ValidationDataset. Two
-physical runs of one graph may still differ in the last digits; a difference is
-not by itself evidence that a dataset identity is wrong. Exit `0` is `ADVANCE`;
-`1` is `NO_OP` or `REJECTED`, both complete answers.
+`--out` must name a missing or empty directory; existing contents are refused
+before readiness or provider work. The directory contains `readiness.json`,
+official GEPA log/state under `optimization/gepa/`, the optimization report,
+and an optional PromptCandidate. The report does not duplicate GEPA trajectory
+or checkpoint state. `ADVANCE` still enters the existing `release register`
+and evaluator/release gates; this command never performs those actions.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
 [--include-reviewed]` proposes `news_review_v6` rubrics for an owner-authorized
@@ -1514,17 +1400,14 @@ audit history and a new experiment re-freezes.
 development or future temporal validation dataset. Every current dataset is in
 the running bundle's runtime-owned epoch and accepts only `news_review_v6`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
-dataset or metric-v4 denominator.
+dataset or metric-v7 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
-`draft-reviews`, `optimize`, `freeze` — and none of them can ship anything.
+`draft-reviews`, `freeze` — and none of them can ship anything.
 There is no taxonomy registration, shadow, or separate evaluation command.
-Taxonomy quality is the recorded Dataset branch of `baseline`; it reads the
-existing Dataset through `serve`, calls one pure metric, and writes only an
-optional report file.
-`run` is the recommended composition of `readiness`, `baseline` and
-`optimize`; the rest stay callable one at a time. `news release` admits a
+Taxonomy Gold is scored inside metric v7 during the one `run`; moving-window
+`baseline` is diagnostic only. `news release` admits a
 candidate and moves it: `register`,
 `evaluate`, `shadow`, `canary`. The split is what an operator reads off
 `--help`, and it is the same boundary the packages carry: `news.learning`
@@ -1533,7 +1416,7 @@ never imports `news.release`.
 `release register --development SHA --candidate FILE --artifact-root DIR
 [--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v1` to
 the active stable Program and a frozen development dataset. Whatever wrote the
-two instructions — `learning optimize`, a research run, or a person — enters
+two instructions — `learning run` or a person — enters
 here on identical terms, because the generator is audit, not permission. The
 command re-applies the patch to the running stable to derive the candidate's
 Program identity, re-projects the corpus and re-derives the #199 Objective Plan

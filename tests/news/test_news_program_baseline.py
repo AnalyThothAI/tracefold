@@ -125,6 +125,7 @@ def _episode(*, dimensions: dict[str, str], expected: dict[str, Any] | None = No
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
             "expected": expected or {},
             "expected_correction": "",
+            "taxonomy": {key: value for key, value in _TAXONOMY.items() if key != "source_authority"},
         },
         production_judgment=scored_judgment(_VERDICT),
         policy_metric={
@@ -165,7 +166,7 @@ def test_failed_dimension_without_gold_is_visible_but_not_scored() -> None:
     unchanged = _score(episode, dict(_VERDICT))
     assert changed.score == unchanged.score
     assert ("magnitude", "not_scored_no_gold") in changed.dimension_outcomes
-    assert changed.gold_scored_n == 1  # the separately accepted novelty judgment
+    assert changed.gold_scored_n == 2  # accepted novelty and taxonomy
 
 
 def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
@@ -183,7 +184,7 @@ def test_failed_dimension_with_gold_scores_only_the_stated_value() -> None:
     assert wrong.score < _score(ungolded, {**_VERDICT, "magnitude": 3}).score
     assert right.score == _score(ungolded, {**_VERDICT, "magnitude": 2}).score
 
-    assert right.gold_scored_n == 2 and right.labelled_n == 3
+    assert right.gold_scored_n == 3 and right.labelled_n == 4
     assert "Accepted correct values: magnitude=2." in right.feedback
 
 
@@ -284,14 +285,14 @@ def test_hard_gate_keeps_component_denominators_and_effective_weight_mass() -> N
     assert case.component_denominators == {
         "final_action": 1,
         "trade_relevance": 7,
-        "semantics_novelty": 4,
+        "semantics_novelty": 5,
         "reader_card": 4,
         # Seven of the eight deterministic card checks; the number count does not apply because this
         # episode's source headline carries no standalone number to preserve.
         "reader_card_lint": 7,
     }
     assert case.effective_weight_mass == 1.1
-    assert case.gold_scored_n == 1 and case.labelled_n == 15
+    assert case.gold_scored_n == 2 and case.labelled_n == 16
     assert report.scores["component_denominators"] == case.component_denominators
     assert report.scores["effective_weight_mass_mean"] == 1.1
 

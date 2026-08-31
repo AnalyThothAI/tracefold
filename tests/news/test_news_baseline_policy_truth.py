@@ -87,6 +87,12 @@ def _episode(
             "should_push": "should_push",
             "dimensions": {"factual_fidelity": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+            "taxonomy": {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            },
         },
         production_judgment=scored_judgment(_VERDICT, relevance=production_relevance),
         policy_metric=projection,

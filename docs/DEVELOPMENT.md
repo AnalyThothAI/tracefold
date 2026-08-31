@@ -550,34 +550,15 @@ uv run tracefold news review accept-drafts --file /tmp/drafts.json --dry-run
 uv run tracefold news review accept-drafts --file /tmp/drafts.json \
   --only EVENT_OR_TASK_PREFIX[,PREFIX...] --reviewer owner_authorized_codex
 
-# The golden path (#253). Freeze once, then `run` — readiness, the standalone
-# `compile_live` baseline over that exact corpus, and the one optimization,
-# composed in one process over one dataset SHA and one configured judge route.
-# It composes the three commands below and owns no second Objective Plan,
-# Metric, split, budget or optimizer. Exit 0 means ADVANCE; 1 means NO_OP or
-# REJECTED, both complete answers.
+# The one candidate path (#453). Freeze once, inspect zero-call readiness, then
+# run stock GEPA exactly once. Candidate zero's validation score is the only
+# optimization baseline. Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --out artifacts/run-1/development.json
-uv run tracefold news learning run --development DATASET_SHA \
-  --out artifacts/run-1 --max-baseline-model-cases 80 \
-  --max-metric-calls 100 --max-task-model-calls 150 \
-  --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
-  --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
-
-# The same three legs one at a time, for a partial re-run or a cheap probe.
-# `readiness` costs nothing and answers a blocked corpus for free.
 uv run tracefold news learning readiness --development DATASET_SHA \
   --out /tmp/readiness.json   # 0 model calls, 0 writes
-uv run tracefold news learning baseline --dataset DATASET_SHA \
-  --mode compile_live --max-model-cases 80 \
-  --semantic-judge deepseek-v4-pro --out /tmp/baseline.json
-# The same frozen Dataset also owns taxonomy measurement. This recorded branch
-# reads persisted Stable taxonomy, makes zero provider calls, and does not use
-# the GEPA Objective Plan or its split.
-uv run tracefold news learning baseline --dataset DATASET_SHA \
-  --mode recorded --out /tmp/taxonomy-baseline.json
-uv run tracefold news learning optimize --development DATASET_SHA \
-  --out artifacts/optimize-1 \
+uv run tracefold news learning run --development DATASET_SHA \
+  --out artifacts/run-1 \
   --max-metric-calls 100 --max-task-model-calls 150 \
   --max-reflection-model-calls 40 --max-metric-judge-model-calls 100 \
   --max-cost-microusd 500000 --max-call-cost-microusd 5000 --seed 112
@@ -633,8 +614,9 @@ audit-only and starts the factory-v7 eligible cohort at zero.
 
 Current Review v6 retains exact gold for `trade_impact_breadth`, `trade_tradability`,
 `trade_surprise`, `trade_development_delta`, `trade_channels`,
-`trade_affected_markets` and `reader_value`, and adds exact Gold for all five
-`news_taxonomy_v1` axes. One explicit ReviewDesk acceptance by an owner-authorized reviewer is taxonomy Gold; there is no
+`trade_affected_markets` and `reader_value`, and adds exact Gold for the four
+model-owned `news_taxonomy_v1` axes. `source_authority` remains code-derived and
+is not model Gold. One explicit ReviewDesk acceptance by an owner-authorized reviewer is taxonomy Gold; there is no
 taxonomy-specific second-reviewer or adjudication requirement. Work the fixed targeted strata
 `local_macro_false_interrupt`, `systemic_macro_must_interrupt`,
 `regional_direct_exception`, `scheduled_or_in_line_macro`,
@@ -642,41 +624,23 @@ taxonomy-specific second-reviewer or adjudication requirement. Work the fixed ta
 only an explicit append-only review submission and acceptance receipt becomes
 truth.
 
-`learning run` (#253) is the one recommended GEPA path in this repository, and
-the four questions it answers are the whole plane: are there accepted examples,
-what did Stable score on them, did GEPA find an instruction worth testing, and
-does that instruction still win on examples it never saw. It is a composition —
-`readiness`, `baseline --dataset --mode compile_live`, `optimize` — into one
-directory. Everything it adds is a check the three
-commands could not make about each other: the equivalence judge is
-`llm.news_compiler_reflection` rather than a model name retyped per command, the
-corpus bound is checked against readiness before a provider call is spent, and a
-corpus readiness already refused skips the baseline instead of paying for the
-refusal twice.
+`learning run` (#453) is the only candidate-generating GEPA path. It writes the
+existing zero-call readiness report, invokes one stock `dspy.GEPA.compile()` on
+the frozen Objective Plan, and writes the existing optimization report plus an
+optional PromptCandidate. Candidate zero's validation score in that same GEPA
+run is the only optimization baseline; there is no provider-backed Dataset
+baseline or paired rerun.
 
-Three baselines, three jobs, and #253 §3.2 exists because #225 published two of
-them as if they were one number:
+The future test baseline remains separate: Stable is evaluated on accepted
+examples that did not exist when the candidate was made (`release evaluate
+--stage holdout` against a ValidationDataset frozen strictly after
+registration). Only this one answers generalization.
 
-- **standalone baseline** — an independent physical `compile_live` run over the
-  frozen corpus (`subsets.development_selection.case_macro_failure_as_zero`).
-  It is for diagnosis, cost and repeatability.
-- **GEPA seed baseline** — the seed Program's score inside the same GEPA run
-  (`trajectory.val_aggregate_scores[0]`). This, not the standalone number, is
-  the *before* the optimizer improved on.
-- **future test baseline** — Stable on accepted examples that did not exist when
-  the candidate was made (`release evaluate --stage holdout` against a
-  ValidationDataset frozen strictly after registration). Only this one answers
-  generalization.
-
-The separate `run_summary.json` comparability projection is gone (#343): with
-the three legs composed in one process over one dataset SHA and one configured
-judge route, same-population holds by construction rather than by a fourth
-document re-checking the other three. The standalone number lives in
-`baseline-compile-live.json`, the GEPA seed number in
-`optimization/optimization_report.json`, and the frozen dataset's own sealed
-`coverage` counts in `readiness.json`. Two physical runs of one graph can still
-differ in the last digits; that is a fact about two runs that happened, and it
-is not on its own evidence that a dataset identity is wrong.
+The run directory must be new and empty. It contains `readiness.json`, official
+GEPA log/state under `optimization/gepa/`,
+`optimization/optimization_report.json`, and
+`optimization/prompt_candidate.json` only on `ADVANCE`. The report does not
+mirror GEPA trajectory or checkpoint state.
 
 **When a corpus is big enough (#259).** Coverage decides it: independent
 connected fact clusters by role, at least one safety case, the required strata
@@ -700,8 +664,8 @@ cut — it moves `TRUSTED_ROOT_SHA`, and the profile is named
 `news_learning_release_v2` — so datasets and candidates frozen under v1 stay as
 audit history and a new experiment re-freezes.
 
-`learning optimize` (#202) is a cold, operator-invoked GEPA workflow, not a
-Worker and not a release gate. It reads the frozen development corpus once as
+The optimization leg of `learning run` is a cold, operator-invoked GEPA
+workflow, not a Worker and not a release gate. It reads the frozen development corpus once as
 `serve`, then holds nothing but three model endpoints and a typed budget: no
 database write credential, no broker, no delivery, no canary, no promotion. It
 ends in `NO_OP`, `REJECTED` or `ADVANCE`; all three write a complete
@@ -721,21 +685,18 @@ shadow, canary and a human promotion are unchanged.
 
 `learning snapshot | compare` — the #193 research fast loop of frozen run
 directories and per-arm comparison — was deleted in #343, along with the
-`tracefold.news.learning.experiment` package that carried it; `optimize` over a
-frozen corpus is the one research entry left.
+`tracefold.news.learning.experiment` package that carried it. The standalone
+`learning optimize` route and Dataset form of `learning baseline` were deleted
+in #453; `learning run` is the one research entry left.
 `tests/architecture/test_news_optimizer_boundary.py` names the one CLI module
 allowed to load the optimizer in process, and asserts what the optimizer itself
 can reach: no database session, no review plane, no canary, no promotion.
 
-`learning baseline` (#143) is the step that has to come first and did not exist
-until then: a cold, read-only run of the native Program over the same `decide()`
-and the same `accepted_review_metric`, so the number an operator reads before a
-prompt edit is the number GEPA will later try to maximize. It needs no dataset,
-sandbox, tariff or container and writes nothing. `compile_live` and GEPA execute
-the same `NativeNewsProgram`, two Predictor bindings, stock JSONAdapter and task
-endpoint. The SemanticJudge adapter needed by the report disables the
-whole-route deadline and cross-case breaker that GEPA does not run; the endpoint
-retains its per-call timeout. There is no fallback slot.
+`learning baseline` (#453) is only a moving-window diagnostic: a cold,
+read-only run of the native Program over current accepted reviews. It accepts
+`--from-ms/--to-ms`, not a frozen Dataset SHA, and is never candidate-selection
+evidence. It needs no sandbox, tariff or container and writes no business
+truth.
 
 Two facts about the optimizer are worth stating plainly, because both were
 invisible while its only tests drove a fake GEPA:
@@ -785,19 +746,11 @@ object; `runtime_live` is the reader's. The same broken ReaderCard answer is
 fatal to the first and survivable on the second, so their failure rates are not
 comparable and the report says which contract it executed in `execution_scope`.
 
-Issue #437 gives `--dataset SHA --mode recorded` one narrower job: score the
-four model-owned taxonomy axes already persisted by the Dataset's Stable cohort.
-It returns `tracefold.news.recorded_taxonomy_baseline.v1`, not the Program
-baseline report, and carries no Objective Plan, split, provider route, judge, or
-candidate identity. The primary is event-family macro-F1 over supported Gold
-labels; diagnostics cover subject-code micro-F1, change-state accuracy,
-assertion-status macro-F1, and four-axis exact match. Complete legal universes,
-cluster-deduplicated denominators, model non-abstain, and separate code-owned
-source-authority registry coverage are always present. Fewer than 60 independent
-clusters is `INSUFFICIENT_DATA`; 60 or more is `MEASURED`, never an inferred
-quality threshold. Accepted external misses remain visible in `case_n` and the
-Dataset root, but without a recorded Stable prediction they enter neither
-`independent_cluster_n` nor `scored_case_n` or any metric denominator.
+Issue #453 folds taxonomy into the one case metric. `taxonomy_metric.py` is a
+pure comparison helper: subject-code set F1 plus exact event family, change
+state and assertion status. The mean is one subscore inside
+`semantics_novelty`; top-level weights stay fixed and code-derived
+`source_authority` is absent from target, score and feedback.
 
 The Program baseline report publishes no single ambiguous number. `case_macro_answered` is
 quality given an answer; `case_macro_failure_as_zero` is the end-to-end lower
@@ -820,7 +773,7 @@ cannot verify its own policy is a construction bug, and scoring it 0 would blame
 the Program for it.
 
 Migration `0336` removes the pre-genesis replay fixture with the database
-evidence it represented. Current metric-v6 evidence is built only from exact
+evidence it represented. Current metric-v7 evidence is built only from exact
 `news_judgment_v2` rows created in the post-genesis active epoch; tests do not
 carry a repository copy of the retired evidence shape.
 
@@ -846,7 +799,7 @@ Hard gates come first and are not averaged with anything: `must_push` miss,
 `must_hold` send, background sent realtime (objective guards separated), schema
 invalidity, ungrounded primary, factual contradiction, relevance inconsistency,
 a card carrying a URL or describing its writer as a model, or known duplicate
-leak scores the example zero. What survives is metric v6: 45% final production
+leak scores the example zero. What survives is metric v7: 45% final production
 action, 35% exact TradeRelevance dimensions, 10% semantics/novelty, 10%
 ReaderCard reviewer anchors and 10% the deterministic ReaderCard copy lint.
 Every failed scored dimension needs exact expected gold; without it the field is

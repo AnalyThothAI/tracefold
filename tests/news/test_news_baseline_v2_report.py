@@ -94,6 +94,12 @@ def _case(index: int, *, cluster: str | None = None, should_push: str = "should_
             "should_push": should_push,
             "dimensions": {"factual_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+            "taxonomy": {
+                "subject_codes": [],
+                "event_family": "other",
+                "change_state": "unknown",
+                "assertion_status": "unknown",
+            },
         },
         production_judgment=scored_judgment(_VERDICT),
         policy_metric={
@@ -298,16 +304,17 @@ def test_report_exposes_complete_diagnostics_for_each_score_component() -> None:
         },
     }
     assert diagnostics["semantics_novelty"] == {
-        "denominator": 2,
+        "denominator": 3,
         "effective_weight_mass": 0.1,
-        "gold_scored_n": 1,
-        "labelled_n": 2,
-        "gold_coverage": 0.5,
+        "gold_scored_n": 2,
+        "labelled_n": 3,
+        "gold_coverage": 0.666667,
         "field_n": {
             "asset_grounding": 0,
             "direction": 0,
             "magnitude": 1,
             "novelty": 1,
+            "taxonomy": 1,
         },
     }
     assert diagnostics["reader_card"] == {
@@ -442,7 +449,7 @@ def test_the_metric_version_label_moves_with_the_metric_definition() -> None:
 
     from tracefold.news.learning.metric import METRIC_ID
 
-    assert METRIC_ID.endswith("_v6")
+    assert METRIC_ID.endswith("_v7")
     assert _report([_case(1)]).identity["metric_id"] == METRIC_ID
 
 

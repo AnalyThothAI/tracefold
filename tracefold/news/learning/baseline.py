@@ -172,10 +172,8 @@ class BaselineReport(BaseModel):
     prediction_dimensions: dict[str, Any]
     gold_coverage: dict[str, Any]
     retrieval: dict[str, Any]
-    # #199. Empty for a moving-window run, which is discovery and says so. For `--dataset` it is the
-    # Objective Plan this baseline was scored under: what was target, what was control, why every other
-    # case is out, and the split roots readiness, the trusted CompileRecord and `CandidateEvaluator` must
-    # all agree with.
+    # Empty for the public moving-window baseline. CandidateEvaluator supplies the Objective Plan when it
+    # reuses this report model inside the release lifecycle.
     objective: dict[str, Any] = Field(default_factory=dict)
     # The three numbers #199 §5 asks for, kept apart because they answer different questions: `train` is
     # what GEPA optimizes against, `development_selection` is the formal *before* value a candidate is
@@ -290,7 +288,7 @@ def build_judge(
     """The semantic-equivalence judge, built here so the CLI layer never composes a model transport.
 
     `max_model_calls` is the judge's own ceiling, admitted atomically before a slow provider call. A caller
-    that spends unattended — `learning optimize`, which can run for hours — passes one; the interactive
+    that spends unattended — the optimization leg of `learning run` — passes one; the interactive
     baseline does not, because an operator watching a bounded `--max-model-cases` run is the ceiling.
 
     The role contract is exact, not a floor, for the same reason the reflection role's is: the identity

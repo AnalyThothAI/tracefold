@@ -195,18 +195,15 @@ winner that is not exactly those two with empty demos. Proving provenance was
 never what made a candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
-`news learning optimize` reads a frozen development corpus once through the
+`news learning run` reads a frozen development corpus once through the
 shared application login and then holds three model endpoints and a typed
 in-process budget: it has no database writer call path, broker, delivery,
 canary, promotion, or artifact writer. Database least privilege is not the
-business boundary in the single-login deployment. `news learning run` (#253)
-composes it with `readiness` and the standalone baseline and adds no authority
-of its own: three bounded database reads, the
-same endpoints, and files in a directory the operator named. The typed budget
-still bounds only the optimization leg — `run_baseline` has no aggregate meter
-or whole-run/whole-route deadline, although each endpoint call keeps its
-configured timeout — so a composite run's spend is the declared budget plus a baseline leg
-bounded by its corpus, which `--max-baseline-model-cases` must cover exactly.
+business boundary in the single-login deployment. The command composes
+zero-call readiness with exactly one stock GEPA compile and writes only to a
+new empty directory named by the operator. The typed budget bounds every
+task/reflection/judge call in that optimization; there is no extra provider
+baseline leg.
 Every physical provider call passes a typed `AuditedConfiguredLM` seam that uses
 DSPy's public `LMRequest`/`LMResponse` contract, never stores credentials in its
 hash or trace, and scrubs bounded provider error detail. The learning meter
@@ -256,7 +253,7 @@ chain names a receipt that no longer validates. Neither re-opens the epoch —
 identity changed, evidence did not — so accepted `news_review_v4`
 truth stays eligible. Every earlier
 review, dataset, recording and release receipt is
-retained as audit history but is never training, metric-v4,
+retained as audit history but is never training, metric-v7,
 validation, holdout or promotion evidence for the current Program factory.
 `0315` then records #288's exact source route and factory-v7 cut without
 rewriting or appending the `program_v7` epoch row. Accepted review labels remain

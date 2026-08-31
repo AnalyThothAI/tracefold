@@ -16,7 +16,7 @@ from typing import Any
 import dspy  # type: ignore[import-untyped]
 import pytest
 
-from tests.support.news_judgment import scored_judgment, trade_relevance
+from tests.support.news_judgment import news_taxonomy, scored_judgment, trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.learning.baseline import BaselineCase, run_baseline
 from tracefold.news.learning.objective import DevelopmentEpisode
@@ -110,10 +110,12 @@ def _case(index: int, *, title: str | None = None) -> BaselineCase:
             "should_push": "should_push",
             "dimensions": {"factual_fidelity": "pass", "headline_fidelity": "pass", "magnitude": "pass"},
             "novelty": {"judgment": "new_fact", "duplicate_of": ""},
+            "taxonomy": dict(_SEMANTICS["taxonomy"]),
         },
         production_judgment=scored_judgment(
             _VERDICT,
             relevance=trade_relevance(),
+            taxonomy=news_taxonomy(**_SEMANTICS["taxonomy"]),
         ),
         policy_metric={
             "gate": {"grounded_assets": ["TSLA"], "admission": "candidate"},

@@ -1078,8 +1078,9 @@ Diagnose News in this order:
    every requested case and does not move when the model does. `hard_gates`
    says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
    is a defect in the corpus or the ruler, not a provider outage. Compare
-   metric-v4 components as well: 45% final action, 35% exact TradeRelevance,
-   10% semantics/novelty and 10% ReaderCard, each with its effective denominator,
+   metric-v7 components as well: 45% final action, 35% exact TradeRelevance,
+   10% semantics/novelty, 10% ReaderCard reviewer anchors and 10% ReaderCard
+   lint, each with its effective denominator,
    weight mass and gold coverage. A failed dimension without exact gold is not
    scored. `metric_judge` unavailability is a receipted failure-as-zero for its
    free-text field, not byte-equality fallback.
@@ -1097,19 +1098,16 @@ Diagnose News in this order:
 7. A change is a registered candidate, not an edited production artifact.
    Freeze a post-epoch development dataset, then run one command:
    `learning run --development SHA --out DIR` with explicit metric, task,
-   reflection and metric-judge call limits, a baseline corpus bound, a total and
-   a per-call provider-cost limit, and a seed. It runs `readiness` (zero model
-   calls), the standalone `compile_live` baseline over that exact corpus, and
-   the one optimization, into that directory. It ends in `NO_OP`, `REJECTED` or
+   reflection and metric-judge call limits, a total and a per-call provider-cost
+   limit, and a seed. It writes `readiness` (zero model calls) and invokes one
+   stock GEPA compile into a new empty directory. It ends in `NO_OP`, `REJECTED` or
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Each of the three roles is one
    `ModelExecutionIdentity`, and calls/cost/failures are accounted separately
-   before they are summed. The standalone baseline in
-   `baseline-compile-live.json` and the GEPA-seed score inside
-   `optimization_report.json` are two different numbers; running the three legs
-   in one process over one dataset SHA and one configured judge route is what
-   keeps them comparable. The
-   three legs stay callable one at a time for a partial re-run. Then `release
+   before they are summed. Candidate zero's validation score inside that GEPA
+   run is the only optimization baseline. Official GEPA log/state is retained;
+   the optimization report does not mirror trajectory or checkpoint state.
+   Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset
    — re-applying the patch to derive the Program identity and re-deriving the
    #199 Objective Plan rather than trusting the candidate — and `learning
@@ -1146,40 +1144,38 @@ news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
 newest agent *before* the join, not after: joining the whole appointment history
 and then taking one row reports the previous deployment's epoch when the current
 agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
-epoch, bound to that exact bundle, enter metric v6, GEPA or release evidence. Every earlier Prompt/Program
+epoch, bound to that exact bundle, enter metric v7, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #437 measures them through the existing Review v6, Dataset, and recorded
-baseline only.
+issue #453 uses them through the existing Review v6, Dataset, Objective, metric
+v7, GEPA and release path only.
 
-Before inspecting the first production taxonomy score, the owner must comment
-`primary_target: ...` on issue #437. Do not derive or revise that target from a
-score already seen. Then:
+For the taxonomy Gold → Candidate workflow:
 
-1. Review 60–100 independent connected-fact clusters. One operator acceptance
-   is Gold; no taxonomy-specific adjudicator is required. A model-drafted batch
-   may be previewed with `news review accept-drafts --file FILE --dry-run`, but
-   every write requires a non-empty explicit `--only EVENT_OR_TASK_PREFIX,...`.
-2. Freeze those accepted reviews with the existing `news learning freeze
-   --role development ...` command. Do not create a taxonomy Dataset or edit
-   the frozen document: accepted taxonomy is part of each existing episode and
-   its projection root.
-3. Run `news learning baseline --dataset DATASET_SHA --mode recorded --out
-   REPORT`. This makes zero provider calls and reads the taxonomy already
-   persisted by that Dataset's Stable cohort.
+1. Draft current unjudged ReviewDesk tasks with an identified teacher model,
+   for example `news learning draft-reviews --model qwen3.8-27b:thinking`.
+   Inspect the evidence and each draft. Preview with `news review accept-drafts
+   --file FILE --dry-run`; every write requires an explicit non-empty `--only`
+   list and an honestly named reviewer, including an AI adjudicator.
+2. Freeze only current-contract accepted reviews with `news learning freeze
+   --role development ...`. Do not reuse or migrate an older Dataset. Accepted
+   four-axis taxonomy is part of each existing episode and its projection root.
+3. Run `news learning readiness --development DATASET_SHA --out FILE`. This is
+   a zero-provider-call check. Both split halves must contain taxonomy targets
+   and Stable-correct controls, and connected-fact cluster overlap must be zero.
+4. Only after an operator declares all existing budget flags, run `news
+   learning run --development DATASET_SHA --out NEW_EMPTY_DIR ...`. It invokes
+   stock GEPA once. Record the optimization outcome, usage and Candidate SHA (if
+   any) on issue #453. It never registers, releases or promotes the Candidate.
 
-The report is `MEASURED` only at 60 or more independent clusters and otherwise
-`INSUFFICIENT_DATA`. Read the primary event-family macro-F1 against the target
-recorded before scoring; treat subject-code micro-F1, change-state accuracy,
-assertion-status macro-F1, and four-axis exact match as diagnostics. The report
-includes every legal label with support zero where applicable and the actual
-scored population. Code-owned source-authority registry coverage is separate;
-it is excluded from model score and model non-abstain. `MEASURED` is a
-denominator statement, not a PASS. Do not use taxonomy to alter Gate, Delivery,
-or Trading, and do not describe schema deployment as model-quality evidence.
+Taxonomy scoring is subject-code set F1 plus exact event family, change state
+and assertion status, folded into the existing semantics/novelty component.
+Code-owned `source_authority` is excluded from model target, score and feedback.
+Do not use taxonomy to alter Gate, Delivery or Trading, and do not describe a
+single offline score increase as production uplift.
 
 Retention: unjudged `news_items`/`news_events` older than 30 days are purged by
 the Janitor; judged evidence is retained under the configured 365-day tier and

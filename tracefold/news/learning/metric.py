@@ -43,6 +43,7 @@ from .objective import (
     _labelled,
     production_decision,
 )
+from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 
 # v3 (#150): the scored dimension set lost `timeliness`, the policy moved from process-global
 # `DEFAULT_POLICY` to the exact frozen values carried by each example, and the metric now returns typed
@@ -50,7 +51,7 @@ from .objective import (
 # addresses — but a version label that stays put while the definition moves is a label that lies.
 # v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
 # so the card side of this ruler no longer depends on a reviewer having labelled anything.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v6"
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v7"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -66,7 +67,7 @@ _CARD_LINT_WEIGHT = 0.10
 COMPONENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
     "final_action": ("should_push",),
     "trade_relevance": _RELEVANCE_DIMENSIONS,
-    "semantics_novelty": (*_SEMANTICS_DIMENSIONS, "novelty"),
+    "semantics_novelty": (*_SEMANTICS_DIMENSIONS, "novelty", "taxonomy"),
     "reader_card": _CARD_DIMENSIONS,
     "reader_card_lint": SCORED_CHECKS,
 }
@@ -183,8 +184,8 @@ class ProductionRegressionGateEvidenceV1(BaseModel):
 
     schema_id: Literal["tracefold.news.production_regression_gate.v1"] = "tracefold.news.production_regression_gate.v1"
     gate: ProductionRegressionGateName
-    metric_id: Literal["tracefold.news.production_action_trade_relevance_v6"] = (
-        "tracefold.news.production_action_trade_relevance_v6"
+    metric_id: Literal["tracefold.news.production_action_trade_relevance_v7"] = (
+        "tracefold.news.production_action_trade_relevance_v7"
     )
     metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     denominator_n: int = Field(ge=0)
@@ -300,6 +301,7 @@ def _component_diagnostics(
     semantics_anchors: Sequence[tuple[str, str, Any]],
     card_anchors: Sequence[tuple[str, str, Any]],
     expected_novelty: str,
+    taxonomy_gold_present: bool,
     lint: CardLintResult | None,
 ) -> dict[str, dict[str, Any]]:
     """Describe exactly how much accepted truth supports each weighted component."""
@@ -308,6 +310,7 @@ def _component_diagnostics(
         objective_guard == "none" and should_push in {"must_push", "should_push", "must_hold", "should_hold"}
     )
     novelty_n = int(expected_novelty != "uncertain")
+    taxonomy_n = int(taxonomy_gold_present)
     anchors = {
         "trade_relevance": tuple(relevance_anchors),
         "semantics_novelty": tuple(semantics_anchors),
@@ -342,13 +345,14 @@ def _component_diagnostics(
                 field_n[field] = int(outcomes.get(field, "lint_not_applicable") != "lint_not_applicable")
             labelled_n = gold_scored_n = denominator = lint_applicable
         else:
-            labelled_n = len(component_anchors) + (novelty_n if component == "semantics_novelty" else 0)
+            labelled_n = len(component_anchors) + (novelty_n + taxonomy_n if component == "semantics_novelty" else 0)
             gold_scored_n = sum(wanted is not _NO_GOLD for _field, _label, wanted in component_anchors)
             denominator = sum(label == "pass" or wanted is not _NO_GOLD for _field, label, wanted in component_anchors)
             if component == "semantics_novelty":
                 field_n["novelty"] = novelty_n
-                gold_scored_n += novelty_n
-                denominator += novelty_n
+                field_n["taxonomy"] = taxonomy_n
+                gold_scored_n += novelty_n + taxonomy_n
+                denominator += novelty_n + taxonomy_n
         diagnostics[component] = {
             "denominator": denominator,
             "effective_weight_mass": weights[component] if denominator else 0.0,
@@ -586,6 +590,7 @@ def accepted_review_metric(
     card_anchors = _scoring_anchors(dimensions, _CARD_DIMENSIONS, expected)
     expected_novelty = str((review.get("novelty") or {}).get("judgment") or "uncertain")
     novelty_denominator = int(expected_novelty != "uncertain")
+    taxonomy_gold_present = isinstance(review.get("taxonomy"), Mapping)
     # Parsed before the diagnostics, not after the gates: `reader_card_lint` is a scored component, so the
     # ruler cannot state its own denominator until it knows whether this prediction carries a card at all.
     rejected = str(pred.instruction_rejected or "")
@@ -606,6 +611,7 @@ def accepted_review_metric(
         semantics_anchors=semantics_anchors,
         card_anchors=card_anchors,
         expected_novelty=expected_novelty,
+        taxonomy_gold_present=taxonomy_gold_present,
         lint=lint,
     )
     component_denominators = {
@@ -616,8 +622,12 @@ def accepted_review_metric(
     )
     included_anchors = (*relevance_anchors, *semantics_anchors, *card_anchors)
     scored_names = tuple(name for name, _, _ in included_anchors)
-    labelled_n = len(included_anchors) + novelty_denominator
-    gold_scored = sum(wanted is not _NO_GOLD for _, _, wanted in included_anchors) + novelty_denominator
+    labelled_n = len(included_anchors) + novelty_denominator + int(taxonomy_gold_present)
+    gold_scored = (
+        sum(wanted is not _NO_GOLD for _, _, wanted in included_anchors)
+        + novelty_denominator
+        + int(taxonomy_gold_present)
+    )
 
     def _zero(
         feedback: str,
@@ -690,6 +700,16 @@ def accepted_review_metric(
     if parsed is None or lint is None:
         return _zero("Return one complete, schema-valid semantic judgment and card.", gate="schema_invalid")
     typed, editorial, judgment, verdict = parsed
+    if not taxonomy_gold_present or editorial.taxonomy is None:
+        return _zero("Return all four accepted taxonomy axes.", gate="schema_invalid")
+    taxonomy = compare_taxonomy(review["taxonomy"], editorial.taxonomy)
+    component_diagnostics["semantics_novelty"]["taxonomy"] = {
+        "score": taxonomy.score,
+        "subject_f1": taxonomy.subject_f1,
+        "missing_subjects": list(taxonomy.missing_subjects),
+        "extra_subjects": list(taxonomy.extra_subjects),
+        "wrong_axes": list(taxonomy.wrong_axes),
+    }
 
     feedback: list[str] = []
     decision = production_decision(judgment, projection)
@@ -718,6 +738,19 @@ def accepted_review_metric(
     # The deterministic card checks report beside the reviewer-labelled dimensions, in the same vocabulary,
     # so one `dimension_outcomes` list answers "what did this candidate do" for both kinds of truth.
     outcomes.extend(lint.outcomes)
+    outcomes.extend(
+        (dimension, "taxonomy_hit" if hit else "taxonomy_miss")
+        for dimension, hit in zip(
+            TAXONOMY_TARGET_DIMENSIONS,
+            (
+                taxonomy.subject_f1 == 1.0,
+                taxonomy.event_family_match,
+                taxonomy.change_state_match,
+                taxonomy.assertion_status_match,
+            ),
+            strict=True,
+        )
+    )
 
     # ---- hard gates: a dangerous miss cannot be averaged away ----
     if should_push == "must_push" and not reaches_reader:
@@ -822,11 +855,12 @@ def accepted_review_metric(
     # `restatement` must not score the same as one that gets it right, and on an `uncertain` action label
     # nothing else would notice.
     novelty_score = None if expected_novelty == "uncertain" else float(str(verdict.get("novelty")) == expected_novelty)
-    semantics_score = semantics[0] if semantics else None
+    semantics_subscores = [
+        value for value in (semantics[0] if semantics else None, novelty_score, taxonomy.score) if value is not None
+    ]
+    semantics_score = sum(semantics_subscores) / len(semantics_subscores)
     relevance_score = relevance_component[0] if relevance_component else None
     card_score = card[0] if card else None
-    if novelty_score is not None:
-        semantics_score = novelty_score if semantics_score is None else (semantics_score + novelty_score) / 2
     # Always present unless the card tripped a gate above or no check applied: this is the whole point of
     # #306 Phase 1 — the ReaderCard side of the ruler no longer needs a reviewer to have labelled anything.
     card_lint_score = lint.score
@@ -868,6 +902,8 @@ def accepted_review_metric(
         and owned != _CARD_DIMENSIONS
     ):
         feedback.append(f"Accepted novelty is {expected_novelty}.")
+    if not taxonomy.exact and owned != _CARD_DIMENSIONS:
+        feedback.append(f"Taxonomy: {taxonomy.feedback}")
     # The lint's own repair instructions, routed to the Predictor that writes the copy. They are the only
     # feedback in this metric that needs no reviewer label at all, which is why they survive `pred_name`
     # filtering that drops everything else on an unlabelled case.
@@ -932,6 +968,7 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
             # #306 Phase 1. The deterministic card contract is now part of what "better" means, so the ruler
             # commits to its bytes the same way it commits to the scoring function's.
             "tracefold.news.learning.card_lint": inspect.getmodule(lint_reader_card),
+            "tracefold.news.learning.taxonomy_metric": inspect.getmodule(compare_taxonomy),
             "tracefold.news.models.base_symbol": base_symbol,
             "tracefold.news.events.storyline": inspect.getmodule(final_storyline_key),
             "tracefold.news.triage_rules": inspect.getmodule(decide),
@@ -974,7 +1011,11 @@ def _metric_receipt(metric: Callable[..., Any], *, review_rubric_version: str) -
         },
         "dimensions": {
             "trade_relevance": list(_RELEVANCE_DIMENSIONS),
-            "semantics_novelty": [*_SEMANTICS_DIMENSIONS, "novelty(accepted_field)"],
+            "semantics_novelty": [
+                *_SEMANTICS_DIMENSIONS,
+                "novelty(accepted_field)",
+                "taxonomy(mean(subject_set_f1,event_family_exact,change_state_exact,assertion_status_exact))",
+            ],
             "reader_card": list(_CARD_DIMENSIONS),
             "reader_card_lint": list(SCORED_CHECKS),
         },
