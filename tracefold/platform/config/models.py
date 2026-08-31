@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
@@ -25,31 +25,19 @@ class ApiConfig(BaseModel):
 class PostgresConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    serve_dsn: str = "postgresql://tracefold_serve@postgres:5432/tracefold"
-    workers_dsn: str = "postgresql://tracefold_workers@postgres:5432/tracefold"
-    migrate_dsn: str = "postgresql://tracefold_owner@postgres:5432/tracefold"
-    nautilus_dsn: str = "postgresql://tracefold_nautilus@postgres:5432/tracefold"
-    serve_password_file: str | None = "postgres_serve_password"
-    workers_password_file: str | None = "postgres_workers_password"
-    migrate_password_file: str | None = "postgres_migrate_password"
-    nautilus_password_file: str | None = "postgres_nautilus_password"
+    dsn: str = "postgresql://tracefold@postgres:5432/tracefold"
+    password_file: str | None = "postgres_database_password"
     connect_timeout_seconds: float = 5.0
 
-    @field_validator("serve_dsn", "workers_dsn", "migrate_dsn", "nautilus_dsn", mode="before")
+    @field_validator("dsn", mode="before")
     @classmethod
     def parse_dsn(cls, value: Any) -> str:
         normalized = str(value or "").strip()
         if not normalized:
-            raise ValueError("postgres role DSN is required")
+            raise ValueError("postgres DSN is required")
         return normalized
 
-    @field_validator(
-        "serve_password_file",
-        "workers_password_file",
-        "migrate_password_file",
-        "nautilus_password_file",
-        mode="before",
-    )
+    @field_validator("password_file", mode="before")
     @classmethod
     def parse_optional_path(cls, value: Any) -> str | None:
         if value is None:
@@ -575,14 +563,8 @@ class Settings(BaseModel):
     def app_home(self) -> Path:
         return self._config_dir
 
-    def postgres_dsn(self, role: Literal["serve", "workers", "migrate", "nautilus"]) -> str:
-        return cast(str, getattr(self.storage.postgres, f"{role}_dsn"))
-
-    def postgres_password_file(
-        self,
-        role: Literal["serve", "workers", "migrate", "nautilus"],
-    ) -> Path | None:
-        value = cast(str | None, getattr(self.storage.postgres, f"{role}_password_file"))
+    def postgres_password_file(self) -> Path | None:
+        value = self.storage.postgres.password_file
         if not value:
             return None
         configured = Path(value).expanduser()

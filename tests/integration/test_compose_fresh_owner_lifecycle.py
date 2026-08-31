@@ -37,12 +37,12 @@ def _run(arguments: list[str], *, env: dict[str, str], check: bool = True) -> su
     )
 
 
-def test_fresh_compose_reaches_owner_direct_readiness_twice(tmp_path: Path) -> None:
+def test_fresh_compose_reaches_single_login_readiness_twice(tmp_path: Path) -> None:
     """Exercise the real Compose layer twice; deploy tests separately seal the locked `make up` recipe."""
 
     suffix = uuid4().hex[:12]
-    project = f"tracefold-role-fresh-{suffix}"
-    image = f"tracefold-role-fresh-{suffix}:test"
+    project = f"tracefold-login-fresh-{suffix}"
+    image = f"tracefold-login-fresh-{suffix}:test"
     home = tmp_path / "home"
     home.mkdir()
     env = {key: value for key, value in os.environ.items() if not key.startswith("COMPOSE_")}
@@ -74,7 +74,7 @@ def test_fresh_compose_reaches_owner_direct_readiness_twice(tmp_path: Path) -> N
             ["docker", "image", "inspect", "--format", "{{.Id}}", image], env=env
         ).stdout.strip()
 
-        # #419's fresh-volume contract is PostgreSQL-only; RabbitMQ policy behavior is an explicit
+        # The fresh-volume contract is PostgreSQL-only; RabbitMQ policy behavior is an explicit
         # non-goal. Seed the isolated broker's already-supported topology, then leave PostgreSQL's
         # named volume absent for the first complete application startup below.
         broker = _run([*compose, "up", "--detach", "--wait", "--wait-timeout", "120", "rabbitmq"], env=env, check=False)
@@ -150,19 +150,15 @@ def test_fresh_compose_reaches_owner_direct_readiness_twice(tmp_path: Path) -> N
                     "sh",
                     "-eu",
                     "-c",
-                    "PGPASSWORD=$(cat /run/secrets/postgres_migrate_password); export PGPASSWORD; "
-                    "psql -X -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -U tracefold_owner -d tracefold "
+                    "PGPASSWORD=$(cat /run/secrets/postgres_database_password); export PGPASSWORD; "
+                    "psql -X -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -U tracefold -d tracefold "
                     " -c \"SELECT current_user || '|' || (SELECT version_num FROM alembic_version) || '|' || "
                     "(SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles "
-                    "WHERE rolname LIKE 'tracefold_%')" + '"',
+                    "WHERE rolname IN ('tracefold', 'tracefold_app'))" + '"',
                 ],
                 env=env,
             ).stdout.strip()
-            assert database_contract == (
-                "tracefold_owner|"
-                f"{latest_migration_version()}|"
-                "tracefold_app,tracefold_nautilus,tracefold_owner,tracefold_serve,tracefold_workers"
-            )
+            assert database_contract == (f"tracefold|{latest_migration_version()}|tracefold,tracefold_app")
     finally:
         _run([*compose, "down", "--volumes", "--remove-orphans", "--timeout", "5"], env=env, check=False)
         _run(["docker", "image", "rm", image], env=env, check=False)

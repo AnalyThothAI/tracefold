@@ -263,54 +263,25 @@ current-bundle filter and the factory-v7 eligible cohort starts at zero.
 The reset is an eligibility hard cut, not permission for an optimizer to
 relabel old evidence or delete it.
 
-PostgreSQL runtime roles are code-owned:
-`tracefold/platform/postgres/alembic/runtime_roles.sql`, executed by the
-`20260818_0275` baseline migration and extended by the #112 migrations,
-creates the direct migration-only `tracefold_owner` LOGIN plus `tracefold_serve`
-(`default_transaction_read_only=on`), `tracefold_workers` (pipeline/control
-writes), `tracefold_nautilus` (only the #283 execution projection), and
-the NOLOGIN bootstrap superuser `tracefold_app`. There is no second migration
-role or owner membership: Alembic connects directly as the ordinary,
-non-superuser owner using the existing
-`postgres_migrate_password` capability secret. No steady runtime is an owner
-member or receives that secret. Serve has SELECT plus INSERT only on
-`news_reviews` and `news_external_miss_snapshots`; it has no UPDATE/DELETE on
-those append-only facts and no write grant on Event, verdict, delivery,
-learning-artifact or control tables. Every ordinary Serve transaction remains
-read-only. Since #256 the public HTTP surface has **no write route at all** —
-the two ReviewDesk POSTs were the only ones and went with the console page they
-served, and the browser's HTTP client no longer exposes a write verb. The one
-remaining writer of those two tables is `tracefold news review submit`, which
-opens its own connection under the same `tracefold_serve` role and one explicit
-read-write transaction; auditing the write surface therefore means auditing that
-CLI, not the API. Learning
-freeze/evaluate and canary control run under Workers, while assignment and
-runtime/deployment receipts are append-only.
-Migration `0316` grants Workers immutable Intent insertion, Serve read-only
-visibility, and Nautilus updates only to execution/result columns and its
-runtime readiness fields.
-Migration `0317` revokes Workers mutation of legacy Orders/observations and
-retired runtime counters in the same transaction that activates
-`INTENT_EMITTED`; the historical tables remain readable audit only.
-Migration `0320` keeps Nautilus blacklist access read-only and grants only the
-database-time `materialize_trading_blacklist_expiry()` function. That
-`SECURITY DEFINER` path accepts no caller timestamp, locks the runtime singleton,
-deletes only rows expired by the database clock, and increments the blacklist
-revision in the same transaction; Nautilus still has no direct
-INSERT/UPDATE/DELETE privilege on the blacklist. The same migration grants
-Workers SELECT/INSERT and Serve SELECT on immutable instrument-listing events;
-neither runtime role can update or delete that replay evidence, and Nautilus
-has no access to it.
-Migration `0327` grants Serve SELECT on Decision, binding, and public catalog
-facts; Workers may update Decision/binding projections and insert immutable
-catalog snapshots but cannot update/delete them. The Nautilus role can read
-binding facts and update only its own non-secret runtime/account columns.
-Catalog payloads are public metadata and their append-only trigger also applies
-to the database owner.
-Migration `0329` grants Nautilus only the additional Intent projection columns
-needed for bounded Q1/Q2 audit, exact submission quantity, and unlabeled
-lifecycle clocks. It grants no tick-table, credential, provider-adapter, or
-cross-capability write authority.
+PostgreSQL has one ordinary non-superuser application login, `tracefold`, plus
+the `tracefold_app` bootstrap superuser whose login is disabled after empty
+PGDATA initialization. Alembic, Serve, Workers, Nautilus, CLI, and database
+diagnostics share `storage.postgres.dsn` and
+`postgres_database_password`; the bootstrap password is not mounted into those
+containers. This is an explicit single-host LAN/single-trust-domain decision.
+Adding another role requires a distinct trust-domain owner, not merely another
+process name.
+
+Database access still has mechanical boundaries. Stable `application_name`
+values attribute sessions. The internet-facing Serve HTTP pool sets
+connection-level read-only mode and exposes no HTTP write route. The review CLI
+uses a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
+business CHECKs, conditional updates, append-only/state-machine triggers,
+maintenance locks, and repository transaction ownership remain authoritative;
+internal role permission denial is not a business invariant. Runtime code does
+not execute DDL, and Compose orders the one-shot migration before steady
+processes. `pg_stat_statements` is naturally visible for the complete
+application identity without a statistics-reader workaround.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
 to the served console and every other `/api/*` route requires it as

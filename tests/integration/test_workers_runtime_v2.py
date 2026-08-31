@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from psycopg.errors import InsufficientPrivilege, ReadOnlySqlTransaction
 
 from tests.postgres_test_utils import (
     connect_postgres_test,
@@ -25,17 +24,9 @@ from tests.postgres_test_utils import (
     test_postgres_dsn as _test_postgres_dsn,
 )
 from tracefold.app.http.app import create_app
-from tracefold.app.repository_session import repositories_for_connection
 from tracefold.app.worker_database import WorkerDatabase
 from tracefold.app.workers.runtime import WorkersRuntimeRepository
-from tracefold.news.opennews import parse_opennews_message
-from tracefold.news.pipeline.admission import admit_item
 from tracefold.platform.config.models import Settings
-from tracefold.platform.postgres.runtime_roles import (
-    RUNTIME_LOGIN_ROLES,
-    provision_runtime_role_passwords,
-    runtime_role_contract,
-)
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("postgres_clone_dsn")]
 
@@ -44,119 +35,6 @@ SECOND_RUNTIME_ID = "00000000-0000-0000-0000-000000000100"
 RUNTIME_MANIFEST_BARRIER_SHA = "a" * 64
 _PROCESS_ENTRY = Path(__file__).with_name("_workers_runtime_process_entry.py")
 _LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-
-
-def test_postgres_runtime_roles_enforce_read_write_and_ddl_boundaries() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        conn.execute("SET ROLE tracefold_serve")
-        assert conn.execute("SELECT count(*) AS count FROM workers_runtime").fetchone()["count"] == 0
-        with pytest.raises((InsufficientPrivilege, ReadOnlySqlTransaction)):
-            conn.execute(
-                """
-                INSERT INTO workers_runtime(
-                  singleton_key, runtime_id, runtime_version, lifecycle_state,
-                  started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
-                )
-                VALUES (true, %s, 'test', 'starting', 1, 1, NULL, 'test-release', 'sha256:test')
-                """,
-                (RUNTIME_ID,),
-            )
-        conn.rollback()
-
-        conn.execute("SET ROLE tracefold_workers")
-        conn.execute(
-            """
-            INSERT INTO workers_runtime(
-              singleton_key, runtime_id, runtime_version, lifecycle_state,
-              started_at_ms, heartbeat_at_ms, fatal_code, runtime_revision, image_digest
-            )
-            VALUES (true, %s, 'test', 'starting', 1, 1, NULL, 'test-release', 'sha256:test')
-            """,
-            (RUNTIME_ID,),
-        )
-        conn.execute("DELETE FROM workers_runtime WHERE singleton_key")
-        with pytest.raises(InsufficientPrivilege):
-            conn.execute("CREATE TABLE public.worker_ddl_forbidden(id integer)")
-        conn.rollback()
-    finally:
-        conn.close()
-
-
-def test_workers_role_appends_evidence_without_table_rewrite_privilege() -> None:
-    conn = connect_postgres_test(read_only=False)
-    try:
-        event = parse_opennews_message(
-            {
-                "method": "strategy.triggered",
-                "params": {
-                    "id": 112_901,
-                    "text": "Micron says DRAM contract prices rose again in August",
-                    "link": "https://example.test/112901",
-                    "source": "Reuters",
-                    "newsType": "news",
-                    "engineType": "news",
-                    "ts": "2026-08-21T08:00:00+08:00",
-                    "aiRating": {"score": 82, "signal": "long", "status": "done"},
-                    "coins": [],
-                    "strategy": {
-                        "id": 1018,
-                        "name": "News Score > 70",
-                        "engine_type": "news",
-                        "source_type": "news",
-                    },
-                },
-            },
-        )
-        assert event is not None
-        repos = repositories_for_connection(conn)
-        with repos.transaction():
-            opened = admit_item(
-                repos,
-                event=event,
-                ingest_mode="live",
-                observed_at_ms=1_787_287_000_000,
-                trace_id="role-authentic-evidence",
-                watchlist_symbols=frozenset(),
-                now_ms=1_787_287_000_000,
-            )
-
-        conn.execute("SET ROLE tracefold_workers")
-        conn.execute(
-            "UPDATE news_events SET provider_score_max = provider_score_max + 1 WHERE event_id = %s",
-            (opened.event_id,),
-        )
-        evidence = repositories_for_connection(conn).news.append_evidence_snapshot(
-            event_id=opened.event_id,
-            now_ms=1_787_287_000_001,
-        )
-        assert evidence["evidence_version"] == 2
-        conn.commit()
-
-        with pytest.raises(InsufficientPrivilege):
-            conn.execute(
-                "UPDATE news_event_evidence_snapshots SET created_at_ms = created_at_ms + 1 WHERE event_id = %s",
-                (opened.event_id,),
-            )
-        conn.rollback()
-    finally:
-        conn.close()
-
-
-def test_direct_role_password_provisioning_is_transactional(tmp_path: Path) -> None:
-    conn = connect_postgres_test(read_only=False)
-    password_files: dict[str, Path] = {}
-    for role in RUNTIME_LOGIN_ROLES:
-        path = tmp_path / f"{role}.password"
-        path.write_text(f"test-only-{role}-password", encoding="utf-8")
-        password_files[role] = path
-    try:
-        provision_runtime_role_passwords(conn, password_files=password_files)
-        contract = runtime_role_contract(conn)
-        assert contract["ok"] is True, contract
-    finally:
-        conn.rollback()
-        conn.close()
 
 
 def test_serve_runtime_is_read_only_composition_and_status_uses_one_runtime_row(tmp_path) -> None:

@@ -206,6 +206,31 @@ def test_current_baseline_is_a_noop_for_an_already_current_database(tmp_path) ->
     assert version == latest_migration_version() == "20260831_0340"
 
 
+def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:
+    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
+    try:
+        migrate(conn)
+        ingest = conn.execute("SELECT singleton_key, updated_at_ms FROM news_ingest_state").fetchall()
+        retention = conn.execute("SELECT singleton, updated_at_ms FROM news_learning_retention_state").fetchall()
+        runtime = conn.execute("SELECT id, control, orders_today, updated_at_ms FROM trading_runtime_state").fetchall()
+        blacklist = conn.execute(
+            "SELECT base_symbol, reason, expires_at_ms FROM trading_symbol_blacklist ORDER BY base_symbol"
+        ).fetchall()
+        artifacts = conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"]
+    finally:
+        conn.close()
+
+    assert ingest == [{"singleton_key": "opennews", "updated_at_ms": 0}]
+    assert retention == [{"singleton": True, "updated_at_ms": 0}]
+    assert runtime == [{"id": 1, "control": "PAUSED", "orders_today": 0, "updated_at_ms": 0}]
+    assert blacklist == [
+        {"base_symbol": "BTC", "reason": "benchmark_large_cap", "expires_at_ms": None},
+        {"base_symbol": "CL", "reason": "commodity_not_target", "expires_at_ms": None},
+        {"base_symbol": "ETH", "reason": "benchmark_large_cap", "expires_at_ms": None},
+    ]
+    assert artifacts == 0
+
+
 def test_migration_refuses_to_run_while_the_steady_runtime_holds_the_gate(tmp_path) -> None:
     conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
     try:

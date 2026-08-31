@@ -56,7 +56,7 @@ PYTEST_ADDOPTS= PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 TRACEFOLD_HYPOTHESIS_PROFILE=ci
 	--junitxml="$(TRACEFOLD_TEST_RESULT_DIR)/$(2)" --durations=50
 endef
 
-.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke trading-hard-cut-preflight _trading-intent-quote-preflight _trading-hard-cut-preflight-if-needed test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
+.PHONY: help up _up-locked deploy-image _deploy-image-locked verify-main-ci status logs down preflight github-preflight sync install uninstall tool-path test test-fast test-all test-ci test-results-prepare ci-test-effectiveness mutation mutation-sentinel ci-quality-static ci-python-hermetic ci-postgres-behavior ci-migration ci-runtime-broker ci-deploy-e2e ci-test-integrity ci-frontend test-property test-slow test-scheduled postgres-restore-drill test-frontend test-browser-smoke test-visual lint compile check check-static init config db-migrate db-health news-genesis-manifest serve workers serve-shell workers-shell clean trading-smoke test-integration test-deploy test-e2e test-golden test-architecture test-contract test-external-codegen regen-contract install-hooks
 
 help: ## show available targets
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "%-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -365,110 +365,10 @@ _db-migrate-locked:
 		COMPOSE_PROJECT_NAME=tracefold; \
 		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
 		unset COMPOSE_ENV_FILES COMPOSE_PROFILES COMPOSE_PATH_SEPARATOR COMPOSE_DISABLE_ENV_FILE; \
-		make --no-print-directory _trading-hard-cut-preflight-if-needed; \
 		$(TRACEFOLD) db migrate
 
 db-health: ## check PostgreSQL liveness and migration version
 	@$(TRACEFOLD) db health
-
-trading-hard-cut-preflight: preflight ## prove one-time Trading execution cutover prerequisites
-	@set -eu; \
-		nautilus_ids=$$(docker compose ps --all -q nautilus); \
-		nautilus_count=$$(printf '%s\n' "$$nautilus_ids" | awk 'NF { count += 1 } END { print count + 0 }'); \
-		if [ "$$nautilus_count" -ne 1 ]; then \
-			echo "Hard cut requires exactly one Nautilus replica; found $$nautilus_count." >&2; \
-			exit 1; \
-		fi; \
-		curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { \
-			echo "Hard cut requires Nautilus readiness to prove the bound account is authoritative flat." >&2; \
-			exit 1; \
-		}; \
-		cut_state=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
-			"SELECT concat_ws('|', \
-			  COALESCE((SELECT control FROM trading_runtime_state WHERE id = 1), 'MISSING'), \
-			  (SELECT count(*) FROM trading_cases WHERE state IN ('PENDING', 'RUNNING')), \
-			  (SELECT count(*) FROM trading_intents WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')), \
-			  (SELECT count(*) FROM trading_orders WHERE state IN ('PREPARED', 'AWAITING_APPROVAL', 'APPROVED', 'SUBMITTING', 'AMBIGUOUS', 'RECONCILING', 'MANUAL_REVIEW_REQUIRED', 'ACKNOWLEDGED', 'PARTIAL', 'OPEN', 'UNPROTECTED', 'SAFETY_CLOSING')))"); \
-		if [ "$$cut_state" != "PAUSED|0|0|0" ]; then \
-			echo "Hard cut requires PAUSED|pending_cases=0|nonterminal_intents=0|active_legacy_orders=0; observed $$cut_state." >&2; \
-			exit 1; \
-		fi; \
-		echo "Trading hard-cut preflight passed: venue flat, PAUSED, ledgers drained, one Nautilus replica."
-
-_trading-intent-quote-preflight:
-	@set -eu; \
-		cut_state=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
-			"SELECT concat_ws('|', \
-			  COALESCE((SELECT control FROM trading_runtime_state WHERE id = 1), 'MISSING'), \
-			  (SELECT count(*) FROM trading_intents WHERE execution_state IN ('PENDING', 'IN_FLIGHT', 'OPEN_PROTECTED', 'MANUAL_REVIEW')))"); \
-		if [ "$$cut_state" != "PAUSED|0" ]; then \
-			echo "Intent Quote cut requires PAUSED|nonterminal_intents=0; observed $$cut_state." >&2; \
-			exit 1; \
-		fi; \
-		echo "Intent Quote preflight passed: PAUSED and no recovery obligations."
-
-_trading-hard-cut-preflight-if-needed:
-	@set -eu; \
-		postgres_id=$$(docker compose ps -q postgres); \
-		if [ -z "$$postgres_id" ]; then \
-			echo "Cannot inspect the database before migration; start the PostgreSQL service first." >&2; \
-			exit 2; \
-		fi; \
-		schema_state=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
-			-c "SELECT CASE WHEN to_regclass('"'"'public.alembic_version'"'"') IS NULL THEN '"'"'fresh'"'"' ELSE '"'"'existing'"'"' END"'); \
-		if [ "$$schema_state" = fresh ]; then \
-			echo "Fresh database: no PR 1 execution authority exists to cut over."; \
-			exit 0; \
-		fi; \
-		migration_state=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
-			PGOPTIONS="-c default_transaction_read_only=on"; \
-			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$$1"' sh \
-			"SELECT concat_ws('|', \
-			  (SELECT version_num FROM alembic_version LIMIT 1), \
-			  EXISTS ( \
-			    SELECT 1 FROM pg_constraint \
-			     WHERE conname = 'trading_cases_state_check' \
-			       AND pg_get_constraintdef(oid) LIKE '%INTENT_EMITTED%' \
-			  ), \
-			  EXISTS ( \
-			    SELECT 1 FROM pg_class \
-			     WHERE relnamespace = 'public'::regnamespace \
-			       AND relname = 'trading_execution_capability_snapshots' \
-			       AND relkind = 'r' \
-			  ))"); \
-		case "$$migration_state" in \
-			20260828_0316\|f\|f|20260828_0317\|t\|f|20260828_0318\|t\|f|20260828_0319\|t\|f) \
-				make --no-print-directory trading-hard-cut-preflight ;; \
-			20260829_0328\|t\|t) make --no-print-directory _trading-intent-quote-preflight ;; \
-			20260829_0329\|t\|t) echo "Trading hard cuts are already present at database head 20260829_0329." ;; \
-			20260830_0330\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
-			20260830_0331\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
-			20260830_0332\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0332." ;; \
-			20260830_0333\|t\|t) echo "Trading capital-authority hard cut is already present at database head 20260830_0333." ;; \
-			20260830_0334\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0334." ;; \
-			20260830_0335\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0335." ;; \
-			20260830_0336\|t\|t) echo "Trading evidence-clock hard cut is already present at database head 20260830_0336; News current-contract genesis is present." ;; \
-			20260830_0337\|t\|t) echo "Trading evidence-clock hard cut, News current-contract genesis, and the Nautilus canonical-JSON grant are present at database head 20260830_0337." ;; \
-			20260831_0338\|t\|t) echo "Trading per-binding runtime hard cut and News current-contract genesis are present at database head 20260831_0338." ;; \
-			20260831_0339\|t\|t) echo "The direct-owner role hard cut and retained runtime ACL contract are present at database head 20260831_0339." ;; \
-			20260831_0340\|t\|t) echo "The direct-owner role hard cut and dormant Trading execution stream are present at database head 20260831_0340." ;; \
-			*\|t\|t) make --no-print-directory trading-hard-cut-preflight ;; \
-			*) echo "Database state '$$migration_state' cannot safely enter the Trading hard cut." >&2; exit 2 ;; \
-		esac
 
 serve: ## run the read-only public runtime in foreground
 	@$(TRACEFOLD) serve
@@ -553,7 +453,6 @@ _up-locked:
 		target_manifest=$$(printf '%s' "$$manifest_document" \
 			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
-		make --no-print-directory _trading-hard-cut-preflight-if-needed || fail; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
@@ -641,10 +540,10 @@ _deploy-image-locked:
 			exit 2; \
 		fi; \
 		if ! database_head=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
 			PGOPTIONS="-c default_transaction_read_only=on"; \
 			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold -d tracefold \
 			-c "SELECT version_num FROM alembic_version LIMIT 1"'); then \
 			echo "Could not inspect the live database Alembic head; no services were stopped." >&2; \
 			exit 2; \
@@ -700,10 +599,10 @@ _deploy-image-locked:
 			fail; \
 		fi; \
 		if ! receipt_identity=$$(docker compose exec -T postgres sh -eu -c \
-			'PGPASSWORD=$$(cat /run/secrets/postgres_serve_password); \
+			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
 			PGOPTIONS="-c default_transaction_read_only=on"; \
 			export PGPASSWORD PGOPTIONS; \
-			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold \
+			exec psql -X -A -t -v ON_ERROR_STOP=1 -U tracefold -d tracefold \
 			-c "$$1"' sh \
 			"WITH active AS ( \
 			   SELECT artifact_sha, payload \

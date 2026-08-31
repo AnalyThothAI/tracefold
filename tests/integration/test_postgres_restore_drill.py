@@ -24,5 +24,4 @@ def test_production_image_dump_restore_migrate_audit_and_smoke(postgres_server_d
         "migration_status": "ready",
         "news_schema_exact": True,
         "trading_schema_exact": True,
-        "runtime_roles_ok": True,
     }

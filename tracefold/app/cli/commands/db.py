@@ -47,8 +47,8 @@ def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
     if args.db_command == "migrate":
         dsn = local_docker_host_dsn(
             with_password_from_file(
-                settings.postgres_dsn("migrate"),
-                settings.postgres_password_file("migrate"),
+                settings.storage.postgres.dsn,
+                settings.postgres_password_file(),
             )
         )
         _prepare_news_genesis_evidence(settings, fresh_install=_database_is_unmigrated(dsn))
@@ -56,17 +56,17 @@ def handle_db(args: Namespace) -> tuple[int, dict[str, Any]]:
         return 0, {"ok": True, "data": {"migration": "head"}}
 
     if args.db_command == "health":
-        with postgres_connection(settings, role="serve") as conn:
+        with postgres_connection(settings) as conn:
             health = postgres_health_check(conn, expected_migration_version=latest_migration_version())
         return (0 if health.get("ok") else 1), {"ok": bool(health.get("ok")), "data": health}
 
     if args.db_command == "audit":
-        with postgres_connection(settings, role="workers") as conn:
+        with postgres_connection(settings) as conn:
             audit = PostgresOperationalAudit(conn).run(deep=bool(args.deep))
         return (0 if audit.get("ok") else 1), {"ok": bool(audit.get("ok")), "data": audit}
 
     if args.db_command == "query-audit":
-        with postgres_connection(settings, role="serve") as conn:
+        with postgres_connection(settings) as conn:
             audit = query_audit_for_connection(conn).run(analyze=bool(args.analyze))
         return (0 if audit.get("ok") else 1), {"ok": bool(audit.get("ok")), "data": audit}
 

@@ -33,16 +33,7 @@ def write_runtime_config(
     app_home = home / ".tracefold"
     app_home.mkdir(parents=True, exist_ok=True)
     payload = {
-        "storage": {
-            "postgres": {
-                "serve_dsn": postgres_dsn,
-                "workers_dsn": postgres_dsn,
-                "migrate_dsn": postgres_dsn,
-                "serve_password_file": None,
-                "workers_password_file": None,
-                "migrate_password_file": None,
-            }
-        },
+        "storage": {"postgres": {"dsn": postgres_dsn, "password_file": None}},
     }
     if ws_token is not None:
         payload["ws_token"] = ws_token
@@ -79,14 +70,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             home = Path(tmpdir)
             app_home = home / ".tracefold"
-            (app_home / "postgres_serve_password").mkdir(parents=True)
+            (app_home / "postgres_database_password").mkdir(parents=True)
             with (
                 patch.dict("os.environ", {"HOME": str(home)}, clear=False),
-                self.assertRaisesRegex(ValueError, "postgres_password_path_not_file:postgres_serve_password"),
+                self.assertRaisesRegex(ValueError, "postgres_password_path_not_file:postgres_database_password"),
             ):
                 main(["init"], stdout=io.StringIO())
 
-    def test_runtime_roles_are_explicit_cli_commands(self):
+    def test_runtime_processes_are_explicit_cli_commands(self):
         parser = build_parser()
 
         assert parser.parse_args(["serve"]).command == "serve"
@@ -444,10 +435,9 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("private-strategy-alpha", stdout.getvalue())
         self.assertNotIn("private-strategy-beta", stdout.getvalue())
         self.assertEqual(payload["data"]["store"]["engine"], "postgresql")
-        self.assertEqual(
-            set(payload["data"]["store"]["postgres_roles"]),
-            {"serve", "workers", "migrate", "nautilus"},
-        )
+        self.assertNotIn("postgres:postgres", payload["data"]["store"]["postgres"]["dsn"])
+        self.assertIn("tracefold_test", payload["data"]["store"]["postgres"]["dsn"])
+        self.assertIsNone(payload["data"]["store"]["postgres"]["password_file"])
         self.assertEqual(payload["data"]["store"]["serve_pool_max_size"], 7)
         self.assertEqual(payload["data"]["store"]["workers_pool_max_size"], 8)
         self.assertNotIn("embed" + "ding_dim", payload["data"]["store"])
@@ -459,10 +449,10 @@ class CliTests(unittest.TestCase):
         settings = Settings.model_validate(payload)
 
         self.assertEqual(
-            settings.storage.postgres.migrate_dsn,
-            "postgresql://tracefold_owner@postgres:5432/tracefold",
+            settings.storage.postgres.dsn,
+            "postgresql://tracefold@postgres:5432/tracefold",
         )
-        self.assertEqual(settings.storage.postgres.migrate_password_file, "postgres_migrate_password")
+        self.assertEqual(settings.storage.postgres.password_file, "postgres_database_password")
         self.assertTrue(settings.news.enabled)
         self.assertNotIn("rss_enabled", payload["news"])
         self.assertNotIn("title_presentation", payload["news"])
@@ -630,9 +620,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert config_path.is_file()
     assert app_home.stat().st_mode & 0o777 == 0o700
     assert config_path.stat().st_mode & 0o777 == 0o600
-    assert 'migrate_dsn: "postgresql://tracefold_owner@postgres:5432/tracefold"' in config_path.read_text(
-        encoding="utf-8"
-    )
+    assert 'dsn: "postgresql://tracefold@postgres:5432/tracefold"' in config_path.read_text(encoding="utf-8")
     for directory_name in ("logs", "cache"):
         directory = app_home / directory_name
         assert directory.is_dir()
@@ -643,10 +631,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "binance_usdm_api_secret",
         "hyperliquid_private_key",
         "postgres_password",
-        "postgres_serve_password",
-        "postgres_workers_password",
-        "postgres_migrate_password",
-        "postgres_nautilus_password",
+        "postgres_database_password",
     ):
         path = app_home / name
         assert path.is_file()
@@ -672,10 +657,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "binance_usdm_api_secret",
         "hyperliquid_private_key",
         "postgres_password",
-        "postgres_serve_password",
-        "postgres_workers_password",
-        "postgres_migrate_password",
-        "postgres_nautilus_password",
+        "postgres_database_password",
     )
     before = {name: (app_home / name).read_bytes() for name in tracked_names}
     app_home.chmod(0o755)

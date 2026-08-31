@@ -50,14 +50,8 @@ api:
 
 storage:
   postgres:
-    serve_dsn: "postgresql://tracefold_serve@postgres:5432/tracefold"
-    workers_dsn: "postgresql://tracefold_workers@postgres:5432/tracefold"
-    migrate_dsn: "postgresql://tracefold_owner@postgres:5432/tracefold"
-    nautilus_dsn: "postgresql://tracefold_nautilus@postgres:5432/tracefold"
-    serve_password_file: "postgres_serve_password"
-    workers_password_file: "postgres_workers_password"
-    migrate_password_file: "postgres_migrate_password"
-    nautilus_password_file: "postgres_nautilus_password"
+    dsn: "postgresql://tracefold@postgres:5432/tracefold"
+    password_file: "postgres_database_password"
     connect_timeout_seconds: 5
 
 llm:

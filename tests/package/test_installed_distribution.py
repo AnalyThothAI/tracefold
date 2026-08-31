@@ -71,7 +71,7 @@ print(
             "program_sha256": load_stable_program_artifact().program_sha256,
             "trading_root": str(Path(tracefold.trading.__file__).resolve().parent),
             "alembic_env_py": (alembic_root / "env.py").is_file(),
-            "alembic_runtime_sql": (alembic_root / "runtime_roles.sql").is_file(),
+            "alembic_baseline_sql": (alembic_root / "current_schema_20260831_0340.sql").is_file(),
             "alembic_revisions": len(sorted((alembic_root / "versions").glob("*.py"))),
         }
     )
@@ -198,8 +198,10 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
     alembic = f"{DISTRIBUTION_NAME}/platform/postgres/alembic/"
 
     assert f"{alembic}env.py" in members
-    assert f"{alembic}runtime_roles.sql" in members
-    assert [name for name in members if name.startswith(f"{alembic}versions/") and name.endswith(".py")]
+    assert f"{alembic}current_schema_20260831_0340.sql" in members
+    assert [name for name in members if name.startswith(f"{alembic}versions/") and name.endswith(".py")] == [
+        f"{alembic}versions/20260831_0340_baseline.py"
+    ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
 
 
@@ -239,9 +241,8 @@ def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: d
 
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:
     assert isolated_probe["alembic_env_py"] is True
-    assert isolated_probe["alembic_runtime_sql"] is True
-    assert isinstance(isolated_probe["alembic_revisions"], int)
-    assert isolated_probe["alembic_revisions"] > 0
+    assert isolated_probe["alembic_baseline_sql"] is True
+    assert isolated_probe["alembic_revisions"] == 1
 
 
 @pytest.mark.parametrize("entrypoint", ["console-script", "python-m"])

@@ -8,7 +8,6 @@ from typing import Any, Literal
 from psycopg import sql
 
 from tracefold.platform.postgres.migrations import latest_migration_version
-from tracefold.platform.postgres.runtime_roles import runtime_role_contract
 from tracefold.platform.validation import require_nonnegative_int
 
 LARGE_SEQ_SCAN_PLAN_ROWS = 10_000
@@ -164,7 +163,6 @@ class PostgresOperationalAudit:
         }
         migration_version = self._migration_version()
         migration_ready = migration_version == self.expected_migration_version
-        runtime_roles = runtime_role_contract(self.conn)
         database_identity = self._database_identity()
         result = {
             "ok": (
@@ -173,7 +171,6 @@ class PostgresOperationalAudit:
                 and all(count >= 0 for count in row_estimates.values())
                 and bool(news_schema["exact"])
                 and bool(trading_schema["exact"])
-                and bool(runtime_roles["ok"])
             ),
             "engine": "postgresql",
             "mode": "deep" if deep else "fast",
@@ -184,7 +181,6 @@ class PostgresOperationalAudit:
             "row_estimates": row_estimates,
             "news_schema": news_schema,
             "trading_schema": trading_schema,
-            "runtime_roles": runtime_roles,
         }
         if deep:
             counts = self._counts(table_names)

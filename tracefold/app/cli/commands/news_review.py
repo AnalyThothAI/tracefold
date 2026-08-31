@@ -41,12 +41,12 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
                 limit=min(100, int(args.limit)),
                 cursor=args.cursor,
             )
-            with postgres_connection(settings, role="serve") as conn:
+            with postgres_connection(settings) as conn:
                 data = ReviewDesk(conn).open(query, principal=principal)
             return 0, {"ok": True, "data": data}
         if action == "evidence":
             task = TaskRef(task_id=str(args.task), task_version=str(args.version))
-            with postgres_connection(settings, role="serve") as conn:
+            with postgres_connection(settings) as conn:
                 data = ReviewDesk(conn).evidence(task, principal=principal)
             return 0, {"ok": True, "data": data}
 
@@ -56,12 +56,9 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         payload = _read_json_or_yaml(str(args.file))
         kind = str(payload.get("kind") or "")
         key = str(args.idempotency_key or uuid.uuid4())
-        # `tracefold_serve` is the role that holds INSERT on `news_reviews`, and it defaults to read-only,
-        # so this path opts one transaction into those two table-level grants. Since #256 it is the *only*
-        # writer: the HTTP ReviewDesk routes are gone and the console has no write path at all, which makes
-        # this CLI the whole append surface for reviewed judgments.
-        with postgres_connection(settings, role="serve") as conn, transaction(conn):
-            conn.execute("SET TRANSACTION READ WRITE")
+        # The HTTP pool is connection-level read-only. This short-lived CLI connection uses the shared
+        # login's ordinary transaction mode; since #256 it is the only ReviewDesk writer.
+        with postgres_connection(settings) as conn, transaction(conn):
             desk = ReviewDesk(conn)
             submission: ReviewSubmission
             if action == "external-miss":
@@ -167,12 +164,11 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
         }
 
     submitted, failures = 0, []
-    with postgres_connection(settings, role="serve") as conn:
+    with postgres_connection(settings) as conn:
         for task_id, task_version, payload, _confidence in planned:
             # One transaction per draft: a rubric one Event disagrees with must not roll back the rest.
             try:
                 with transaction(conn):
-                    conn.execute("SET TRANSACTION READ WRITE")
                     ReviewDesk(conn).submit(
                         TaskRef(task_id=task_id, task_version=task_version),
                         EventRubricSubmission.model_validate(payload),

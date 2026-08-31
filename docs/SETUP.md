@@ -88,16 +88,13 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
-token (`ws_token`) but no external credentials, five independent PostgreSQL
-password files, and an empty Telegram token placeholder:
+token (`ws_token`) but no external credentials, two PostgreSQL password files,
+and an empty Telegram token placeholder:
 
 ```text
 telegram_bot_token
 postgres_password
-postgres_serve_password
-postgres_workers_password
-postgres_migrate_password
-postgres_nautilus_password
+postgres_database_password
 ```
 
 The config, Telegram token placeholder, and all password files are mode `0600`.
@@ -116,15 +113,16 @@ disabled. Edit only the operator-owned
 `~/.tracefold/config.yaml` to enable live capabilities. Keep secrets out of
 terminal output, docs, tests, and commits.
 
-The generated PostgreSQL DSNs are container-network addresses. The fresh-volume
-bootstrap runs only during PostgreSQL `initdb`: it creates the migration-only
-`tracefold_owner` LOGIN plus Serve, Workers, and Nautilus, then revokes the
-`tracefold_app` bootstrap login before owner-direct migration. The owner uses
-the existing `postgres_migrate_password`; no second migration role or owner
-secret exists. It never attempts to reinterpret or hard-cut an unknown
-non-empty volume. The one supported pre-0339 volume must use the exact offline
-procedure in [Operations](OPERATIONS.md#postgresql-owner-role-hard-cut-0339-one-time)
-before ordinary startup; every other non-empty role shape fails closed.
+The generated PostgreSQL DSN is a container-network address. The fresh-volume
+bootstrap runs only during PostgreSQL `initdb`: it creates the single
+non-superuser `tracefold` application LOGIN, assigns the public schema to it,
+creates the required extensions, and revokes the `tracefold_app` bootstrap
+login. Alembic, Serve, Workers, Nautilus, and CLI share that DSN and
+`postgres_database_password`; the bootstrap password remains separate and is
+never mounted into application containers. Unknown non-empty volumes are not
+reinterpreted or repaired by startup. A pre-baseline backup must first be
+restored with its recorded pre-cut source/image and advanced to the old terminal
+head before the #449 stopped-writer cutover.
 
 ### Credential-dependent capabilities
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 
 import pytest
-from psycopg.errors import InsufficientPrivilege, RaiseException
+from psycopg.errors import RaiseException
 
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
@@ -328,7 +328,7 @@ def test_unreferenced_recordings_use_90_days_and_referenced_runs_use_365(conn) -
     conn.commit()
 
 
-def test_only_workers_can_execute_the_retention_function(conn) -> None:
+def test_retention_function_keeps_its_bounded_batch_contract(conn) -> None:
     function_def = conn.execute(
         "SELECT pg_get_functiondef('purge_news_learning_retention(integer)'::regprocedure) AS definition"
     ).fetchone()["definition"]
@@ -336,22 +336,8 @@ def test_only_workers_can_execute_the_retention_function(conn) -> None:
     assert "LIMIT p_batch" in function_def
     assert "ORDER BY created_at_ms ASC LIMIT 1" in function_def
 
-    conn.execute("SET ROLE tracefold_workers")
-    try:
-        with pytest.raises(InsufficientPrivilege):
-            conn.execute("DELETE FROM news_model_recordings WHERE false")
-        row = conn.execute("SELECT purge_news_learning_retention(1) AS result").fetchone()
-        assert isinstance(row["result"], dict)
-        with pytest.raises(RaiseException, match="news_learning_retention_batch_invalid"):
-            conn.execute("SELECT purge_news_learning_retention(1001)")
-    finally:
-        conn.execute("RESET ROLE")
-        conn.rollback()
-
-    conn.execute("SET ROLE tracefold_serve")
-    try:
-        with pytest.raises(InsufficientPrivilege):
-            conn.execute("SELECT purge_news_learning_retention(1)")
-    finally:
-        conn.execute("RESET ROLE")
-        conn.rollback()
+    row = conn.execute("SELECT purge_news_learning_retention(1) AS result").fetchone()
+    assert isinstance(row["result"], dict)
+    with pytest.raises(RaiseException, match="news_learning_retention_batch_invalid"):
+        conn.execute("SELECT purge_news_learning_retention(1001)")
+    conn.rollback()

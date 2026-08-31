@@ -74,9 +74,9 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
 
     admission = runtime_config.admission
     try:
-        with repositories(settings, role="workers") as repos, repos.transaction():
+        with repositories(settings) as repos, repos.transaction():
             repos.trading.blacklist_snapshot(now_ms=now_ms, materialize_expiry=True)
-        with repositories(settings, role="serve") as repos, repos.transaction():
+        with repositories(settings) as repos, repos.transaction():
             repos.conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             snapshot, blacklist = repos.trading.replay_authority_snapshot(binding="BINANCE_USDM", now_ms=now_ms)
             fact_rows = repos.news.trade_candidate_oi_rows(
@@ -222,7 +222,7 @@ def handle_oi_replay(settings: Any, args: Any, *, now_ms: int) -> tuple[int, dic
         terminal_outcome_count=len(outcomes),
     )
     try:
-        with repositories(settings, role="workers") as repos, repos.transaction():
+        with repositories(settings) as repos, repos.transaction():
             inserted = repos.trading.insert_replay_receipt(receipt)
             stored = receipt if inserted else ReplayReceiptV1.model_validate(repos.trading.replay_receipt(spec.run_id))
             if stored.artifact_sha256 != artifact_sha256 or stored.artifact_path != str(artifact_path):
@@ -297,7 +297,7 @@ def _to_replay_bar(plan: DirectionalReplayPlan, bar: VenueBar) -> ReplayBarV1:
 
 
 def _existing_receipt(settings: Any, run_id: str) -> ReplayReceiptV1 | None:
-    with repositories(settings, role="serve") as repos:
+    with repositories(settings) as repos:
         row = repos.trading.replay_receipt(run_id)
     return None if row is None else ReplayReceiptV1.model_validate(row)
 

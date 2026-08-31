@@ -313,18 +313,17 @@ PostgreSQL when absent, requires the one-shot migration to succeed, starts
 Serve and Workers, and then runs the same fail-closed status gate. Execution
 credentials do not participate in deployment readiness, and no Nautilus
 process is recreated. It
-does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, five
-password files, and named-volume data remain in place. `make down` stops
+does not recreate a running PostgreSQL container. On failure, use `make logs`. Operator config, two
+PostgreSQL password files, and named-volume data remain in place. `make down` stops
 containers without deleting that volume.
 
-Fresh PostgreSQL role bootstrap belongs only to the image's `initdb` phase. It
-creates the ordinary direct-login migration owner plus the separate Serve,
-Workers, and Nautilus roles from their mode-`0600` password files. The owner
-reuses `postgres_migrate_password`; no second migrator role exists. Bootstrap
-then revokes its own login and permits owner-direct migration. It is not a
-periodic reconciler and will not mutate an unknown non-empty cluster. Such a
-cluster must already satisfy the role/schema contract; startup never repairs an
-unknown role/schema boundary.
+Fresh PostgreSQL bootstrap belongs only to the image's `initdb` phase. It
+creates one ordinary non-superuser `tracefold` application login from the
+mode-`0600` `postgres_database_password`, assigns the public schema to it, and
+then revokes the `tracefold_app` bootstrap login. Alembic and every steady
+application process share that login; process identity is reported through
+`application_name`. Bootstrap is not a periodic reconciler and never mutates an
+unknown non-empty cluster.
 
 `make status` prints Compose state and returns non-zero unless PostgreSQL,
 migration, Serve, Workers, the Serve and Workers readiness endpoints, and the
@@ -345,10 +344,10 @@ recorded previous image candidate, then inspect and deploy that exact ID:
 ```bash
 cd ~/Documents/Code/tracefold
 docker compose exec -T postgres sh -eu -c '
-  PGPASSWORD="$(cat /run/secrets/postgres_serve_password)"
+  PGPASSWORD="$(cat /run/secrets/postgres_database_password)"
   PGOPTIONS="-c default_transaction_read_only=on"
   export PGPASSWORD PGOPTIONS
-  exec psql -X -v ON_ERROR_STOP=1 -U tracefold_serve -d tracefold -c "$1"
+  exec psql -X -v ON_ERROR_STOP=1 -U tracefold -d tracefold -c "$1"
 ' sh \
   "SELECT payload->>'previous_image_digest' AS image_id
      FROM news_learning_artifacts
@@ -665,9 +664,10 @@ Serve owns one pool of seven with ordinary/control admission `6/1`,
 50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
 parallel gather off, and 8 MiB work memory. Connections and ordinary requests
 default to read-only, and since #256 the HTTP surface has no write route at
-all: `tracefold news review submit` opens its own `tracefold_serve` connection
-and one explicit read-write transaction, whose role grants permit INSERT only
-on the two append-only review fact tables. Workers owns the exact pool/lane topology
+all. `tracefold news review submit` opens a short-lived connection under the
+same `tracefold` login and uses one ordinary short transaction. Database
+append-only triggers and business constraints—not an internal role ACL—protect
+the review facts. Workers owns the exact pool/lane topology
 above. Finite provider/filesystem operations share the three-slot
 external capability; the OpenNews WSS socket remains a long-lived async root
 child outside it. Only the owning source seam may map an outer
@@ -1333,21 +1333,16 @@ snapshot.
 
 ## Migrations
 
-The Alembic chain is the `20260818_0275` baseline (root; it executes
-`current_schema_20260818_0275.sql` and then `runtime_roles.sql`, which
-creates the direct-login `tracefold_owner`, `tracefold_serve`,
-`tracefold_workers`, and `tracefold_nautilus` roles when run by the bootstrap
-superuser, verifies the role contract, and applies the Serve read / Workers
-write grants) followed by the linear revisions through the current
-`20260831_0340` head. The #112 chain
-adds ReviewDesk tables and grants the existing Serve role only their
-append-only INSERT capability. It adds no login role or password. A live
-database stamped at an earlier revision upgrades with `tracefold db migrate`;
-a fresh database runs the same complete chain. Every revision is irreversible;
-a downgrade is a backup restore. Stop Serve and Workers before applying a
-chained revision
-(each takes the maintenance gate advisory lock and refuses to run while
-Workers hold the steady lock).
+Alembic has one root and head: the current-schema baseline
+`20260831_0340`. A fresh PostgreSQL 18 database creates the full schema in one
+step. The supported pre-cut database was first advanced to the old terminal
+revision with its recorded image, then underwent the #449 stopped-writer role
+catalog cut while retaining the same Alembic identity and all business rows.
+Current source has no pre-baseline upgrade or old-role repair path. New schema
+changes resume as immutable linear forward revisions after the baseline; an
+irreversible downgrade is a verified backup restore. Stop Serve, Workers, and
+Nautilus before migration; the maintenance gate refuses to run while the steady
+Workers lock is held.
 
 The normative authoring checklist, required evidence, and 0330–0332 object
 authority/cost audit are in [the migration guide](MIGRATIONS.md). Published
@@ -1586,9 +1581,9 @@ downgrade to a second execution permission model.
 `0321` is #314's computed-identity cut and the last epoch migration there will
 be. It adds `bundle_sha` and `envelope_sha256` to `news_learning_epochs`, ties
 `epoch_id` to `left(bundle_sha, 8)` by CHECK, relaxes `program_factory_id` to
-nullable, and grants `tracefold_workers` INSERT so the startup barrier can open
-the running bundle's epoch itself; UPDATE and DELETE stay revoked and the
-append-only trigger stays. The artifact loses its `factory_id` field, which
+nullable, and allowed the startup barrier to open the running bundle's epoch
+itself; the append-only trigger remains the durable mutation boundary. The
+artifact loses its `factory_id` field, which
 re-issues the stable root over unchanged seed texts one last time, so the first
 deployment after this migration opens a new `bundle_<sha8>` epoch and trips every
 armed or active canary. After it, an identity migration is a code change plus a
@@ -1631,8 +1626,8 @@ Before applying 0278 remove `providers.macro_sources` and the
 `llm.macro_document_analysis_*` keys from `~/.tracefold/config.yaml`; the
 settings schema rejects them and Serve/Workers fail to start with them
 present. Verify after restart: `tracefold db audit` reports
-`migration_status` `ready`, current News table counts, `news_schema.exact`, and
-`runtime_roles.ok`; `tracefold news bus-check` shows one consumer on
+`migration_status` `ready`, current News table counts, and
+`news_schema.exact`; `tracefold news bus-check` shows one consumer on
 `news.raw` and `news.deliver`; `/api/news/status.state` becomes `ready` only
 after the WSS, broker, model, delivery, and Workers health checks are all green;
 `/api/macro/overview` answers `404`; and the first candidate

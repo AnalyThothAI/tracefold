@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-from typing import Any
-
 import pytest
 
-import tracefold
 from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.market_review.instruments import Instrument, classify
@@ -373,51 +368,6 @@ def test_unmatched_provider_tags_rank_the_missing_symbols(conn) -> None:
     assert rows[1]["max_score"] is None  # a non-numeric provider score is not a crash
 
 
-def test_both_runtime_roles_have_the_expected_privileges(conn) -> None:
-    """The current universe is mutable by Workers; the replay history is insert-only."""
-
-    row = conn.execute(
-        """
-        SELECT has_table_privilege('tracefold_serve', 'public.news_market_instruments', 'SELECT') AS serve_select,
-               has_table_privilege('tracefold_serve', 'public.news_market_instruments', 'INSERT') AS serve_insert,
-               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'SELECT')
-                 AS workers_select,
-               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'INSERT')
-                 AS workers_insert,
-               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'UPDATE')
-                 AS workers_update,
-               has_table_privilege('tracefold_workers', 'public.news_market_instruments', 'DELETE')
-                 AS workers_delete,
-               has_table_privilege(
-                 'tracefold_serve', 'public.news_market_instrument_listing_events', 'SELECT'
-               ) AS serve_history_select,
-               has_table_privilege(
-                 'tracefold_serve', 'public.news_market_instrument_listing_events', 'INSERT'
-               ) AS serve_history_insert,
-               has_table_privilege(
-                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'SELECT'
-               ) AS workers_history_select,
-               has_table_privilege(
-                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'INSERT'
-               ) AS workers_history_insert,
-               has_table_privilege(
-                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'UPDATE'
-               ) AS workers_history_update,
-               has_table_privilege(
-                 'tracefold_workers', 'public.news_market_instrument_listing_events', 'DELETE'
-               ) AS workers_history_delete,
-               has_table_privilege('tracefold_workers', 'public.news_symbol_aliases', 'INSERT') AS workers_alias
-        """
-    ).fetchone()
-    assert row["serve_select"] is True
-    assert row["serve_insert"] is False
-    assert all(row[key] is True for key in ("workers_select", "workers_insert", "workers_update", "workers_delete"))
-    assert row["serve_history_select"] is True and row["serve_history_insert"] is False
-    assert row["workers_history_select"] is True and row["workers_history_insert"] is True
-    assert row["workers_history_update"] is False and row["workers_history_delete"] is False
-    assert row["workers_alias"] is True
-
-
 def _with_reference_tier(repos) -> None:
     """One symbol on a real venue that is also a US ticker, and one that only the directory knows."""
 
@@ -507,50 +457,3 @@ def test_universe_summary_keeps_the_reference_tier_out_of_the_traded_counts(conn
     assert summary["by_class"] == {"crypto": 1}
     assert summary["reference_symbols"] == 2
     assert summary["last_snapshot_ms"] == NOW  # the timestamp still spans every tier
-
-
-def _migration_0282() -> Any:
-    """Load the 0282 revision by path: `alembic/versions` is not a package."""
-
-    path = (
-        Path(tracefold.__file__).resolve().parent
-        / "platform/postgres/alembic/versions/20260820_0282_instruments_consolidation.py"
-    )
-    spec = importlib.util.spec_from_file_location("migration_0282", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def test_0282_rewrites_alias_rows_that_already_exist(conn) -> None:
-    """The first deploy of 0282 failed right here, and a from-scratch test database could not see it.
-
-    `UPDATE ... SET source = 'seed'` ran while the deployed CHECK still allowed only `operator`, so every
-    database that already held alias rows aborted the migration — which on this stack means serve and workers do
-    not start. An empty table made the same statement a no-op in every test. Replay the statements against the
-    pre-0282 shape instead, with a row in the table.
-    """
-
-    conn.execute("ALTER TABLE news_symbol_aliases DROP CONSTRAINT news_symbol_aliases_source_check")
-    conn.execute(
-        "ALTER TABLE news_symbol_aliases ADD CONSTRAINT news_symbol_aliases_source_check"
-        " CHECK (source IN ('venue', 'opennews_prefix', 'operator'))"
-    )
-    conn.execute("ALTER TABLE news_market_instruments ADD COLUMN first_seen_ms bigint")
-    conn.execute(
-        "INSERT INTO news_symbol_aliases (alias, base_symbol, source, updated_at_ms)"
-        " VALUES ('XAU', 'GOLD', 'operator', %s)",
-        (NOW,),
-    )
-    conn.commit()
-
-    for statement in _migration_0282().UPGRADE_SQL:
-        conn.execute(statement)
-    conn.commit()
-
-    assert conn.execute("SELECT source FROM news_symbol_aliases WHERE alias = 'XAU'").fetchone()["source"] == "seed"
-    columns = conn.execute(
-        "SELECT column_name FROM information_schema.columns WHERE table_name = 'news_market_instruments'"
-    ).fetchall()
-    assert "first_seen_ms" not in {str(row["column_name"]) for row in columns}

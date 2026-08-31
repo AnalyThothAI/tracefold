@@ -41,9 +41,10 @@ an HTTP surface, not a notebook.
 
 ### A — live read-only
 
-Read the running system: HTTP `/api/*` on the operator's own service, or
-`SELECT` as the `tracefold_serve` role. Public market data (Binance, Yahoo) is
-part of this channel. Answers *what is the system doing now*.
+Read the running system: HTTP `/api/*` on the operator's own service, or a
+`tracefold` SQL session explicitly configured read-only. Public market data
+(Binance, Yahoo) is part of this channel. Answers *what is the system doing
+now*.
 
 A live read has no fixed identity, so the notebook has to supply one: print the
 UTC cut-off it actually queried, and pin the window the conclusions describe.
@@ -85,9 +86,10 @@ window that produced it — a fixed audit, a before/after baseline.
 
 ## Red lines
 
-- **Read-only roles only.** `tracefold_serve` for SQL. Never
-  `tracefold_workers`, never `tracefold_owner`. `make check` fails on either
-  name appearing in a notebook code cell.
+- **Read-only sessions only.** SQL uses the operator DSN with
+  `default_transaction_read_only=on` (or an explicit read-only transaction).
+  The shared login is write-capable, so the session policy—not a retired role
+  name—is the safety boundary.
 - **No business writes.** No Review acceptance, dataset freeze, candidate
   registration, promotion, canary arming, or order placement — not even through
   a CLI call in a cell.
@@ -198,7 +200,8 @@ Stripping is `Kernel → Restart Kernel and Clear Outputs of All Cells`, then sa
   `urllib.request`, `httpx`, `requests.`, `aiohttp` or `psycopg` in a code cell;
 - no notebook commits `metadata.execution`, the per-cell wall clock of the run
   that produced it;
-- no notebook code cell names `tracefold_workers` or `tracefold_owner`.
+- no notebook code cell names a retired `tracefold_owner`, `tracefold_serve`,
+  `tracefold_workers`, or `tracefold_nautilus` role.
 
 Tracked files only, deliberately: an untracked notebook on the operator's disk
 is a draft. It does not fail `make check`, and — by the same reasoning — it does

@@ -21,7 +21,8 @@ from psycopg.rows import dict_row
 
 from .audit import PostgresOperationalAudit
 from .migrations import upgrade_head
-from .runtime_roles import MIGRATION_ROLE
+
+APPLICATION_ROLE = "tracefold"
 
 POSTGRES_PRODUCTION_IMAGE = (
     "postgres:18-bookworm@sha256:1961f96e6029a02c3812d7cb329a3b03a3ac2bb067058dec17b0f5596aca9296"
@@ -102,7 +103,6 @@ def run_restore_drill(
                 "audit_ok": audit["ok"],
                 "news_schema": audit["news_schema"],
                 "trading_schema": audit["trading_schema"],
-                "runtime_roles": audit["runtime_roles"],
                 "missing_estimates": [name for name, count in audit["row_estimates"].items() if count < 0],
                 "source_summary": source_summary,
                 "restored_summary": restored_summary,
@@ -126,7 +126,6 @@ def run_restore_drill(
                 "migration_status": audit["migration_status"],
                 "news_schema_exact": audit["news_schema"]["exact"],
                 "trading_schema_exact": audit["trading_schema"]["exact"],
-                "runtime_roles_ok": audit["runtime_roles"]["ok"],
             },
         }
     finally:
@@ -139,7 +138,7 @@ def _create_database(admin_dsn: str, name: str) -> None:
         conn.execute(
             sql.SQL("CREATE DATABASE {} OWNER {}").format(
                 sql.Identifier(name),
-                sql.Identifier(MIGRATION_ROLE),
+                sql.Identifier(APPLICATION_ROLE),
             )
         )
 
@@ -148,10 +147,6 @@ def _bootstrap_migration_database(admin_dsn: str) -> None:
     with psycopg.connect(admin_dsn) as conn:
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public")
         conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
-        conn.execute(sql.SQL("ALTER VIEW public.pg_stat_statements OWNER TO {}").format(sql.Identifier(MIGRATION_ROLE)))
-        conn.execute(
-            sql.SQL("ALTER VIEW public.pg_stat_statements_info OWNER TO {}").format(sql.Identifier(MIGRATION_ROLE))
-        )
 
 
 def _database_dsn(dsn: str, database: str) -> str:

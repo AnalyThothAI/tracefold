@@ -412,16 +412,7 @@ async def _main() -> None:
                 }
             },
         },
-        storage={
-            "postgres": {
-                "serve_dsn": arguments.dsn,
-                "workers_dsn": arguments.dsn,
-                "migrate_dsn": arguments.dsn,
-                "serve_password_file": None,
-                "workers_password_file": None,
-                "migrate_password_file": None,
-            }
-        },
+        storage={"postgres": {"dsn": arguments.dsn, "password_file": None}},
     )
     if trading_process:
         settings.set_config_dir(Path(os.environ["TRACEFOLD_TEST_CONFIG_DIR"]))

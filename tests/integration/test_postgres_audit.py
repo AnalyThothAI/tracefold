@@ -58,7 +58,7 @@ def test_operational_audit_fast_path_uses_catalog_estimates_and_exact_schema(
         "actual_tables": sorted(NEWS_TABLES),
         "exact": True,
     }
-    assert payload["runtime_roles"]["ok"] is True
+    assert "runtime_roles" not in payload
     assert "projection_schema" not in payload
     assert "foreign_key_checks" not in payload
 
@@ -75,21 +75,6 @@ def test_operational_audit_deep_mode_runs_explicit_exact_counts(tmp_path, postgr
     assert set(payload["counts"]) == set(NEWS_TABLES) | set(TRADING_TABLES)
     assert all(count >= 0 for count in payload["counts"].values())
     assert payload["counts"]["news_learning_epochs"] == 0
-
-
-def test_operational_audit_fails_when_workers_cannot_append_evidence(tmp_path, postgres_clone_dsn: str):
-    conn = connect_postgres_test(tmp_path / "postgres_test_db", read_only=False)
-    try:
-        conn.execute("REVOKE INSERT ON news_event_evidence_snapshots FROM tracefold_workers")
-        conn.commit()
-
-        payload = PostgresOperationalAudit(conn).run()
-    finally:
-        conn.close()
-
-    assert payload["ok"] is False
-    assert payload["runtime_roles"]["ok"] is False
-    assert "workers_business_boundary" in payload["runtime_roles"]["failures"]
 
 
 def test_query_audit_explains_hot_read_paths_without_analyze(tmp_path, postgres_clone_dsn: str):

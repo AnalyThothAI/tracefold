@@ -38,16 +38,7 @@ def main() -> int:
 
     settings = Settings(
         ws_token=ws_token,
-        storage={
-            "postgres": {
-                "serve_dsn": dsn,
-                "workers_dsn": dsn,
-                "migrate_dsn": dsn,
-                "serve_password_file": None,
-                "workers_password_file": None,
-                "migrate_password_file": None,
-            }
-        },
+        storage={"postgres": {"dsn": dsn, "password_file": None}},
     )
     app_home = os.environ.get("TRACEFOLD_E2E_APP_HOME")
     if not app_home:

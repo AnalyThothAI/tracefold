@@ -156,14 +156,21 @@ def _url_dsn_with_password(dsn: str, password: str) -> str:
     return urlunsplit((parsed.scheme, f"{auth}{host}", parsed.path, parsed.query, parsed.fragment))
 
 
-def connect_postgres(dsn: str, *, connect_timeout_seconds: float = 5.0) -> Connection[dict[str, Any]]:
+def connect_postgres(
+    dsn: str,
+    *,
+    connect_timeout_seconds: float = 5.0,
+    application_name: str | None = None,
+) -> Connection[dict[str, Any]]:
     dsn = local_docker_host_dsn(dsn)
-    return Connection.connect(
-        dsn,
-        autocommit=True,
-        connect_timeout=int(connect_timeout_seconds),
-        row_factory=dict_row,
-    )
+    kwargs: dict[str, Any] = {
+        "autocommit": True,
+        "connect_timeout": int(connect_timeout_seconds),
+        "row_factory": dict_row,
+    }
+    if application_name is not None:
+        kwargs["application_name"] = application_name
+    return Connection.connect(dsn, **kwargs)
 
 
 @contextmanager

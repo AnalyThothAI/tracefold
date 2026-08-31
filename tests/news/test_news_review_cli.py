@@ -120,9 +120,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
     persisted: dict[str, str] = {}
 
     class _Connection:
-        @staticmethod
-        def execute(statement: str) -> None:
-            assert statement == "SET TRANSACTION READ WRITE"
+        pass
 
     class _Desk:
         def __init__(self, _conn: Any) -> None:
@@ -142,8 +140,7 @@ def test_accept_drafts_records_the_model_that_actually_authored_the_proposal(
             return {"review_id": "review-1"}
 
     @contextmanager
-    def fake_postgres_connection(_settings: Any, *, role: str):
-        assert role == "serve"
+    def fake_postgres_connection(_settings: Any, **_kwargs: Any):
         yield _Connection()
 
     @contextmanager

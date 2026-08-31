@@ -100,8 +100,8 @@ class WorkerDatabase:
     def create(cls, settings: Any, *, telemetry: TelemetryRegistry | None = None) -> WorkerDatabase:
         postgres = settings.storage.postgres
         dsn = with_password_from_file(
-            settings.postgres_dsn("workers"),
-            settings.postgres_password_file("workers"),
+            postgres.dsn,
+            settings.postgres_password_file(),
         )
         try:
             worker_pool = create_pool(
