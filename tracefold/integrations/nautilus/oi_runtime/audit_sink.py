@@ -209,6 +209,14 @@ class AuditSink:
     def offer(self, value: ExecutionObservationV1) -> bool:
         size = len(value.model_dump_json().encode())
         with self._lock:
+            for queued, _ in self._values:
+                if queued.event_id != value.event_id:
+                    continue
+                if queued == value:
+                    return True
+                self._healthy = False
+                self._failure_reason = "audit_identity_conflict"
+                return False
             if len(self._values) >= self._max_count or self._bytes + size > self._max_bytes:
                 self._healthy = False
                 self._failure_reason = "audit_queue_overflow"

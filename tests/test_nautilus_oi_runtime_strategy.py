@@ -76,6 +76,7 @@ def test_signal_submits_one_native_entry_and_emits_unique_disposition() -> None:
     assert order.order_type == OrderType.MARKET
     assert order.side == OrderSide.BUY
     assert order.is_reduce_only is False
+    assert order.quantity.as_decimal() == Decimal("0.049")
     assert order.client_order_id.value.startswith("tf")
     assert context.signals.pending_ids == {signal.signal_id}
     assert context.audit.queued_count == 2
@@ -133,6 +134,41 @@ def test_restart_replay_queries_same_deterministic_client_id_without_resubmit() 
     assert restarted.strategy.submitted == []
     assert restarted.strategy.queried == [entry]
     assert entry.client_order_id == first.strategy.submitted[0][0].client_order_id
+
+
+def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
+    signal = trade_signal()
+    first = registered_oi_strategy()
+    entry_id = deterministic_client_order_id(
+        namespace=first.profile.client_order_namespace,
+        profile_id=first.profile.profile_id,
+        signal_id=signal.signal_id,
+        leg="entry",
+    )
+    wrong_entry = first.strategy.order_factory.market(
+        instrument_id=first.instrument.id,
+        order_side=OrderSide.SELL,
+        quantity=first.instrument.make_qty(Decimal("0.01")),
+        client_order_id=entry_id,
+    )
+    _accepted(first, wrong_entry)
+    snapshot = RuntimeReconciliationSnapshot(
+        runtime_profile_id=first.profile.profile_id,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+        executions=(RecoveredExecutionSeed(signal=signal, entry_client_order_id=entry_id),),
+    )
+    restarted = registered_oi_strategy(
+        cache=first.cache,
+        startup_reconciliation=snapshot,
+        mark_reconciled=False,
+    )
+
+    restarted.strategy.on_start()
+
+    readiness = restarted.strategy.readiness()
+    assert readiness.ready is False
+    assert readiness.unexpected_exposure is True
 
 
 @pytest.mark.parametrize(
@@ -383,6 +419,28 @@ def test_accepted_entry_does_not_remain_on_periodic_ambiguity_query_path() -> No
     assert context.strategy.queried == []
 
 
+def test_wide_spread_disposes_signal_without_entry() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.clock.set_time(NOW_NS + 1)
+    context.cache.add_quote_tick(
+        TestDataStubs.quote_tick(
+            instrument=context.instrument,
+            bid_price=9_900,
+            ask_price=10_000,
+            ts_event=NOW_NS + 1,
+            ts_init=NOW_NS + 1,
+        )
+    )
+
+    context.strategy.on_timer(None)
+
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    dispositions = [value for value in written if value.normalized_kind == "signal_disposition"]
+    assert context.strategy.submitted == []
+    assert dispositions[0].summary["disposition"] == "spread_limit"
+
+
 def test_partial_position_change_cancel_replaces_explicit_reduce_only_stop() -> None:
     context = registered_oi_strategy(values=(trade_signal(),))
     context.strategy.on_timer(None)
@@ -480,6 +538,27 @@ def test_native_partial_fill_is_normalized_without_callback_io() -> None:
         "last_quantity": "0.020",
         "last_price": "10000.0",
     }
+
+
+def test_repeated_exit_query_observation_is_idempotent() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    _, position_id = _open_position(context)
+    context.strategy.flatten_position(position_id)
+    context.clock.set_time(NOW_NS + 3)
+    context.strategy.flatten_position(position_id)
+    context.clock.set_time(NOW_NS + 4)
+    context.strategy.flatten_position(position_id)
+
+    written: list[object] = []
+    context.audit.flush_once(written.extend)
+    replayed = [
+        value
+        for value in written
+        if value.normalized_kind == "order" and value.summary.get("status") == "replayed_query_first"
+    ]
+
+    assert len(replayed) == 1
 
 
 def test_revisited_position_quantity_has_distinct_audit_identity() -> None:

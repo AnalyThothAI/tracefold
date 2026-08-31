@@ -23,7 +23,14 @@ from tracefold.integrations.nautilus.oi_runtime.risk import (
 )
 
 
-def _submitted_order(context: object, client_order_id: str, quantity: str, *, accepted: bool) -> object:
+def _submitted_order(
+    context: object,
+    client_order_id: str,
+    quantity: str,
+    *,
+    accepted: bool,
+    reduce_only: bool = False,
+) -> object:
     strategy = context.strategy  # type: ignore[attr-defined]
     instrument = context.instrument  # type: ignore[attr-defined]
     cache = context.cache  # type: ignore[attr-defined]
@@ -31,6 +38,7 @@ def _submitted_order(context: object, client_order_id: str, quantity: str, *, ac
         instrument_id=instrument.id,
         order_side=OrderSide.BUY,
         quantity=instrument.make_qty(Decimal(quantity)),
+        reduce_only=reduce_only,
         client_order_id=ClientOrderId(client_order_id),
     )
     cache.add_order(order, client_id=ClientId("BINANCE"))
@@ -74,6 +82,7 @@ def test_cache_portfolio_snapshot_aggregates_position_open_and_inflight_risk() -
     cache.add_position(Position(instrument, fill), OmsType.NETTING)
     open_order = _submitted_order(context, "owned-open", "0.02", accepted=True)
     inflight_order = _submitted_order(context, "owned-inflight", "0.03", accepted=False)
+    protective_order = _submitted_order(context, "owned-protection", "0.04", accepted=True, reduce_only=True)
 
     facts = NautilusRiskFacts.collect(
         cache=cache,
@@ -82,7 +91,14 @@ def test_cache_portfolio_snapshot_aggregates_position_open_and_inflight_risk() -
         strategy_id=strategy.id,
         routes={instrument.id: 200},
         candidate_instrument_id=instrument.id,
-        owned_order_ids=frozenset({entry.client_order_id, open_order.client_order_id, inflight_order.client_order_id}),
+        owned_order_ids=frozenset(
+            {
+                entry.client_order_id,
+                open_order.client_order_id,
+                inflight_order.client_order_id,
+                protective_order.client_order_id,
+            }
+        ),
         owned_position_ids=frozenset({position_id}),
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,

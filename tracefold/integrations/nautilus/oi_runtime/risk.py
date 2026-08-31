@@ -151,11 +151,13 @@ class NautilusRiskFacts:
             nonlocal unexpected
             price = prices.get(order.instrument_id)
             stop_bps = routes.get(order.instrument_id)
+            if order.client_order_id not in owned_order_ids or order.strategy_id != strategy_id:
+                unexpected = True
             if price is None or stop_bps is None:
                 unexpected = True
                 return Decimal(0), Decimal(0)
-            if order.client_order_id not in owned_order_ids or order.strategy_id != strategy_id:
-                unexpected = True
+            if bool(order.is_reduce_only):
+                return Decimal(0), Decimal(0)
             quantity = _decimal(getattr(order, "leaves_qty", order.quantity))
             notional = abs(quantity) * price
             return notional, notional * Decimal(stop_bps) / Decimal(10_000)

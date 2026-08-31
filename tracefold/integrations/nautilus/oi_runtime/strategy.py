@@ -26,6 +26,8 @@ _CALLBACK_BATCH = 16
 _PUMP_INTERVAL_MS = 100
 _AMBIGUOUS_QUERY_AFTER_NS = 5_000_000_000
 _AMBIGUOUS_REASONS = ("-1007", "503", "timeout", "timed out", "response unknown")
+_MAX_ENTRY_DRIFT_BPS = Decimal(25)
+_MAX_SPREAD_BPS = Decimal(30)
 
 
 class _AuditBackpressure(RuntimeError):
@@ -342,12 +344,19 @@ class OiNautilusStrategy(Strategy):
                 leg="entry",
             )
             entry = self.cache.order(seed.entry_client_order_id)
+            expected_entry_side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
             if (
                 route is None
                 or signal.signal_id in states
                 or seed.entry_client_order_id != expected_entry
                 or entry is None
                 or entry.strategy_id != self.id
+                or entry.account_id != self._profile.account_id
+                or entry.instrument_id != route.instrument_id
+                or entry.side != expected_entry_side
+                or entry.order_type != OrderType.MARKET
+                or entry.is_reduce_only
+                or entry.quantity.as_decimal() <= 0
             ):
                 self._readiness.halt_for_unexpected_exposure()
                 return False
@@ -648,7 +657,15 @@ class OiNautilusStrategy(Strategy):
         if decision.action in {"deny", "halt"}:
             self._dispose_signal(signal, decision.reason)
             return
-        price = (Decimal(str(quote.bid_price)) + Decimal(str(quote.ask_price))) / Decimal(2)
+        bid = Decimal(str(quote.bid_price))
+        ask = Decimal(str(quote.ask_price))
+        midpoint = (bid + ask) / Decimal(2)
+        spread_bps = (ask - bid) * Decimal(10_000) / midpoint
+        if spread_bps > _MAX_SPREAD_BPS:
+            self._dispose_signal(signal, "spread_limit")
+            return
+        executable_price = ask if signal.direction == "long" else bid
+        price = executable_price * (Decimal(1) + _MAX_ENTRY_DRIFT_BPS / Decimal(10_000))
         try:
             raw_quantity = fixed_risk_quantity(
                 price=price,
@@ -734,13 +751,13 @@ class OiNautilusStrategy(Strategy):
         self._disposed.add(signal.signal_id)
 
     def _observe_order(self, state: _ExecutionState, order: Any, leg: str, status: str) -> None:
-        now_ns = int(self.clock.timestamp_ns())
+        occurred_at_ns = int(order.ts_init)
         self._audit.offer(
             self._observations.create(
                 normalized_kind="protection" if leg == "protection" else "order",
                 signal_id=state.signal.signal_id,
-                occurred_at_ns=now_ns,
-                observed_at_ns=now_ns,
+                occurred_at_ns=occurred_at_ns,
+                observed_at_ns=occurred_at_ns,
                 native_identity_references=(order.client_order_id.value,),
                 summary={"leg": leg, "status": status},
                 payload={"client_order_id": order.client_order_id.value, "leg": leg, "status": status},
