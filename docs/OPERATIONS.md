@@ -1237,8 +1237,10 @@ Diagnose News in this order:
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
    a complete `optimization_report.json`. Task and reflection are separate
    `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
-   before they are summed. The taxonomy optimizer has no judge. Candidate zero's validation score inside that GEPA
-   run is the only optimization baseline. A task answer that reaches `max_tokens` is receipted once and
+   before they are summed. The taxonomy optimizer has no judge. A complete candidate zero inside that GEPA
+   run is the only optimization baseline; a candidate-zero truncation rejects the run. Tracefold admits the
+   highest-scoring public candidate that strictly improves on that baseline and scores exactly `1.0` against
+   accepted Gold on every Stable-correct control. A task answer that reaches `max_tokens` is receipted once and
    scores that candidate example below any complete answer; it does not retry or abort later candidates.
    A typed-invalid `EventSemantics` answer similarly remains one aligned example at score zero, rather than
    shortening GEPA's batch.

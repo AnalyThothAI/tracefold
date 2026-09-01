@@ -538,8 +538,9 @@ uv run tracefold news review accept-drafts --file /tmp/drafts.json \
   --first-bad-owner taxonomy
 
 # The one candidate path (#453). Freeze once, inspect zero-call readiness, then
-# run stock GEPA exactly once. Candidate zero's validation score is the only
-# optimization baseline. Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
+# run stock GEPA exactly once. A complete candidate zero is the only quality
+# baseline; all Stable-correct controls must remain exactly Gold-correct.
+# Exit 0 means ADVANCE; 1 means NO_OP or REJECTED.
 uv run tracefold news learning freeze --role development \
   --from-ms START --to-ms END --calibration-request /tmp/calibration-50.json \
   --out artifacts/run-1/development.json
@@ -618,8 +619,11 @@ report and refuses before endpoint construction unless both `objective.compilabl
 `development_profile.ready` are true. It then invokes one stock `dspy.GEPA.compile()` on the single native
 `NativeNewsProgram.event_semantics` Predict. The direct scalar is the mean of subject-code set F1 and exact
 event-family, change-state and assertion-status scores. ReaderCard, the composite case metric, a semantic
-judge and a component selector do not participate. Candidate zero's validation score in that same GEPA run
-is the only optimization baseline; there is no provider-backed Dataset baseline or paired rerun.
+judge and a component selector do not participate. A complete candidate zero in that same GEPA run is the
+only optimization baseline; its task-output-failure sentinel rejects the run instead of becoming a quality
+anchor. Tracefold scans the public candidates for the highest aggregate score that strictly improves on
+candidate zero and remains exactly correct against accepted Gold on every Stable-correct control. There is
+no provider-backed Dataset baseline or paired rerun.
 
 The future test baseline remains separate: Stable is evaluated on accepted
 examples that did not exist when the candidate was made (`release evaluate
@@ -629,8 +633,8 @@ registration). Only this one answers generalization.
 The run directory must be new and empty. It contains `readiness.json`, official GEPA log/state under
 `optimization/gepa/`, `optimization/optimization_report.json`, and
 `optimization/prompt_candidate.json` only on `ADVANCE`. The report retains DSPy's public candidate parents,
-aggregate validation scores, per-example subscores, per-objective aggregate scores, best index and total
-metric calls when DSPy returns its public result. An interrupted compile records `metric_calls=null` while
+aggregate validation scores, per-example subscores, per-objective aggregate scores, GEPA best index,
+Tracefold admitted index and total metric calls when DSPy returns its public result. An interrupted compile records `metric_calls=null` while
 keeping physical task/reflection usage exact; it does not invent a count from private checkpoint state.
 
 **When a corpus is big enough (#259).** Coverage decides it: independent

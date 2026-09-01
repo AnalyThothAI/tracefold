@@ -1376,18 +1376,21 @@ the run. Production keeps its existing fail-closed truncation contract. The comp
 `add_format_failure_as_feedback=True` and a code-owned six-example reflection minibatch. The latter uses
 GEPA's public knob and leaves the 32K-context thinking teacher output headroom without adding retries or a
 custom proposer. There is no component selector, ReaderCard execution, composite case
-metric or judge. Candidate zero's validation score in that same compile is the sole optimization baseline.
-`best_idx == 0`, a non-strict improvement, or any Stable-correct control regression returns `NO_OP`.
+metric or judge. A complete candidate zero in that same compile is the sole optimization baseline. If its
+validation subscores contain the task-output-failure sentinel, the run is `REJECTED` because it has no valid
+quality anchor. Otherwise Tracefold scans every public candidate by aggregate score and admits the highest
+one that strictly improves on candidate zero, passes the instruction bounds, and scores exactly `1.0`
+against accepted Gold on every Stable-correct control. No qualifying candidate returns `NO_OP`.
 
 The command reads the frozen development corpus once through the shared
 application login and then holds task/reflection model endpoints and the existing typed
 budget. It has no database writer, broker, delivery, canary or promotion
 authority. Every terminal state writes
-`optimization/optimization_report.json` (`news_optimization_run_report_v3`):
+`optimization/optimization_report.json` (`news_optimization_run_report_v4`):
 
 | Outcome | Meaning | Candidate | Exit |
 | --- | --- | --- | --- |
-| `NO_OP` | candidate zero remained best, or no strict improvement | none | 1 |
+| `NO_OP` | no public candidate met every admission condition | none | 1 |
 | `REJECTED` | Objective, quality, safety or budget refusal | none | 1 |
 | `ADVANCE` | one bounded Prompt patch with no production authority | `optimization/prompt_candidate.json` | 0 |
 
@@ -1395,8 +1398,10 @@ authority. Every terminal state writes
 before readiness or provider work. The directory contains `readiness.json`,
 official GEPA log/state under `optimization/gepa/`, the optimization report,
 and an optional PromptCandidate. The report records native public GEPA candidate parents, aggregate scores,
-per-example subscores, per-objective aggregate scores, best index and total metric calls without inventing a
-private checkpoint state. `ADVANCE` still enters the existing `release register`
+per-example subscores, per-objective aggregate scores, GEPA best index, Tracefold admitted index and total
+metric calls without inventing a private checkpoint state. Selection receipt v2 records candidate-zero
+completeness and task-output-failure count plus control total, Gold-exact count and non-exact count for
+Candidate zero, GEPA best and the Tracefold-admitted candidate. `ADVANCE` still enters the existing `release register`
 and evaluator/release gates; this command never performs those actions.
 
 Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs

@@ -1639,6 +1639,10 @@ metric assigns a truncated Prediction a dedicated
 the train minibatch or the smaller development-selection split; a typed-invalid Prediction receives the
 Issue-declared invalid score `0`. The wrapper does not retry, parse, evaluate or select.
 Reflection truncation, transport/provider failure and budget refusal remain run-terminal.
+Candidate zero must have no task-output-failure sentinel in its validation subscores; otherwise the run is
+`REJECTED` because there is no complete quality anchor. Tracefold then scans all public GEPA candidates by
+descending aggregate score and admits the first whose instruction is valid and bounded, strictly improves
+over candidate zero, and scores exactly `1.0` against accepted Gold on every Stable-correct control.
 Frozen examples carry only rendered Event evidence and accepted taxonomy Gold; the deterministic metric
 returns the mean of subject set-F1 and exact family/state/assertion axes. There is no component selector,
 ReaderCard rollout, production composite, semantic judge, direct GEPA import, private DSPy API or
@@ -1653,14 +1657,14 @@ or production assignment.
 
 One optimization produces one `news_prompt_candidate_v2`, and only when it ends
 in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
-writes a complete `news_optimization_run_report_v3`, so a run that spent a
+writes a complete `news_optimization_run_report_v4`, so a run that spent a
 budget and shipped nothing is still readable. Issue #193 had already collapsed
 the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
 *where* two instructions were produced. Nothing downstream ever needed that:
-public `dspy.GEPA` returns an optimized native Predict, and `run_gepa` extracts
-only its public winner instruction while refusing demos or any extra Predictor, then copies ReaderCard
+public `dspy.GEPA` returns native Predict candidates, and `run_gepa` extracts
+only Tracefold's admitted public candidate while refusing demos or any extra Predictor, then copies ReaderCard
 unchanged into the two-string patch contract. Rows written
 under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
@@ -1737,10 +1741,12 @@ and reviewed-cluster floors. No stable-age, window-age or calendar-day gate may
 stand in for it, and a development temporal diagnostic is never holdout
 evidence.
 
-`news learning run` (#453) is the only way to generate a candidate: one command
+`news learning run` (#453, #492) is the only way to generate a candidate: one command
 writes zero-call readiness and invokes stock GEPA exactly once over the same
-frozen corpus, exiting `0` only on `ADVANCE`. Candidate zero's validation score
-inside that run is the sole optimization baseline. The only later baseline is
+frozen corpus, exiting `0` only on `ADVANCE`. A complete candidate zero is the sole optimization baseline;
+an incomplete one rejects the run. GEPA's aggregate best remains public evidence, while Tracefold admits
+the highest-scoring candidate that strictly improves on candidate zero and remains exactly Gold-correct on
+every Stable-correct control. The only later baseline is
 Stable on accepted examples that did not exist when the candidate was made,
 produced by the release plane's holdout stage.
 

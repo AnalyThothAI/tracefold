@@ -28,7 +28,7 @@ def _readiness(**updates: Any) -> dict[str, Any]:
 
 def _optimization(**updates: Any) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "schema_version": "news_optimization_run_report_v3",
+        "schema_version": "news_optimization_run_report_v4",
         "outcome": "NO_OP",
         "reasons": ["news_program_compile_no_program_change"],
         "candidate_sha256": None,

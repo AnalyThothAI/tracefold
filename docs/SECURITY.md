@@ -230,10 +230,12 @@ after it, and records each role's input/output/cached/total tokens, calls, cost,
 in the same report. Reflection alone has the code-owned 32k-token ceiling. The taxonomy optimizer has no
 semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
 
-Every terminal state writes `news_optimization_run_report_v3`; only `ADVANCE` also writes
+Every terminal state writes `news_optimization_run_report_v4`; only `ADVANCE` also writes
 `news_prompt_candidate_v2`. The only mutable field is the EventSemantics instruction. ReaderCard is copied
 byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
-beside the public native GEPA parent/score/subscore state. Registration independently re-applies the patch,
+beside the public native GEPA parent/score/subscore state, GEPA best index and Tracefold admitted index.
+Candidate-zero incompleteness rejects the run, and controls are compared directly with accepted Gold rather
+than with another model output. Registration independently re-applies the patch,
 re-projects the dataset and re-derives Objective Plan v3. Generator provenance grants no release authority;
 future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
 
