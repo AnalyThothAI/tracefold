@@ -7,10 +7,12 @@ from collections.abc import Sequence
 from decimal import Decimal
 from typing import Any
 
+import httpx
 import pytest
 
 from tracefold.app.trading_config import signal_lane_config
 from tracefold.app.workers.wiring import trading as trading_wiring
+from tracefold.integrations.venues import fetch_binance_candles
 from tracefold.platform.config.models import Settings
 from tracefold.trading.admission import AdmissionConfig
 from tracefold.trading.contracts import Bar, CaseState, OiCandidateRow, TradingCaseManifest
@@ -309,6 +311,50 @@ def test_hyperliquid_builder_source_uses_provider_native_market_key(monkeypatch:
     asyncio.run(trading_wiring._source_native_bars(candidate, NOW - 300_000, NOW))
 
     assert requested == [("xyz:UNITREE", "hl.xyz")]
+
+
+def test_pre_move_and_four_hour_reads_measure_the_same_book(monkeypatch: pytest.MonkeyPatch) -> None:
+    """#460 M2: the two source-native reads translate one venue vocabulary through one function.
+
+    The pre-move read takes a live `OiTradeCandidate`; the four-hour result read takes a `market_key`
+    the Case froze hours earlier. They had a `binance.usdm` -> `binance.perp` ladder each, and the
+    failure that costs something is not a crash — it is the two quietly asking different books for
+    the same Signal, so a 4 h card reports an outcome the entry price was never measured against.
+    This drives both through a real Binance klines payload and asserts they come back identical.
+    """
+
+    rows = [
+        [1_787_000_000_000, "100.0", "101.0", "99.5", "100.5", "12", 1_787_000_299_999],
+        [1_787_000_300_000, "100.5", "102.0", "100.0", "101.5", "18", 1_787_000_599_999],
+    ]
+    requested: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append((str(request.url.params.get("symbol")), request.url.host))
+        return httpx.Response(200, json=rows)
+
+    async def fetch(venue_symbol: str, *, venue: str, start_ms: int, end_ms: int) -> Any:
+        return await fetch_binance_candles(
+            venue_symbol,
+            venue=venue,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            transport=httpx.MockTransport(handler),
+        )
+
+    monkeypatch.setattr(trading_wiring, "fetch_binance_candles", fetch)
+    candidate = normalize_oi_source(_row(symbol="SOL", provider_symbol="SOL", venue="binance"))
+    assert not isinstance(candidate, SourceRejected)
+
+    pre_move = asyncio.run(trading_wiring._source_native_bars(candidate, NOW - 300_000, NOW))
+    result = asyncio.run(
+        trading_wiring._source_native_result_bars("crypto:perp:SOL:USDT", candidate.venue, NOW - 300_000, NOW)
+    )
+
+    # One symbol spelling and one host across both reads: `SOLUSDT` on the USD-M book, never the spot one.
+    assert requested == [("SOLUSDT", "fapi.binance.com"), ("SOLUSDT", "fapi.binance.com")]
+    assert [(bar.open_at_ms, str(bar.close)) for bar in pre_move] == list(result)
+    assert [str(bar.close) for bar in pre_move] == ["100.5", "101.5"]
 
 
 def test_provider_symbol_mismatch_fails_closed_before_market_data() -> None:

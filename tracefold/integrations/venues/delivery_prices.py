@@ -7,13 +7,7 @@ from collections.abc import Mapping, Sequence
 
 from tracefold.news.market_review.pricing import Candle, PricePoint, Trade, select_candle, select_trade
 
-from .candles import (
-    fetch_binance_candles,
-    fetch_bitget_candles,
-    fetch_hyperliquid_candles,
-    fetch_lighter_candles,
-    fetch_okx_candles,
-)
+from .candles import candle_fetcher_for
 from .trades import (
     fetch_binance_trade_before,
     fetch_bitget_recent_trades,
@@ -94,49 +88,19 @@ async def _candles_for_targets(venue_symbol: str, *, venue: str, targets: Sequen
 
 
 async def _candles_for_target(venue_symbol: str, *, venue: str, target_ms: int) -> Sequence[Candle]:
-    start_ms = int(target_ms) - _CANDLE_MAX_GAP_MS
-    end_ms = int(target_ms)
-    if venue.startswith("binance."):
-        return await fetch_binance_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval="1m",
-        )
-    if venue.startswith("hl."):
-        return await fetch_hyperliquid_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval="1m",
-        )
-    if venue.startswith("okx."):
-        return await fetch_okx_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval="1m",
-        )
-    if venue.startswith("lighter."):
-        return await fetch_lighter_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval="1m",
-        )
-    if venue.startswith("bitget."):
-        return await fetch_bitget_candles(
-            venue_symbol,
-            venue=venue,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            interval="1m",
-        )
-    return ()
+    """Every venue this package can fetch candles from: a delivery price is a historical fact about the
+    market the instrument actually trades on, and there is no rank to fall back down."""
+
+    fetcher = candle_fetcher_for(venue)
+    if fetcher is None:
+        return ()
+    return await fetcher(
+        venue_symbol,
+        venue=venue,
+        start_ms=int(target_ms) - _CANDLE_MAX_GAP_MS,
+        end_ms=int(target_ms),
+        interval="1m",
+    )
 
 
 __all__ = ["fetch_delivery_price_points"]
