@@ -293,8 +293,34 @@ class GepaNoProgramChange(ValueError):
         self.result = result
 
 
+_TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
+
+
+class _LearningEventSemantics(dspy.Module):  # type: ignore[misc]
+    """Keep one truncated task answer as one scoreable GEPA example.
+
+    DSPy 3.3.1 re-raises ``LMError`` while capturing GEPA traces, then drops that example before returning
+    the batch. GEPA assumes the batch stayed aligned and indexes past the shortened result. This adapter is
+    deliberately narrower than an evaluator: it preserves the one native Predict and converts only the
+    candidate-local truncation into a Prediction the existing metric can score.
+    """
+
+    def __init__(self, predictor: dspy.Predict) -> None:
+        super().__init__()
+        self.event_semantics = predictor
+
+    def forward(self, evidence_json: str) -> dspy.Prediction:
+        try:
+            return self.event_semantics(evidence_json=evidence_json)
+        except LMOutputTruncatedError:
+            return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
+
+
 class _DspyTaxonomyMetric:
     """The four-axis accepted-Gold ruler used by the single EventSemantics Predict."""
+
+    def __init__(self, *, task_output_failure_score: float) -> None:
+        self._task_output_failure_score = task_output_failure_score
 
     def __call__(
         self,
@@ -308,6 +334,19 @@ class _DspyTaxonomyMetric:
         expected = getattr(gold, "gold_taxonomy", None)
         if expected is None:
             raise TypeError("news_program_compile_taxonomy_gold_missing")
+        if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_FAILURE:
+            score = self._task_output_failure_score
+            return dspy.Prediction(
+                score=score,
+                feedback="Task output was truncated; this candidate did not complete the example.",
+                objective_scores={
+                    "subject_codes_set_f1": score,
+                    "event_family_accuracy": score,
+                    "change_state_accuracy": score,
+                    "assertion_status_accuracy": score,
+                    "four_axis_exact_accuracy": score,
+                },
+            )
         try:
             semantics = EventSemantics.model_validate(getattr(pred, "semantics", None))
             comparison = compare_taxonomy(expected, semantics.taxonomy)
@@ -352,14 +391,19 @@ def _dspy_taxonomy_example(episode: DevelopmentEpisode) -> dspy.Example:
     ).with_inputs("evidence_json")
 
 
-def _taxonomy_metric_receipt(*, review_rubric_version: str) -> dict[str, Any]:
+def _taxonomy_metric_receipt(
+    *,
+    review_rubric_version: str,
+    task_output_failure_score: float,
+) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.taxonomy_gepa_metric.v1",
-        "metric_id": "tracefold.news.taxonomy_gepa_direct_v1",
+        "schema": "tracefold.news.taxonomy_gepa_metric.v2",
+        "metric_id": "tracefold.news.taxonomy_gepa_direct_v2",
         "review_rubric_version": review_rubric_version,
         "scalar": "mean(subject_codes_set_f1,event_family_exact,change_state_exact,assertion_status_exact)",
         "axes": list(TAXONOMY_AXES),
         "invalid_prediction_score": 0.0,
+        "task_output_failure_score": task_output_failure_score,
     }
 
 
@@ -438,15 +482,19 @@ def run_gepa(
     val_examples = [_dspy_taxonomy_example(episode) for episode in plan.development_selection_episodes]
     retrieval = retrieval_receipt(episodes)
 
-    metric = _DspyTaxonomyMetric()
-    metric_receipt = _taxonomy_metric_receipt(review_rubric_version=review_rubric_version)
-    growth_budget = InstructionGrowthBudget.from_seeds({"event_semantics": base_program.event_semantics_instruction})
-    student = NativeNewsProgram(base_program).event_semantics
     constructor = optimizer_constructor(
         max_metric_calls=max_metric_calls,
         seed=seed,
         train_count=len(train_examples),
     )
+    task_output_failure_score = float(-(len(train_examples) + 1))
+    metric = _DspyTaxonomyMetric(task_output_failure_score=task_output_failure_score)
+    metric_receipt = _taxonomy_metric_receipt(
+        review_rubric_version=review_rubric_version,
+        task_output_failure_score=task_output_failure_score,
+    )
+    growth_budget = InstructionGrowthBudget.from_seeds({"event_semantics": base_program.event_semantics_instruction})
+    student = _LearningEventSemantics(NativeNewsProgram(base_program).event_semantics)
     config_receipt = optimizer_config_receipt(
         growth_budget=growth_budget,
         constructor=constructor,
@@ -489,9 +537,9 @@ def run_gepa(
     with task_ledger.scope(scope_context), dspy.context(lm=task_lm, adapter=program_json_adapter()):
         optimized = (compile_fn or optimizer.compile)(student, trainset=train_examples, valset=val_examples)
 
-    # DSPy's evaluator translates every per-example Exception to `failure_score`. A physical budget refusal
-    # or systemic provider failure is a run answer, not a bad candidate, so reconcile it before looking at
-    # the returned winner. The stopper merely avoids starting another GEPA step; this check is authoritative.
+    # The learning wrapper translates only task-output truncation into a scored Prediction. A physical budget
+    # refusal or systemic provider failure is a run answer, so reconcile it before looking at the returned
+    # winner. The stopper merely avoids starting another GEPA step; this check is authoritative.
     raise_terminal = getattr(task_lm, "raise_if_terminal", None)
     if callable(raise_terminal):
         raise_terminal()
@@ -654,15 +702,15 @@ def optimizer_config_receipt(
     val_count: int,
 ) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v5",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v6",
         "optimizer": {
             "implementation": "dspy.GEPA",
             "dspy_version": importlib.metadata.version("dspy"),
             "gepa_version": importlib.metadata.version("gepa"),
             "adapter": "tracefold.news.program.lm.program_json_adapter",
-            "evaluator": "NativeNewsProgram.event_semantics on one explicit task LM",
+            "evaluator": "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM",
             "add_format_failure_as_feedback": True,
-            "terminal_stopper": "shared_physical_lm_meter",
+            "terminal_stopper": "shared_physical_lm_meter_system_failures_only",
             "upstream_fixed_arguments": {"display_progress_bar": True, "raise_on_exception": True},
         },
         "metric_sha256": metric_sha256,
@@ -1084,15 +1132,19 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._settle_error(exc, receipt_index=receipt_index)
+                receipt_verified = self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
                 if not isinstance(exc, LMOutputTruncatedError):
                     self.transport_failures += 1
-                terminal = self._terminal_error(exc)
-                self._meter.remember_terminal(terminal)
+                candidate_failure = self._is_candidate_failure(exc, receipt_verified=receipt_verified)
+                terminal = exc if candidate_failure else self._terminal_error(exc)
+                if not candidate_failure:
+                    self._meter.remember_terminal(terminal)
+                if terminal is exc:
+                    raise
                 raise terminal from exc
             self._meter.after(self._role, response)
             return response
@@ -1108,21 +1160,25 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                 if not isinstance(response, dspy.LMResponse):
                     raise dspy.LMUnexpectedError("news_program_compile_lm_response_invalid")
             except BaseException as exc:
-                self._settle_error(exc, receipt_index=receipt_index)
+                receipt_verified = self._settle_error(exc, receipt_index=receipt_index)
                 if _is_retryable_lm_failure(exc) and attempt < _NUM_RETRIES:
                     self.transport_retries += 1
                     last = exc
                     continue
                 if not isinstance(exc, LMOutputTruncatedError):
                     self.transport_failures += 1
-                terminal = self._terminal_error(exc)
-                self._meter.remember_terminal(terminal)
+                candidate_failure = self._is_candidate_failure(exc, receipt_verified=receipt_verified)
+                terminal = exc if candidate_failure else self._terminal_error(exc)
+                if not candidate_failure:
+                    self._meter.remember_terminal(terminal)
+                if terminal is exc:
+                    raise
                 raise terminal from exc
             self._meter.after(self._role, response)
             return response
         raise last if last is not None else RuntimeError("news_program_compile_lm_retry_invariant")
 
-    def _settle_error(self, exc: BaseException, *, receipt_index: int | None) -> None:
+    def _settle_error(self, exc: BaseException, *, receipt_index: int | None) -> bool:
         # GEPA is fixed to one worker. The audited LM writes this physical provider-success receipt before
         # raising truncation, so learning can settle the exact answer without changing the production
         # execution envelope or fabricating a second provider call.
@@ -1137,8 +1193,9 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
                     and receipt.error_code == "news_program_lm_output_truncated"
                 ):
                     self._meter.after_receipt(self._role, receipt)
-                    return
+                    return True
         self._meter.after_provider_failure(self._role, provider_reached=_provider_reached(exc))
+        return False
 
     def _terminal_error(self, exc: BaseException) -> BaseException:
         if _is_retryable_lm_failure(exc):
@@ -1146,6 +1203,9 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
         if isinstance(exc, LMOutputTruncatedError):
             return OptimizationRunTerminated(f"news_program_compile_{self._role}_model_output_truncated")
         return exc
+
+    def _is_candidate_failure(self, exc: BaseException, *, receipt_verified: bool) -> bool:
+        return receipt_verified and self._role == "task" and isinstance(exc, LMOutputTruncatedError)
 
 
 @dataclass(frozen=True)

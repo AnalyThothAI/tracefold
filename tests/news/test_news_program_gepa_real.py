@@ -13,7 +13,7 @@ from tracefold.news.artifact_identity import canonical_json
 from tracefold.news.learning.contracts import OptimizationBudget
 from tracefold.news.learning.objective import DevelopmentEpisode
 from tracefold.news.learning.optimizer import (
-    OptimizationRunTerminated,
+    GepaNoProgramChange,
     _BudgetMeter,
     _MeteredLearningLM,
     build_reflection_lm,
@@ -111,17 +111,29 @@ class _ReflectionLM(dspy.BaseLM):  # type: ignore[misc]
         )
 
 
-class _TruncatedTaskLM(_TaskLM):
+class _CandidateTruncatedTaskLM(_TaskLM):
+    """Stable completes; the reflected instruction truncates on one held-out target."""
+
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         self.requests.append(request)
-        response = dspy.LMResponse.from_text(
-            "{",
+        rendered = str(request.messages)
+        if _ADVISORY in rendered and '"title":"taxonomy-target 11"' in rendered:
+            response = dspy.LMResponse.from_text(
+                "{",
+                model=self.model,
+                usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+                cost=0.000003,
+            )
+            response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
+            return response
+        target = '"title":"taxonomy-target' in rendered
+        taxonomy = _OTHER_TAXONOMY if target and _ADVISORY in rendered else _PRODUCT_TAXONOMY
+        return dspy.LMResponse.from_text(
+            canonical_json({"semantics": {**_SEMANTICS, "taxonomy": taxonomy}}),
             model=self.model,
-            usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
-            cost=0.000003,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            cost=0,
         )
-        response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
-        return response
 
 
 def _episode(index: int, *, target: bool) -> DevelopmentEpisode:
@@ -279,9 +291,9 @@ def test_run_gepa_rejects_a_non_native_detailed_result() -> None:
     assert reflection_delegate.requests == []
 
 
-def test_run_gepa_recovers_a_truncation_swallowed_by_the_evaluator() -> None:
+def test_candidate_task_truncation_is_scored_unsafe_without_terminating_gepa() -> None:
     ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
-    task_delegate = _TruncatedTaskLM()
+    task_delegate = _CandidateTruncatedTaskLM()
     reflection_delegate = _ReflectionLM()
     task = build_task_lm(
         model_name=task_delegate.model,
@@ -314,18 +326,7 @@ def test_run_gepa_recovers_a_truncation_swallowed_by_the_evaluator() -> None:
     metered_task = _MeteredLearningLM(task, meter=meter, role="task")
     metered_reflection = _MeteredLearningLM(reflection, meter=meter, role="reflection")
 
-    def swallow_one_error(student: dspy.Module, **kwargs: Any) -> dspy.Module:
-        example = kwargs["trainset"][0]
-        with pytest.raises(OptimizationRunTerminated):
-            student(evidence_json=example.evidence_json)
-        with pytest.raises(OptimizationRunTerminated):
-            student(evidence_json=example.evidence_json)
-        return student
-
-    with pytest.raises(
-        OptimizationRunTerminated,
-        match="news_program_compile_task_model_output_truncated",
-    ):
+    with pytest.raises(GepaNoProgramChange) as caught:
         run_gepa(
             base_program=load_stable_program_artifact(),
             episodes=_corpus(),
@@ -334,14 +335,30 @@ def test_run_gepa_recovers_a_truncation_swallowed_by_the_evaluator() -> None:
             max_metric_calls=40,
             seed=456,
             review_rubric_version=REVIEW_RUBRIC_VERSION,
-            compile_fn=swallow_one_error,
         )
 
-    assert meter.task_model_calls == 1
-    assert meter.task_total_tokens == 18
-    assert meter.task_cost_microusd == 3
+    result = caught.value.result
+    assert result.public_result["candidate_count"] >= 2
+    assert result.public_result["best_index"] == 0
+    assert any(
+        score < 0
+        for candidate_scores in result.public_result["validation_subscores"][1:]
+        for score in candidate_scores.values()
+    )
+    assert result.patch.event_semantics_instruction == load_stable_program_artifact().event_semantics_instruction
+    assert meter.task_model_calls > 1
     assert meter.imputed_cost_calls == 0
+    assert meter.first_terminal_error is None
     assert metered_task.transport_failures == 0
-    assert len(task_delegate.requests) == 1
-    assert len(ledger.receipts) == 1
-    assert ledger.receipts[0].terminal_disposition == "provider_success"
+    truncated_indexes = [
+        index
+        for index, receipt in enumerate(ledger.receipts)
+        if receipt.error_code == "news_program_lm_output_truncated"
+    ]
+    assert len(truncated_indexes) == 1
+    truncated_index = truncated_indexes[0]
+    truncated = ledger.receipts[truncated_index]
+    assert truncated.terminal_disposition == "provider_success"
+    assert (truncated.input_tokens, truncated.output_tokens, truncated.total_tokens) == (11, 7, 18)
+    assert truncated.provider_cost_microusd == 3
+    assert any(receipt.model_binding == "task" for receipt in ledger.receipts[truncated_index + 1 :])

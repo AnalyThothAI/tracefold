@@ -89,7 +89,7 @@ def test_direct_metric_is_the_mean_of_the_four_taxonomy_axes() -> None:
     gold = dspy.Example(gold_taxonomy=_taxonomy())
     prediction = dspy.Prediction(semantics=_semantics(_taxonomy(event_family="other", assertion_status="rumor")))
 
-    result = _DspyTaxonomyMetric()(gold, prediction)
+    result = _DspyTaxonomyMetric(task_output_failure_score=-9.0)(gold, prediction)
 
     assert result.score == 0.5
     assert result.objective_scores == {
@@ -117,7 +117,9 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
         val_count=4,
     )
 
-    assert receipt["optimizer"]["evaluator"] == "NativeNewsProgram.event_semantics on one explicit task LM"
+    assert receipt["optimizer"]["evaluator"] == (
+        "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM"
+    )
     assert receipt["optimizer"]["add_format_failure_as_feedback"] is True
     assert receipt["instruction_proposer"] is None
     assert "component_selector" not in receipt
@@ -208,15 +210,15 @@ def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:
         ),
         imputed_call_cost_microusd=10,
     )
-    meter.remember_terminal(OptimizationRunTerminated("news_program_compile_task_model_output_truncated"))
+    meter.remember_terminal(OptimizationRunTerminated("news_program_compile_task_provider_unavailable"))
 
-    with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
+    with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_provider_unavailable"):
         meter.before("task")
 
     assert meter.task_model_calls == 0
 
 
-def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
+def test_unreceipted_task_truncation_remains_a_run_termination() -> None:
     task = _TruncatedRoleLM("task")
     meter = _BudgetMeter(
         OptimizationBudget(
@@ -232,14 +234,28 @@ def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
     )
     metered = _MeteredLearningLM(task, meter=meter, role="task")
 
-    with pytest.raises(
-        OptimizationRunTerminated,
-        match="news_program_compile_task_model_output_truncated",
-    ):
+    with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
         metered(messages=[{"role": "user", "content": "classify"}])
 
     assert meter.task_model_calls == 1
     assert meter.task_total_tokens == 0
     assert meter.task_cost_microusd == 10
     assert meter.imputed_cost_calls == 1
+    assert isinstance(meter.first_terminal_error, OptimizationRunTerminated)
     assert metered.transport_failures == 0
+
+
+def test_task_output_failure_score_makes_one_incomplete_output_lose_to_a_complete_candidate() -> None:
+    constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
+    failure_score = -9.0
+    metric = _DspyTaxonomyMetric(task_output_failure_score=failure_score)
+
+    result = metric(
+        dspy.Example(gold_taxonomy=_taxonomy()),
+        dspy.Prediction(task_output_failure="news_program_compile_task_model_output_truncated"),
+    )
+
+    assert constructor["failure_score"] == 0.0
+    assert result.score == failure_score
+    assert failure_score + 7 < 0
+    assert set(result.objective_scores.values()) == {failure_score}

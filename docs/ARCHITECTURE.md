@@ -1626,11 +1626,17 @@ EventSemantics to change and requires ReaderCard to remain byte-identical. The g
 execution budget, model slots and policy are code, covered by `envelope_sha256`, and outside the write set.
 The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
 `add_format_failure_as_feedback=True`, and the existing
-`NativeNewsProgram(base_strategy).event_semantics` Predict as its student with `num_threads=1`.
+`NativeNewsProgram(base_strategy).event_semantics` Predict inside one learning-only wrapper as its student
+with `num_threads=1`. The wrapper catches only an audited task-output truncation and returns one failed
+Prediction so DSPy keeps the trace batch aligned; DSPy 3.3.1 otherwise re-raises that `LMError`, drops the
+example, and leaves GEPA indexing a shorter batch. The existing metric assigns that Prediction a dedicated
+`task_output_failure_score = -(train_count + 1)`, so one incomplete answer cannot beat a complete candidate on either
+the train minibatch or the smaller development-selection split. It does not retry, parse, evaluate or select.
+Reflection truncation, transport/provider failure and budget refusal remain run-terminal.
 Frozen examples carry only rendered Event evidence and accepted taxonomy Gold; the deterministic metric
 returns the mean of subject set-F1 and exact family/state/assertion axes. There is no component selector,
 ReaderCard rollout, production composite, semantic judge, direct GEPA import, private DSPy API or
-optimizer-owned Program adapter. GEPA cannot accept a review,
+second evaluator. GEPA cannot accept a review,
 register/deploy its output, move a stable pointer, or promote a candidate.
 #202 deleted the container platform that used to surround it — image, launcher,
 metered proxy sidecar, sandbox policy, tariff, build attestation — because it
