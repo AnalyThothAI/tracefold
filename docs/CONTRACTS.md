@@ -303,9 +303,6 @@ import each other and share only the HTTP transport.
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
 connection-level read-only.
-Legacy `trading_orders` and
-`trading_order_observations` are retained read-only for audit and have no
-product or writer surface.
 
 `tracefold.app.workers.run_workers(settings)` is the sole public Workers root.
 Worker topology, News broker topology and consumer set, and all resource
@@ -973,7 +970,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and current head
-`20260901_0346`; `0342` adds the Trading notification delivery ledger,
+`20260901_0347`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -983,7 +980,10 @@ unexpected-exposure observations while readiness continues to fail closed on
 unexpected exposure. Additive `0346` makes
 `trading_execution_notification_deliveries.message_id` nullable — a Feishu
 custom-bot webhook returns none — and adds `result_delivered_at_ns` for the
-four-hour outcome message. The exact
+four-hour outcome message. Destructive `0347` drops the twenty-two execution
+tables `0341` had frozen read-only, and the thirteen functions only their
+triggers, defaults and CHECKs called; their 390 archived rows were dumped to
+`~/.tracefold/backups` first. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility

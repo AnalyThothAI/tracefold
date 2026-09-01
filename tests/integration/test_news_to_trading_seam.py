@@ -236,5 +236,6 @@ def test_news_frame_mapper_and_signal_lane_commit_one_current_pair(clean: Any) -
     assert cases[0]["case_id"] == signals[0]["case_id"]
     assert cases[0]["capital_disposition"] == "not_applicable"
     assert signals[0]["market_key"] == f"crypto:perp:{OI_SYMBOL}:USDT"
-    assert int(conn.execute("SELECT count(*) AS n FROM trading_intents").fetchone()["n"]) == 0
-    assert int(conn.execute("SELECT count(*) AS n FROM trading_orders").fetchone()["n"]) == 0
+    # The lane emitting no Intent and no order used to be two `count(*) = 0` reads. `20260901_0347`
+    # dropped both tables, so the claim is now made by the schema rather than measured here — see
+    # `test_trading_signal_hard_cut.py::test_0347_drops_every_retired_execution_table_and_only_its_own_functions`.

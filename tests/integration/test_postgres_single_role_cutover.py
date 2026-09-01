@@ -124,7 +124,9 @@ def _reconstruct_exact_pre_cut_terminal_role_catalog(conn: Any) -> None:
         )
     conn.execute("GRANT SELECT ON ALL TABLES IN SCHEMA public TO tracefold_serve")
     conn.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO tracefold_workers")
-    conn.execute("GRANT SELECT, UPDATE ON trading_binding_runtime TO tracefold_nautilus")
+    # `tracefold_nautilus` also held `SELECT, UPDATE ON trading_binding_runtime`. That grant is not
+    # reconstructable at head — `20260901_0347` dropped the table — and it is not what this test is
+    # about: the cutover claim is that removing the four retired *roles* moves no row and no revision.
     conn.execute(
         "ALTER DEFAULT PRIVILEGES FOR ROLE tracefold_owner IN SCHEMA public GRANT SELECT ON TABLES TO tracefold_serve"
     )
