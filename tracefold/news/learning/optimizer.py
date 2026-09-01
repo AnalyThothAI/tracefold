@@ -910,6 +910,7 @@ class _BudgetMeter:
         return self._monotonic() - self._started_monotonic
 
     def before(self, role: Literal["task", "reflection"]) -> None:
+        self.raise_if_terminal()
         # The wall clock is checked here, before the call, for the same reason the cost reservation is: the
         # only bound worth having is one that stops the next request rather than reporting the last one.
         if self._max_wall_clock_seconds is not None and self.elapsed_seconds >= self._max_wall_clock_seconds:
@@ -1010,6 +1011,15 @@ def _is_retryable_lm_failure(exc: BaseException) -> bool:
 
 def _provider_reached(exc: BaseException) -> bool:
     return not isinstance(exc, (dspy.LMTransportError, ConnectionError))
+
+
+def _remembered_termination(meter: _BudgetMeter) -> str | None:
+    error = meter.first_terminal_error
+    if error is None:
+        return None
+    if isinstance(error, OptimizationRunTerminated):
+        return str(error)
+    raise error
 
 
 class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
@@ -1351,7 +1361,18 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
         if code.startswith(_REJECTION_PREFIXES):
             outcome, reasons = "REJECTED", (code,)
         else:
+            termination = _remembered_termination(meter)
+            if termination is None:
+                raise
+            outcome, reasons = "REJECTED", (termination,)
+    except Exception:
+        # DSPy's evaluator may translate the physical-call error into a failure score and later raise its
+        # own max-errors exception. The first metered terminal remains the run answer; unrelated defects
+        # still propagate because this is a no-op when no terminal was remembered.
+        termination = _remembered_termination(meter)
+        if termination is None:
             raise
+        outcome, reasons = "REJECTED", (termination,)
 
     metric_calls = run.metric_calls if run is not None else 0
     usage = _usage(meter=meter, metric_calls=metric_calls, budgeted=budgeted)

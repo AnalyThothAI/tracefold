@@ -14,6 +14,7 @@ from tracefold.news.learning.contracts import DevelopmentDatasetRef, Optimizatio
 from tracefold.news.learning.optimizer import (
     FrozenDevelopmentDataset,
     OptimizationConfig,
+    OptimizationRunTerminated,
     build_reflection_lm,
     build_task_lm,
     optimize,
@@ -135,9 +136,9 @@ def test_truncated_answer_writes_an_exact_terminal_usage_receipt(
             model=lm.model,
             messages=[{"role": "user", "content": "classify"}],
         )
-        with ledger.scope(LMCallContext(PROGRAM_VERSION, "a" * 64, "b" * 64)):
+        with ledger.scope(LMCallContext(PROGRAM_VERSION, "a" * 64, "b" * 64)), pytest.raises(OptimizationRunTerminated):
             lm(request=request)
-        raise AssertionError("truncated call must terminate the run")
+        raise RuntimeError("upstream evaluator exhausted its error limit")
 
     monkeypatch.setattr(optimizer_module, "run_gepa", terminate)
     result = optimize(

@@ -318,6 +318,8 @@ def test_run_gepa_recovers_a_truncation_swallowed_by_the_evaluator() -> None:
         example = kwargs["trainset"][0]
         with pytest.raises(OptimizationRunTerminated):
             student(evidence_json=example.evidence_json)
+        with pytest.raises(OptimizationRunTerminated):
+            student(evidence_json=example.evidence_json)
         return student
 
     with pytest.raises(
@@ -340,5 +342,6 @@ def test_run_gepa_recovers_a_truncation_swallowed_by_the_evaluator() -> None:
     assert meter.task_cost_microusd == 3
     assert meter.imputed_cost_calls == 0
     assert metered_task.transport_failures == 0
+    assert len(task_delegate.requests) == 1
     assert len(ledger.receipts) == 1
     assert ledger.receipts[0].terminal_disposition == "provider_success"

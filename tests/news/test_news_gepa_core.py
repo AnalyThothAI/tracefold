@@ -195,6 +195,27 @@ def test_budget_meter_records_an_answer_before_rejecting_its_reported_cost() -> 
     assert meter.actual_cost_microusd == 3
 
 
+def test_budget_meter_refuses_every_call_after_a_terminal_error() -> None:
+    meter = _BudgetMeter(
+        OptimizationBudget(
+            max_metric_calls=10,
+            max_task_model_calls=1,
+            max_reflection_model_calls=1,
+            max_cost_microusd=10,
+            max_call_cost_microusd=10,
+            max_wall_clock_seconds=60,
+            seed=456,
+        ),
+        imputed_call_cost_microusd=10,
+    )
+    meter.remember_terminal(OptimizationRunTerminated("news_program_compile_task_model_output_truncated"))
+
+    with pytest.raises(OptimizationRunTerminated, match="news_program_compile_task_model_output_truncated"):
+        meter.before("task")
+
+    assert meter.task_model_calls == 0
+
+
 def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
     task = _TruncatedRoleLM("task")
     meter = _BudgetMeter(
