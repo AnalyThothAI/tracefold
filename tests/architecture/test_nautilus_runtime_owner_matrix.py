@@ -119,6 +119,7 @@ def test_current_production_wiring_matches_the_measured_pr0_owner_baseline() -> 
     assert "state_repos.trading.update_execution_runtime_state(state)" in root_source
     assert "class _MeasuredRuntimeBridge(OiRuntimeDatabaseBridge):" in diagnostic_source
     assert "super()._cycle(repos)" in diagnostic_source
+    assert "before_commit=lambda _bridge=bridge: _wait_until_next_cycle_finishes(_bridge)" in diagnostic_source
     assert "install_execution_stream_listener" not in diagnostic_source
     assert '"tracefold_oi_runtime_pr0_baseline_v1"' in diagnostic_source
     assert "oi_runtime_pr0_baseline_dirty_tracked_tree" in diagnostic_source

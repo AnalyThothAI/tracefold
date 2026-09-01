@@ -11,11 +11,12 @@ import os
 import resource
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from threading import Event
+from threading import Condition, Event
 from types import SimpleNamespace
 from typing import Any
 
@@ -110,10 +111,27 @@ class _MeasuredRuntimeBridge(OiRuntimeDatabaseBridge):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self.initial_cycle_finished = Event()
+        self._cycle_condition = Condition()
+        self._completed_cycles = 0
+
+    @property
+    def completed_cycles(self) -> int:
+        with self._cycle_condition:
+            return self._completed_cycles
 
     def _cycle(self, repos: Any) -> None:
         super()._cycle(repos)
-        self.initial_cycle_finished.set()
+        with self._cycle_condition:
+            self._completed_cycles += 1
+            self.initial_cycle_finished.set()
+            self._cycle_condition.notify_all()
+
+    def wait_for_cycle_after(self, completed_cycles: int, timeout_seconds: float) -> bool:
+        with self._cycle_condition:
+            return self._cycle_condition.wait_for(
+                lambda: self._completed_cycles > completed_cycles,
+                timeout=timeout_seconds,
+            )
 
 
 def _p95(values: list[float]) -> float:
@@ -183,7 +201,15 @@ def _activate(repo: TradingRepository, *, profile: str, slot: str, now_ns: int) 
         )
 
 
-def _append_workload(repo: TradingRepository, *, profile: str, size: int, seed: str, now_ns: int) -> None:
+def _append_workload(
+    repo: TradingRepository,
+    *,
+    profile: str,
+    size: int,
+    seed: str,
+    now_ns: int,
+    before_commit: Callable[[], None],
+) -> None:
     with repo.conn.transaction():
         for index in range(size):
             identity = _sha(f"signal:{seed}:{index}")
@@ -243,6 +269,7 @@ def _append_workload(repo: TradingRepository, *, profile: str, size: int, seed: 
                     direction=None,
                 )
             )
+        before_commit()
 
 
 def _runtime_bridge(
@@ -305,6 +332,16 @@ def _wait_until_initial_cycle_finishes(
     assert bridge.fatal_error is None
 
 
+def _wait_until_next_cycle_finishes(
+    bridge: _MeasuredRuntimeBridge,
+    *,
+    timeout_seconds: float = 2.0,
+) -> None:
+    completed_cycles = bridge.completed_cycles
+    assert bridge.wait_for_cycle_after(completed_cycles, timeout_seconds)
+    assert bridge.fatal_error is None
+
+
 def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
     writer = connect_postgres_test(read_only=False)
     try:
@@ -331,7 +368,14 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
                     # Commit only after the first production cycle has definitely finished,
                     # so admission must traverse the next 200 ms repair cadence.
                     _wait_until_initial_cycle_finishes(bridge)
-                    _append_workload(repo, profile=profile, size=size, seed=seed, now_ns=NOW_NS + repeat)
+                    _append_workload(
+                        repo,
+                        profile=profile,
+                        size=size,
+                        seed=seed,
+                        now_ns=NOW_NS + repeat,
+                        before_commit=lambda _bridge=bridge: _wait_until_next_cycle_finishes(_bridge),
+                    )
                     committed = time.perf_counter()
                     _wait_until_bridge_delivers(bridge, client, expected_count=2 * size)
                     assert client.queued_count == 2 * size
@@ -375,7 +419,14 @@ def _stream_samples(settings: Settings) -> tuple[dict[str, Any], int]:
         try:
             _wait_until_bridge_connects(bridge)
             _wait_until_initial_cycle_finishes(bridge)
-            _append_workload(repo, profile=profile, size=1, seed="repair", now_ns=NOW_NS + 100)
+            _append_workload(
+                repo,
+                profile=profile,
+                size=1,
+                seed="repair",
+                now_ns=NOW_NS + 100,
+                before_commit=lambda: _wait_until_next_cycle_finishes(bridge),
+            )
             committed = time.perf_counter()
             _wait_until_bridge_delivers(bridge, client, expected_count=2)
             repaired_ms = (time.perf_counter() - committed) * 1_000

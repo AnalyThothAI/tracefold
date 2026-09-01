@@ -29,8 +29,10 @@ The opt-in diagnostic uses one migrated isolated PostgreSQL database, starts
 the production `OiRuntimeDatabaseBridge` for every input sample, and uses the
 pinned Nautilus Strategy/Cache/Portfolio seam. Six samples were run for each
 input burst. The harness waits for an explicit completed production cycle,
-commits immediately afterward, and timestamps only after the Command and
-Signal are actually dequeued. Every scheduled artifact records the checked-out
+constructs the whole burst in an uncommitted transaction, waits for the next
+production cycle to finish without seeing those rows, then commits immediately
+afterward. It timestamps only after the Command and Signal are actually
+dequeued. Every scheduled artifact records the checked-out
 `HEAD` as `measured_git_sha`; the historical base is separately pinned as
 `baseline_source_main`, so the shallow checkout needs no remote tracking ref
 and never attributes a measurement to the preceding commit. No cadence or
