@@ -1627,7 +1627,9 @@ execution budget, model slots and policy are code, covered by `envelope_sha256`,
 The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
 `add_format_failure_as_feedback=True`, and the existing
 `NativeNewsProgram(base_strategy).event_semantics` Predict inside one learning-only wrapper as its student
-with `num_threads=1`. The wrapper converts an audited task-output truncation or a typed `EventSemantics`
+with `num_threads=1`. Its code-owned six-example reflection minibatch reuses GEPA's native knob: it is wider
+than the tie-prone default of three while leaving the local thinking teacher's 32K total context room for a
+proposal. The wrapper converts an audited task-output truncation or a typed `EventSemantics`
 validation failure into one failed Prediction so DSPy keeps the trace batch aligned; DSPy 3.3.1 otherwise
 re-raises the truncation or drops the invalid example, leaving GEPA indexing a shorter batch. The existing
 metric assigns a truncated Prediction a dedicated

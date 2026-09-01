@@ -24,6 +24,7 @@ from tracefold.news.learning.optimizer import (
     _DspyTaxonomyMetric,
     _LearningEventSemantics,
     _MeteredLearningLM,
+    gepa_metric_call_ceiling,
     optimizer_config_receipt,
     optimizer_constructor,
 )
@@ -119,6 +120,7 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
     reflection = _RoleLM("reflection")
     constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=8)
 
+    assert constructor["reflection_minibatch_size"] == 6
     receipt = optimizer_config_receipt(
         constructor=constructor,
         task_lm=task,
@@ -138,6 +140,14 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
     assert receipt["instruction_proposer"] is None
     assert "component_selector" not in receipt
     assert set(receipt["model_identities"]) == {"task", "reflection"}
+    assert (
+        gepa_metric_call_ceiling(
+            max_metric_calls=40,
+            optimizer_config=receipt,
+            expected_example_count=12,
+        )
+        == 50
+    )
 
 
 def test_shared_instruction_growth_budget_cannot_ratchet() -> None:
@@ -273,6 +283,12 @@ def test_task_output_failure_score_makes_one_incomplete_output_lose_to_a_complet
     assert result.score == failure_score
     assert failure_score + 7 < 0
     assert set(result.objective_scores.values()) == {failure_score}
+
+
+def test_reflection_minibatch_never_exceeds_the_trainset() -> None:
+    constructor = optimizer_constructor(max_metric_calls=40, seed=456, train_count=4)
+
+    assert constructor["reflection_minibatch_size"] == 4
 
 
 def test_typed_invalid_task_output_keeps_the_existing_zero_score() -> None:

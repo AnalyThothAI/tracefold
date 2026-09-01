@@ -113,6 +113,7 @@ def test_complete_profile_reports_train_selection_counts_and_taxonomy_support() 
     assert report["development_selection"]["taxonomy_target_cluster_n"] == 30
     assert report["development_selection"]["taxonomy_control_cluster_n"] == 30
     assert report["call_envelope"]["task_model_calls_per_metric_call"] == 2
+    assert report["call_envelope"]["metric_calls_per_reflection_minibatch"] == 6
     assert report["call_envelope"]["task_model_calls_per_full_selection_evaluation"] == 120
     assert report["taxonomy_gold"]["cluster_n"] == 200
     assert report["taxonomy_gold"]["support"]["event_family"] == {

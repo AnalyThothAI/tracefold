@@ -23,6 +23,7 @@ from ..program.contracts import ScoredJudgment, TriageContext
 from ..taxonomy import ModelTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .card_lint import lint_reader_card
+from .contracts import REFLECTION_MINIBATCH_SIZE
 from .profile import development_coverage_blockers
 from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy, summarize_taxonomy
 
@@ -921,7 +922,7 @@ def build_readiness_report(
             "note": "ceilings computed from the corpus; GEPA chooses how many rounds fit in --max-metric-calls",
             "task_model_calls_per_metric_call": _TASK_CALLS_PER_METRIC_CALL,
             "metric_calls_per_full_selection_evaluation": len(plan.development_selection_episodes),
-            "metric_calls_per_reflection_minibatch": min(10, len(plan.train_episodes)),
+            "metric_calls_per_reflection_minibatch": min(REFLECTION_MINIBATCH_SIZE, len(plan.train_episodes)),
             "task_model_calls_per_full_selection_evaluation": (
                 len(plan.development_selection_episodes) * _TASK_CALLS_PER_METRIC_CALL
             ),

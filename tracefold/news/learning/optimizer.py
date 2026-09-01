@@ -48,6 +48,7 @@ from ..program.runtime import PROGRAM_VERSION, _estimated_tokens
 from ..program.signatures import EventSemantics
 from .contracts import (
     REFLECTION_MAX_TOKENS,
+    REFLECTION_MINIBATCH_SIZE,
     REFLECTION_TIMEOUT_SECONDS,
     DevelopmentDatasetRef,
     ModelExecutionIdentity,
@@ -685,13 +686,14 @@ def optimizer_constructor(*, max_metric_calls: int, seed: int, train_count: int)
 
     return {
         "max_metric_calls": max_metric_calls,
-        # gepa's default is 3, and 3 is too few for this metric. In the first real run every proposal was
+        # GEPA's default is 3, and 3 is too few for this metric. In the first real run every proposal was
         # skipped on an *exact* tie — 1.729166 vs 1.729166, 1.597917 vs 1.597917 — because a good instruction
         # here names recurring evidence patterns (a sentiment index, a comparison base, a crypto-linked
         # equity) that a 3-example sample almost never contains. The metric is also coarse, moving in steps
-        # like 0 / 0.675 / 0.825 / 1.0, so ties are easy to hit and GEPA skips on a tie by rule. A wider
-        # minibatch is what gives a real improvement room to show up as one.
-        "reflection_minibatch_size": min(10, train_count),
+        # like 0 / 0.675 / 0.825 / 1.0, so ties are easy to hit and GEPA skips on a tie by rule. Six doubles
+        # that signal while leaving the 32K-context thinking teacher room for its final proposal: a real
+        # 10-example call consumed 22,782 input + 9,985 output tokens and ended exactly at 32,767.
+        "reflection_minibatch_size": min(REFLECTION_MINIBATCH_SIZE, train_count),
         "candidate_selection_strategy": "pareto",
         "skip_perfect_score": True,
         "use_merge": True,
