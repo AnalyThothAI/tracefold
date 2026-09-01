@@ -67,7 +67,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert revisions[1].down_revision == "20260901_0342"
     assert revisions[2].down_revision == "20260901_0341"
     assert revisions[3].down_revision == BASELINE
-    assert revisions[3].down_revision is None
+    assert revisions[4].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -105,7 +105,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="irreversible Trading execution Runtime projection"):
+    with pytest.raises(RuntimeError, match="news_oi_push_cut_forward_only"):
         command.downgrade(config, "base")
 
     assert _stamped_revision() == HEAD
