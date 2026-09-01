@@ -1,8 +1,8 @@
 {
   "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
   "baseline_source_main": "f495a9fc0d0ba0d528e40b588e76108d80cdfefe",
-  "measured_git_sha": "975452458111f8ac71a803e45190933c5e223405",
-  "captured_at": "2026-09-01T12:59:19.111435+00:00",
+  "measured_git_sha": "5f48a4cc417ca77bd2b42d47d8ce390d150cd25b",
+  "captured_at": "2026-09-01T13:09:27.317411+00:00",
   "environment": {
     "platform": "Darwin",
     "machine": "arm64",
@@ -61,7 +61,7 @@
           "samples": 6,
           "delivery_path": "production_fixed_poll",
           "poll_cadence_ms": 200,
-          "persisted_to_dequeued_p95_ms": 211.735,
+          "persisted_to_dequeued_p95_ms": 222.415,
           "reader_calls_per_cycle": 2,
           "pending_identity_duplicates": 0
         },
@@ -69,7 +69,7 @@
           "samples": 6,
           "delivery_path": "production_fixed_poll",
           "poll_cadence_ms": 200,
-          "persisted_to_dequeued_p95_ms": 185.262,
+          "persisted_to_dequeued_p95_ms": 220.4,
           "reader_calls_per_cycle": 2,
           "pending_identity_duplicates": 0
         },
@@ -77,12 +77,12 @@
           "samples": 6,
           "delivery_path": "production_fixed_poll",
           "poll_cadence_ms": 200,
-          "persisted_to_dequeued_p95_ms": 47.307,
+          "persisted_to_dequeued_p95_ms": 221.349,
           "reader_calls_per_cycle": 2,
           "pending_identity_duplicates": 0
         }
       },
-      "missed_wake_repair_ms": 206.182,
+      "missed_wake_repair_ms": 216.987,
       "repair_cadence_ms": 200,
       "ttl_ms": 60000
     },
@@ -95,14 +95,14 @@
       "status": "observed",
       "batch_count": 100,
       "queued_bytes_before_flush": 52990,
-      "append_ms": 37.534,
+      "append_ms": 35.471,
       "remaining_count": 0,
       "remaining_bytes": 0
     },
     "runtime_lifecycle": {
       "status": "observed",
       "seam": "pinned_nautilus_strategy_cache_portfolio",
-      "duration_ms": 5.312,
+      "duration_ms": 2.974,
       "orders": [
         {"type": "MARKET", "reduce_only": false},
         {"type": "STOP_MARKET", "reduce_only": true},
@@ -115,7 +115,7 @@
       "window_seconds": 15.0,
       "interval_ms": 500,
       "request_count": 29,
-      "latency_p95_ms": 22.948
+      "latency_p95_ms": 19.065
     },
     "quote_subscriptions": {
       "status": "derived_from_pinned_source",
@@ -140,11 +140,11 @@
     "cpu_rss": {
       "status": "observed",
       "scope": "diagnostic_process_including_postgres_and_http_clients",
-      "user_cpu_seconds": 0.490268,
-      "system_cpu_seconds": 0.133681,
-      "rss_bytes_before": 243417088,
-      "rss_bytes_after": 116523008,
-      "rss_delta_bytes": -126894080
+      "user_cpu_seconds": 0.714879,
+      "system_cpu_seconds": 0.180107,
+      "rss_bytes_before": 246382592,
+      "rss_bytes_after": 117424128,
+      "rss_delta_bytes": -128958464
     }
   },
   "interpretation": {

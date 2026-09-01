@@ -2,7 +2,7 @@
 
 This is the before-change receipt for Issue #475. It binds the current owner
 matrix and reproducible local measurements to measured commit
-`975452458111f8ac71a803e45190933c5e223405`, whose immutable pre-change main
+`5f48a4cc417ca77bd2b42d47d8ce390d150cd25b`, whose immutable pre-change main
 baseline is `f495a9fc0d0ba0d528e40b588e76108d80cdfefe`. The machine-readable receipt is
 [`oi-runtime-pr0-baseline-2026-09-01.json`](oi-runtime-pr0-baseline-2026-09-01.json).
 
@@ -40,14 +40,14 @@ production behavior changed.
 
 | Workload | Result |
 | --- | --- |
-| 1 event Signal + Command | production fixed-poll persisted through actual dequeue p95 211.735 ms; two indexed reads; zero duplicate pending identities |
-| 10 event burst | production fixed-poll p95 185.262 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
-| 100 event burst | production fixed-poll p95 47.307 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
-| all wake hints discarded | repaired in 206.182 ms by the production Bridge's current 200 ms cadence; 60 s fixture TTL |
-| 100 Observation append | 52,990 queued bytes; 37.534 ms append; queue returned to zero |
-| entry -> protection -> flatten submit | 5.312 ms pinned lifecycle seam; one entry, one reduce-only stop and one reduce-only exit |
-| UI 15-second read window | 29 status reads at 500 ms; p95 22.948 ms |
-| process resource envelope | 0.490268 s user CPU, 0.133681 s system CPU; RSS before 243,417,088, after 116,523,008, delta -126,894,080 bytes |
+| 1 event Signal + Command | production fixed-poll persisted through actual dequeue p95 222.415 ms; two indexed reads; zero duplicate pending identities |
+| 10 event burst | production fixed-poll p95 220.400 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
+| 100 event burst | production fixed-poll p95 221.349 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
+| all wake hints discarded | repaired in 216.987 ms by the production Bridge's current 200 ms cadence; 60 s fixture TTL |
+| 100 Observation append | 52,990 queued bytes; 35.471 ms append; queue returned to zero |
+| entry -> protection -> flatten submit | 2.974 ms pinned lifecycle seam; one entry, one reduce-only stop and one reduce-only exit |
+| UI 15-second read window | 29 status reads at 500 ms; p95 19.065 ms |
+| process resource envelope | 0.714879 s user CPU, 0.180107 s system CPU; RSS before 246,382,592, after 117,424,128, delta -128,958,464 bytes |
 
 The optional 525-route capacity case is retained only as a source-derived
 subscription-attempt count: current `on_start` calls subscribe once per route,
