@@ -5,6 +5,8 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from uuid import UUID
 
 import psycopg
 import pytest
@@ -16,6 +18,7 @@ from tracefold.platform.postgres.audit import PostgresQueryAudit, QueryAuditCata
 from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
+    ExecutionRuntimeState,
     PreparedExecutionObservationBatch,
     PreparedOperatorIntent,
     PreparedTradeSignal,
@@ -567,6 +570,126 @@ def test_account_slot_advisory_lock_has_one_session_owner() -> None:
         second.close()
 
 
+def test_runtime_state_is_single_generation_and_activation_recency_is_authoritative() -> None:
+    first_activation = ExecutionProfileActivation(
+        runtime_profile_id="demo-v1",
+        account_slot="binance_usdm_primary",
+        activated_after_signal_seq=0,
+        activated_after_command_seq=0,
+        mode="paper",
+        runtime_release="nautilus-1.231.0+oi-v1",
+        config_sha256="3" * 64,
+        created_at_ns=1_500,
+    )
+    second_activation = replace(
+        first_activation,
+        runtime_profile_id="demo-v2",
+        config_sha256="4" * 64,
+        created_at_ns=1_600,
+    )
+    running = ExecutionRuntimeState(
+        account_slot="binance_usdm_primary",
+        runtime_profile_id="demo-v2",
+        mode="paper",
+        runtime_release="nautilus-1.231.0+oi-v1",
+        config_sha256="4" * 64,
+        runtime_id=UUID("11111111-1111-4111-8111-111111111111"),
+        runtime_revision="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        credential_fingerprint="c" * 64,
+        lifecycle_state="running",
+        ready=True,
+        singleton_ready=True,
+        credential_ready=True,
+        activation_ready=True,
+        startup_reconciled=True,
+        portfolio_ready=True,
+        audit_ready=True,
+        unexpected_exposure=False,
+        account_flat=True,
+        reconciliation_observed_at_ns=2_000,
+        heartbeat_at_ns=2_100,
+        unavailable_reason=None,
+        started_at_ns=1_900,
+        updated_at_ns=2_100,
+    )
+
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_execution_profile_activation(first_activation)
+            repo.append_execution_profile_activation(second_activation)
+            assert repo.latest_execution_profile_activation("binance_usdm_primary") == second_activation
+            assert repo.execution_stream_fence() == (0, 0)
+            assert repo.put_execution_runtime_state(running) == running
+
+        assert repo.execution_runtime_state("binance_usdm_primary") == running
+        stale_generation = replace(
+            running,
+            runtime_id=UUID("22222222-2222-4222-8222-222222222222"),
+            heartbeat_at_ns=2_200,
+            updated_at_ns=2_200,
+        )
+        with conn.transaction():
+            assert repo.update_execution_runtime_state(stale_generation) is False
+        stopped = replace(
+            running,
+            lifecycle_state="stopped",
+            ready=False,
+            heartbeat_at_ns=2_300,
+            unavailable_reason="runtime_stopped",
+            updated_at_ns=2_300,
+        )
+        with conn.transaction():
+            assert repo.update_execution_runtime_state(stopped) is True
+        assert repo.execution_runtime_state("binance_usdm_primary") == stopped
+    finally:
+        conn.close()
+
+
+def test_manual_entry_recovery_read_is_activation_bounded() -> None:
+    before = _prepare_command(
+        suffix="7",
+        action="manual_entry",
+        scope="market",
+        market_key="crypto:perp:BTC:USDT",
+        direction="long",
+    )
+    after = _prepare_command(
+        suffix="8",
+        action="manual_entry",
+        scope="market",
+        market_key="crypto:perp:ETH:USDT",
+        direction="short",
+    )
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            repo.append_operator_intent(before)
+            _signal_seq, command_seq = repo.execution_stream_fence()
+            repo.append_execution_profile_activation(
+                ExecutionProfileActivation(
+                    runtime_profile_id="demo-v1",
+                    account_slot="binance_usdm_primary",
+                    activated_after_signal_seq=0,
+                    activated_after_command_seq=command_seq,
+                    mode="paper",
+                    runtime_release="nautilus-1.231.0+oi-v1",
+                    config_sha256="3" * 64,
+                    created_at_ns=1_500,
+                )
+            )
+            repo.append_operator_intent(after)
+
+        rows = repo.execution_recovery_manual_entries(runtime_profile_id="demo-v1", limit=10)
+
+        assert materialize_operator_intents(rows) == (after.value.model_copy(update={"seq": rows[0][0]}),)
+    finally:
+        conn.close()
+
+
 def test_database_rejects_execution_fact_mutation() -> None:
     signal = _prepare_signal(suffix="a")
     conn = connect_postgres_test(read_only=False)
@@ -914,6 +1037,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_operator_intents",
         "trading_execution_observations",
         "trading_execution_profile_activations",
+        "trading_execution_runtime_state",
     )
     conn = connect_postgres_test(read_only=False)
     try:
@@ -993,6 +1117,9 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ux_trading_execution_signal_disposition",
         "ux_trading_execution_control_disposition",
         "trading_execution_profile_activations_pkey",
+        "ix_trading_execution_activations_slot_created",
+        "trading_execution_runtime_state_pkey",
+        "trading_execution_runtime_state_runtime_id_key",
     }
     assert indexes["ix_trading_trade_signals_unresolved"].endswith(
         "USING btree (seq) INCLUDE (signal_id, alpha_contract_sha256, expires_at_ns, payload)"
@@ -1060,6 +1187,24 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_observation_summary_check",
             "trading_execution_observation_digest_check",
             "trading_execution_observation_payload_check",
+        },
+        "trading_execution_runtime_state": {
+            "trading_execution_runtime_state_pkey",
+            "trading_execution_runtime_state_runtime_id_key",
+            "trading_execution_runtime_state_runtime_profile_id_fkey",
+            "trading_execution_runtime_slot_check",
+            "trading_execution_runtime_profile_check",
+            "trading_execution_runtime_mode_check",
+            "trading_execution_runtime_release_check",
+            "trading_execution_runtime_config_check",
+            "trading_execution_runtime_revision_check",
+            "trading_execution_runtime_image_check",
+            "trading_execution_runtime_credential_check",
+            "trading_execution_runtime_lifecycle_check",
+            "trading_execution_runtime_clock_check",
+            "trading_execution_runtime_exposure_check",
+            "trading_execution_runtime_ready_check",
+            "trading_execution_runtime_reason_check",
         },
     }
     assert set(triggers) == {

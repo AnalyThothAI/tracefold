@@ -424,6 +424,9 @@ _up-locked:
 		COMPOSE_PROJECT_NAME=tracefold; \
 		export COMPOSE_FILE COMPOSE_PROJECT_NAME; \
 		$(TRACEFOLD) init; \
+		runtime_config=$$($(TRACEFOLD) config); \
+		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
+		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
 		unset TRACEFOLD_APP_IMAGE; \
 		token="$${GITHUB_TOKEN:-}"; \
 		if [ -z "$$token" ] && command -v gh >/dev/null 2>&1; then \
@@ -453,6 +456,7 @@ _up-locked:
 			| uv run python -c 'import json,sys; print(json.load(sys.stdin)["data"]["runtime_manifest_sha"])') || fail; \
 		docker compose up -d --no-build --wait --wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) postgres || fail; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
+		if [ "$$execution_mode" != disabled ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
 			--wait-timeout $(TRACEFOLD_COMPOSE_WAIT_SECONDS) $$runtime_services || fail; \
@@ -538,6 +542,14 @@ _deploy-image-locked:
 			echo "Target image Alembic head '$$image_head' does not match current source head '$$source_head'; schema-incompatible images are refused." >&2; \
 			exit 2; \
 		fi; \
+		if ! image_revision=$$(docker run --rm --entrypoint python "$$image_id" -c 'from tracefold.platform.runtime_identity import runtime_identity; print(runtime_identity().runtime_revision)'); then \
+			echo "Could not inspect the target image runtime revision: $$image_id" >&2; \
+			exit 2; \
+		fi; \
+		if [ "$$image_revision" != "$$head" ]; then \
+			echo "Target image revision '$$image_revision' does not equal current main '$$head'; execution image rollback is refused." >&2; \
+			exit 2; \
+		fi; \
 		if ! database_head=$$(docker compose exec -T postgres sh -eu -c \
 			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
 			PGOPTIONS="-c default_transaction_read_only=on"; \
@@ -563,12 +575,15 @@ _deploy-image-locked:
 			echo "Target image could not parse the active operator config; no services were stopped." >&2; \
 			exit 2; \
 		fi; \
+		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
+		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
 		fail() { \
 			docker compose ps --all >&2 || true; \
 			echo "Exact-image deployment failed. Run make logs for diagnostics." >&2; \
 			exit 1; \
 		}; \
 		runtime_services="migrate rabbitmq-policy serve workers"; \
+		if [ "$$execution_mode" != disabled ]; then runtime_services="$$runtime_services nautilus"; fi; \
 		base_services="$$runtime_services"; \
 		docker compose stop -t 40 workers serve nautilus || fail; \
 		docker compose up -d --no-build --force-recreate --wait \
@@ -596,6 +611,17 @@ _deploy-image-locked:
 		if [ "$$ready_image" != "$$image_id" ]; then \
 			echo "Workers readiness image_digest '$$ready_image' does not equal requested '$$image_id'." >&2; \
 			fail; \
+		fi; \
+		if [ "$$execution_mode" != disabled ]; then \
+			if ! nautilus_ready_image=$$(curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" \
+				| uv run python -c 'import json,sys; print(str(json.load(sys.stdin).get("image_digest") or ""))'); then \
+				echo "Could not read Nautilus readiness image_digest after exact-image deployment." >&2; \
+				fail; \
+			fi; \
+			if [ "$$nautilus_ready_image" != "$$image_id" ]; then \
+				echo "Nautilus readiness image_digest '$$nautilus_ready_image' does not equal requested '$$image_id'." >&2; \
+				fail; \
+			fi; \
 		fi; \
 		if ! receipt_identity=$$(docker compose exec -T postgres sh -eu -c \
 			'PGPASSWORD=$$(cat /run/secrets/postgres_database_password); \
@@ -640,13 +666,16 @@ _deploy-image-locked:
 		echo "Tracefold deployed exact local image $$image_id."
 
 status: preflight ## fail closed unless every enabled runtime is ready
-	@docker compose ps --all
 	@set -eu; \
 		runtime_config=$$($(TRACEFOLD) config); \
 		trading_enabled=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_ENABLED)); \
 		execution_mode=$$(printf '%s\n' "$$runtime_config" | $(READ_TRADING_EXECUTION_MODE)); \
+		if [ "$$execution_mode" != disabled ]; then COMPOSE_PROFILES=execution; export COMPOSE_PROFILES; fi; \
+		docker compose ps --all; \
 		failed=0; \
-		for service in postgres rabbitmq serve workers; do \
+		services="postgres rabbitmq serve workers"; \
+		if [ "$$execution_mode" != disabled ]; then services="$$services nautilus"; fi; \
+		for service in $$services; do \
 			container_id=$$(docker compose ps -q "$$service"); \
 			if [ -z "$$container_id" ]; then \
 				echo "$$service: missing or stopped" >&2; \
@@ -661,10 +690,13 @@ status: preflight ## fail closed unless every enabled runtime is ready
 			fi; \
 		done; \
 		if [ "$$execution_mode" != disabled ]; then \
-			echo "execution runtime: mode=$$execution_mode unavailable before #433-E" >&2; \
+			curl -fsS "$(TRACEFOLD_NAUTILUS_URL)/readyz" >/dev/null || { echo "nautilus readiness failed" >&2; failed=1; }; \
+			echo "execution runtime: mode=$$execution_mode (Binance Runtime ready)"; \
+		elif [ -n "$$(COMPOSE_PROFILES=execution docker compose ps -q nautilus)" ]; then \
+			echo "execution runtime: disabled but nautilus is still running" >&2; \
 			failed=1; \
 		elif [ "$$trading_enabled" = true ]; then \
-			echo "execution runtime: disabled (#433-E activation pending)"; \
+			echo "execution runtime: disabled (operator selected)"; \
 		else \
 			echo "execution runtime: disabled (Trading disabled)"; \
 		fi; \
@@ -695,10 +727,10 @@ status: preflight ## fail closed unless every enabled runtime is ready
 		fi
 
 logs: preflight ## tail all product runtime and dependency logs
-	@docker compose logs -f --tail=100 serve workers migrate postgres rabbitmq
+	@COMPOSE_PROFILES=execution docker compose logs -f --tail=100 serve workers nautilus migrate postgres rabbitmq
 
 down: preflight ## stop the container stack without deleting PostgreSQL data
-	@docker compose down
+	@COMPOSE_PROFILES=execution docker compose down
 
 serve-shell: preflight ## open a shell in the Serve container
 	@docker compose exec serve /bin/sh

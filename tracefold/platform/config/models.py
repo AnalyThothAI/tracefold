@@ -487,7 +487,7 @@ class TradingExecutionCredentialsSettings(BaseModel):
 
 
 class TradingExecutionSettings(BaseModel):
-    """The single cold execution profile. 433-C still permits only disabled activation."""
+    """The single cold Binance USD-M execution profile."""
 
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 

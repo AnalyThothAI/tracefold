@@ -1,4 +1,4 @@
-"""Pinned Nautilus Strategy seam for the dormant OI Runtime."""
+"""Pinned Nautilus Strategy seam for the OI Runtime."""
 
 from __future__ import annotations
 
@@ -203,7 +203,7 @@ def test_signal_full_queue_yields_to_a_later_durable_pause_scan() -> None:
     assert context.strategy.submitted == []
 
 
-def test_manual_entry_is_explicitly_rejected_without_quantity_or_leverage_path() -> None:
+def test_manual_entry_uses_the_same_sizing_risk_and_native_order_path() -> None:
     manual = operator_intent(
         action="manual_entry",
         scope="market",
@@ -215,14 +215,41 @@ def test_manual_entry_is_explicitly_rejected_without_quantity_or_leverage_path()
     context.strategy.on_timer(None)
 
     observations = context.audit.flush_once(lambda _values: None)
-    assert len(observations) == 1
-    assert observations[0].command_id == manual.command_id
-    assert observations[0].summary == {
+    order = context.strategy.submitted[0][0]
+    assert order.quantity.as_decimal() == Decimal("0.049")
+    assert order.order_type == OrderType.MARKET
+    assert order.is_reduce_only is False
+    assert all(value.signal_id is None for value in observations)
+    assert all(value.command_id == manual.command_id for value in observations)
+    disposition = next(value for value in observations if value.normalized_kind == "control_disposition")
+    assert disposition.summary == {
         "action": "manual_entry",
-        "disposition": "rejected",
-        "reason": "manual_entry_not_enabled",
+        "disposition": "accepted",
+        "reason": "accepted",
     }
-    assert context.strategy.submitted == []
+
+
+def test_manual_entry_replay_queries_the_same_client_id_without_resubmit() -> None:
+    manual = operator_intent(
+        action="manual_entry",
+        scope="market",
+        market_key="crypto:perp:BTC:USDT",
+        direction="long",
+    )
+    first = registered_oi_strategy(commands=(manual,))
+    first.strategy.on_timer(None)
+    entry = first.strategy.submitted[0][0]
+    _accepted(first, entry)
+
+    restarted = registered_oi_strategy(commands=(manual,))
+    restarted.cache.add_order(entry, client_id=ClientId("BINANCE"))
+    restarted.strategy.on_timer(None)
+
+    assert restarted.strategy.submitted == []
+    assert restarted.strategy.queried == [entry]
+    observations = restarted.audit.flush_once(lambda _values: None)
+    assert all(value.command_id == manual.command_id for value in observations)
+    assert all(value.signal_id is None for value in observations)
 
 
 def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconciliation() -> None:

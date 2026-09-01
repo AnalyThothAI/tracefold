@@ -1,4 +1,4 @@
-"""Dormant Binance USD-M OI Runtime internals for #433-B."""
+"""Binance USD-M OI execution Runtime internals."""
 
 from .audit_sink import AuditSink, ObservationFactory, day_start_baseline_from_observation
 from .config import (

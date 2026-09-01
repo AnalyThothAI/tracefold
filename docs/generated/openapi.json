@@ -5799,9 +5799,91 @@
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
         "properties": {
+          "account_flat": {
+            "default": false,
+            "title": "Account Flat",
+            "type": "boolean"
+          },
           "account_slot": {
             "title": "Account Slot",
             "type": "string"
+          },
+          "activation_ready": {
+            "default": false,
+            "title": "Activation Ready",
+            "type": "boolean"
+          },
+          "audit_ready": {
+            "default": false,
+            "title": "Audit Ready",
+            "type": "boolean"
+          },
+          "config_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config Sha256"
+          },
+          "credential_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Fingerprint"
+          },
+          "credential_ready": {
+            "default": false,
+            "title": "Credential Ready",
+            "type": "boolean"
+          },
+          "heartbeat_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Heartbeat At Ns"
+          },
+          "image_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Digest"
+          },
+          "lifecycle_state": {
+            "anyOf": [
+              {
+                "enum": [
+                  "starting",
+                  "running",
+                  "stopping",
+                  "stopped",
+                  "failed"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle State"
           },
           "mode": {
             "enum": [
@@ -5812,6 +5894,11 @@
             "title": "Mode",
             "type": "string"
           },
+          "portfolio_ready": {
+            "default": false,
+            "title": "Portfolio Ready",
+            "type": "boolean"
+          },
           "profile_id": {
             "title": "Profile Id",
             "type": "string"
@@ -5821,12 +5908,67 @@
             "type": "boolean"
           },
           "reason": {
-            "enum": [
-              "disabled",
-              "activation_not_available_before_433e"
-            ],
             "title": "Reason",
             "type": "string"
+          },
+          "reconciliation_age_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciliation Age Ms"
+          },
+          "reconciliation_observed_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reconciliation Observed At Ns"
+          },
+          "runtime_release": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Release"
+          },
+          "runtime_revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Runtime Revision"
+          },
+          "singleton_ready": {
+            "default": false,
+            "title": "Singleton Ready",
+            "type": "boolean"
+          },
+          "startup_reconciled": {
+            "default": false,
+            "title": "Startup Reconciled",
+            "type": "boolean"
+          },
+          "unexpected_exposure": {
+            "default": false,
+            "title": "Unexpected Exposure",
+            "type": "boolean"
           }
         },
         "required": [

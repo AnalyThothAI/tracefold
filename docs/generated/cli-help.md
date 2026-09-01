@@ -53,7 +53,8 @@ usage: tracefold nautilus [-h] {run} ...
 
 positional arguments:
   {run}
-    run       run the configured Runtime (disabled until 433-E)
+    run       run the configured disabled, Binance Demo, or Binance Live
+              Runtime
 
 options:
   -h, --help  show this help message and exit
@@ -747,15 +748,16 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,signals,observations,commands,issue} ...
+                         {status,cases,signals,observations,commands,demo-receipt,issue} ...
 
 positional arguments:
-  {status,cases,signals,observations,commands,issue}
+  {status,cases,signals,observations,commands,demo-receipt,issue}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV1 rows
     observations        list append-only Runtime observations
     commands            list authenticated OperatorIntentV1 rows
+    demo-receipt        verify a paper entry/restart/flatten venue receipt
     issue               durably record one local OS-authenticated operator
                         intent
 
@@ -821,6 +823,19 @@ options:
   -h, --help            show this help message and exit
   --action {pause_entries,resume_entries,emergency_halt,flatten,manual_entry}
   --limit LIMIT
+
+```
+
+## `trading demo-receipt`
+
+```
+usage: tracefold trading demo-receipt [-h] --entry-command-id ENTRY_COMMAND_ID
+                                      --flatten-command-id FLATTEN_COMMAND_ID
+
+options:
+  -h, --help            show this help message and exit
+  --entry-command-id ENTRY_COMMAND_ID
+  --flatten-command-id FLATTEN_COMMAND_ID
 
 ```
 

@@ -1,4 +1,4 @@
-"""Dormant PostgreSQL transport for engine-neutral execution facts."""
+"""PostgreSQL transport for engine-neutral execution facts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import Any, Literal
+from uuid import UUID
 
 from tracefold.platform.postgres.client import require_transaction
 
@@ -93,6 +94,67 @@ class ExecutionProfileActivation:
 
     def as_kwargs(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionRuntimeState:
+    """The sole durable current projection for one execution account slot."""
+
+    account_slot: str
+    runtime_profile_id: str
+    mode: Literal["paper", "live"]
+    runtime_release: str
+    config_sha256: str
+    runtime_id: UUID
+    runtime_revision: str
+    image_digest: str
+    credential_fingerprint: str
+    lifecycle_state: Literal["starting", "running", "stopping", "stopped", "failed"]
+    ready: bool
+    singleton_ready: bool
+    credential_ready: bool
+    activation_ready: bool
+    startup_reconciled: bool
+    portfolio_ready: bool
+    audit_ready: bool
+    unexpected_exposure: bool
+    account_flat: bool
+    reconciliation_observed_at_ns: int
+    heartbeat_at_ns: int
+    unavailable_reason: str | None
+    started_at_ns: int
+    updated_at_ns: int
+
+    def __post_init__(self) -> None:
+        if _IDENTITY.fullmatch(self.account_slot) is None or _IDENTITY.fullmatch(self.runtime_profile_id) is None:
+            raise ValueError("execution_runtime_identity_invalid")
+        if self.mode not in {"paper", "live"}:
+            raise ValueError("execution_runtime_mode_invalid")
+        if _SHA256.fullmatch(self.config_sha256) is None:
+            raise ValueError("execution_runtime_config_invalid")
+        if self.image_digest != "unversioned" and re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_digest) is None:
+            raise ValueError("execution_runtime_image_invalid")
+        if _SHA256.fullmatch(self.credential_fingerprint) is None:
+            raise ValueError("execution_runtime_credential_invalid")
+        if self.reconciliation_observed_at_ns < 0 or min(self.heartbeat_at_ns, self.started_at_ns) <= 0:
+            raise ValueError("execution_runtime_clock_invalid")
+        if self.updated_at_ns < max(self.heartbeat_at_ns, self.started_at_ns):
+            raise ValueError("execution_runtime_clock_invalid")
+        if self.account_flat and self.unexpected_exposure:
+            raise ValueError("execution_runtime_exposure_invalid")
+        gates = (
+            self.lifecycle_state == "running",
+            self.singleton_ready,
+            self.credential_ready,
+            self.activation_ready,
+            self.startup_reconciled,
+            self.portfolio_ready,
+            self.audit_ready,
+            not self.unexpected_exposure,
+            self.unavailable_reason is None,
+        )
+        if self.ready and not all(gates):
+            raise ValueError("execution_runtime_ready_invalid")
 
 
 def prepare_trade_signal(
@@ -452,6 +514,60 @@ class ExecutionStreamStorage:
         self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
+    def execution_recovery_signals(
+        self,
+        *,
+        runtime_profile_id: str,
+        limit: int,
+    ) -> tuple[StoredExecutionPayload, ...]:
+        """Read the activation-bounded identities used to reclaim current Cache state."""
+
+        self._validate_read_limit(limit)
+        if _IDENTITY.fullmatch(runtime_profile_id) is None:
+            raise ValueError("execution_profile_identity_invalid")
+        rows = self.conn.execute(
+            """
+            SELECT signal.seq, signal.payload
+              FROM trading_execution_profile_activations activation
+              JOIN trading_trade_signals signal
+                ON signal.seq > activation.activated_after_signal_seq
+             WHERE activation.runtime_profile_id = %s
+             ORDER BY signal.seq DESC
+             LIMIT %s
+            """,
+            (runtime_profile_id, limit),
+        ).fetchall()
+        self._require_activation(runtime_profile_id)
+        return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
+
+    def execution_recovery_manual_entries(
+        self,
+        *,
+        runtime_profile_id: str,
+        limit: int,
+    ) -> tuple[StoredExecutionPayload, ...]:
+        """Read activation-bounded manual entries needed to reclaim current Cache state."""
+
+        self._validate_read_limit(limit)
+        if _IDENTITY.fullmatch(runtime_profile_id) is None:
+            raise ValueError("execution_profile_identity_invalid")
+        rows = self.conn.execute(
+            """
+            SELECT command.seq, command.payload
+              FROM trading_execution_profile_activations activation
+              JOIN trading_operator_intents command
+                ON command.target_profile_id = activation.runtime_profile_id
+               AND command.seq > activation.activated_after_command_seq
+             WHERE activation.runtime_profile_id = %s
+               AND command.action = 'manual_entry'
+             ORDER BY command.seq DESC
+             LIMIT %s
+            """,
+            (runtime_profile_id, limit),
+        ).fetchall()
+        self._require_activation(runtime_profile_id)
+        return tuple((int(row["seq"]), dict(row["payload"])) for row in reversed(rows))
+
     def execution_profile_activation(self, runtime_profile_id: str) -> ExecutionProfileActivation | None:
         if _IDENTITY.fullmatch(runtime_profile_id) is None:
             raise ValueError("execution_profile_identity_invalid")
@@ -475,6 +591,186 @@ class ExecutionStreamStorage:
             runtime_release=str(row["runtime_release"]),
             config_sha256=str(row["config_sha256"]),
             created_at_ns=int(row["created_at_ns"]),
+        )
+
+    def latest_execution_profile_activation(self, account_slot: str) -> ExecutionProfileActivation | None:
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
+        row = self.conn.execute(
+            """
+            SELECT runtime_profile_id, account_slot, activated_after_signal_seq,
+                   activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
+              FROM trading_execution_profile_activations
+             WHERE account_slot = %s
+             ORDER BY created_at_ns DESC, runtime_profile_id DESC
+             LIMIT 1
+            """,
+            (account_slot,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ExecutionProfileActivation(
+            runtime_profile_id=str(row["runtime_profile_id"]),
+            account_slot=str(row["account_slot"]),
+            activated_after_signal_seq=int(row["activated_after_signal_seq"]),
+            activated_after_command_seq=int(row["activated_after_command_seq"]),
+            mode=row["mode"],
+            runtime_release=str(row["runtime_release"]),
+            config_sha256=str(row["config_sha256"]),
+            created_at_ns=int(row["created_at_ns"]),
+        )
+
+    def execution_stream_fence(self) -> tuple[int, int]:
+        row = self.conn.execute(
+            """
+            SELECT COALESCE((SELECT max(seq) FROM trading_trade_signals), 0) AS signal_seq,
+                   COALESCE((SELECT max(seq) FROM trading_operator_intents), 0) AS command_seq
+            """
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("execution_stream_fence_unavailable")
+        return int(row["signal_seq"]), int(row["command_seq"])
+
+    def execution_runtime_state(self, account_slot: str, *, for_update: bool = False) -> ExecutionRuntimeState | None:
+        if _IDENTITY.fullmatch(account_slot) is None:
+            raise ValueError("execution_account_slot_invalid")
+        query = (
+            """
+            SELECT account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+                   runtime_id, runtime_revision, image_digest, credential_fingerprint,
+                   lifecycle_state, ready,
+                   singleton_ready, credential_ready, activation_ready, startup_reconciled,
+                   portfolio_ready, audit_ready, unexpected_exposure, account_flat,
+                   reconciliation_observed_at_ns, heartbeat_at_ns, unavailable_reason,
+                   started_at_ns, updated_at_ns
+              FROM trading_execution_runtime_state
+             WHERE account_slot = %s
+             FOR UPDATE
+            """
+            if for_update
+            else """
+            SELECT account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+                   runtime_id, runtime_revision, image_digest, credential_fingerprint,
+                   lifecycle_state, ready,
+                   singleton_ready, credential_ready, activation_ready, startup_reconciled,
+                   portfolio_ready, audit_ready, unexpected_exposure, account_flat,
+                   reconciliation_observed_at_ns, heartbeat_at_ns, unavailable_reason,
+                   started_at_ns, updated_at_ns
+              FROM trading_execution_runtime_state
+             WHERE account_slot = %s
+            """
+        )
+        row = self.conn.execute(query, (account_slot,)).fetchone()
+        return None if row is None else self._materialize_runtime_state(row)
+
+    def put_execution_runtime_state(self, value: ExecutionRuntimeState) -> ExecutionRuntimeState:
+        require_transaction(self.conn, operation="put_execution_runtime_state")
+        self.conn.execute(
+            """
+            INSERT INTO trading_execution_runtime_state (
+              account_slot, runtime_profile_id, mode, runtime_release, config_sha256,
+              runtime_id, runtime_revision, image_digest, credential_fingerprint,
+              lifecycle_state, ready,
+              singleton_ready, credential_ready, activation_ready, startup_reconciled,
+              portfolio_ready, audit_ready, unexpected_exposure, account_flat,
+              reconciliation_observed_at_ns, heartbeat_at_ns, unavailable_reason,
+              started_at_ns, updated_at_ns
+            ) VALUES (
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (account_slot) DO UPDATE SET
+              runtime_profile_id = EXCLUDED.runtime_profile_id,
+              mode = EXCLUDED.mode,
+              runtime_release = EXCLUDED.runtime_release,
+              config_sha256 = EXCLUDED.config_sha256,
+              runtime_id = EXCLUDED.runtime_id,
+              runtime_revision = EXCLUDED.runtime_revision,
+              image_digest = EXCLUDED.image_digest,
+              credential_fingerprint = EXCLUDED.credential_fingerprint,
+              lifecycle_state = EXCLUDED.lifecycle_state,
+              ready = EXCLUDED.ready,
+              singleton_ready = EXCLUDED.singleton_ready,
+              credential_ready = EXCLUDED.credential_ready,
+              activation_ready = EXCLUDED.activation_ready,
+              startup_reconciled = EXCLUDED.startup_reconciled,
+              portfolio_ready = EXCLUDED.portfolio_ready,
+              audit_ready = EXCLUDED.audit_ready,
+              unexpected_exposure = EXCLUDED.unexpected_exposure,
+              account_flat = EXCLUDED.account_flat,
+              reconciliation_observed_at_ns = EXCLUDED.reconciliation_observed_at_ns,
+              heartbeat_at_ns = EXCLUDED.heartbeat_at_ns,
+              unavailable_reason = EXCLUDED.unavailable_reason,
+              started_at_ns = EXCLUDED.started_at_ns,
+              updated_at_ns = EXCLUDED.updated_at_ns
+            """,
+            tuple(asdict(value).values()),
+        )
+        return value
+
+    def update_execution_runtime_state(self, value: ExecutionRuntimeState) -> bool:
+        """Heartbeat only the generation that still owns the account-slot row."""
+
+        require_transaction(self.conn, operation="update_execution_runtime_state")
+        updated = self.conn.execute(
+            """
+            UPDATE trading_execution_runtime_state
+               SET lifecycle_state = %s, ready = %s, singleton_ready = %s,
+                   credential_ready = %s, activation_ready = %s,
+                   startup_reconciled = %s, portfolio_ready = %s, audit_ready = %s,
+                   unexpected_exposure = %s, account_flat = %s,
+                   reconciliation_observed_at_ns = %s, heartbeat_at_ns = %s,
+                   unavailable_reason = %s, updated_at_ns = %s
+             WHERE account_slot = %s AND runtime_id = %s
+            """,
+            (
+                value.lifecycle_state,
+                value.ready,
+                value.singleton_ready,
+                value.credential_ready,
+                value.activation_ready,
+                value.startup_reconciled,
+                value.portfolio_ready,
+                value.audit_ready,
+                value.unexpected_exposure,
+                value.account_flat,
+                value.reconciliation_observed_at_ns,
+                value.heartbeat_at_ns,
+                value.unavailable_reason,
+                value.updated_at_ns,
+                value.account_slot,
+                value.runtime_id,
+            ),
+        )
+        return bool(updated.rowcount == 1)
+
+    @staticmethod
+    def _materialize_runtime_state(row: Any) -> ExecutionRuntimeState:
+        return ExecutionRuntimeState(
+            account_slot=str(row["account_slot"]),
+            runtime_profile_id=str(row["runtime_profile_id"]),
+            mode=row["mode"],
+            runtime_release=str(row["runtime_release"]),
+            config_sha256=str(row["config_sha256"]),
+            runtime_id=UUID(str(row["runtime_id"])),
+            runtime_revision=str(row["runtime_revision"]),
+            image_digest=str(row["image_digest"]),
+            credential_fingerprint=str(row["credential_fingerprint"]),
+            lifecycle_state=row["lifecycle_state"],
+            ready=bool(row["ready"]),
+            singleton_ready=bool(row["singleton_ready"]),
+            credential_ready=bool(row["credential_ready"]),
+            activation_ready=bool(row["activation_ready"]),
+            startup_reconciled=bool(row["startup_reconciled"]),
+            portfolio_ready=bool(row["portfolio_ready"]),
+            audit_ready=bool(row["audit_ready"]),
+            unexpected_exposure=bool(row["unexpected_exposure"]),
+            account_flat=bool(row["account_flat"]),
+            reconciliation_observed_at_ns=int(row["reconciliation_observed_at_ns"]),
+            heartbeat_at_ns=int(row["heartbeat_at_ns"]),
+            unavailable_reason=None if row["unavailable_reason"] is None else str(row["unavailable_reason"]),
+            started_at_ns=int(row["started_at_ns"]),
+            updated_at_ns=int(row["updated_at_ns"]),
         )
 
     def operator_control_history(
@@ -572,6 +868,7 @@ __all__ = [
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
     "ExecutionProfileActivation",
+    "ExecutionRuntimeState",
     "ExecutionStreamStorage",
     "PreparedExecutionObservationBatch",
     "PreparedOperatorIntent",

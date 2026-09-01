@@ -11,6 +11,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import Response
 
+from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
 from tracefold.trading import DecisionRuntimeV1, canonical_sha256
@@ -72,8 +73,13 @@ def get_trading_status(request: Request) -> Response:
             updated_at_ms=now_ms,
         )
         counts = repos.trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms)
+        execution = runtime.settings.trading.execution
+        execution_status = execution_readiness_projection(
+            execution,
+            repos.trading.execution_runtime_state(execution.account_slot),
+            now_ns=now_ms * 1_000_000,
+        )
     config = signal_lane_config(runtime.settings)
-    execution = runtime.settings.trading.execution
     alpha_contract = canonical_sha256(
         {
             "policy_id": config.policy.policy_id,
@@ -88,13 +94,7 @@ def get_trading_status(request: Request) -> Response:
                 "heartbeat_at_ms": decision.heartbeat_at_ms,
                 "reason": decision.reason,
             },
-            "execution": {
-                "mode": execution.mode,
-                "profile_id": execution.profile_id,
-                "account_slot": execution.account_slot,
-                "ready": False,
-                "reason": "disabled" if execution.mode == "disabled" else "activation_not_available_before_433e",
-            },
+            "execution": execution_status,
             "alpha": {
                 "policy_id": config.policy.policy_id,
                 "policy_version": config.policy.policy_version,

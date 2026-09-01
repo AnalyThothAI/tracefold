@@ -125,6 +125,7 @@ TRADING_TABLES = (
     "trading_execution_observations",
     "trading_execution_notification_deliveries",
     "trading_execution_profile_activations",
+    "trading_execution_runtime_state",
 )
 
 _POSTGRES_QUERY_TEMPLATES: tuple[dict[str, Any], ...] = (

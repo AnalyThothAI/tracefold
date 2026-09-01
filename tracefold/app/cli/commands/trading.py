@@ -8,6 +8,8 @@ import time
 from datetime import UTC, datetime
 from typing import Any
 
+from tracefold.app.demo_receipt import DemoReceiptError, verify_binance_demo_receipt
+from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories
 from tracefold.app.trading_config import signal_lane_config
@@ -46,6 +48,11 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             )
             config = signal_lane_config(settings)
             execution = settings.trading.execution
+            execution_status = execution_readiness_projection(
+                execution,
+                trading.execution_runtime_state(execution.account_slot),
+                now_ns=now_ms * 1_000_000,
+            )
             return 0, {
                 "ok": True,
                 "data": {
@@ -66,15 +73,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                             }
                         ),
                     },
-                    "execution": {
-                        "mode": execution.mode,
-                        "profile_id": execution.profile_id,
-                        "account_slot": execution.account_slot,
-                        "ready": False,
-                        "reason": (
-                            "disabled" if execution.mode == "disabled" else "activation_not_available_before_433e"
-                        ),
-                    },
+                    "execution": execution_status,
                     "counts": trading.runtime_summary(since_ms=now_ms - _WINDOW_MS, now_ms=now_ms),
                 },
             }
@@ -118,6 +117,29 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
                     limit=int(getattr(args, "limit", 20) or 20),
                 ),
             }
+        if command == "demo-receipt":
+            entry_command_id = str(getattr(args, "entry_command_id", "") or "")
+            flatten_command_id = str(getattr(args, "flatten_command_id", "") or "")
+            if not all(re.fullmatch(r"[0-9a-f]{64}", value) for value in (entry_command_id, flatten_command_id)):
+                return 2, {"ok": False, "error": "binance_demo_command_identity_invalid"}
+            execution = settings.trading.execution
+            try:
+                receipt = verify_binance_demo_receipt(
+                    state=trading.execution_runtime_state(execution.account_slot),
+                    observations=trading.console_execution_observations(
+                        since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
+                        runtime_profile_id=execution.profile_id,
+                        normalized_kind=None,
+                        before=None,
+                        limit=1_000,
+                    ),
+                    entry_command_id=entry_command_id,
+                    flatten_command_id=flatten_command_id,
+                    now_ns=now_ms * 1_000_000,
+                )
+            except DemoReceiptError as exc:
+                return 1, {"ok": False, "error": str(exc)}
+            return 0, {"ok": True, "data": receipt}
     return 2, {"ok": False, "error": f"unknown trading command: {command}"}
 
 

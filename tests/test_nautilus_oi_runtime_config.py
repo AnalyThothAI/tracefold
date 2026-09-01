@@ -1,4 +1,4 @@
-"""Closed configuration and dormant app boundary for #433-B."""
+"""Closed configuration and disabled app boundary for the OI Runtime."""
 
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def test_paper_and_live_change_only_cold_identity_and_binance_environment(
     assert config.cache.use_instance_id is True
 
 
-def test_disabled_is_the_only_reachable_app_state_and_constructs_no_node() -> None:
+def test_disabled_helper_constructs_no_node_and_rejects_active_profiles() -> None:
     profile = oi_profile("disabled")
     readiness = run_nautilus(profile)
 
@@ -63,7 +63,7 @@ def test_disabled_is_the_only_reachable_app_state_and_constructs_no_node() -> No
     assert readiness.reason == "disabled"
     with pytest.raises(ValueError, match="oi_runtime_disabled_has_no_node"):
         build_oi_node_config(profile, BinanceRuntimeCredentials(api_key="x", api_secret="y"))
-    with pytest.raises(RuntimeError, match="oi_runtime_activation_not_available_before_433e"):
+    with pytest.raises(RuntimeError, match="oi_runtime_active_profile_requires_composition_root"):
         run_nautilus(oi_profile("paper"))
 
 
@@ -96,7 +96,7 @@ def test_paper_and_live_have_disjoint_profile_cache_credential_and_client_namesp
     assert paper_node.instance_id != live_node.instance_id
 
 
-def test_canonical_root_references_only_new_runtime_and_remains_disabled() -> None:
+def test_canonical_root_references_only_new_runtime_and_activates_one_binance_node() -> None:
     repository = Path(__file__).resolve().parents[1]
     source = (repository / "tracefold/app/nautilus/oi_runtime.py").read_text()
     tree = ast.parse(source)
@@ -108,6 +108,8 @@ def test_canonical_root_references_only_new_runtime_and_remains_disabled() -> No
     assert "tracefold.trading.intent" not in imports
     root_source = (repository / "tracefold/app/nautilus/root.py").read_text()
     assert "tracefold.app.nautilus.oi_runtime" in root_source
-    assert "activation_not_available_before_433e" in root_source
+    assert "TradingNode" in root_source
+    assert "BinanceLiveExecClientFactory" in root_source
+    assert "oi_runtime_cold_transition_requires_binance_flat" in root_source
     assert "tracefold.app.nautilus.database" not in root_source
     assert "tracefold.integrations.nautilus.strategy" not in root_source

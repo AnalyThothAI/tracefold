@@ -46,7 +46,13 @@ set -eu
 if [ "$1" = "info" ]; then exit 0; fi
 if [ "$1" = "compose" ] && [ "$2" = "version" ]; then exit 0; fi
 if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then printf '%s\\n' "$TRACEFOLD_TEST_IMAGE"; exit 0; fi
-if [ "$1" = "run" ]; then printf '%s\\n' 20260824_0303; exit 0; fi
+if [ "$1" = "run" ]; then
+  case "$*" in
+    *runtime_identity*) printf '%s\\n' "${TRACEFOLD_TEST_IMAGE_REVISION:-$(git rev-parse HEAD)}" ;;
+    *) printf '%s\\n' 20260824_0303 ;;
+  esac
+  exit 0
+fi
 if [ "$1" = "compose" ] && [ "$2" = "config" ]; then
   printf '%s\\n' 'postgres:18-bookworm@sha256:pinned' "$TRACEFOLD_APP_IMAGE"
   exit 0
@@ -92,6 +98,7 @@ fi
 if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
   : > "$TRACEFOLD_TEST_SERVICES_STOPPED"
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_STOP_ARGS"
+  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ;; esac
   if [ -n "${TRACEFOLD_TEST_DEPLOY_BLOCK:-}" ]; then
     : > "${TRACEFOLD_TEST_DEPLOY_BLOCK}.entered"
     while [ ! -e "${TRACEFOLD_TEST_DEPLOY_BLOCK}.release" ]; do sleep 0.01; done
@@ -99,7 +106,9 @@ if [ "$1" = "compose" ] && [ "$2" = "stop" ]; then
 fi
 if [ "$1" = "compose" ] && [ "$2" = "up" ]; then
   printf '%s\n' "$*" > "$TRACEFOLD_TEST_UP_ARGS"
-  case " $* " in *" nautilus "*) : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;; esac
+  case " $* " in
+    *" nautilus "*) rm -f "$TRACEFOLD_TEST_NAUTILUS_STOPPED"; : > "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ;;
+  esac
   exit 0
 fi
 if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
@@ -112,7 +121,9 @@ if [ "$1" = "compose" ] && [ "$2" = "ps" ]; then
   case "$service" in
     postgres|rabbitmq|rabbitmq-policy|migrate|serve|workers) printf '%s\\n' "${service}-id" ;;
     nautilus)
-      if [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
+      if [ -e "$TRACEFOLD_TEST_NAUTILUS_STOPPED" ]; then
+        :
+      elif [ -e "$TRACEFOLD_TEST_NAUTILUS_RECREATED" ]; then
         printf '%s\\n' nautilus-id
       elif [ "${TRACEFOLD_TEST_NAUTILUS_PRESENT:-}" = "1" ]; then
         case " $* " in
@@ -231,6 +242,7 @@ esac
         "TRACEFOLD_TEST_EXECUTION_MODE": "disabled",
         "TRACEFOLD_TEST_TRADING_CONTROL": str(trading_control),
         "TRACEFOLD_TEST_NAUTILUS_RECREATED": str(tmp_path / "nautilus-recreated"),
+        "TRACEFOLD_TEST_NAUTILUS_STOPPED": str(tmp_path / "nautilus-stopped"),
         "TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP": str(tmp_path / "capability-bootstrap"),
         "TRACEFOLD_TEST_CAPABILITY_REFRESH": str(tmp_path / "capability-refresh"),
         "TRACEFOLD_TEST_BOOTSTRAP_ACCOUNT_ZERO": "ready",
@@ -557,16 +569,16 @@ def test_deploy_runs_decision_without_demo_credentials_or_nautilus(
     assert services_stopped.exists()
     assert not Path(env["TRACEFOLD_TEST_NAUTILUS_RECREATED"]).exists()
     assert not Path(env["TRACEFOLD_TEST_CAPABILITY_BOOTSTRAP"]).exists()
-    assert "execution runtime: disabled (#433-E activation pending)" in result.stdout
+    assert "execution runtime: disabled (operator selected)" in result.stdout
 
 
 @pytest.mark.parametrize(
     ("trading_enabled", "credentials_configured", "execution_mode", "expected_ok", "expected_message"),
     (
-        ("true", "true", "disabled", True, "execution runtime: disabled (#433-E activation pending)"),
-        ("true", "false", "disabled", True, "execution runtime: disabled (#433-E activation pending)"),
+        ("true", "true", "disabled", True, "execution runtime: disabled (operator selected)"),
+        ("true", "false", "disabled", True, "execution runtime: disabled (operator selected)"),
         ("false", "false", "disabled", True, "execution runtime: disabled (Trading disabled)"),
-        ("true", "true", "paper", False, "execution runtime: mode=paper unavailable before #433-E"),
+        ("true", "true", "paper", True, "execution runtime: mode=paper (Binance Runtime ready)"),
     ),
 )
 def test_status_does_not_require_an_adapter_before_its_owner_issue(
@@ -581,6 +593,8 @@ def test_status_does_not_require_an_adapter_before_its_owner_issue(
     env["TRACEFOLD_TEST_TRADING_ENABLED"] = trading_enabled
     env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = credentials_configured
     env["TRACEFOLD_TEST_EXECUTION_MODE"] = execution_mode
+    if execution_mode != "disabled":
+        env["TRACEFOLD_TEST_NAUTILUS_PRESENT"] = "1"
 
     result = subprocess.run(
         ["make", "status"],
@@ -628,6 +642,43 @@ def test_exact_image_deploy_does_not_recreate_nautilus_without_demo_credentials(
 
     assert result.returncode == 0, result.stderr
     assert "nautilus" not in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("target", ("up", "deploy-image"))
+def test_active_execution_mode_recreates_and_requires_nautilus(tmp_path: Path, target: str) -> None:
+    repo, _external_activity, _services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_TRADING_ENABLED"] = "true"
+    env["TRACEFOLD_TEST_EXECUTION_MODE"] = "paper"
+    env["TRACEFOLD_TEST_NAUTILUS_CREDENTIALS_CONFIGURED"] = "true"
+    command = ["make", target]
+    if target == "deploy-image":
+        command.append(f"IMAGE_ID={TEST_IMAGE_ID}")
+
+    result = subprocess.run(command, cwd=repo, env=env, capture_output=True, check=False, text=True)
+
+    assert result.returncode == 0, result.stderr
+    assert "nautilus" in Path(env["TRACEFOLD_TEST_UP_ARGS"]).read_text(encoding="utf-8")
+    assert "execution runtime: mode=paper (Binance Runtime ready)" in result.stdout
+
+
+def test_deploy_image_rejects_a_different_runtime_revision_before_stopping_services(
+    tmp_path: Path,
+) -> None:
+    repo, _external_activity, services_stopped, env = _deploy_image_sandbox(tmp_path)
+    env["TRACEFOLD_TEST_IMAGE_REVISION"] = "f" * 40
+
+    result = subprocess.run(
+        ["make", "deploy-image", f"IMAGE_ID={TEST_IMAGE_ID}"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "execution image rollback is refused" in result.stderr
+    assert not services_stopped.exists()
 
 
 def test_deployment_lock_is_released_by_the_os_when_the_owner_crashes(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChro
 
 import "./trading.css";
 
-/** D operator view: commands and observations are facts; execution stays disabled until E. */
+/** Operator view: every execution claim remains tied to a durable Runtime or venue fact. */
 export function TradingPage({ token }: { token: string }) {
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
@@ -45,7 +45,7 @@ export function TradingPage({ token }: { token: string }) {
       <header className="trading-page-header">
         <div className="trading-heading-copy">
           <h1>Alpha / Execution</h1>
-          <p>Case 与 Signal 原子落库；账户、数量、订单和保护只属于后续 Runtime。</p>
+          <p>Case 与 Signal 原子落库；账户、数量、订单、保护与恢复只属于 Nautilus Runtime。</p>
         </div>
         <div
           className="trading-heading-aside"
@@ -96,13 +96,22 @@ export function TradingPage({ token }: { token: string }) {
           </MetricRow>
 
           <Card
-            hint={`${status.alpha.policy_version} · ${status.alpha.contract_sha256.slice(0, 12)}`}
-            title="Alpha 合约"
+            hint={
+              status.execution.runtime_release
+                ? `${status.execution.runtime_release} · reconcile ${status.execution.reconciliation_age_ms ?? "?"}ms`
+                : `${status.alpha.policy_version} · ${status.alpha.contract_sha256.slice(0, 12)}`
+            }
+            title="Alpha / Runtime 边界"
           >
             <p>
-              当前边界只输出 engine-neutral <code>TradeSignalV1</code>。执行配置是独立事实：profile{" "}
+              Alpha 只输出 engine-neutral <code>TradeSignalV1</code>。执行配置是独立事实：profile{" "}
               <code>{status.execution.profile_id}</code>，account slot{" "}
-              <code>{status.execution.account_slot}</code>；本阶段不会把它们写入 Signal。
+              <code>{status.execution.account_slot}</code>。Binance account flat：
+              <code>
+                {status.execution.account_flat ? "PROVEN" : "NOT PROVEN"}
+              </code>；credential{" "}
+              <code>{status.execution.credential_fingerprint?.slice(0, 12) ?? "unavailable"}</code>
+              。
             </p>
             <TradingSourceLine path="GET /api/trading/status → decision · execution · alpha · counts" />
           </Card>
