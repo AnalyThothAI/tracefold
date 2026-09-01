@@ -35,6 +35,13 @@ from typing import Any, TypedDict
 # `whale_oi_ratio > 80%` push rule admitted 2 of the 7 frames that meet the target strategy's
 # conditions; the other 5 — TUT 15.48%/54.24% among them — were `drop` and never reached Trading at all.
 #
+# v10 (#458): that reader rule is gone entirely and every frame arrives as `stored` / `drop`, so this
+# read is now the only judgment of an OI frame there is. Two consequences here. The pin moves to
+# `news_oi_signal_v3`, which means frames judged by the old rule stop projecting — deliberately: their
+# `program_sha256` attests thresholds that no longer exist. And the freeze check loses its
+# `rank_in_window` leg with the column, keeping the six measurements and the three source-contract
+# fields it still binds verdict-to-ledger.
+#
 # v7 (#265): the OI read publishes what the provider proves about *how* the frame was measured —
 # `source_strategy_id`, `source_contract_version`, `measurement_window_ms` — beside the four numbers it
 # measured. All three are nullable together, and `NULL` is the contract: it means the interval could not
@@ -117,7 +124,6 @@ class OiTradeProjectionRow(TypedDict):
     oi_value_usd: int
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
-    rank_in_window: int
     observed_at_ms: int
     source_available_at_ms: int
     ingest_mode: str
@@ -232,8 +238,9 @@ class TradeProjectionStorage:
           never saw them. The column is still selected, as audit, beside `source_rule`.
         * `rank_in_window <= N` and `oi_value_usd >= N` were Trading's own thresholds executed in News's
           SQL. A row filtered out here is indistinguishable from a row that never existed, which is what
-          made `oi_rows = 0` unable to say *why*. They now belong to the Trading Candidate Gate, which
-          records a named reason per source instead.
+          made `oi_rows = 0` unable to say *why*. `oi_value_usd` moved to the Trading Candidate Gate,
+          which records a named reason per source instead; the rank is gone entirely with #458's cut of
+          the News notification rule that spent it.
 
         `venue` comes from the Item's own `provider_metadata.source` rather than the ledger, which does
         not store it. That field is the single strongest discriminator the OI research measured
@@ -272,7 +279,6 @@ class TradeProjectionStorage:
                    (v.trace #>> '{{judgment,signal,oi_value_usd}}')::bigint AS oi_value_usd,
                    (v.trace #>> '{{judgment,signal,whale_long_profit_bps}}')::bigint AS whale_long_profit_bps,
                    (v.trace #>> '{{judgment,signal,whale_oi_ratio_bps}}')::bigint AS whale_oi_ratio_bps,
-                   (v.trace #>> '{{judgment,rank_in_window}}')::integer AS rank_in_window,
                    s.observed_at_ms,
                    s.available_at_ms AS source_available_at_ms,
                    i.first_ingest_mode AS ingest_mode,
@@ -288,7 +294,6 @@ class TradeProjectionStorage:
                      'whale_long_profit_bps', s.whale_long_profit_bps,
                      'whale_oi_ratio_bps', s.whale_oi_ratio_bps
                    )
-               AND (v.trace #>> '{{judgment,rank_in_window}}')::integer = s.rank_in_window
                AND v.trace #>> '{{oi_signal,source_strategy_id}}' IS NOT DISTINCT FROM s.source_strategy_id
                AND v.trace #>> '{{oi_signal,source_contract_version}}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{{oi_signal,measurement_window_ms}}')::bigint
@@ -298,7 +303,7 @@ class TradeProjectionStorage:
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v2'
+               AND v.program_version = 'news_oi_signal_v3'
                AND v.policy_version = 'news_triage_policy_v11'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{{64}}$'
@@ -358,7 +363,6 @@ class TradeProjectionStorage:
                    (v.trace #>> '{judgment,signal,oi_value_usd}')::bigint AS oi_value_usd,
                    (v.trace #>> '{judgment,signal,whale_long_profit_bps}')::bigint AS whale_long_profit_bps,
                    (v.trace #>> '{judgment,signal,whale_oi_ratio_bps}')::bigint AS whale_oi_ratio_bps,
-                   (v.trace #>> '{judgment,rank_in_window}')::integer AS rank_in_window,
                    s.observed_at_ms,
                    s.available_at_ms AS source_available_at_ms,
                    i.first_ingest_mode AS ingest_mode,
@@ -374,7 +378,6 @@ class TradeProjectionStorage:
                      'whale_long_profit_bps', s.whale_long_profit_bps,
                      'whale_oi_ratio_bps', s.whale_oi_ratio_bps
                    )
-               AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
                AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
                AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
@@ -383,7 +386,7 @@ class TradeProjectionStorage:
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v2'
+               AND v.program_version = 'news_oi_signal_v3'
                AND v.policy_version = 'news_triage_policy_v11'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{64}$'
@@ -438,7 +441,6 @@ class TradeProjectionStorage:
                        'whale_long_profit_bps', s.whale_long_profit_bps,
                        'whale_oi_ratio_bps', s.whale_oi_ratio_bps
                      )
-                 AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
                  AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
                  AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
                  AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
@@ -446,7 +448,7 @@ class TradeProjectionStorage:
                WHERE v.stage = 'triage'
                  AND v.judgment_contract_version = 'news_judgment_v2'
                  AND v.judgment_origin = 'oi'
-                 AND v.program_version = 'news_oi_signal_v2'
+                 AND v.program_version = 'news_oi_signal_v3'
                  AND v.policy_version = 'news_triage_policy_v11'
                  AND v.editorial IS NULL
                  AND v.program_sha256 ~ '^[0-9a-f]{64}$'
@@ -540,7 +542,6 @@ class TradeProjectionStorage:
                      'whale_long_profit_bps', s.whale_long_profit_bps,
                      'whale_oi_ratio_bps', s.whale_oi_ratio_bps
                    )
-               AND (v.trace #>> '{judgment,rank_in_window}')::integer = s.rank_in_window
                AND v.trace #>> '{oi_signal,source_strategy_id}' IS NOT DISTINCT FROM s.source_strategy_id
                AND v.trace #>> '{oi_signal,source_contract_version}' IS NOT DISTINCT FROM s.source_contract_version
                AND (v.trace #>> '{oi_signal,measurement_window_ms}')::bigint
@@ -549,7 +550,7 @@ class TradeProjectionStorage:
              WHERE v.stage = 'triage'
                AND v.judgment_contract_version = 'news_judgment_v2'
                AND v.judgment_origin = 'oi'
-               AND v.program_version = 'news_oi_signal_v2'
+               AND v.program_version = 'news_oi_signal_v3'
                AND v.policy_version = 'news_triage_policy_v11'
                AND v.editorial IS NULL
                AND v.program_sha256 ~ '^[0-9a-f]{64}$'
@@ -731,7 +732,6 @@ def _oi_projection_row(row: Any) -> OiTradeProjectionRow:
         oi_value_usd=row["oi_value_usd"],
         whale_long_profit_bps=row["whale_long_profit_bps"],
         whale_oi_ratio_bps=row["whale_oi_ratio_bps"],
-        rank_in_window=row["rank_in_window"],
         observed_at_ms=row["observed_at_ms"],
         source_available_at_ms=row["source_available_at_ms"],
         ingest_mode=row["ingest_mode"],

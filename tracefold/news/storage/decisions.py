@@ -247,50 +247,13 @@ class DecisionStorage:
         self.conn.execute("SET LOCAL lock_timeout = '2500ms'")
         self.conn.execute("SELECT pg_advisory_xact_lock(%s, hashtext(%s))", (_STORYLINE_LOCK_NAMESPACE, storyline_key))
 
-    def count_recent_eligible_oi_signals(
-        self,
-        *,
-        symbol: str,
-        metric_version: str,
-        since_ms: int,
-        before_ms: int,
-        whale_oi_ratio_above_bps: int,
-        oi_change_at_least_bps: int,
-        exclude_event_id: str = "",
-    ) -> int:
-        """Count eligible *other* frames for this symbol in ``(since_ms, before_ms]``.
-
-        Filtering happens before ``count(*)`` so any number of ineligible rows cannot hide older
-        eligible ones. ``before_ms`` is the judged frame's publication time; the inclusive upper bound
-        preserves provider frames sharing one millisecond, while ``exclude_event_id`` keeps a redelivery
-        out of its own history.
-        """
-
-        row = self.conn.execute(
-            "SELECT count(*)::int AS n FROM news_oi_signals signal "
-            "JOIN news_events event ON event.event_id = signal.event_id "
-            "WHERE signal.metric_version = %s AND signal.symbol = %s "
-            "AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s AND signal.event_id <> %s "
-            "AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s",
-            (
-                metric_version,
-                symbol,
-                int(since_ms),
-                int(before_ms),
-                exclude_event_id,
-                int(whale_oi_ratio_above_bps),
-                int(oi_change_at_least_bps),
-            ),
-        ).fetchone()
-        return int(row["n"] if row is not None else 0)
-
     def oi_signal(self, *, event_id: str, metric_version: str) -> dict[str, Any] | None:
         """The code-verified OI row that may ground its deterministic reader card."""
 
         row = self.conn.execute(
             "SELECT signal.event_id, signal.metric_version, signal.symbol, signal.direction, "
             "signal.oi_change_bps, signal.oi_value_usd, signal.whale_long_profit_bps, "
-            "signal.whale_oi_ratio_bps, signal.observed_at_ms, signal.rank_in_window, "
+            "signal.whale_oi_ratio_bps, signal.observed_at_ms, "
             "signal.source_strategy_id, signal.source_contract_version, signal.measurement_window_ms, "
             "signal.source_item_id, signal.source_venue, signal.available_at_ms, signal.learning_epoch "
             "FROM news_oi_signals signal "
@@ -312,15 +275,14 @@ class DecisionStorage:
         whale_long_profit_bps: int,
         whale_oi_ratio_bps: int,
         observed_at_ms: int,
-        rank_in_window: int,
         now_ms: int,
         source_strategy_id: str | None = None,
         source_contract_version: str | None = None,
         measurement_window_ms: int | None = None,
         source_item_id: str,
         source_venue: str | None,
-    ) -> int:
-        """Append one parsed frame to the rank ledger. Idempotent; the decision lives in the verdict.
+    ) -> None:
+        """Append one parsed frame to the frame ledger. Idempotent; the decision lives in the verdict.
 
         The three source-contract columns travel together or not at all (#265): a window with no
         identity behind it is a number nobody can audit, and `NULL` is the honest record of a frame
@@ -332,15 +294,15 @@ class DecisionStorage:
         proven = (
             source_strategy_id is not None and source_contract_version is not None and measurement_window_ms is not None
         )
-        cursor = self.conn.execute(
+        self.conn.execute(
             """
             INSERT INTO news_oi_signals (
               event_id, metric_version, symbol, direction, oi_change_bps, oi_value_usd,
-              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, rank_in_window, created_at_ms,
+              whale_long_profit_bps, whale_oi_ratio_bps, observed_at_ms, created_at_ms,
               source_strategy_id, source_contract_version, measurement_window_ms,
               source_item_id, source_venue, available_at_ms, learning_epoch
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s,
               COALESCE((SELECT epoch.epoch_id
                  FROM news_learning_epochs epoch
@@ -351,7 +313,6 @@ class DecisionStorage:
                 ORDER BY epoch.starts_at_ms DESC LIMIT 1), 'unproven')
             )
             ON CONFLICT (event_id, metric_version) DO NOTHING
-            RETURNING rank_in_window
             """,
             (
                 event_id,
@@ -363,7 +324,6 @@ class DecisionStorage:
                 int(whale_long_profit_bps),
                 int(whale_oi_ratio_bps),
                 int(observed_at_ms),
-                int(rank_in_window),
                 int(now_ms),
                 source_strategy_id if proven else None,
                 source_contract_version if proven else None,
@@ -373,16 +333,6 @@ class DecisionStorage:
                 int(now_ms),
             ),
         )
-        row = cursor.fetchone()
-        if row is not None:
-            return int(row["rank_in_window"])
-        existing = self.conn.execute(
-            "SELECT rank_in_window FROM news_oi_signals WHERE event_id = %s AND metric_version = %s",
-            (event_id, metric_version),
-        ).fetchone()
-        if existing is None:
-            raise RuntimeError("news_oi_signal_insert_failed")
-        return int(existing["rank_in_window"])
 
     def insert_market_liquidation(
         self,

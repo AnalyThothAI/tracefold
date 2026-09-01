@@ -114,7 +114,6 @@ export function tradingAdmissionTraceEntries(
     for (const [label, value] of [
       ["场所", evidence.venue],
       ["持仓额", evidence.oi_value_usd == null ? "" : String(evidence.oi_value_usd)],
-      ["窗口名次", evidence.rank_in_window == null ? "" : String(evidence.rank_in_window)],
       ["地板", evidence.floor == null ? "" : String(evidence.floor)],
       ["帧龄 ms", evidence.age_ms == null ? "" : String(evidence.age_ms)],
     ] as const) {

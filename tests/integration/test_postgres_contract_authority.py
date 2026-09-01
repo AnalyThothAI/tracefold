@@ -15,7 +15,6 @@ from tracefold.news.liquidations import LiquidationFact, parse_liquidation
 from tracefold.news.liquidations import trace as liquidation_trace
 from tracefold.news.models import TriageVerdict
 from tracefold.news.oi_signals import (
-    DEFAULT_OI_POLICY,
     OiSignal,
     evaluate_oi,
     oi_judgment_trace,
@@ -57,8 +56,7 @@ def _current_telemetry_payloads() -> tuple[dict[str, Any], dict[str, Any], dict[
     )
     assert oi is not None and liquidation is not None
     oi_metadata = oi_judgment_trace(
-        evaluate_oi(oi, earlier_eligible_count=0, policy=DEFAULT_OI_POLICY),
-        policy=DEFAULT_OI_POLICY,
+        evaluate_oi(oi),
     )
     return (
         asdict(oi),

@@ -1404,9 +1404,10 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260901_0343`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
-additive `0342` notification delivery ledger, and the additive `0343` current
-execution Runtime projection/indexes in order. This
+`20260901_0344`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+additive `0342` notification delivery ledger, the additive `0343` current
+execution Runtime projection/indexes, and the destructive `0344` News
+open-interest push cut in order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1515,7 +1516,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260901_0343`; zero rows in every cleared
+After deployment, require Alembic head `20260901_0344`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

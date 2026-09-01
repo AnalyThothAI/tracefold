@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260901_0343"
+HEAD = "20260901_0344"
 
 
 def _config():
@@ -56,16 +56,24 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     revisions = list(script.walk_revisions())
 
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
-    assert [revision.revision for revision in revisions] == [HEAD, "20260901_0342", "20260901_0341", BASELINE]
-    assert revisions[0].down_revision == "20260901_0342"
-    assert revisions[1].down_revision == "20260901_0341"
-    assert revisions[2].down_revision == BASELINE
-    assert revisions[3].down_revision is None
+    assert [revision.revision for revision in revisions] == [
+        HEAD,
+        "20260901_0343",
+        "20260901_0342",
+        "20260901_0341",
+        BASELINE,
+    ]
+    assert revisions[0].down_revision == "20260901_0343"
+    assert revisions[1].down_revision == "20260901_0342"
+    assert revisions[2].down_revision == "20260901_0341"
+    assert revisions[3].down_revision == BASELINE
+    assert revisions[4].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
         "20260901_0342_trading_notification_deliveries.py",
         "20260901_0343_trading_execution_runtime_state.py",
+        "20260901_0344_news_oi_push_cut.py",
     ]
 
 
@@ -97,7 +105,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="irreversible Trading execution Runtime projection"):
+    with pytest.raises(RuntimeError, match="news_oi_push_cut_forward_only"):
         command.downgrade(config, "base")
 
     assert _stamped_revision() == HEAD

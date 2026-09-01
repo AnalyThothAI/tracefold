@@ -59,13 +59,13 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
     const url = new URL(response.url());
     return (
       isFeedResponse(response) &&
-      url.searchParams.get("q") === "BTC OI" &&
+      url.searchParams.get("q") === "BTC Liquidation" &&
       url.searchParams.get("hours") === "168"
     );
   });
   const searchInput = page.getByLabel("news search");
   await expect(searchInput).toHaveAttribute("placeholder", "标的 / 事件关键词");
-  await searchInput.fill("BTC OI");
+  await searchInput.fill("BTC Liquidation");
   await searchInput.press("Enter");
 
   const searchedUrl = new URL(page.url());
@@ -74,10 +74,10 @@ test("FastAPI serves the console, installs bootstrap bearer, and renders one New
   const searchedData = asObject(searchedFeed.data);
   expect(searchedData.search).toEqual({
     mode: "text",
-    normalized_query: "BTC OI",
+    normalized_query: "BTC Liquidation",
     resolved_symbols: [],
   });
-  await expect(page.getByText("全文匹配：BTC OI", { exact: true })).toBeVisible();
+  await expect(page.getByText("全文匹配：BTC Liquidation", { exact: true })).toBeVisible();
   await expect(page.getByText("全部结果 · 最近 7 天", { exact: true })).toBeVisible();
   await expect(page.getByRole("heading", { name: headline ?? "__missing__" })).toBeVisible();
 });

@@ -11,12 +11,9 @@ from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from ..bus import Q_DELIVER, BusMessage, DeferError, PermanentError, TransientError, now_ms
-from ..delivery import reader_assets, reader_market_movements, reader_trade_targets, render_first_card
+from ..delivery import card_assets, reader_market_movements, reader_trade_targets, render_first_card
 from ..market_review.pricing import Candle, PriceInstrument, PricePoint, return_bps, select_candle
 from ..models import Novelty, ReaderDeliveryPresentation, ReaderMarketScope, TelegramDeliveryReceipt
-from ..oi_signals import DEFAULT_OI_POLICY, OiPolicy, program_sha256
-from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..progression_review import PROGRESSION_REVIEW_TIMEOUT_SECONDS, ProgressionReview, ProgressionVerifier
 from ..telemetry import NewsWorkSemantics
 from ..tradability import (
@@ -252,7 +249,6 @@ class DelivererConsumer:
         sender: NewsPushSender | None,
         finite_operations: Any,
         min_interval_seconds: float,
-        oi_policy: OiPolicy = DEFAULT_OI_POLICY,
         candle_fetcher_for: DeliveryCandleFetcherFor | None = None,
         price_fetcher_for: DeliveryPriceFetcherFor | None = None,
         progression_verifier: ProgressionVerifier | None = None,
@@ -263,7 +259,6 @@ class DelivererConsumer:
         self.sender = sender
         self.finite = finite_operations
         self.min_interval = float(min_interval_seconds)
-        self._oi_program_sha256 = program_sha256(oi_policy)
         self._candle_fetcher_for = candle_fetcher_for
         self._price_fetcher_for = price_fetcher_for
         self._progression_verifier = progression_verifier
@@ -349,7 +344,7 @@ class DelivererConsumer:
         bundle = await self.db.read("news_delivery_load", lambda repos: self._load(repos, event_id, stamp))
         if bundle is None:
             raise PermanentError("news_delivery_inputs_missing")
-        card, triage_row, oi_signal, _admission, event_kind, timing = bundle
+        card, triage_row, _admission, event_kind, timing = bundle
         # A delivery message can outlive the source-contract migration that held its Event. Immutable
         # evidence and historical verdicts remain audit facts; current PostgreSQL routing still wins before
         # a delivery ledger row, quote read, or external send is attempted.
@@ -373,15 +368,7 @@ class DelivererConsumer:
             return
         # Only query a quote after every policy return above. A quote failure
         # never changes the delivery decision.
-        shown = reader_assets(
-            event_kind=event_kind,
-            verdict=tv,
-            grounded_assets=list(card.get("grounded_assets") or []),
-            program_version=str(triage_row.get("program_version") or ""),
-            verdict_program_sha256=str(triage_row.get("program_sha256") or ""),
-            expected_program_sha256=self._oi_program_sha256,
-            oi_signal=oi_signal,
-        )
+        shown = card_assets(tv, list(card.get("grounded_assets") or []))
         news_at_ms = int(timing["news_at_ms"]) if timing and timing.get("news_at_ms") is not None else None
         observed_at_ms = int(timing["observed_at_ms"]) if timing and timing.get("observed_at_ms") is not None else None
         progression_candidates = _progression_review_candidates(triage_row, tv)
@@ -1207,18 +1194,13 @@ class DelivererConsumer:
         admission = str(routing.get("admission") or "")
         event_kind = str(routing.get("event_kind") or "")
         if event_kind == "unsupported_market":
-            return card, None, None, admission, event_kind, timing
+            return card, None, admission, event_kind, timing
         triage = repos.news.latest_verdict(event_id=event_id, stage="triage")
         if triage is None:
             return None
-        oi_signal = None
-        if (
-            event_kind == "oi"
-            and str(triage.get("program_version") or "") == OI_PROGRAM_VERSION
-            and str(triage.get("program_sha256") or "") == self._oi_program_sha256
-        ):
-            oi_signal = repos.news.oi_signal(event_id=event_id, metric_version=OI_METRIC_VERSION)
-        return card, triage, oi_signal, admission, event_kind, timing
+        # No OI frame row travels in this bundle any more (#458). It grounded the symbol on a pushed OI
+        # card, and Triage publishes to this consumer only on `push`, which the OI lane no longer produces.
+        return card, triage, admission, event_kind, timing
 
     async def drain(self) -> None:
         tasks = tuple(self._edit_tasks)

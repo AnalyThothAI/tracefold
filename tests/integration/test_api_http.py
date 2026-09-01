@@ -111,7 +111,13 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
         detail = client.get(f"/api/news/events/{event_ids[0]}", headers=headers)
         missing = client.get("/api/news/events/does-not-exist", headers=headers)
         oi_all = client.get("/api/news/feed?admission=telemetry_deterministic&oi=all&limit=10", headers=headers)
-        oi_withheld = client.get(
+        oi_parse_failed = client.get(
+            "/api/news/feed?admission=telemetry_deterministic&oi=parse_failed&limit=10", headers=headers
+        )
+        # #458 retired `pushed` and `withheld`. The route reads the storage lane's vocabulary rather than
+        # restating it, so a request for a retired tab is a named 400 instead of a filter that quietly
+        # narrows nothing.
+        oi_retired = client.get(
             "/api/news/feed?admission=telemetry_deterministic&oi=withheld&limit=10", headers=headers
         )
         bad_admission = client.get("/api/news/feed?admission=bogus", headers=headers)
@@ -152,12 +158,14 @@ def test_api_news_v3_exposes_feed_event_detail_and_status(tmp_path):
     assert oi_all.status_code == 200
     assert oi_all.json()["data"]["filters"]["oi"] == "all"
     assert oi_all.json()["data"]["counts"] is None
-    assert oi_withheld.status_code == 200
-    assert oi_withheld.json()["data"]["filters"]["oi"] == "withheld"
-    assert oi_withheld.json()["data"]["counts"] is None
+    assert oi_parse_failed.status_code == 200
+    assert oi_parse_failed.json()["data"]["filters"]["oi"] == "parse_failed"
+    assert oi_parse_failed.json()["data"]["counts"] is None
+    assert oi_retired.status_code == 400
+    assert oi_retired.json()["error"] == "news_feed_oi_invalid"
     # `all` narrows nothing: it serves the same rows the admission filter alone would.
     assert {row["event_id"] for row in oi_all.json()["data"]["events"]} >= {
-        row["event_id"] for row in oi_withheld.json()["data"]["events"]
+        row["event_id"] for row in oi_parse_failed.json()["data"]["events"]
     }
     assert {row["outcome"]["kind"] for row in feed_data["events"]} <= {
         "held_recovery",

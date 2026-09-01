@@ -2399,19 +2399,8 @@
       },
       "NewsFeedOiData": {
         "additionalProperties": false,
-        "description": "#207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.\n\n`None` on every other admission. The server assembles these fields from the typed judgment atom and its\ncurrent source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.\n\nThe two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an\nunparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /\n`whale_oi_ratio_above_bps` / `oi_change_at_least_bps` are the thresholds *this frame ran under*, from its\nown trace, so a retuned `news.oi` never rewrites the history of a decision it did not make.",
+        "description": "#207: the deterministic open-interest judgment behind one `telemetry_deterministic` row.\n\n`None` on every other admission. The server assembles these fields from the typed judgment atom and its\ncurrent source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.\n\nThe two shapes are told apart by `parsed`: a judged frame carries the four measurements, an unparseable\none carries the provider-contract failure instead. Neither carries a threshold any more (#458): the lane\nstopped deciding whether a reader is told, so there is no number left for a frame to say it ran under.",
         "properties": {
-          "eligible_rank_in_window": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Eligible Rank In Window"
-          },
           "failure_stage": {
             "anyOf": [
               {
@@ -2422,28 +2411,6 @@
               }
             ],
             "title": "Failure Stage"
-          },
-          "max_rank_in_window": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Rank In Window"
-          },
-          "oi_change_at_least_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Oi Change At Least Bps"
           },
           "oi_change_bps": {
             "anyOf": [
@@ -2482,17 +2449,6 @@
             ],
             "title": "Parser Version"
           },
-          "rank_semantics": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank Semantics"
-          },
           "rule": {
             "title": "Rule",
             "type": "string"
@@ -2530,17 +2486,6 @@
             ],
             "title": "Whale Long Profit Bps"
           },
-          "whale_oi_ratio_above_bps": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Whale Oi Ratio Above Bps"
-          },
           "whale_oi_ratio_bps": {
             "anyOf": [
               {
@@ -2551,17 +2496,6 @@
               }
             ],
             "title": "Whale Oi Ratio Bps"
-          },
-          "window_ms": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Window Ms"
           }
         },
         "required": [
@@ -2999,39 +2933,9 @@
         "title": "NewsModelEditorialData",
         "type": "object"
       },
-      "NewsOiPolicyData": {
-        "additionalProperties": false,
-        "description": "`news.oi` as it is running right now \u2014 the operator-owned thresholds the judge applies.",
-        "properties": {
-          "max_rank_in_window": {
-            "title": "Max Rank In Window",
-            "type": "integer"
-          },
-          "oi_change_at_least_bps": {
-            "title": "Oi Change At Least Bps",
-            "type": "integer"
-          },
-          "whale_oi_ratio_above_bps": {
-            "title": "Whale Oi Ratio Above Bps",
-            "type": "integer"
-          },
-          "window_ms": {
-            "title": "Window Ms",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "window_ms",
-          "max_rank_in_window",
-          "whale_oi_ratio_above_bps",
-          "oi_change_at_least_bps"
-        ],
-        "title": "NewsOiPolicyData",
-        "type": "object"
-      },
       "NewsOiStatusData": {
         "additionalProperties": false,
-        "description": "#137's deterministic telemetry lane, as the \u6301\u4ed3\u5f02\u52a8 monitor reads it.\n\n`by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline\nreason map remains a cross-lane aggregate.",
+        "description": "#137's deterministic telemetry lane, as the \u6301\u4ed3\u5f02\u52a8 monitor reads it.\n\n`by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline\nreason map remains a cross-lane aggregate. Since #458 there are two of them \u2014 `stored` and\n`oi_parse_failed` \u2014 because the lane judges the provider's format and nothing else.",
         "properties": {
           "by_rule_24h": {
             "additionalProperties": {
@@ -3039,56 +2943,9 @@
             },
             "title": "By Rule 24H",
             "type": "object"
-          },
-          "policy": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/NewsOiPolicyData"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "window_occupancy": {
-            "items": {
-              "$ref": "#/components/schemas/NewsOiWindowSymbolData"
-            },
-            "title": "Window Occupancy",
-            "type": "array"
           }
         },
         "title": "NewsOiStatusData",
-        "type": "object"
-      },
-      "NewsOiWindowSymbolData": {
-        "additionalProperties": false,
-        "description": "One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling.",
-        "properties": {
-          "full": {
-            "title": "Full",
-            "type": "boolean"
-          },
-          "max_rank_in_window": {
-            "title": "Max Rank In Window",
-            "type": "integer"
-          },
-          "symbol": {
-            "title": "Symbol",
-            "type": "string"
-          },
-          "used": {
-            "title": "Used",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "symbol",
-          "used",
-          "max_rank_in_window",
-          "full"
-        ],
-        "title": "NewsOiWindowSymbolData",
         "type": "object"
       },
       "NewsOutcomeData": {
@@ -3317,11 +3174,6 @@
           "telemetry_parsed_24h": {
             "default": 0,
             "title": "Telemetry Parsed 24H",
-            "type": "integer"
-          },
-          "telemetry_push_24h": {
-            "default": 0,
-            "title": "Telemetry Push 24H",
             "type": "integer"
           },
           "telemetry_received_24h": {
@@ -6388,17 +6240,6 @@
               }
             ],
             "title": "Oi Value Usd"
-          },
-          "rank_in_window": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rank In Window"
           },
           "rule": {
             "default": "",

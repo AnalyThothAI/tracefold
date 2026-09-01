@@ -80,10 +80,10 @@ describe("NewsOiPage", () => {
     await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
     const tabs = await screen.findByRole("tablist", { name: "按判定筛选" });
-    expect(within(tabs).getByRole("tab", { name: /已推送/ })).toHaveTextContent("3");
-    // 未达阈值 is the three threshold rules summed: 106 + 30 + 0.
-    expect(within(tabs).getByRole("tab", { name: /未达阈值/ })).toHaveTextContent("136");
     expect(within(tabs).getByRole("tab", { name: /解析失败/ })).toHaveTextContent("1");
+    // #458 left the lane two rules, so there is no 已推送 or 未达阈值 tab to count.
+    expect(within(tabs).queryByRole("tab", { name: /已推送/ })).toBeNull();
+    expect(within(tabs).queryByRole("tab", { name: /未达阈值/ })).toBeNull();
     /*
      * 全部 is `telemetry_events_24h` (141) — Events on this admission, which is exactly the row universe.
      * It is neither of the numbers beside it: `telemetry_received_24h` (142) counts provider items *before*
@@ -121,36 +121,6 @@ describe("NewsOiPage", () => {
     expect(await screen.findByText(/准入台账读取失败/)).toBeInTheDocument();
   });
 
-  it("marks a frame no threshold let through as having spent no window slot", async () => {
-    // `evaluate_oi` computes a rank for every frame and the trace records it, so a whale-ratio rejection
-    // still carries `eligible_rank_in_window: 1`. That is the rank it *would* have taken; printing "1 / 2"
-    // beside it would say the window is fuller than it is.
-    server.use(
-      http.get(/.*\/api\/news\/feed$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsFeedFixture({
-            events: [
-              newsOiFrameFixture({
-                oi: {
-                  ...newsOiFrameFixture().oi!,
-                  eligible_rank_in_window: 1,
-                  rule: "whale_ratio_below_threshold",
-                  whale_oi_ratio_bps: 5_420,
-                },
-              }),
-            ],
-          }),
-        }),
-      ),
-    );
-
-    renderOi();
-    const row = await screen.findByRole("button", { name: /WIF/ });
-    expect(row).toHaveTextContent("whale_ratio_below_threshold");
-    expect(row).not.toHaveTextContent("1 / 2");
-  });
-
   it("stamps the research bucket from the measurement, not from a lane threshold", async () => {
     /*
      * #331: the 95% boundary is `oi-agent-design-2026-08-22.md` §1.5's measured bucket, not the capital
@@ -183,11 +153,11 @@ describe("NewsOiPage", () => {
       http.get(/.*\/api\/news\/feed$/, () => HttpResponse.json({ ok: false }, { status: 500 })),
     );
 
-    renderOi("/news/oi?oi=withheld");
+    renderOi("/news/oi?oi=parse_failed");
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     const tabs = screen.getByRole("tablist", { name: "按判定筛选" });
     expect(within(tabs).getByRole("tab", { name: /全部/ })).toBeInTheDocument();
-    expect(within(tabs).getByRole("tab", { name: /未达阈值/ })).toHaveAttribute(
+    expect(within(tabs).getByRole("tab", { name: /解析失败/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -303,13 +273,14 @@ describe("NewsOiPage", () => {
     renderOi();
     const row = await screen.findByRole("button", { name: /WIF/ });
 
-    // The four measurements, the rank and the gate — all `oi_judgment_trace()` fields read back.
+    // The four measurements and the rule — all `oi_judgment_trace()` fields read back.
     expect(row).toHaveTextContent("+6.71%");
     expect(row).toHaveTextContent("1103 万");
     expect(row).toHaveTextContent("143.90%");
     expect(row).toHaveTextContent("88.40%");
-    expect(row).toHaveTextContent("1 / 2");
-    expect(row).toHaveTextContent("opening_move_with_whale_concentration");
+    expect(row).toHaveTextContent("stored");
+    // The rank column left with the rank (#458); nothing renders `n / n` any more.
+    expect(row).not.toHaveTextContent("1 / 2");
     // 1H/4H is the fixed post-Event measurement, signed and in percent.
     expect(row).toHaveTextContent("+2.03%");
     expect(row).toHaveTextContent("+1.45%");
@@ -548,17 +519,26 @@ describe("NewsOiPage", () => {
     expect(screen.getByText(/WIF OI Rise 6.71%/)).toBeInTheDocument();
   });
 
-  it("shows the two compact policy sets side by side and never merges them", async () => {
+  it("shows the two compact panels side by side and never merges them", async () => {
     renderOi();
     await screen.findByRole("heading", { name: "OI 来源与准入审计" });
 
-    const gates = await screen.findByRole("heading", { name: "推送闸门 · NEWS.OI" });
+    /*
+     * #458: the News half is no longer a gate. It counts what the lane did with the frames — stored and
+     * unparseable — and hands the push decision to the Signal lane by name and by link. A threshold on
+     * this side is exactly the second teacher the cut removed.
+     */
+    const gates = await screen.findByRole("heading", { name: "来源入账 · NEWS.OI" });
     const gatesCard = gates.closest("article") as HTMLElement;
-    expect(within(gatesCard).getByText("> 80%")).toBeInTheDocument();
-    expect(within(gatesCard).getByText("≤ 2 / 4h")).toBeInTheDocument();
-    expect(gatesCard).toHaveTextContent("106");
-    expect(gatesCard).toHaveTextContent("30");
-    expect(gatesCard).toHaveTextContent("拦下 0");
+    expect(gatesCard).toHaveTextContent("139");
+    expect(gatesCard).toHaveTextContent("1");
+    expect(within(gatesCard).getByRole("link", { name: /Signal 通道/ })).toHaveAttribute(
+      "href",
+      "/trading",
+    );
+    // The two thresholds this panel used to print, by their exact rendered form.
+    expect(gatesCard).not.toHaveTextContent("> 80%");
+    expect(gatesCard).not.toHaveTextContent("\u2264 2 / 4h");
 
     /*
      * The capital half is Admission's own configuration, read from the same batch as the answers it
@@ -569,8 +549,8 @@ describe("NewsOiPage", () => {
     const admission = screen.getByRole("heading", { name: "准入闸 · TRADING" });
     const admissionCard = admission.closest("article") as HTMLElement;
     expect(within(admissionCard).getByText("≥500 万")).toBeInTheDocument(); // 5_000_000
-    // #348 retired the capital rank ceiling and the per-symbol cooldown. The push gate keeps its own
-    // rank (`≤ 2 / 4h`, asserted above), and the two must not be confused for one another again.
+    // #348 retired the capital rank ceiling and the per-symbol cooldown; #458 then removed the News
+    // push rank as well, so neither panel may grow one back.
     expect(within(admissionCard).queryByText("≤ 2")).toBeNull();
     expect(admissionCard).not.toHaveTextContent("冷却");
     // Source venues describe evidence provenance only; execution routing belongs to a later owner.
@@ -686,14 +666,6 @@ describe("NewsOiPage", () => {
 
   it("says so plainly when the window holds no eligible frame", async () => {
     server.use(
-      http.get(/.*\/api\/news\/status$/, () =>
-        HttpResponse.json({
-          ok: true,
-          data: newsStatusFixture({
-            oi: { ...newsStatusFixture().oi, window_occupancy: [] },
-          }),
-        }),
-      ),
       http.get(/.*\/api\/news\/feed$/, () =>
         HttpResponse.json({ ok: true, data: newsFeedFixture({ events: [] }) }),
       ),

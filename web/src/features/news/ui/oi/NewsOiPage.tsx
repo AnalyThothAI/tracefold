@@ -99,7 +99,6 @@ export function NewsOiPage({ token }: { token: string }) {
   const received = pipeline?.telemetry_received_24h;
   const parsed = pipeline?.telemetry_parsed_24h;
   const failed = pipeline?.telemetry_parse_failed_24h;
-  const pushed = pipeline?.telemetry_push_24h;
   const byRule = oi?.by_rule_24h;
   const counts = Object.fromEntries(
     NEWS_OI_TABS.map((value) => [value, oiTabCount(value, byRule, pipeline?.telemetry_events_24h)]),
@@ -119,7 +118,7 @@ export function NewsOiPage({ token }: { token: string }) {
       <NewsPageHeader
         subtitle={
           <>
-            遥测帧、解析、推送闸门与资本准入——这一页只答「来源发生了什么」；判定与冻结证据在{" "}
+            遥测帧、解析与资本准入——这一页只答「来源发生了什么」；判定与冻结证据在{" "}
             <Link to={newsAlphaPath()}>Alpha 判定</Link>
           </>
         }
@@ -154,7 +153,7 @@ export function NewsOiPage({ token }: { token: string }) {
           updating={statusQuery.isFetching || feedQuery.isFetching || gateQuery.isFetching}
         >
           <div className="news-oi-body">
-            <MetricRow className="news-oi-metrics" columns={5} label="过去 24 小时的遥测帧">
+            <MetricRow className="news-oi-metrics" columns={3} label="过去 24 小时的遥测帧">
               <Metric caption="遥测帧 · 24h" eyebrow="RECEIVED" value={count(received)} />
               <Metric
                 caption={
@@ -163,12 +162,6 @@ export function NewsOiPage({ token }: { token: string }) {
                 eyebrow="PARSED"
                 value={count(parsed)}
               />
-              <Metric
-                caption="过全部闸门"
-                eyebrow="ELIGIBLE"
-                value={count(byRule?.opening_move_with_whale_concentration ?? 0)}
-              />
-              <Metric caption="已推送" eyebrow="PUSHED" tone="accent" value={count(pushed)} />
               <Metric
                 caption="模板变了才会涨"
                 eyebrow="FAILED"
@@ -187,12 +180,11 @@ export function NewsOiPage({ token }: { token: string }) {
                  * unread threshold and an absent one are different facts.
                  */
                 gateUnread={!gateQuery.data}
-                policy={oi?.policy ?? null}
               />
             </div>
 
             {/*
-             * The failed request replaces the rows, never the tabs: a reader whose 未达阈值 page 5xx'd has to
+             * The failed request replaces the rows, never the tabs: a reader whose 解析失败 page 5xx'd has to
              * be able to click back to 全部 without editing the URL.
              */}
             <NewsQuoteReadState query={quotesQuery}>

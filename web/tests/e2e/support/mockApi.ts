@@ -182,8 +182,9 @@ function newsFeedData(prepended: string[] = [], empty = false) {
 }
 
 /**
- * A judged frame per gate, so the monitor's baseline shows the four measurements, the rank, both withhold
- * rules and the unparseable shape rather than one row repeated.
+ * Three frames, so the monitor's baseline shows the four measurements across a range of values and the
+ * unparseable shape rather than one row repeated. Since #458 the lane has one judged rule and one failure
+ * rule, so the tabs are 全部 and 解析失败.
  */
 function newsOiFeedData(oi: string | null) {
   const frames = [
@@ -195,10 +196,8 @@ function newsOiFeedData(oi: string | null) {
         "DOGE OI Rise 2.08%, OI Value 892.31M, Whale Long Profit 63.00%, Whale/OI Ratio 54.20%",
       oi: {
         ...newsOiFrameFixture().oi!,
-        eligible_rank_in_window: null,
         oi_change_bps: 208,
         oi_value_usd: 892_310_000,
-        rule: "whale_ratio_below_threshold",
         symbol: "DOGE",
         whale_long_profit_bps: 6_300,
         whale_oi_ratio_bps: 5_420,
@@ -229,23 +228,17 @@ function newsOiFeedData(oi: string | null) {
       leader_title:
         "PENGU OI Rise 3.4%, OI Value --, Whale Long Profit 55.10%, Whale/OI Ratio 71.00%",
       oi: {
-        eligible_rank_in_window: null,
         failure_stage: "template_match",
-        max_rank_in_window: null,
-        oi_change_at_least_bps: null,
         oi_change_bps: null,
         oi_value_usd: null,
         parsed: false,
         parser_version: "oi_signal_parser_v1",
-        rank_semantics: null,
         rule: "oi_parse_failed",
         // The template never matched, so nothing — not even the subject — was read out of the title.
         symbol: null,
         title_sha256: "9f2c41ab7d10",
         whale_long_profit_bps: null,
-        whale_oi_ratio_above_bps: null,
         whale_oi_ratio_bps: null,
-        window_ms: null,
       },
       outcome: newsOutcomeFixture({
         group: "held",
@@ -266,7 +259,7 @@ function newsOiFeedData(oi: string | null) {
       }),
     }),
   ];
-  const wanted = { pushed: 0, withheld: 1, parse_failed: 2 }[oi ?? ""];
+  const wanted = { parse_failed: 2 }[oi ?? ""];
   return {
     ...newsFeedFixture(),
     events: wanted == null ? frames : [frames[wanted]],

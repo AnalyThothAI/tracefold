@@ -460,20 +460,19 @@ title alone selects a deterministic route.
   `resolved_symbols`; it is `null` when neither input was supplied.
 
   A `telemetry_deterministic` row additionally carries a nullable `oi` block
-  (#207): `parsed`, `rule`, and — depending on which of the two shapes it is —
-  the four measurements (`oi_change_bps`, `oi_value_usd`,
-  `whale_long_profit_bps`, `whale_oi_ratio_bps`), `eligible_rank_in_window`,
-  `rank_semantics`, the thresholds that frame ran under (`window_ms`,
-  `max_rank_in_window`, `whale_oi_ratio_above_bps`, `oi_change_at_least_bps`),
-  or the provider-contract failure (`parser_version`, `failure_stage`,
-  `title_sha256`). Every field is `oi_judgment_trace()` /
-  `oi_parse_failure()` output read back from the verdict trace, so no client
-  ever re-runs `oi_signal_parser_v1` over `leader_title`. `strategy_id`,
-  `provider` and `provider_source` are deliberately not exposed. The block is
-  `null` on every other admission. `oi={pushed|withheld|parse_failed}` filters
-  on the judged rule: `pushed` is the one qualifying rule, `withheld` the three
-  threshold rules, `parse_failed` the unparseable frame. `decision` cannot
-  express that split — a threshold withhold and a parse failure are both
+  (#207): `parsed`, `rule`, `symbol`, and — depending on which of the two shapes
+  it is — the four measurements (`oi_change_bps`, `oi_value_usd`,
+  `whale_long_profit_bps`, `whale_oi_ratio_bps`), or the provider-contract
+  failure (`parser_version`, `failure_stage`, `title_sha256`). No threshold and
+  no rank travel with it since #458: the lane applied neither, so a number here
+  would be a gate the console asserts and no code runs. Every field is
+  `oi_judgment_trace()` / `oi_parse_failure()` output read back from the verdict
+  trace, so no client ever re-runs `oi_signal_parser_v1` over `leader_title`.
+  `strategy_id`, `provider` and `provider_source` are deliberately not exposed.
+  The block is `null` on every other admission. `oi={all|parse_failed}` filters
+  on the judged rule: `parse_failed` is the unparseable frame, and `all` narrows
+  nothing while still identifying the caller as the monitor. `decision` cannot
+  express that split — a stored frame and a parse failure are both
   `drop` and both carry `override_rule = telemetry_deterministic`. The filter
   also constrains `admission = telemetry_deterministic`, which is the only lane
   that can write the key it reads: without it the predicate has to detoast
@@ -567,13 +566,12 @@ title alone selects a deterministic route.
   `throttled_by_key`, `pushed_by_rule`, `duplicates_withheld_24h`
   (`all` is the current content-only path), plus `tagged_24h`,
   `grounded_24h` and
-  the top-ten `ungrounded_by_symbol_24h`), `oi` (#207: the deterministic
-  open-interest lane — `policy`, the `news.oi` thresholds as they are running;
-  `by_rule_24h`, 24 h OI-scoped counts keyed on the typed judgment's own gate
-  names; `window_occupancy`, per-symbol spent rank slots inside
-  the live window measured with the judge's eligibility predicate, ending at
-  `measured_at_ms` — the window's start is deliberately not a field because it
-  would move on every read and churn the ETag. There is no `trade_floors`
+  the top-ten `ungrounded_by_symbol_24h`), `oi` (#207/#458: the deterministic
+  open-interest lane — one field, `by_rule_24h`, 24 h OI-scoped counts keyed on
+  the typed judgment's own rule names, of which there are two: `stored` and
+  `oi_parse_failed`. There is no `policy` and no `window_occupancy` (#458): the
+  lane has no operator-owned threshold and no rank window left. There is no
+  `trade_floors` either
   (#331): News republished the capital lane's thresholds here, which invited a
   console to compare a Case frozen last week against a floor edited yesterday.
   Admission's own configuration is published by `/api/trading/gate`, and the
@@ -704,7 +702,7 @@ the complete `first_judgment`; evidence-changing re-asks may not reuse it.
 `triage` is the only current stage. Current versions are
 `news_title_norm_v2`, `news_gate_v5`, `news_storyline_v3`,
 `news_event_evidence_v3`, `news_judgment_v2`,
-`news_semantic_program_v8` (or `news_oi_signal_v2` /
+`news_semantic_program_v8` (or `news_oi_signal_v3` /
 `news_liquidation_fact_v2` for deterministic structured lanes),
 `news_triage_policy_v11`, `news_delivery_card_v11`, artifact schema
 `news_program_strategy_artifact_v1`, and source classifier
@@ -771,13 +769,13 @@ The `EventSemantics.v2` model-visible projection excludes queue priority,
 provider score, Gate macro lexicon, queue lag and watchlist. ReaderCard receives
 only the explicit `ReaderCardSemanticView`; it cannot read ToldContext,
 `reader_value`, tradability, surprise or development delta.
-`news.oi` keys are `window_ms` (4 h), `max_rank_in_window` (2),
-`whale_oi_ratio_above_bps` (8000, exceeded not met) and `oi_change_at_least_bps`
-(0, disabled): the deterministic open-interest lane's thresholds (#137). Rank
-counts only earlier rows that satisfy both thresholds; parsed rows that fail a
-threshold remain auditable without consuming rank. Status exposes
-`telemetry_received_24h`, `telemetry_parsed_24h`,
-`telemetry_parse_failed_24h`, and `telemetry_push_24h`; parser-contract failures
+There is no `news.oi` section. Its four keys — `window_ms`,
+`max_rank_in_window`, `whale_oi_ratio_above_bps` and `oi_change_at_least_bps` —
+were the deterministic open-interest lane's notification thresholds (#137) and
+were removed with the rule in #458; `extra="forbid"` means a config file that
+still carries the section fails at startup. Status exposes
+`telemetry_received_24h`, `telemetry_parsed_24h` and
+`telemetry_parse_failed_24h`; parser-contract failures
 also appear under `dropped_by_rule.oi_parse_failed` and never call a model.
 `news.policy` has exactly four v10 keys: `restatement_drop` (true),
 `similarity_max` (0.25), `listing_exempt_from_duplicate` (true), and
@@ -961,9 +959,12 @@ refuses to advance if any existing delivery row has a partial lifecycle shape.
 A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
-`20260901_0341` Signal hard cut, and additive current head
-`20260901_0343`; `0342` adds the Trading notification delivery ledger and
-`0343` adds the current execution Runtime projection and recovery indexes. The exact
+`20260901_0341` Signal hard cut, and current head
+`20260901_0344`; `0342` adds the Trading notification delivery ledger,
+`0343` adds the current execution Runtime projection and recovery indexes, and
+destructive `0344` restates the `news_verdicts` judgment CHECK for the News
+open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
+`judgment_origin='oi'` verdict written under the retired program. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility

@@ -495,7 +495,6 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       },
       telemetry_parse_failed_24h: 1,
       telemetry_parsed_24h: 139,
-      telemetry_push_24h: 3,
       // Three numbers that must not agree, because they count three different things and the 全部 tab has
       // to read the right one: `received` counts provider items before the Gate (142), `events` counts the
       // Events those became and is the table's own universe (141 — one of them is still awaiting a
@@ -532,26 +531,14 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
       triage_p50_ms: 640,
       triage_p95_ms: 1_900,
     },
-    // #207: the deterministic OI lane. `by_rule_24h` is keyed on the judge's own gate names — those cannot
+    // #207: the deterministic OI lane. `by_rule_24h` is keyed on the judge's own rule names — those cannot
     // come from `dropped_by_rule`, which groups `override_rule` and reads `telemetry_deterministic` for
-    // every OI verdict whether it pushed or withheld.
+    // every OI verdict. Since #458 there are two of them, and neither is a threshold.
     oi: {
       by_rule_24h: {
-        whale_ratio_below_threshold: 106,
-        beyond_window_rank: 30,
-        opening_move_with_whale_concentration: 3,
+        stored: 139,
         oi_parse_failed: 1,
       },
-      policy: {
-        max_rank_in_window: 2,
-        oi_change_at_least_bps: 0,
-        whale_oi_ratio_above_bps: 8_000,
-        window_ms: 14_400_000,
-      },
-      window_occupancy: [
-        { full: true, max_rank_in_window: 2, symbol: "WIF", used: 2 },
-        { full: false, max_rank_in_window: 2, symbol: "DOGE", used: 1 },
-      ],
     },
     state: "ready",
     watchlist: ["BTC", "ETH", "SOL"],
@@ -562,8 +549,8 @@ export function newsStatusFixture(overrides: Partial<NewsStatus> = {}): NewsStat
 
 /**
  * One judged telemetry frame, as the feed serves it (#207/#137). The `oi` block is the judge's own trace
- * read back, so a test that wants the withheld or the unparseable shape overrides `rule` and the fields that
- * shape actually carries rather than inventing new ones.
+ * read back, so a test that wants the unparseable shape overrides `rule` and the fields that shape actually
+ * carries rather than inventing new ones.
  */
 /**
  * The OI frame the trading fixture opened `symbol`'s case on (#282).
@@ -604,23 +591,17 @@ export function newsOiFrameFixture(overrides: Partial<NewsFeedEvent> = {}): News
     leader_title:
       "WIF OI Rise 6.71%, OI Value 11.03M, Whale Long Profit 88.40%, Whale/OI Ratio 143.90%",
     oi: {
-      eligible_rank_in_window: 1,
       failure_stage: null,
-      max_rank_in_window: 2,
-      oi_change_at_least_bps: 0,
       oi_change_bps: 671,
       oi_value_usd: 11_030_000,
       parsed: true,
       parser_version: null,
-      rank_semantics: "eligible_rank_v1",
       // The only place the feed carries the frame's subject for this lane.
       symbol: "WIF",
-      rule: "opening_move_with_whale_concentration",
+      rule: "stored",
       title_sha256: null,
       whale_long_profit_bps: 8_840,
-      whale_oi_ratio_above_bps: 8_000,
       whale_oi_ratio_bps: 14_390,
-      window_ms: 14_400_000,
     },
     reaction: newsReactionFixture({
       p0: "0.8412",

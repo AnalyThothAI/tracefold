@@ -350,11 +350,6 @@ news:
     similarity_max: 0.25
     listing_exempt_from_duplicate: true
     stale_source_max_age_s: 43200  # #154: an x/twitter artifact older than this on arrival is a replay
-  oi:                             # #137 open-interest telemetry, judged by rule instead of by model
-    window_ms: 14400000           # 4 h rolling window the rank counts within
-    max_rank_in_window: 2         # push a symbol's first N eligible signals in that window
-    whale_oi_ratio_above_bps: 8000  # a frame must exceed this ratio; 8000 = 80.00% does not qualify
-    oi_change_at_least_bps: 0     # 0 disables the OI-move floor
   retention:
     raw_days: 30
     judged_days: 365

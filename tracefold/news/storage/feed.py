@@ -9,7 +9,7 @@ from typing import Any, Final
 
 # S608 exemptions below interpolate the closed admission enum literal set; all request values stay bound.
 from ..models import ReaderReceipt
-from ..oi_signals import METRIC_VERSION as OI_METRIC_VERSION
+from ..oi_contracts import OI_FILTERS, OI_OUTCOMES
 from ..oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
 from ..outcome import (
     audience_zh,
@@ -42,21 +42,6 @@ from .feed_sql import (
     feed_page_sql,
 )
 
-# The deterministic OI lane's own rule names, grouped the three ways the monitor asks about them. These are
-# `oi_signals.evaluate_oi` / `oi_parse_failure` keys verbatim: the reader-facing tab has no vocabulary of its
-# own, and a rule the judge adds shows up as an unfiltered row rather than silently joining `withheld`.
-_OI_PUSH_RULE: Final = "opening_move_with_whale_concentration"
-_OI_WITHHELD_RULES: Final = ("whale_ratio_below_threshold", "oi_change_below_threshold", "beyond_window_rank")
-_OI_PARSE_FAILED_RULE: Final = "oi_parse_failed"
-OI_FILTERS: Final[dict[str, tuple[str, ...]]] = {
-    "pushed": (_OI_PUSH_RULE,),
-    "withheld": _OI_WITHHELD_RULES,
-    "parse_failed": (_OI_PARSE_FAILED_RULE,),
-}
-# `all` is the monitor's fourth tab and narrows nothing, so it is not in `OI_FILTERS`. It still has to be a
-# value the caller can send: it is how a request says "I am the 持仓异动 monitor", which is what lets the
-# outcome-group count be skipped for the tab that is displayed most.
-OI_OUTCOMES: Final[frozenset[str]] = frozenset({"all", *OI_FILTERS})
 # The lane the key can only come from. `triage.py` enters its OI branch under
 # `admission == 'telemetry_deterministic'` and only that lane writes an OI judgment, so pairing the rule
 # with the admission narrows nothing semantically — measured live on 2026-08-25, all 298 verdicts carrying
@@ -141,7 +126,7 @@ class FeedStorage:
             params.append(list(event_kind))
         if oi in OI_FILTERS:
             # The canonical judgment atom owns the rule; `override_rule` is the same value, while
-            # `final_decision` cannot distinguish threshold holds from provider parse failures because both
+            # `final_decision` cannot distinguish a stored frame from a provider parse failure because both
             # are `drop`. The predicate carries the lane's admission with the rule, which is what keeps it off
             # the whole retention's TOAST — see `_OI_RULE_PREDICATE`.
             where.append(_OI_RULE_PREDICATE)
@@ -151,8 +136,8 @@ class FeedStorage:
         #
         # Any `oi` request skips it too — including `all`, which narrows nothing but still identifies the
         # caller as the OI monitor. `counts` describes the three *outcome* groups, which are the feed's task
-        # tabs; the monitor's tabs are gates and it takes their counts from `status.oi`, so on a 5 s poll
-        # this would be the file's own "19 ms over the entire table" aggregate run for a field nobody reads.
+        # tabs; the monitor takes its own counts from `status.oi`, so on a 5 s poll this would be the file's
+        # own "19 ms over the entire table" aggregate run for a field nobody reads.
         wants_counts = cursor_opened is None and oi not in OI_OUTCOMES
         counts = (
             self._feed_counts(where=list(where), params=list(params), now_ms=handoff_now_ms) if wants_counts else None
@@ -418,13 +403,8 @@ class FeedStorage:
                 WHERE stage = 'triage' AND error_code = 'oi_parse_failed'
                   AND judgment_contract_version = 'news_judgment_v2'
                   AND created_at_ms >= %s) AS telemetry_parse_failed_24h,
-              (SELECT count(*) FROM news_verdicts
-                WHERE stage = 'triage' AND final_decision IN ('push','escalate')
-                  AND judgment_contract_version = 'news_judgment_v2'
-                  AND created_at_ms >= %s
-                  AND program_version = 'news_oi_signal_v2') AS telemetry_push_24h,
               -- #207: Events, not provider items. `telemetry_received_24h` counts exact OI source frames
-              -- attached to a current-contract Event; the three by-rule buckets count judged verdicts, so
+              -- attached to a current-contract Event; the by-rule buckets count judged verdicts, so
               -- together they miss a current frame still waiting for one. The Event subquery is the table's
               -- own universe — exactly the rows `admission=telemetry_deterministic&hours=24` serves — and it
               -- is what the 全部 tab counts.
@@ -448,7 +428,6 @@ class FeedStorage:
                 OI_SOURCE_IDENTITY.strategy_name,
                 OI_SOURCE_IDENTITY.source_type,
                 OI_SOURCE_IDENTITY.engine_type,
-                day_ago,
                 day_ago,
                 day_ago,
                 day_ago,
@@ -537,52 +516,6 @@ class FeedStorage:
         ).fetchall()
         counts = {str(row["oi_rule"]): int(row["n"]) for row in rows if row["oi_rule"]}
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
-
-    def oi_window_occupancy(
-        self,
-        *,
-        now_ms: int,
-        window_ms: int,
-        whale_oi_ratio_above_bps: int,
-        oi_change_at_least_bps: int,
-        limit: int = 40,
-    ) -> list[dict[str, Any]]:
-        """How many rank slots each symbol has already spent inside the live window.
-
-        The eligibility predicate is `count_recent_eligible_oi_signals`' predicate verbatim, and for the same
-        reason: an ineligible frame stays auditable but never spends a later signal's rank, so counting rows
-        instead of filtering them would report a symbol as full that the next frame will sail straight past.
-        The stored `rank_in_window` cannot answer this either — it is the rank that frame had when it landed,
-        and a window that has since slid past its earlier siblings would keep reporting their high-water mark.
-
-        Bounded by construction: `news_oi_signals` holds one row per parsed frame under a 30-day purge —
-        roughly 190 a day, so low thousands at steady state. The window spans every symbol rather than one,
-        so the planner takes the table rather than `ix_news_oi_signals_symbol_observed`; measured at 0.06 ms
-        over 288 rows on 2026-08-25. Re-measure if the lane's daily volume or the retention window grows.
-        """
-
-        rows = self.conn.execute(
-            """
-            SELECT signal.symbol, count(*)::int AS used
-              FROM news_oi_signals signal
-              JOIN news_events current_event ON current_event.event_id = signal.event_id
-             WHERE signal.metric_version = %s
-               AND signal.observed_at_ms > %s AND signal.observed_at_ms <= %s
-               AND signal.whale_oi_ratio_bps > %s AND abs(signal.oi_change_bps) >= %s
-             GROUP BY signal.symbol
-             ORDER BY used DESC, signal.symbol ASC
-             LIMIT %s
-            """,
-            (
-                OI_METRIC_VERSION,
-                int(now_ms) - int(window_ms),
-                int(now_ms),
-                int(whale_oi_ratio_above_bps),
-                int(oi_change_at_least_bps),
-                int(limit),
-            ),
-        ).fetchall()
-        return [{"symbol": str(row["symbol"]), "used": int(row["used"])} for row in rows]
 
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         ingest = self.conn.execute(STATUS_INGEST_SQL).fetchone()
@@ -1071,10 +1004,10 @@ def _optional_bool(value: Any) -> bool | None:
 def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | None:
     """The deterministic OI judgment behind one `telemetry_deterministic` row, or None for every other row.
 
-    The fact, rank and rule come only from the canonical judgment atom. Source/parser/policy metadata remains
-    beside it, but never repeats those business fields. The browser is not allowed to re-run
-    `oi_signal_parser_v1` over `leader_title`; the two thresholds come from the stored policy metadata, so a
-    frame keeps saying what it ran under after an operator retunes `news.oi`.
+    The fact and the rule come only from the canonical judgment atom. Source/parser metadata remains beside
+    it, but never repeats those business fields. The browser is not allowed to re-run `oi_signal_parser_v1`
+    over `leader_title`. There are no thresholds left to echo: #458 removed the lane's notification rule, and
+    with it the four `news.oi` numbers a frame used to carry so it could keep saying what it ran under.
 
     `symbol` is the judge's parsed subject, not something the browser may infer from the wire title. The Gate
     grounds no provider tag for strategy 1019, so `grounded_assets` stays empty; after judgment the primary is
@@ -1092,8 +1025,6 @@ def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | No
     metadata = metadata_value if isinstance(metadata_value, Mapping) else {}
     signal = judgment_value.get("signal")
     signal = signal if isinstance(signal, Mapping) else {}
-    policy = metadata.get("policy")
-    policy = policy if isinstance(policy, Mapping) else {}
     return {
         "parsed": bool(signal),
         "rule": str(judgment_value.get("rule") or ""),
@@ -1102,12 +1033,6 @@ def _oi_summary(judgment_value: Any, metadata_value: Any) -> dict[str, Any] | No
         "oi_value_usd": _optional_int(signal.get("oi_value_usd")),
         "whale_long_profit_bps": _optional_int(signal.get("whale_long_profit_bps")),
         "whale_oi_ratio_bps": _optional_int(signal.get("whale_oi_ratio_bps")),
-        "eligible_rank_in_window": _optional_int(judgment_value.get("rank_in_window")),
-        "rank_semantics": str(metadata.get("rank_semantics") or "") or None,
-        "window_ms": _optional_int(policy.get("window_ms")),
-        "max_rank_in_window": _optional_int(policy.get("max_rank_in_window")),
-        "whale_oi_ratio_above_bps": _optional_int(policy.get("whale_oi_ratio_above_bps")),
-        "oi_change_at_least_bps": _optional_int(policy.get("oi_change_at_least_bps")),
         "parser_version": str(metadata.get("parser_version") or "") or None,
         "failure_stage": str(metadata.get("failure_stage") or "") or None,
         "title_sha256": str(metadata.get("title_sha256") or "") or None,

@@ -1930,9 +1930,10 @@ current schema in one step; an already-stamped database does not replay the
 baseline or rewrite business data. Earlier revisions and role bootstrap logic
 live only in Git history and the pre-cut image. `20260901_0341` performs the
 #433-C Signal hard cut after the baseline; additive `20260901_0342` adds the
-append-only Trading notification delivery ledger, and additive
-`20260901_0343` is the current single head with the current execution Runtime
-projection and bounded recovery indexes.
+append-only Trading notification delivery ledger; additive `20260901_0343` adds
+the current execution Runtime projection and bounded recovery indexes; and
+destructive `20260901_0344`, the current single head, restates the
+`news_verdicts` judgment CHECK for the News open-interest push cut.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2410,57 +2411,55 @@ authority.
 
 Those four numbers are the whole message, so Triage judges the frame by
 arithmetic instead of spending two structured model calls re-reading them.
-`tracefold.news.oi_signals` parses it, ranks it against the symbol's other
-threshold-eligible frames in a rolling `window_ms` (4 h), and returns one typed
-`OiJudgment` containing its presentation Verdict, parsed signal, rank, rule and
-sole `DecisionResult`:
-a qualifying frame — inside `max_rank_in_window` (2), with `whale_oi_ratio_bps`
-above `whale_oi_ratio_above_bps` (8000, which the frame must exceed), and with
-absolute OI change at least `oi_change_at_least_bps` — has a directional
-magnitude-2 presentation and a push result; a rejected one has a magnitude-0
-presentation and a drop result.
+`tracefold.news.oi_signals` parses it and returns one typed `OiJudgment`
+containing its presentation Verdict, parsed signal, rule and sole
+`DecisionResult`. Since #458 there is one rule and one outcome: a parsed frame
+is `stored` with a magnitude-0 directional presentation and a `drop` result, and
+an unparseable one is `oi_parse_failed`, also `drop`.
 
-The rule counts, while ordinary-News `decide()` deliberately does not.
-Counting and reserving the eligible rank in PostgreSQL under the per-asset lock keeps one rank authority. The
-typed arithmetic judgment is then materialized outside PostgreSQL and follows the same prepared Verdict write as
-ordinary News, preserving the shared delivery, receipts,
+The lane had a second rule until then — a strict `whale_oi_ratio_bps` threshold
+and an opening-rank ceiling inside a rolling 4 h window — which decided whether
+a reader was interrupted. It was removed rather than retuned, for two measured
+reasons. Over 48 h it and Trading's Alpha policy selected disjoint sets: seven
+frames were pushed to the reader that the capital lane had refused, and none of
+the five it admitted. And #459 then checked the provider's own number against
+Binance's open-interest history: the reported five-minute move is substantially
+price rather than position, and entered at a price a taker can actually get
+those frames returned −276 bps at 4 h against a +82 bps baseline. The reader-
+facing card returns as the Signal card once #433-E powers on the Runtime; until
+then this lane pushes nothing, and the frame table, the Trading candidate feed
+and the audit trail are unchanged.
+
+The typed arithmetic judgment is materialized outside PostgreSQL and follows the
+same prepared Verdict write as ordinary News, preserving the shared receipts,
 `event_outcome`, the feed, the counters and the audit trail on the single path
-they were built for.
+they were built for. Nothing is published to the delivery consumer, because
+Triage publishes only on `push`.
 
-Duplicate protection for this lane *is* the rank ceiling, so the ordinary-News
-content check does not run. Every telemetry headline is one template: two
-cards about unrelated symbols score 0.33 against the 0.25 threshold, and two
-frames for one symbol score 0.41. `WINDOW_MS` and `TOLD_WINDOW_MS` are both 4 h,
-so a rank-2 frame is always inside its rank-1 sibling's ledger — running the
-content check as well would have shipped "the first two per symbol" as "one per
-symbol". Two frames for one symbol are two different observations, and the
-reader asked for the opening ones by count; a byte-identical repeat is still
+The ordinary-News content check still does not run on this lane. Every telemetry
+headline is one template: two cards about unrelated symbols score 0.33 against
+the 0.25 threshold, and two frames for one symbol score 0.41, so the check would
+collapse the lane into roughly one row per symbol per window and lose
+observations the frame table exists to hold. A byte-identical repeat is still
 collapsed upstream by the exact fingerprint. Listing frames keep the different
 exemption they were given in #72, which is per instrument rather than blanket,
 because two notices for the same instrument really are one fact.
 
-Rank and the idempotent ledger row are written in one transaction under the asset
-advisory lock; the prepared verdict follows in its own short transaction. PostgreSQL filters the complete `(cutoff, observed_at]` range by
-the same strict whale-ratio and inclusive absolute-change thresholds before
-`count(*)`; ineligible frames stay in the ledger for audit but never spend a
-later signal's rank. Reading that count outside the lock would let two frames for
-one symbol both see a history without the other and both claim the same rank. If the process stops between the
-ledger commit and Verdict commit, broker redelivery reads the already-stored rank and completes the Verdict.
+The ledger row is an idempotent append keyed on `(event_id, metric_version)`;
+the prepared verdict follows in its own short transaction. No advisory lock is
+taken for it any more: the lock existed so "count this symbol's earlier eligible
+frames -> decide -> insert" could not miss a concurrent sibling, and nothing is
+counted now.
 
-`news_oi_signals` is the rank ledger and nothing more: a derived read model with
+`news_oi_signals` is the frame ledger and nothing more: a derived read model with
 one writer, idempotent by `event_id`, rebuildable by re-parsing the Item, and
-cascade-deleted with it. `rank_in_window` is the eligible rank under the policy
-recorded in the verdict trace; rows that failed a threshold are still stored and
-carry the eligible position they would have occupied without consuming it for
-later rows. Two consequences of judging these frames rather than
-suppressing them are deliberate and worth stating: every 1019 frame now carries
-a verdict, so `news.retention` keeps its Item for 365 days instead of purging at
-30 (~70k small rows a year), and the card may show the ledger-verified ticker
-plus a fresh Quote Snapshot without altering the empty provider/Gate
-`grounded_assets` evidence. A pre-reader-contract verdict, a mismatched Program SHA, or an unavailable
-quote leaves that ticker/行情 context absent. The decision itself lives in `news_verdicts` like every
-other decision, which is also where the lane's idempotency comes from — Triage
-already re-publishes an unpublished push on redelivery.
+cascade-deleted with it. `rank_in_window` was dropped from it in migration
+`20260901_0344` with the rule that computed it. Two consequences of judging
+these frames rather than suppressing them are deliberate and worth stating:
+every 1019 frame carries a verdict, so `news.retention` keeps its Item for 365
+days instead of purging at 30 (~70k small rows a year), and every frame is
+readable on the OI monitor with its four measurements. The decision itself lives
+in `news_verdicts` like every other decision.
 
 Strategy provenance and parser success are separate contracts. Every live `oi_v1`
 frame bypasses near-duplicate matching so provider format drift reaches Triage;
@@ -2468,8 +2467,9 @@ an unparseable frame fails closed without a model call and persists the named
 `oi_parse_failed` rule/error. Its trace and structured warning carry strategy
 id, OpenNews/provider source, a title SHA-256 rather than raw text, parser
 version, source-classifier version and failure stage. Status exposes 24 h
-received, parsed, parse-failed and pushed counts, while ordinary OI prose keeps
-the normal Deduper and model path.
+received, parsed and parse-failed counts — there is no pushed count, because
+there is no push — while ordinary OI prose keeps the normal Deduper and model
+path.
 
 Two places treat these Events specially and both are explicit: they are exempt
 from near-duplicate matching (two frames for one symbol differ only in their

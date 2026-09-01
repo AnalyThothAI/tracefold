@@ -22,7 +22,11 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DSN = "postgresql://postgres:postgres@127.0.0.1:55432/tracefold_test"
 DEFAULT_AMQP_URL = "amqp://tracefold:tracefold@127.0.0.1:5672/"
 WS_TOKEN = "browser-smoke-token"
-SERVICE_FACT = "BTC OI Rise 4.55%, OI Value 32.17M, Whale Long Profit 80.21%, Whale/OI Ratio 100.71%"
+# A liquidation frame, not an open-interest one. This smoke's subject is a fact reaching the
+# console's default view, and that view is the 已推送 tab; #458 stopped the OI lane pushing, so it
+# can no longer carry the test. The liquidation lane is the other deterministic judge that still
+# delivers and needs no model.
+SERVICE_FACT = "BTC Large Short Liquidation 4.55M at $118000"
 
 
 def main() -> int:
@@ -163,7 +167,7 @@ async def _publish_opennews(amqp_url: str, name_prefix: str) -> None:
             BusMessage(
                 kind="raw",
                 message_id=f"raw:{message_id}",
-                routing_key=RK_RAW_LIVE.format(strategy_id="1019"),
+                routing_key=RK_RAW_LIVE.format(strategy_id="2000"),
                 payload={
                     "params": {
                         "id": message_id,
@@ -174,13 +178,13 @@ async def _publish_opennews(amqp_url: str, name_prefix: str) -> None:
                         "coins": [],
                         "ts": stamp,
                         "strategy": {
-                            "id": 1019,
-                            "name": "OI Event Monitor",
+                            "id": 2000,
+                            "name": "实时清算",
                             "engineType": "market",
                             "sourceType": "market",
                         },
                     },
-                    "strategy_id": "1019",
+                    "strategy_id": "2000",
                     "ingest_mode": "live",
                     "observed_at_ms": stamp,
                 },

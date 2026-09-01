@@ -1067,20 +1067,13 @@ export interface components {
          *     `None` on every other admission. The server assembles these fields from the typed judgment atom and its
          *     current source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.
          *
-         *     The two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an
-         *     unparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /
-         *     `whale_oi_ratio_above_bps` / `oi_change_at_least_bps` are the thresholds *this frame ran under*, from its
-         *     own trace, so a retuned `news.oi` never rewrites the history of a decision it did not make.
+         *     The two shapes are told apart by `parsed`: a judged frame carries the four measurements, an unparseable
+         *     one carries the provider-contract failure instead. Neither carries a threshold any more (#458): the lane
+         *     stopped deciding whether a reader is told, so there is no number left for a frame to say it ran under.
          */
         NewsFeedOiData: {
-            /** Eligible Rank In Window */
-            eligible_rank_in_window?: number | null;
             /** Failure Stage */
             failure_stage?: string | null;
-            /** Max Rank In Window */
-            max_rank_in_window?: number | null;
-            /** Oi Change At Least Bps */
-            oi_change_at_least_bps?: number | null;
             /** Oi Change Bps */
             oi_change_bps?: number | null;
             /** Oi Value Usd */
@@ -1089,8 +1082,6 @@ export interface components {
             parsed: boolean;
             /** Parser Version */
             parser_version?: string | null;
-            /** Rank Semantics */
-            rank_semantics?: string | null;
             /** Rule */
             rule: string;
             /** Symbol */
@@ -1099,12 +1090,8 @@ export interface components {
             title_sha256?: string | null;
             /** Whale Long Profit Bps */
             whale_long_profit_bps?: number | null;
-            /** Whale Oi Ratio Above Bps */
-            whale_oi_ratio_above_bps?: number | null;
             /** Whale Oi Ratio Bps */
             whale_oi_ratio_bps?: number | null;
-            /** Window Ms */
-            window_ms?: number | null;
         };
         /** NewsFeedSearchData */
         NewsFeedSearchData: {
@@ -1329,48 +1316,18 @@ export interface components {
             taxonomy: components["schemas"]["NewsTaxonomyData"];
         };
         /**
-         * NewsOiPolicyData
-         * @description `news.oi` as it is running right now — the operator-owned thresholds the judge applies.
-         */
-        NewsOiPolicyData: {
-            /** Max Rank In Window */
-            max_rank_in_window: number;
-            /** Oi Change At Least Bps */
-            oi_change_at_least_bps: number;
-            /** Whale Oi Ratio Above Bps */
-            whale_oi_ratio_above_bps: number;
-            /** Window Ms */
-            window_ms: number;
-        };
-        /**
          * NewsOiStatusData
          * @description #137's deterministic telemetry lane, as the 持仓异动 monitor reads it.
          *
          *     `by_rule_24h` is scoped to OI and keyed on the typed judgment's own rule names; the general pipeline
-         *     reason map remains a cross-lane aggregate.
+         *     reason map remains a cross-lane aggregate. Since #458 there are two of them — `stored` and
+         *     `oi_parse_failed` — because the lane judges the provider's format and nothing else.
          */
         NewsOiStatusData: {
             /** By Rule 24H */
             by_rule_24h?: {
                 [key: string]: number;
             };
-            policy?: components["schemas"]["NewsOiPolicyData"] | null;
-            /** Window Occupancy */
-            window_occupancy?: components["schemas"]["NewsOiWindowSymbolData"][];
-        };
-        /**
-         * NewsOiWindowSymbolData
-         * @description One symbol's spent rank slots inside the live window. `full` means the next frame hits the ceiling.
-         */
-        NewsOiWindowSymbolData: {
-            /** Full */
-            full: boolean;
-            /** Max Rank In Window */
-            max_rank_in_window: number;
-            /** Symbol */
-            symbol: string;
-            /** Used */
-            used: number;
         };
         /**
          * NewsOutcomeData
@@ -1524,11 +1481,6 @@ export interface components {
              * @default 0
              */
             telemetry_parsed_24h: number;
-            /**
-             * Telemetry Push 24H
-             * @default 0
-             */
-            telemetry_push_24h: number;
             /**
              * Telemetry Received 24H
              * @default 0
@@ -2610,8 +2562,6 @@ export interface components {
             oi_change_bps?: number | null;
             /** Oi Value Usd */
             oi_value_usd?: number | null;
-            /** Rank In Window */
-            rank_in_window?: number | null;
             /**
              * Rule
              * @default

@@ -26,18 +26,8 @@ def get_news_status(request: Request) -> Response:
     runtime = _authenticated_runtime(request)
     now_ms = int(time.time() * 1000)
     settings = runtime.settings
-    oi_policy = settings.news.oi
     with runtime.repositories() as repos:
         snapshot = repos.news.status_snapshot(now_ms=now_ms)
-        # The live window, read under the running thresholds. It has to be a read rather than a fold over the
-        # 24 h counters: rank is spent per symbol inside a sliding 4 h window, and only the rows still inside
-        # it say which symbol the next frame will find full.
-        occupancy = repos.news.oi_window_occupancy(
-            now_ms=now_ms,
-            window_ms=oi_policy.window_ms,
-            whale_oi_ratio_above_bps=oi_policy.whale_oi_ratio_above_bps,
-            oi_change_at_least_bps=oi_policy.oi_change_at_least_bps,
-        )
         workers_state, _ = _news_workers_observation(repos.workers_runtime_row(), now_ms=now_ms)
         instruments = repos.instruments.universe_summary()
         # #87: each repository answers only over its own tables and the fold happens here — News knows which
@@ -78,23 +68,12 @@ def get_news_status(request: Request) -> Response:
         **snapshot["delivery"],
         "delivery_available": push.delivery_available and workers_state == "running",
     }
-    # No `trade_floors` here. News once republished the Signal lane's thresholds beside its own
+    # No thresholds here at all. News once republished the Signal lane's floors beside its own push
     # gates, which invited a console to compare a Case frozen last week against a floor edited
-    # yesterday. Alpha rules belong to `/api/trading/*`, and the ones that decided a Case
-    # travel with that Case as frozen evidence.
-    oi = {
-        **snapshot["oi"],
-        "policy": oi_policy.model_dump(),
-        "window_occupancy": [
-            {
-                "symbol": row["symbol"],
-                "used": int(row["used"]),
-                "max_rank_in_window": oi_policy.max_rank_in_window,
-                "full": int(row["used"]) >= oi_policy.max_rank_in_window,
-            }
-            for row in occupancy
-        ],
-    }
+    # yesterday. Alpha rules belong to `/api/trading/*`, and the ones that decided a Case travel with
+    # that Case as frozen evidence. #458 then removed the push gates themselves, so what is left is a
+    # count of what the lane did, keyed on the rules it actually has.
+    oi = dict(snapshot["oi"])
     health = status_health(
         ingest=ingest,
         broker=broker_data,

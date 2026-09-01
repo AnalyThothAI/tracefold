@@ -16,7 +16,7 @@ from .models import (
     TelegramDeliveryReceipt,
     TriageVerdict,
 )
-from .oi_contracts import OI_METRIC_VERSION
+from .oi_contracts import OI_METRIC_VERSION, OI_OUTCOMES
 from .opennews import (
     OpenNewsEvent,
     OpenNewsExpectedError,
@@ -70,6 +70,7 @@ __all__ = [
     "IPTC_SUBJECT_CODES",
     "NEWS_RETRIEVAL_SHA256",
     "OI_METRIC_VERSION",
+    "OI_OUTCOMES",
     "PROGRESSION_REVIEW_REASON_MAX_CHARS",
     "PROGRESSION_REVIEW_TIMEOUT_SECONDS",
     "REQUIRED_TRADABILITY_VENUES",

@@ -17,10 +17,9 @@ class NewsFeedOiData(ExactApiSchema):
     `None` on every other admission. The server assembles these fields from the typed judgment atom and its
     current source metadata, so the browser never re-runs `oi_signal_parser_v1` over `leader_title`.
 
-    The two shapes are told apart by `parsed`: a judged frame carries the four measurements and its rank, an
-    unparseable one carries the provider-contract failure instead. `window_ms` / `max_rank_in_window` /
-    `whale_oi_ratio_above_bps` / `oi_change_at_least_bps` are the thresholds *this frame ran under*, from its
-    own trace, so a retuned `news.oi` never rewrites the history of a decision it did not make.
+    The two shapes are told apart by `parsed`: a judged frame carries the four measurements, an unparseable
+    one carries the provider-contract failure instead. Neither carries a threshold any more (#458): the lane
+    stopped deciding whether a reader is told, so there is no number left for a frame to say it ran under.
     """
 
     parsed: bool
@@ -32,12 +31,6 @@ class NewsFeedOiData(ExactApiSchema):
     oi_value_usd: int | None = None
     whale_long_profit_bps: int | None = None
     whale_oi_ratio_bps: int | None = None
-    eligible_rank_in_window: int | None = None
-    rank_semantics: str | None = None
-    window_ms: int | None = None
-    max_rank_in_window: int | None = None
-    whale_oi_ratio_above_bps: int | None = None
-    oi_change_at_least_bps: int | None = None
     parser_version: str | None = None
     failure_stage: str | None = None
     title_sha256: str | None = None
