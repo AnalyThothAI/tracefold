@@ -38,7 +38,7 @@ active config is replaced. For a direct schema upgrade, require this order:
 Run `uv run tracefold config` to inspect only the execution mode, profile,
 account slot, and resolved secret-file references. Never print or copy a
 credential. `make up`, migration, Serve, Workers, and Web remain green without
-an execution credential because no execution process is active in #433-C.
+an execution credential because no execution process is active in #433-D.
 
 `trading.enabled` controls only the Alpha/Signal lane. Verify with:
 
@@ -57,6 +57,69 @@ Do not set `execution.mode` to `paper` or `live` to test activation. The App
 root fails closed with `oi_runtime_activation_not_available_before_433e`, and
 the canonical deployment activates no Nautilus service in this slice; the
 Compose definition is isolated behind the explicit `execution` profile.
+
+### Trading operator control (#433-D)
+
+Operator control is disabled by default and does not activate execution. To
+request it, keep `execution.mode: disabled` during D and configure one
+Workers-owned Telegram boundary:
+
+```yaml
+trading:
+  control:
+    enabled: true
+    telegram_bot_token_file: "telegram_bot_token"
+    telegram_webhook_secret_file: "telegram_webhook_secret"
+    allowed_chat_ids: [-1001234567890]
+    allowed_user_ids: [123456789]
+    notification_chat_id: -1001234567890
+```
+
+Populate both referenced files as regular mode-`0600` files. `tracefold
+config` reports only paths, allowlist counts, and configured booleans. Workers
+fails startup on an absent, empty, symlinked, oversized, or over-permissive
+file. Serve and Nautilus do not mount either Telegram file.
+
+Workers mounts `POST /telegram/control` only while this boundary is enabled.
+The listener remains host-loopback; use an operator-owned HTTPS reverse proxy
+that exposes only this path, then configure Telegram's webhook with the same
+secret-token header value. Do not put the secret in a URL, config comment,
+Issue, command transcript, or log. Both the message chat and sender user must
+be allowlisted.
+
+The closed commands are `/status`, `/pause REASON`, `/resume REASON CONFIRM`,
+`/halt REASON CONFIRM`, `/flatten account TTL_SECONDS CONFIRM`, and optional
+`/long MARKET_KEY TTL_SECONDS` / `/short MARKET_KEY TTL_SECONDS`. Flatten and
+manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantity,
+notional, leverage, venue, order type, or direct order option. Manual direction
+is recorded but the D Runtime explicitly rejects it as
+`manual_entry_not_enabled`.
+An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
+explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
+state. The same bot keeps command identity across token rotation; replacing the
+bot creates a new namespace because Telegram `update_id` values are bot-scoped.
+
+Telegram's “意图已记录” and CLI `ok` prove only the PostgreSQL intent. With no
+active execution profile, the same transaction records
+`not_applied/execution_profile_inactive`. Otherwise inspect `trading commands`
+or `/api/trading/execution/commands` for the command disposition and
+`trading observations` for later Runtime facts. The only valid evidence ladder
+is: intent recorded, Runtime accepted, order accepted, fill observed, fresh
+Binance account-flat reconciliation. Never infer a later stage from an earlier
+one, from Decision `RUNNING`, or from Runtime readiness.
+
+The local fallback writer uses the identical parser and an OS UID identity:
+
+```text
+uv run tracefold trading issue "/pause maintenance" --request-id ops-20260901-1 --requested-at-ns <unix-nanoseconds>
+```
+
+Preserve both request fields exactly on retries. The notification worker is
+asynchronous and at-least-once: it appends a target/observation delivery receipt only
+after a send, so a crash between send and receipt commit may duplicate a message.
+A Telegram outage or transient shared database-admission timeout leaves the
+observation unreceipted and retries; it never blocks Runtime protection, exits,
+reconciliation, or PostgreSQL audit.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
 composition is invalid, Workers must fail startup/readiness or record Decision
@@ -1333,7 +1396,8 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260901_0341`. A fresh PostgreSQL 18 database applies both in order. This
+`20260901_0342`. A fresh PostgreSQL 18 database applies baseline, `0341`, and
+the additive `0342` notification delivery ledger in order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
 and put through the #449 stopped-writer role catalog cut while retaining the
@@ -1442,7 +1506,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260901_0341`; zero rows in every cleared
+After deployment, require Alembic head `20260901_0342`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

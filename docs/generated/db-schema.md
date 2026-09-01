@@ -747,6 +747,15 @@
 | `catalog_instrument_count` | `INTEGER` | True | `None` |
 | `partition_sha256` | `TEXT` | True | `None` |
 
+## `trading_execution_notification_deliveries`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `target_sha256` | `TEXT` | False | `None` |
+| `observation_seq` | `BIGINT` | False | `None` |
+| `message_id` | `BIGINT` | False | `None` |
+| `delivered_at_ns` | `BIGINT` | False | `None` |
+
 ## `trading_execution_observations`
 
 | Column | Type | Nullable | Default |

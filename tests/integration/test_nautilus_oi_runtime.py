@@ -16,8 +16,11 @@ from tests.postgres_test_utils import connect_postgres_test
 from tracefold.app.nautilus.oi_runtime import (
     execution_stream_channel,
     load_or_record_day_start,
+    load_runtime_control_state,
+    load_unresolved_operator_intents,
     load_unresolved_trade_signals,
 )
+from tracefold.app.operator_control import persist_operator_intent
 from tracefold.app.repository_session import repositories_for_connection
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.signal_client import (
@@ -26,8 +29,12 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     wait_for_execution_stream_wake,
 )
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
+from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.trading.storage.execution_stream import (
     ExecutionProfileActivation,
+    PreparedOperatorIntent,
+    prepare_execution_observations,
+    prepare_operator_intent,
     prepare_trade_signal,
 )
 from tracefold.trading.storage.root import TradingRepository
@@ -83,6 +90,26 @@ def _append_signal(repo: TradingRepository, *, suffix: str = "1") -> None:
         repo.append_trade_signal(prepared)
 
 
+def _append_command(repo: TradingRepository, *, suffix: str, action: str) -> PreparedOperatorIntent:
+    prepared = prepare_operator_intent(
+        command_id=suffix * 64,
+        target_profile_id="oi-paper-profile",
+        action=action,
+        scope="account" if action in {"emergency_halt", "flatten"} else "entries",
+        reason="operator test",
+        operator_identity="operator:test",
+        authentication_identity="test:authenticated",
+        requested_at_ns=NOW_NS,
+        expires_at_ns=NOW_NS + 60_000_000_000,
+        confirmation_identity="6" * 64 if action in {"resume_entries", "emergency_halt", "flatten"} else None,
+        market_key=None,
+        direction=None,
+    )
+    with repo.conn.transaction():
+        repo.append_operator_intent(prepared)
+    return prepared
+
+
 def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -> None:
     listener = connect_postgres_test(read_only=False)
     writer = connect_postgres_test(read_only=False)
@@ -105,9 +132,44 @@ def test_listen_is_wake_only_and_poll_repairs_before_and_after_notifications() -
         # A timeout is still followed by the same correctness poll; no notification is required.
         assert wait_for_execution_stream_wake(listener, 0.01) is False
         assert client.poll_once(reader) == 0
+        command = _append_command(writer_repo, suffix="7", action="pause_entries")
+        command_reader = partial(load_unresolved_operator_intents, listener_repos)
+        assert wait_for_execution_stream_wake(listener, 2.0) is True
+        assert client.poll_commands_once(command_reader) == 1
+        assert client.next_command_nowait() == command.value
     finally:
         listener.close()
         writer.close()
+
+
+def test_restart_control_state_folds_durable_pause_resume_and_sticky_halt() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        factory = ObservationFactory("oi-paper-profile", "runtime-test", "oi_nautilus_v1")
+        actions = ("pause_entries", "resume_entries", "emergency_halt")
+        for suffix, action in zip(("4", "5", "6"), actions, strict=True):
+            prepared = _append_command(repo, suffix=suffix, action=action)
+            observation = factory.create(
+                normalized_kind="control_disposition",
+                command_id=prepared.value.command_id,
+                occurred_at_ns=NOW_NS,
+                observed_at_ns=NOW_NS,
+                summary={"action": action, "disposition": "accepted", "reason": "test"},
+                payload={"action": action, "disposition": "accepted"},
+                event_identity="final",
+            )
+            with conn.transaction():
+                repo.append_execution_observations(prepare_execution_observations((observation,)))
+
+        state = load_runtime_control_state(repositories_for_connection(conn), "oi-paper-profile")
+
+        assert state.entries_paused is True
+        assert state.emergency_halted is True
+        assert state.flatten_pending == ()
+    finally:
+        conn.close()
 
 
 def test_account_slot_lock_is_single_session_and_loss_fails_closed() -> None:
@@ -242,5 +304,84 @@ def test_real_postgres_signal_to_pinned_nautilus_callback_to_observation_process
             "signal_disposition",
         }
         assert [row["disposition"] for row in rows if row["normalized_kind"] == "signal_disposition"] == ["accepted"]
+    finally:
+        verify.close()
+
+
+def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_process_seam(
+    postgres_clone_dsn: str,
+) -> None:
+    webhook = TelegramControlWebhook(
+        webhook_secret="test-webhook-secret-433d",
+        bot_id=1234567,
+        allowed_chat_ids=frozenset({-433}),
+        allowed_user_ids=frozenset({433}),
+        target_profile_id="oi-paper-profile",
+    )
+    parsed = webhook.parse(
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-webhook-secret-433d"},
+        body=json.dumps(
+            {
+                "update_id": 433_004,
+                "message": {
+                    "message_id": 4,
+                    "date": NOW_NS // 1_000_000_000,
+                    "chat": {"id": -433},
+                    "from": {"id": 433},
+                    "text": "/pause process-seam",
+                },
+            }
+        ).encode(),
+        received_at_ns=NOW_NS,
+    )
+    assert parsed.intent is not None
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        with conn.transaction():
+            receipt = persist_operator_intent(repo, parsed.intent)
+        assert receipt.disposition == "awaiting_runtime"
+    finally:
+        conn.close()
+
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.helpers.nautilus_oi_runtime_process", postgres_clone_dsn, "command"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    process_receipt = json.loads(result.stdout.strip().splitlines()[-1])
+    assert process_receipt == {
+        "admitted": 0,
+        "admitted_commands": 1,
+        "control": {"emergency_halted": False, "entries_paused": True, "flatten_pending": []},
+        "flushed": 1,
+        "open_position_quantity": None,
+        "orders": [],
+        "pending": [],
+        "pending_commands": [],
+    }
+
+    verify = connect_postgres_test(read_only=False)
+    try:
+        row = verify.execute(
+            """
+            SELECT normalized_kind, summary
+              FROM trading_execution_observations
+             WHERE command_id = %s
+            """,
+            (parsed.intent.value.command_id,),
+        ).fetchone()
+        assert row == {
+            "normalized_kind": "control_disposition",
+            "summary": {
+                "action": "pause_entries",
+                "disposition": "accepted",
+                "reason": "entries_paused",
+            },
+        }
     finally:
         verify.close()

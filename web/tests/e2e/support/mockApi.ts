@@ -16,6 +16,7 @@ import {
 import {
   TRADING_NOW_MS,
   tradingCasesForUnderlying,
+  tradingCommandsFixture,
   tradingGateFixture,
   tradingObservationsFixture,
   tradingSignalsForMarket,
@@ -99,6 +100,9 @@ export async function installMockApi(
     }
     if (path === "/api/trading/execution/observations") {
       return fulfill(route, tradingObservationsFixture());
+    }
+    if (path === "/api/trading/execution/commands") {
+      return fulfill(route, tradingCommandsFixture());
     }
     // #269: the admission ledger the OI audit reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());

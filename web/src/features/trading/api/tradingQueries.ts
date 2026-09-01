@@ -17,6 +17,8 @@ export type TradingSignals = TradingSchemas["TradingSignalsData"];
 export type TradingSignal = TradingSchemas["TradingSignalData"];
 export type TradingExecutionObservations = TradingSchemas["TradingExecutionObservationsData"];
 export type TradingExecutionObservation = TradingSchemas["TradingExecutionObservationData"];
+export type TradingOperatorIntents = TradingSchemas["TradingOperatorIntentsData"];
+export type TradingOperatorIntent = TradingSchemas["TradingOperatorIntentData"];
 export type TradingGate = TradingSchemas["TradingGateData"];
 export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
 export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
@@ -79,6 +81,21 @@ export const useTradingObservationsWithToken = (token: string) =>
       (
         await getApi<TradingExecutionObservations>("/api/trading/execution/observations", {
           etagKey: "trading-execution-observations",
+          token,
+        })
+      ).data,
+    refetchInterval: TRADING_REFETCH_MS,
+    staleTime: 5_000,
+  });
+
+export const useTradingCommandsWithToken = (token: string) =>
+  useQuery({
+    enabled: Boolean(token),
+    queryKey: queryKeys.tradingCommands(),
+    queryFn: async () =>
+      (
+        await getApi<TradingOperatorIntents>("/api/trading/execution/commands", {
+          etagKey: "trading-execution-commands",
           token,
         })
       ).data,

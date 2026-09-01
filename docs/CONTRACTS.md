@@ -240,11 +240,16 @@ delivery consumer settles `terminal/delivery_unavailable`.
 - `execution.profile_id` and `execution.account_slot`, cold immutable
   identities for the future Runtime;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
-  Binance USD-M secret references.
+  Binance USD-M secret references;
+- `control.enabled`, default `false`; when true it requires secure
+  `telegram_bot_token_file` and `telegram_webhook_secret_file` references,
+  non-empty sorted unique `allowed_chat_ids` and `allowed_user_ids`, and a
+  `notification_chat_id` present in the chat allowlist. Config diagnostics
+  publish only resolved paths, counts, and configured booleans.
 
 Secret-file paths are resolved relative to the operator config directory
 unless absolute. Config and status may report only the resolved path or whether
-it is configured; they never expose secret contents. In #433-C the App Nautilus
+it is configured; they never expose secret contents. In #433-D the App Nautilus
 root accepts only `disabled`; `paper` or `live` fails closed as
 `oi_runtime_activation_not_available_before_433e`.
 
@@ -267,7 +272,9 @@ committed as exactly one `TradeSignalV1` plus `Case=SIGNAL_EMITTED`; `NO_TRADE`
 creates no Signal. The Signal is venue-neutral and carries no execution
 authority. Legacy binding, Capital, capability, catalog, Intent, order, replay,
 and evidence-clock tables remain queryable only as immutable historical audit
-after `20260901_0341`; there is no current command, HTTP, worker, or writer path.
+after `20260901_0341`; #433-D writes only the current
+`trading_operator_intents` / `trading_execution_observations` transport and the
+`0342` append-only notification delivery ledger, never those legacy owners.
 
 All database consumers use `storage.postgres.dsn` and `password_file`. Process
 identity is the connection's stable `application_name`; Serve's HTTP pool is
@@ -939,8 +946,9 @@ authoritative single-name tradeability absence.
 refuses to advance if any existing delivery row has a partial lifecycle shape.
 A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
-source is used. A fresh database applies baseline `20260831_0340` and then the
-`20260901_0341` Signal hard cut. The exact
+source is used. A fresh database applies baseline `20260831_0340`, the
+`20260901_0341` Signal hard cut, and additive current head
+`20260901_0342` for the Trading notification delivery ledger. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1012,8 +1020,13 @@ Runtime facts, and status carries readiness plus bounded totals.
   rows newest first, with TTL/expiry and opaque pagination. It publishes no
   account, route, quantity, leverage, order, or execution state.
 - `GET /api/trading/execution/observations` — append-only normalized Runtime
-  observations. In #433-C the canonical Runtime is disabled, so an empty result
+  observations. In #433-D the canonical Runtime is disabled, so an empty result
   is not evidence of execution or flatness.
+- `GET /api/trading/execution/commands?profile={profile}&action={action}` —
+  authenticated `OperatorIntentV1` facts, expiry, confirmation presence, and
+  any final disposition, newest first with opaque pagination. It never returns
+  authentication material. A row, HTTP 200, or `awaiting_runtime` is not an
+  order, fill, or flat receipt.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
   24-hour window: the admission `config` its rows were filed under, then per
   Source the status, stage, named reason, retryability, version/config digest,
@@ -1042,7 +1055,7 @@ Runtime facts, and status carries readiness plus bounded totals.
 - service/config: `serve`, `workers`, `nautilus run`, `init`, `config`;
 - database: `db migrate|health|audit|query-audit`;
 - News: `news bus-check|control|instruments|review|learning|replay|why|dlq`;
-- Trading: `trading status|cases|signals|observations`;
+- Trading: `trading status|cases|signals|observations|commands|issue`;
 - maintenance: `ops validate-projections`.
 
 There is no `recent` or `search` command and no market rebuild/sync/reconcile
@@ -1050,8 +1063,9 @@ maintenance command. Mutating maintenance commands require an explicit
 execution flag where the parser offers a dry-run mode. They operate from
 persisted facts and stable target keys. A rebuild does not create an alternate
 generation/run identity or make a provider response the source of truth.
-There is no CLI command that creates, approves, rejects, resolves, submits,
-amends, or cancels an execution. The #433-C CLI is read-only.
+There is no CLI command that creates an order or approves, rejects, resolves,
+submits, amends, or cancels execution. `trading issue` only appends a bounded,
+authenticated `OperatorIntentV1`; its success is not Runtime or venue evidence.
 
 `validate-projections` is a strict Serve-role read. It does not acquire the
 maintenance lock, so operators can inspect the running singleton without
@@ -1439,15 +1453,18 @@ queue and ends the batch with a non-zero exit naming the message, the decode
 code and the number already replayed. `purge` is the only command that removes
 evidence.
 
-The `trading` family is read-only and has no provider-execution or operator
-control command. `trading status` reports the Decision state/heartbeat, exact
+The `trading` family has no provider-execution command. `trading status` reports the Decision state/heartbeat, exact
 Alpha identity/digests, explicit disabled execution profile, and bounded 24-hour
 Case/Signal counts. It never infers readiness, flatness, protection, PnL, or
 fees. `trading cases [--state] [--limit]` lists the Case ledger;
 `trading signals [--limit]` lists engine-neutral `TradeSignalV1` rows; and
-`trading observations [--limit]` lists append-only dormant Runtime observations.
-There is no `show`, blacklist, control, capability, replay, evidence, or manual
-execution subcommand in #433-C.
+`trading observations [--limit]` lists append-only Runtime observations;
+`trading commands [--action] [--limit]` lists authenticated operator intents
+and their final disposition when present. `trading issue TEXT --request-id ID
+--requested-at-ns NS` is the one local OS-authenticated writer: callers preserve
+both sealed fields on retries, it accepts only the shared closed slash grammar,
+and success says `intent_recorded_not_order_or_fill`. There is no blacklist,
+capability, replay, evidence, quantity, leverage, venue, or direct order command.
 
 ### Historical pre-433-C Trading CLI and manifest (retired)
 

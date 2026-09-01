@@ -28,6 +28,7 @@ _GateSourceEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingGateSourceD
 _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _SignalsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingSignalsData]
 _ObservationsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionObservationsData]
+_CommandsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorIntentsData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ROW_LIMIT: Final = 100
@@ -55,6 +56,7 @@ _OBSERVATION_KINDS: Final = frozenset(
         "audit_gap",
     }
 )
+_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"})
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
@@ -266,6 +268,46 @@ def get_execution_observations(
     )
 
 
+@router.get("/trading/execution/commands", response_model=_CommandsEnvelope)
+def get_operator_intents(
+    request: Request,
+    profile: Annotated[str, Query(max_length=128)] = "",
+    action: Annotated[str, Query(max_length=32)] = "",
+    cursor: Annotated[str, Query(max_length=256)] = "",
+) -> Response:
+    _validate_query_params(request, supported={"action", "cursor", "profile", "token"})
+    if action and action not in _COMMAND_ACTIONS:
+        raise ApiBadRequest("trading_commands_action_invalid", field="action")
+    before = _cursor_pair(cursor, kind="commands", error="trading_commands_cursor_invalid")
+    runtime = _authenticated_runtime(request)
+    now_ms = int(time.time() * 1000)
+    now_ns = now_ms * 1_000_000
+    with runtime.repositories() as repos:
+        rows = repos.trading.console_operator_intents(
+            since_ns=(now_ms - _WINDOW_MS) * 1_000_000,
+            runtime_profile_id=profile.strip() or None,
+            action=action or None,
+            before=before,
+            limit=_ROW_LIMIT + 1,
+        )
+    return _etagged(
+        {
+            "commands": [_command(row, now_ns=now_ns) for row in rows[:_ROW_LIMIT]],
+            "complete": len(rows) <= _ROW_LIMIT,
+            "next_cursor": _next_cursor(
+                rows,
+                kind="commands",
+                time_key="requested_at_ns",
+                id_key="command_id",
+            ),
+            "window_hours": _WINDOW_MS // 3_600_000,
+            "measured_at_ms": now_ms,
+        },
+        request,
+        envelope=_CommandsEnvelope,
+    )
+
+
 def _encode_cursor(kind: str, timestamp: int, identity: str) -> str:
     raw = json.dumps(
         {"v": 1, "kind": kind, "values": [timestamp, identity]},
@@ -402,6 +444,26 @@ def _observation(row: dict[str, Any]) -> dict[str, Any]:
         "native_identity_references": list(row.get("native_identity_references") or []),
         "summary": row.get("summary") or {},
         "payload_digest": str(row["payload_digest"]),
+    }
+
+
+def _command(row: dict[str, Any], *, now_ns: int) -> dict[str, Any]:
+    return {
+        "seq": int(row["seq"]),
+        "command_id": str(row["command_id"]),
+        "target_profile_id": str(row["target_profile_id"]),
+        "action": str(row["action"]),
+        "scope": str(row["scope"]),
+        "reason": str(row["reason"]),
+        "operator_identity": str(row["operator_identity"]),
+        "requested_at_ns": int(row["requested_at_ns"]),
+        "expires_at_ns": int(row["expires_at_ns"]),
+        "expired": int(row["expires_at_ns"]) <= now_ns,
+        "confirmed": bool(row["confirmed"]),
+        "market_key": row.get("market_key"),
+        "direction": row.get("direction"),
+        "disposition": row.get("disposition"),
+        "disposition_reason": row.get("disposition_reason"),
     }
 
 

@@ -10,6 +10,7 @@ import {
   TRADING_NOW_MS,
   tradingGateFixture,
   tradingCasesForUnderlying,
+  tradingCommandsFixture,
   tradingObservationsFixture,
   tradingSignalsForMarket,
   tradingStatusFixture,
@@ -62,6 +63,7 @@ export function mockAppRoutes(apiMock: ApiMock) {
       return ok(tradingSignalsForMarket(param("market")));
     }
     if (path === "/api/trading/execution/observations") return ok(tradingObservationsFixture());
+    if (path === "/api/trading/execution/commands") return ok(tradingCommandsFixture());
     // #269: the durable admission ledger, read by the OI audit's admission column.
     if (path === "/api/trading/gate") return ok(tradingGateFixture());
     if (path.startsWith("/api/trading/gate/"))

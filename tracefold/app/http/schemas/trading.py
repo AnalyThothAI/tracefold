@@ -214,4 +214,30 @@ class TradingExecutionObservationsData(ExactApiSchema):
     measured_at_ms: int
 
 
+class TradingOperatorIntentData(ExactApiSchema):
+    seq: int
+    command_id: str
+    target_profile_id: str
+    action: Literal["pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"]
+    scope: str
+    reason: str
+    operator_identity: str
+    requested_at_ns: int
+    expires_at_ns: int
+    expired: bool
+    confirmed: bool
+    market_key: str | None = None
+    direction: Literal["long", "short"] | None = None
+    disposition: str | None = None
+    disposition_reason: str | None = None
+
+
+class TradingOperatorIntentsData(ExactApiSchema):
+    commands: list[TradingOperatorIntentData] = Field(default_factory=list)
+    complete: bool
+    next_cursor: str | None = None
+    window_hours: int
+    measured_at_ms: int
+
+
 __all__ = [name for name in globals() if name.startswith("Trading")]

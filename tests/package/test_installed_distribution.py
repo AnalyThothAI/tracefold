@@ -202,6 +202,7 @@ def test_wheel_ships_the_packaged_resources_the_runtime_reads(built_distribution
     assert sorted(name for name in members if name.startswith(f"{alembic}versions/") and name.endswith(".py")) == [
         f"{alembic}versions/20260831_0340_baseline.py",
         f"{alembic}versions/20260901_0341_trading_signal_hard_cut.py",
+        f"{alembic}versions/20260901_0342_trading_notification_deliveries.py",
     ]
     assert f"{DISTRIBUTION_NAME}/news/program/resources/registry.json" in members
 
@@ -243,7 +244,7 @@ def test_installed_distribution_reads_its_own_program_artifact(isolated_probe: d
 def test_installed_distribution_carries_the_alembic_tree(isolated_probe: dict[str, object]) -> None:
     assert isolated_probe["alembic_env_py"] is True
     assert isolated_probe["alembic_baseline_sql"] is True
-    assert isolated_probe["alembic_revisions"] == 2
+    assert isolated_probe["alembic_revisions"] == 3
 
 
 @pytest.mark.parametrize("entrypoint", ["console-script", "python-m"])

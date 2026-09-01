@@ -42,9 +42,11 @@ PostgreSQL transaction. The Signal contains no account, route, quantity,
 notional, leverage, order, grant, reservation, or OMS state.
 
 The #433-B Nautilus Runtime and the Signal/OperatorIntent/Observation transport
-exist but remain cold: current configuration accepts only `execution.mode =
-disabled` at the App root. The canonical deployment starts no execution
-process and cannot submit an order until #433-E. Legacy Capital/Intent/order
+exist, and #433-D adds the authenticated operator-control boundary while the
+Runtime remains cold: current configuration accepts only `execution.mode =
+disabled` at the App root. Workers may durably record commands and asynchronously
+project observations to Telegram, but the canonical deployment starts no
+execution process and cannot submit an order until #433-E. Legacy Capital/Intent/order
 tables are read-only history after migration `20260901_0341`; no active writer
 or compatibility route reaches them. RabbitMQ remains News-only.
 
@@ -152,7 +154,7 @@ evidence rather than executable configuration.
 | US reference instruments | News Market Review | `latest_state` | Nasdaq Trader symbol directories | REST polling | `news-instruments`; 6 h, 15 m retry if none answer | reference rows in `news_market_instruments`; non-crypto classification only |
 | Event Reaction | News Market Review | `derived_work` | persisted Events plus venue candle history | PostgreSQL planner + REST | `news-reactions`; 60 s and bounded immediate catch-up | versioned `news_event_reactions`; review projections |
 | Trading Signal lane | Trading | `derived_work` | one public News OI projection and source-native closed bars | PostgreSQL planner + REST | `trading-signal-lane`; App-owned poll, 2 s when enabled | admission ledger, frozen `trading_cases`, and atomic `trading_trade_signals` |
-| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, future `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | dormant bounded PostgreSQL transport | no canonical task before #433-E | append-only `ExecutionObservationV1`; disabled in #433-C |
+| Nautilus OI Runtime | Trading execution | `capital_truth` | `TradeSignalV1`, authenticated `OperatorIntentV1`, Nautilus Cache/Portfolio, Binance | bounded PostgreSQL transport; Workers Telegram/CLI ingress is durable before acknowledgement | no canonical Runtime task before #433-E; optional Workers notification task in D | append-only `ExecutionObservationV1`; execution disabled in #433-D |
 
 The runtime limits behind that inventory are code-owned safety policy. `shared`
 means one turn-wide cap is divided among the named rows. `adapter-owned` names a
@@ -182,7 +184,7 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Nautilus OI Runtime | no canonical task before #433-E | disabled | account slot / immutable activation fence | count-and-byte bounded queues | disabled | one account-slot writer when activated | Runtime-owned | anti-join replay / deterministic client IDs / fail closed | #433-C cannot activate or submit; only dormant seam tests may construct it |
+| Nautilus OI Runtime | no canonical Runtime task before #433-E | command TTL; Runtime cadence code-owned | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | disabled | one account-slot writer when activated | Runtime-owned | anti-join replay / deterministic client IDs / fail closed | #433-D cannot activate or submit; authenticated commands can be recorded, and no active profile is terminally `not_applied` |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -599,7 +601,8 @@ health/readiness/metrics), the News consumer tasks when News is enabled
 `news-deliverer`, `news-janitor`), the bounded polling loops
 (`news-instruments`, and with venues enabled `news-quotes`,
 `news-reactions`), the one Signal loop when Trading is enabled
-(`trading-signal-lane`), and `workers-control` (singleton
+(`trading-signal-lane`), the optional `trading-observation-notifier` when
+Trading control is enabled, and `workers-control` (singleton
 lock, heartbeat, runtime row). There is no acquisition clock, projection
 coordinator, model arbiter, stream ingester, identity backfill, or universe
 sync task. The polling loops read public catalogues and prices on code-owned
@@ -1925,8 +1928,9 @@ database to the exact old terminal revision, then reused that identity with
 `down_revision = None`. A fresh PostgreSQL 18 database creates the complete
 current schema in one step; an already-stamped database does not replay the
 baseline or rewrite business data. Earlier revisions and role bootstrap logic
-live only in Git history and the pre-cut image. `20260901_0341` is the current
-single head; it performs the #433-C Signal hard cut after the baseline.
+live only in Git history and the pre-cut image. `20260901_0341` performs the
+#433-C Signal hard cut after the baseline; additive `20260901_0342` is the
+current single head and adds only the append-only Trading notification delivery ledger.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2030,6 +2034,36 @@ overflow remains unhealthy until its durable `audit_gap` is appended. The
 App root accepts only `disabled` and constructs no TradingNode, so this stage
 has no CLI/deploy selector, no provider write route, no old `TradeIntent`
 consumer, legacy lifecycle bridge, or dual writer.
+
+#433-D adds one closed operator-control path without adding another execution
+owner. Workers alone exposes `POST /telegram/control` on its loopback probe;
+the Telegram secret header and both configured chat/user allowlists must pass
+before parsing. `/status` is read-only. `/pause`, confirmed `/resume`, confirmed
+`/halt`, account-only confirmed `/flatten`, and optional short-lived `/long` /
+`/short` commands map to `OperatorIntentV1`; the grammar contains no quantity,
+notional, leverage, venue, or order parameter. The stable Telegram bot identity
+plus its bot-scoped `update_id`, or the CLI request identity, makes the command
+deterministic. Workers appends the
+intent before replying “recorded”; without an active target profile it appends
+the final `not_applied/execution_profile_inactive` observation in the same
+transaction. Serve remains read-only.
+
+Commands and Signals share one bounded Runtime input, with Commands admitted
+and handled first. Queue pressure evicts only volatile Signal admission so a
+durable Command can be scanned; PostgreSQL replays that unresolved Signal.
+Pause blocks only new entries; halt is sticky, rejects resume, and does not
+mean flatten; flatten pauses entries, touches only Runtime-owned exposure, and
+does not complete until a later fresh Binance-account reconciliation proves
+flat. The Strategy callback reaches only Cache/Portfolio and in-memory queues.
+PostgreSQL polling/audit and Telegram I/O remain background work. The optional
+Workers notifier advances through append-only target/observation delivery receipts and
+records one only after delivery; it has no mutable cursor or ACK state machine.
+Telegram or transient database-admission unavailability retries the unreceipted
+observation and cannot block protection, exits, or reconciliation. Delivery is
+at-least-once across the send/receipt crash window, so a duplicate message is
+allowed but a skipped notifiable durable observation is not. HTTP/CLI/React command and
+observation views are read projections: recorded, Runtime accepted, order
+accepted, fill, and account flat are five distinct facts.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

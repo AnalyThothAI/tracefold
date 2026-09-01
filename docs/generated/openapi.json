@@ -507,6 +507,52 @@
         "title": "ApiEnvelope[TradingGateSourceData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingOperatorIntentsData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingOperatorIntentsData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingOperatorIntentsData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingSignalsData_": {
         "additionalProperties": false,
         "properties": {
@@ -6298,6 +6344,167 @@
         "title": "TradingGateSourceData",
         "type": "object"
       },
+      "TradingOperatorIntentData": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "pause_entries",
+              "resume_entries",
+              "emergency_halt",
+              "flatten",
+              "manual_entry"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "direction": {
+            "anyOf": [
+              {
+                "enum": [
+                  "long",
+                  "short"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Direction"
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition"
+          },
+          "disposition_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition Reason"
+          },
+          "expired": {
+            "title": "Expired",
+            "type": "boolean"
+          },
+          "expires_at_ns": {
+            "title": "Expires At Ns",
+            "type": "integer"
+          },
+          "market_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Key"
+          },
+          "operator_identity": {
+            "title": "Operator Identity",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requested_at_ns": {
+            "title": "Requested At Ns",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "target_profile_id": {
+            "title": "Target Profile Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "command_id",
+          "target_profile_id",
+          "action",
+          "scope",
+          "reason",
+          "operator_identity",
+          "requested_at_ns",
+          "expires_at_ns",
+          "expired",
+          "confirmed"
+        ],
+        "title": "TradingOperatorIntentData",
+        "type": "object"
+      },
+      "TradingOperatorIntentsData": {
+        "additionalProperties": false,
+        "properties": {
+          "commands": {
+            "items": {
+              "$ref": "#/components/schemas/TradingOperatorIntentData"
+            },
+            "title": "Commands",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "measured_at_ms": {
+            "title": "Measured At Ms",
+            "type": "integer"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "window_hours": {
+            "title": "Window Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "complete",
+          "window_hours",
+          "measured_at_ms"
+        ],
+        "title": "TradingOperatorIntentsData",
+        "type": "object"
+      },
       "TradingPolicyCheckData": {
         "additionalProperties": false,
         "properties": {
@@ -7175,6 +7382,72 @@
           }
         },
         "summary": "Get Trading Cases",
+        "tags": [
+          "api"
+        ]
+      }
+    },
+    "/api/trading/execution/commands": {
+      "get": {
+        "operationId": "get_operator_intents_api_trading_execution_commands_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "profile",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 128,
+              "title": "Profile",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 32,
+              "title": "Action",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 256,
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingOperatorIntentsData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Operator Intents",
         "tags": [
           "api"
         ]

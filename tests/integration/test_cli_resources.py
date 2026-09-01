@@ -6,6 +6,7 @@ import io
 import json
 import os
 import tempfile
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -73,6 +74,39 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "blocked_24h",
         "cases_open",
         "signals_unexpired",
+    }
+
+
+def test_trading_issue_records_idempotent_not_applied_intent_without_an_active_profile(
+    postgres_clone_dsn: str,
+) -> None:
+    requested_at_ns = time.time_ns()
+    command = [
+        "trading",
+        "issue",
+        "/pause planned-maintenance",
+        "--request-id",
+        "cli-integration-1",
+        "--requested-at-ns",
+        str(requested_at_ns),
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        home = Path(tmpdir)
+        write_runtime_config(home, postgres_dsn=postgres_migration_test_dsn(postgres_clone_dsn))
+        stdout = io.StringIO()
+        with patch.dict("os.environ", {"HOME": str(home)}, clear=False):
+            exit_codes = [main(command, stdout=stdout), main(command, stdout=stdout)]
+
+    responses = [json.loads(line) for line in stdout.getvalue().splitlines()]
+    assert exit_codes == [0, 0]
+    assert responses[0] == responses[1]
+    assert responses[0]["data"] == {
+        "command_id": responses[0]["data"]["command_id"],
+        "seq": 1,
+        "requested_at_ns": requested_at_ns,
+        "disposition": "not_applied",
+        "reason": "execution_profile_inactive",
+        "truth": "intent_recorded_not_order_or_fill",
     }
 
 

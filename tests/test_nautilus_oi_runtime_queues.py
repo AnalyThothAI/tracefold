@@ -6,13 +6,23 @@ from decimal import Decimal
 
 import pytest
 
-from tests.nautilus_oi_runtime_fixtures import NOW_NS, SignalRows, oi_profile, trade_signal
+from tests.nautilus_oi_runtime_fixtures import (
+    NOW_NS,
+    CommandRows,
+    SignalRows,
+    oi_profile,
+    operator_intent,
+    trade_signal,
+)
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
     AuditSink,
     ObservationFactory,
     day_start_baseline_from_observation,
 )
-from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
+from tracefold.integrations.nautilus.oi_runtime.signal_client import (
+    ExecutionSignalClient,
+    poll_execution_inputs_once,
+)
 
 
 def _factory() -> ObservationFactory:
@@ -76,6 +86,125 @@ def test_signal_can_be_retried_when_audit_backpressure_prevents_final_dispositio
 
     assert client.next_nowait() == signal
     assert client.pending_ids == {signal.signal_id}
+
+
+def test_signal_client_consumes_commands_in_the_same_total_count_and_byte_bound() -> None:
+    signal = trade_signal()
+    command = operator_intent()
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=1,
+        max_bytes=1_048_576,
+    )
+
+    assert client.poll_commands_once(CommandRows(command)) == 1
+    assert client.poll_once(SignalRows(signal)) == 0
+    assert client.next_command_nowait() == command
+    assert client.pending_command_ids == {command.command_id}
+    client.retry_command(command)
+    assert client.next_command_nowait() == command
+    client.mark_command_durable(command.command_id)
+    assert client.pending_command_ids == set()
+
+
+def test_poll_admits_operator_commands_before_signals_into_the_shared_bound() -> None:
+    signal = trade_signal()
+    command = operator_intent()
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=1,
+    )
+
+    admitted = poll_execution_inputs_once(
+        client=client,
+        reader=SignalRows(signal),
+        command_reader=CommandRows(command),
+    )
+
+    assert admitted == (1, 0)
+    assert client.next_command_nowait() == command
+    assert client.next_nowait() is None
+
+
+def test_signal_retry_cannot_overfill_the_shared_command_and_signal_bound() -> None:
+    signal = trade_signal()
+    command = operator_intent()
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=1,
+    )
+    assert client.poll_once(SignalRows(signal)) == 1
+    assert client.next_nowait() == signal
+    assert client.poll_commands_once(CommandRows(command)) == 1
+
+    with pytest.raises(RuntimeError, match="oi_runtime_signal_retry_overflow"):
+        client.retry(signal)
+
+    assert client.queued_count == 1
+
+
+def test_durable_command_scan_evicts_one_buffered_signal_instead_of_being_starved() -> None:
+    first = trade_signal(signal_id="1" * 64)
+    second = trade_signal(signal_id="2" * 64)
+    command = operator_intent(command_id="3" * 64)
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=2,
+    )
+    assert client.poll_once(SignalRows(first, second)) == 2
+
+    assert client.poll_commands_once(CommandRows(command)) == 1
+
+    assert client.queued_count == 2
+    assert client.queued_command_count == 1
+    assert client.command_scan_complete is False
+    assert client.pending_ids == {first.signal_id}
+    assert client.pending_command_ids == {command.command_id}
+    assert client.poll_once(SignalRows(first, second)) == 0
+
+
+def test_durable_command_scan_can_reclaim_signal_bytes_without_losing_database_truth() -> None:
+    first = trade_signal(signal_id="1" * 64)
+    second = trade_signal(signal_id="2" * 64)
+    command = operator_intent(command_id="3" * 64)
+    signal_bytes = len(first.model_dump_json().encode()) + len(second.model_dump_json().encode())
+    command_bytes = len(command.model_dump_json().encode())
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=3,
+        max_bytes=max(signal_bytes, command_bytes),
+    )
+    assert client.poll_once(SignalRows(first, second)) == 2
+
+    assert client.poll_commands_once(CommandRows(command)) == 1
+
+    assert client.pending_command_ids == {command.command_id}
+    assert client.queued_bytes <= max(signal_bytes, command_bytes)
+    assert len(client.pending_ids) < 2
+
+
+def test_failed_command_scan_closes_the_signal_gate() -> None:
+    signal = trade_signal()
+    client = ExecutionSignalClient(
+        runtime_profile_id=oi_profile().profile_id,
+        execution_strategy="oi_nautilus_v1",
+        max_count=2,
+    )
+    assert client.poll_once(SignalRows(signal)) == 1
+
+    def unavailable(_profile: str, _strategy: str, _limit: int) -> tuple[()]:
+        raise RuntimeError("command-reader-unavailable")
+
+    with pytest.raises(RuntimeError, match="command-reader-unavailable"):
+        client.poll_commands_once(unavailable)
+
+    assert client.command_scan_complete is False
+    assert client.poll_once(SignalRows(signal)) == 0
 
 
 def test_audit_flush_failure_keeps_batch_and_blocks_exposure_until_success() -> None:

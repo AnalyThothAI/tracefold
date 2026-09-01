@@ -22,6 +22,7 @@ _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,127}$")
 _OBSERVATION_BATCH_SAVEPOINT = "tracefold_execution_observation_batch"
 
 type StoredExecutionPayload = tuple[int, dict[str, Any]]
+type StoredOperatorControl = tuple[StoredExecutionPayload, dict[str, Any] | None]
 
 
 def _postgres_text_valid(value: str) -> bool:
@@ -451,6 +452,68 @@ class ExecutionStreamStorage:
         self._require_activation(runtime_profile_id)
         return tuple((int(row["seq"]), dict(row["payload"])) for row in rows)
 
+    def execution_profile_activation(self, runtime_profile_id: str) -> ExecutionProfileActivation | None:
+        if _IDENTITY.fullmatch(runtime_profile_id) is None:
+            raise ValueError("execution_profile_identity_invalid")
+        row = self.conn.execute(
+            """
+            SELECT runtime_profile_id, account_slot, activated_after_signal_seq,
+                   activated_after_command_seq, mode, runtime_release, config_sha256, created_at_ns
+              FROM trading_execution_profile_activations
+             WHERE runtime_profile_id = %s
+            """,
+            (runtime_profile_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return ExecutionProfileActivation(
+            runtime_profile_id=str(row["runtime_profile_id"]),
+            account_slot=str(row["account_slot"]),
+            activated_after_signal_seq=int(row["activated_after_signal_seq"]),
+            activated_after_command_seq=int(row["activated_after_command_seq"]),
+            mode=row["mode"],
+            runtime_release=str(row["runtime_release"]),
+            config_sha256=str(row["config_sha256"]),
+            created_at_ns=int(row["created_at_ns"]),
+        )
+
+    def operator_control_history(
+        self,
+        *,
+        runtime_profile_id: str,
+        limit: int,
+    ) -> tuple[StoredOperatorControl, ...]:
+        """Return the activation-fenced facts needed to rebuild fail-closed control state."""
+
+        self._validate_read_limit(limit)
+        if _IDENTITY.fullmatch(runtime_profile_id) is None:
+            raise ValueError("execution_profile_identity_invalid")
+        rows = self.conn.execute(
+            """
+            SELECT command.seq, command.payload AS command_payload,
+                   disposition.payload AS disposition_payload
+              FROM trading_execution_profile_activations activation
+              JOIN trading_operator_intents command
+                ON command.target_profile_id = activation.runtime_profile_id
+               AND command.seq > activation.activated_after_command_seq
+              LEFT JOIN trading_execution_observations disposition
+                ON disposition.command_id = command.command_id
+               AND disposition.normalized_kind = 'control_disposition'
+             WHERE activation.runtime_profile_id = %s
+             ORDER BY command.seq
+             LIMIT %s
+            """,
+            (runtime_profile_id, limit),
+        ).fetchall()
+        self._require_activation(runtime_profile_id)
+        return tuple(
+            (
+                (int(row["seq"]), dict(row["command_payload"])),
+                None if row["disposition_payload"] is None else dict(row["disposition_payload"]),
+            )
+            for row in rows
+        )
+
     def execution_observation(self, event_id: str) -> StoredExecutionPayload | None:
         if _SHA256.fullmatch(event_id) is None:
             raise ValueError("execution_observation_identity_invalid")
@@ -514,6 +577,7 @@ __all__ = [
     "PreparedOperatorIntent",
     "PreparedTradeSignal",
     "StoredExecutionPayload",
+    "StoredOperatorControl",
     "materialize_execution_observation",
     "materialize_operator_intent",
     "materialize_operator_intents",

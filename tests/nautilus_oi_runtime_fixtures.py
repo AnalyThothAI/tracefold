@@ -31,10 +31,11 @@ from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     OiNautilusStrategy,
+    RuntimeControlSnapshot,
     RuntimeReadiness,
     RuntimeReconciliationSnapshot,
 )
-from tracefold.trading import TradeSignalV1
+from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 NOW_NS = 1_900_000_000_000_000_000
 ACCOUNT_ID = AccountId("BINANCE-001")
@@ -102,6 +103,51 @@ class SignalRows:
         return self.values[:limit]
 
 
+class CommandRows:
+    def __init__(self, *values: OperatorIntentV1) -> None:
+        self.values = values
+
+    def __call__(
+        self,
+        _runtime_profile_id: str,
+        _execution_strategy: str,
+        limit: int,
+    ) -> tuple[OperatorIntentV1, ...]:
+        return self.values[:limit]
+
+
+def operator_intent(
+    *,
+    command_id: str = "5" * 64,
+    action: str = "pause_entries",
+    requested_at_ns: int = NOW_NS - 1_000_000,
+    expires_at_ns: int = NOW_NS + 60_000_000_000,
+    confirmation_identity: str | None = None,
+    scope: str = "entries",
+    market_key: str | None = None,
+    direction: str | None = None,
+) -> OperatorIntentV1:
+    if action in {"resume_entries", "emergency_halt", "flatten"} and confirmation_identity is None:
+        confirmation_identity = "6" * 64
+    return OperatorIntentV1.model_validate(
+        {
+            "seq": 1,
+            "command_id": command_id,
+            "target_profile_id": oi_profile().profile_id,
+            "action": action,
+            "scope": scope,
+            "reason": "operator test",
+            "operator_identity": "operator:test",
+            "authentication_identity": "test:authenticated",
+            "requested_at_ns": requested_at_ns,
+            "expires_at_ns": expires_at_ns,
+            "confirmation_identity": confirmation_identity,
+            "market_key": market_key,
+            "direction": direction,
+        }
+    )
+
+
 class RecordingOiStrategy(OiNautilusStrategy):
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
@@ -147,6 +193,7 @@ def _usdt_margin_account() -> Any:
 def registered_oi_strategy(
     *,
     values: tuple[TradeSignalV1, ...] = (),
+    commands: tuple[OperatorIntentV1, ...] = (),
     singleton: list[bool] | None = None,
     audit: AuditSink | None = None,
     signal_client: ExecutionSignalClient | None = None,
@@ -154,6 +201,7 @@ def registered_oi_strategy(
     startup_reconciliation: RuntimeReconciliationSnapshot | None = None,
     continuous_reconciliation: Callable[[], RuntimeReconciliationSnapshot | None] | None = None,
     mark_reconciled: bool = True,
+    initial_control_state: RuntimeControlSnapshot | None = None,
 ) -> SimpleNamespace:
     profile = oi_profile()
     selected_signals = signal_client or ExecutionSignalClient(
@@ -162,6 +210,8 @@ def registered_oi_strategy(
     )
     if values:
         selected_signals.poll_once(SignalRows(*values))
+    if commands:
+        selected_signals.poll_commands_once(CommandRows(*commands))
     factory = ObservationFactory(
         runtime_profile_id=profile.profile_id,
         runtime_release=profile.runtime_release,
@@ -190,6 +240,7 @@ def registered_oi_strategy(
         ),
         startup_reconciliation=startup_reconciliation,
         continuous_reconciliation=continuous_reconciliation,
+        initial_control_state=initial_control_state,
     )
     clock = TestClock()
     clock.set_time(NOW_NS)
@@ -231,9 +282,11 @@ def registered_oi_strategy(
 __all__ = [
     "ACCOUNT_ID",
     "NOW_NS",
+    "CommandRows",
     "RecordingOiStrategy",
     "SignalRows",
     "oi_profile",
+    "operator_intent",
     "registered_oi_strategy",
     "trade_signal",
 ]

@@ -20,10 +20,12 @@ from tracefold.integrations.nautilus.oi_runtime.audit_sink import (
 from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
-from tracefold.trading import ExecutionObservationV1, TradeSignalV1
+from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
+from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
     EXECUTION_STREAM_NOTIFY_CHANNEL,
     materialize_execution_observation,
+    materialize_operator_intents,
     materialize_trade_signals,
     prepare_execution_observations,
 )
@@ -68,10 +70,64 @@ def load_unresolved_trade_signals(
     return materialize_trade_signals(rows)
 
 
+def load_unresolved_operator_intents(
+    repos: RepositorySession,
+    runtime_profile_id: str,
+    execution_strategy: str,
+    limit: int,
+) -> tuple[OperatorIntentV1, ...]:
+    """Materialize authenticated Commands beside Signals at the App boundary."""
+
+    rows = repos.trading.unresolved_operator_intents(
+        runtime_profile_id=runtime_profile_id,
+        execution_strategy=execution_strategy,
+        limit=limit,
+    )
+    return materialize_operator_intents(rows)
+
+
 def execution_stream_channel() -> str:
     """Return the Trading-owned LISTEN wake channel to the PostgreSQL adapter."""
 
     return EXECUTION_STREAM_NOTIFY_CHANNEL
+
+
+def load_runtime_control_state(
+    repos: RepositorySession,
+    runtime_profile_id: str,
+    *,
+    limit: int = 999,
+) -> RuntimeControlSnapshot:
+    """Fold durable accepted controls; overflow halts instead of guessing a truncated state."""
+
+    if not 1 <= limit <= 999:
+        raise ValueError("oi_runtime_control_history_limit_invalid")
+    rows = repos.trading.operator_control_history(runtime_profile_id=runtime_profile_id, limit=limit + 1)
+    if len(rows) > limit:
+        return RuntimeControlSnapshot(entries_paused=True, emergency_halted=True, flatten_pending=())
+    entries_paused = False
+    emergency_halted = False
+    for command_row, disposition_payload in rows:
+        if disposition_payload is None:
+            continue
+        command = materialize_operator_intents((command_row,))[0]
+        disposition = materialize_execution_observation((0, disposition_payload))
+        if disposition.summary.get("disposition") not in {"accepted", "completed"}:
+            continue
+        if command.action == "pause_entries":
+            entries_paused = True
+        elif command.action == "resume_entries":
+            entries_paused = False
+        elif command.action == "emergency_halt":
+            entries_paused = True
+            emergency_halted = True
+        elif command.action == "flatten":
+            entries_paused = True
+    return RuntimeControlSnapshot(
+        entries_paused=entries_paused,
+        emergency_halted=emergency_halted,
+        flatten_pending=(),
+    )
 
 
 def flush_audit_once(
@@ -91,6 +147,8 @@ def flush_audit_once(
     for value in flushed:
         if value.normalized_kind == "signal_disposition" and value.signal_id is not None:
             signals.mark_durable(value.signal_id)
+        if value.normalized_kind == "control_disposition" and value.command_id is not None:
+            signals.mark_command_durable(value.command_id)
     return len(flushed)
 
 

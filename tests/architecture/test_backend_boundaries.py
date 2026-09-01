@@ -204,6 +204,7 @@ PRIVATE_BUSINESS_IMPORT_RULES = {
 INTEGRATION_BUSINESS_ADAPTER_FAMILIES = {
     "nautilus": {"trading"},
     "opentrade": {"trading"},
+    "telegram_control": {"trading"},
     "trading_catalog": {"trading"},
 }
 # News V3 cross-domain reads: none since the Analyst lane was retired (#57). Every edge

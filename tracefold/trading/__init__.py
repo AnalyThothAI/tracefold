@@ -16,6 +16,13 @@ from .contracts import (
     canonical_sha256,
 )
 from .execution_contracts import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
+from .operator_control import (
+    OperatorCommandError,
+    ParsedOperatorCommand,
+    parse_operator_command,
+    prepare_parsed_operator_intent,
+)
+from .storage.execution_stream import PreparedOperatorIntent, prepare_execution_observations
 
 __all__ = [
     "AlphaDecision",
@@ -24,8 +31,14 @@ __all__ = [
     "DecisionRuntimeV1",
     "ExecutionObservationV1",
     "OiTradeCandidate",
+    "OperatorCommandError",
     "OperatorIntentV1",
+    "ParsedOperatorCommand",
+    "PreparedOperatorIntent",
     "TradeSignalV1",
     "TradingCaseManifest",
     "canonical_sha256",
+    "parse_operator_command",
+    "prepare_execution_observations",
+    "prepare_parsed_operator_intent",
 ]

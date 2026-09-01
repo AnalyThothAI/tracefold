@@ -4,6 +4,7 @@ import * as PageState from "@shared/ui/PageState";
 
 import {
   useTradingCasesWithToken,
+  useTradingCommandsWithToken,
   useTradingObservationsWithToken,
   useTradingSignalsWithToken,
   useTradingStatusWithToken,
@@ -15,11 +16,12 @@ import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChro
 
 import "./trading.css";
 
-/** Current C boundary: Alpha emits Signals; execution stays explicitly disabled until E. */
+/** D operator view: commands and observations are facts; execution stays disabled until E. */
 export function TradingPage({ token }: { token: string }) {
   const statusQuery = useTradingStatusWithToken(token);
   const casesQuery = useTradingCasesWithToken(token);
   const signalsQuery = useTradingSignalsWithToken(token);
+  const commandsQuery = useTradingCommandsWithToken(token);
   const observationsQuery = useTradingObservationsWithToken(token);
   const status = statusQuery.data;
 
@@ -34,6 +36,7 @@ export function TradingPage({ token }: { token: string }) {
   const failed = [
     casesQuery.isError ? "Case" : "",
     signalsQuery.isError ? "Signal" : "",
+    commandsQuery.isError ? "Command" : "",
     observationsQuery.isError ? "Observation" : "",
   ].filter(Boolean);
 
@@ -62,12 +65,14 @@ export function TradingPage({ token }: { token: string }) {
         onRetry={() => {
           void casesQuery.refetch();
           void signalsQuery.refetch();
+          void commandsQuery.refetch();
           void observationsQuery.refetch();
         }}
         updating={
           statusQuery.isFetching ||
           casesQuery.isFetching ||
           signalsQuery.isFetching ||
+          commandsQuery.isFetching ||
           observationsQuery.isFetching
         }
       >
@@ -100,6 +105,37 @@ export function TradingPage({ token }: { token: string }) {
               <code>{status.execution.account_slot}</code>；本阶段不会把它们写入 Signal。
             </p>
             <TradingSourceLine path="GET /api/trading/status → decision · execution · alpha · counts" />
+          </Card>
+
+          <Card
+            hint="HTTP 200 或 CLI ok 只证明意图已持久化，不证明 Runtime、订单、成交或账户已平"
+            title="操作命令账本"
+          >
+            <p>
+              事实层级：意图已记录 → Runtime 受理 → 订单已接受 → 成交 → Binance
+              账户已平。每一级都必须有自己的持久回执，不能向后推断。
+            </p>
+            {commandsQuery.data?.commands?.length ? (
+              <div className="trading-table">
+                {commandsQuery.data.commands.map((command) => (
+                  <article className="trading-current-row" key={command.command_id}>
+                    <b>{commandActionLabel(command.action)}</b>
+                    <span data-tone={command.disposition ? undefined : "caution"}>
+                      {commandDispositionLabel(command)}
+                    </span>
+                    <code>{command.target_profile_id}</code>
+                    <span>{command.market_key ?? command.scope}</span>
+                    <span>seq {command.seq}</span>
+                    <code title={command.command_id}>{command.command_id.slice(0, 16)}</code>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <TradingEmptyNote>
+                {ledgerEmpty(commandsQuery.isPending, commandsQuery.isError, "Command")}
+              </TradingEmptyNote>
+            )}
+            <TradingSourceLine path="GET /api/trading/execution/commands → commands[] · disposition" />
           </Card>
 
           <Card flush hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal" title="最近 Case">
@@ -150,7 +186,7 @@ export function TradingPage({ token }: { token: string }) {
 
           <Card
             flush
-            hint="D/E Runtime 的 venue-native 回执；C 阶段允许为空但不能伪造 ready"
+            hint="Runtime 与 venue-native 回执；为空、RUNNING 或 ready 都不能被解释成订单或成交"
             title="执行观察"
           >
             {observationsQuery.data?.observations?.length ? (
@@ -183,6 +219,31 @@ export function TradingPage({ token }: { token: string }) {
       </PageState.Stale>
     </TradingShell>
   );
+}
+
+function commandActionLabel(action: string): string {
+  return (
+    {
+      emergency_halt: "紧急停止",
+      flatten: "减仓至空",
+      manual_entry: "手动方向",
+      pause_entries: "暂停开仓",
+      resume_entries: "恢复开仓",
+    }[action] ?? action
+  );
+}
+
+function commandDispositionLabel(command: {
+  disposition?: string | null;
+  disposition_reason?: string | null;
+  expired: boolean;
+}): string {
+  if (command.disposition) {
+    return command.disposition_reason
+      ? `${command.disposition} · ${command.disposition_reason}`
+      : command.disposition;
+  }
+  return command.expired ? "已过期 · 未见终局" : "等待 Runtime";
 }
 
 function ledgerEmpty(pending: boolean, failed: boolean, owner: string): string {

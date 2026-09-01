@@ -35,7 +35,9 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, the PostgreSQL DSN and
 password-file reference, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
-provider/name. `trading.execution.credentials` contains the closed file
+provider/name. `trading.control` contains only its enable switch, Telegram
+token/webhook-secret file references, chat/user allowlists, and notification
+target. `trading.execution.credentials` contains the closed file
 references for the one Binance USD-M Runtime profile. The Signal-only Workers
 process has no execution-secret mount or secret-reading path. Serve has neither.
 
@@ -50,6 +52,10 @@ fallback endpoint),
 `news.push.telegram_bot_token_file`, the two PostgreSQL password files
 (bootstrap and the shared `tracefold` application login), and the Binance files
 named by `trading.execution.credentials.api_key_file` / `api_secret_file`.
+When Trading control is enabled, its bot-token file and webhook-secret file are
+also secrets; the generated canonical names are `telegram_bot_token` and
+`telegram_webhook_secret`. A shared token filename does not merge News and
+Trading semantics: each adapter keeps its own target and message contract.
 There is no Hyperliquid execution credential and no other provider key or
 credential.
 
@@ -60,7 +66,7 @@ secret files with mode `0600`; reruns repair those permissions. Without
 only the generated config and does not rotate existing PostgreSQL passwords.
 Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create empty mode-`0600`
-`telegram_bot_token`, `binance_usdm_api_key`, and `binance_usdm_api_secret`
+`telegram_bot_token`, `telegram_webhook_secret`, `binance_usdm_api_key`, and `binance_usdm_api_secret`
 placeholders; an empty file is `unconfigured`, never a credential. They do not
 create or populate an execution key. A live
 operator populates each required provider file as a regular,
@@ -69,11 +75,20 @@ non-symlink file of at most 16 KiB with no group/other permission bits
 diagnostics expose only configured/readable booleans and resolved paths, never
 contents.
 
-Compose mounts only the generated `telegram_bot_token` filename and only into
-Workers. Serve receives neither the file nor its contents. If outbound push is
+Compose mounts only the generated Telegram token and webhook-secret filenames,
+and only into Workers. Serve receives neither file nor its contents. If outbound push is
 explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
+
+The Trading webhook is absent unless `trading.control.enabled=true`. When
+present it remains on the loopback Workers listener; an operator-owned HTTPS
+reverse proxy may expose only `/telegram/control`. Every request must carry the
+Telegram secret-token header, match both chat and user allowlists, fit the
+bounded body, and parse under the closed command grammar. Secrets and raw
+payloads are never persisted or echoed. A 2xx reply proves only durable intent
+recording. Telegram delivery failures stay outside the execution callback and
+cannot block protection, exit, or reconciliation.
 
 The dormant Nautilus service is excluded from the default Compose model by the
 explicit `execution` profile and is not a required deployment runtime before
