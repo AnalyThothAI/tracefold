@@ -1180,6 +1180,8 @@ Diagnose News in this order:
    before they are summed. The taxonomy optimizer has no judge. Candidate zero's validation score inside that GEPA
    run is the only optimization baseline. A task answer that reaches `max_tokens` is receipted once and
    scores that candidate example below any complete answer; it does not retry or abort later candidates.
+   A typed-invalid `EventSemantics` answer similarly remains one aligned example at score zero, rather than
+   shortening GEPA's batch.
    Reflection truncation, provider/transport failure and budget refusal reject the run. Official GEPA log/state is retained;
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release

@@ -1627,11 +1627,13 @@ execution budget, model slots and policy are code, covered by `envelope_sha256`,
 The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
 `add_format_failure_as_feedback=True`, and the existing
 `NativeNewsProgram(base_strategy).event_semantics` Predict inside one learning-only wrapper as its student
-with `num_threads=1`. The wrapper catches only an audited task-output truncation and returns one failed
-Prediction so DSPy keeps the trace batch aligned; DSPy 3.3.1 otherwise re-raises that `LMError`, drops the
-example, and leaves GEPA indexing a shorter batch. The existing metric assigns that Prediction a dedicated
+with `num_threads=1`. The wrapper converts an audited task-output truncation or a typed `EventSemantics`
+validation failure into one failed Prediction so DSPy keeps the trace batch aligned; DSPy 3.3.1 otherwise
+re-raises the truncation or drops the invalid example, leaving GEPA indexing a shorter batch. The existing
+metric assigns a truncated Prediction a dedicated
 `task_output_failure_score = -(train_count + 1)`, so one incomplete answer cannot beat a complete candidate on either
-the train minibatch or the smaller development-selection split. It does not retry, parse, evaluate or select.
+the train minibatch or the smaller development-selection split; a typed-invalid Prediction receives the
+Issue-declared invalid score `0`. The wrapper does not retry, parse, evaluate or select.
 Reflection truncation, transport/provider failure and budget refusal remain run-terminal.
 Frozen examples carry only rendered Event evidence and accepted taxonomy Gold; the deterministic metric
 returns the mean of subject set-F1 and exact family/state/assertion axes. There is no component selector,

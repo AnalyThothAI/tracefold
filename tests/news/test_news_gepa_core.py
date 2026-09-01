@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import dspy  # type: ignore[import-untyped]
 import pytest
+from pydantic import BaseModel
 
 from tests.support.news_judgment import trade_relevance
 from tracefold.news.artifact_identity import canonical_sha
@@ -21,6 +22,7 @@ from tracefold.news.learning.optimizer import (
     OptimizationRunTerminated,
     _BudgetMeter,
     _DspyTaxonomyMetric,
+    _LearningEventSemantics,
     _MeteredLearningLM,
     optimizer_config_receipt,
     optimizer_constructor,
@@ -55,6 +57,17 @@ class _TruncatedRoleLM(_RoleLM):
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         del request
         raise LMOutputTruncatedError("[task] news_program_lm_output_truncated")
+
+
+class _OtherConfig(BaseModel):
+    value: int
+
+
+class _UnrelatedValidationPredictor(dspy.Module):  # type: ignore[misc]
+    def forward(self, *, evidence_json: str) -> dspy.Prediction:
+        del evidence_json
+        _OtherConfig.model_validate({"value": "not-an-integer"})
+        raise AssertionError("validation must fail")
 
 
 def _taxonomy(**overrides: Any) -> dict[str, Any]:
@@ -117,6 +130,7 @@ def test_optimizer_receipt_exposes_native_format_feedback_and_no_hidden_selector
         val_count=4,
     )
 
+    assert receipt["schema"] == "tracefold.news.compile_optimizer_config_receipt.v7"
     assert receipt["optimizer"]["evaluator"] == (
         "LearningEventSemantics(NativeNewsProgram.event_semantics) on one explicit task LM"
     )
@@ -259,3 +273,24 @@ def test_task_output_failure_score_makes_one_incomplete_output_lose_to_a_complet
     assert result.score == failure_score
     assert failure_score + 7 < 0
     assert set(result.objective_scores.values()) == {failure_score}
+
+
+def test_typed_invalid_task_output_keeps_the_existing_zero_score() -> None:
+    result = _DspyTaxonomyMetric(task_output_failure_score=-9.0)(
+        dspy.Example(gold_taxonomy=_taxonomy()),
+        dspy.Prediction(
+            task_output_failure="news_program_compile_task_model_output_invalid",
+            task_output_feedback="Typed EventSemantics is invalid: scope",
+        ),
+    )
+
+    assert result.score == 0.0
+    assert result.feedback == "Typed EventSemantics is invalid: scope"
+    assert set(result.objective_scores.values()) == {0.0}
+
+
+def test_learning_wrapper_propagates_unrelated_pydantic_validation() -> None:
+    wrapper = _LearningEventSemantics(cast(dspy.Predict, _UnrelatedValidationPredictor()))
+
+    with pytest.raises(ValueError, match="OtherConfig"):
+        wrapper(evidence_json="evidence")
