@@ -1925,9 +1925,11 @@ constraint that rejected a safe transient pairing of independently observed
 flatness and unexpected exposure, with readiness still failing closed on
 unexpected exposure; additive `20260901_0346` lets a notification receipt
 outlive its provider's message id and carry a four-hour result; and destructive
-`20260901_0347`, the current single head, drops the twenty-two execution tables
+`20260901_0347` drops the twenty-two execution tables
 `0341` had made read-only, together with the thirteen functions only their
-triggers, defaults and CHECKs called.
+triggers, defaults and CHECKs called; and `20260902_0348`, the current single
+head, hard-cuts Runtime readiness and adds the profile-keyed current control
+projection.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
