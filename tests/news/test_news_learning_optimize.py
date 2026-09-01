@@ -166,7 +166,7 @@ def test_truncated_answer_writes_an_exact_terminal_usage_receipt(
     assert result.report.optimizer is None
     assert result.report.gepa_public_result is None
     assert result.report.usage == {
-        "schema": "tracefold.news.optimization_usage.v2",
+        "schema": "tracefold.news.optimization_usage.v3",
         "task_model_calls": int(role == "task"),
         "reflection_model_calls": int(role == "reflection"),
         "task_cost_microusd": 3 if role == "task" else 0,
@@ -183,7 +183,9 @@ def test_truncated_answer_writes_an_exact_terminal_usage_receipt(
         "wall_clock_ms": 250,
         "imputed_cost_calls": 0,
         "actual_cost_microusd": 3,
-        "metric_calls": 0,
+        # GEPA did not return its public result, so the exact number of completed metric evaluations is
+        # unavailable. Physical model calls remain exact above; zero would falsely claim no evaluation ran.
+        "metric_calls": None,
         "transport_failures": 0,
         "transport_retries": 0,
     }
@@ -248,8 +250,10 @@ def test_unready_development_profile_is_a_zero_provider_call_terminal_report() -
     assert result.report.objective["development_profile"]["ready"] is False
     assert "development_calibration_missing" in result.report.reasons
     assert result.report.model_identities == {}
+    assert result.report.usage["schema"] == "tracefold.news.optimization_usage.v3"
     assert result.report.usage["task_model_calls"] == 0
     assert result.report.usage["reflection_model_calls"] == 0
+    assert result.report.usage["metric_calls"] == 0
     assert result.report.metric is None
     assert result.candidate is None
 

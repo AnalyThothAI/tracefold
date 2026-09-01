@@ -55,7 +55,9 @@ REFLECTION_MAX_TOKENS = 32_000
 REFLECTION_TIMEOUT_SECONDS = 300.0
 METRIC_JUDGE_MAX_TOKENS = 4_096
 METRIC_JUDGE_TIMEOUT_SECONDS = 120.0
-OPTIMIZATION_RUN_REPORT_SCHEMA: Literal["news_optimization_run_report_v2"] = "news_optimization_run_report_v2"
+# v3 (#456): an interrupted GEPA compile cannot expose an exact public metric-evaluation count. Its report
+# records that count as unavailable instead of claiming zero while retaining exact physical model usage.
+OPTIMIZATION_RUN_REPORT_SCHEMA: Literal["news_optimization_run_report_v3"] = "news_optimization_run_report_v3"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 # The three terminal states one offline optimization can end in (#202 §5). Every one of them is a complete,
@@ -490,7 +492,7 @@ class OptimizationRunReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["news_optimization_run_report_v2"] = OPTIMIZATION_RUN_REPORT_SCHEMA
+    schema_version: Literal["news_optimization_run_report_v3"] = OPTIMIZATION_RUN_REPORT_SCHEMA
     outcome: OptimizationOutcome
     dataset: DevelopmentDatasetRef
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)

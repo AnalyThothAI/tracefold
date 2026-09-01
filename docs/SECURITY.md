@@ -221,12 +221,16 @@ after it, and records each role's input/output/cached/total tokens, calls, cost,
 in the same report. Reflection alone has the code-owned 32k-token ceiling. The taxonomy optimizer has no
 semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
 
-Every terminal state writes `news_optimization_run_report_v2`; only `ADVANCE` also writes
+Every terminal state writes `news_optimization_run_report_v3`; only `ADVANCE` also writes
 `news_prompt_candidate_v2`. The only mutable field is the EventSemantics instruction. ReaderCard is copied
 byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
 beside the public native GEPA parent/score/subscore state. Registration independently re-applies the patch,
 re-projects the dataset and re-derives Objective Plan v3. Generator provenance grants no release authority;
 future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
+
+Optimization usage v3 distinguishes a proven zero metric count from an unavailable count: preflight
+refusals record `0`, while an interrupted GEPA compile with no public result records `null`. Physical model
+calls, tokens and cost remain exact; the report never infers a metric count from them or private GEPA state.
 
 If dynamic code generation or an agent graph ever becomes a candidate again, the
 sandbox threat model has to be rebuilt with it, under a new Issue. It is not

@@ -1641,7 +1641,7 @@ or production assignment.
 
 One optimization produces one `news_prompt_candidate_v2`, and only when it ends
 in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
-writes a complete `news_optimization_run_report_v2`, so a run that spent a
+writes a complete `news_optimization_run_report_v3`, so a run that spent a
 budget and shipped nothing is still readable. Issue #193 had already collapsed
 the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
@@ -1652,6 +1652,10 @@ only its public winner instruction while refusing demos or any extra Predictor, 
 unchanged into the two-string patch contract. Rows written
 under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
+
+The embedded optimization usage v3 keeps physical task/reflection usage exact. If GEPA terminates before
+returning its public result, the report records `metric_calls=null`; it does not turn completed-but-unknown
+metric evaluations into zero or reconstruct a count from private optimizer state.
 
 What replaced provenance is binding, checked at registration by a party that did
 not produce the candidate. `release register` re-applies the patch to the

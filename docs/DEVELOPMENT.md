@@ -630,7 +630,8 @@ The run directory must be new and empty. It contains `readiness.json`, official 
 `optimization/gepa/`, `optimization/optimization_report.json`, and
 `optimization/prompt_candidate.json` only on `ADVANCE`. The report retains DSPy's public candidate parents,
 aggregate validation scores, per-example subscores, per-objective aggregate scores, best index and total
-metric calls; it does not invent a private checkpoint format.
+metric calls when DSPy returns its public result. An interrupted compile records `metric_calls=null` while
+keeping physical task/reflection usage exact; it does not invent a count from private checkpoint state.
 
 **When a corpus is big enough (#259).** Coverage decides it: independent
 connected fact clusters by role, at least one safety case, the required strata

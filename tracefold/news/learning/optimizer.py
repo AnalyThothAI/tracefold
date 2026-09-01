@@ -70,7 +70,9 @@ from .objective import (
 from .taxonomy_metric import TAXONOMY_AXES, compare_taxonomy
 
 OBJECTIVE_SUMMARY_SCHEMA = "tracefold.news.optimization_objective_summary.v3"
-USAGE_SCHEMA = "tracefold.news.optimization_usage.v2"
+# v3 (#456): `metric_calls` is null when GEPA terminates before returning its public result. The physical
+# task/reflection call counters remain exact; zero is reserved for a preflight refusal that ran no metric.
+USAGE_SCHEMA = "tracefold.news.optimization_usage.v3"
 
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -1374,7 +1376,7 @@ def optimize(dataset: FrozenDevelopmentDataset, config: OptimizationConfig) -> O
             raise
         outcome, reasons = "REJECTED", (termination,)
 
-    metric_calls = run.metric_calls if run is not None else 0
+    metric_calls = run.metric_calls if run is not None else None
     usage = _usage(meter=meter, metric_calls=metric_calls, budgeted=budgeted)
     # The split and the recall receipt are corpus facts, known before the first call. A run the budget cut
     # short still publishes them, so "which halves was this scored on" is answerable for every terminal
@@ -1522,7 +1524,7 @@ def _terminal(
 def _usage(
     *,
     meter: _BudgetMeter | None,
-    metric_calls: int,
+    metric_calls: int | None,
     budgeted: Sequence[Any],
 ) -> dict[str, Any]:
     return {

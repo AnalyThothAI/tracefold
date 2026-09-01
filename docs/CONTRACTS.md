@@ -1339,7 +1339,7 @@ The command reads the frozen development corpus once through the shared
 application login and then holds task/reflection model endpoints and the existing typed
 budget. It has no database writer, broker, delivery, canary or promotion
 authority. Every terminal state writes
-`optimization/optimization_report.json` (`news_optimization_run_report_v2`):
+`optimization/optimization_report.json` (`news_optimization_run_report_v3`):
 
 | Outcome | Meaning | Candidate | Exit |
 | --- | --- | --- | --- |
@@ -1354,6 +1354,11 @@ and an optional PromptCandidate. The report records native public GEPA candidate
 per-example subscores, per-objective aggregate scores, best index and total metric calls without inventing a
 private checkpoint state. `ADVANCE` still enters the existing `release register`
 and evaluator/release gates; this command never performs those actions.
+
+Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs
+exact in every terminal state. `metric_calls` is the public `DspyGEPAResult.total_metric_calls` when GEPA
+returns that result, `0` for a zero-call preflight refusal, and `null` when an interrupted compile cannot
+publish an exact count. It never guesses from model calls or parses private GEPA state.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
 [--include-reviewed]` proposes `news_review_v6` rubrics for an owner-authorized
