@@ -28,11 +28,11 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
 )
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
-from tracefold.integrations.nautilus.oi_runtime.strategy import (
-    OiNautilusStrategy,
+from tracefold.integrations.nautilus.oi_runtime.state import (
     RuntimeControlSnapshot,
     RuntimeReadiness,
 )
+from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 NOW_NS = 1_900_000_000_000_000_000

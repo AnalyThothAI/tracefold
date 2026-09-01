@@ -103,7 +103,7 @@ def test_pr0_does_not_create_an_oi_collector_or_a_second_execution_bus() -> None
     assert violations == []
 
 
-def test_current_production_wiring_has_one_input_reconciliation_and_projection_owner_after_pr_b() -> None:
+def test_current_production_wiring_has_one_input_reconciliation_and_projection_owner_after_pr_d() -> None:
     root_source = (ROOT / "tracefold/app/nautilus/root.py").read_text(encoding="utf-8")
     bridge_source = (ROOT / "tracefold/app/nautilus/oi_runtime.py").read_text(encoding="utf-8")
     config_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/config.py").read_text(encoding="utf-8")
@@ -111,6 +111,10 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
         encoding="utf-8"
     )
     strategy_source = (ROOT / "tracefold/integrations/nautilus/oi_runtime/strategy.py").read_text(encoding="utf-8")
+    lifecycle_source = "\n".join(
+        (ROOT / f"tracefold/integrations/nautilus/oi_runtime/{name}.py").read_text(encoding="utf-8")
+        for name in ("entry", "exit", "protection", "recovery", "strategy")
+    )
     diagnostic_source = (ROOT / "tests/integration/test_nautilus_runtime_input_diagnostic.py").read_text(
         encoding="utf-8"
     )
@@ -136,7 +140,7 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert 'triggers=("startup",)' in root_source
     assert 'reconciliation_triggers.add("steady")' in root_source
     for reason in ("unknown_outcome", "protection_ambiguity", "flatten_pending"):
-        assert f'self._request_reconciliation("{reason}")' in strategy_source
+        assert f'self._request_reconciliation("{reason}")' in lifecycle_source
     assert "continuous_reconciliation" not in strategy_source
     assert "reconciliation=False" in config_source
     assert "open_check_interval_secs=5.0" in config_source
@@ -149,3 +153,59 @@ def test_current_production_wiring_has_one_input_reconciliation_and_projection_o
     assert "oi_runtime_input_diagnostic_dirty_worktree" in diagnostic_source
     assert "artifacts/scheduled/oi-runtime-input-diagnostic.json" in diagnostic_source
     assert "rss_delta_bytes" in diagnostic_source
+
+
+def test_pr_d_strategy_is_a_router_and_private_nautilus_calls_have_one_compatibility_seam() -> None:
+    runtime_root = ROOT / "tracefold/integrations/nautilus/oi_runtime"
+    strategy = runtime_root / "strategy.py"
+    strategy_source = strategy.read_text(encoding="utf-8")
+    expected_owners = {
+        "entry.py": "EntryCoordinator",
+        "protection.py": "ProtectionCoordinator",
+        "exit.py": "ExitCoordinator",
+        "recovery.py": "RecoveryCoordinator",
+        "state.py": "RuntimeExecutionState",
+        "observations.py": "RuntimeObservationWriter",
+    }
+    for filename, symbol in expected_owners.items():
+        assert symbol in _defined_symbols(runtime_root / filename)
+
+    assert len(strategy_source.splitlines()) < 400
+    for moved_algorithm in (
+        "def _handle_entry(",
+        "def _submit_stop(",
+        "def _verify_owned_exposure(",
+        "def _complete_flatten_from_reconciliation(",
+    ):
+        assert moved_algorithm not in strategy_source
+    assert "self._entry.handle_signal(signal)" in strategy_source
+    assert "self._protection.position_opened(event)" in strategy_source
+    assert "self._recovery.reconcile(snapshot)" in strategy_source
+
+    forbidden_frameworks = (
+        "IExecutionManager",
+        "OrderRepository",
+        "Protocol",
+        "ABC",
+        "adapter_registry",
+        "plugin_loader",
+        "service_locator",
+    )
+    runtime_source = "\n".join(path.read_text(encoding="utf-8") for path in runtime_root.glob("*.py"))
+    assert [token for token in forbidden_frameworks if token in runtime_source] == []
+
+    compat = runtime_root / "nautilus_1231_binance_compat.py"
+    private_calls = (
+        "._clients",
+        "._active_symbols_cache",
+        "._get_binance_position_status_reports",
+        "._build_active_symbols",
+        "._parse_order_status_reports",
+        "._fetch_algo_orders",
+        "._parse_algo_order_report",
+    )
+    for path in (ROOT / "tracefold").rglob("*.py"):
+        if path == compat:
+            continue
+        source = path.read_text(encoding="utf-8")
+        assert [token for token in private_calls if token in source] == [], path

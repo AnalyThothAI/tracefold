@@ -8,11 +8,10 @@ from typing import Any
 
 import pytest
 
-from tracefold.app.nautilus.reconciliation import (
+from tracefold.app.nautilus.reconciliation import account_reports_are_flat, reconcile_reports_into_cache
+from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
     CompleteBinanceAccountReports,
-    account_reports_are_flat,
     load_complete_binance_account_reports,
-    reconcile_reports_into_cache,
 )
 
 

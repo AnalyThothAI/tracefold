@@ -1,0 +1,347 @@
+"""Concrete position and reduce-only stop lifecycle owner."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from decimal import Decimal
+from typing import Any, Literal
+
+from nautilus_trader.model.enums import OrderSide, OrderType, PositionSide, TriggerType
+from nautilus_trader.model.identifiers import ClientId, ClientOrderId
+
+from .config import OiRuntimeProfile
+from .exit import ExitCoordinator
+from .observations import RuntimeObservationWriter
+from .state import (
+    ExecutionState,
+    PrivateReconciliationReason,
+    RecoveredProtectionSeed,
+    RuntimeExecutionState,
+    RuntimeReadiness,
+    deterministic_client_order_id,
+    protection_leg,
+)
+
+
+class ProtectionCoordinator:
+    """Own stop creation, replacement, retirement, and failure convergence."""
+
+    def __init__(
+        self,
+        *,
+        engine: Any,
+        profile: OiRuntimeProfile,
+        state: RuntimeExecutionState,
+        readiness: RuntimeReadiness,
+        observations: RuntimeObservationWriter,
+        exits: ExitCoordinator,
+        request_reconciliation: Callable[[PrivateReconciliationReason], None],
+    ) -> None:
+        self._engine = engine
+        self._profile = profile
+        self._state = state
+        self._readiness = readiness
+        self._observations = observations
+        self._exits = exits
+        self._request_reconciliation = request_reconciliation
+
+    def status(
+        self,
+        *,
+        positions_count: int,
+        unexpected_exposure: bool,
+    ) -> Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]:
+        if positions_count < 0:
+            raise ValueError("oi_runtime_positions_count_invalid")
+        if positions_count == 0:
+            return "not_applicable"
+        owned = tuple(state for state in self._state.executions.values() if state.position_id is not None)
+        if unexpected_exposure or len(owned) != positions_count:
+            return "unknown"
+        protected = tuple(
+            state.stop_order is not None
+            and state.stop_order.is_open
+            and state.stop_quantity == state.position_quantity
+            and state.position_quantity > 0
+            for state in owned
+        )
+        if all(protected):
+            return "protected"
+        if any(state.pending_stop_order is not None for state in owned):
+            return "pending"
+        return "unprotected"
+
+    def position_opened(self, event: Any) -> None:
+        entry_id = self._state.entry_for_opening_order(event.opening_order_id)
+        if entry_id is None:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        state = self._state.executions[entry_id]
+        if event.instrument_id != state.route.instrument_id or event.account_id != self._profile.account_id:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        expected_side = PositionSide.LONG if state.entry.direction == "long" else PositionSide.SHORT
+        if event.strategy_id != self._engine.id or event.side != expected_side:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        state.position_id = event.position_id
+        state.position_quantity = abs(Decimal(str(event.quantity)))
+        state.avg_entry_price = Decimal(str(event.avg_px_open))
+        self._state.positions[event.position_id] = entry_id
+        self.request_stop(state, state.position_quantity, state.avg_entry_price)
+        self._observations.position(state, "opened", int(event.ts_opened))
+
+    def position_changed(self, event: Any) -> None:
+        entry_id = self._state.positions.get(event.position_id)
+        if entry_id is None:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        state = self._state.executions[entry_id]
+        quantity = abs(Decimal(str(event.quantity)))
+        avg_price = Decimal(str(event.avg_px_open))
+        state.position_quantity = quantity
+        state.avg_entry_price = avg_price
+        self._observations.position(state, "changed", self._observations.event_ns(event))
+        self.request_stop(state, quantity, avg_price)
+
+    def position_closed(self, event: Any) -> None:
+        entry_id = self._state.positions.pop(event.position_id, None)
+        if entry_id is None:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        state = self._state.executions[entry_id]
+        state.position_quantity = Decimal(0)
+        state.active = False
+        if state.stop_order is not None and not state.stop_order.is_closed:
+            self._engine.cancel_order(state.stop_order, client_id=ClientId("BINANCE"))
+        if state.pending_stop_order is not None and not state.pending_stop_order.is_closed:
+            self._engine.cancel_order(state.pending_stop_order, client_id=ClientId("BINANCE"))
+        for retiring in state.retiring_stop_orders.values():
+            if not retiring.is_closed:
+                self._engine.cancel_order(retiring, client_id=ClientId("BINANCE"))
+        state.exit_retry_required = False
+        self._observations.position(state, "closed", int(event.ts_closed))
+        if self._state.pending_flatten:
+            self._request_reconciliation("flatten_pending")
+
+    def request_stop(self, state: ExecutionState, quantity: Decimal, avg_price: Decimal) -> None:
+        if quantity <= 0:
+            return
+        state.desired_stop = (quantity, avg_price)
+        if state.pending_stop_order is not None:
+            return
+        if state.stop_order is not None and state.stop_quantity == quantity and state.stop_avg_price == avg_price:
+            return
+        self._submit_stop(state, quantity, avg_price)
+
+    def _submit_stop(self, state: ExecutionState, quantity: Decimal, avg_price: Decimal) -> None:
+        instrument = self._engine.cache.instrument(state.route.instrument_id)
+        if instrument is None:
+            self._readiness.halt_for_unexpected_exposure()
+            return
+        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
+        trigger = avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
+        side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
+        quantity_value = instrument.make_qty(quantity)
+        trigger_price = instrument.make_price(trigger)
+        state.protection_generation += 1
+        leg = protection_leg(state.protection_generation, quantity_value.as_decimal())
+        client_order_id = deterministic_client_order_id(
+            namespace=self._profile.client_order_namespace,
+            profile_id=self._profile.profile_id,
+            entry_id=state.entry.entry_id,
+            leg=leg,
+        )
+        existing = self._engine.cache.order(client_order_id)
+        if existing is not None:
+            self._replay_stop(
+                state=state,
+                existing=existing,
+                client_order_id=client_order_id,
+                quantity=quantity_value.as_decimal(),
+                avg_price=avg_price,
+                trigger_price=trigger_price.as_decimal(),
+            )
+            return
+        order = self._engine.order_factory.stop_market(
+            instrument_id=state.route.instrument_id,
+            order_side=side,
+            quantity=quantity_value,
+            trigger_price=trigger_price,
+            trigger_type=TriggerType.LAST_PRICE,
+            reduce_only=True,
+            client_order_id=client_order_id,
+        )
+        state.pending_stop_order = order
+        state.pending_stop_quantity = quantity_value.as_decimal()
+        state.pending_stop_avg_price = avg_price
+        self._state.orders[client_order_id] = (state.entry.entry_id, "protection")
+        try:
+            self._engine.submit_order(order, position_id=state.position_id, client_id=ClientId("BINANCE"))
+        except Exception:
+            self._request_reconciliation("protection_ambiguity")
+            self._engine.query_order(order, client_id=ClientId("BINANCE"))
+            if state.position_id is not None:
+                self._exits.flatten(state.position_id)
+        self._observations.protection_submitted(
+            state,
+            client_order_id=client_order_id,
+            quantity=quantity_value.as_decimal(),
+            trigger_price=trigger_price.as_decimal(),
+            event_identity=leg,
+        )
+
+    def _replay_stop(
+        self,
+        *,
+        state: ExecutionState,
+        existing: Any,
+        client_order_id: ClientOrderId,
+        quantity: Decimal,
+        avg_price: Decimal,
+        trigger_price: Decimal,
+    ) -> None:
+        recovered = RecoveredProtectionSeed(
+            role="pending",
+            client_order_id=client_order_id,
+            quantity=quantity,
+            trigger_price=trigger_price,
+            generation=state.protection_generation,
+        )
+        self._state.orders[client_order_id] = (state.entry.entry_id, "protection")
+        if not self.recovered_valid(state=state, seed=recovered, protection=existing):
+            self._request_reconciliation("protection_ambiguity")
+            if not existing.is_closed:
+                self._engine.query_order(existing, client_id=ClientId("BINANCE"))
+            self._observations.order(state, existing, "protection", "replayed_invalid_flatten")
+            if state.position_id is not None:
+                self._exits.flatten(state.position_id)
+            return
+        state.pending_stop_order = existing
+        state.pending_stop_quantity = quantity
+        state.pending_stop_avg_price = avg_price
+        self._request_reconciliation("protection_ambiguity")
+        self._engine.query_order(existing, client_id=ClientId("BINANCE"))
+        self._observations.order(state, existing, "protection", "replayed_query_first")
+        if existing.is_open:
+            self.accept_pending(state, client_order_id)
+        elif state.stop_order is None and state.position_id is not None:
+            self._exits.flatten(state.position_id)
+
+    def accept_pending(self, state: ExecutionState, client_order_id: ClientOrderId) -> None:
+        pending = state.pending_stop_order
+        if pending is None or pending.client_order_id != client_order_id:
+            return
+        previous = state.stop_order
+        state.stop_order = pending
+        state.stop_quantity = state.pending_stop_quantity
+        state.stop_avg_price = state.pending_stop_avg_price
+        state.pending_stop_order = None
+        state.pending_stop_quantity = Decimal(0)
+        state.pending_stop_avg_price = None
+        if previous is not None and previous.client_order_id != client_order_id and not previous.is_closed:
+            state.retiring_stop_orders[previous.client_order_id] = previous
+            self._engine.cancel_order(previous, client_id=ClientId("BINANCE"))
+        desired = state.desired_stop
+        if desired is not None and (desired[0] != state.stop_quantity or desired[1] != state.stop_avg_price):
+            self._submit_stop(state, *desired)
+
+    def known_terminal(self, state: ExecutionState, client_order_id: ClientOrderId) -> None:
+        if state.retiring_stop_orders.pop(client_order_id, None) is not None:
+            return
+        if state.pending_stop_order is not None and client_order_id == state.pending_stop_order.client_order_id:
+            state.pending_stop_order = None
+            state.pending_stop_quantity = Decimal(0)
+            state.pending_stop_avg_price = None
+        elif state.stop_order is not None and client_order_id == state.stop_order.client_order_id:
+            state.stop_order = None
+            state.stop_quantity = Decimal(0)
+            state.stop_avg_price = None
+        else:
+            return
+        if state.position_quantity > 0 and state.position_id is not None:
+            self._request_reconciliation("protection_ambiguity")
+            self._exits.flatten(state.position_id)
+
+    def recovered_valid(
+        self,
+        *,
+        state: ExecutionState,
+        seed: RecoveredProtectionSeed,
+        protection: Any,
+    ) -> bool:
+        instrument = self._engine.cache.instrument(state.route.instrument_id)
+        if instrument is None or state.position_id is None or state.avg_entry_price is None:
+            return False
+        expected_id = deterministic_client_order_id(
+            namespace=self._profile.client_order_namespace,
+            profile_id=self._profile.profile_id,
+            entry_id=state.entry.entry_id,
+            leg=protection_leg(seed.generation, seed.quantity),
+        )
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
+        bound_position = (
+            None if protection is None else self._engine.cache.position_for_order(protection.client_order_id)
+        )
+        return bool(
+            seed.generation > 0
+            and seed.quantity > 0
+            and seed.client_order_id == expected_id
+            and protection is not None
+            and not protection.is_closed
+            and protection.strategy_id == self._engine.id
+            and protection.account_id == self._profile.account_id
+            and bound_position is not None
+            and bound_position.id == state.position_id
+            and protection.instrument_id == state.route.instrument_id
+            and protection.side == expected_side
+            and protection.order_type == OrderType.STOP_MARKET
+            and protection.trigger_type == TriggerType.LAST_PRICE
+            and seed.trigger_price > 0
+            and protection.trigger_price == instrument.make_price(seed.trigger_price)
+            and protection.is_reduce_only
+            and protection.quantity.as_decimal() == seed.quantity
+        )
+
+    def current_valid(
+        self,
+        *,
+        state: ExecutionState,
+        protection: Any,
+        quantity: Decimal,
+        avg_price: Decimal | None,
+        require_open: bool,
+    ) -> bool:
+        instrument = self._engine.cache.instrument(state.route.instrument_id)
+        if instrument is None or protection is None or quantity <= 0:
+            return False
+        current = self._engine.cache.order(protection.client_order_id)
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
+        distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
+        expected_trigger = (
+            None
+            if avg_price is None
+            else instrument.make_price(
+                avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
+            )
+        )
+        return bool(
+            not protection.is_closed
+            and (not require_open or (current is not None and current.is_open))
+            and protection.strategy_id == self._engine.id
+            and (
+                protection.account_id == self._profile.account_id
+                if require_open
+                else protection.account_id in {None, self._profile.account_id}
+            )
+            and protection.instrument_id == state.route.instrument_id
+            and protection.side == expected_side
+            and protection.order_type == OrderType.STOP_MARKET
+            and protection.trigger_type == TriggerType.LAST_PRICE
+            and (expected_trigger is None or protection.trigger_price == expected_trigger)
+            and protection.is_reduce_only
+            and protection.quantity.as_decimal() == quantity
+        )
+
+
+__all__ = ["ProtectionCoordinator"]
