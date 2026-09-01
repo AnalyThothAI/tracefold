@@ -18,9 +18,9 @@ _DATASET = "d" * 64
 
 def _readiness(**updates: Any) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "schema": "tracefold.news.gepa_readiness_report.v2",
-        "outcome": "ready",
-        "blocking_reasons": [],
+        "schema": "tracefold.news.gepa_readiness_report.v3",
+        "objective": {"compilable": True, "blockers": []},
+        "development_profile": {"ready": True, "blockers": []},
     }
     report.update(updates)
     return report
@@ -28,7 +28,7 @@ def _readiness(**updates: Any) -> dict[str, Any]:
 
 def _optimization(**updates: Any) -> dict[str, Any]:
     report: dict[str, Any] = {
-        "schema_version": "news_optimization_run_report_v1",
+        "schema_version": "news_optimization_run_report_v2",
         "outcome": "NO_OP",
         "reasons": ["news_program_compile_no_program_change"],
         "candidate_sha256": None,
@@ -44,7 +44,6 @@ def _run_args(tmp_path: Path, **updates: Any) -> Namespace:
         "max_metric_calls": 120,
         "max_task_model_calls": 400,
         "max_reflection_model_calls": 40,
-        "max_metric_judge_model_calls": 200,
         "max_cost_microusd": 800_000,
         "max_call_cost_microusd": 5_000,
         "max_wall_clock_seconds": 14_400,
@@ -96,14 +95,14 @@ def test_run_parser_is_the_only_candidate_route_and_keeps_explicit_budgets() -> 
             "--max-metric-calls", "120",
             "--max-task-model-calls", "400",
             "--max-reflection-model-calls", "40",
-            "--max-metric-judge-model-calls", "200",
             "--max-cost-microusd", "800000",
             "--max-call-cost-microusd", "5000",
         ]
     )  # fmt: skip
 
     assert args.learning_command == "run"
-    assert (args.max_metric_judge_model_calls, args.seed) == (200, 129)
+    assert args.seed == 129
+    assert not hasattr(args, "max_metric_judge_model_calls")
     for absent in ("semantic_judge", "dataset", "mode", "max_baseline_model_cases"):
         assert not hasattr(args, absent), absent
 
@@ -121,17 +120,20 @@ def test_readiness_then_one_optimization_write_the_only_run_artifacts(monkeypatc
     assert "baseline" not in payload["data"]
 
 
-def test_insufficient_readiness_still_gets_the_optimizer_terminal_report(monkeypatch: Any, tmp_path: Path) -> None:
+def test_insufficient_readiness_refuses_before_the_optimizer_leg(monkeypatch: Any, tmp_path: Path) -> None:
     legs = _Legs(
-        readiness=_readiness(outcome="insufficient", blocking_reasons=["train_target_missing"]),
+        readiness=_readiness(
+            objective={"compilable": True, "blockers": []},
+            development_profile={"ready": False, "blockers": ["development_calibration_missing"]},
+        ),
         optimization=_optimization(outcome="REJECTED", reasons=["train_target_missing"]),
     )
     _install(monkeypatch, legs)
 
-    code, payload = run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
+    with pytest.raises(ValueError, match="news_learning_run_readiness_blocked:development_calibration_missing"):
+        run_commands._handle_learning_run(_run_args(tmp_path), SimpleNamespace(), SimpleNamespace())
 
-    assert [name for name, _args in legs.calls] == ["readiness", "optimize"]
-    assert code == 1 and payload["data"]["outcome"] == "REJECTED"
+    assert [name for name, _args in legs.calls] == ["readiness"]
 
 
 def test_advance_is_the_only_zero_exit_and_names_its_candidate(monkeypatch: Any, tmp_path: Path) -> None:
@@ -140,7 +142,7 @@ def test_advance_is_the_only_zero_exit_and_names_its_candidate(monkeypatch: Any,
 
     def with_candidate(args: Namespace, settings: Any, stable: Any) -> tuple[int, dict[str, Any]]:
         result = legs.on_optimize(args, settings, stable)
-        _write(Path(args.out) / "prompt_candidate.json", {"schema_version": "news_prompt_candidate_v1"})
+        _write(Path(args.out) / "prompt_candidate.json", {"schema_version": "news_prompt_candidate_v2"})
         return result
 
     monkeypatch.setattr(

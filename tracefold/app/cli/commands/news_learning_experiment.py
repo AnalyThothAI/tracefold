@@ -27,12 +27,11 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
 
     The endpoints are the configured ones, not command-line models. That is deliberate: the task LM has to
     be the route production Triage answers on, or the number this maximizes stops predicting anything about
-    production, and the reflection and judge roles are the operator's configured compiler endpoint. What
+    production, and the reflection role is the operator's configured compiler endpoint. What
     the command line still owns is the budget, because spending is the operator's decision.
     """
 
     from tracefold.app.repository_session import postgres_connection
-    from tracefold.news.learning.baseline import build_judge
     from tracefold.news.learning.contracts import (
         DevelopmentDatasetRef,
         OptimizationBudget,
@@ -51,7 +50,6 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
     from tracefold.news.program.lm import LMCallLedger
     from tracefold.news.program.runtime import (
         PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
-        PROGRAM_READER_CARD_MAX_TOKENS,
         PROGRAM_ROUTE_DEADLINE_SECONDS,
     )
     from tracefold.news.review.desk import REVIEW_RUBRIC_VERSION
@@ -101,7 +99,7 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         api_key=task.api_key,
         api_base=task.api_base,
         timeout=float(PROGRAM_ROUTE_DEADLINE_SECONDS),
-        max_tokens=max(PROGRAM_EVENT_SEMANTICS_MAX_TOKENS, PROGRAM_READER_CARD_MAX_TOKENS),
+        max_tokens=PROGRAM_EVENT_SEMANTICS_MAX_TOKENS,
         model_kwargs=task.model_kwargs,
         temperature=0 if task.temperature is None else task.temperature,
         structured_output=task.structured_output,
@@ -115,28 +113,15 @@ def execute_optimization(args: Any, settings: Any, stable: Any) -> tuple[int, di
         structured_output=reflection.structured_output,
         ledger=ledger,
     )
-    judge = build_judge(
-        model_name=reflection.model_name,
-        api_key=reflection.api_key,
-        api_base=reflection.api_base,
-        model_kwargs=reflection.model_kwargs,
-        temperature=0 if reflection.temperature is None else reflection.temperature,
-        structured_output=reflection.structured_output,
-        # Bound to the declared budget, because `optimize` refuses a judge whose own ceiling is larger:
-        # the metric calls the judge directly, so this admission check is the only pre-call bound there is.
-        max_model_calls=int(args.max_metric_judge_model_calls),
-    )
     result = optimize(
         dataset,
         OptimizationConfig(
             task_lm=task_lm,
             reflection_lm=reflection_lm,
-            judge=judge,
             budget=OptimizationBudget(
                 max_metric_calls=int(args.max_metric_calls),
                 max_task_model_calls=int(args.max_task_model_calls),
                 max_reflection_model_calls=int(args.max_reflection_model_calls),
-                max_metric_judge_model_calls=int(args.max_metric_judge_model_calls),
                 max_cost_microusd=int(args.max_cost_microusd),
                 max_call_cost_microusd=int(args.max_call_cost_microusd),
                 max_wall_clock_seconds=float(args.max_wall_clock_seconds),

@@ -320,7 +320,7 @@ model sees cannot go on accruing evidence into the previous cohort. Rows
 `program_v1`–`program_v9`, each opened by a hand-written migration, remain
 append-only audit history. Only accepted `news_review_v6` evidence created in
 the running bundle's epoch and bound to that exact bundle is eligible for
-metric v7, compiler, replay or release gates.
+metric v8, optimizer, replay or release gates.
 The operator fast loop that used to sit beside that plane
 (`tracefold.news.learning.experiment`, #193) was deleted in #343, and with it
 its on-disk run directories, snapshot/compare arm comparison and the
@@ -1598,8 +1598,8 @@ created after the current epoch, and eligible verdicts must match the exact
 stable Program bundle.
 
 `CandidateEvaluator` is a deep Module whose Interface freezes accepted
-current-bundle / `news_review_v6` evidence, compares stable with exactly one declared `program` or
-`policy` variable, and publishes release evidence. Validation/holdout replay
+current-bundle / `news_review_v6` evidence, compares Stable with exactly one registered Prompt candidate,
+and publishes release evidence. Validation/holdout replay
 both arms sequentially because each arm's would-reach-reader ledger changes
 later decisions. Predictor requests/responses are recorded per call and
 content-addressed — retained as auditable forensic evidence — and the default
@@ -1619,19 +1619,18 @@ reported for operator impact analysis but are not candidate-release quotas;
 correctly recognizing many distinct facts cannot fail a release by count alone.
 The optional GEPA optimization is a cold, manual development tool, never a
 Workers loop. `news learning run` reads a frozen development corpus once
-and then holds three model endpoints and a typed budget — no DB write, broker,
+and then holds task and reflection model endpoints plus a typed budget — no DB write, broker,
 delivery, canary or promotion credential — and can emit only a bounded
-`PromptPatchV1`. That patch carries the two Predictor instructions and nothing
-else: the graph, the output schemas, the execution budget, the model slots and
-the policy are code, covered by `envelope_sha256`, and outside the write set.
-Since #453 the optimizer calls public `dspy.GEPA` exactly once with
-`instruction_proposer=None`, an Objective-bounded component selector, and the production
-`NativeNewsProgram` as its student and `num_threads=1`. Frozen examples become
-`dspy.Example`; the metric returns `dspy.Prediction(score, feedback)`; and the
-winner is extracted only from the two named Predictor instructions with empty
-demos. A compile-only candidate guard validates proposal, mutation and merge
-instructions before the first task-model call. There is no direct GEPA import,
-private DSPy API or optimizer-owned Program adapter. GEPA cannot accept a review,
+`PromptPatchV1`. The patch contract still carries both Predictor instructions, but #456 permits only
+EventSemantics to change and requires ReaderCard to remain byte-identical. The graph, output schemas,
+execution budget, model slots and policy are code, covered by `envelope_sha256`, and outside the write set.
+The optimizer calls public `dspy.GEPA` exactly once with `instruction_proposer=None`,
+`add_format_failure_as_feedback=True`, and the existing
+`NativeNewsProgram(base_strategy).event_semantics` Predict as its student with `num_threads=1`.
+Frozen examples carry only rendered Event evidence and accepted taxonomy Gold; the deterministic metric
+returns the mean of subject set-F1 and exact family/state/assertion axes. There is no component selector,
+ReaderCard rollout, production composite, semantic judge, direct GEPA import, private DSPy API or
+optimizer-owned Program adapter. GEPA cannot accept a review,
 register/deploy its output, move a stable pointer, or promote a candidate.
 #202 deleted the container platform that used to surround it — image, launcher,
 metered proxy sidecar, sandbox policy, tariff, build attestation — because it
@@ -1640,17 +1639,17 @@ Automated optimizers may propose a Program candidate but cannot modify the
 reader contract, rubric, accepted reviews, holdout, thresholds, stable bundle,
 or production assignment.
 
-One optimization produces one `news_prompt_candidate_v1`, and only when it ends
+One optimization produces one `news_prompt_candidate_v2`, and only when it ends
 in `ADVANCE`. Every terminal state — `NO_OP`, `REJECTED`, `ADVANCE` — also
-writes a complete `news_optimization_run_report_v1`, so a run that spent a
+writes a complete `news_optimization_run_report_v2`, so a run that spent a
 budget and shipped nothing is still readable. Issue #193 had already collapsed
 the compile's evidence into a single `CompileRecordV1`; #202 removed the compile
 itself, and with it the record, the sealed input bundle, the sidecar's per-call
 ledger, the `CompilerBuildAttestation` and the tariff. Those documents proved
 *where* two instructions were produced. Nothing downstream ever needed that:
-public `dspy.GEPA` returns an optimized native Module, and `run_gepa` extracts
-only the two named Predictor instructions while refusing demos or any extra
-Predictor. The write-set is therefore still exactly two strings. Rows written
+public `dspy.GEPA` returns an optimized native Predict, and `run_gepa` extracts
+only its public winner instruction while refusing demos or any extra Predictor, then copies ReaderCard
+unchanged into the two-string patch contract. Rows written
 under the old chain stay in `news_learning_artifacts`
 as append-only audit and no longer parse, so they cannot be re-armed.
 
@@ -1665,21 +1664,17 @@ registration checks this before writing candidate artifacts.
 A patch a person wrote and a patch GEPA wrote are admissible on exactly the same
 evidence.
 
-Each of the three roles — task, reflection (32k tokens) and `metric_judge` — is
+Each of the two optimizer roles — task and reflection (32k tokens) — is
 one `ModelExecutionIdentity` carrying the complete secret-free execution
 contract, in place of the `endpoint_sha256 -> model_sha256 -> binding_sha256`
 chain and the role binding above it. Its one surviving digest is
 `endpoint_fingerprint`, because the endpoint URL names the host a credential is
-presented to and therefore may not be stored. All three are required before a
-budget is spent, the judge included: it is called by the metric rather than
-through the metered LM, so its own admission ceiling is bound to the declared
-`max_metric_judge_model_calls` up front. The judge is wired explicitly for
-headline/why/factual semantic equivalence; its calls, cost and failures stay
-separate facts, and unavailable means failure-as-zero rather than byte equality,
-hidden retry or cache.
+presented to and therefore may not be stored. Both are required before a budget is spent. The separate
+diagnostic baseline and release evaluator retain their semantic judge; it is not an optimizer endpoint,
+budget field, identity or receipt.
 
 What bounds the offline job now is what it holds, not what surrounds it: a
-frozen corpus read once through the shared application login, three model
+frozen corpus read once through the shared application login, two model
 endpoints, and a typed in-process budget whose per-call ceiling is also the rate
 an unpriced call is charged at. It has no database writer call path, broker,
 delivery, canary, or promotion authority; role separation is not that boundary.
@@ -1690,44 +1685,22 @@ What GEPA is allowed to optimize is decided once, by `learning/objective.py`,
 and every plane that needs the answer rebuilds the same plan from the same
 frozen episodes: `news learning readiness`, `run_gepa` through the one offline
 entry point, and `CandidateEvaluator` when it
-re-projects a registered candidate's corpus. A case is a **target** only when an operator wrote
-`first_bad_owner = triage_prompt` into the submission itself — a ReviewDesk-derived
-owner routes queue work and grants nothing — and the failure belongs to
-EventSemantics or ReaderCard with something checkable behind it: an exact typed
-gold value, or a `factual_fidelity` failure with evidence refs plus a stated
-correction, or a novelty prior that reached the ToldContext the model actually
-saw. Taxonomy is the additional explicit owner: a valid accepted four-axis
-taxonomy that differs from recorded Stable becomes an EventSemantics target
-only when `first_bad_owner_explicit = taxonomy`; review dimension labels and
-derived owners grant nothing. A failed `headline_fidelity` / `why_support` / `why_value` is *not* a target
-however well attributed: `ExpectedCorrection` holds no value for a copy
-dimension — "the correct Chinese sentence" is not a label — so `_component` files
-it as `not_scored_no_gold` and drops it from the denominator, and a target the
-ruler cannot see lets GEPA pick a winner without ever scoring the repair it was
-pointed at. `factual_fidelity` is the exception because a failed one arms the
-`factual_contradiction` hard gate, which zeroes the case until the judge verifies
-the candidate's facts against the frozen evidence. A **control** is a case the
-stable Program already answers correctly under the accepted review and that
-trips no hard gate. Everything else is an **excluded diagnostic** — retrieval,
-Gate, storyline, policy, delivery, provider failures, derived-only
-owners, failed dimensions with no stated correct value, accepted external misses
-with no stable output — and stays visible in readiness and baseline reports
-without ever entering a reflective minibatch. `run_gepa` splits `target +
-control` and nothing else, after Objective Plan v2 elects one deterministic
-representative per connected fact cluster. Targets beat controls, then the
-election prefers more target dimensions, safety status, the
-newer Event and stable case id. Shadowed media members remain frozen audit facts
-but add no optimizer weight; required split coverage still fails closed. Before
-#199 it scoped targets owner-blind and split the whole corpus, so a retrieval
-miss became an instruction to repair.
-The candidate's `optimization_objective_summary.v2` binds the plan schema and
+re-projects a registered candidate's corpus. Under #456 a case is a **target** only when accepted four-axis
+taxonomy differs from recorded Stable and the operator explicitly wrote
+`first_bad_owner = taxonomy`; a derived owner or taxonomy review dimension grants no optimizer authority.
+A **control** has no explicit owner and Stable already matches all four accepted axes. Everything else is
+an **excluded diagnostic** and never enters a reflective minibatch. `run_gepa` splits only target + control
+after Objective Plan v3 elects one deterministic representative per connected fact cluster. Shadowed media
+members remain frozen audit facts but add no optimizer weight.
+The candidate's `optimization_objective_summary.v3` binds the plan schema and
 representative ids/count/root; registration re-derives that population and refuses claims that do not
 carry the current identity, while leaving their artifact bytes intact.
 `news learning readiness --development SHA` publishes the plan with zero model
 calls, and `run` rebuilds it and refuses on the same conditions before any
-endpoint is touched. Its report (`gepa_readiness_report.v2`) also carries the
-frozen dataset's own sealed `coverage` counts, so one document answers both
-whether a corpus may be optimized and how much separable evidence is in it.
+endpoint is touched. Its v3 report separately publishes `objective.compilable` and
+`development_profile.ready`; it has no ambiguous top-level outcome. The profile additionally requires
+train target/control 60/60, development-selection target/control 30/30, and a sealed source-only
+50-cluster calibration with family/state/assertion kappa ≥0.75 and subject mean set-F1 ≥0.80.
 
 Whether a development corpus is *enough* is decided by coverage, never by the
 calendar (#259). The release profile asks for independent connected fact
@@ -1755,7 +1728,7 @@ inside that run is the sole optimization baseline. The only later baseline is
 Stable on accepted examples that did not exist when the candidate was made,
 produced by the release plane's holdout stage.
 
-Metric v7 (`tracefold.news.production_action_trade_relevance_v7`) uses the one
+Metric v8 (`tracefold.news.production_action_trade_relevance_v8`) uses the one
 version-bound production-action projection shared by baseline, failure-cluster
 selection and CandidateEvaluator. Its candidate scalar weights 45% final
 production action, 35% exact TradeRelevance dimensions, 10% semantics/novelty,

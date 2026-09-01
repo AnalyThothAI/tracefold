@@ -287,7 +287,8 @@ options:
 ## `news review evidence`
 
 ```
-usage: tracefold news review evidence [-h] --version VERSION task
+usage: tracefold news review evidence [-h] --version VERSION [--source-only]
+                                      task
 
 positional arguments:
   task
@@ -295,6 +296,8 @@ positional arguments:
 options:
   -h, --help         show this help message and exit
   --version VERSION
+  --source-only      show only the pinned TaskRef and source evidence,
+                     excluding Stable, drafts, and reviews
 
 ```
 
@@ -302,6 +305,7 @@ options:
 
 ```
 usage: tracefold news review submit [-h] --version VERSION --file FILE
+                                    --reviewer REVIEWER
                                     [--idempotency-key IDEMPOTENCY_KEY]
                                     task
 
@@ -312,6 +316,7 @@ options:
   -h, --help            show this help message and exit
   --version VERSION
   --file FILE
+  --reviewer REVIEWER   actual reviewer principal persisted on the review
   --idempotency-key IDEMPOTENCY_KEY
 
 ```
@@ -322,7 +327,9 @@ options:
 usage: tracefold news review accept-drafts [-h] --file FILE
                                            [--min-confidence MIN_CONFIDENCE]
                                            [--only ONLY] [--exclude EXCLUDE]
-                                           [--reviewer REVIEWER] [--dry-run]
+                                           [--reviewer REVIEWER]
+                                           [--first-bad-owner FIRST_BAD_OWNER]
+                                           [--dry-run]
 
 options:
   -h, --help            show this help message and exit
@@ -339,6 +346,9 @@ options:
                         recorded on each row, including an identified AI
                         adjudicator; an empty value is allowed only with
                         --dry-run
+  --first-bad-owner FIRST_BAD_OWNER
+                        explicit owner written into every selected review, for
+                        example taxonomy; omitted keeps null
   --dry-run             report exactly what would be submitted, and write
                         nothing
 
@@ -444,6 +454,7 @@ options:
 ```
 usage: tracefold news learning draft-reviews [-h] [--hours HOURS]
                                              --model MODEL [--limit LIMIT]
+                                             [--stratum STRATUM]
                                              [--include-reviewed] --out OUT
 
 options:
@@ -452,6 +463,7 @@ options:
   --model MODEL       direct drafting model, e.g. deepseek-v4-pro or
                       qwen3.8-27b:thinking
   --limit LIMIT
+  --stratum STRATUM   restrict the existing ReviewDesk sampler stratum
   --include-reviewed  also draft Events that already carry an accepted review
                       (default: only unjudged ones)
   --out OUT           write the draft batch JSON for authorized review
@@ -465,7 +477,6 @@ usage: tracefold news learning run [-h] --development DEVELOPMENT --out OUT
                                    --max-metric-calls MAX_METRIC_CALLS
                                    --max-task-model-calls MAX_TASK_MODEL_CALLS
                                    --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-                                   --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
                                    --max-cost-microusd MAX_COST_MICROUSD
                                    --max-call-cost-microusd MAX_CALL_COST_MICROUSD
                                    [--max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS]
@@ -479,8 +490,6 @@ options:
   --max-metric-calls MAX_METRIC_CALLS
   --max-task-model-calls MAX_TASK_MODEL_CALLS
   --max-reflection-model-calls MAX_REFLECTION_MODEL_CALLS
-  --max-metric-judge-model-calls MAX_METRIC_JUDGE_MODEL_CALLS
-                        judge call ceiling for the optimization
   --max-cost-microusd MAX_COST_MICROUSD
   --max-call-cost-microusd MAX_CALL_COST_MICROUSD
   --max-wall-clock-seconds MAX_WALL_CLOCK_SECONDS
@@ -493,7 +502,9 @@ options:
 ```
 usage: tracefold news learning freeze [-h] --role {development,validation}
                                       --from-ms FROM_MS --to-ms TO_MS
-                                      [--candidate CANDIDATE] --out OUT
+                                      [--candidate CANDIDATE]
+                                      [--calibration-request CALIBRATION_REQUEST]
+                                      --out OUT
 
 options:
   -h, --help            show this help message and exit
@@ -502,6 +513,9 @@ options:
   --to-ms TO_MS
   --candidate CANDIDATE
                         candidate manifest; required for validation
+  --calibration-request CALIBRATION_REQUEST
+                        one-time source-only task/projection request;
+                        development freeze only
   --out OUT             write the dataset manifest
 
 ```
@@ -538,7 +552,7 @@ options:
   --development DEVELOPMENT
                         development dataset artifact SHA
   --candidate CANDIDATE
-                        news_prompt_candidate_v1 JSON/YAML
+                        news_prompt_candidate_v2 JSON/YAML
   --artifact-root ARTIFACT_ROOT
                         write the candidate <program-sha>.json artifact
                         document

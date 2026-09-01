@@ -207,40 +207,24 @@ winner that is not exactly those two with empty demos. Proving provenance was
 never what made a candidate safe to ship.
 
 What actually bounds the job is what it holds, and that is now a short list.
-`news learning run` reads a frozen development corpus once through the
-shared application login and then holds three model endpoints and a typed
-in-process budget: it has no database writer call path, broker, delivery,
-canary, promotion, or artifact writer. Database least privilege is not the
-business boundary in the single-login deployment. The command composes
-zero-call readiness with exactly one stock GEPA compile and writes only to a
-new empty directory named by the operator. The typed budget bounds every
-task/reflection/judge call in that optimization; there is no extra provider
-baseline leg.
-Every physical provider call passes a typed `AuditedConfiguredLM` seam that uses
-DSPy's public `LMRequest`/`LMResponse` contract, never stores credentials in its
-hash or trace, and scrubs bounded provider error detail. The learning meter
-reserves the operator's declared per-call cost before the request and settles
-after it, and a wall-clock
-deadline is checked before each call rather than reported after the last. Task,
-reflection and `metric_judge` are each one `ModelExecutionIdentity` — the
-complete secret-free execution contract — whose single digest is
-`endpoint_fingerprint`: the endpoint URL names the host a credential is
-presented to, so it is fingerprinted rather than stored. Reflection alone owns
-its 32k-token ceiling; the judge has its own endpoint, instruction/schema/adapter
-identity, budget, calls, cost and failure facts. Judge failure is explicit
-unavailable and scores the affected free-text dimension as failure-as-zero; it
-never falls back to byte equality, hidden retry, or a cached failure.
+`news learning run` reads one frozen development corpus through the shared application login, closes the
+database before provider work, and then holds two model endpoints plus a typed in-process budget. It has no
+database writer, broker, delivery, canary or promotion credential. Zero-call readiness runs before endpoint
+construction and requires both `objective.compilable` and `development_profile.ready`.
 
-A run ends in `NO_OP`, `REJECTED` or `ADVANCE`, and every one of the three writes
-a complete `news_optimization_run_report_v1`. Only `ADVANCE` also writes a
-`news_prompt_candidate_v1`, which carries the two instructions and cannot name a
-stage, an activation or an artifact root. Registration re-applies that patch to
-the running stable to derive the candidate's Program identity, re-projects the
-corpus and re-derives the #199 Objective Plan rather than trusting the
-candidate's own summary — so a patch a person wrote and a patch GEPA wrote are
-admissible on exactly the same evidence. Nothing downstream moved: future
-holdout, blind pairwise, shadow, canary and manual promotion are unchanged, and
-an `ADVANCE` is still not a release.
+The task and reflection roles are separate `ModelExecutionIdentity` values. Their endpoint URLs are
+fingerprinted rather than stored, credentials never enter hashes or traces, and bounded provider errors are
+scrubbed. The meter reserves the declared per-call price before a request, settles provider-reported cost
+after it, and records each role's input/output/cached/total tokens, calls, cost, failures and wall-clock time
+in the same report. Reflection alone has the code-owned 32k-token ceiling. The taxonomy optimizer has no
+semantic judge, no ReaderCard call, no tool or code-generation authority, and no private DSPy API.
+
+Every terminal state writes `news_optimization_run_report_v2`; only `ADVANCE` also writes
+`news_prompt_candidate_v2`. The only mutable field is the EventSemantics instruction. ReaderCard is copied
+byte-identically, and the report publishes before/after hashes, bytes, estimated tokens, growth and diff
+beside the public native GEPA parent/score/subscore state. Registration independently re-applies the patch,
+re-projects the dataset and re-derives Objective Plan v3. Generator provenance grants no release authority;
+future holdout, blind pairwise, shadow, canary and manual promotion remain mandatory.
 
 If dynamic code generation or an agent graph ever becomes a candidate again, the
 sandbox threat model has to be rebuilt with it, under a new Issue. It is not

@@ -244,6 +244,9 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                         stable=stable,
                         catalog={item.candidate_sha: item for item in catalog},
                     ).admit_for_validation(candidate.candidate_sha)
+                calibration_request = (
+                    _read_json_or_yaml(str(args.calibration_request)) if str(args.calibration_request or "") else None
+                )
                 manifest = asyncio.run(
                     datasets.freeze_dataset(
                         DatasetSpec(
@@ -252,6 +255,7 @@ def _handle_learning(args: Namespace) -> tuple[int, dict[str, Any]]:
                             observation_ref=candidate.candidate_sha if candidate is not None else None,
                         ),
                         admitted=admitted,
+                        calibration_request=calibration_request,
                     )
                 )
                 payload = manifest.model_dump(mode="json")
