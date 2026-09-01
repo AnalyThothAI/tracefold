@@ -72,14 +72,22 @@ class RuntimeAccountProjector:
             if quote is None or instrument is None:
                 complete = False
                 continue
+            quote_observed_at_ns = int(quote.ts_event)
+            if quote_observed_at_ns <= 0:
+                complete = False
+                continue
+            market_clocks.append(quote_observed_at_ns)
+            quote_age_ns = account_observed_at_ns - quote_observed_at_ns
+            if quote_age_ns < 0 or quote_age_ns > self._profile.risk.market_stale_after_ns:
+                complete = False
+                continue
             bid = _decimal(quote.bid_price)
             ask = _decimal(quote.ask_price)
             if bid <= 0 or ask <= 0 or ask < bid:
                 complete = False
                 continue
             mark = (bid + ask) / Decimal(2)
-            marks[instrument_id] = (mark, int(quote.ts_event))
-            market_clocks.append(int(quote.ts_event))
+            marks[instrument_id] = (mark, quote_observed_at_ns)
 
         aggregate_risk = Decimal(0)
         position_rows: list[ExecutionAccountPosition] = []

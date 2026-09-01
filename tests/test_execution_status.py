@@ -6,6 +6,7 @@ from uuid import UUID
 
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.trading.storage.execution_stream import (
+    ExecutionAccountOrder,
     ExecutionAccountPosition,
     ExecutionAccountSnapshot,
     ExecutionRuntimeControlState,
@@ -149,6 +150,33 @@ def test_flat_proof_requires_complete_non_truncated_current_account_facts() -> N
     assert missing["account_flat_proven"] is False
     assert partial["account_flat_proven"] is False
     assert truncated["account_flat_proven"] is False
+
+
+def test_flat_proof_requires_no_open_inflight_or_unknown_order_uncertainty() -> None:
+    inflight_order = ExecutionAccountOrder(
+        client_order_id="entry-query-pending",
+        instrument_id="BTCUSDT-PERP.BINANCE",
+        state="inflight",
+        leg="entry",
+        quantity="0.01",
+        reduce_only=False,
+        trigger_price=None,
+        owned=True,
+    )
+    snapshots = (
+        replace(_account_snapshot(), open_orders_count=1),
+        replace(_account_snapshot(), orders=(inflight_order,), inflight_orders_count=1),
+        replace(_account_snapshot(), unknown_orders_count=1),
+    )
+
+    for snapshot in snapshots:
+        projection = execution_readiness_projection(
+            _execution(),
+            replace(_state(), account_snapshot=snapshot),
+            _control(),
+            now_ns=10_000_000_000,
+        )
+        assert projection["account_flat_proven"] is False
 
 
 def test_current_account_projection_remains_a_distinct_read_model() -> None:

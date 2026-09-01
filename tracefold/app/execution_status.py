@@ -70,8 +70,15 @@ def execution_readiness_projection(
         and state.reconciliation_observed_at_ns <= now_ns
         and reconciliation_age_ns <= _PRIVATE_RECONCILIATION_STALE_AFTER_NS
     )
-    account_snapshot_complete = bool(
-        state.account_snapshot is not None and state.account_snapshot.complete and not state.account_snapshot.truncated
+    account_snapshot_flat = bool(
+        state.account_snapshot is not None
+        and state.account_snapshot.complete
+        and not state.account_snapshot.truncated
+        and not state.account_snapshot.positions
+        and not state.account_snapshot.orders
+        and state.account_snapshot.open_orders_count == 0
+        and state.account_snapshot.inflight_orders_count == 0
+        and state.account_snapshot.unknown_orders_count == 0
     )
     current_control = control if control is not None and control.runtime_profile_id == execution.profile_id else None
     entries_paused = True if current_control is None else current_control.entries_paused
@@ -129,7 +136,7 @@ def execution_readiness_projection(
                 alive
                 and execution_safe
                 and private_reconciliation_fresh
-                and account_snapshot_complete
+                and account_snapshot_flat
                 and state.account_flat
             ),
             "positions_count": state.positions_count,

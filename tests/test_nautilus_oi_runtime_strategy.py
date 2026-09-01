@@ -1174,6 +1174,52 @@ def test_account_projection_exposes_owned_protection_and_unknown_orders() -> Non
     assert after_cancel.positions[0].protection_trigger_price is None
 
 
+def test_account_projection_withholds_stale_quote_values() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    context.strategy.on_order_accepted(_accepted(context, entry))
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-STALE-PROJECTION")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 2,
+        )
+    )
+
+    snapshot = context.strategy.account_snapshot(
+        account_observed_at_ns=NOW_NS + context.profile.risk.market_stale_after_ns + 1
+    )
+
+    assert snapshot.complete is False
+    assert snapshot.market_observed_at_ns == NOW_NS
+    assert snapshot.positions[0].mark_price is None
+    assert snapshot.positions[0].unrealized_pnl_usd is None
+    assert snapshot.aggregate_risk_usd is None
+
+
 def test_callback_module_has_no_postgres_or_telegram_io() -> None:
     import inspect
 
