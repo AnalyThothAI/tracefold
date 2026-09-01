@@ -217,18 +217,31 @@ def test_0341_allows_only_safe_account_cutover_states(
         assert conn.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "20260901_0341"
 
 
-def test_0341_enforces_atomic_pair_and_makes_retired_execution_tables_read_only(
-    postgres_clone_dsn: str,
-) -> None:
-    del postgres_clone_dsn
-    conn = connect_postgres_test(read_only=False)
-    try:
+def test_0341_makes_retired_execution_tables_read_only(postgres_server_dsn: str) -> None:
+    """The guard 0347 later replaces with the tables' absence, proven where it still exists.
+
+    Pinned at 0341 rather than at head: `20260901_0347` drops all 22 of these tables, so at head there
+    is nothing left to refuse a write. An operator upgrading a database that stops at 0341 still gets
+    this trigger, and this is the only place that says so.
+    """
+
+    with _at_0340(postgres_server_dsn) as (dsn, conn):
+        config = alembic_config()
+        config.attributes["database_url"] = postgres_migration_test_dsn(dsn)
+        command.upgrade(config, "20260901_0341")
         with (
             pytest.raises(psycopg.errors.RaiseException, match="retired_trading_execution_table_read_only"),
             conn.transaction(),
         ):
             conn.execute("UPDATE trading_runtime_state SET orders_today = orders_today WHERE id = 1")
 
+
+def test_0341_enforces_the_atomic_case_signal_pair(
+    postgres_clone_dsn: str,
+) -> None:
+    del postgres_clone_dsn
+    conn = connect_postgres_test(read_only=False)
+    try:
         with (
             pytest.raises(psycopg.errors.RaiseException, match="trading_case_signal_link_invalid"),
             conn.transaction(),
@@ -294,3 +307,95 @@ def test_0341_enforces_atomic_pair_and_makes_retired_execution_tables_read_only(
             )
     finally:
         conn.close()
+
+
+# The exact set `20260901_0347` drops, written out rather than imported from the revision module: this
+# is the assertion that the tables are gone, and a list that moved with the migration could not fail.
+_DROPPED_TABLES = (
+    "trading_binding_runtime",
+    "trading_capital_authorization_receipts",
+    "trading_capital_risk_events",
+    "trading_capital_risk_reservation_state",
+    "trading_capital_risk_reservations",
+    "trading_daily_risk_policies",
+    "trading_evidence_clock_receipts",
+    "trading_evidence_future_capture_batches",
+    "trading_execution_bindings",
+    "trading_execution_capability_snapshots",
+    "trading_intents",
+    "trading_nautilus_runtime_starts",
+    "trading_operator_arm_receipts",
+    "trading_order_observations",
+    "trading_orders",
+    "trading_production_promotion_grants",
+    "trading_production_release_registrations",
+    "trading_promotion_grant_revocations",
+    "trading_replay_runs",
+    "trading_runtime_state",
+    "trading_symbol_blacklist",
+    "trading_venue_catalog_snapshots",
+)
+
+_DROPPED_FUNCTIONS = (
+    "reject_retired_trading_execution_mutation",
+    "reject_trading_append_only_mutation",
+    "validate_trading_evidence_parent",
+    "validate_trading_future_capture_batch",
+    "validate_trading_promotion_future_evidence",
+    "reject_new_execution_capability_v1",
+    "reject_new_legacy_trade_intent",
+    "reject_trading_terminal_intent_revival",
+    "stamp_trading_release_registration",
+    "materialize_trading_blacklist_expiry",
+    "store_trading_venue_catalog_snapshot",
+    "trading_evidence_now_ms",
+    "trading_canonical_jsonb",
+)
+
+# The guards 0347 must not take with it: four still fire on `trading_cases` / `trading_trade_signals` /
+# `trading_candidate_gate_decisions` / the execution stream, and three are called from live CHECKs on
+# the Signal and observation payloads.
+_KEPT_FUNCTIONS = (
+    "reject_retired_candidate_gate_stage",
+    "reject_retired_trading_case_state",
+    "enforce_trading_case_signal_link",
+    "reject_trading_execution_stream_mutation",
+    "trading_jsonb_object_size",
+    "trading_execution_metadata_valid",
+    "trading_execution_string_array_valid",
+)
+
+
+def test_0347_drops_every_retired_execution_table_and_only_its_own_functions(
+    postgres_clone_dsn: str,
+) -> None:
+    """At head: the 22 tables and their 13 functions are gone, and nothing live went with them.
+
+    The second half is the part worth having. `DROP FUNCTION` without `CASCADE` already refuses to
+    remove a function a surviving trigger calls, so the migration cannot silently disarm a live guard
+    — but nothing stops a later edit from adding a name to the drop list *and* removing the trigger
+    that used it, which is how a table quietly loses its append-only guarantee.
+    """
+
+    del postgres_clone_dsn
+    conn = connect_postgres_test(read_only=False)
+    try:
+        tables = {
+            str(row["table_name"])
+            for row in conn.execute(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+            ).fetchall()
+        }
+        functions = {
+            str(row["proname"])
+            for row in conn.execute(
+                "SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+                " WHERE n.nspname = 'public'"
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+
+    assert tables.isdisjoint(_DROPPED_TABLES)
+    assert functions.isdisjoint(_DROPPED_FUNCTIONS)
+    assert set(_KEPT_FUNCTIONS) <= functions

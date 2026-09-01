@@ -266,8 +266,8 @@ class CandidateGateStorage:
         """The whole durable half of the lane's status, assembled once.
 
         The counts a lane reports are otherwise keyed on a case or an order existing, which is exactly
-        what a lane with neither has none of — and `trading_runtime_state.funnel` resets on the UTC day
-        key, so a question about yesterday had no evidence at all. This is the part that survives both.
+        what a lane with neither has none of — and the counter this replaced reset on the UTC day key,
+        so a question about yesterday had no evidence at all. This is the part that survives both.
         """
 
         window_24h = self.gate_decision_counts(since_ms=int(now_ms) - 86_400_000, trigger_kind=trigger_kind)

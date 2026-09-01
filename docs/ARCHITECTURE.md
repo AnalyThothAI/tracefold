@@ -1923,9 +1923,11 @@ destructive `20260901_0344` restates the `news_verdicts` judgment CHECK for the
 News open-interest push cut; `20260901_0345` removes the stale execution Runtime
 constraint that rejected a safe transient pairing of independently observed
 flatness and unexpected exposure, with readiness still failing closed on
-unexpected exposure; and additive `20260901_0346`, the current single head, lets
-a notification receipt outlive its provider's message id and carry a four-hour
-result.
+unexpected exposure; additive `20260901_0346` lets a notification receipt
+outlive its provider's message id and carry a four-hour result; and destructive
+`20260901_0347`, the current single head, drops the twenty-two execution tables
+`0341` had made read-only, together with the thirteen functions only their
+triggers, defaults and CHECKs called.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2121,10 +2123,13 @@ to healthy. Case+Signal failure rolls back both rows; no partial handoff exists.
 
 ### Historical pre-433-C frozen execution evidence (retired)
 
-The following paragraphs record schema history retained for audit. Every named
-Capital/Intent/order/catalog table is read-only after `0341`; its command, HTTP,
-worker, adapter, and compatibility paths are deleted. Nothing in this
-historical subsection describes a current writer or activation route.
+The following paragraphs record the rules the pre-433-C execution owner ran
+under. Every named Capital/Intent/order/catalog table was read-only after
+`0341` and was dropped by `0347`; its command, HTTP, worker, adapter, and
+compatibility paths are deleted, and its 390 archived rows are in
+`~/.tracefold/backups/pre-0347-retired-trading-tables-20260901.sql` rather than
+in the schema. Nothing in this historical subsection describes a current table,
+writer, or activation route.
 
 Execution permission is `active capability snapshot − canonical blacklist`,
 not a target-symbol list. A cold refresh mechanically joins the complete public
@@ -2175,30 +2180,6 @@ insert. Execution-capability activation has no current command or deployment
 hook. Credential-free public catalog publication is separate: each venue
 appends immutable snapshots and atomically moves only its own pointer; failure
 retains last-known-good and never changes Capital control.
-
-### Existing Intent recovery authority
-
-The dormant `tracefold nautilus run` process describes recovery of existing
-pre-#350 Intent obligations; it is not started by the required deployment.
-One process loads the active snapshot but owns at most one Intent lifecycle at
-a time. It polls PostgreSQL once per second and claims a fresh `PENDING` Intent
-only when `trading_runtime_state.control = RUNNING`, startup reconciliation has
-proved the dedicated Demo account is one-way, every included instrument is 1x,
-and the whole account has no unexpected position or open order. `PAUSED` and `CLOSE_ONLY`
-block new entry fences but never stop query, protection, or exit work for an
-already-fenced lifecycle. After restart, an already-fenced lifecycle remains in
-the bounded command slot until the complete provider account report has been
-reconciled; only then may recovery query protection, close exposure, or report
-an unknown outcome.
-
-The one `trading_intents` row is simultaneously the durable inbox, immutable
-instruction, entry fence, restart checkpoint, current execution projection, and
-audit identity. Workers may insert its immutable columns; the Nautilus process
-may read the row and update only the execution projection through the shared
-`tracefold` login; Serve is connection-level read-only.
-Database constraints enforce the Demo environment, V2 capability/blacklist
-identity, immutable Intent columns,
-Case-to-Intent one-to-one identity, and one nonterminal row globally.
 
 ### OI BAR replay and attribution
 
