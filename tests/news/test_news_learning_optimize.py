@@ -254,7 +254,10 @@ def test_incomplete_candidate_zero_is_an_explicit_rejection_with_public_receipts
     assert result.report.schema_version == "news_optimization_run_report_v4"
     assert result.report.reasons == ("news_program_compile_candidate_zero_incomplete",)
     assert result.report.metric is not None
-    assert result.report.metric["taxonomy_selection_score"]["candidate_zero_task_output_failure_n"] == 1
+    selection = result.report.metric["taxonomy_selection_score"]
+    assert selection["candidate_zero_complete"] is False
+    assert selection["candidate_zero_task_output_failure_n"] == 1
+    assert selection["delta"] is None
     assert result.report.gepa_public_result is not None
     assert result.report.gepa_public_result["tracefold_admitted_index"] is None
     assert result.candidate is None

@@ -1374,7 +1374,8 @@ official GEPA log/state under `optimization/gepa/`, the optimization report,
 and an optional PromptCandidate. The report records native public GEPA candidate parents, aggregate scores,
 per-example subscores, per-objective aggregate scores, GEPA best index, Tracefold admitted index and total
 metric calls without inventing a private checkpoint state. Selection receipt v2 records candidate-zero
-task-output failures and direct Gold-control failures. `ADVANCE` still enters the existing `release register`
+completeness and task-output-failure count plus control total, Gold-exact count and non-exact count for
+Candidate zero, GEPA best and the Tracefold-admitted candidate. `ADVANCE` still enters the existing `release register`
 and evaluator/release gates; this command never performs those actions.
 
 Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs

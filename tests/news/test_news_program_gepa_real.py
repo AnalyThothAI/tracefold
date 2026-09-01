@@ -16,6 +16,7 @@ from tracefold.news.learning.contracts import OptimizationBudget
 from tracefold.news.learning.objective import DevelopmentEpisode, build_gepa_objective_plan
 from tracefold.news.learning.optimizer import (
     GepaNoProgramChange,
+    GepaRunResult,
     _BudgetMeter,
     _MeteredLearningLM,
     build_reflection_lm,
@@ -280,6 +281,29 @@ def _synthetic_compile(
     return compile_result
 
 
+def _run_synthetic_gepa(
+    *,
+    instructions: tuple[str, ...],
+    aggregate_scores: tuple[float, ...],
+    validation_subscores: tuple[dict[int, float], ...],
+) -> GepaRunResult:
+    task, reflection, _task_delegate, _reflection_delegate = _models()
+    return run_gepa(
+        base_program=load_stable_program_artifact(),
+        episodes=_corpus(),
+        task_lm=task,
+        reflection_lm=reflection,
+        max_metric_calls=40,
+        seed=456,
+        review_rubric_version=REVIEW_RUBRIC_VERSION,
+        compile_fn=_synthetic_compile(
+            instructions=instructions,
+            aggregate_scores=aggregate_scores,
+            validation_subscores=validation_subscores,
+        ),
+    )
+
+
 def _selection_fixture() -> tuple[Any, set[int], str, str, str]:
     plan = build_gepa_objective_plan(_corpus())
     controls = {
@@ -298,31 +322,20 @@ def _selection_fixture() -> tuple[Any, set[int], str, str, str]:
 
 
 def test_candidate_zero_truncation_refuses_the_run_instead_of_becoming_the_quality_baseline() -> None:
-    task, reflection, _task_delegate, _reflection_delegate = _models()
     plan, _controls, stable, candidate, _unused = _selection_fixture()
     val_count = len(plan.development_selection_episodes)
     rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(2)]
     rows[0][0] = float(-(len(plan.train_episodes) + 1))
 
     with pytest.raises(ValueError, match=r"^news_program_compile_candidate_zero_incomplete$"):
-        run_gepa(
-            base_program=load_stable_program_artifact(),
-            episodes=_corpus(),
-            task_lm=task,
-            reflection_lm=reflection,
-            max_metric_calls=40,
-            seed=456,
-            review_rubric_version=REVIEW_RUBRIC_VERSION,
-            compile_fn=_synthetic_compile(
-                instructions=(stable, candidate),
-                aggregate_scores=(0.2, 0.8),
-                validation_subscores=tuple(rows),
-            ),
+        _run_synthetic_gepa(
+            instructions=(stable, candidate),
+            aggregate_scores=(0.2, 0.8),
+            validation_subscores=tuple(rows),
         )
 
 
 def test_candidate_controls_must_be_gold_correct_not_merely_better_than_candidate_zero() -> None:
-    task, reflection, _task_delegate, _reflection_delegate = _models()
     plan, controls, stable, candidate, _unused = _selection_fixture()
     val_count = len(plan.development_selection_episodes)
     rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(2)]
@@ -331,52 +344,53 @@ def test_candidate_controls_must_be_gold_correct_not_merely_better_than_candidat
         rows[1][index] = 0.75
 
     with pytest.raises(GepaNoProgramChange) as caught:
-        run_gepa(
-            base_program=load_stable_program_artifact(),
-            episodes=_corpus(),
-            task_lm=task,
-            reflection_lm=reflection,
-            max_metric_calls=40,
-            seed=456,
-            review_rubric_version=REVIEW_RUBRIC_VERSION,
-            compile_fn=_synthetic_compile(
-                instructions=(stable, candidate),
-                aggregate_scores=(0.5, 0.8),
-                validation_subscores=tuple(rows),
-            ),
+        _run_synthetic_gepa(
+            instructions=(stable, candidate),
+            aggregate_scores=(0.5, 0.8),
+            validation_subscores=tuple(rows),
         )
 
     selection = caught.value.result.metric["taxonomy_selection_score"]
-    assert selection["gepa_best_control_failure_n"] == len(controls)
+    assert selection["gepa_best_control_gold_exact_n"] == 0
+    assert selection["gepa_best_control_non_exact_n"] == len(controls)
     assert selection["tracefold_admitted_candidate_index"] is None
 
 
 def test_tracefold_admits_the_highest_qualified_public_candidate_not_gepa_best() -> None:
-    task, reflection, _task_delegate, _reflection_delegate = _models()
     plan, controls, stable, candidate_one, candidate_two = _selection_fixture()
     val_count = len(plan.development_selection_episodes)
     rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(3)]
     rows[1][next(iter(controls))] = 0.0
 
-    result = run_gepa(
-        base_program=load_stable_program_artifact(),
-        episodes=_corpus(),
-        task_lm=task,
-        reflection_lm=reflection,
-        max_metric_calls=40,
-        seed=456,
-        review_rubric_version=REVIEW_RUBRIC_VERSION,
-        compile_fn=_synthetic_compile(
-            instructions=(stable, candidate_one, candidate_two),
-            aggregate_scores=(0.5, 0.9, 0.8),
-            validation_subscores=tuple(rows),
-        ),
+    result = _run_synthetic_gepa(
+        instructions=(stable, candidate_one, candidate_two),
+        aggregate_scores=(0.5, 0.9, 0.8),
+        validation_subscores=tuple(rows),
     )
 
     assert result.patch.event_semantics_instruction == candidate_two
     assert result.public_result["gepa_best_index"] == 1
     assert result.public_result["tracefold_admitted_index"] == 2
-    assert result.metric["taxonomy_selection_score"]["gepa_best_control_failure_n"] == 1
+    assert result.metric["taxonomy_selection_score"]["gepa_best_control_non_exact_n"] == 1
+
+
+def test_typed_invalid_candidate_zero_score_is_still_a_complete_quality_baseline() -> None:
+    plan, controls, stable, candidate, _unused = _selection_fixture()
+    val_count = len(plan.development_selection_episodes)
+    rows = [dict.fromkeys(range(val_count), 1.0) for _ in range(2)]
+    rows[0][next(iter(controls))] = 0.0
+
+    result = _run_synthetic_gepa(
+        instructions=(stable, candidate),
+        aggregate_scores=(0.5, 0.8),
+        validation_subscores=tuple(rows),
+    )
+
+    selection = result.metric["taxonomy_selection_score"]
+    assert selection["candidate_zero_complete"] is True
+    assert selection["candidate_zero_task_output_failure_n"] == 0
+    assert selection["candidate_zero_control_non_exact_n"] == 1
+    assert result.public_result["tracefold_admitted_index"] == 1
 
 
 def test_real_gepa_uses_one_native_predict_and_returns_public_trajectory() -> None:
@@ -397,7 +411,9 @@ def test_real_gepa_uses_one_native_predict_and_returns_public_trajectory() -> No
     assert result.metric["schema"] == "tracefold.news.taxonomy_gepa_metric.v3"
     assert result.patch.reader_card_instruction == stable.reader_card_instruction
     assert result.metric["taxonomy_selection_score"]["delta"]["taxonomy_overall"] > 0
-    assert result.metric["taxonomy_selection_score"]["tracefold_admitted_control_failure_n"] == 0
+    selection = result.metric["taxonomy_selection_score"]
+    assert selection["tracefold_admitted_control_gold_exact_n"] == selection["stable_correct_control_n"]
+    assert selection["tracefold_admitted_control_non_exact_n"] == 0
     change = result.metric["instruction_change"]
     assert change["event_semantics"]["changed"] is True
     assert change["event_semantics"]["estimated_token_growth"] < 0
