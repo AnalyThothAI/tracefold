@@ -1,30 +1,12 @@
-"""What GEPA is allowed to optimize, decided once, without the optimizer.
+"""The framework-neutral taxonomy Objective Plan and shared evaluation vocabulary.
 
-Three questions have to be answered before a single provider call is worth making, and until #199 they
-were answered in three different places that disagreed:
+Issue #456 makes the optimizer population exact: targets are recorded Stable taxonomy mismatches with an
+explicit ``first_bad_owner=taxonomy``; controls are recorded Stable answers that exactly match accepted
+taxonomy Gold and have no explicit owner; every other case is excluded. Readiness, GEPA, candidate
+registration and release evaluation re-derive that same plan from the same frozen episodes.
 
-``target``      the errors GEPA has both the authority and the evidence to repair — an operator wrote
-                ``first_bad_owner = triage_prompt`` into the submission itself, the failure belongs to
-                EventSemantics or ReaderCard, and the accepted review states something checkable.
-``control``     the cases the stable Program already answers correctly, kept so a candidate that breaks
-                one is caught. A wrong answer nobody blamed the Prompt for is not a control: it is a
-                low-scoring trajectory the reflection model reads and tries to fix by rewriting an
-                instruction it cannot fix anything with.
-``excluded``    everything else — retrieval, Gate, storyline, policy, delivery, provider
-                failures, derived-only owners, failed dimensions with no stated correct value, and copy
-                failures the metric has no way to score. They stay visible in readiness and baseline
-                diagnostics and never enter a reflective minibatch.
-
-The module is framework-neutral on purpose: no DSPy, no database, no provider, no promotion, no
-container. `readiness`, `run_gepa`, the run command and `CandidateEvaluator` all build the same plan from
-the same episodes, which is the only way the corpus a
-release gate re-derives can be the corpus an optimizer actually saw.
-
-It also owns the corpus vocabulary the metric reads — the dimension groups, the exact-gold lookup, the
-frozen policy, the production action, the strata and the honest split. Those moved here from
-``metric.py`` rather than being copied: the metric turns labels into a number, and this module decides
-which labels are in scope, and a rule that answers "is this case in scope" cannot live in a module the
-scope decision is not allowed to import.
+The older composite case metric still imports its dimension and policy helpers from this module for release
+evaluation. Those helpers do not participate in target selection or GEPA scoring.
 """
 
 from __future__ import annotations
@@ -41,7 +23,8 @@ from ..program.contracts import ScoredJudgment, TriageContext
 from ..taxonomy import ModelTaxonomyV1
 from ..triage_rules import DecidePolicy, DecisionResult, GateFacts, decide, storyline_status
 from .card_lint import lint_reader_card
-from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
+from .profile import development_coverage_blockers
+from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy, summarize_taxonomy
 
 
 class _ExactModel(BaseModel):
@@ -62,17 +45,8 @@ class DevelopmentEpisode(_ExactModel):
     policy_metric: dict[str, Any] = Field(default_factory=dict)
 
 
-# EventSemantics owns interpretation; ReaderCard owns copy. Feedback is routed the same way, so a Predictor is
-# never asked to repair a failure it cannot cause.
-#
-# These are exactly the names `review._DIMENSIONS` accepts. Inventing plausible extras would leave dead entries
-# no reviewer can ever label, and publish them in the metric receipt as
-# if they were scored. Novelty is a separate accepted field, not a rubric dimension, and is scored below.
-# `timeliness` is absent on purpose. The canonical ReviewDesk owner map assigns it to `delivery`, and
-# `TriageVerdict` has no timeliness field — so scoring it here fell through to "did the whole verdict change?"
-# and handed EventSemantics feedback about delivery latency it cannot repair. It stays in the corpus label
-# distribution under its real owner; giving the model a freshness judgment needs a typed output and a gold
-# contract of its own, not a borrowed one.
+# Shared by the diagnostic composite metric and release evaluator. They do not define the #456 GEPA
+# population, which is taxonomy-only below.
 _RELEVANCE_DIMENSIONS = (
     "trade_impact_breadth",
     "trade_tradability",
@@ -85,23 +59,8 @@ _RELEVANCE_DIMENSIONS = (
 _SEMANTICS_DIMENSIONS = ("asset_grounding", "direction", "magnitude")
 _CARD_DIMENSIONS = ("factual_fidelity", "headline_fidelity", "why_support", "why_value")
 _DELIVERY_DIMENSIONS = ("timeliness",)
-_TAXONOMY_REVIEW_DIMENSIONS: Final = frozenset(
-    {
-        "taxonomy_subject_codes",
-        "taxonomy_event_family",
-        "taxonomy_change_state",
-        "taxonomy_source_authority",
-        "taxonomy_assertion_status",
-    }
-)
-
-
-# A sentinel, because `None` is a legitimate absence of a reviewer opinion and must not read as "gold = null".
+_FREE_TEXT_DIMENSIONS = ("headline_fidelity", "why_support", "why_value", "factual_fidelity")
 _NO_GOLD: Final = object()
-# `news_review_v6` non-taxonomy gold keys, per dimension. Taxonomy has its own evaluator; `why_support`/
-# `why_value`/`headline_fidelity`/`factual_fidelity`/
-# `timeliness` have no scalar gold. Failed typed fields without exact gold do not enter the score; free-text
-# retention and factual support use the sealed judge path instead.
 _GOLD_KEY = {
     "direction": "direction",
     "magnitude": "magnitude",
@@ -223,11 +182,7 @@ def _labelled(dimensions: Mapping[str, Any], names: Sequence[str]) -> list[tuple
 
 
 def _gold_value(expected: Mapping[str, Any], name: str) -> Any:
-    """The reviewer's stated correct value for one dimension, or ``_NO_GOLD``.
-
-    ``asset_grounding`` is the one dimension whose gold is a set rather than a scalar: a reviewer names the
-    instruments the card should have been about, and role/order are not what they were asserting.
-    """
+    """Return one exact accepted correction, or the no-Gold sentinel."""
 
     if name == "asset_grounding":
         assets = expected.get("assets")
@@ -248,17 +203,9 @@ def _gold_value(expected: Mapping[str, Any], name: str) -> Any:
     return _NO_GOLD if value is None else value
 
 
-# Dimensions whose accepted value is a whole Chinese sentence, so "did the candidate keep it?" cannot be
-# answered by `==`. `timeliness` is not one of them — it is handled separately in `_retains`, and only when a
-# judge is present, so that the no-judge arm stays byte-for-byte the pre-#148 rule.
-_FREE_TEXT_DIMENSIONS = ("headline_fidelity", "why_support", "why_value", "factual_fidelity")
-
-
 # GEPA optimizes on one set and picks the winner on another. Handing it the same object for both proved
 # nothing about generalization, and the receipt said so in as many words ("same_object_as_trainset").
 _TRAIN_SHARE = 0.70
-# A split that leaves one side without safety cases, without both action labels, or without novelty cases
-# cannot detect the regressions it exists to detect.
 _REQUIRED_STRATA = ("safety", "positive_action", "negative_action", "novelty")
 
 
@@ -312,9 +259,6 @@ def _honest_split(
         for episode in half:
             for stratum in _episode_strata(episode):
                 seen[stratum] += 1
-        missing = sorted(stratum for stratum, count in seen.items() if count == 0)
-        if missing:
-            raise ValueError(f"news_program_compile_split_coverage_incomplete:{name}:{','.join(missing)}")
         coverage[name] = seen
 
     train_ids = {episode.case_id for episode in train}
@@ -322,7 +266,7 @@ def _honest_split(
     if train_ids & val_ids or set(train_roots) & set(val_roots):
         raise ValueError("news_program_compile_split_not_disjoint")
     receipt = {
-        "schema": "tracefold.news.compile_split_receipt.v2",
+        "schema": "tracefold.news.compile_split_receipt.v3",
         "policy": {
             "share": _TRAIN_SHARE,
             "unit": "connected_fact_cluster_representative",
@@ -394,30 +338,8 @@ def _retrieval_receipt(episodes: Sequence[DevelopmentEpisode]) -> dict[str, Any]
 # The Objective Plan: what GEPA is allowed to see, and why
 # ---------------------------------------------------------------------------
 
-OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v2"] = "tracefold.news.gepa_objective_plan.v2"
-# The one owner value that grants GEPA permission, and it has to have been written by a human into the
-# submission itself. `review._OWNER_BY_DIMENSION` derives an owner for every failed dimension so the
-# ReviewDesk queue can route work; deriving is a hint, not a grant. 53% of the failure cases in the only
-# corpus this project has ever collected carry a non-`triage_prompt` owner, and the owner-blind predecessor
-# swept every one of them into the failure clusters GEPA was told to repair.
-PROMPT_OWNER: Final = "triage_prompt"
-# Typed EventSemantics targets: a failed dimension whose accepted repair is one exact value the metric can
-# check. `asset_grounding` is absent on purpose — the canonical ReviewDesk owner map calls it a Gate defect,
-# so a reviewer who fails it is not blaming the Prompt even when the Prompt is what emitted the symbol.
-_EVENT_SEMANTICS_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("direction", "magnitude", *_RELEVANCE_DIMENSIONS)
-# The only ReaderCard failure the metric can measure a repair of. `_GOLD_KEY` holds no copy dimension —
-# `ExpectedCorrection` says why in as many words, "the correct Chinese sentence is not a label" — so
-# `_component` files a failed `headline_fidelity` / `why_support` / `why_value` as `not_scored_no_gold`
-# and drops it from the denominator, and `_retains` only ever runs on a dimension the reviewer *passed*.
-# `factual_fidelity` is different: a failed one arms the `factual_contradiction` hard gate, which zeroes
-# the case until the judge can verify the candidate's facts against the frozen evidence. That is a real,
-# checkable repair, and it is the whole of "verifiable objective" on the ReaderCard side today.
-_READER_CARD_TARGET_DIMENSIONS: Final[tuple[str, ...]] = ("factual_fidelity",)
-# Prompt-owned, evidenced, corrected — and still unmeasurable. Excluded rather than optimized toward,
-# because a target the ruler cannot see lets GEPA pick a winner without ever scoring the repair it was
-# pointed at. They stay visible in readiness under their own reason; giving them a scoring path needs a
-# judge-backed correction anchor, which is a Metric change and not this Issue's.
-_UNSCORABLE_CARD_DIMENSIONS: Final[tuple[str, ...]] = ("headline_fidelity", "why_support", "why_value")
+OBJECTIVE_PLAN_SCHEMA: Literal["tracefold.news.gepa_objective_plan.v3"] = "tracefold.news.gepa_objective_plan.v3"
+TAXONOMY_OWNER: Final = "taxonomy"
 _PUSH_ACTIONS: Final = frozenset({"push", "escalate"})
 _OBJECTIVE_GUARD_ADMISSIONS: Final = frozenset({"listing_deterministic", "telemetry_deterministic"})
 
@@ -451,7 +373,7 @@ class GepaObjectivePlan(_ExactModel):
     and by the split's case roots below. Everything a receipt needs to state is a bounded id or a count.
     """
 
-    schema_version: Literal["tracefold.news.gepa_objective_plan.v2"] = OBJECTIVE_PLAN_SCHEMA
+    schema_version: Literal["tracefold.news.gepa_objective_plan.v3"] = OBJECTIVE_PLAN_SCHEMA
     case_n: int = Field(default=0, ge=0)
     cluster_n: int = Field(default=0, ge=0)
     cases: tuple[ObjectiveCase, ...] = ()
@@ -595,245 +517,58 @@ def _owner_identity(review: Mapping[str, Any]) -> tuple[str, str]:
     return (derived, "derived") if derived else ("", "absent")
 
 
-def _novelty_verifiability(
-    episode: DevelopmentEpisode,
-    *,
-    accepted_novelty: str,
-    duplicate_of: str,
-    production_novelty: str,
-) -> tuple[bool, str]:
-    """Whether an accepted novelty disagreement is a Prompt target, or which stage actually owns it.
-
-    A restatement the reviewer names has to be provable twice: the prior must exist in the source reader
-    history the selector drew from, and it must have reached the bounded ToldContext the model was given.
-    Prior outside the history is `event_evidence`/`retrieval`; inside the history but unselected is
-    `retrieval`. Neither is repairable by an instruction, and both used to enter the failure clusters GEPA
-    was pointed at.
-
-    The mirror case is the one where the *model* asserts the link — it called a fact a restatement or a
-    progression and the reviewer disagreed. That claim is checkable without a named prior, because the
-    model made it against entries it was shown, so an instruction can be held responsible for it. With an
-    empty ToldContext there was nothing to match against and the defect is the model's, not the
-    instruction's.
-
-    Everything else is the reviewer asserting a link the model did not make, on a prior the rubric gives
-    no way to name — `NoveltyJudgment` only accepts `duplicate_of` for `restatement`. An accepted
-    `progression` the model called `new_fact` is exactly that shape, and it is precisely the "the model
-    was never shown the card" defect this module exists to keep out of the trainset, so it is excluded
-    rather than optimized toward.
-    """
-
-    if accepted_novelty in {"uncertain", production_novelty}:
-        return False, ""
-    told_ids = {entry.event_id for entry in episode.context.told.entries}
-    if accepted_novelty == "restatement":
-        if not duplicate_of:
-            return False, "accepted_novelty_target_not_verifiable"
-        seen_ids = {str(row.get("event_id") or "") for row in (episode.policy_metric.get("seen") or ())}
-        if duplicate_of not in seen_ids:
-            return False, "novelty_prior_outside_source_history"
-        if duplicate_of not in told_ids:
-            return False, "novelty_prior_not_selected"
-        return True, ""
-    if production_novelty not in {"restatement", "progression"} or not told_ids:
-        return False, "accepted_novelty_target_not_verifiable"
-    return True, ""
-
-
-def _classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any]]:
-    """One case's disposition, plus the facts readiness reports about it. Pure, and never a model call."""
+def _taxonomy_classify(episode: DevelopmentEpisode) -> tuple[ObjectiveCase, dict[str, Any]]:
+    """Classify the only objective #456 authorizes: accepted taxonomy Gold."""
 
     review = dict(episode.accepted_review or {})
-    dimensions = {str(key): str(value) for key, value in dict(review.get("dimensions") or {}).items()}
-    # Taxonomy pass/fail dimensions remain review audit metadata. The exact accepted taxonomy below is the
-    # only Gold and the only way taxonomy participates in the Objective or Metric.
-    failed = frozenset(
-        name for name, value in dimensions.items() if value == "fail" and name not in _TAXONOMY_REVIEW_DIMENSIONS
-    )
-    expected = dict(review.get("expected") or {})
-    correction = bool(str(review.get("expected_correction") or "").strip())
-    has_evidence_refs = bool([str(ref) for ref in (review.get("evidence_refs") or ()) if str(ref).strip()])
-    should_push = str(review.get("should_push") or "uncertain")
-    novelty = dict(review.get("novelty") or {})
-    accepted_novelty = str(novelty.get("judgment") or "uncertain")
-    duplicate_of = str(novelty.get("duplicate_of") or "")
     owner, owner_source = _owner_identity(review)
-    explicit_prompt_owned = owner_source == "explicit" and owner == PROMPT_OWNER
-
-    judgment = episode.production_judgment
-    taxonomy_valid = False
-    taxonomy_recorded = False
     taxonomy_mismatch = False
+
+    def result(disposition: Disposition, reason: str) -> tuple[ObjectiveCase, dict[str, Any]]:
+        target = disposition == "target"
+        case = ObjectiveCase(
+            case_id=episode.case_id,
+            cluster_id=episode.cluster_id,
+            stratum=episode.stratum,
+            disposition=disposition,
+            owner=owner,
+            owner_source=owner_source,
+            predictors=("event_semantics",) if target else (),
+            dimensions=TAXONOMY_TARGET_DIMENSIONS if target else (),
+            reason=reason,
+        )
+        return case, {
+            "disposition": disposition,
+            "reason": reason,
+            "failed": TAXONOMY_TARGET_DIMENSIONS if target else (),
+            "failed_with_exact_gold": TAXONOMY_TARGET_DIMENSIONS if target else (),
+            "observed_failure": taxonomy_mismatch,
+            "observed_dimensions": TAXONOMY_TARGET_DIMENSIONS if taxonomy_mismatch else (),
+        }
+
+    if episode.production_judgment is None:
+        return result("excluded", "stable_output_absent")
     try:
-        if isinstance(review.get("taxonomy"), Mapping):
-            gold_taxonomy = ModelTaxonomyV1.model_validate(review["taxonomy"])
-            taxonomy_valid = True
-            if judgment is not None and judgment.editorial.taxonomy is not None:
-                taxonomy_recorded = True
-                taxonomy_mismatch = not compare_taxonomy(gold_taxonomy, judgment.editorial.taxonomy).exact
+        gold = ModelTaxonomyV1.model_validate(review.get("taxonomy"))
     except ValueError:
-        taxonomy_valid = False
-    taxonomy_target = (
-        taxonomy_valid
-        and taxonomy_recorded
-        and taxonomy_mismatch
-        and owner_source == "explicit"
-        and owner == "taxonomy"
-    )
+        return result("excluded", "accepted_taxonomy_gold_invalid")
+    predicted = episode.production_judgment.editorial.taxonomy
+    if predicted is None:
+        return result("excluded", "recorded_stable_taxonomy_absent")
 
-    semantics_targets = tuple(
-        name
-        for name in _EVENT_SEMANTICS_TARGET_DIMENSIONS
-        if name in failed and _gold_value(expected, name) is not _NO_GOLD
-    )
-    card_targets = tuple(
-        name for name in _READER_CARD_TARGET_DIMENSIONS if name in failed and has_evidence_refs and correction
-    )
-    gold_facts: dict[str, Any] = {
-        "failed": tuple(sorted(failed)),
-        "failed_with_exact_gold": tuple(sorted(name for name in failed if _gold_value(expected, name) is not _NO_GOLD)),
-    }
-
-    def _case(
-        disposition: Disposition,
-        *,
-        reason: str,
-        predictors: Sequence[str] = (),
-        dims: Sequence[str] = (),
-    ) -> tuple[ObjectiveCase, dict[str, Any]]:
-        return (
-            ObjectiveCase(
-                case_id=episode.case_id,
-                cluster_id=episode.cluster_id,
-                stratum=episode.stratum,
-                disposition=disposition,
-                owner=owner,
-                owner_source=owner_source,
-                predictors=tuple(predictors),
-                dimensions=tuple(dims),
-                reason=reason,
-            ),
-            {**gold_facts, "reason": reason, "disposition": disposition},
-        )
-
-    policy_verifiable = True
-    try:
-        verify_policy_projection(episode.policy_metric)
-    except ValueError:
-        policy_verifiable = False
-    decision = (
-        production_decision(judgment, episode.policy_metric) if judgment is not None and policy_verifiable else None
-    )
-    production_novelty = str(judgment.verdict.novelty or "") if judgment is not None else ""
-    reaches_reader = decision is not None and decision.final in _PUSH_ACTIONS
-    # The owner-blind superset, computed for every case including the ones no optimizer will ever see. It
-    # is what a *policy* candidate is held to, and what readiness reports as the gap between the errors the
-    # corpus contains and the ones a Prompt may be asked to repair. The rule is the predecessor's, to the
-    # letter: a case with no stable output pushed nothing and claimed no novelty.
-    decision_failed = (should_push in {"must_push", "should_push"} and not reaches_reader) or (
-        should_push in {"must_hold", "should_hold"} and reaches_reader
-    )
-    novelty_failed = accepted_novelty not in ("uncertain", production_novelty)
-    observed_failure = bool(failed) or decision_failed or novelty_failed or correction or taxonomy_mismatch
-    observed_dimensions = set(failed)
-    if decision_failed:
-        observed_dimensions.add("should_push")
-    if novelty_failed:
-        observed_dimensions.add("novelty")
-    if correction and not failed:
-        observed_dimensions.add("factual_fidelity")
-    if taxonomy_mismatch:
-        observed_dimensions.update(TAXONOMY_TARGET_DIMENSIONS)
-    gold_facts["observed_failure"] = observed_failure
-    gold_facts["observed_dimensions"] = tuple(sorted(observed_dimensions))
-
-    # Decided here, before the guards below, because a novelty disagreement is one of the three things that
-    # can make a case a target — and "would this have been a target" is what decides whether an
-    # unreplayable case blocks the run or merely shrinks the corpus.
-    novelty_target, novelty_reason = _novelty_verifiability(
-        episode,
-        accepted_novelty=accepted_novelty,
-        duplicate_of=duplicate_of,
-        production_novelty=production_novelty,
-    )
-    would_be_target = taxonomy_target or (
-        explicit_prompt_owned and bool(semantics_targets or card_targets or novelty_target)
-    )
-
-    # A case with no stable output is out of scope rather than broken: the accepted external miss is a fact
-    # the Gate never admitted, so its `TriageContext` is synthesized rather than replayed, there is no
-    # stable answer to preserve, and — the decisive part — `_component` credits every passed retention
-    # anchor whose production field is simply absent. Left in the optimizer corpus those cases pay full
-    # marks to any candidate at all, which is the one thing a control must never do.
-    if judgment is None:
-        return _case("excluded", reason="stable_output_absent")
-    if not taxonomy_valid:
-        return _case("excluded", reason="accepted_taxonomy_gold_invalid")
-    if not taxonomy_recorded:
-        return _case("excluded", reason="recorded_stable_taxonomy_absent")
-    # An unverifiable policy projection is different: the case *is* in scope and the metric will raise on
-    # it mid-compile, after the budget is spent. If it would otherwise have been a target, that blocks the
-    # run rather than shrinking it, which is exactly what a zero-call readiness exists to say in advance.
-    if not policy_verifiable:
-        return _case(
-            "excluded", reason="non_replayable_target" if would_be_target else "non_replayable_policy_unverifiable"
-        )
-
-    if not observed_failure:
-        # Reached only past both guards above, so the decision exists; naming that here rather than
-        # widening `stable_hard_gate` to accept an absence it can never be handed.
-        if decision is None:  # pragma: no cover - both guards above return first
-            raise ValueError("news_program_objective_decision_unavailable")
-        gate = stable_hard_gate(episode, decision)
-        if gate:
-            return _case("excluded", reason=f"stable_hard_gate:{gate}")
-        return _case("control", reason="stable_correct_under_accepted_review")
-
-    if taxonomy_target:
-        return _case(
-            "target",
-            reason="explicit_taxonomy_owner_with_exact_mismatch",
-            predictors=("event_semantics",),
-            dims=TAXONOMY_TARGET_DIMENSIONS,
-        )
-
-    if not explicit_prompt_owned:
+    exact = compare_taxonomy(gold, predicted).exact
+    taxonomy_mismatch = not exact
+    if not exact:
+        if owner_source == "explicit" and owner == TAXONOMY_OWNER:
+            return result("target", "explicit_taxonomy_owner_with_exact_mismatch")
         if owner_source == "explicit":
-            reason = "unknown_owner" if owner == "unknown" else f"non_prompt_owner:{owner}"
-        elif owner_source == "derived":
-            reason = "owner_unknown_and_not_confirmed" if owner == "unknown" else f"owner_derived_only:{owner}"
-        else:
-            reason = "owner_absent"
-        return _case("excluded", reason=reason)
-
-    predictors: list[str] = []
-    dims: list[str] = []
-    if semantics_targets or novelty_target:
-        predictors.append("event_semantics")
-        dims.extend(semantics_targets)
-        if novelty_target:
-            dims.append("novelty")
-    if card_targets:
-        predictors.append("reader_card")
-        dims.extend(card_targets)
-    if dims:
-        return _case(
-            "target", reason="explicit_prompt_owner_with_verifiable_objective", predictors=predictors, dims=dims
-        )
-
-    if novelty_reason:
-        return _case("excluded", reason=novelty_reason)
-    if failed & set(_EVENT_SEMANTICS_TARGET_DIMENSIONS):
-        return _case("excluded", reason="failed_typed_dimension_without_exact_gold")
-    if failed & set(_READER_CARD_TARGET_DIMENSIONS):
-        return _case("excluded", reason="reader_card_failure_without_evidence_and_correction")
-    if failed & set(_UNSCORABLE_CARD_DIMENSIONS):
-        return _case("excluded", reason="reader_card_failure_not_scorable")
-    if failed:
-        return _case("excluded", reason="failed_dimension_not_prompt_repairable")
-    if decision_failed:
-        return _case("excluded", reason="should_push_only_failure")
-    return _case("excluded", reason="correction_without_owned_failed_dimension")
+            return result("excluded", f"non_taxonomy_owner:{owner}")
+        if owner_source == "derived":
+            return result("excluded", f"owner_derived_only:{owner}")
+        return result("excluded", "taxonomy_mismatch_without_explicit_owner")
+    if owner_source == "explicit":
+        return result("excluded", "explicit_owner_on_taxonomy_control")
+    return result("control", "stable_taxonomy_exact_under_accepted_gold")
 
 
 def _split_blockers(split_error: str) -> tuple[str, ...]:
@@ -900,7 +635,7 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
     repair, and a case nobody had blamed on anything still reached the reflective minibatch as a low score.
     """
 
-    classified = _elect_cluster_representatives([_classify(episode) for episode in episodes], episodes)
+    classified = _elect_cluster_representatives([_taxonomy_classify(episode) for episode in episodes], episodes)
     cases = tuple(case for case, _facts in classified)
 
     targets = tuple(case for case in cases if case.disposition == "target")
@@ -999,15 +734,15 @@ def build_gepa_objective_plan(episodes: Sequence[DevelopmentEpisode]) -> GepaObj
             "explicit": dict(sorted(owner_distribution["explicit"].items())),
             "derived": dict(sorted(owner_distribution["derived"].items())),
             "absent": int(sum(owner_distribution["absent"].values())),
-            "explicit_prompt_owner_n": int(owner_distribution["explicit"].get(PROMPT_OWNER, 0)),
+            "explicit_taxonomy_owner_n": int(owner_distribution["explicit"].get(TAXONOMY_OWNER, 0)),
         },
         exclusion_reasons=dict(sorted(exclusion_reasons.items())),
         exact_gold_coverage={
             "failed_by_dimension": dict(sorted(gold_failed.items())),
             "failed_with_exact_gold_by_dimension": dict(sorted(gold_with_value.items())),
-            "target_dimension_gold_n": sum(gold_with_value.get(name, 0) for name in _EVENT_SEMANTICS_TARGET_DIMENSIONS),
+            "target_dimension_gold_n": sum(gold_with_value.get(name, 0) for name in TAXONOMY_TARGET_DIMENSIONS),
         },
-        reader_card_targets_require_semantic_judge=any("reader_card" in case.predictors for case in targets),
+        reader_card_targets_require_semantic_judge=False,
         split=split,
         split_error=split_error,
         blocking_reasons=tuple(blocking),
@@ -1034,23 +769,10 @@ def _expected_delivery(should_push: str) -> bool | None:
 # v2 (#259): the report carries the frozen dataset's own `coverage` counts beside the plan, so one
 # document answers both "may this corpus be optimized" and "how much separable evidence is in it".
 # A v1 report cannot answer the second question and must not be read as if it could.
-READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v2"] = "tracefold.news.gepa_readiness_report.v2"
-# The Program answers two Predictors per metric call, in a fixed order. Not an estimate — it is the graph.
+READINESS_SCHEMA: Literal["tracefold.news.gepa_readiness_report.v3"] = "tracefold.news.gepa_readiness_report.v3"
+# One Predictor evaluation may use JSONAdapter's single format fallback. This is a physical-call ceiling,
+# not the usual successful-path count, so the readiness receipt must reserve both attempts.
 _TASK_CALLS_PER_METRIC_CALL: Final = 2
-
-
-def _judge_call_ceiling(episode: DevelopmentEpisode) -> int:
-    """The most equivalence-judge calls one metric call can make on this case.
-
-    A judge call happens for a free-text dimension the reviewer *passed* whose text the candidate changed,
-    and once more when a failed `factual_fidelity` has to be verified against the frozen evidence. A
-    candidate that keeps every anchor byte-for-byte makes none of them, so this is a ceiling and is
-    published as one.
-    """
-
-    dimensions = dict(dict(episode.accepted_review or {}).get("dimensions") or {})
-    passed = sum(1 for name in _FREE_TEXT_DIMENSIONS if str(dimensions.get(name) or "") == "pass")
-    return passed + int(str(dimensions.get("factual_fidelity") or "") == "fail")
 
 
 def _strata_coverage(episodes: Sequence[DevelopmentEpisode]) -> dict[str, int]:
@@ -1080,8 +802,20 @@ def _half_counts(plan: GepaObjectivePlan, half: Sequence[DevelopmentEpisode]) ->
         ),
         "control_case_n": sum(1 for episode in half if episode.case_id in controls),
         "control_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in controls}),
+        "taxonomy_control_case_n": sum(1 for episode in half if episode.case_id in controls),
+        "taxonomy_control_cluster_n": len({episode.cluster_id for episode in half if episode.case_id in controls}),
         "strata": _strata_coverage(half),
-        "metric_judge_model_calls_max": sum(_judge_call_ceiling(episode) for episode in half),
+    }
+
+
+def development_split_profile_counts(plan: GepaObjectivePlan) -> dict[str, int]:
+    """Project the two sealed Objective halves into the shared release-profile vocabulary."""
+
+    return {
+        "train_stratum_n": sum(value > 0 for value in _strata_coverage(plan.train_episodes).values()),
+        "development_selection_stratum_n": sum(
+            value > 0 for value in _strata_coverage(plan.development_selection_episodes).values()
+        ),
     }
 
 
@@ -1104,12 +838,38 @@ def build_readiness_report(
     evidence is in it, and how concentrated is it in time" (#259 §5.2).
     """
 
-    optimizer = plan.optimizer_episodes
+    train = _half_counts(plan, plan.train_episodes)
+    selection = _half_counts(plan, plan.development_selection_episodes)
+    profile_counts = {
+        **dict(coverage),
+        **development_split_profile_counts(plan),
+        "train_taxonomy_target_cluster_n": train["taxonomy_target_cluster_n"],
+        "train_taxonomy_control_cluster_n": train["taxonomy_control_cluster_n"],
+        "development_selection_taxonomy_target_cluster_n": selection["taxonomy_target_cluster_n"],
+        "development_selection_taxonomy_control_cluster_n": selection["taxonomy_control_cluster_n"],
+    }
+    profile_blockers = development_coverage_blockers(profile_counts)
+    gold_rows: list[dict[str, Any]] = []
+    for episode in episodes:
+        try:
+            gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review or {}).get("taxonomy"))
+        except ValueError:
+            continue
+        predicted = episode.production_judgment.editorial.taxonomy if episode.production_judgment else None
+        if predicted is None:
+            continue
+        gold_rows.append(
+            {
+                "case_id": episode.case_id,
+                "cluster_id": episode.cluster_id,
+                "gold": gold,
+                "predicted": predicted,
+            }
+        )
+    gold_summary = summarize_taxonomy(gold_rows)
     return {
         "schema": READINESS_SCHEMA,
         "identity": dict(identity),
-        "outcome": "ready" if plan.optimizer_ready else "insufficient",
-        "blocking_reasons": list(plan.blocking_reasons),
         # Diagnostics, in the release profile's own vocabulary, and separate from `corpus` below because
         # these are the *dataset's* sealed counts rather than anything re-derived from the episodes.
         # `natural_day_n` and `window_duration_hours` describe sample concentration and gate nothing.
@@ -1124,6 +884,8 @@ def build_readiness_report(
         "owner_distribution": dict(plan.owner_distribution),
         "objective": {
             "schema": plan.schema_version,
+            "compilable": plan.optimizer_ready,
+            "blockers": list(plan.blocking_reasons),
             "target_case_n": len(plan.target_case_ids),
             "target_cluster_n": len(plan.target_failure_cluster_ids),
             "control_case_n": len(plan.control_case_ids),
@@ -1136,11 +898,21 @@ def build_readiness_report(
             "exclusion_reasons": dict(plan.exclusion_reasons),
             "reader_card_targets_require_semantic_judge": plan.reader_card_targets_require_semantic_judge,
         },
+        "development_profile": {
+            "ready": not profile_blockers,
+            "blockers": list(profile_blockers),
+            "counts": profile_counts,
+        },
+        "taxonomy_gold": {
+            "cluster_n": gold_summary["cluster_n"],
+            "support": gold_summary["support"],
+            "zero_support": gold_summary["zero_support"],
+        },
         "exact_gold_coverage": dict(plan.exact_gold_coverage),
         "split": plan.split,
         "split_error": plan.split_error,
-        "train": _half_counts(plan, plan.train_episodes),
-        "development_selection": _half_counts(plan, plan.development_selection_episodes),
+        "train": train,
+        "development_selection": selection,
         # Retrieval is reported on the *whole* corpus, not the optimizer half: "the model called it new" and
         # "the model was never shown the card" are different defects, and the second one is precisely what
         # the objective plan just excluded. Narrowing this to the optimizer corpus would hide it.
@@ -1148,13 +920,11 @@ def build_readiness_report(
         "call_envelope": {
             "note": "ceilings computed from the corpus; GEPA chooses how many rounds fit in --max-metric-calls",
             "task_model_calls_per_metric_call": _TASK_CALLS_PER_METRIC_CALL,
-            "metric_judge_model_calls_per_metric_call_max": max(
-                (_judge_call_ceiling(episode) for episode in optimizer), default=0
-            ),
             "metric_calls_per_full_selection_evaluation": len(plan.development_selection_episodes),
             "metric_calls_per_reflection_minibatch": min(10, len(plan.train_episodes)),
-            "task_model_calls_per_full_selection_evaluation": _TASK_CALLS_PER_METRIC_CALL
-            * len(plan.development_selection_episodes),
+            "task_model_calls_per_full_selection_evaluation": (
+                len(plan.development_selection_episodes) * _TASK_CALLS_PER_METRIC_CALL
+            ),
             "reflection_model_calls_per_proposal_round": 1,
         },
         "case_dispositions": [case.model_dump(mode="json") for case in plan.cases],
@@ -1163,14 +933,15 @@ def build_readiness_report(
 
 __all__ = [
     "OBJECTIVE_PLAN_SCHEMA",
-    "PROMPT_OWNER",
     "READINESS_SCHEMA",
+    "TAXONOMY_OWNER",
     "DevelopmentEpisode",
     "Disposition",
     "GepaObjectivePlan",
     "ObjectiveCase",
     "build_gepa_objective_plan",
     "build_readiness_report",
+    "development_split_profile_counts",
     "optimizer_population_identity",
     "production_decision",
     "retrieval_receipt",

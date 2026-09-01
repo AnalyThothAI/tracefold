@@ -13,7 +13,7 @@ release validation re-derives the Objective Plan from `development_compile_expor
 from __future__ import annotations
 
 import hashlib
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -28,9 +28,10 @@ from ..review.desk import (
     READER_CONTRACT_VERSION,
     REVIEW_RUBRIC_VERSION,
     REVIEW_RUBRIC_VERSIONS,
+    source_only_event_projection,
 )
 from ..storage.root import NewsRepository
-from ..taxonomy import ModelTaxonomyV1
+from ..taxonomy import ModelTaxonomyV1, NewsTaxonomyV1, source_authority_from_evidence
 from .contracts import (
     LEARNING_PROFILE_ID,
     ArmManifest,
@@ -43,8 +44,9 @@ from .evaluation_history import ArmState, EvaluationReaderHistory, Receipt
 from .ledger import LearningLedger
 from .profile import _PROFILE, TRUSTED_ROOT_SHA
 from .projection import _connected_fact_clusters
+from .taxonomy_metric import calibrate_taxonomy, summarize_taxonomy
 
-DATASET_VERSION: Literal["news_learning_dataset_v2"] = "news_learning_dataset_v2"
+DATASET_VERSION: Literal["news_learning_dataset_v3"] = "news_learning_dataset_v3"
 # A window whose tail is still settling is not closed: the outcome loop keeps writing prices for minutes
 # after an Event opens, so freezing to "now" seals cases whose scores change after the file is written.
 SETTLEMENT_GRACE_MS = 10 * 60_000
@@ -55,7 +57,7 @@ class DatasetSpec(BaseModel):
 
     window: ClosedWindow
     role: Literal["development", "validation"]
-    profile_id: Literal["news_learning_release_v2"] = LEARNING_PROFILE_ID
+    profile_id: Literal["news_learning_release_v3"] = LEARNING_PROFILE_ID
     # No `learning_epoch` (#314). It was a declared field defaulting to a module constant, which meant a
     # caller could name an epoch and the freeze would then check the name against the same constant it came
     # from. The epoch a freeze belongs to is a fact about the deployment, and the ledger is the one place
@@ -67,7 +69,7 @@ class DatasetManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_sha: str
-    dataset_version: Literal["news_learning_dataset_v2"] = DATASET_VERSION
+    dataset_version: Literal["news_learning_dataset_v3"] = DATASET_VERSION
     role: Literal["development", "validation"]
     profile_id: str
     learning_epoch: str = Field(pattern=r"^bundle_[0-9a-f]{8}$")
@@ -80,6 +82,7 @@ class DatasetManifest(BaseModel):
     observation_ref: str | None = None
     cases: tuple[DatasetCaseRef, ...]
     seed_receipts: tuple[dict[str, Any], ...] = ()
+    calibration: dict[str, Any] | None = None
     counts: dict[str, Any]
     hashes: dict[str, str]
 
@@ -162,7 +165,13 @@ class DevelopmentDatasetStore:
         self._trusted_root_sha = trusted_root_sha
         self._profile = profile
 
-    async def freeze_dataset(self, spec: DatasetSpec, *, admitted: AdmittedCandidate | None = None) -> DatasetManifest:
+    async def freeze_dataset(
+        self,
+        spec: DatasetSpec,
+        *,
+        admitted: AdmittedCandidate | None = None,
+        calibration_request: Mapping[str, Any] | None = None,
+    ) -> DatasetManifest:
         self._ledger.assert_active_stable()
         epoch_started_at_ms = self._ledger.epoch_started_at_ms()
         if spec.window.from_ms < epoch_started_at_ms:
@@ -185,6 +194,8 @@ class DevelopmentDatasetStore:
                 raise ValueError("news_learning_holdout_precedes_candidate_registration")
         elif spec.observation_ref is not None:
             raise ValueError("news_learning_development_observation_ref_not_allowed")
+        if spec.role != "development" and calibration_request is not None:
+            raise ValueError("news_learning_calibration_requires_development_dataset")
 
         cases = self._accepted_cases(
             spec.window,
@@ -193,6 +204,18 @@ class DevelopmentDatasetStore:
         )
         seed = self._seed_receipts(spec.window.from_ms, epoch_started_at_ms=epoch_started_at_ms)
         counts = self._dataset_counts(spec, cases)
+        calibration = self._calibration_receipt(calibration_request, cases) if calibration_request is not None else None
+        if calibration is not None:
+            counts["calibration"] = dict(calibration["statistics"])
+        episodes = self._project_episodes(cases, seed)
+        distributions, objective_counts = self._dataset_distributions(episodes, cases)
+        counts.update(objective_counts)
+        counts["distributions"] = distributions
+        counts["contract_cluster_receipt"] = {
+            "cluster_n": counts["independent_cluster_n"],
+            "contract": "news_fact_cluster_v1",
+            "semantic_duplicate_risk": "residual_cross-source_paraphrases_require_reviewer_duplicate_of",
+        }
         payload = {
             "dataset_version": DATASET_VERSION,
             "role": spec.role,
@@ -207,6 +230,7 @@ class DevelopmentDatasetStore:
             "observation_ref": spec.observation_ref,
             "cases": [case.model_dump(mode="json") for case in cases],
             "seed_receipts": seed,
+            "calibration": calibration,
             "counts": counts,
             "hashes": {
                 "trusted_root_sha": self._trusted_root_sha,
@@ -219,6 +243,247 @@ class DevelopmentDatasetStore:
         }
         artifact_sha = self._ledger.persist_artifact("dataset", payload)
         return DatasetManifest(artifact_sha=artifact_sha, **payload)
+
+    def _dataset_distributions(
+        self,
+        episodes: Sequence[Mapping[str, Any]],
+        cases: Sequence[DatasetCaseRef],
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        from .objective import DevelopmentEpisode, build_gepa_objective_plan
+
+        typed = tuple(DevelopmentEpisode.model_validate(episode) for episode in episodes)
+        plan = build_gepa_objective_plan(typed)
+        reviews = self._ledger.reviews_by_id([case.review_id for case in cases])
+        review_by_case = {case.case_id: reviews.get(case.review_id, {}) for case in cases}
+
+        def distribution(subset: Sequence[DevelopmentEpisode]) -> dict[str, Any]:
+            representatives: dict[str, DevelopmentEpisode] = {}
+            for episode in sorted(subset, key=lambda item: (item.context.now_ms, item.case_id)):
+                representatives.setdefault(episode.cluster_id, episode)
+            counters: dict[str, Counter[str]] = {
+                name: Counter()
+                for name in (
+                    "subject_count",
+                    "action",
+                    "stratum",
+                    "source_authority",
+                    "title_script",
+                    "reviewer",
+                    "revision",
+                    "review_role",
+                    "label_source",
+                )
+            }
+            taxonomy_rows: list[dict[str, Any]] = []
+            times: list[int] = []
+            for episode in representatives.values():
+                gold = ModelTaxonomyV1.model_validate(dict(episode.accepted_review)["taxonomy"])
+                authority = source_authority_from_evidence(episode.context.evidence)
+                taxonomy_rows.append(
+                    {
+                        "case_id": episode.case_id,
+                        "cluster_id": episode.cluster_id,
+                        "gold": gold,
+                        "predicted": NewsTaxonomyV1.issue(gold, source_authority=authority),
+                    }
+                )
+                review = dict(review_by_case.get(episode.case_id) or {})
+                provenance = dict(dict(review.get("payload") or {}).get("taxonomy_review") or {})
+                title = episode.context.evidence.title
+                has_cjk = any("\u4e00" <= char <= "\u9fff" for char in title)
+                has_latin = any(char.isascii() and char.isalpha() for char in title)
+                script = "mixed" if has_cjk and has_latin else "cjk" if has_cjk else "latin" if has_latin else "other"
+                counters["subject_count"][str(len(gold.subject_codes))] += 1
+                counters["action"][str(episode.accepted_review.get("should_push") or "uncertain")] += 1
+                counters["stratum"][episode.stratum] += 1
+                counters["source_authority"][authority] += 1
+                counters["title_script"][script] += 1
+                counters["reviewer"][str(review.get("reviewer") or "unknown")] += 1
+                counters["revision"]["superseding" if review.get("supersedes_review_id") else "initial"] += 1
+                counters["review_role"][str(provenance.get("review_role") or "primary")] += 1
+                counters["label_source"][str(provenance.get("label_source") or "human")] += 1
+                times.append(episode.context.now_ms)
+            summary = summarize_taxonomy(taxonomy_rows)
+            return {
+                "cluster_n": len(representatives),
+                "taxonomy_gold": {
+                    "support": summary["support"],
+                    "zero_support": summary["zero_support"],
+                },
+                **{name: dict(sorted(counter.items())) for name, counter in counters.items()},
+                "time_span": {
+                    "from_ms": min(times) if times else None,
+                    "to_ms": max(times) if times else None,
+                    "duration_hours": round((max(times) - min(times)) / 3_600_000, 3) if times else 0.0,
+                },
+            }
+
+        target_ids = set(plan.target_case_ids)
+        control_ids = set(plan.control_case_ids)
+
+        def objective_cluster_n(subset: Sequence[DevelopmentEpisode], case_ids: set[str]) -> int:
+            return len({episode.cluster_id for episode in subset if episode.case_id in case_ids})
+
+        distributions = {
+            "schema": "tracefold.news.dataset_distributions.v1",
+            "full": distribution(typed),
+            "train": distribution(plan.train_episodes),
+            "development_selection": distribution(plan.development_selection_episodes),
+        }
+        objective_counts = {
+            "train_taxonomy_target_cluster_n": objective_cluster_n(plan.train_episodes, target_ids),
+            "train_taxonomy_control_cluster_n": objective_cluster_n(plan.train_episodes, control_ids),
+            "development_selection_taxonomy_target_cluster_n": objective_cluster_n(
+                plan.development_selection_episodes, target_ids
+            ),
+            "development_selection_taxonomy_control_cluster_n": objective_cluster_n(
+                plan.development_selection_episodes, control_ids
+            ),
+        }
+        return distributions, objective_counts
+
+    def _calibration_receipt(
+        self,
+        request: Mapping[str, Any],
+        cases: Sequence[DatasetCaseRef],
+    ) -> dict[str, Any]:
+        if set(request) != {"tasks"}:
+            raise ValueError("news_learning_calibration_request_fields_invalid")
+        items = request.get("tasks")
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes)) or len(items) != 50:
+            raise ValueError("news_learning_calibration_requires_50_tasks")
+        case_by_pin = {
+            (str(case.event_id), int(case.evidence_version or 0)): case
+            for case in cases
+            if case.subject_kind == "event"
+        }
+        accepted = self._repository.reviews_by_id([case.review_id for case in case_by_pin.values()])
+        case_by_task: dict[str, tuple[DatasetCaseRef, Mapping[str, Any]]] = {}
+        for case in case_by_pin.values():
+            review = accepted.get(case.review_id)
+            if review is None:
+                raise ValueError("news_learning_calibration_review_missing")
+            task_id = str(review.get("task_id") or "")
+            if not task_id or task_id in case_by_task:
+                raise ValueError("news_learning_calibration_task_duplicate")
+            case_by_task[task_id] = (case, review)
+        rows: list[dict[str, Any]] = []
+        entries: list[dict[str, Any]] = []
+        seen_tasks: set[str] = set()
+        seen_clusters: set[str] = set()
+        for raw in items:
+            if not isinstance(raw, Mapping):
+                raise ValueError("news_learning_calibration_task_invalid")
+            if set(raw) != {"task_id", "source_projection_sha256"}:
+                raise ValueError("news_learning_calibration_task_fields_invalid")
+            task_id = str(raw.get("task_id") or "")
+            expected_projection = str(raw.get("source_projection_sha256") or "")
+            if not task_id or task_id in seen_tasks:
+                raise ValueError("news_learning_calibration_task_duplicate")
+            seen_tasks.add(task_id)
+            match = case_by_task.get(task_id)
+            if match is None:
+                raise ValueError("news_learning_calibration_task_not_in_dataset")
+            case, accepted_review = match
+            source_row = self._repository.review_task_source(
+                event_id=str(case.event_id),
+                evidence_version=int(case.evidence_version or 0),
+                program_version=self._stable.program_version,
+                program_sha256=self._stable.program_sha256,
+                policy_version=TRIAGE_POLICY_VERSION,
+                bundle_sha=self._stable.bundle_sha,
+            )
+            if source_row is None or str(source_row.get("evidence_sha256") or "") != case.evidence_sha256:
+                raise ValueError("news_learning_calibration_task_not_found")
+            source = source_only_event_projection(source_row)
+            if str(source["task"]["task_id"]) != task_id or str(source["task"]["task_version"]) != str(
+                accepted_review.get("task_version") or ""
+            ):
+                raise ValueError("news_learning_calibration_task_identity_mismatch")
+            if source["projection_sha256"] != expected_projection:
+                raise ValueError("news_learning_calibration_source_projection_mismatch")
+            event_id = str(source["task"]["event_id"])
+            evidence_version = int(source["task"]["evidence_version"])
+            pinned_case = case_by_pin.get((event_id, evidence_version))
+            if pinned_case is None or pinned_case.case_id != case.case_id:
+                raise ValueError("news_learning_calibration_task_not_in_dataset")
+            if case.cluster_id in seen_clusters:
+                raise ValueError("news_learning_calibration_cluster_duplicate")
+            seen_clusters.add(case.cluster_id)
+            reviews = self._repository.event_task_reviews(
+                task_id=task_id,
+                task_version=str(source["task"]["task_version"]),
+            )
+            primary = [
+                review
+                for review in reviews
+                if dict(dict(review.get("payload") or {}).get("taxonomy_review") or {}).get("review_role") == "primary"
+            ]
+            if len(primary) != 2 or len({str(review["reviewer"]) for review in primary}) != 2:
+                raise ValueError("news_learning_calibration_two_primary_reviewers_required")
+
+            def taxonomy(review: Mapping[str, Any]) -> ModelTaxonomyV1:
+                payload = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
+                return ModelTaxonomyV1.model_validate(
+                    {field: payload[field] for field in ModelTaxonomyV1.model_fields if field in payload}
+                )
+
+            left, right = taxonomy(primary[0]), taxonomy(primary[1])
+            disagreement = left != right
+            adjudications = [
+                review
+                for review in reviews
+                if dict(dict(review.get("payload") or {}).get("taxonomy_review") or {}).get("review_role")
+                == "adjudication"
+            ]
+            adjudication = adjudications[-1] if adjudications else None
+            if disagreement:
+                provenance = dict(dict((adjudication or {}).get("payload") or {}).get("taxonomy_review") or {})
+                if (
+                    adjudication is None
+                    or str(adjudication["reviewer"]) in {str(review["reviewer"]) for review in primary}
+                    or provenance.get("adjudicates_review_id") != primary[-1]["review_id"]
+                    or case.review_id != adjudication["review_id"]
+                ):
+                    raise ValueError("news_learning_calibration_adjudication_incomplete")
+            elif case.review_id not in {str(review["review_id"]) for review in primary}:
+                raise ValueError("news_learning_calibration_consensus_not_dataset_gold")
+            rows.append(
+                {
+                    "task_id": task_id,
+                    "cluster_id": case.cluster_id,
+                    "reviewer_a": left,
+                    "reviewer_b": right,
+                }
+            )
+            entries.append(
+                {
+                    "task_id": task_id,
+                    "source_projection_sha256": expected_projection,
+                    "event_id": event_id,
+                    "evidence_version": evidence_version,
+                    "cluster_id": case.cluster_id,
+                    "primary_review_ids": [str(review["review_id"]) for review in primary],
+                    "primary_reviewers": [str(review["reviewer"]) for review in primary],
+                    "adjudication_review_id": (
+                        str(adjudication["review_id"]) if disagreement and adjudication is not None else None
+                    ),
+                }
+            )
+        statistics = {
+            **calibrate_taxonomy(rows),
+            "disagreement_n": sum(
+                ModelTaxonomyV1.model_validate(row["reviewer_a"]) != ModelTaxonomyV1.model_validate(row["reviewer_b"])
+                for row in rows
+            ),
+            "disagreement_unadjudicated_n": 0,
+        }
+        return {
+            "schema": "tracefold.news.dataset_calibration_receipt.v1",
+            "request_sha256": canonical_sha(dict(request)),
+            "tasks": entries,
+            "statistics": statistics,
+        }
 
     def development_compile_export(self, dataset_sha: str) -> DevelopmentCompileExport:
         """Seal the sole read-only development export for the cold compiler."""
@@ -643,11 +908,33 @@ class DevelopmentDatasetStore:
         if review is None:
             raise ValueError("news_learning_review_missing")
         if case.subject_kind == "event":
+            if (
+                str(review.get("subject_kind") or "") != "event"
+                or str(review.get("event_id") or "") != str(case.event_id)
+                or int(review.get("evidence_version") or 0) != int(case.evidence_version or 0)
+            ):
+                raise ValueError("news_learning_review_identity_mismatch")
             row = self._repository.review_task_source(
-                event_id=str(case.event_id), evidence_version=int(case.evidence_version or 0)
+                event_id=str(case.event_id),
+                evidence_version=int(case.evidence_version or 0),
+                program_version=self._stable.program_version,
+                program_sha256=self._stable.program_sha256,
+                policy_version=TRIAGE_POLICY_VERSION,
+                bundle_sha=self._stable.bundle_sha,
             )
             if row is None or row["evidence_sha256"] != case.evidence_sha256:
                 raise ValueError("news_learning_evidence_changed")
+            snapshot = dict(row["evidence_snapshot"] or {})
+            focus = dict(snapshot.get("focus_fact") or {})
+            trace = dict(row.get("trace") or {})
+            if (
+                int(row.get("verdict_evidence_version") or -1) != int(case.evidence_version or 0)
+                or str(row.get("focus_fact_id") or "") != str(focus.get("fact_id") or "")
+                or int(trace.get("evidence_version") or -1) != int(case.evidence_version or 0)
+                or str(trace.get("evidence_sha256") or "") != case.evidence_sha256
+                or str(trace.get("focus_fact_id") or "") != str(focus.get("fact_id") or "")
+            ):
+                raise ValueError("news_learning_verdict_identity_mismatch")
             production_judgment: dict[str, Any] | None = None
             if row.get("verdict") is not None and row.get("model_editorial") is not None:
                 scored = ScoredJudgment.issue(
@@ -658,13 +945,17 @@ class DevelopmentDatasetStore:
                     raise ValueError("news_learning_scored_judgment_identity_mismatch")
                 production_judgment = scored.model_dump(mode="json")
             return {
-                "snapshot": dict(row["evidence_snapshot"] or {}),
+                "snapshot": snapshot,
                 "opened_at_ms": int(row["opened_at_ms"]),
                 "receipt_at_ms": int(row["settled_at_ms"]) if row.get("settled_at_ms") is not None else None,
                 "production_judgment": production_judgment,
                 "review": dict(review),
                 "watchlist": list((row.get("trace") or {}).get("watchlist") or []),
             }
+        if str(review.get("subject_kind") or "") != "external_miss" or str(
+            review.get("external_snapshot_id") or ""
+        ) != str(case.external_snapshot_id):
+            raise ValueError("news_learning_review_identity_mismatch")
         row = self._repository.external_miss_snapshot(str(case.external_snapshot_id))
         if row is None or row["evidence_sha256"] != case.evidence_sha256:
             raise ValueError("news_learning_external_evidence_changed")

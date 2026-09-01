@@ -1151,7 +1151,7 @@ Diagnose News in this order:
    every requested case and does not move when the model does. `hard_gates`
    says which gate zeroed a case, and a `metric_error:*` in `failures.by_code`
    is a defect in the corpus or the ruler, not a provider outage. Compare
-   metric-v7 components as well: 45% final action, 35% exact TradeRelevance,
+   metric-v8 components as well: 45% final action, 35% exact TradeRelevance,
    10% semantics/novelty, 10% ReaderCard reviewer anchors and 10% ReaderCard
    lint, each with its effective denominator,
    weight mass and gold coverage. A failed dimension without exact gold is not
@@ -1170,14 +1170,14 @@ Diagnose News in this order:
    serves News correctly but cannot close a promotion.
 7. A change is a registered candidate, not an edited production artifact.
    Freeze a post-epoch development dataset, then run one command:
-   `learning run --development SHA --out DIR` with explicit metric, task,
-   reflection and metric-judge call limits, a total and a per-call provider-cost
+   `learning run --development SHA --out DIR` with explicit metric, task and
+   reflection call limits, a total and a per-call provider-cost
    limit, and a seed. It writes `readiness` (zero model calls) and invokes one
    stock GEPA compile into a new empty directory. It ends in `NO_OP`, `REJECTED` or
    `ADVANCE`; only `ADVANCE` writes `prompt_candidate.json`, and all three write
-   a complete `optimization_report.json`. Each of the three roles is one
-   `ModelExecutionIdentity`, and calls/cost/failures are accounted separately
-   before they are summed. Candidate zero's validation score inside that GEPA
+   a complete `optimization_report.json`. Task and reflection are separate
+   `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
+   before they are summed. The taxonomy optimizer has no judge. Candidate zero's validation score inside that GEPA
    run is the only optimization baseline. Official GEPA log/state is retained;
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release
@@ -1217,14 +1217,14 @@ news_learning_epochs e JOIN agent ON agent.stable_sha = e.bundle_sha`. Take the
 newest agent *before* the join, not after: joining the whole appointment history
 and then taking one row reports the previous deployment's epoch when the current
 agent has no row yet, which is exactly the case worth diagnosing. Only accepted `news_review_v6` rows from that
-epoch, bound to that exact bundle, enter metric v7, GEPA or release evidence. Every earlier Prompt/Program
+epoch, bound to that exact bundle, enter metric v8, GEPA or release evidence. Every earlier Prompt/Program
 baseline remains readable audit history but cannot enter a dataset or release
 stage. Do not
 interpret a successful migration, a valid Program artifact, or the new
 two-Predictor trace as proof of higher quality. Issue #117 deliberately lands
 the production persistence/read/UI seam before taxonomy denominators exist;
-issue #453 uses them through the existing Review v6, Dataset, Objective, metric
-v7, GEPA and release path only.
+issue #456 uses them through the existing Review v6, Dataset, Objective, direct taxonomy GEPA metric and
+release path only.
 
 For the taxonomy Gold → Candidate workflow:
 

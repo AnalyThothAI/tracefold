@@ -30,7 +30,13 @@ def _handle_learning_run(args: Namespace, settings: Any, stable: Any) -> tuple[i
     out = Path(str(args.out))
     _prepare_new_empty_directory(out)
     development = str(args.development).strip()
-    _readiness(settings, stable, out=out, development=development)
+    readiness = _readiness(settings, stable, out=out, development=development)
+    blockers = [
+        *list(readiness["objective"]["blockers"]),
+        *list(readiness["development_profile"]["blockers"]),
+    ]
+    if not readiness["objective"]["compilable"] or not readiness["development_profile"]["ready"]:
+        raise ValueError("news_learning_run_readiness_blocked:" + ",".join(blockers))
     optimization = _optimize(args, settings, stable, out=out, development=development)
 
     candidate = out / _OPTIMIZATION_DIR / _CANDIDATE_FILE
@@ -79,7 +85,6 @@ def _optimize(args: Namespace, settings: Any, stable: Any, *, out: Path, develop
             max_metric_calls=int(args.max_metric_calls),
             max_task_model_calls=int(args.max_task_model_calls),
             max_reflection_model_calls=int(args.max_reflection_model_calls),
-            max_metric_judge_model_calls=int(args.max_metric_judge_model_calls),
             max_cost_microusd=int(args.max_cost_microusd),
             max_call_cost_microusd=int(args.max_call_cost_microusd),
             max_wall_clock_seconds=int(args.max_wall_clock_seconds),

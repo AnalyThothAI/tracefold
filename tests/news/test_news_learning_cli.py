@@ -428,7 +428,7 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
 
     The blocked path used to return four keys and a differently named output field, so anything parsing
     the report had to special-case it. `dataset_agent_cohort_mismatch` is a #199 §4 blocking reason, not
-    an error, so it is an `insufficient` report with every section present and empty.
+    an error, so the same report carries a non-compilable Objective with every section present and empty.
     """
 
     class _Evaluator:
@@ -450,14 +450,18 @@ def test_readiness_reports_a_cohort_mismatch_in_the_same_shape_as_a_real_report(
     code, payload = _handle_learning(_readiness_args())
     data = payload["data"]
     assert code == 0 and payload["ok"] is True
-    assert data["outcome"] == "insufficient"
-    assert data["blocking_reasons"] == ["dataset_agent_cohort_mismatch"]
+    assert "outcome" not in data and "blocking_reasons" not in data
+    assert data["objective"]["compilable"] is False
+    assert data["objective"]["blockers"] == ["dataset_agent_cohort_mismatch"]
+    assert data["development_profile"]["ready"] is False
     # The sections a consumer reads, present and empty rather than absent.
     for section in (
         "coverage",
         "corpus",
         "owner_distribution",
         "objective",
+        "development_profile",
+        "taxonomy_gold",
         "split",
         "train",
         "development_selection",
@@ -524,7 +528,7 @@ def test_readiness_republishes_the_frozen_datasets_own_coverage_counts(monkeypat
     assert coverage["independent_cluster_n"] == 141
     assert coverage["eligible_event_n"] == 733
     assert "strata" not in coverage and "eligibility" not in coverage
-    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v2"
+    assert payload["data"]["schema"] == "tracefold.news.gepa_readiness_report.v3"
 
 
 def test_readiness_lets_a_wrong_dataset_argument_stay_an_error(monkeypatch: Any) -> None:

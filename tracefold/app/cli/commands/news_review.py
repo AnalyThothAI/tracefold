@@ -47,7 +47,7 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         if action == "evidence":
             task = TaskRef(task_id=str(args.task), task_version=str(args.version))
             with postgres_connection(settings) as conn:
-                data = ReviewDesk(conn).evidence(task, principal=principal)
+                data = ReviewDesk(conn).evidence(task, principal=principal, source_only=bool(args.source_only))
             return 0, {"ok": True, "data": data}
 
         if action == "accept-drafts":
@@ -56,6 +56,11 @@ def _handle_review(args: Namespace) -> tuple[int, dict[str, Any]]:
         payload = _read_json_or_yaml(str(args.file))
         kind = str(payload.get("kind") or "")
         key = str(args.idempotency_key or uuid.uuid4())
+        if action == "submit":
+            reviewer = str(args.reviewer or "").strip()
+            if not reviewer:
+                raise ValueError("news_review_submit_reviewer_required")
+            principal = Principal(subject=reviewer)
         # The HTTP pool is connection-level read-only. This short-lived CLI connection uses the shared
         # login's ordinary transaction mode; since #256 it is the only ReviewDesk writer.
         with postgres_connection(settings) as conn, transaction(conn):
@@ -109,6 +114,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
         raise ValueError("news_review_accept_drafts_reviewer_required")
     # Dry-run creates no acceptance row, so its placeholder identity never becomes provenance.
     principal = Principal(subject=reviewer or "preview")
+    explicit_owner = str(getattr(args, "first_bad_owner", "") or "").strip() or None
     drafter_identity = dict(batch.get("drafter") or {})
     drafter_contract = str(drafter_identity.get("drafter_id") or DRAFTER_ID).strip()
     drafter_model = str(drafter_identity.get("model") or "").strip()
@@ -141,6 +147,7 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
                 source_authority=cast(SourceAuthority, str(entry.get("source_authority") or "unknown")),
                 draft_author=draft_author,
             )
+            payload["first_bad_owner"] = explicit_owner
             EventRubricSubmission.model_validate(payload)
         except Exception:
             # The rubric refused it. Better skipped and reported than reshaped into something acceptable.
@@ -156,6 +163,8 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
                 "would_submit": len(planned),
                 "skipped": skipped,
                 "batch_sha256": batch.get("batch_sha256"),
+                "selected_task_ids": [task_id for task_id, _version, _payload, _confidence in planned],
+                "explicit_first_bad_owner": explicit_owner,
                 "sample": [
                     {"task_id": task_id, "confidence": confidence, "dimensions": payload["dimensions"]}
                     for task_id, _version, payload, confidence in planned[:5]
@@ -188,6 +197,8 @@ def _handle_review_accept_drafts(args: Namespace, settings: Any, _principal: Any
             "failed_n": len(failures),
             "batch_sha256": batch.get("batch_sha256"),
             "reviewer": getattr(principal, "subject", None),
+            "selected_task_ids": [task_id for task_id, _version, _payload, _confidence in planned],
+            "explicit_first_bad_owner": explicit_owner,
         },
     }
 

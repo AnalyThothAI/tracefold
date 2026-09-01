@@ -44,10 +44,16 @@ def add_news_commands(
     review_evidence = review_subcommands.add_parser("evidence", help="show the task-scoped evidence view")
     review_evidence.add_argument("task")
     review_evidence.add_argument("--version", required=True)
+    review_evidence.add_argument(
+        "--source-only",
+        action="store_true",
+        help="show only the pinned TaskRef and source evidence, excluding Stable, drafts, and reviews",
+    )
     review_submit = review_subcommands.add_parser("submit", help="append and accept one rubric or pairwise judgment")
     review_submit.add_argument("task")
     review_submit.add_argument("--version", required=True)
     review_submit.add_argument("--file", required=True)
+    review_submit.add_argument("--reviewer", required=True, help="actual reviewer principal persisted on the review")
     review_submit.add_argument("--idempotency-key", default="")
     review_accept = review_subcommands.add_parser(
         "accept-drafts",
@@ -80,6 +86,11 @@ def add_news_commands(
             "required for writes: actual accepting reviewer recorded on each row, including an identified AI "
             "adjudicator; an empty value is allowed only with --dry-run"
         ),
+    )
+    review_accept.add_argument(
+        "--first-bad-owner",
+        default="",
+        help="explicit owner written into every selected review, for example taxonomy; omitted keeps null",
     )
     review_accept.add_argument(
         "--dry-run",
@@ -169,6 +180,7 @@ def add_news_commands(
         "--model", required=True, help="direct drafting model, e.g. deepseek-v4-pro or qwen3.8-27b:thinking"
     )
     learning_draft.add_argument("--limit", type=_positive_int, default=50)
+    learning_draft.add_argument("--stratum", default="", help="restrict the existing ReviewDesk sampler stratum")
     learning_draft.add_argument(
         "--include-reviewed",
         action="store_true",
@@ -186,12 +198,6 @@ def add_news_commands(
     learning_run.add_argument("--max-metric-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-task-model-calls", type=_positive_int, required=True)
     learning_run.add_argument("--max-reflection-model-calls", type=_positive_int, required=True)
-    learning_run.add_argument(
-        "--max-metric-judge-model-calls",
-        type=_positive_int,
-        required=True,
-        help="judge call ceiling for the optimization",
-    )
     learning_run.add_argument("--max-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-call-cost-microusd", type=_positive_int, required=True)
     learning_run.add_argument("--max-wall-clock-seconds", type=_positive_int, default=14_400)
@@ -213,7 +219,7 @@ def add_news_commands(
         "register", help="bind a Prompt candidate to the active stable and a frozen dataset"
     )
     learning_register.add_argument("--development", required=True, help="development dataset artifact SHA")
-    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v1 JSON/YAML")
+    learning_register.add_argument("--candidate", required=True, help="news_prompt_candidate_v2 JSON/YAML")
     learning_register.add_argument(
         "--artifact-root", required=True, help="write the candidate <program-sha>.json artifact document"
     )
@@ -224,6 +230,11 @@ def add_news_commands(
     learning_freeze.add_argument("--from-ms", type=_nonnegative_int, required=True)
     learning_freeze.add_argument("--to-ms", type=_positive_int, required=True)
     learning_freeze.add_argument("--candidate", default="", help="candidate manifest; required for validation")
+    learning_freeze.add_argument(
+        "--calibration-request",
+        default="",
+        help="one-time source-only task/projection request; development freeze only",
+    )
     learning_freeze.add_argument("--out", required=True, help="write the dataset manifest")
     for action, stage in (("evaluate", None), ("shadow", "shadow")):
         learning_eval = release_subcommands.add_parser(action, help=f"run the {action} release-evidence gate")

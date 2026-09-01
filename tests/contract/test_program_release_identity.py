@@ -31,7 +31,7 @@ NEWS_STABLE_PROGRAM_SHA256 = "404ad791ba68b0898f6fa07ad7e919b33cd5031a2bee27383f
 
 # #437 changes Gold projection. It remains release evidence after #453 moves taxonomy Gold into the one
 # development Objective and Metric: a behavior edit must visibly re-pin this name.
-NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v5"
+NEWS_COMPILE_EPISODE_PROJECTION_SCHEMA = "tracefold.news.development_compile_episode.v6"
 
 
 def test_execution_envelope_identity_is_pinned() -> None:
@@ -69,7 +69,7 @@ def test_current_news_release_identity_is_byte_exact() -> None:
         "program_version": "news_semantic_program_v8",
         "policy_version": "news_triage_policy_v11",
         "review_rubric_version": "news_review_v6",
-        "metric_id": "tracefold.news.production_action_trade_relevance_v7",
+        "metric_id": "tracefold.news.production_action_trade_relevance_v8",
         "program_sha256": NEWS_STABLE_PROGRAM_SHA256,
     }
 

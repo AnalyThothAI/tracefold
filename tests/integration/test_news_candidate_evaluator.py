@@ -661,7 +661,7 @@ def _prompt_candidate(
             if objective_summary is not None
             else objective_plan_summary(plan, episode_projection_root_sha256=exported.episode_projection_root_sha256)
         ),
-        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v3"},
+        "optimizer": {"schema": "tracefold.news.compile_optimizer_config_receipt.v5"},
         "model_identities": {"task": {"role": "task"}, "reflection": {"role": "reflection"}},
         "budget": {"max_metric_calls": 12},
         "usage": {"metric_calls": 12},
@@ -779,9 +779,9 @@ def _persist_prompt_candidate(
 
 def _insert_validation_dataset(conn, *, development, candidate: CandidateManifest) -> str:
     payload = {
-        "dataset_version": "news_learning_dataset_v2",
+        "dataset_version": "news_learning_dataset_v3",
         "role": "validation",
-        "profile_id": "news_learning_release_v2",
+        "profile_id": "news_learning_release_v3",
         "learning_epoch": epoch_id_for_bundle(_arm().bundle_sha),
         "learning_epoch_started_at_ms": development.learning_epoch_started_at_ms,
         "window": {"from_ms": NOW - 6 * 3_600_000, "to_ms": NOW},
@@ -1117,6 +1117,7 @@ def _accepted_event(
     title: str = "Micron says DRAM contract prices rose again in August",
     should_push: str = "must_push",
     first_bad_owner: str | None = "triage_prompt",
+    taxonomy_mismatch: bool = False,
     magnitude: str | None = None,
     published_at_ms: int | None = None,
     relevance: TradeRelevanceV1 | None = None,
@@ -1158,17 +1159,30 @@ def _accepted_event(
         DeskQuery(event=event_id),
         principal=PRINCIPAL,
     )["tasks"][0]
+    rubric = _rubric(
+        why=why,
+        should_push=should_push,
+        magnitude=magnitude,
+        # A taxonomy target is authorized only by this explicit owner; other failed dimensions are
+        # diagnostics under #456 and grant no optimizer authority.
+        first_bad_owner=first_bad_owner if (why != "pass" or magnitude == "fail" or taxonomy_mismatch) else None,
+    )
+    if taxonomy_mismatch:
+        rubric = EventRubricSubmission.model_validate(
+            rubric.model_dump(mode="json")
+            | {
+                "taxonomy": news_taxonomy(
+                    event_family="product_service_change",
+                    change_state="reported",
+                    assertion_status="claimed",
+                    source_authority="reputable_secondary",
+                ).model_dump(mode="json")
+            }
+        )
     with repositories_for_connection(conn).transaction():
         desk.submit(
             TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
-            _rubric(
-                why=why,
-                should_push=should_push,
-                magnitude=magnitude,
-                # A failing case only becomes a GEPA target when a human wrote the owner into the
-                # submission; a passing one has nothing to attribute.
-                first_bad_owner=first_bad_owner if (why != "pass" or magnitude == "fail") else None,
-            ),
+            rubric,
             principal=PRINCIPAL,
             idempotency_key=str(uuid.uuid4()),
         )
@@ -1336,15 +1350,14 @@ def _accepted_compilable_event(
     selected_stable = stable or _arm()
     event_ids: list[str] = []
     for index, (role, hit_id, title, should_push, held) in enumerate(_COMPILABLE_CORPUS):
-        # A typed `magnitude` failure with a stated correct value, not a copy complaint: #199 keeps a
-        # failed `why_support` as an excluded diagnostic because the metric has no value to score the
-        # repair against, so a corpus of those produces no targets at all.
+        # #456 admits only exact taxonomy mismatches with an explicit taxonomy owner.
         is_target = role == "target" and why != "pass"
         event_ids.append(
             _accepted_event(
                 conn,
                 why="pass",
-                magnitude="fail" if is_target else None,
+                first_bad_owner="taxonomy" if is_target else None,
+                taxonomy_mismatch=is_target,
                 stale_reask=stale_reask and index == 0,
                 stable=selected_stable,
                 hit_id=hit_id,
@@ -1578,6 +1591,35 @@ def test_development_compile_export_seals_exact_dataset_and_ordered_episodes(con
     assert episode["production_judgment"]["verdict"] == _verdict()
     assert episode["production_judgment"]["editorial"] == _editorial().model_dump(mode="json")
     assert conn.execute("SELECT count(*) AS n FROM news_model_recordings").fetchone()["n"] == 0
+
+
+def test_frozen_dataset_replays_its_pin_after_new_evidence_without_a_verdict(conn) -> None:
+    event_id = _accepted_event(conn, why="pass")
+    stable = _arm()
+    datasets = _datasets(conn, stable)
+    development = asyncio.run(
+        datasets.freeze_dataset(
+            DatasetSpec(role="development", window=ClosedWindow(from_ms=NOW - 6 * 3_600_000, to_ms=NOW))
+        )
+    )
+    before = datasets.development_compile_export(development.artifact_sha)
+
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.set_storyline_key(
+            event_id=event_id,
+            storyline_key="macro:later-source-context",
+            now_ms=NOW + 1,
+        )
+        newer = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 2)
+
+    assert int(newer["evidence_version"]) == int(development.cases[0].evidence_version or 0) + 1
+    assert conn.execute("SELECT 1 FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone() is None
+
+    after = datasets.development_compile_export(development.artifact_sha)
+
+    assert after.episodes == before.episodes
+    assert after.episode_projection_root_sha256 == before.episode_projection_root_sha256
 
 
 def test_development_compile_export_rejects_a_forged_dataset_artifact_sha(conn) -> None:
@@ -3411,7 +3453,7 @@ def test_shadow_collects_real_distribution_without_touching_online_truth(conn) -
 
 @pytest.mark.parametrize("program_matches_assignment", [True, False])
 def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, program_matches_assignment: bool) -> None:
-    event_id = _accepted_compilable_event(conn)
+    _accepted_compilable_event(conn)
     stable = _arm()
     bootstrap = CandidateEvaluator(conn, stable=stable, judges={})
     development = asyncio.run(
@@ -3443,6 +3485,18 @@ def test_canary_evaluation_reads_one_arm_assignments_and_receipts(conn, *, progr
             rolling_profile_sha=CANARY_ROLLING_PROFILE_SHA,
             now_ms=NOW - 6 * 3_600_000,
         )
+    # Canary observations are future evidence, not a mutation of a development case. Reusing the focal
+    # frozen Event here used to overwrite its Stable verdict and correctly invalidated the exact dataset pin.
+    event_id = _open_event(
+        conn,
+        hit_id=992001,
+        title="A future canary Event receives one durable arm assignment",
+        bundle_sha=stable.bundle_sha,
+        program_version=stable.program_version,
+        program_sha256=stable.program_sha256,
+        published_at_ms=NOW - 3_500_000,
+    )
+    with repos.transaction():
         assignment = repos.news.assign_agent_arm(
             event_id=event_id,
             stable_bundle_sha=stable.bundle_sha,

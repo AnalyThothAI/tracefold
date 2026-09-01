@@ -9,6 +9,7 @@ content-addressed; opening a queue never writes.
 from __future__ import annotations
 
 import base64
+import difflib
 import hashlib
 import json
 import math
@@ -22,6 +23,7 @@ from typing import Annotated, Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from ..artifact_identity import canonical_json, canonical_sha
+from ..events.identity import comparison_title as normalize_comparison_title
 from ..market_review.storage import MarketReviewCohort, PriceRepository
 from ..outcome import decision_zh
 from ..program.contracts import (
@@ -718,7 +720,7 @@ class ReviewDesk:
             return self._market(query)
         return self._proposals(query)
 
-    def evidence(self, task: TaskRef, *, principal: Principal) -> dict[str, Any]:
+    def evidence(self, task: TaskRef, *, principal: Principal, source_only: bool = False) -> dict[str, Any]:
         self._require_principal(principal)
         if task.task_id.startswith("evt."):
             event_id, evidence_version = _parse_event_task_id(task.task_id)
@@ -729,6 +731,8 @@ class ReviewDesk:
                 raise ValueError("news_review_task_version_conflict")
             row = virtual.row
             accepted = self._latest_accepted(virtual)
+            if source_only:
+                return source_only_event_projection(row)
             reactions = PriceRepository(self._conn).event_reactions(event_id)
             trace = dict(row.get("trace") or {})
             editorial = dict(row.get("model_editorial") or {})
@@ -763,6 +767,7 @@ class ReviewDesk:
                 "reader_receipt": _receipt_public(row),
                 "market_reactions": reactions if accepted is not None else [],
                 "accepted_review": accepted,
+                "duplicate_hints": self._duplicate_hints(row),
                 "rubric": _rubric_contract(row),
                 "versions": {
                     "rubric": REVIEW_RUBRIC_VERSION,
@@ -772,6 +777,8 @@ class ReviewDesk:
                 },
             }
         if task.task_id.startswith("pair."):
+            if source_only:
+                raise ValueError("news_review_source_only_requires_event_task")
             virtual = self._pairwise_task(task.task_id)
             if virtual is None:
                 raise ValueError("news_review_task_not_found")
@@ -786,6 +793,50 @@ class ReviewDesk:
                 reveal=reveal,
             )
         raise ValueError("news_review_task_kind_unsupported")
+
+    def _duplicate_hints(self, row: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Bounded reviewer hints only; never persisted, counted, or unioned."""
+
+        storyline_key = str(row.get("storyline_key") or "")
+        taxonomy = dict(dict(row.get("model_editorial") or {}).get("taxonomy") or {})
+        event_family = str(taxonomy.get("event_family") or "")
+        if not storyline_key or not event_family:
+            return []
+        opened_at_ms = int(row.get("opened_at_ms") or 0)
+        candidates = self._conn.execute(
+            "SELECT * "
+            "FROM news_review_task_source_v1 "
+            "WHERE event_id <> %s AND storyline_key = %s "
+            "AND opened_at_ms BETWEEN %s AND %s "
+            "AND model_editorial #>> '{taxonomy,event_family}' = %s "
+            "ORDER BY opened_at_ms DESC, event_id LIMIT 50",
+            (
+                row["event_id"],
+                storyline_key,
+                opened_at_ms - 24 * 3_600_000,
+                opened_at_ms + 24 * 3_600_000,
+                event_family,
+            ),
+        ).fetchall()
+        source_title = _comparison_title(row["evidence_snapshot"])
+        ranked: list[dict[str, Any]] = []
+        for candidate in candidates:
+            candidate_title = _comparison_title(candidate["evidence_snapshot"])
+            similarity = difflib.SequenceMatcher(None, source_title.casefold(), candidate_title.casefold()).ratio()
+            if similarity < 0.35:
+                continue
+            ranked.append(
+                {
+                    "task_id": _virtual_task(candidate).task_id,
+                    "event_id": str(candidate["event_id"]),
+                    "evidence_version": int(candidate["evidence_version"]),
+                    "evidence_sha256": str(candidate["evidence_sha256"]),
+                    "comparison_title": candidate_title,
+                    "similarity": round(similarity, 6),
+                    "selection_reason": "same_storyline_family_within_24h_title_similarity",
+                }
+            )
+        return sorted(ranked, key=lambda hint: (-hint["similarity"], hint["task_id"]))[:5]
 
     def submit(
         self,
@@ -1388,8 +1439,10 @@ class ReviewDesk:
     def _pairwise_source(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
         if row.get("event_id"):
             source = self._conn.execute(
-                "SELECT evidence_snapshot FROM news_review_task_source_v1 "
-                "WHERE event_id = %s AND evidence_version = %s",
+                "SELECT snapshot AS evidence_snapshot FROM news_event_evidence_snapshots "
+                "WHERE event_id = %s AND evidence_version = %s "
+                "AND provenance = 'observed' AND release_eligible "
+                "AND snapshot ->> 'schema_version' = 'news_event_evidence_v3'",
                 (row["event_id"], row["evidence_version"]),
             ).fetchone()
             if source is None:
@@ -1917,6 +1970,25 @@ def _virtual_task(row: Mapping[str, Any]) -> _VirtualTask:
     return _VirtualTask(task_id=task_id, task_version=task_version, row=row, selection=selection)
 
 
+def source_only_event_projection(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Project one exact Event source without outcome, agent, or reviewer hints."""
+
+    task = _virtual_task(row)
+    source = {
+        "schema": "tracefold.news.review_source_only.v1",
+        "task": {
+            "task_id": task.task_id,
+            "task_version": task.task_version,
+            "mode": "event",
+            "event_id": row["event_id"],
+            "evidence_version": row["evidence_version"],
+        },
+        "evidence": row["evidence_snapshot"],
+        "evidence_sha256": row["evidence_sha256"],
+    }
+    return {**source, "projection_sha256": canonical_sha(source)}
+
+
 def _pairwise_virtual(row: Mapping[str, Any]) -> _VirtualTask:
     run_sha = str(row["run_sha"])
     case_id = str(row["case_id"])
@@ -2380,6 +2452,14 @@ def _parse_agent_cohort_sha(value: str) -> str:
     if not _is_sha256(normalized):
         raise ValueError("news_review_cohort_invalid")
     return normalized
+
+
+def _comparison_title(snapshot: Mapping[str, Any]) -> str:
+    card = dict(snapshot.get("card") or {})
+    focus = dict(snapshot.get("focus_fact") or {})
+    return normalize_comparison_title(
+        str(card.get("comparison_title") or focus.get("text") or card.get("leader_title") or "")
+    )
 
 
 def _parse_event_task_id(task_id: str) -> tuple[str, int]:

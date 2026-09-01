@@ -983,10 +983,97 @@ class LearningStorage:
         ).fetchone()
         return None if row is None else dict(row)
 
-    def review_task_source(self, *, event_id: str, evidence_version: int) -> dict[str, Any] | None:
+    def review_task_source(
+        self,
+        *,
+        event_id: str,
+        evidence_version: int,
+        program_version: str,
+        program_sha256: str,
+        policy_version: str,
+        bundle_sha: str,
+    ) -> dict[str, Any] | None:
+        """Load one frozen Event source by its append-only evidence and Stable identities."""
+
         row = self.conn.execute(
-            "SELECT * FROM news_review_task_source_v1 WHERE event_id = %s AND evidence_version = %s",
-            (event_id, evidence_version),
+            """
+            SELECT e.event_id,
+                   s.evidence_version,
+                   s.focus_fact_id,
+                   s.evidence_sha256,
+                   s.release_eligible AS evidence_release_eligible,
+                   s.snapshot AS evidence_snapshot,
+                   e.opened_at_ms,
+                   e.admission,
+                   e.queue_priority,
+                   e.storyline_key,
+                   e.ingest_mode,
+                   v.created_at_ms AS verdict_created_at_ms,
+                   v.evidence_version AS verdict_evidence_version,
+                   v.final_decision,
+                   v.degraded,
+                   v.error_code AS verdict_error_code,
+                   v.override_rule,
+                   v.throttled_by,
+                   v.verdict,
+                   v.trace,
+                   v.policy_version,
+                   v.model,
+                   d.state AS delivery_state,
+                   d.card AS delivery_card,
+                   d.settled_at_ms,
+                   d.error_code AS delivery_error_code,
+                   reaction.max_abs_return_1h_bps,
+                   v.program_version,
+                   v.program_sha256,
+                   v.judgment_contract_version,
+                   v.judgment_origin,
+                   v.editorial AS model_editorial,
+                   v.scored_judgment_sha256 AS judgment_sha256,
+                   v.runtime_manifest_sha,
+                   e.event_kind
+              FROM news_event_evidence_snapshots s
+              JOIN news_events e ON e.event_id = s.event_id
+              JOIN LATERAL (
+                    SELECT x.*
+                      FROM news_verdicts x
+                     WHERE x.event_id = s.event_id
+                       AND x.stage = 'triage'
+                       AND x.judgment_contract_version = 'news_judgment_v2'
+                       AND x.judgment_origin = 'model'
+                       AND x.evidence_version = s.evidence_version
+                       AND x.evidence_sha256 = s.evidence_sha256
+                       AND x.focus_fact_id = s.focus_fact_id
+                       AND x.program_version = %s
+                       AND x.program_sha256 = %s
+                       AND x.policy_version = %s
+                       AND x.trace #>> '{agent_assignment,bundle_sha}' = %s
+                     ORDER BY x.created_at_ms DESC
+                     LIMIT 1
+              ) v ON true
+              LEFT JOIN news_deliveries d ON d.event_id = e.event_id AND d.kind = 'first'
+              LEFT JOIN LATERAL (
+                    SELECT max(abs(x.return_1h_bps)) AS max_abs_return_1h_bps
+                      FROM news_event_reactions x
+                     WHERE x.event_id = e.event_id
+                       AND x.metric_version = 'reaction_v1'
+                       AND x.is_primary
+              ) reaction ON true
+             WHERE s.event_id = %s
+               AND s.evidence_version = %s
+               AND s.provenance = 'observed'
+               AND s.release_eligible
+               AND s.snapshot ->> 'schema_version' = 'news_event_evidence_v3'
+               AND e.event_kind = 'news'
+            """,
+            (
+                program_version,
+                program_sha256,
+                policy_version,
+                bundle_sha,
+                event_id,
+                evidence_version,
+            ),
         ).fetchone()
         return None if row is None else dict(row)
 
@@ -1145,6 +1232,17 @@ class LearningStorage:
             "SELECT * FROM news_review_records_v1 WHERE review_id = ANY(%s)", (list(review_ids),)
         ).fetchall()
         return {str(row["review_id"]): dict(row) for row in rows}
+
+    def event_task_reviews(self, *, task_id: str, task_version: str) -> tuple[dict[str, Any], ...]:
+        """Every append-only judgment for one exact calibration task, in ledger order."""
+
+        rows = self.conn.execute(
+            "SELECT * FROM news_review_records_v1 "
+            "WHERE task_id = %s AND task_version = %s AND review_kind = 'judgment' "
+            "ORDER BY created_at_ms, review_id",
+            (task_id, task_version),
+        ).fetchall()
+        return tuple(dict(row) for row in rows)
 
     def learning_epoch_row_for_bundle(self, bundle_sha: str) -> dict[str, Any] | None:
         """The epoch one exact bundle accrues evidence under, or None until that bundle has deployed.

@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from ..review.desk import READER_CONTRACT_SHA256, READER_CONTRACT_VERSION, REVIEW_RUBRIC_VERSION
 from .contracts import LEARNING_PROFILE_ID
 
-EVALUATOR_VERSION = "news_candidate_evaluator_v2"
+EVALUATOR_VERSION = "news_candidate_evaluator_v4"
 
 _PROFILE: dict[str, Any] = {
     "profile_id": LEARNING_PROFILE_ID,
@@ -42,6 +43,13 @@ _PROFILE: dict[str, Any] = {
         "negative_clusters_min": 50,
         "strata_min": 3,
         "safety_required": True,
+        "train_taxonomy_target_clusters_min": 60,
+        "train_taxonomy_control_clusters_min": 60,
+        "selection_taxonomy_target_clusters_min": 30,
+        "selection_taxonomy_control_clusters_min": 30,
+        "calibration_clusters_min": 50,
+        "calibration_kappa_min": 0.75,
+        "calibration_subject_set_f1_min": 0.80,
     },
     # The only temporal contract in the profile, and it is a *future* one: the holdout window opens after
     # the candidate was registered, runs at least a day, and has to carry real reviewed clusters.
@@ -80,4 +88,47 @@ TRUSTED_ROOT_SHA = hashlib.sha256(
 ).hexdigest()
 
 
-__all__ = ["EVALUATOR_VERSION", "TRUSTED_ROOT_SHA", "_PROFILE"]
+_DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
+    ("boundary_cluster_n", "boundary_clusters_min"),
+    ("retention_cluster_n", "retention_clusters_min"),
+    ("negative_cluster_n", "negative_clusters_min"),
+    ("stratum_n", "strata_min"),
+    ("train_stratum_n", "strata_min"),
+    ("development_selection_stratum_n", "strata_min"),
+    ("train_taxonomy_target_cluster_n", "train_taxonomy_target_clusters_min"),
+    ("train_taxonomy_control_cluster_n", "train_taxonomy_control_clusters_min"),
+    ("development_selection_taxonomy_target_cluster_n", "selection_taxonomy_target_clusters_min"),
+    ("development_selection_taxonomy_control_cluster_n", "selection_taxonomy_control_clusters_min"),
+)
+
+
+def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
+    """All zero-call development-corpus gates, from sealed counts and the Objective split."""
+
+    requirements = _PROFILE["development"]
+    blockers = [
+        f"development_{field_name}_insufficient"
+        for field_name, threshold_name in _DEVELOPMENT_COVERAGE_GATES
+        if int(counts.get(field_name) or 0) < int(requirements[threshold_name])
+    ]
+    if requirements["safety_required"] and int(counts.get("safety_cluster_n") or 0) == 0:
+        blockers.append("development_safety_empty")
+    calibration = counts.get("calibration")
+    if not isinstance(calibration, Mapping):
+        blockers.append("development_calibration_missing")
+        return tuple(blockers)
+    if int(calibration.get("cluster_n") or 0) < int(requirements["calibration_clusters_min"]):
+        blockers.append("development_calibration_cluster_n_insufficient")
+    if int(calibration.get("disagreement_unadjudicated_n") or 0):
+        blockers.append("development_calibration_adjudication_incomplete")
+    blockers.extend(
+        f"development_calibration_{axis}_kappa_insufficient"
+        for axis in ("event_family", "change_state", "assertion_status")
+        if float(dict(calibration.get("kappa") or {}).get(axis) or 0.0) < float(requirements["calibration_kappa_min"])
+    )
+    if float(calibration.get("subject_mean_set_f1") or 0.0) < float(requirements["calibration_subject_set_f1_min"]):
+        blockers.append("development_calibration_subject_set_f1_insufficient")
+    return tuple(blockers)
+
+
+__all__ = ["EVALUATOR_VERSION", "TRUSTED_ROOT_SHA", "_PROFILE", "development_coverage_blockers"]

@@ -71,6 +71,7 @@ def _open_event(
     delivered: bool = True,
     hit_id: int = 112001,
     title: str = "Micron says DRAM contract prices rose again in August",
+    source: str = "Reuters",
     bundle_sha: str = ACTIVE_BUNDLE,
     program_sha256: str = "b" * 64,
     relevance_overrides: dict[str, object] | None = None,
@@ -80,7 +81,7 @@ def _open_event(
         "id": hit_id,
         "text": title,
         "link": f"https://example.test/{hit_id}",
-        "source": "Reuters",
+        "source": source,
         "newsType": "news",
         "engineType": "news",
         "ts": "2026-08-21T08:00:00+08:00",
@@ -285,6 +286,18 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     assert evidence["evidence"]["focus_fact"]["text"].startswith("Micron")
     assert evidence["agent"]["cohort"] == f"{PROGRAM_VERSION}/{TRIAGE_POLICY_VERSION}/test-model"
     assert evidence["agent"]["agent_cohort"]["cohort_sha256"] == task["agent_cohort"]["cohort_sha256"]
+    source_only = desk.evidence(ref, principal=PRINCIPAL, source_only=True)
+    assert set(source_only) == {
+        "schema",
+        "task",
+        "evidence",
+        "evidence_sha256",
+        "projection_sha256",
+    }
+    assert source_only["task"]["task_id"] == ref.task_id
+    assert source_only["task"]["task_version"] == ref.task_version
+    assert source_only["evidence"] == evidence["evidence"]
+    assert not any(key in source_only for key in ("agent", "accepted_review", "duplicate_hints"))
     cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     repeated_cohort_queue = desk.open(DeskQuery(cohort=ACTIVE_BUNDLE), principal=PRINCIPAL)
     # Delivered cases use a deterministic 25% sample.  This particular case
@@ -333,6 +346,82 @@ def test_review_queue_evidence_submit_idempotency_and_correction(conn) -> None:
     conn.execute("ROLLBACK TO SAVEPOINT immutable_review")
     conn.execute("RELEASE SAVEPOINT immutable_review")
     conn.commit()
+
+
+def test_event_evidence_offers_bounded_cross_source_duplicate_hints_without_unioning(conn) -> None:
+    first = _open_event(conn, hit_id=112101, title="FTC opens Amazon antitrust investigation")
+    second = _open_event(
+        conn,
+        hit_id=112102,
+        title="Amazon marketplace accused of monopoly by US regulator",
+        source="Bloomberg",
+    )
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.set_storyline_key(event_id=first, storyline_key="asset:AMZN:ftc", now_ms=NOW)
+        repos.news.set_storyline_key(event_id=second, storyline_key="asset:AMZN:ftc", now_ms=NOW)
+
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=first), principal=PRINCIPAL)["tasks"][0]
+    evidence = desk.evidence(
+        TaskRef(task_id=task["task_id"], task_version=task["task_version"]),
+        principal=PRINCIPAL,
+    )
+
+    assert [hint["event_id"] for hint in evidence["duplicate_hints"]] == [second]
+    assert evidence["duplicate_hints"][0]["selection_reason"].startswith("same_storyline_family")
+    assert (
+        conn.execute("SELECT count(*) AS n FROM news_reviews WHERE event_id IN (%s, %s)", (first, second)).fetchone()[
+            "n"
+        ]
+        == 0
+    )
+
+
+def test_two_primary_reviewers_are_retained_and_adjudication_requires_an_independent_principal(conn) -> None:
+    event_id = _open_event(conn, hit_id=112002, title="AMD confirms a new data-center GPU launch window")
+    desk = ReviewDesk(conn, now_ms=NOW)
+    task = desk.open(DeskQuery(event=event_id), principal=PRINCIPAL)["tasks"][0]
+    ref = TaskRef(task_id=task["task_id"], task_version=task["task_version"])
+
+    for reviewer in ("reviewer-alice", "reviewer-bob"):
+        with repositories_for_connection(conn).transaction():
+            desk.submit(
+                ref,
+                _rubric(),
+                principal=Principal(subject=reviewer),
+                idempotency_key=str(uuid.uuid4()),
+            )
+
+    rows = conn.execute(
+        "SELECT review_id, reviewer, payload FROM news_review_records_v1 "
+        "WHERE task_id = %s AND review_kind = 'judgment' ORDER BY review_id",
+        (task["task_id"],),
+    ).fetchall()
+    assert {row["reviewer"] for row in rows} == {"reviewer-alice", "reviewer-bob"}
+    assert len(rows) == 2
+
+    latest = desk._latest_accepted(desk._event_task(event_id, evidence_version=task["evidence_version"]))
+    assert latest is not None
+    adjudication = EventRubricSubmission.model_validate(
+        _rubric().model_dump(mode="json")
+        | {
+            "taxonomy_review": {
+                "review_role": "adjudication",
+                "adjudicates_review_id": latest["review_id"],
+            }
+        }
+    )
+    with (
+        repositories_for_connection(conn).transaction(),
+        pytest.raises(ValueError, match="news_review_taxonomy_adjudicator_not_independent"),
+    ):
+        desk.submit(
+            ref,
+            adjudication,
+            principal=Principal(subject=latest["reviewer"]),
+            idempotency_key=str(uuid.uuid4()),
+        )
 
 
 def test_coverage_uses_only_the_exact_active_agent_bundle(conn) -> None:
@@ -1003,6 +1092,16 @@ def test_pairwise_queue_hides_arm_identity_and_appends_blind_acceptance(conn) ->
     assert [item["task_id"] for item in accepted_queue["tasks"]] == [task["task_id"]]
     direct = desk.open(DeskQuery(task=task["task_id"]), principal=PRINCIPAL)
     assert direct["mode"] == "pairwise" and direct["tasks"][0]["review_status"] == "accepted"
+    repos = repositories_for_connection(conn)
+    with repos.transaction():
+        repos.news.set_storyline_key(
+            event_id=event_id,
+            storyline_key="macro:pairwise-later-evidence",
+            now_ms=NOW + 1,
+        )
+        newer = repos.news.append_evidence_snapshot(event_id=event_id, now_ms=NOW + 2)
+    assert int(newer["evidence_version"]) == int(source["evidence_version"]) + 1
+    assert conn.execute("SELECT 1 FROM news_review_task_source_v1 WHERE event_id = %s", (event_id,)).fetchone() is None
     # A validation case stays blind after its own acceptance.  The whole run
     # must be accepted and then re-sealed by CandidateEvaluator first.
     after = desk.evidence(ref, principal=PRINCIPAL)

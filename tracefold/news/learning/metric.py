@@ -51,7 +51,7 @@ from .taxonomy_metric import TAXONOMY_TARGET_DIMENSIONS, compare_taxonomy
 # addresses — but a version label that stays put while the definition moves is a label that lies.
 # v5 (#306 Phase 1): the deterministic ReaderCard copy contract became a scored component and a hard gate,
 # so the card side of this ruler no longer depends on a reviewer having labelled anything.
-METRIC_ID = "tracefold.news.production_action_trade_relevance_v7"
+METRIC_ID = "tracefold.news.production_action_trade_relevance_v8"
 
 
 # The five components of the candidate-selection score. Code-owned and content-addressed: they are hashed
@@ -184,8 +184,8 @@ class ProductionRegressionGateEvidenceV1(BaseModel):
 
     schema_id: Literal["tracefold.news.production_regression_gate.v1"] = "tracefold.news.production_regression_gate.v1"
     gate: ProductionRegressionGateName
-    metric_id: Literal["tracefold.news.production_action_trade_relevance_v7"] = (
-        "tracefold.news.production_action_trade_relevance_v7"
+    metric_id: Literal["tracefold.news.production_action_trade_relevance_v8"] = (
+        "tracefold.news.production_action_trade_relevance_v8"
     )
     metric_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     denominator_n: int = Field(ge=0)

@@ -21,12 +21,12 @@ from ..artifact_identity import canonical_json, canonical_sha, reject_nonfinite_
 from ..program.artifact import ProgramStrategyArtifactV1, ProgramStrategyPatchV1, validate_program_instruction
 from ..triage_rules import DecidePolicy
 
-# v2 (#259): the development gate dropped `natural_days_min`. The profile is inside `TRUSTED_ROOT_SHA`,
-# so a corpus frozen under v1 already fails closed — but the root is a digest and this is the name a
-# report prints, and one readable name must not stand for two different sets of gates.
-LEARNING_PROFILE_ID: Literal["news_learning_release_v2"] = "news_learning_release_v2"
+# v3 (#456): the development gate adds taxonomy target/control split floors and an independently reviewed
+# 50-cluster calibration receipt. The profile is inside `TRUSTED_ROOT_SHA`; this readable name prevents an
+# older corpus from being mistaken for one that met those gates.
+LEARNING_PROFILE_ID: Literal["news_learning_release_v3"] = "news_learning_release_v3"
 LEARNING_PROGRAM_VERSION = "news_semantic_program_v8"
-PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v1"] = "news_prompt_candidate_v1"
+PROMPT_CANDIDATE_SCHEMA: Literal["news_prompt_candidate_v2"] = "news_prompt_candidate_v2"
 MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identity.v1"] = (
     "tracefold.news.model_execution_identity.v1"
 )
@@ -39,12 +39,14 @@ MODEL_EXECUTION_IDENTITY_SCHEMA: Literal["tracefold.news.model_execution_identit
 # submission, distinct from the derived one the column holds. A v3 projection cannot answer "did a human
 # blame the Prompt", so an Objective Plan built from one would grant GEPA every derived owner in the
 # corpus — the exact permission #199 exists to withdraw.
-# v5 (#437): accepted Review v6 taxonomy now contributes its four model-owned axes to the projection
-# root. A v4 compile record cannot claim the same frozen Gold because taxonomy did not address its root.
-COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v5"] = (
-    "tracefold.news.development_compile_episode.v5"
+# v5 (#437): accepted Review v6 taxonomy contributes its four model-owned axes to the projection root.
+# v6 (#456): explicit taxonomy ownership is the sole optimization authority and therefore part of the
+# frozen episode identity consumed by the direct taxonomy Objective.
+COMPILE_EPISODE_PROJECTION_SCHEMA: Literal["tracefold.news.development_compile_episode.v6"] = (
+    "tracefold.news.development_compile_episode.v6"
 )
-OptimizerRole = Literal["task", "reflection", "metric_judge"]
+OptimizerRole = Literal["task", "reflection"]
+ModelExecutionRole = Literal["task", "reflection", "metric_judge"]
 # The reflection role's budget is its own. Until #143 both roles were built from the task route's numbers,
 # which capped a proposed instruction at 1,200 tokens — below what the instruction bound itself accepts — and
 # gave a reflection call the 20 s route deadline. These live here, not beside the optimizer, because the
@@ -53,7 +55,9 @@ REFLECTION_MAX_TOKENS = 32_000
 REFLECTION_TIMEOUT_SECONDS = 300.0
 METRIC_JUDGE_MAX_TOKENS = 4_096
 METRIC_JUDGE_TIMEOUT_SECONDS = 120.0
-OPTIMIZATION_RUN_REPORT_SCHEMA: Literal["news_optimization_run_report_v1"] = "news_optimization_run_report_v1"
+# v3 (#456): an interrupted GEPA compile cannot expose an exact public metric-evaluation count. Its report
+# records that count as unavailable instead of claiming zero while retaining exact physical model usage.
+OPTIMIZATION_RUN_REPORT_SCHEMA: Literal["news_optimization_run_report_v3"] = "news_optimization_run_report_v3"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 # The three terminal states one offline optimization can end in (#202 §5). Every one of them is a complete,
@@ -115,7 +119,7 @@ class ModelExecutionIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     schema_version: Literal["tracefold.news.model_execution_identity.v1"] = MODEL_EXECUTION_IDENTITY_SCHEMA
-    role: OptimizerRole
+    role: ModelExecutionRole
     provider: str = Field(min_length=1)
     model: str = Field(min_length=1)
     # The one digest here: the canonical endpoint URL identifies the host a credential is presented to, so
@@ -133,7 +137,7 @@ class ModelExecutionIdentity(BaseModel):
     def issue(
         cls,
         *,
-        role: OptimizerRole,
+        role: ModelExecutionRole,
         model: str,
         api_base: str,
         max_output_tokens: int,
@@ -379,7 +383,6 @@ class OptimizationBudget(BaseModel):
     max_metric_calls: int = Field(gt=0)
     max_task_model_calls: int = Field(gt=0)
     max_reflection_model_calls: int = Field(gt=0)
-    max_metric_judge_model_calls: int = Field(gt=0)
     max_cost_microusd: int = Field(gt=0)
     max_call_cost_microusd: int = Field(gt=0)
     max_wall_clock_seconds: float = Field(gt=0, le=86_400)
@@ -393,13 +396,14 @@ class OptimizationBudget(BaseModel):
 
 
 class PromptPatchV1(BaseModel):
-    """The entire legal write-set of News learning: two complete Predictor instructions.
+    """The complete two-instruction candidate payload accepted by News release.
 
     `ProgramStrategyPatchV1` says the same two things bound to a parent, because applying a patch to a
-    Program is the Program package's business and needs the parent to refuse a mismatch. This one is the
-    *candidate's* write-set, which is why it carries nothing else — a field here is a field an optimizer
-    could learn to write. The safety bounds are not restated: `validate_program_instruction` is the one
-    implementation, so a candidate cannot be admitted under looser rules than the artifact it becomes.
+    Program is the Program package's business and needs the parent to refuse a mismatch. The taxonomy
+    optimizer may change only EventSemantics and copies ReaderCard byte-identically; retaining both here
+    makes that equality independently verifiable at registration. The safety bounds are not restated:
+    `validate_program_instruction` is the one implementation, so a candidate cannot be admitted under
+    looser rules than the artifact it becomes.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -451,7 +455,7 @@ class PromptCandidateV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["news_prompt_candidate_v1"] = PROMPT_CANDIDATE_SCHEMA
+    schema_version: Literal["news_prompt_candidate_v2"] = PROMPT_CANDIDATE_SCHEMA
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
     development_dataset_sha256: str = Field(pattern=_SHA256_PATTERN)
     target_runtime_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -488,7 +492,7 @@ class OptimizationRunReport(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["news_optimization_run_report_v1"] = OPTIMIZATION_RUN_REPORT_SCHEMA
+    schema_version: Literal["news_optimization_run_report_v3"] = OPTIMIZATION_RUN_REPORT_SCHEMA
     outcome: OptimizationOutcome
     dataset: DevelopmentDatasetRef
     parent_program_sha256: str = Field(pattern=_SHA256_PATTERN)
@@ -500,6 +504,7 @@ class OptimizationRunReport(BaseModel):
     retrieval: dict[str, Any] | None = None
     metric: dict[str, Any] | None = None
     optimizer: dict[str, Any] | None = None
+    gepa_public_result: dict[str, Any] | None = None
     model_identities: dict[str, Any] = Field(default_factory=dict)
     budget: dict[str, Any]
     usage: dict[str, Any]
@@ -580,6 +585,9 @@ _COVERAGE_FIELDS: tuple[str, ...] = (
     "safety_cluster_n",
     "stratum_n",
     "eligible_event_n",
+    "calibration",
+    "contract_cluster_receipt",
+    "distributions",
     # Below this line: how concentrated the accepted cases are in time, and nothing a gate reads (#259).
     "natural_day_n",
     "window_duration_hours",
@@ -616,6 +624,7 @@ __all__ = [
     "DatasetCaseRef",
     "DevelopmentDatasetRef",
     "ModelExecutionIdentity",
+    "ModelExecutionRole",
     "OptimizationBudget",
     "OptimizationOutcome",
     "OptimizationResult",

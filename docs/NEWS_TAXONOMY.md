@@ -81,6 +81,27 @@ the underlying financial, product, corporate, or regulatory event.
 - `conflicted`: material sources disagree.
 - `unknown`: the bounded evidence does not support a stronger value.
 
+Reviewer calibration uses these precedence rules:
+
+- `reported` is narrow: use it for a published measurement or completed-period
+  result (price, yield, index, flow, inventory, PMI, or financial result), not
+  merely because an outlet reported an event. A non-measurement change that is
+  explicitly live, completed, or in force is `effective`.
+- Use `scheduled` only when the evidence fixes a future time. Otherwise a
+  declared change that is not yet live is `announced`. Use `updated` only for a
+  material new term, correction, denial, or status of an already-known fact;
+  “newly reported” by itself is not `updated`.
+- `confirmed` does not require a recognized `source_authority`. Use it when the
+  bounded evidence directly states an observable datum or live state without
+  attribution-dependent or speculative wording. Use `claimed` when truth
+  depends on an identified actor's assertion, denial, intention, or an
+  attributed report such as “according to” or “says”. Use `rumor` for anonymous
+  or explicitly speculative sourcing. Unknown source authority alone never
+  changes an otherwise direct observation from `confirmed` to `claimed`.
+- When a single evidence bundle materially contradicts itself, use
+  `conflicted`; when the fragment cannot distinguish any stronger state, use
+  `unknown` rather than guessing.
+
 `source_authority` is code-owned:
 
 - `regulatory_filing`: exact recognized regulator/filing provenance.
@@ -130,7 +151,7 @@ exists.
 subject-code set F1 (both empty is 1; exactly one empty is 0) and exact matches
 for the other three axes, then averages the four values. The score and feedback
 come from that one comparison; feedback lists missing/extra subjects and wrong
-axes, never source authority. Metric v7 folds this result into the existing
+axes, never source authority. Metric v8 folds this result into the existing
 `semantics_novelty` component without adding a top-level weight.
 
 A mismatch is an Objective target only when recorded Stable taxonomy exists,

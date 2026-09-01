@@ -101,16 +101,14 @@ rate table the proxy sidecar reserved against, and the sidecar went with the
 compiler platform; the optimization leg of `learning run` charges an unpriced provider call at the
 operator's declared `--max-call-cost-microusd` instead. `LlmConfig` forbids
 unknown keys, so an operator YAML still carrying the block fails to load with
-the key named — remove it before deploying this revision. Each of the three
-optimizer roles —
-task, reflection and `metric_judge` — is one `ModelExecutionIdentity` holding
+the key named — remove it before deploying this revision. Each optimizer role —
+task and reflection — is one `ModelExecutionIdentity` holding
 the complete secret-free execution contract; its only digest is
 `endpoint_fingerprint` over the canonical endpoint URL, which is fingerprinted
 rather than stored because it names the host a credential is presented to.
-Reflection has an exact 32k-token ceiling. The judge binds its
-model/endpoint, instruction/schema, JSONAdapter, timeout/token/temperature/LM
-kwargs and cache/retry contract, and its calls, cost and explicit unavailable
-failures stay separate facts inside the compile record.
+Reflection has an exact 32k-token ceiling. The taxonomy optimizer has no
+semantic judge; the diagnostic baseline and release evaluator retain their
+separate judge contract.
 `llm.news_triage_fallback` (`api_key`, `base_url`, `model`; all-or-nothing and
 only valid next to a complete primary triple; issue #65) is a second direct
 endpoint used only when the primary Triage call fails — timeout, transport
@@ -1203,7 +1201,7 @@ gate zeroed each case (`must_push_miss`, `must_hold_send`,
 `card_lint_self_description`). A gated case keeps its resolved action and its per-dimension
 outcomes: the zero enters every denominator rather than leaving it, or a
 candidate with more hard failures could publish a higher per-dimension hit rate.
-Metric `tracefold.news.production_action_trade_relevance_v7` weights 45% exact
+Metric `tracefold.news.production_action_trade_relevance_v8` weights 45% exact
 final production action, 35% exact TradeRelevance dimensions, 10% existing
 semantics/novelty, 10% ReaderCard reviewer anchors and 10% the deterministic
 ReaderCard copy lint, normalized over the components a case carries. The four
@@ -1274,13 +1272,14 @@ values came from: `active_arm_manifest` is the configured current arm, and only
 current-cohort episodes are eligible. An episode with no
 complete recorded `DecisionResult` is refused in `recorded` mode rather than quietly falling through
 to a policy replay. The sealed compile projection is
-`tracefold.news.development_compile_episode.v5`. The projection is recomputed
+`tracefold.news.development_compile_episode.v6`. The projection is recomputed
 from `news_reviews` on every read, so a *dataset* is never stale; what the field
 refuses is a **compile record** written under an older projection — v2 carried no
 policy and would have raised inside every metric call, v3 could not say
 whether a human wrote `first_bad_owner` or ReviewDesk derived it, which is
 exactly the difference between a Prompt-owned target and somebody else's defect,
-and v4 did not address accepted taxonomy in the projection root.
+v4 did not address accepted taxonomy in the projection root, and v5 did not bind the explicit taxonomy
+ownership now required for an optimizer target.
 A record naming an older projection fails
 `news_learning_program_compile_record_invalid` rather than being re-read under
 rules it was not produced under.
@@ -1290,7 +1289,8 @@ episodes from the active epoch. Its moving-window form remains the Program
 metric; its Dataset form is the taxonomy report above.
 `--semantic-judge MODEL` scores free-text retention anchors by meaning instead of
 byte equality (#148) through the same `CardEquivalenceJudge` contract that the
-the optimization wires through its separate `metric_judge` role. Judge failure is explicit unavailable, enters the affected
+the diagnostic baseline wires through its separate `metric_judge` role. The taxonomy optimizer has no judge.
+Judge failure is explicit unavailable, enters the affected
 free-text dimension as zero, and is counted/costed with no byte-equality fallback,
 hidden retry or cache. Magnitude, direction, assets, novelty and every
 TradeRelevance field stay exact; the strict byte-equality mean is reported
@@ -1316,8 +1316,9 @@ evidence. Listing/telemetry do not enter relevance gold; grounded-watchlist
 cases are separated as policy evidence. `gold_coverage` reports how much of each
 component is actually scored.
 
-One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient taxonomy Gold; no taxonomy-specific
-second reviewer or adjudication is required. Model drafts still cannot
+One explicit ReviewDesk acceptance by an owner-authorized reviewer is sufficient ordinary taxonomy Gold.
+Development readiness separately requires a source-only 50-cluster calibration set with two independent
+primary reviewers per task and an independent adjudicator for every disagreement. Model drafts still cannot
 self-accept. `news review accept-drafts --dry-run` may preview an empty
 selection, while every non-dry-run requires a non-empty explicit `--only` list
 and `--reviewer` identity. An AI adjudicator is recorded as AI, never as human.
@@ -1328,22 +1329,21 @@ standalone `news learning optimize` route and `news learning baseline
 
 `news learning run --development SHA --out NEW_EMPTY_DIR --max-metric-calls N
 --max-task-model-calls N --max-reflection-model-calls N
---max-metric-judge-model-calls N --max-cost-microusd N
+--max-cost-microusd N
 --max-call-cost-microusd N [--max-wall-clock-seconds N] [--seed N]`.
 
-`run` writes the existing zero-call readiness report and then invokes exactly
-one `dspy.GEPA.compile(trainset, valset)` over the same frozen Objective Plan.
-It uses `instruction_proposer=None`; its component selector can return only
-`GepaObjectivePlan.target_predictors`, so a taxonomy-only Objective can rewrite
-only `event_semantics`. Candidate zero's validation score in that same compile
-is the sole optimization baseline. `best_idx == 0` or a winner that does not
-strictly beat candidate zero returns `NO_OP`.
+`run` writes zero-call readiness, requires both `objective.compilable` and
+`development_profile.ready`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
+native `NativeNewsProgram.event_semantics` Predict. It uses `instruction_proposer=None` and
+`add_format_failure_as_feedback=True`; there is no component selector, ReaderCard execution, composite case
+metric or judge. Candidate zero's validation score in that same compile is the sole optimization baseline.
+`best_idx == 0`, a non-strict improvement, or any Stable-correct control regression returns `NO_OP`.
 
 The command reads the frozen development corpus once through the shared
-application login and then holds three model endpoints and the existing typed
+application login and then holds task/reflection model endpoints and the existing typed
 budget. It has no database writer, broker, delivery, canary or promotion
 authority. Every terminal state writes
-`optimization/optimization_report.json` (`news_optimization_run_report_v1`):
+`optimization/optimization_report.json` (`news_optimization_run_report_v3`):
 
 | Outcome | Meaning | Candidate | Exit |
 | --- | --- | --- | --- |
@@ -1354,9 +1354,15 @@ authority. Every terminal state writes
 `--out` must name a missing or empty directory; existing contents are refused
 before readiness or provider work. The directory contains `readiness.json`,
 official GEPA log/state under `optimization/gepa/`, the optimization report,
-and an optional PromptCandidate. The report does not duplicate GEPA trajectory
-or checkpoint state. `ADVANCE` still enters the existing `release register`
+and an optional PromptCandidate. The report records native public GEPA candidate parents, aggregate scores,
+per-example subscores, per-objective aggregate scores, best index and total metric calls without inventing a
+private checkpoint state. `ADVANCE` still enters the existing `release register`
 and evaluator/release gates; this command never performs those actions.
+
+Usage schema `tracefold.news.optimization_usage.v3` keeps task/reflection physical calls, tokens and costs
+exact in every terminal state. `metric_calls` is the public `DspyGEPAResult.total_metric_calls` when GEPA
+returns that result, `0` for a zero-call preflight refusal, and `null` when an interrupted compile cannot
+publish an exact count. It never guesses from model calls or parses private GEPA state.
 
 `news learning draft-reviews --model MODEL --out FILE [--hours N] [--limit N]
 [--include-reviewed]` proposes `news_review_v6` rubrics for an owner-authorized
@@ -1368,70 +1374,44 @@ and reports `tasks` beside `unique_tasks`; one ReviewDesk task can therefore
 consume at most one drafting call.
 
 `news learning readiness --development SHA [--out FILE]` explains one frozen
-development dataset before anyone spends a provider call on it: it re-projects
-the sealed corpus, builds the one `GepaObjectivePlan`, and reports
-`target / control / excluded` with a reason for every exclusion, the explicit vs
-derived owner distribution, exact-gold coverage by dimension, the train and
-development-selection halves of the honest split with their case and cluster
-roots, the required strata, retrieval verifiability, and a per-metric-call task
-and judge envelope computed from the corpus. Objective Plan v2 elects exactly
-one optimizer representative per connected fact cluster before the split:
-target before control, then target-dimension count, safety status,
-newer Event and stable case id. Other members remain frozen diagnostics with a
-`cluster_representative_shadowed:*` reason. Split receipt v2 proves the resulting
-one-case-per-cluster invariant; if election removes a target, control or required stratum from either half,
-readiness remains fail-closed. It makes no task, reflection or
-judge call and writes nothing. `outcome` is `ready` or `insufficient`; the exit
-code stays `0` for an `insufficient` report, because refusing to optimize a
-corpus that cannot support it is a result rather than a failure. `insufficient`
-means exactly that — a corpus that cannot support an optimization, including the
-one blocking reason that has no episodes behind it,
-`dataset_agent_cohort_mismatch` — and it is reported in the same shape as a
-`ready` report, every section present. A wrong argument is still an error: a
-validation-role SHA, a bumped epoch or drifted evidence raise their own codes
-and a non-zero exit rather than being dressed up as insufficiency. Readiness is an
-explanation in advance, not a bypass — `run_gepa` rebuilds the same plan and
-refuses on the same conditions, and `CandidateEvaluator` rebuilds it again from
-the frozen dataset and requires the candidate's declared failure clusters,
-target dimensions and split roots to equal it exactly.
+development dataset before any provider call. It re-projects the sealed corpus and builds Objective Plan v3.
+A **target** is only an exact four-axis Stable taxonomy mismatch whose operator explicitly accepted
+`first_bad_owner=taxonomy`; a **control** has no explicit owner and matches all four axes. One deterministic
+representative per connected fact cluster enters the time-ordered, cluster-disjoint train/selection split;
+every other member remains an excluded diagnostic.
 
-Optimizer candidates publish `optimization_objective_summary.v2`, including
-the Objective Plan schema plus the representative case ids, count and root. Registration
-re-derives and compares that population. A
-candidate that declares split roots with an older or missing plan identity is
-registration-ineligible; its append-only artifact remains historical evidence.
+The v3 readiness report has no top-level outcome. `objective.compilable` and its blockers describe whether
+the target/control population can be optimized; `development_profile.ready` and its blockers independently
+describe whether the sealed evidence meets release-profile v3. The profile requires 60 target and 60 control
+clusters in train, 30 and 30 in development-selection, plus the existing boundary/retention/negative/strata
+and safety floors. It also requires exactly source-only calibration evidence from 50 independent clusters:
+two distinct primary reviewers per task, independent adjudication for every disagreement, Cohen's kappa
+≥ 0.75 on family/state/assertion, and mean subject-code set-F1 ≥ 0.80. Source-only projections contain no
+Agent answer, accepted Gold, duplicate hint or outcome.
 
-The report is `tracefold.news.gepa_readiness_report.v2`. v2 adds a `coverage`
-block carrying the frozen dataset's own sealed counts — `case_n`,
-`independent_cluster_n`, `boundary_cluster_n`, `retention_cluster_n`,
-`negative_cluster_n`, `safety_cluster_n`, `stratum_n`, `eligible_event_n`,
-`natural_day_n`, `window_duration_hours` — republished verbatim rather than
-re-tallied, and present with `null` values on the one path that cannot project a
-corpus at all. The last two are diagnostics and are read by no gate (#259):
-`natural_day_n` is how many distinct UTC dates the accepted cases opened on and
-`window_duration_hours` is the length of the frozen window, so the pair says how
-concentrated the corpus is and the two may disagree freely — a 72 h freeze whose
-reviews all landed in one afternoon reads `1` and `72.0`.
-`release evaluate --stage offline|holdout` decides
-development evidence on the cluster-role, stratum and safety counts alone.
-Out-of-time generalization remains the Future Holdout's alone — `validation`
-still requires a window strictly after candidate registration, ≥ 24 h, ≥ 200
-eligible Events and ≥ 30 primary clusters. Removing the day gate moves
-`TRUSTED_ROOT_SHA`, and the profile is named `news_learning_release_v2` so one
-readable name cannot stand for two sets of gates; a v1 dataset or candidate is
-audit history and a new experiment re-freezes.
+Readiness makes no task/reflection/judge call and writes nothing except the operator-requested report file.
+Its call envelope names the ceiling of two physical EventSemantics task calls per metric call — the primary
+JSONAdapter attempt plus its one format fallback — and one reflection call per proposal round; the taxonomy
+optimizer has no ReaderCard or semantic-judge envelope. `news learning run` rebuilds
+the same report before constructing endpoints and refuses unless both readiness booleans are true.
+CandidateEvaluator re-projects the same v3 plan at registration/evaluation.
+
+Optimizer candidates publish `optimization_objective_summary.v3`, including the episode projection root,
+plan schema, representative population identity, target dimensions and split roots. Registration re-derives
+and compares every field. The current corpus contract is `news_learning_dataset_v3`, the current candidate
+is `news_prompt_candidate_v2`, and historical v1/v2 artifacts remain audit-only.
 
 `news learning freeze` seals accepted reviews into a content-addressed
 development or future temporal validation dataset. Every current dataset is in
 the running bundle's runtime-owned epoch and accepts only `news_review_v6`;
 every earlier Prompt/Program/review cohort is audit-only and cannot enter a
-dataset or metric-v7 denominator.
+dataset or metric-v8 denominator.
 The CLI is two groups, because there are two lifecycles (#202 §11 PR-E). `news
 learning` freezes a corpus, explains what GEPA may optimize, scores the stable
 Program and runs the one optimization — `readiness`, `baseline`, `run`,
 `draft-reviews`, `freeze` — and none of them can ship anything.
 There is no taxonomy registration, shadow, or separate evaluation command.
-Taxonomy Gold is scored inside metric v7 during the one `run`; moving-window
+Taxonomy Gold is scored directly by the taxonomy GEPA metric during the one `run`; moving-window
 `baseline` is diagnostic only. `news release` admits a
 candidate and moves it: `register`,
 `evaluate`, `shadow`, `canary`. The split is what an operator reads off
@@ -1439,10 +1419,11 @@ candidate and moves it: `register`,
 never imports `news.release`.
 
 `release register --development SHA --candidate FILE --artifact-root DIR
-[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v1` to
-the active stable Program and a frozen development dataset. Whatever wrote the
-two instructions — `learning run` or a person — enters
-here on identical terms, because the generator is audit, not permission. The
+[--hypothesis TEXT] --out FILE` (#202) binds one `news_prompt_candidate_v2` to
+the active stable Program and a frozen development dataset. Whatever supplied
+the candidate instruction pair — `learning run`, which may change only
+EventSemantics and copies ReaderCard byte-identically, or a person — enters here
+on identical terms, because the generator is audit, not permission. The
 command re-applies the patch to the running stable to derive the candidate's
 Program identity, re-projects the corpus and re-derives the #199 Objective Plan
 rather than trusting the candidate's own `objective_summary`, and refuses a

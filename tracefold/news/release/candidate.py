@@ -99,7 +99,7 @@ class CandidateRegistry:
             ),
         )
 
-    def validate(self, candidate: CandidateManifest) -> None:
+    def validate(self, candidate: CandidateManifest) -> GepaObjectivePlan:
         if self._stable.program_version != LEARNING_PROGRAM_VERSION:
             raise ValueError("news_learning_program_v1_unsupported")
         if candidate.parent_stable_sha != self._stable.bundle_sha:
@@ -166,6 +166,7 @@ class CandidateRegistry:
         if tuple(candidate.target_dimensions) != tuple(candidate.proposal_receipt.declared_target_dimensions):
             raise ValueError("news_learning_target_dimensions_mismatch")
         self._verify_registration_receipt(candidate.proposal_receipt)
+        return plan
 
     def persist(self, candidate: CandidateManifest) -> None:
         self._verify_registration_receipt(candidate.proposal_receipt)

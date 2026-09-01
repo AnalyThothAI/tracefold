@@ -405,7 +405,12 @@ def test_recorded_lm_preserves_schema_invalid_fallback_sequence() -> None:
 
 
 def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
-    response = dspy.LMResponse.from_text('{"answer":', model="scripted/test")
+    response = dspy.LMResponse.from_text(
+        '{"answer":',
+        model="scripted/test",
+        usage={"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+        cost=0.000003,
+    )
     response.outputs[0] = response.output.model_copy(update={"finish_reason": "length", "truncated": True})
     lm, delegate, ledger = _audited([response])
 
@@ -417,6 +422,8 @@ def test_truncation_is_one_provider_answer_and_replay_preserves_it() -> None:
     assert receipt.terminal_disposition == "provider_success"
     assert receipt.finish_reason == "length"
     assert receipt.error_code == "news_program_lm_output_truncated"
+    assert receipt.total_tokens == 18
+    assert receipt.provider_cost_microusd == 3
     assert receipt.recording is not None
     replay = _recorded_lm({receipt.request_sha256: receipt.recording}, model=delegate.model)
     with pytest.raises(LMOutputTruncatedError):

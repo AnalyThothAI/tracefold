@@ -34,6 +34,7 @@ from ..review.desk import (
     REVIEW_RUBRIC_VERSION,
 )
 from ..storage.root import NewsRepository
+from ..taxonomy import ModelTaxonomyV1
 from .contracts import (
     LEARNING_PROFILE_ID,
     ArmManifest,
@@ -59,9 +60,10 @@ from .metric import (
 )
 from .objective import (
     _expected_delivery,
+    development_split_profile_counts,
     production_decision,
 )
-from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA
+from .profile import _PROFILE, EVALUATOR_VERSION, TRUSTED_ROOT_SHA, development_coverage_blockers
 from .projection import (
     _call_cost_microusd,
     _observation_root,
@@ -71,6 +73,7 @@ from .projection import (
     _program_cost_by_predictor,
     _program_metric,
 )
+from .taxonomy_metric import compare_taxonomy, summarize_taxonomy
 
 # Re-exported, not restated. A second literal here would be one more copy of the identity #193 exists to
 # stop duplicating — and since #314 there is no literal to copy: the value is computed from the code the
@@ -79,6 +82,94 @@ LEARNING_EXECUTION_ENVELOPE_SHA256 = EXECUTION_ENVELOPE_SHA256
 MODEL_RECORDING_BYTES_MAX = 64 * 1024
 ArmName = Literal["stable", "candidate"]
 ArmJudgeKey = tuple[ArmName, str]
+
+_TAXONOMY_RELEASE_AXES = (
+    "subject_codes_set_f1",
+    "event_family_accuracy",
+    "change_state_accuracy",
+    "assertion_status_accuracy",
+    "four_axis_exact_accuracy",
+)
+
+
+def _output_taxonomy(output: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    editorial = output.get("editorial")
+    if not isinstance(editorial, Mapping):
+        scored = output.get("scored_judgment")
+        editorial = scored.get("editorial") if isinstance(scored, Mapping) else None
+    taxonomy = editorial.get("taxonomy") if isinstance(editorial, Mapping) else None
+    return taxonomy if isinstance(taxonomy, Mapping) else None
+
+
+def _review_taxonomy(review: Mapping[str, Any]) -> dict[str, Any] | None:
+    taxonomy = dict(dict(review.get("payload") or {}).get("taxonomy") or {})
+    model_axes = {field: taxonomy[field] for field in ModelTaxonomyV1.model_fields if field in taxonomy}
+    try:
+        return ModelTaxonomyV1.model_validate(model_axes).model_dump(mode="json")
+    except ValueError:
+        return None
+
+
+def _taxonomy_release_evidence(
+    observations: Sequence[Mapping[str, Any]],
+    reviews: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Aggregate accepted-Gold taxonomy once per arm and expose exact control regressions."""
+
+    rows: dict[str, list[dict[str, Any]]] = {"stable": [], "candidate": []}
+    controls: dict[str, dict[str, Any]] = {}
+    for item in observations:
+        case_ref = dict(item.get("case_ref") or {})
+        review = reviews.get(str(case_ref.get("review_id") or ""), {})
+        gold = _review_taxonomy(review)
+        if gold is None:
+            continue
+        case_id = str(case_ref.get("case_id") or "")
+        cluster_id = str(case_ref.get("cluster_id") or "")
+        stable = _output_taxonomy(dict(item.get("stable") or {}))
+        candidate = _output_taxonomy(dict(item.get("candidate") or {}))
+        if stable is not None:
+            rows["stable"].append({"case_id": case_id, "cluster_id": cluster_id, "gold": gold, "predicted": stable})
+        if candidate is not None:
+            rows["candidate"].append(
+                {"case_id": case_id, "cluster_id": cluster_id, "gold": gold, "predicted": candidate}
+            )
+        explicit_owner = str(dict(review.get("payload") or {}).get("first_bad_owner") or "")
+        if not explicit_owner and stable is not None and candidate is not None and compare_taxonomy(gold, stable).exact:
+            current = controls.get(cluster_id)
+            value = {
+                "case_id": case_id,
+                "candidate_exact": compare_taxonomy(gold, candidate).exact,
+            }
+            if current is None or case_id < str(current["case_id"]):
+                controls[cluster_id] = value
+
+    stable_summary = summarize_taxonomy(rows["stable"])
+    candidate_summary = summarize_taxonomy(rows["candidate"])
+    delta: dict[str, float | None] = {
+        axis: (
+            None
+            if stable_summary[axis] is None or candidate_summary[axis] is None
+            else round(float(candidate_summary[axis]) - float(stable_summary[axis]), 6)
+        )
+        for axis in ("taxonomy_overall", *_TAXONOMY_RELEASE_AXES)
+    }
+    regressed_axes = [
+        axis for axis in _TAXONOMY_RELEASE_AXES if (axis_delta := delta[axis]) is not None and axis_delta < 0
+    ]
+    regressed_controls = sorted(
+        cluster_id for cluster_id, value in controls.items() if not bool(value["candidate_exact"])
+    )
+    return {
+        "schema": "tracefold.news.taxonomy_release_evidence.v1",
+        "stable": stable_summary,
+        "candidate": candidate_summary,
+        "delta": delta,
+        "regressed_axes": regressed_axes,
+        "stable_correct_control_cluster_n": len(controls),
+        "stable_correct_control_regression_n": len(regressed_controls),
+        "stable_correct_control_regression_cluster_ids": regressed_controls,
+    }
 
 
 class EvaluationRequest(BaseModel):
@@ -211,7 +302,7 @@ class CandidateEvaluator:
         ):
             raise ValueError("news_learning_dataset_reader_contract_mismatch")
         candidate = self._registry.load(request.candidate_sha)
-        self._registry.validate(candidate)
+        candidate_plan = self._registry.validate(candidate)
         self._registry.persist(candidate)
         prior_stage = {"holdout": "offline", "shadow": "holdout", "canary": "shadow"}.get(request.stage)
         if prior_stage and not self._registry.has_passed_stage(candidate.candidate_sha, prior_stage):
@@ -307,6 +398,10 @@ class CandidateEvaluator:
             observations=existing,
             execution_errors=execution_errors,
             observation_dimensions=observation_dimensions,
+            development_profile_counts={
+                **development.counts,
+                **development_split_profile_counts(candidate_plan),
+            },
         )
         if observation_manifest_sha:
             evidence["observation_manifest_sha"] = observation_manifest_sha
@@ -1072,11 +1167,12 @@ class CandidateEvaluator:
         observations: Sequence[Mapping[str, Any]],
         execution_errors: Sequence[str],
         observation_dimensions: Mapping[str, Any] | None,
+        development_profile_counts: Mapping[str, Any],
     ) -> dict[str, Any]:
         blockers: list[str] = []
         failures: list[str] = []
         if request.stage in {"offline", "holdout"}:
-            blockers.extend(development_coverage_blockers(development.counts))
+            blockers.extend(development_coverage_blockers(development_profile_counts))
         else:
             prior = "holdout" if request.stage == "shadow" else "shadow"
             if not self._registry.has_passed_stage(candidate.candidate_sha, prior):
@@ -1220,6 +1316,15 @@ class CandidateEvaluator:
                     and not bool(candidate_out.get("delivered"))
                 ):
                     critical_regressions.append(str(item["case_ref"]["case_id"]))
+        taxonomy_evidence: dict[str, Any] | None = None
+        if request.stage in {"offline", "holdout"}:
+            taxonomy_evidence = _taxonomy_release_evidence(observations, reviews)
+            if not int(taxonomy_evidence["stable"]["cluster_n"]):
+                blockers.append("taxonomy_release_evidence_empty")
+            if taxonomy_evidence["regressed_axes"]:
+                failures.append("candidate_taxonomy_axis_regression")
+            if int(taxonomy_evidence["stable_correct_control_regression_n"]):
+                failures.append("candidate_taxonomy_stable_correct_control_regression")
         if critical_regressions:
             failures.append("must_push_regression")
         if candidate_only_errors and request.stage in {"offline", "holdout"}:
@@ -1368,6 +1473,7 @@ class CandidateEvaluator:
             "metric_id": METRIC_ID,
             "metric_sha256": self._metric_sha256,
             "regression_gates": regression_gates,
+            "taxonomy": taxonomy_evidence,
             "stable_sha": self._stable.bundle_sha,
             "candidate_sha": candidate.candidate_sha,
             "candidate_kind": "prompt",
@@ -1797,16 +1903,6 @@ def _bootstrap_interval(values: Sequence[int]) -> dict[str, float] | None:
     return {"lower": lower, "upper": upper}
 
 
-# Which counts decide whether a frozen development corpus can support a release evaluation at all. Read
-# by `_evaluate_evidence` at `offline` and `holdout`, and by nothing else — one gate, one vocabulary.
-_DEVELOPMENT_COVERAGE_GATES: tuple[tuple[str, str], ...] = (
-    ("boundary_cluster_n", "boundary_clusters_min"),
-    ("retention_cluster_n", "retention_clusters_min"),
-    ("negative_cluster_n", "negative_clusters_min"),
-    ("stratum_n", "strata_min"),
-)
-
-
 def stable_or_common_execution_unavailability(unavailable_n: int, assigned_pair_n: int) -> tuple[float, bool]:
     """#294: the unavailable-comparison rate and its verdict, from one derivation.
 
@@ -1824,33 +1920,6 @@ def stable_or_common_execution_unavailability(unavailable_n: int, assigned_pair_
         return 1.0, True
     rate = unavailable_n / assigned_pair_n
     return rate, rate > float(_PROFILE["guardrails"]["candidate_degraded_or_error_rate_max"])
-
-
-def development_coverage_blockers(counts: Mapping[str, Any]) -> tuple[str, ...]:
-    """The development corpus refusals, from the frozen dataset's own counts and nothing else.
-
-    Every input is a count of independent connected fact clusters or of strata: how much separable
-    evidence this corpus carries, per role. #259 removed the one input that was neither — `natural_day_n`,
-    the number of distinct UTC calendar dates the accepted cases opened on. It could refuse a corpus of a
-    hundred independent clusters for landing inside one date and admit three restatements of one storyline
-    for straddling one midnight, and because a frozen corpus only holds cases from the *active* Stable
-    bundle, it also made every new Stable unusable until the calendar caught up. Time-out-of-sample is
-    proven once, later, by a Future Holdout frozen after the candidate was registered.
-
-    `natural_day_n` and `window_duration_hours` stay in the counts this reads from, and stay out of the
-    answer: together they say how concentrated the accepted cases are inside the frozen window. Nothing
-    here may be replaced by a stable-age, window-age or calendar-day threshold.
-    """
-
-    requirements = _PROFILE["development"]
-    blockers = [
-        f"development_{field_name}_insufficient"
-        for field_name, threshold_name in _DEVELOPMENT_COVERAGE_GATES
-        if int(counts.get(field_name) or 0) < int(requirements[threshold_name])
-    ]
-    if requirements["safety_required"] and int(counts.get("safety_cluster_n") or 0) == 0:
-        blockers.append("development_safety_empty")
-    return tuple(blockers)
 
 
 def _sha(value: Any) -> str:
@@ -1881,6 +1950,5 @@ __all__ = [
     "EvaluationReport",
     "EvaluationRequest",
     "ProposalReceipt",
-    "development_coverage_blockers",
     "evaluation_run_sha",
 ]
