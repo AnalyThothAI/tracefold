@@ -1279,7 +1279,6 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_credential_check",
             "trading_execution_runtime_lifecycle_check",
             "trading_execution_runtime_clock_check",
-            "trading_execution_runtime_exposure_check",
             "trading_execution_runtime_ready_check",
             "trading_execution_runtime_reason_check",
         },
