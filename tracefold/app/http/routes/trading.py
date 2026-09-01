@@ -11,6 +11,7 @@ from typing import Annotated, Any, Final
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
@@ -370,7 +371,7 @@ async def post_operator_intent(
             raise OperatorCommandError("operator_command_expired")
     except OperatorCommandError as exc:
         raise ApiBadRequest(exc.code, field="text") from None
-    receipt = runtime.persist_operator_intent(prepared)
+    receipt = await run_in_threadpool(runtime.persist_operator_intent, prepared)
     return _validated_json(
         _CommandReceiptEnvelope,
         {

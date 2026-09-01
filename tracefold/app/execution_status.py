@@ -70,6 +70,9 @@ def execution_readiness_projection(
         and state.reconciliation_observed_at_ns <= now_ns
         and reconciliation_age_ns <= _PRIVATE_RECONCILIATION_STALE_AFTER_NS
     )
+    account_snapshot_complete = bool(
+        state.account_snapshot is not None and state.account_snapshot.complete and not state.account_snapshot.truncated
+    )
     current_control = control if control is not None and control.runtime_profile_id == execution.profile_id else None
     entries_paused = True if current_control is None else current_control.entries_paused
     emergency_halted = False if current_control is None else current_control.emergency_halted
@@ -123,7 +126,11 @@ def execution_readiness_projection(
             "unexpected_exposure": state.unexpected_exposure,
             "account_flat": state.account_flat,
             "account_flat_proven": bool(
-                alive and execution_safe and private_reconciliation_fresh and state.account_flat
+                alive
+                and execution_safe
+                and private_reconciliation_fresh
+                and account_snapshot_complete
+                and state.account_flat
             ),
             "positions_count": state.positions_count,
             "open_orders_count": state.open_orders_count,

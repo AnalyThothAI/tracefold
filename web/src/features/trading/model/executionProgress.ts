@@ -4,7 +4,13 @@ import type {
   TradingSignal,
 } from "../api/tradingQueries";
 
-export type ProgressTone = "complete" | "current" | "pending" | "rejected" | "expired";
+export type ProgressTone =
+  | "complete"
+  | "current"
+  | "pending"
+  | "ambiguous"
+  | "rejected"
+  | "expired";
 
 export type ExecutionProgressStep = {
   label: string;
@@ -117,8 +123,13 @@ export function signalProgress(
 ): ExecutionProgress {
   const correlated = observations.filter((item) => item.signal_id === signal.signal_id);
   const disposition = correlated.find((item) => item.normalized_kind === "signal_disposition");
-  const accepted = disposition?.summary?.disposition === "accepted";
-  const rejected = Boolean(disposition && !accepted);
+  const rawDisposition = disposition?.summary?.disposition;
+  const dispositionValue = typeof rawDisposition === "string" ? rawDisposition : "";
+  const accepted = dispositionValue === "accepted";
+  const ambiguous = ["unknown_query_first", "replayed_query_first"].includes(
+    dispositionValue ?? "",
+  );
+  const rejected = Boolean(disposition && !accepted && !ambiguous);
   const orderAccepted = correlated.some(
     (item) => item.normalized_kind === "order" && item.summary?.status === "accepted",
   );
@@ -136,16 +147,26 @@ export function signalProgress(
           ? "ORDER ACCEPTED"
           : accepted
             ? "RUNTIME ACCEPTED"
-            : rejected
-              ? "RUNTIME REJECTED"
-              : expired
-                ? "EXPIRED"
-                : "PERSISTED",
+            : ambiguous
+              ? "RUNTIME AMBIGUOUS"
+              : rejected
+                ? "RUNTIME REJECTED"
+                : expired
+                  ? "EXPIRED"
+                  : "PERSISTED",
     steps: [
       { label: "Signal 已持久化", tone: "complete" },
       {
-        label: rejected ? "Runtime 拒绝" : "Runtime 受理",
-        tone: rejected ? "rejected" : accepted ? "complete" : expired ? "expired" : "current",
+        label: rejected ? "Runtime 拒绝" : ambiguous ? "Runtime 结果不确定" : "Runtime 受理",
+        tone: rejected
+          ? "rejected"
+          : accepted
+            ? "complete"
+            : ambiguous
+              ? "ambiguous"
+              : expired
+                ? "expired"
+                : "current",
       },
       {
         label: fillObserved ? "成交已观察" : orderAccepted ? "订单已接受" : "等待 venue",
@@ -159,7 +180,15 @@ export function signalProgress(
       },
       {
         label: positionOpened ? "仓位已打开" : expired ? "已过期" : "等待仓位事实",
-        tone: positionOpened ? "complete" : expired ? "expired" : rejected ? "rejected" : "pending",
+        tone: positionOpened
+          ? "complete"
+          : expired
+            ? "expired"
+            : rejected
+              ? "rejected"
+              : ambiguous
+                ? "ambiguous"
+                : "pending",
       },
     ],
   };

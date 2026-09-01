@@ -253,6 +253,34 @@ def test_console_command_post_records_only_an_intent(
     assert persisted.confirmation_identity is not None
 
 
+def test_console_command_post_offloads_the_synchronous_database_append(
+    client: tuple[TestClient, _Trading], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, _ = client
+    offloaded: list[tuple[Any, tuple[Any, ...]]] = []
+
+    async def run_in_worker(function: Any, *args: Any) -> Any:
+        offloaded.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
+    monkeypatch.setattr(trading_routes, "run_in_threadpool", run_in_worker, raising=False)
+
+    response = api.post(
+        "/api/trading/execution/commands",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+        json={
+            "request_id": "33333333-3333-4333-8333-333333333333",
+            "requested_at_ms": NOW,
+            "text": "/pause database maintenance",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(offloaded) == 1
+    assert offloaded[0][0].__name__ == "persist_operator_intent"
+
+
 def test_console_command_post_authenticates_before_body_and_rejects_query_tokens(
     client: tuple[TestClient, _Trading],
 ) -> None:

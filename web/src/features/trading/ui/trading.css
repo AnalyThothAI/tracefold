@@ -442,6 +442,15 @@
     background: var(--signal-info);
   }
 
+  .trading-progress-steps li[data-tone="ambiguous"] {
+    color: var(--signal-caution);
+    font-weight: 600;
+  }
+
+  .trading-progress-steps li[data-tone="ambiguous"] .trading-progress-dot {
+    background: var(--signal-caution);
+  }
+
   .trading-progress-steps li[data-tone="rejected"] {
     color: var(--signal-alert);
   }

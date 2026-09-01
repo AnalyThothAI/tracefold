@@ -17,6 +17,25 @@ def _execution(mode: str = "paper") -> SimpleNamespace:
     return SimpleNamespace(mode=mode, profile_id="demo-v1", account_slot="binance_usdm_primary")
 
 
+def _account_snapshot(*, complete: bool = True, truncated: bool = False) -> ExecutionAccountSnapshot:
+    return ExecutionAccountSnapshot(
+        observed_at_ns=9_000_000_000,
+        market_observed_at_ns=None,
+        equity_usd="1000",
+        day_start_equity_usd="1000",
+        daily_drawdown_usd="0",
+        daily_drawdown_bps=0,
+        aggregate_risk_usd="0",
+        positions=(),
+        orders=(),
+        open_orders_count=0,
+        inflight_orders_count=0,
+        unknown_orders_count=0,
+        complete=complete,
+        truncated=truncated,
+    )
+
+
 def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
     return ExecutionRuntimeState(
         account_slot="binance_usdm_primary",
@@ -50,6 +69,7 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
         entry_block_reason=None,
         started_at_ns=8_000_000_000,
         updated_at_ns=heartbeat_at_ns,
+        account_snapshot=_account_snapshot(),
     )
 
 
@@ -104,6 +124,31 @@ def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
     assert projection["account_flat"] is True
     assert projection["account_flat_proven"] is False
     assert projection["reconciliation_age_ms"] == 11_000
+
+
+def test_flat_proof_requires_complete_non_truncated_current_account_facts() -> None:
+    missing = execution_readiness_projection(
+        _execution(),
+        replace(_state(), account_snapshot=None),
+        _control(),
+        now_ns=10_000_000_000,
+    )
+    partial = execution_readiness_projection(
+        _execution(),
+        replace(_state(), account_snapshot=_account_snapshot(complete=False)),
+        _control(),
+        now_ns=10_000_000_000,
+    )
+    truncated = execution_readiness_projection(
+        _execution(),
+        replace(_state(), account_snapshot=_account_snapshot(truncated=True)),
+        _control(),
+        now_ns=10_000_000_000,
+    )
+
+    assert missing["account_flat_proven"] is False
+    assert partial["account_flat_proven"] is False
+    assert truncated["account_flat_proven"] is False
 
 
 def test_current_account_projection_remains_a_distinct_read_model() -> None:

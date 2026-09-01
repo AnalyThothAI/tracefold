@@ -103,4 +103,22 @@ describe("executionProgress", () => {
     expect(signalProgress(signal, [rejected]).label).toBe("RUNTIME REJECTED");
     expect(signalProgress({ ...signal, expired: true }, []).label).toBe("EXPIRED");
   });
+
+  it.each(["unknown_query_first", "replayed_query_first"])(
+    "keeps %s signal dispositions ambiguous instead of manufacturing a rejection",
+    (runtimeDisposition) => {
+      const signal = tradingSignalFixture();
+      const ambiguous = tradingObservationFixture({
+        normalized_kind: "signal_disposition",
+        signal_id: signal.signal_id,
+        summary: { disposition: runtimeDisposition },
+      });
+
+      const progress = signalProgress(signal, [ambiguous]);
+
+      expect(progress.label).toBe("RUNTIME AMBIGUOUS");
+      expect(progress.steps[1]).toEqual({ label: "Runtime 结果不确定", tone: "ambiguous" });
+      expect(progress.steps[3].tone).toBe("ambiguous");
+    },
+  );
 });
