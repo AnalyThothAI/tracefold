@@ -39,7 +39,7 @@ def _authenticated_write_runtime(request: Request) -> Any:
         )
     except SecretFileError:
         expected = ""
-    if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+    if not supplied or not supplied.isascii() or not expected or not hmac.compare_digest(supplied, expected):
         raise ApiUnauthorized()
     if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
         raise ApiBadRequest("content_type_json_required")

@@ -313,6 +313,14 @@ def test_console_command_post_authenticates_before_body_and_rejects_query_tokens
         ).json()["error"]
         == "content_type_json_required"
     )
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers=[(b"authorization", b"Bearer \xff"), (b"content-type", b"application/json")],
+        ).status_code
+        == 401
+    )
     shared_token = "shared-bootstrap-write-token-" + "x" * 32
     api.app.state.service.settings.ws_token = shared_token
     token_path = api.app.state.service.settings.trading_console_write_token_file()

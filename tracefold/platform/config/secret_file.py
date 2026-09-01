@@ -87,7 +87,9 @@ def read_secure_distinct_token(path: Path, *, forbidden_value: str | None) -> st
     value = read_secure_secret_text(path)
     if len(value) < 32:
         raise SecretFileError("too_short")
-    if forbidden_value and hmac.compare_digest(value, forbidden_value):
+    if not value.isascii():
+        raise SecretFileError("non_ascii")
+    if forbidden_value and forbidden_value.isascii() and hmac.compare_digest(value, forbidden_value):
         raise SecretFileError("conflict")
     return value
 

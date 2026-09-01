@@ -38,6 +38,15 @@ def test_secure_distinct_token_rejects_weak_or_reused_credentials(tmp_path: Path
     assert read_secure_distinct_token(path, forbidden_value="different") == shared
 
 
+def test_secure_distinct_token_rejects_non_ascii_credentials(tmp_path: Path) -> None:
+    path = tmp_path / "token"
+    path.write_text("operator-write-" + "é" * 32, encoding="utf-8")
+    path.chmod(0o600)
+
+    with pytest.raises(SecretFileError, match="non_ascii"):
+        read_secure_distinct_token(path, forbidden_value="different")
+
+
 @pytest.mark.parametrize("mode", [0o604, 0o640, 0o666])
 def test_secret_file_rejects_group_or_other_permissions(tmp_path: Path, mode: int) -> None:
     path = tmp_path / "token"
