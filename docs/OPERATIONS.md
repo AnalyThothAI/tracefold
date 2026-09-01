@@ -1178,7 +1178,9 @@ Diagnose News in this order:
    a complete `optimization_report.json`. Task and reflection are separate
    `ModelExecutionIdentity` values, and calls/cost/tokens/failures are accounted separately
    before they are summed. The taxonomy optimizer has no judge. Candidate zero's validation score inside that GEPA
-   run is the only optimization baseline. Official GEPA log/state is retained;
+   run is the only optimization baseline. A task answer that reaches `max_tokens` is receipted once and
+   scores that candidate example below any complete answer; it does not retry or abort later candidates.
+   Reflection truncation, provider/transport failure and budget refusal reject the run. Official GEPA log/state is retained;
    the optimization report does not mirror trajectory or checkpoint state.
    Then `release
    register --candidate prompt_candidate.json` binds it to the active stable and that frozen dataset

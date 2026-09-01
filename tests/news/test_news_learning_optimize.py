@@ -130,10 +130,10 @@ def _learning_models(*, role: Literal["task", "reflection"]) -> tuple[dspy.BaseL
     return task, reflection, ledger
 
 
-@pytest.mark.parametrize("role", ["task", "reflection"])
-def test_truncated_answer_writes_an_exact_terminal_usage_receipt(
-    monkeypatch: pytest.MonkeyPatch, role: Literal["task", "reflection"]
+def test_truncated_reflection_writes_an_exact_terminal_usage_receipt(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    role: Literal["reflection"] = "reflection"
     task, reflection, ledger = _learning_models(role=role)
     monotonic_values = iter((100.0, 100.0, 100.25))
 
