@@ -64,6 +64,10 @@ pending flatten. Nautilus owns native in-flight, missing-open-order, and
 position consistency mechanics at their pinned 2/5/5-second checks; its
 duplicate startup reconciliation is disabled. Any complete-report or Cache
 projection error terminates the generation without refreshing the old fact.
+All Nautilus 1.231 Binance private calls used by that proof are pinned behind
+`nautilus_1231_binance_compat.py`; upgrade validation targets that one seam.
+No App reconciliation or Strategy lifecycle module may call a private adapter
+member directly.
 
 One persistent autocommit PostgreSQL session owns the Runtime current
 projection; it never holds a transaction across Binance I/O. Semantic changes

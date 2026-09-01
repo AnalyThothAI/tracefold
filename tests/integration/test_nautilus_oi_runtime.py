@@ -35,7 +35,7 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     wait_for_execution_stream_wake,
 )
 from tracefold.integrations.nautilus.oi_runtime.singleton import AccountSlotSingleton
-from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
+from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
 from tracefold.integrations.telegram_control import TelegramControlWebhook
 from tracefold.platform.config.models import Settings
 from tracefold.trading.storage.execution_stream import (

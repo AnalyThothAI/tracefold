@@ -2147,6 +2147,25 @@ Manual entry is a concrete internal entry request correlated only to its
 `OperatorIntentV1`; it shares sizing, risk, OMS, protection, and recovery with a
 Signal without fabricating a Case, Signal, Alpha contract, or evidence digest.
 
+#475 PR-D makes that concrete lifecycle visible in the package structure.
+`OiNautilusStrategy` now owns only Nautilus start/stop, the bounded input timer,
+control-command routing, and native callback routing. One
+`RuntimeExecutionState` aggregate holds execution/order/position/control
+identity, while concrete `EntryCoordinator`, `ProtectionCoordinator`,
+`ExitCoordinator`, and `RecoveryCoordinator` owners implement the four
+lifecycle algorithms. `RuntimeObservationWriter` alone translates native facts
+and dispositions into `ExecutionObservationV1`. The split introduces no
+Protocol, ABC, registry, plugin, service locator, or future Runtime interface;
+the coordinators call the existing Nautilus Strategy primitives and share the
+one aggregate directly.
+
+Every Nautilus 1.231 Binance private attribute or method required for complete
+account proof is isolated in `nautilus_1231_binance_compat.py`. App-level
+reconciliation retains report projection and durable snapshot construction but
+cannot reach those private APIs. Deterministic client IDs, query-first handling,
+reduce-only stops/exits, recovery validation, and private-flat proof retain one
+production path with no forwarding helper left in the former modules.
+
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is

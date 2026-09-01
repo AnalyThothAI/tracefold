@@ -27,7 +27,7 @@ from tracefold.integrations.nautilus.oi_runtime.signal_client import (
     poll_execution_inputs_once,
     wait_for_execution_stream_wake,
 )
-from tracefold.integrations.nautilus.oi_runtime.strategy import RuntimeControlSnapshot
+from tracefold.integrations.nautilus.oi_runtime.state import RuntimeControlSnapshot
 from tracefold.trading import ExecutionObservationV1, OperatorIntentV1, TradeSignalV1
 from tracefold.trading.storage.execution_stream import (
     EXECUTION_STREAM_NOTIFY_CHANNEL,

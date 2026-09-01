@@ -14,7 +14,6 @@ from nautilus_trader.model.identifiers import AccountId
 
 from tests.nautilus_oi_runtime_fixtures import NOW_NS, oi_profile
 from tracefold.app.nautilus.oi_runtime import run_nautilus
-from tracefold.app.nautilus.reconciliation import single_binance_execution_client
 from tracefold.app.nautilus.root import _build_active_node
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import (
@@ -22,9 +21,13 @@ from tracefold.integrations.nautilus.oi_runtime.config import (
     RuntimeMode,
     build_oi_node_config,
 )
+from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import (
+    single_binance_execution_client,
+)
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
 from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
-from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy, RuntimeReadiness
+from tracefold.integrations.nautilus.oi_runtime.state import RuntimeReadiness
+from tracefold.integrations.nautilus.oi_runtime.strategy import OiNautilusStrategy
 
 
 @pytest.mark.parametrize(

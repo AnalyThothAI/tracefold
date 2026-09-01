@@ -176,8 +176,8 @@ def test_exhausted_leverage_capacity_disposes_signal_instead_of_losing_it() -> N
     signal = trade_signal()
     context = registered_oi_strategy(values=(signal,))
     existing = _submitted_order(context, "owned-capacity", "0.201", accepted=True)
-    context.strategy._orders[existing.client_order_id] = ("existing", "entry")
-    context.strategy._stop_bps[context.instrument.id] = 100
+    context.strategy._runtime.orders[existing.client_order_id] = ("existing", "entry")
+    context.strategy._entry._stop_bps[context.instrument.id] = 100
 
     context.strategy.on_timer(None)
 

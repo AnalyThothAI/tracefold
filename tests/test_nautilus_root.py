@@ -12,7 +12,6 @@ from nautilus_trader.model.identifiers import InstrumentId
 
 from tests.nautilus_oi_runtime_fixtures import oi_profile
 from tracefold.app.nautilus import root as nautilus_root
-from tracefold.app.nautilus.reconciliation import CompleteBinanceAccountReports
 from tracefold.app.nautilus.root import (
     _activate_profile,
     _discover_routes,
@@ -29,6 +28,7 @@ from tracefold.app.nautilus.root import (
 from tracefold.app.workers.trading_notifications import trading_notification_text
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials
+from tracefold.integrations.nautilus.oi_runtime.nautilus_1231_binance_compat import CompleteBinanceAccountReports
 from tracefold.trading.notification_policy import is_notifiable
 from tracefold.trading.storage.execution_stream import ExecutionProfileActivation, ExecutionRuntimeState
 
