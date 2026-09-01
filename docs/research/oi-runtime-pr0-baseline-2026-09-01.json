@@ -142,7 +142,9 @@
       "scope": "diagnostic_process_including_postgres_and_http_clients",
       "user_cpu_seconds": 0.543243,
       "system_cpu_seconds": 0.152433,
-      "max_rss_bytes": 321568768
+      "rss_bytes_before": 0,
+      "rss_bytes_after": 0,
+      "rss_delta_bytes": 0
     }
   },
   "interpretation": {

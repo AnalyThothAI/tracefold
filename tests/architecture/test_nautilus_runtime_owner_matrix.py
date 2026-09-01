@@ -121,3 +121,6 @@ def test_current_production_wiring_matches_the_measured_pr0_owner_baseline() -> 
     assert "super()._cycle(repos)" in diagnostic_source
     assert "install_execution_stream_listener" not in diagnostic_source
     assert '"tracefold_oi_runtime_pr0_baseline_v1"' in diagnostic_source
+    assert "oi_runtime_pr0_baseline_dirty_tracked_tree" in diagnostic_source
+    assert "artifacts/scheduled/oi-runtime-pr0-baseline.json" in diagnostic_source
+    assert "rss_delta_bytes" in diagnostic_source

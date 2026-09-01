@@ -45,7 +45,7 @@ production behavior changed.
 | 100 Observation append | 52,990 queued bytes; 34.715 ms append; queue returned to zero |
 | entry -> protection -> flatten submit | 5.900 ms pinned lifecycle seam; one entry, one reduce-only stop and one reduce-only exit |
 | UI 15-second read window | 30 status reads at 500 ms; p95 17.658 ms |
-| process resource envelope | 0.543243 s user CPU, 0.152433 s system CPU, 321,568,768 max RSS bytes |
+| process resource envelope | 0.543243 s user CPU, 0.152433 s system CPU; current RSS before/after/delta are regenerated below |
 
 The optional 525-route capacity case is retained only as a source-derived
 subscription-attempt count: current `on_start` calls subscribe once per route,
@@ -66,6 +66,12 @@ Reproduce the complete machine-readable schema, including explicit
 ```text
 uv run pytest -q -s tests/integration/test_nautilus_runtime_pr0_baseline.py
 ```
+
+The diagnostic refuses a dirty tracked tree. It also writes the same JSON to
+`artifacts/scheduled/oi-runtime-pr0-baseline.json`, which the scheduled workflow
+uploads even when pytest output capture is enabled. RSS is the current process
+value before and after this diagnostic plus their delta; it is not the
+process-lifetime `ru_maxrss` shared with other scheduled tests.
 
 This diagnostic is scheduled/opt-in and is not fixed-CI merge evidence. The
 architecture contract always validates the owner matrix, forbidden collector

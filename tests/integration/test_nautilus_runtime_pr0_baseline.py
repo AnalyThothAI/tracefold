@@ -10,7 +10,6 @@ import json
 import os
 import resource
 import subprocess
-import sys
 import time
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -20,6 +19,7 @@ from threading import Event
 from types import SimpleNamespace
 from typing import Any
 
+import psutil
 import pytest
 from fastapi.testclient import TestClient
 from nautilus_trader.model.enums import PositionSide
@@ -58,6 +58,8 @@ _REPEATS = 6
 _REPAIR_SECONDS = 0.2
 _UI_WINDOW_SECONDS = 15.0
 _BASELINE_SOURCE_MAIN = "f495a9fc0d0ba0d528e40b588e76108d80cdfefe"
+_ROOT = Path(__file__).resolve().parents[2]
+_SCHEDULED_RECEIPT = _ROOT / "artifacts/scheduled/oi-runtime-pr0-baseline.json"
 
 _OWNER_MATRIX = (
     {
@@ -125,6 +127,26 @@ def _sha(value: str) -> str:
     import hashlib
 
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _require_clean_tracked_tree() -> str:
+    measured_git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    tracked_status = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=no"],
+        cwd=_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if tracked_status:
+        raise RuntimeError("oi_runtime_pr0_baseline_dirty_tracked_tree")
+    return measured_git_sha
 
 
 def _fence(repo: TradingRepository) -> tuple[int, int]:
@@ -462,6 +484,9 @@ def _http_sample(tmp_path: Path) -> dict[str, Any]:
 
 
 def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
+    measured_git_sha = _require_clean_tracked_tree()
+    process = psutil.Process()
+    rss_before = process.memory_info().rss
     settings = Settings(ws_token="475-baseline", storage=postgres_settings_storage())
     settings.set_config_dir(tmp_path / "bridge-home")
     before = resource.getrusage(resource.RUSAGE_SELF)
@@ -470,13 +495,7 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
     lifecycle = _runtime_lifecycle_sample()
     http = _http_sample(tmp_path)
     after = resource.getrusage(resource.RUSAGE_SELF)
-    measured_git_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=Path(__file__).resolve().parents[2],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    rss_after = process.memory_info().rss
     report = {
         "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
         "baseline_source_main": _BASELINE_SOURCE_MAIN,
@@ -525,7 +544,9 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
                 "scope": "diagnostic_process_including_postgres_and_http_clients",
                 "user_cpu_seconds": round(after.ru_utime - before.ru_utime, 6),
                 "system_cpu_seconds": round(after.ru_stime - before.ru_stime, 6),
-                "max_rss_bytes": after.ru_maxrss if sys.platform == "darwin" else after.ru_maxrss * 1_024,
+                "rss_bytes_before": rss_before,
+                "rss_bytes_after": rss_after,
+                "rss_delta_bytes": rss_after - rss_before,
             },
         },
         "interpretation": {
@@ -550,4 +571,7 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
         "runtime_lifecycle",
         "stream_latency",
     }
+    serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    _SCHEDULED_RECEIPT.parent.mkdir(parents=True, exist_ok=True)
+    _SCHEDULED_RECEIPT.write_text(serialized, encoding="utf-8")
     print("TRACEFOLD_RUNTIME_BASELINE=" + json.dumps(report, sort_keys=True))
