@@ -49,9 +49,9 @@ def test_openapi_json_matches_committed_artefact(tmp_path: Path) -> None:
 def test_public_api_is_status_news_trading_and_macro_only() -> None:
     """#47 removed Radar, #50 removed the GMGN lane: no market/search/token/live routes or schemas remain.
 
-    `/api/trading/*` is an exact read-only allowlist, named individually rather than by prefix: the
-    capital lane's one hard rule is that no browser can place, amend or cancel an order, and a prefix
-    wildcard would let a mutation route join without anyone reading this line.
+    `/api/trading/*` is an exact allowlist, named individually rather than by prefix. The sole write
+    appends a bounded Command; the browser still cannot place, amend, or cancel an order. A prefix
+    wildcard would let a second mutation route join without anyone reading this line.
     """
 
     from tracefold.app.http.app import create_app
@@ -75,18 +75,18 @@ def test_public_api_is_status_news_trading_and_macro_only() -> None:
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     }
-    # Reads only. Trading mutations stay on the CLI. The internet-facing Serve pool enforces
-    # connection-level read-only mode under the shared application login.
+    # Every path except the one Command append is read-only. The ordinary Serve pool still enforces
+    # connection-level read-only mode; the command append owns a separate bounded transaction.
     for path in (
         "/api/trading/status",
         "/api/trading/cases",
         "/api/trading/signals",
         "/api/trading/execution/observations",
-        "/api/trading/execution/commands",
         "/api/trading/gate",
         "/api/trading/gate/{event_id}",
     ):
         assert set(schema["paths"][path]) == {"get"}, path
+    assert set(schema["paths"]["/api/trading/execution/commands"]) == {"get", "post"}
     for retired in (
         "/api/token-radar",
         "/api/stocks-radar",

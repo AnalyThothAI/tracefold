@@ -507,6 +507,52 @@
         "title": "ApiEnvelope[TradingGateSourceData]",
         "type": "object"
       },
+      "ApiEnvelope_TradingOperatorCommandReceiptData_": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingOperatorCommandReceiptData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "ApiEnvelope[TradingOperatorCommandReceiptData]",
+        "type": "object"
+      },
       "ApiEnvelope_TradingOperatorIntentsData_": {
         "additionalProperties": false,
         "properties": {
@@ -5518,6 +5564,130 @@
         "title": "TradingDecisionRuntimeData",
         "type": "object"
       },
+      "TradingExecutionAccountData": {
+        "additionalProperties": false,
+        "properties": {
+          "aggregate_risk_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aggregate Risk Usd"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "daily_drawdown_bps": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Drawdown Bps"
+          },
+          "daily_drawdown_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Drawdown Usd"
+          },
+          "day_start_equity_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Day Start Equity Usd"
+          },
+          "equity_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Equity Usd"
+          },
+          "inflight_orders_count": {
+            "minimum": 0.0,
+            "title": "Inflight Orders Count",
+            "type": "integer"
+          },
+          "market_observed_at_ns": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Market Observed At Ns"
+          },
+          "observed_at_ns": {
+            "title": "Observed At Ns",
+            "type": "integer"
+          },
+          "open_orders_count": {
+            "minimum": 0.0,
+            "title": "Open Orders Count",
+            "type": "integer"
+          },
+          "orders": {
+            "items": {
+              "$ref": "#/components/schemas/TradingExecutionOrderData"
+            },
+            "maxItems": 200,
+            "title": "Orders",
+            "type": "array"
+          },
+          "positions": {
+            "items": {
+              "$ref": "#/components/schemas/TradingExecutionPositionData"
+            },
+            "maxItems": 100,
+            "title": "Positions",
+            "type": "array"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
+          },
+          "unknown_orders_count": {
+            "minimum": 0.0,
+            "title": "Unknown Orders Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "observed_at_ns",
+          "open_orders_count",
+          "inflight_orders_count",
+          "unknown_orders_count",
+          "complete"
+        ],
+        "title": "TradingExecutionAccountData",
+        "type": "object"
+      },
       "TradingExecutionObservationData": {
         "additionalProperties": false,
         "properties": {
@@ -5648,12 +5818,185 @@
         "title": "TradingExecutionObservationsData",
         "type": "object"
       },
+      "TradingExecutionOrderData": {
+        "additionalProperties": false,
+        "properties": {
+          "client_order_id": {
+            "title": "Client Order Id",
+            "type": "string"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "leg": {
+            "enum": [
+              "entry",
+              "exit",
+              "protection",
+              "unknown"
+            ],
+            "title": "Leg",
+            "type": "string"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "reduce_only": {
+            "title": "Reduce Only",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "inflight"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trigger Price"
+          }
+        },
+        "required": [
+          "client_order_id",
+          "instrument_id",
+          "state",
+          "leg",
+          "quantity",
+          "reduce_only",
+          "owned"
+        ],
+        "title": "TradingExecutionOrderData",
+        "type": "object"
+      },
+      "TradingExecutionPositionData": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_price": {
+            "title": "Entry Price",
+            "type": "string"
+          },
+          "instrument_id": {
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "mark_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mark Price"
+          },
+          "owned": {
+            "title": "Owned",
+            "type": "boolean"
+          },
+          "position_id": {
+            "title": "Position Id",
+            "type": "string"
+          },
+          "protection_full_coverage": {
+            "title": "Protection Full Coverage",
+            "type": "boolean"
+          },
+          "protection_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection Quantity"
+          },
+          "protection_status": {
+            "enum": [
+              "protected",
+              "pending",
+              "unprotected",
+              "unknown"
+            ],
+            "title": "Protection Status",
+            "type": "string"
+          },
+          "protection_trigger_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Protection Trigger Price"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "long",
+              "short"
+            ],
+            "title": "Side",
+            "type": "string"
+          },
+          "unrealized_pnl_usd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unrealized Pnl Usd"
+          }
+        },
+        "required": [
+          "position_id",
+          "instrument_id",
+          "side",
+          "quantity",
+          "entry_price",
+          "owned",
+          "protection_status",
+          "protection_full_coverage"
+        ],
+        "title": "TradingExecutionPositionData",
+        "type": "object"
+      },
       "TradingExecutionReadinessData": {
         "additionalProperties": false,
         "properties": {
           "account_flat": {
             "default": false,
             "title": "Account Flat",
+            "type": "boolean"
+          },
+          "account_flat_proven": {
+            "default": false,
+            "title": "Account Flat Proven",
             "type": "boolean"
           },
           "account_slot": {
@@ -5705,6 +6048,16 @@
             "default": false,
             "title": "Credential Ready",
             "type": "boolean"
+          },
+          "current_account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TradingExecutionAccountData"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "day_start_ready": {
             "default": false,
@@ -6379,6 +6732,53 @@
           "joinable"
         ],
         "title": "TradingGateSourceData",
+        "type": "object"
+      },
+      "TradingOperatorCommandReceiptData": {
+        "additionalProperties": false,
+        "properties": {
+          "command_id": {
+            "title": "Command Id",
+            "type": "string"
+          },
+          "disposition": {
+            "const": "awaiting_runtime",
+            "title": "Disposition",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "requested_at_ns": {
+            "title": "Requested At Ns",
+            "type": "integer"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "truth": {
+            "const": "intent_recorded_not_runtime_or_venue",
+            "title": "Truth",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command_id",
+          "seq",
+          "requested_at_ns",
+          "disposition",
+          "truth"
+        ],
+        "title": "TradingOperatorCommandReceiptData",
         "type": "object"
       },
       "TradingOperatorIntentData": {
@@ -7485,6 +7885,61 @@
           }
         },
         "summary": "Get Operator Intents",
+        "tags": [
+          "api"
+        ]
+      },
+      "post": {
+        "description": "Persist one bounded console intent; Runtime and venue outcomes remain separate facts.",
+        "operationId": "post_operator_intent_api_trading_execution_commands_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "request_id": {
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "title": "Request Id",
+                    "type": "string"
+                  },
+                  "requested_at_ms": {
+                    "exclusiveMinimum": 0,
+                    "title": "Requested At Ms",
+                    "type": "integer"
+                  },
+                  "text": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "title": "Text",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "request_id",
+                  "requested_at_ms",
+                  "text"
+                ],
+                "title": "TradingOperatorCommandRequestData",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_TradingOperatorCommandReceiptData_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Post Operator Intent",
         "tags": [
           "api"
         ]

@@ -1,4 +1,4 @@
-"""Read-only Source, Case, Signal, Observation, and readiness contracts."""
+"""Trading read contracts plus the bounded operator-command request and receipt."""
 
 from __future__ import annotations
 
@@ -23,6 +23,49 @@ class TradingDecisionRuntimeData(ExactApiSchema):
     state: Literal["DISABLED", "STARTING", "RUNNING", "FAULTED"]
     heartbeat_at_ms: int | None = None
     reason: str | None = None
+
+
+class TradingExecutionPositionData(ExactApiSchema):
+    position_id: str
+    instrument_id: str
+    side: Literal["long", "short"]
+    quantity: str
+    entry_price: str
+    mark_price: str | None = None
+    unrealized_pnl_usd: str | None = None
+    owned: bool
+    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
+    protection_quantity: str | None = None
+    protection_trigger_price: str | None = None
+    protection_full_coverage: bool
+
+
+class TradingExecutionOrderData(ExactApiSchema):
+    client_order_id: str
+    instrument_id: str
+    state: Literal["open", "inflight"]
+    leg: Literal["entry", "exit", "protection", "unknown"]
+    quantity: str
+    reduce_only: bool
+    trigger_price: str | None = None
+    owned: bool
+
+
+class TradingExecutionAccountData(ExactApiSchema):
+    observed_at_ns: int
+    market_observed_at_ns: int | None = None
+    equity_usd: str | None = None
+    day_start_equity_usd: str | None = None
+    daily_drawdown_usd: str | None = None
+    daily_drawdown_bps: int | None = None
+    aggregate_risk_usd: str | None = None
+    positions: list[TradingExecutionPositionData] = Field(default_factory=list, max_length=100)
+    orders: list[TradingExecutionOrderData] = Field(default_factory=list, max_length=200)
+    open_orders_count: int = Field(ge=0)
+    inflight_orders_count: int = Field(ge=0)
+    unknown_orders_count: int = Field(ge=0)
+    complete: bool
+    truncated: bool = False
 
 
 class TradingExecutionReadinessData(ExactApiSchema):
@@ -54,9 +97,11 @@ class TradingExecutionReadinessData(ExactApiSchema):
     emergency_halted: bool = False
     unexpected_exposure: bool = False
     account_flat: bool = False
+    account_flat_proven: bool = False
     positions_count: int = Field(default=0, ge=0)
     open_orders_count: int = Field(default=0, ge=0)
     protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "unknown"
+    current_account: TradingExecutionAccountData | None = None
 
 
 class TradingRuntimeCountsData(ExactApiSchema):
@@ -269,6 +314,21 @@ class TradingOperatorIntentsData(ExactApiSchema):
     next_cursor: str | None = None
     window_hours: int
     measured_at_ms: int
+
+
+class TradingOperatorCommandRequestData(ExactApiSchema):
+    request_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    requested_at_ms: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=512)
+
+
+class TradingOperatorCommandReceiptData(ExactApiSchema):
+    command_id: str
+    seq: int
+    requested_at_ns: int
+    disposition: Literal["awaiting_runtime"]
+    reason: str | None = None
+    truth: Literal["intent_recorded_not_runtime_or_venue"]
 
 
 __all__ = [name for name in globals() if name.startswith("Trading")]

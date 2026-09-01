@@ -502,13 +502,19 @@ class TradingControlSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     enabled: bool = False
+    console_write_token_file: str | None = "trading_console_write_token"
     telegram_bot_token_file: str | None = "telegram_bot_token"
     telegram_webhook_secret_file: str | None = "telegram_webhook_secret"
     allowed_chat_ids: tuple[int, ...] = ()
     allowed_user_ids: tuple[int, ...] = ()
     notification_chat_id: int | None = None
 
-    @field_validator("telegram_bot_token_file", "telegram_webhook_secret_file", mode="before")
+    @field_validator(
+        "console_write_token_file",
+        "telegram_bot_token_file",
+        "telegram_webhook_secret_file",
+        mode="before",
+    )
     @classmethod
     def parse_optional_secret_path(cls, value: Any) -> str | None:
         if value is None:
@@ -602,6 +608,9 @@ class Settings(BaseModel):
 
     def trading_binance_usdm_api_secret_file(self) -> Path | None:
         return self._configured_path(self.trading.execution.credentials.api_secret_file)
+
+    def trading_console_write_token_file(self) -> Path | None:
+        return self._configured_path(self.trading.control.console_write_token_file)
 
     def trading_telegram_bot_token_file(self) -> Path | None:
         return self._configured_path(self.trading.control.telegram_bot_token_file)

@@ -2,10 +2,12 @@
   .trading-case-head,
   .trading-case-row {
     display: grid;
-    grid-template-columns: 104px 118px 158px 128px 132px minmax(220px, 1fr) 160px;
+    grid-template-columns:
+      88px 104px minmax(110px, 0.8fr) minmax(120px, 1fr) minmax(120px, 1fr)
+      64px;
     gap: 10px;
     align-items: center;
-    min-width: 1108px;
+    min-width: 0;
     padding: 0 14px;
   }
 
@@ -23,5 +25,34 @@
     border-bottom: 1px solid var(--border-faint);
     color: var(--text-secondary);
     font-size: var(--font-size-mono-meta);
+  }
+
+  .trading-case-row span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  @media (max-width: 767px) {
+    .trading-case-head {
+      display: none;
+    }
+
+    .trading-case-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+      padding: 11px 12px;
+    }
+
+    .trading-case-row span {
+      display: grid;
+      gap: 2px;
+    }
+
+    .trading-case-row span::before {
+      color: var(--text-subtle);
+      font: var(--type-eyebrow);
+      letter-spacing: 0.08em;
+      content: attr(data-label);
+    }
   }
 }

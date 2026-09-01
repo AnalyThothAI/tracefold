@@ -1,24 +1,29 @@
-"""Read-only Case, Signal, Observation, and execution-runtime HTTP contract."""
+"""Trading reads plus the one authenticated operator-command append contract."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tracefold.app.http.app import create_app
+from tracefold.app.http.routes import trading as trading_routes
 from tracefold.platform.config.models import Settings
 from tracefold.trading import DecisionRuntimeV1
 
 TOKEN = "trading-contract-token"
+WRITE_TOKEN = "operator-write-" + "w" * 40
 NOW = 1_900_000_000_000
 
 
 class _Trading:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.persisted: list[Any] = []
 
     def decision_runtime(self) -> DecisionRuntimeV1:
         return DecisionRuntimeV1(state="RUNNING", heartbeat_at_ms=NOW, reason=None, updated_at_ms=NOW)
@@ -144,10 +149,26 @@ class _Runtime:
     def repositories(self):
         yield type("Repositories", (), {"trading": self._trading})()
 
+    def persist_operator_intent(self, prepared: Any) -> SimpleNamespace:
+        self._trading.persisted.append(prepared)
+        return SimpleNamespace(
+            command_id=prepared.value.command_id,
+            seq=7,
+            disposition="awaiting_runtime",
+            reason=None,
+        )
+
 
 @pytest.fixture
-def client() -> tuple[TestClient, _Trading]:
-    settings = Settings(ws_token=TOKEN)
+def client(tmp_path: Path) -> tuple[TestClient, _Trading]:
+    token_path = tmp_path / "trading_console_write_token"
+    token_path.write_text(WRITE_TOKEN + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    settings = Settings(
+        ws_token=TOKEN,
+        trading={"control": {"console_write_token_file": token_path.name}},
+    )
+    settings.set_config_dir(tmp_path)
     trading = _Trading()
     app = create_app(settings=settings)
     app.state.service = _Runtime(settings, trading)
@@ -206,6 +227,146 @@ def test_commands_are_read_only_authenticated_intent_projections(client: tuple[T
     assert command["expired"] is False
     for forbidden in ("authentication_identity", "confirmation_identity", "quantity", "leverage"):
         assert forbidden not in command
+
+
+def test_console_command_post_records_only_an_intent(
+    client: tuple[TestClient, _Trading], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, trading = client
+    monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
+    response = api.post(
+        "/api/trading/execution/commands",
+        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        json={
+            "request_id": "11111111-1111-4111-8111-111111111111",
+            "requested_at_ms": NOW,
+            "text": "/resume operator review complete CONFIRM",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "command_id": trading.persisted[0].value.command_id,
+        "seq": 7,
+        "requested_at_ns": NOW * 1_000_000,
+        "disposition": "awaiting_runtime",
+        "reason": None,
+        "truth": "intent_recorded_not_runtime_or_venue",
+    }
+    persisted = trading.persisted[0].value
+    assert persisted.action == "resume_entries"
+    assert persisted.scope == "entries"
+    assert persisted.reason == "operator review complete"
+    assert persisted.target_profile_id == "binance_usdm_primary"
+    assert persisted.authentication_identity == "http-operator-write-token:v1"
+    assert persisted.confirmation_identity is not None
+
+
+def test_console_command_post_offloads_the_synchronous_database_append(
+    client: tuple[TestClient, _Trading], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api, _ = client
+    offloaded: list[tuple[Any, tuple[Any, ...]]] = []
+
+    async def run_in_worker(function: Any, *args: Any) -> Any:
+        offloaded.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
+    monkeypatch.setattr(trading_routes, "run_in_threadpool", run_in_worker, raising=False)
+
+    response = api.post(
+        "/api/trading/execution/commands",
+        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        json={
+            "request_id": "33333333-3333-4333-8333-333333333333",
+            "requested_at_ms": NOW,
+            "text": "/pause database maintenance",
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(offloaded) == 1
+    assert offloaded[0][0].__name__ == "persist_operator_intent"
+
+
+def test_console_command_post_authenticates_before_body_and_rejects_query_tokens(
+    client: tuple[TestClient, _Trading],
+) -> None:
+    api, trading = client
+    path = f"/api/trading/execution/commands?token={TOKEN}"
+
+    assert api.post(path, content=b"not-json", headers={"Content-Type": "application/json"}).status_code == 401
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"},
+        ).status_code
+        == 401
+    )
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers={"Authorization": f"Bearer {WRITE_TOKEN}", "Content-Type": "text/plain"},
+        ).json()["error"]
+        == "content_type_json_required"
+    )
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers=[(b"authorization", b"Bearer \xff"), (b"content-type", b"application/json")],
+        ).status_code
+        == 401
+    )
+    shared_token = "shared-bootstrap-write-token-" + "x" * 32
+    api.app.state.service.settings.ws_token = shared_token
+    token_path = api.app.state.service.settings.trading_console_write_token_file()
+    assert token_path is not None
+    token_path.write_text(shared_token + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+    assert (
+        api.post(
+            "/api/trading/execution/commands",
+            content=b"{}",
+            headers={"Authorization": f"Bearer {shared_token}", "Content-Type": "application/json"},
+        ).status_code
+        == 401
+    )
+    assert trading.persisted == []
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ("/halt incident CONFIRM", "operator_console_action_unsupported"),
+        ("/long crypto:perp:BTC:USDT 30", "operator_console_action_unsupported"),
+        ("/flatten account 30", "operator_command_invalid"),
+    ],
+)
+def test_console_command_post_keeps_the_closed_non_capital_grammar(
+    client: tuple[TestClient, _Trading],
+    monkeypatch: pytest.MonkeyPatch,
+    text: str,
+    error: str,
+) -> None:
+    api, trading = client
+    monkeypatch.setattr(trading_routes.time, "time_ns", lambda: NOW * 1_000_000)
+    response = api.post(
+        "/api/trading/execution/commands",
+        headers={"Authorization": f"Bearer {WRITE_TOKEN}"},
+        json={
+            "request_id": "22222222-2222-4222-8222-222222222222",
+            "requested_at_ms": NOW,
+            "text": text,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"ok": False, "error": error, "field": "text"}
+    assert trading.persisted == []
 
 
 def test_retired_execution_routes_are_absent_and_current_routes_are_authenticated(

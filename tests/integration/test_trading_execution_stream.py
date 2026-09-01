@@ -18,6 +18,9 @@ from tracefold.platform.postgres.audit import PostgresQueryAudit, QueryAuditCata
 from tracefold.trading.execution_contracts import ExecutionObservationV1
 from tracefold.trading.notification_policy import NOTIFICATION_THROTTLE_MS
 from tracefold.trading.storage.execution_stream import (
+    ExecutionAccountOrder,
+    ExecutionAccountPosition,
+    ExecutionAccountSnapshot,
     ExecutionProfileActivation,
     ExecutionRuntimeState,
     PreparedExecutionObservationBatch,
@@ -676,6 +679,47 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         entry_block_reason=None,
         started_at_ns=1_900,
         updated_at_ns=2_100,
+        account_snapshot=ExecutionAccountSnapshot(
+            observed_at_ns=2_000,
+            market_observed_at_ns=1_990,
+            equity_usd="995",
+            day_start_equity_usd="1000",
+            daily_drawdown_usd="5",
+            daily_drawdown_bps=50,
+            aggregate_risk_usd="2",
+            positions=(
+                ExecutionAccountPosition(
+                    position_id="position-1",
+                    instrument_id="BTCUSDT-PERP.BINANCE",
+                    side="long",
+                    quantity="0.01",
+                    entry_price="100000",
+                    mark_price="100500",
+                    unrealized_pnl_usd="5",
+                    owned=True,
+                    protection_status="protected",
+                    protection_quantity="0.01",
+                    protection_trigger_price="99000",
+                    protection_full_coverage=True,
+                ),
+            ),
+            orders=(
+                ExecutionAccountOrder(
+                    client_order_id="stop-1",
+                    instrument_id="BTCUSDT-PERP.BINANCE",
+                    state="open",
+                    leg="protection",
+                    quantity="0.01",
+                    reduce_only=True,
+                    trigger_price="99000",
+                    owned=True,
+                ),
+            ),
+            open_orders_count=1,
+            inflight_orders_count=0,
+            unknown_orders_count=0,
+            complete=True,
+        ),
     )
 
     conn = connect_postgres_test(read_only=False)
@@ -1363,6 +1407,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_safe_check",
             "trading_execution_runtime_armed_check",
             "trading_execution_runtime_entry_reason_check",
+            "trading_execution_runtime_account_snapshot_check",
         },
     }
     assert set(triggers) == {

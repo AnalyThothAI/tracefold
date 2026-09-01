@@ -110,10 +110,8 @@ def test_app_catalog_composes_platform_and_injected_news_query_specs():
     )
     assert catalog.query_routes["/api/news/quotes"] == ("news_quote_snapshot_read",)
     assert "/api/news/review" not in catalog.query_routes
-    # #256: the ReviewDesk console and its HTTP surface are gone, so the public surface has no write route
-    # at all. The audit asserts the empty set rather than dropping the assertion — an accidental write route
-    # must fail here, not slip in unnoticed.
-    assert catalog.write_routes == set()
+    # #475 PR-E adds one exact append-only operator control route; every other public route stays read-only.
+    assert catalog.write_routes == {"/api/trading/execution/commands"}
     assert catalog.query_routes["/api/news/status"] == (
         "workers_runtime",
         "news_status_ingest",

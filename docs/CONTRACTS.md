@@ -247,6 +247,8 @@ delivery consumer settles `terminal/delivery_unavailable`.
   identities for the profile-gated Runtime;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
+- `control.console_write_token_file`, default `trading_console_write_token`,
+  names the independent HTTP Command credential that bootstrap never returns;
 - `control.enabled`, default `false`; when true it requires secure
   `telegram_bot_token_file` and `telegram_webhook_secret_file` references,
   non-empty sorted unique `allowed_chat_ids` and `allowed_user_ids`, and a
@@ -351,9 +353,11 @@ There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate; every other `/api/*` route requires that token as an HTTP bearer token (`Authorization: Bearer <ws_token>`; routes that allow it also accept a `token` query parameter). A missing or wrong token is `401`.
+- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate GET reads (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST rejects this bootstrap-disclosed token and requires the separate ASCII bearer value from `trading.control.console_write_token_file`. That value is never returned by an API. Serve rejects an equal read/write token at startup; a later equal or non-ASCII replacement fails closed as `401`, as does any missing, non-ASCII, or wrong write credential.
 - `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
-- Read endpoints do not call providers, execute models, or mutate facts.
+- Read endpoints do not call providers, execute models, or mutate facts. The one
+  command POST only appends an authenticated `OperatorIntentV1`; it cannot call
+  Nautilus or Binance and its response is not a Runtime or venue receipt.
 
 Status contains no provider/model credentials, base URLs, request policy,
 capacity counters, Program instructions/demonstrations, or raw model responses.
@@ -374,7 +378,7 @@ Errors use `ok: false` with a stable error code. Pydantic response models genera
 |---|---|---|
 | Bootstrap/status | `/api/bootstrap`, `/api/status` | Serve configuration, database probe, and the Workers runtime row |
 | News | `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}` | broker-driven Event feed, one Event with frozen evidence/verdict/delivery audit, four-layer status, bounded quotes, and one symbol's identity |
-| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. Reads only — there is no HTTP write on this surface |
+| Trading | `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/gate`, `/api/trading/gate/{event_id}` | one owner per durable aggregate: Alpha and current execution/account readiness, frozen Case decisions, engine-neutral Signals, append-only Runtime Observations, authenticated operator intents, and the Source-admission ledger. GET reads all aggregates; the same commands path has the sole bounded POST append |
 
 The public API is exactly these routes plus `/healthz`, `/readyz`, and
 `/metrics`. The retired GMGN-lane routes (`/ws`, `/api/recent`,
@@ -388,8 +392,8 @@ feature flag.
 
 News is an operator-bound, Strategy-qualified Event surface. The public surface
 is exactly five GET route templates and no write route at all. The four
-ReviewDesk routes — two reads and the only two HTTP writes this project ever
-had — were removed with the console page they served (#256); `news review
+ReviewDesk routes — two reads and the only two News HTTP writes — were removed
+with the console page they served (#256); `news review
 queue|evidence|submit|external-miss` is now the whole ReviewDesk surface, and
 it reaches `news_reviews` through its own Serve-role connection.
 
@@ -970,7 +974,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and current head
-`20260902_0348`; `0342` adds the Trading notification delivery ledger,
+`20260902_0349`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -985,7 +989,8 @@ tables `0341` had frozen read-only, and the thirteen functions only their
 triggers, defaults and CHECKs called; their 390 archived rows were dumped to
 `~/.tracefold/backups` first. `0348` hard-cuts Runtime readiness into liveness,
 existing-exposure safety, and new-entry admission while adding the profile-keyed
-current control projection. The exact
+current control projection. `0349` adds the bounded nullable Runtime-owned
+current account JSON projection without changing any append-only ledger. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1046,7 +1051,14 @@ Runtime facts, and status carries readiness plus bounded totals.
   exact Runtime/revision/image/config identity, independent `alive`,
   `execution_safe`, and `entries_armed` facts, `entry_block_reason`, control,
   audit/day-start gates, position/open-order counts, protection status, flatness,
-  heartbeat and reconciliation age. Nautilus `/readyz` means
+  heartbeat and reconciliation age. `current_account` is the replaceable
+  Runtime-owned read model for current equity, day-start/drawdown, aggregate
+  risk, bounded position/protection rows, and bounded open/in-flight order rows
+  including ownership uncertainty. It is neither an append-only audit ledger
+  nor an OMS owner. `account_flat_proven=true` additionally requires the Runtime
+  heartbeat, existing-exposure safety, and the complete Binance private
+  reconciliation to remain inside its 10-second freshness budget; empty or
+  partial `current_account` rows never prove flat. Nautilus `/readyz` means
   `alive && execution_safe`; it remains green when only new entries are paused
   or otherwise blocked. Serve reads no secret file and constructs
   no provider client. Counts are bounded durable
@@ -1069,6 +1081,19 @@ Runtime facts, and status carries readiness plus bounded totals.
   any final disposition, newest first with opaque pagination. It never returns
   authentication material. A row, HTTP 200, or `awaiting_runtime` is not an
   order, fill, or flat receipt.
+- `POST /api/trading/execution/commands` — the sole browser write. It requires
+  the non-bootstrap operator write token in `Authorization: Bearer` plus
+  `application/json`, rejects query-token and read-token auth,
+  bounds the body to 2 KiB, and accepts exactly lowercase UUID `request_id`,
+  millisecond `requested_at_ms`, and the shared closed slash-command `text`.
+  The browser surface admits `/pause reason`, confirmed `/resume reason CONFIRM`,
+  and confirmed `/flatten account TTL CONFIRM`; `/halt`, `/long`, `/short`, and
+  every capital/order parameter are rejected. Stable request ID and clock must
+  be preserved on a retry. The append runs in one bounded short transaction
+  outside Serve's seven-connection read-only pool. Success returns
+  `truth=intent_recorded_not_runtime_or_venue`; only later Runtime Observations
+  may establish acceptance, order, fill, completion, expiry, rejection, or a
+  fresh private flat proof.
 - `GET /api/trading/gate` — the Source/Admission aggregate over a bounded
   24-hour window: the admission `config` its rows were filed under, then per
   Source the status, stage, named reason, retryability, version/config digest,
@@ -1122,10 +1147,10 @@ adds exact table counts for offline migration or restore evidence. Since
 contract; the two registries stay separate so "exactly these tables" remains a
 per-capability claim.
 `db query-audit` covers bounded reads for `/readyz`, `/api/status`, and every
-News GET. The catalogued write-route set is empty since #256 — the audit still
-asks for it, so a write route added by accident fails the contract rather than
-slipping in unnoticed. `/healthz`, `/metrics`, and `/api/bootstrap` are declared
-no-SQL routes.
+News and Trading GET. Its write-route set contains exactly
+`/api/trading/execution/commands`; that same path remains independently listed
+with its GET plan. Any second write route fails the public-surface contract.
+`/healthz`, `/metrics`, and `/api/bootstrap` are declared no-SQL routes.
 
 `news bus-check` connects, declares the topology idempotently, and prints
 per-queue message/consumer counts.
@@ -1133,7 +1158,8 @@ per-queue message/consumer counts.
 contract since #256; submissions require the task version and an idempotency
 key, and open one short transaction under the shared `tracefold`
 login. Append-only triggers and business constraints reject review rewrites;
-the public Serve HTTP pool remains read-only and has no write route.
+the public Serve HTTP pool remains read-only. The sole Trading Command POST
+opens its own bounded short application transaction outside that pool.
 
 `news learning baseline --from-ms N --to-ms N
 [--mode recorded|compile_live|runtime_live] [--action-source recorded|policy]

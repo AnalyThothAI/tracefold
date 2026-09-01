@@ -10,7 +10,7 @@ usage: tracefold [-h]
 
 positional arguments:
   {serve,workers,nautilus,init,config,db,news,trading,ops}
-    serve               run the read-only HTTP and frontend runtime
+    serve               run the HTTP and frontend runtime
     workers             run the News ingestion, triage, and delivery runtime
     nautilus            run the single OI Nautilus Runtime
     init                create ~/.tracefold/config.yaml
