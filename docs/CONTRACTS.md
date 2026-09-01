@@ -247,6 +247,8 @@ delivery consumer settles `terminal/delivery_unavailable`.
   identities for the profile-gated Runtime;
 - `execution.credentials.api_key_file` / `api_secret_file`, operator-owned
   Binance USD-M secret references;
+- `control.console_write_token_file`, default `trading_console_write_token`,
+  names the independent HTTP Command credential that bootstrap never returns;
 - `control.enabled`, default `false`; when true it requires secure
   `telegram_bot_token_file` and `telegram_webhook_secret_file` references,
   non-empty sorted unique `allowed_chat_ids` and `allowed_user_ids`, and a
@@ -351,7 +353,7 @@ There is no WebSocket endpoint.
 
 - `/healthz` is process liveness.
 - `/readyz` combines a lightweight PostgreSQL liveness check with the cached startup schema/composition result. It does not inspect providers, queues, or business freshness.
-- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate; every other `/api/*` route requires that token as an HTTP bearer token (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST accepts the bearer header only. A missing or wrong token is `401`.
+- `/api/bootstrap` returns `{ws_token}` so the served console can authenticate GET reads (`Authorization: Bearer <ws_token>`; read routes also accept a `token` query parameter). The one command POST rejects this bootstrap-disclosed token and requires the separate bearer value from `trading.control.console_write_token_file`. That value is never returned by an API. A missing or wrong credential is `401`.
 - `/api/status` is exactly `{measured_at_ms, runtime}`. `runtime` combines the database probe (schema revision match) with the Workers heartbeat row and fails closed on stale heartbeats; there is no provider block.
 - Read endpoints do not call providers, execute models, or mutate facts. The one
   command POST only appends an authenticated `OperatorIntentV1`; it cannot call
@@ -1080,7 +1082,8 @@ Runtime facts, and status carries readiness plus bounded totals.
   authentication material. A row, HTTP 200, or `awaiting_runtime` is not an
   order, fill, or flat receipt.
 - `POST /api/trading/execution/commands` — the sole browser write. It requires
-  `Authorization: Bearer` and `application/json`, rejects query-token auth,
+  the non-bootstrap operator write token in `Authorization: Bearer` plus
+  `application/json`, rejects query-token and read-token auth,
   bounds the body to 2 KiB, and accepts exactly lowercase UUID `request_id`,
   millisecond `requested_at_ms`, and the shared closed slash-command `text`.
   The browser surface admits `/pause reason`, confirmed `/resume reason CONFIRM`,

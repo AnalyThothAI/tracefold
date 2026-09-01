@@ -258,6 +258,9 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText("PROVEN")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Operator write token"), {
+      target: { value: "operator-write-token" },
+    });
     expect(screen.getByText("$997.50")).toBeVisible();
     expect(screen.getByText("9,000 ms")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
@@ -304,6 +307,9 @@ describe("TradingPage", () => {
     const { client } = renderTrading();
 
     expect(await screen.findByText("允许新增 exposure")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Operator write token"), {
+      target: { value: "operator-write-token" },
+    });
     expect(within(screen.getByLabelText("执行安全状态")).getAllByText("YES")).toHaveLength(3);
     expect(screen.getByText("PROVEN")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
@@ -364,13 +370,16 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
+    fireEvent.change(await screen.findByLabelText("Operator write token"), {
+      target: { value: "operator-write-token" },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
     expect(screen.getByRole("alertdialog")).toBeVisible();
     expect(posted).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "确认写入 Command" }));
 
     await waitFor(() => expect(posted).toBeDefined());
-    expect(authorization).toBe("Bearer test-token");
+    expect(authorization).toBe("Bearer operator-write-token");
     expect(posted).toMatchObject({
       request_id: "11111111-1111-4111-8111-111111111111",
       text: "/resume operator console CONFIRM",
@@ -418,6 +427,9 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
+    fireEvent.change(await screen.findByLabelText("Operator write token"), {
+      target: { value: "operator-write-token" },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
     const submit = screen.getByRole("button", { name: "确认写入 Command" });
     expect(submit).toBeDisabled();
@@ -477,6 +489,9 @@ describe("TradingPage", () => {
     );
     renderTrading();
 
+    fireEvent.change(await screen.findByLabelText("Operator write token"), {
+      target: { value: "operator-write-token" },
+    });
     fireEvent.click(await screen.findByRole("button", { name: "Resume / Arm" }));
     fireEvent.click(screen.getByRole("button", { name: "确认写入 Command" }));
     expect(await screen.findByText(/提交结果未知/)).toHaveTextContent(

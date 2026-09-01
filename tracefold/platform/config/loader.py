@@ -370,6 +370,7 @@ trading:
   enabled: false
   control:
     enabled: false
+    console_write_token_file: "trading_console_write_token"
     telegram_bot_token_file: "telegram_bot_token"
     telegram_webhook_secret_file: "telegram_webhook_secret"
     allowed_chat_ids: []

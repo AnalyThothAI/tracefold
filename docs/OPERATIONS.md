@@ -97,6 +97,7 @@ execution. Configure the one Workers-owned Telegram boundary:
 trading:
   control:
     enabled: true
+    console_write_token_file: "trading_console_write_token"
     telegram_bot_token_file: "telegram_bot_token"
     telegram_webhook_secret_file: "telegram_webhook_secret"
     allowed_chat_ids: [-1001234567890]
@@ -136,6 +137,13 @@ Inspect `trading commands` or `/api/trading/execution/commands` for the command 
 is: intent recorded, Runtime accepted, order accepted, fill observed, fresh
 Binance account-flat reconciliation. Never infer a later stage from an earlier
 one, from Decision `RUNNING`, or from Runtime readiness.
+
+The browser reads use the bootstrap token, but Command writes use the separate
+mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste
+that value into the Trading desk's password field only for the current page
+session. Bootstrap, logs, Issues, screenshots, and browser persistence must
+never carry it; rotating the file takes effect on the next request without a
+Serve restart.
 
 The local fallback writer uses the identical parser and an OS UID identity:
 

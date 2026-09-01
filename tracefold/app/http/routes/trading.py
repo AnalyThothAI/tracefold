@@ -362,7 +362,7 @@ async def post_operator_intent(
             source_command_id=command.request_id,
             target_profile_id=runtime.settings.trading.execution.profile_id,
             operator_identity="operator-console",
-            authentication_identity="http-bearer:v1",
+            authentication_identity="http-operator-write-token:v1",
             requested_at_ns=requested_at_ns,
         )
         if requested_at_ns > now_ns + _MAX_FUTURE_SKEW_NS:

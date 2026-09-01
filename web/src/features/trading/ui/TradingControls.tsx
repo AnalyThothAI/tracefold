@@ -17,19 +17,18 @@ export function TradingControls({
   accountFlatProven,
   entriesPaused,
   mode,
-  token,
 }: {
   accountFlatProven: boolean;
   entriesPaused: boolean;
   mode: "disabled" | "paper" | "live";
-  token: string;
 }) {
-  const command = useIssueTradingCommandWithToken(token);
+  const [operatorWriteToken, setOperatorWriteToken] = useState("");
+  const command = useIssueTradingCommandWithToken(operatorWriteToken.trim());
   const [reason, setReason] = useState("operator console");
   const [pendingAction, setPendingAction] = useState<CommandAction | null>(null);
   const [confirmation, setConfirmation] = useState("");
   const [retryEnvelope, setRetryEnvelope] = useState<CommandEnvelope | null>(null);
-  const disabled = mode === "disabled" || command.isPending;
+  const disabled = mode === "disabled" || !operatorWriteToken.trim() || command.isPending;
 
   const issue = (action: CommandAction) => {
     const normalizedReason = reason.trim() || "operator console";
@@ -61,6 +60,7 @@ export function TradingControls({
           setConfirmation("");
         },
         onError: (error) => {
+          if (error instanceof ApiError && error.status === 401) setOperatorWriteToken("");
           if (error instanceof ApiError && error.status < 500) setRetryEnvelope(null);
         },
       },
@@ -73,6 +73,16 @@ export function TradingControls({
         <b>执行控制</b>
         <span>按钮只写入 Command；页面随后从 Runtime 与 venue 回执更新进度。</span>
       </div>
+      <label className="trading-control-reason">
+        <span>Operator write token</span>
+        <input
+          autoComplete="off"
+          onChange={(event) => setOperatorWriteToken(event.target.value)}
+          spellCheck={false}
+          type="password"
+          value={operatorWriteToken}
+        />
+      </label>
       <label className="trading-control-reason">
         <span>操作原因</span>
         <input maxLength={256} onChange={(event) => setReason(event.target.value)} value={reason} />
@@ -103,6 +113,11 @@ export function TradingControls({
       {mode === "disabled" ? (
         <p className="trading-control-message" data-tone="caution">
           execution.mode=disabled；控制已锁定，不会写入无 Runtime 可处理的 Command。
+        </p>
+      ) : null}
+      {mode !== "disabled" && !operatorWriteToken.trim() ? (
+        <p className="trading-control-message" data-tone="caution">
+          读取 token 不能写入 Command；请粘贴本机 operator write token。它只保存在当前页面内存。
         </p>
       ) : null}
       {command.data ? (

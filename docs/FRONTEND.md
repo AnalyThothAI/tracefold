@@ -81,7 +81,10 @@ the route components into the eager shell chunk.
 - **Transport.** The browser talks HTTP only. `useAppSession` reads
   `/api/bootstrap` (`{ws_token}`) once and installs the bearer token on
   `lib/api/client`; feature hooks poll `/api/news/*` on
-  code-owned intervals with ETag revalidation. There is no `/ws` client, no
+  code-owned intervals with ETag revalidation. This bootstrap token is read
+  authority only. The Trading desk requires the separate operator write token
+  for Command buttons and holds the pasted value only in component memory; it
+  is never bootstrapped or persisted. There is no `/ws` client, no
   socket provider, no live-market cache patching, and no subscription registry;
   the shell status pill derives only from `/api/status.runtime`.
 - **Topbar search.** The single topbar search box is News-only: its label is
