@@ -22,6 +22,7 @@ from tracefold.app.nautilus.root import (
     _private_reconciliation_interval_seconds,
     _PrivateReconciliationRequests,
     _PrivateReconciliationResult,
+    _probe_payload,
     _reconcile_account,
     _RuntimeStateProjector,
 )
@@ -96,18 +97,25 @@ def _runtime_state(*, heartbeat_at_ns: int = 1_000_000_000) -> ExecutionRuntimeS
         image_digest="sha256:" + "c" * 64,
         credential_fingerprint="d" * 64,
         lifecycle_state="starting",
-        ready=False,
+        alive=True,
+        execution_safe=False,
+        entries_armed=False,
+        control_plane_ready=False,
         singleton_ready=True,
         credential_ready=True,
         activation_ready=True,
         startup_reconciled=False,
         portfolio_ready=False,
         audit_ready=False,
+        day_start_ready=False,
         unexpected_exposure=False,
         account_flat=True,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
         reconciliation_observed_at_ns=heartbeat_at_ns,
         heartbeat_at_ns=heartbeat_at_ns,
-        unavailable_reason="runtime_starting",
+        entry_block_reason="runtime_starting",
         started_at_ns=heartbeat_at_ns,
         updated_at_ns=heartbeat_at_ns,
     )
@@ -309,7 +317,7 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
         starting,
         lifecycle_state="running",
         heartbeat_at_ns=starting.heartbeat_at_ns + 1,
-        unavailable_reason="portfolio_unavailable",
+        entry_block_reason="portfolio_unavailable",
         updated_at_ns=starting.updated_at_ns + 1,
     )
     assert projector.publish(changed) == changed
@@ -329,6 +337,27 @@ def test_runtime_state_projector_writes_changes_immediately_and_unchanged_state_
     assert projector.publish(heartbeat) == heartbeat
     assert trading.puts == [starting]
     assert trading.updates == [changed, heartbeat]
+
+
+def test_probe_readiness_requires_execution_safety_but_not_entry_arming() -> None:
+    safe_but_paused = replace(
+        _runtime_state(),
+        lifecycle_state="running",
+        execution_safe=True,
+        entries_armed=False,
+        control_plane_ready=True,
+        startup_reconciled=True,
+        portfolio_ready=True,
+        entry_block_reason="entries_paused",
+    )
+
+    payload = _probe_payload(safe_but_paused)
+
+    assert payload["ok"] is True
+    assert payload["alive"] is True
+    assert payload["execution_safe"] is True
+    assert payload["entries_armed"] is False
+    assert _probe_payload(replace(safe_but_paused, execution_safe=False))["ok"] is False
 
 
 def test_reconciliation_observation_preserves_native_ids_and_flat_proof() -> None:

@@ -30,6 +30,7 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
     RuntimeControlSnapshot,
+    RuntimeEntryRequest,
     RuntimeReconciliationSnapshot,
     deterministic_client_order_id,
 )
@@ -131,7 +132,7 @@ def test_expired_duplicate_and_entry_gate_rejections_never_submit() -> None:
     blocked = registered_oi_strategy(values=(trade_signal(signal_id="5" * 64),), singleton=singleton)
     blocked.strategy.on_timer(None)
     assert blocked.strategy.submitted == []
-    assert blocked.strategy.readiness().reason == "singleton_unavailable"
+    assert blocked.strategy.readiness().entry_block_reason == "singleton_unavailable"
 
 
 def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> None:
@@ -139,6 +140,8 @@ def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> Non
     paused = registered_oi_strategy(values=(trade_signal(),), commands=(pause,))
     paused.strategy.on_timer(None)
     assert paused.strategy.submitted == []
+    assert paused.strategy.readiness().execution_safe is True
+    assert paused.strategy.readiness().entries_armed is False
     assert paused.strategy.control_state().entries_paused is True
     assert paused.strategy.control_state().emergency_halted is False
 
@@ -153,6 +156,8 @@ def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> Non
     halted = registered_oi_strategy(values=(trade_signal(),), commands=(halt, resume))
     halted.strategy.on_timer(None)
     assert halted.strategy.submitted == []
+    assert halted.strategy.readiness().execution_safe is True
+    assert halted.strategy.readiness().entries_armed is False
     assert halted.strategy.control_state().entries_paused is True
     assert halted.strategy.control_state().emergency_halted is True
     observations = halted.audit.flush_once(lambda _values: None)
@@ -335,7 +340,7 @@ def test_unresolved_signal_replay_rejects_wrong_cached_entry_shape() -> None:
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="entry",
     )
     wrong_entry = first.strategy.order_factory.market(
@@ -363,7 +368,7 @@ def test_expired_unresolved_signal_reclaims_cached_filled_position_and_flattens(
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="entry",
     )
     entry = first.strategy.order_factory.market(
@@ -407,7 +412,7 @@ def test_closed_replayed_entry_does_not_keep_instrument_busy() -> None:
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=first_signal.signal_id,
+        entry_id=first_signal.signal_id,
         leg="entry",
     )
     entry = first.strategy.order_factory.market(
@@ -436,7 +441,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     entry_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="entry",
     )
     wrong_entry = first.strategy.order_factory.market(
@@ -450,7 +455,12 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
         runtime_profile_id=first.profile.profile_id,
         account_observed_at_ns=NOW_NS,
         reconciliation_observed_at_ns=NOW_NS,
-        executions=(RecoveredExecutionSeed(signal=signal, entry_client_order_id=entry_id),),
+        executions=(
+            RecoveredExecutionSeed(
+                entry=RuntimeEntryRequest.from_signal(signal),
+                entry_client_order_id=entry_id,
+            ),
+        ),
     )
     restarted = registered_oi_strategy(
         cache=first.cache,
@@ -461,7 +471,7 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     restarted.strategy.on_start()
 
     readiness = restarted.strategy.readiness()
-    assert readiness.ready is False
+    assert readiness.execution_safe is False
     assert readiness.unexpected_exposure is True
 
 
@@ -515,7 +525,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     old_stop_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="protection:1:0.04",
     )
     old_stop = first.strategy.order_factory.stop_market(
@@ -531,7 +541,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     replacement_id = deterministic_client_order_id(
         namespace=first.profile.client_order_namespace,
         profile_id=first.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="protection:2:0.05",
     )
     replacement = first.strategy.order_factory.stop_market(
@@ -560,7 +570,7 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
         reconciliation_observed_at_ns=NOW_NS + 3,
         executions=(
             RecoveredExecutionSeed(
-                signal=signal,
+                entry=RuntimeEntryRequest.from_signal(signal),
                 entry_client_order_id=entry.client_order_id,
                 position_id=position_id,
                 protections=(
@@ -592,13 +602,13 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     restarted.strategy.reconcile_runtime(snapshot)
     restarted.strategy.on_start()
     if not expected_ready:
-        assert restarted.strategy.readiness().ready is False
+        assert restarted.strategy.readiness().execution_safe is False
         assert restarted.strategy.submitted == []
         return
     restarted.strategy.on_timer(None)
     restarted.strategy.flatten_position(position_id)
 
-    assert restarted.strategy.readiness().ready is True
+    assert restarted.strategy.readiness().execution_safe is True
     assert restarted.strategy.submitted == []
     expected_queries = [exit_order, exit_order]
     if not replacement_accepted:
@@ -640,7 +650,9 @@ def test_utc_day_rollover_blocks_until_background_updates_durable_baseline() -> 
     rollover_ns = NOW_NS + 86_400_000_000_000
     context.clock.set_time(rollover_ns)
 
-    assert context.strategy.readiness().reason == "day_start_baseline_missing"
+    assert context.strategy.readiness().entry_block_reason == "day_start_baseline_missing"
+    assert context.strategy.readiness().execution_safe is True
+    assert context.strategy.readiness().entries_armed is False
 
     utc_day = datetime.fromtimestamp(rollover_ns // 1_000_000_000, tz=UTC).date().isoformat()
     context.strategy.update_day_start(
@@ -652,7 +664,7 @@ def test_utc_day_rollover_blocks_until_background_updates_durable_baseline() -> 
         )
     )
 
-    assert context.strategy.readiness().ready is True
+    assert context.strategy.readiness().entries_armed is True
 
 
 @pytest.mark.parametrize(
@@ -770,7 +782,7 @@ def test_cached_same_id_invalid_protection_flattens_instead_of_replaying() -> No
     cached_id = deterministic_client_order_id(
         namespace=context.profile.client_order_namespace,
         profile_id=context.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="protection:2:0.08",
     )
     cached = context.strategy.order_factory.stop_market(
@@ -918,6 +930,8 @@ def test_audit_failure_blocks_new_entries_but_not_protection_or_flatten() -> Non
     with pytest.raises(RuntimeError, match="postgres-down"):
         context.audit.flush_once(fail_writer)
     assert context.audit.healthy is False
+    assert context.strategy.readiness().execution_safe is True
+    assert context.strategy.readiness().entries_armed is False
     context.strategy.on_order_accepted(_accepted(context, first_stop))
 
     context.strategy.on_position_changed(
@@ -1026,7 +1040,7 @@ def test_cached_exit_with_wrong_shape_is_never_reclaimed() -> None:
     bad_exit_id = deterministic_client_order_id(
         namespace=context.profile.client_order_namespace,
         profile_id=context.profile.profile_id,
-        signal_id=signal.signal_id,
+        entry_id=signal.signal_id,
         leg="exit",
     )
     bad_exit = context.strategy.order_factory.market(

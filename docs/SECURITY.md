@@ -92,7 +92,8 @@ cannot block protection, exit, or reconciliation.
 
 The Nautilus service is excluded from the default Compose model and remains
 absent while execution is disabled. Canonical paper/live deployment enables
-the explicit `execution` profile and requires Nautilus readiness. It alone has
+the explicit `execution` profile and requires Nautilus readiness (`alive &&
+execution_safe`, independent of whether new entries are armed). It alone has
 read-only mounts for the Binance pair; absent, empty, symlinked, oversized, or
 over-permissive files fail startup. Neither plaintext nor path enters
 PostgreSQL, HTTP, logs, artifacts, or Issues. No execution credential is

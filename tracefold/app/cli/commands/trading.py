@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import socket
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -54,6 +55,7 @@ def handle_trading(args: Any) -> tuple[int, dict[str, Any]]:
             execution_status = execution_readiness_projection(
                 execution,
                 trading.execution_runtime_state(execution.account_slot),
+                trading.execution_runtime_control_state(execution.profile_id),
                 now_ns=now_ms * 1_000_000,
             )
             return 0, {
@@ -227,7 +229,7 @@ def _issue_operator_intent(args: Any, *, settings: Any) -> tuple[int, dict[str, 
         local_uid = os.getuid()
         prepared = prepare_parsed_operator_intent(
             parsed,
-            source="cli",
+            source=_cli_request_source(local_uid=local_uid, hostname=socket.gethostname()),
             source_command_id=request_id,
             target_profile_id=settings.trading.execution.profile_id,
             operator_identity=f"local-cli:{local_uid}",
@@ -253,6 +255,15 @@ def _issue_operator_intent(args: Any, *, settings: Any) -> tuple[int, dict[str, 
             "truth": "intent_recorded_not_order_or_fill",
         },
     }
+
+
+def _cli_request_source(*, local_uid: int, hostname: str) -> str:
+    """Namespace caller-supplied request IDs by the stable local caller and host."""
+
+    normalized_host = hostname.strip().lower()
+    if local_uid < 0 or not normalized_host or "\x00" in normalized_host:
+        raise OperatorCommandError("operator_command_caller_identity_invalid")
+    return f"cli:uid:{local_uid}:host:{normalized_host}"
 
 
 __all__ = ["handle_trading"]

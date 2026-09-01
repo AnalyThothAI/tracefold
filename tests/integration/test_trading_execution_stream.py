@@ -190,7 +190,7 @@ def test_exact_append_is_idempotent_and_identity_conflicts_fail_closed() -> None
     assert materialize_operator_intent(command_row).command_id == command.value.command_id
 
 
-def test_operator_ingress_records_inactive_profile_disposition_in_the_same_idempotent_transaction() -> None:
+def test_operator_ingress_records_only_the_idempotent_intent_without_interpreting_activation() -> None:
     command = _prepare_command(suffix="9", requested_at_ns=2_000, expires_at_ns=10_000)
     conn = connect_postgres_test(read_only=False)
     try:
@@ -201,22 +201,16 @@ def test_operator_ingress_records_inactive_profile_disposition_in_the_same_idemp
             retried = persist_operator_intent(repo, command)
 
         assert first == retried
-        assert first.disposition == "not_applied"
-        assert first.reason == "execution_profile_inactive"
+        assert first.disposition == "awaiting_runtime"
+        assert first.reason is None
         assert conn.execute("SELECT count(*) AS n FROM trading_operator_intents").fetchone()["n"] == 1
-        observation = conn.execute(
-            """
-            SELECT normalized_kind, command_id, summary
-              FROM trading_execution_observations
-             WHERE command_id = %s
-            """,
-            (command.value.command_id,),
-        ).fetchone()
-        assert observation == {
-            "normalized_kind": "control_disposition",
-            "command_id": command.value.command_id,
-            "summary": {"disposition": "not_applied", "reason": "execution_profile_inactive"},
-        }
+        assert (
+            conn.execute(
+                "SELECT count(*) AS n FROM trading_execution_observations WHERE command_id = %s",
+                (command.value.command_id,),
+            ).fetchone()["n"]
+            == 0
+        )
     finally:
         conn.close()
 
@@ -661,18 +655,25 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         image_digest="sha256:" + "b" * 64,
         credential_fingerprint="c" * 64,
         lifecycle_state="running",
-        ready=True,
+        alive=True,
+        execution_safe=True,
+        entries_armed=True,
+        control_plane_ready=True,
         singleton_ready=True,
         credential_ready=True,
         activation_ready=True,
         startup_reconciled=True,
         portfolio_ready=True,
         audit_ready=True,
+        day_start_ready=True,
         unexpected_exposure=False,
         account_flat=True,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
         reconciliation_observed_at_ns=2_000,
         heartbeat_at_ns=2_100,
-        unavailable_reason=None,
+        entry_block_reason=None,
         started_at_ns=1_900,
         updated_at_ns=2_100,
     )
@@ -699,9 +700,11 @@ def test_runtime_state_is_single_generation_and_activation_recency_is_authoritat
         stopped = replace(
             running,
             lifecycle_state="stopped",
-            ready=False,
+            alive=False,
+            execution_safe=False,
+            entries_armed=False,
             heartbeat_at_ns=2_300,
-            unavailable_reason="runtime_stopped",
+            entry_block_reason="runtime_stopped",
             updated_at_ns=2_300,
         )
         with conn.transaction():
@@ -1175,6 +1178,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "trading_operator_intents",
         "trading_execution_observations",
         "trading_execution_profile_activations",
+        "trading_execution_runtime_control_state",
         "trading_execution_runtime_state",
     )
     conn = connect_postgres_test(read_only=False)
@@ -1258,6 +1262,7 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
         "ux_trading_execution_control_disposition",
         "trading_execution_profile_activations_pkey",
         "ix_trading_execution_activations_slot_created",
+        "trading_execution_runtime_control_state_pkey",
         "trading_execution_runtime_state_pkey",
         "trading_execution_runtime_state_runtime_id_key",
     }
@@ -1328,6 +1333,15 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_observation_digest_check",
             "trading_execution_observation_payload_check",
         },
+        "trading_execution_runtime_control_state": {
+            "trading_execution_runtime_control_state_pkey",
+            "trading_execution_runtime_control_state_runtime_profile_id_fkey",
+            "trading_execution_runtime_control_profile_check",
+            "trading_execution_runtime_control_seq_check",
+            "trading_execution_runtime_control_command_check",
+            "trading_execution_runtime_control_clock_check",
+            "trading_execution_runtime_control_halt_check",
+        },
         "trading_execution_runtime_state": {
             "trading_execution_runtime_state_pkey",
             "trading_execution_runtime_state_runtime_id_key",
@@ -1342,8 +1356,13 @@ def test_execution_stream_schema_has_the_bounded_read_and_append_guards() -> Non
             "trading_execution_runtime_credential_check",
             "trading_execution_runtime_lifecycle_check",
             "trading_execution_runtime_clock_check",
-            "trading_execution_runtime_ready_check",
             "trading_execution_runtime_reason_check",
+            "trading_execution_runtime_counts_check",
+            "trading_execution_runtime_protection_check",
+            "trading_execution_runtime_alive_check",
+            "trading_execution_runtime_safe_check",
+            "trading_execution_runtime_armed_check",
+            "trading_execution_runtime_entry_reason_check",
         },
     }
     assert set(triggers) == {

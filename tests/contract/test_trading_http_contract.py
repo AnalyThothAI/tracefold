@@ -37,6 +37,9 @@ class _Trading:
     def execution_runtime_state(self, _account_slot: str) -> None:
         return None
 
+    def execution_runtime_control_state(self, _runtime_profile_id: str) -> None:
+        return None
+
     def console_cases(self, **kwargs: Any) -> list[dict[str, Any]]:
         self.calls.append(("console_cases", kwargs))
         return [
@@ -160,8 +163,10 @@ def test_status_keeps_execution_truthfully_disabled(client: tuple[TestClient, _T
         "mode": "disabled",
         "profile_id": "binance_usdm_primary",
         "account_slot": "binance_usdm_primary",
-        "ready": False,
-        "reason": "disabled",
+        "alive": False,
+        "execution_safe": False,
+        "entries_armed": False,
+        "entry_block_reason": "disabled",
     }
     assert {key: data["execution"][key] for key in expected} == expected
     assert data["execution"]["runtime_release"] is None

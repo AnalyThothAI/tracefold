@@ -43,8 +43,10 @@ class OiRuntimeReadiness:
     mode: Literal["disabled"]
     runtime_profile_id: str
     runtime_release: str
-    ready: Literal[False]
-    reason: Literal["disabled"]
+    alive: Literal[False]
+    execution_safe: Literal[False]
+    entries_armed: Literal[False]
+    entry_block_reason: Literal["disabled"]
 
 
 class OiRuntimeDatabaseBridge:
@@ -175,8 +177,10 @@ def run_nautilus(profile: OiRuntimeProfile) -> OiRuntimeReadiness:
         mode="disabled",
         runtime_profile_id=profile.profile_id,
         runtime_release=profile.runtime_release,
-        ready=False,
-        reason="disabled",
+        alive=False,
+        execution_safe=False,
+        entries_armed=False,
+        entry_block_reason="disabled",
     )
 
 
@@ -221,39 +225,15 @@ def execution_stream_channel() -> str:
 def load_runtime_control_state(
     repos: RepositorySession,
     runtime_profile_id: str,
-    *,
-    limit: int = 999,
 ) -> RuntimeControlSnapshot:
-    """Fold durable accepted controls; overflow halts instead of guessing a truncated state."""
+    """Load one current row; Command/Observation history is never a startup path."""
 
-    if not 1 <= limit <= 999:
-        raise ValueError("oi_runtime_control_history_limit_invalid")
-    rows = repos.trading.operator_control_history(runtime_profile_id=runtime_profile_id, limit=limit + 1)
-    if len(rows) > limit:
-        return RuntimeControlSnapshot(entries_paused=True, emergency_halted=True, flatten_pending=())
-    # No accepted control history means the profile has never been explicitly
-    # resumed. Restarts therefore preserve the cold, fail-closed entry gate.
-    entries_paused = True
-    emergency_halted = False
-    for command_row, disposition_payload in rows:
-        if disposition_payload is None:
-            continue
-        command = materialize_operator_intents((command_row,))[0]
-        disposition = materialize_execution_observation((0, disposition_payload))
-        if disposition.summary.get("disposition") not in {"accepted", "completed"}:
-            continue
-        if command.action == "pause_entries":
-            entries_paused = True
-        elif command.action == "resume_entries":
-            entries_paused = False
-        elif command.action == "emergency_halt":
-            entries_paused = True
-            emergency_halted = True
-        elif command.action == "flatten":
-            entries_paused = True
+    state = repos.trading.execution_runtime_control_state(runtime_profile_id)
+    if state is None:
+        raise RuntimeError("oi_runtime_control_state_missing")
     return RuntimeControlSnapshot(
-        entries_paused=entries_paused,
-        emergency_halted=emergency_halted,
+        entries_paused=state.entries_paused,
+        emergency_halted=state.emergency_halted,
         flatten_pending=(),
     )
 

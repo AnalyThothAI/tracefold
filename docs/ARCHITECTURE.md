@@ -2041,9 +2041,11 @@ before parsing. `/status` is read-only. `/pause`, confirmed `/resume`, confirmed
 notional, leverage, venue, or order parameter. The stable Telegram bot identity
 plus its bot-scoped `update_id`, or the CLI request identity, makes the command
 deterministic. Workers appends the
-intent before replying “recorded”; without an active target profile it appends
-the final `not_applied/execution_profile_inactive` observation in the same
-transaction. Serve remains read-only.
+intent before replying “recorded” and never interprets activation or manufactures
+a Runtime disposition. Only the Runtime may append accepted, rejected, or completed
+control Observations. CLI request identity is namespaced by local OS UID and
+hostname before hashing, so two callers reusing the same request ID cannot collide.
+Serve remains read-only.
 
 Commands and Signals share one bounded Runtime input, with Commands admitted
 and handled first. Queue pressure evicts only volatile Signal admission so a
@@ -2124,6 +2126,24 @@ the next root wake and otherwise writes only the code-owned 500 ms heartbeat,
 well before the public 5-second stale boundary; no transaction spans Binance
 I/O. Quote subscription behavior is unchanged because PR-0 recorded provider
 inbound-rate and event-loop evidence as unobserved until the Demo receipt.
+
+#475 PR-C hard-cuts readiness into three independent facts. `alive` means the
+process, TradingNode, and event loop are alive; `execution_safe` means fresh
+private reconciliation and current Nautilus state can still protect, cancel,
+exit, flatten, and recover existing exposure; `entries_armed` alone admits a new
+Signal or manual entry. Audit backpressure, a missing day-start baseline, paused
+entries, or a disconnected control plane therefore blocks new exposure without
+disabling protection or `/readyz`. The probe is ready exactly when
+`alive && execution_safe`; it does not require `entries_armed`.
+
+Migration `0348` adds one profile-keyed mutable current control projection while
+retaining Commands and Observations as append-only history. The Runtime advances
+that row atomically only from its durable accepted/completed Observation, ordered
+by Command sequence; duplicate and out-of-order Observations cannot regress it.
+Startup performs one point read and never folds a bounded slice of history.
+Manual entry is a concrete internal entry request correlated only to its
+`OperatorIntentV1`; it shares sizing, risk, OMS, protection, and recovery with a
+Signal without fabricating a Case, Signal, Alpha contract, or evidence digest.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

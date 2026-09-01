@@ -77,6 +77,7 @@ def get_trading_status(request: Request) -> Response:
         execution_status = execution_readiness_projection(
             execution,
             repos.trading.execution_runtime_state(execution.account_slot),
+            repos.trading.execution_runtime_control_state(execution.profile_id),
             now_ns=now_ms * 1_000_000,
         )
     config = signal_lane_config(runtime.settings)

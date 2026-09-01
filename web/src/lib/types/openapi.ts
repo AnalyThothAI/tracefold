@@ -2383,6 +2383,8 @@ export interface components {
              * @default false
              */
             activation_ready: boolean;
+            /** Alive */
+            alive: boolean;
             /**
              * Audit Ready
              * @default false
@@ -2390,6 +2392,11 @@ export interface components {
             audit_ready: boolean;
             /** Config Sha256 */
             config_sha256?: string | null;
+            /**
+             * Control Plane Ready
+             * @default false
+             */
+            control_plane_ready: boolean;
             /** Credential Fingerprint */
             credential_fingerprint?: string | null;
             /**
@@ -2397,6 +2404,27 @@ export interface components {
              * @default false
              */
             credential_ready: boolean;
+            /**
+             * Day Start Ready
+             * @default false
+             */
+            day_start_ready: boolean;
+            /**
+             * Emergency Halted
+             * @default false
+             */
+            emergency_halted: boolean;
+            /** Entries Armed */
+            entries_armed: boolean;
+            /**
+             * Entries Paused
+             * @default true
+             */
+            entries_paused: boolean;
+            /** Entry Block Reason */
+            entry_block_reason?: string | null;
+            /** Execution Safe */
+            execution_safe: boolean;
             /** Heartbeat At Ns */
             heartbeat_at_ns?: number | null;
             /** Image Digest */
@@ -2409,16 +2437,28 @@ export interface components {
              */
             mode: "disabled" | "paper" | "live";
             /**
+             * Open Orders Count
+             * @default 0
+             */
+            open_orders_count: number;
+            /**
              * Portfolio Ready
              * @default false
              */
             portfolio_ready: boolean;
+            /**
+             * Positions Count
+             * @default 0
+             */
+            positions_count: number;
             /** Profile Id */
             profile_id: string;
-            /** Ready */
-            ready: boolean;
-            /** Reason */
-            reason: string;
+            /**
+             * Protection Status
+             * @default unknown
+             * @enum {string}
+             */
+            protection_status: "not_applicable" | "protected" | "pending" | "unprotected" | "unknown";
             /** Reconciliation Age Ms */
             reconciliation_age_ms?: number | null;
             /** Reconciliation Observed At Ns */

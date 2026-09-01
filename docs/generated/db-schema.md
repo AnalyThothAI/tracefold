@@ -628,6 +628,17 @@
 | `config_sha256` | `TEXT` | False | `None` |
 | `created_at_ns` | `BIGINT` | False | `None` |
 
+## `trading_execution_runtime_control_state`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `runtime_profile_id` | `TEXT` | False | `None` |
+| `entries_paused` | `BOOLEAN` | False | `None` |
+| `emergency_halted` | `BOOLEAN` | False | `None` |
+| `last_command_seq` | `BIGINT` | False | `None` |
+| `last_command_id` | `TEXT` | True | `None` |
+| `updated_at_ns` | `BIGINT` | False | `None` |
+
 ## `trading_execution_runtime_state`
 
 | Column | Type | Nullable | Default |
@@ -642,7 +653,7 @@
 | `image_digest` | `TEXT` | False | `None` |
 | `credential_fingerprint` | `TEXT` | False | `None` |
 | `lifecycle_state` | `TEXT` | False | `None` |
-| `ready` | `BOOLEAN` | False | `None` |
+| `alive` | `BOOLEAN` | False | `None` |
 | `singleton_ready` | `BOOLEAN` | False | `None` |
 | `credential_ready` | `BOOLEAN` | False | `None` |
 | `activation_ready` | `BOOLEAN` | False | `None` |
@@ -653,9 +664,16 @@
 | `account_flat` | `BOOLEAN` | False | `None` |
 | `reconciliation_observed_at_ns` | `BIGINT` | False | `None` |
 | `heartbeat_at_ns` | `BIGINT` | False | `None` |
-| `unavailable_reason` | `TEXT` | True | `None` |
+| `entry_block_reason` | `TEXT` | True | `None` |
 | `started_at_ns` | `BIGINT` | False | `None` |
 | `updated_at_ns` | `BIGINT` | False | `None` |
+| `execution_safe` | `BOOLEAN` | False | `None` |
+| `entries_armed` | `BOOLEAN` | False | `None` |
+| `control_plane_ready` | `BOOLEAN` | False | `None` |
+| `day_start_ready` | `BOOLEAN` | False | `None` |
+| `positions_count` | `INTEGER` | False | `None` |
+| `open_orders_count` | `INTEGER` | False | `None` |
+| `protection_status` | `TEXT` | False | `None` |
 
 ## `trading_operator_intents`
 

@@ -5,7 +5,10 @@ from types import SimpleNamespace
 from uuid import UUID
 
 from tracefold.app.execution_status import execution_readiness_projection
-from tracefold.trading.storage.execution_stream import ExecutionRuntimeState
+from tracefold.trading.storage.execution_stream import (
+    ExecutionRuntimeControlState,
+    ExecutionRuntimeState,
+)
 
 
 def _execution(mode: str = "paper") -> SimpleNamespace:
@@ -24,36 +27,58 @@ def _state(*, heartbeat_at_ns: int = 10_000_000_000) -> ExecutionRuntimeState:
         image_digest="sha256:" + "c" * 64,
         credential_fingerprint="d" * 64,
         lifecycle_state="running",
-        ready=True,
+        alive=True,
+        execution_safe=True,
+        entries_armed=True,
+        control_plane_ready=True,
         singleton_ready=True,
         credential_ready=True,
         activation_ready=True,
         startup_reconciled=True,
         portfolio_ready=True,
         audit_ready=True,
+        day_start_ready=True,
         unexpected_exposure=False,
         account_flat=True,
+        positions_count=0,
+        open_orders_count=0,
+        protection_status="not_applicable",
         reconciliation_observed_at_ns=9_000_000_000,
         heartbeat_at_ns=heartbeat_at_ns,
-        unavailable_reason=None,
+        entry_block_reason=None,
         started_at_ns=8_000_000_000,
         updated_at_ns=heartbeat_at_ns,
     )
 
 
-def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
-    projection = execution_readiness_projection(_execution("disabled"), _state(), now_ns=10_000_000_000)
+def _control(*, entries_paused: bool = False) -> ExecutionRuntimeControlState:
+    return ExecutionRuntimeControlState(
+        runtime_profile_id="demo-v1",
+        entries_paused=entries_paused,
+        emergency_halted=False,
+        last_command_seq=1,
+        last_command_id="e" * 64,
+        updated_at_ns=9_000_000_000,
+    )
 
-    assert projection["ready"] is False
-    assert projection["reason"] == "disabled"
+
+def test_disabled_execution_never_projects_a_stale_runtime_as_ready() -> None:
+    projection = execution_readiness_projection(_execution("disabled"), _state(), _control(), now_ns=10_000_000_000)
+
+    assert projection["alive"] is False
+    assert projection["execution_safe"] is False
+    assert projection["entries_armed"] is False
+    assert projection["entry_block_reason"] == "disabled"
     assert projection["runtime_release"] is None
 
 
 def test_active_execution_projects_exact_runtime_gates_and_identity() -> None:
-    projection = execution_readiness_projection(_execution(), _state(), now_ns=10_000_000_000)
+    projection = execution_readiness_projection(_execution(), _state(), _control(), now_ns=10_000_000_000)
 
-    assert projection["ready"] is True
-    assert projection["reason"] == "ready"
+    assert projection["alive"] is True
+    assert projection["execution_safe"] is True
+    assert projection["entries_armed"] is True
+    assert projection["entry_block_reason"] is None
     assert projection["runtime_release"] == "nautilus-1.231.0+oi-v1"
     assert projection["credential_fingerprint"] == "d" * 64
     assert projection["reconciliation_age_ms"] == 1_000
@@ -63,27 +88,49 @@ def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:
     mismatch = execution_readiness_projection(
         SimpleNamespace(mode="paper", profile_id="demo-v2", account_slot="binance_usdm_primary"),
         _state(),
+        _control(),
         now_ns=10_000_000_000,
     )
-    stale = execution_readiness_projection(_execution(), _state(), now_ns=15_000_000_001)
+    stale = execution_readiness_projection(_execution(), _state(), _control(), now_ns=15_000_000_001)
 
-    assert mismatch["ready"] is False
-    assert mismatch["reason"] == "runtime_identity_mismatch"
-    assert stale["ready"] is False
-    assert stale["reason"] == "runtime_heartbeat_stale"
+    assert mismatch["entries_armed"] is False
+    assert mismatch["entry_block_reason"] == "runtime_identity_mismatch"
+    assert stale["alive"] is False
+    assert stale["execution_safe"] is False
+    assert stale["entries_armed"] is False
+    assert stale["entry_block_reason"] == "runtime_heartbeat_stale"
 
 
 def test_transient_flat_and_unexpected_exposure_facts_remain_fail_closed() -> None:
     state = replace(
         _state(),
-        ready=False,
+        execution_safe=False,
+        entries_armed=False,
         unexpected_exposure=True,
-        unavailable_reason="unexpected_exposure",
+        entry_block_reason="unexpected_exposure",
     )
 
-    projection = execution_readiness_projection(_execution(), state, now_ns=10_000_000_000)
+    projection = execution_readiness_projection(_execution(), state, _control(), now_ns=10_000_000_000)
 
-    assert projection["ready"] is False
-    assert projection["reason"] == "unexpected_exposure"
+    assert projection["alive"] is True
+    assert projection["execution_safe"] is False
+    assert projection["entries_armed"] is False
+    assert projection["entry_block_reason"] == "unexpected_exposure"
     assert projection["account_flat"] is True
     assert projection["unexpected_exposure"] is True
+
+    paused_projection = execution_readiness_projection(
+        _execution(), state, _control(entries_paused=True), now_ns=10_000_000_000
+    )
+    assert paused_projection["entry_block_reason"] == "unexpected_exposure"
+
+
+def test_paused_entries_do_not_make_an_alive_safe_runtime_unready() -> None:
+    projection = execution_readiness_projection(
+        _execution(), _state(), _control(entries_paused=True), now_ns=10_000_000_000
+    )
+
+    assert projection["alive"] is True
+    assert projection["execution_safe"] is True
+    assert projection["entries_armed"] is False
+    assert projection["entry_block_reason"] == "entries_paused"

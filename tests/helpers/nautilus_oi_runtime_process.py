@@ -70,6 +70,7 @@ def main() -> None:
             audit=audit,
             readiness=readiness,
             singleton_ready=lambda: True,
+            control_plane_ready=lambda: True,
             day_start=DayStartBaseline("2030-03-17", Decimal("1000"), NOW_NS - 1, "4" * 64),
             request_reconciliation=lambda _reason: None,
             initial_control_state=RuntimeControlSnapshot(False, False, ()),

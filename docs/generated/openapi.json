@@ -5665,6 +5665,10 @@
             "title": "Activation Ready",
             "type": "boolean"
           },
+          "alive": {
+            "title": "Alive",
+            "type": "boolean"
+          },
           "audit_ready": {
             "default": false,
             "title": "Audit Ready",
@@ -5681,6 +5685,11 @@
             ],
             "title": "Config Sha256"
           },
+          "control_plane_ready": {
+            "default": false,
+            "title": "Control Plane Ready",
+            "type": "boolean"
+          },
           "credential_fingerprint": {
             "anyOf": [
               {
@@ -5695,6 +5704,40 @@
           "credential_ready": {
             "default": false,
             "title": "Credential Ready",
+            "type": "boolean"
+          },
+          "day_start_ready": {
+            "default": false,
+            "title": "Day Start Ready",
+            "type": "boolean"
+          },
+          "emergency_halted": {
+            "default": false,
+            "title": "Emergency Halted",
+            "type": "boolean"
+          },
+          "entries_armed": {
+            "title": "Entries Armed",
+            "type": "boolean"
+          },
+          "entries_paused": {
+            "default": true,
+            "title": "Entries Paused",
+            "type": "boolean"
+          },
+          "entry_block_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Entry Block Reason"
+          },
+          "execution_safe": {
+            "title": "Execution Safe",
             "type": "boolean"
           },
           "heartbeat_at_ns": {
@@ -5746,21 +5789,37 @@
             "title": "Mode",
             "type": "string"
           },
+          "open_orders_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Open Orders Count",
+            "type": "integer"
+          },
           "portfolio_ready": {
             "default": false,
             "title": "Portfolio Ready",
             "type": "boolean"
           },
+          "positions_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Positions Count",
+            "type": "integer"
+          },
           "profile_id": {
             "title": "Profile Id",
             "type": "string"
           },
-          "ready": {
-            "title": "Ready",
-            "type": "boolean"
-          },
-          "reason": {
-            "title": "Reason",
+          "protection_status": {
+            "default": "unknown",
+            "enum": [
+              "not_applicable",
+              "protected",
+              "pending",
+              "unprotected",
+              "unknown"
+            ],
+            "title": "Protection Status",
             "type": "string"
           },
           "reconciliation_age_ms": {
@@ -5827,8 +5886,9 @@
           "mode",
           "profile_id",
           "account_slot",
-          "ready",
-          "reason"
+          "alive",
+          "execution_safe",
+          "entries_armed"
         ],
         "title": "TradingExecutionReadinessData",
         "type": "object"

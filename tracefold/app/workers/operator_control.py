@@ -52,10 +52,8 @@ class WorkersTelegramControl:
                     else "状态已读取：当前无活动执行 profile。"
                 )
             else:
-                receipt = await persist_operator_intent(self._db, parsed.intent)
+                await persist_operator_intent(self._db, parsed.intent)
                 text = "意图已记录。"
-                if receipt.disposition == "not_applied":
-                    text += " 当前无活动执行 profile，已明确记录为未应用。"
             return JSONResponse(telegram_webhook_reply(chat_id=parsed.chat_id, text=text))
         except TelegramControlError as exc:
             return JSONResponse({"ok": False, "error": exc.code}, status_code=exc.status_code)

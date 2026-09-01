@@ -15,7 +15,7 @@ from nautilus_trader.model.enums import OrderSide, OrderType, PositionSide, Trig
 from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import OperatorIntentV1, TradeSignalV1, canonical_sha256
+from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
 from .audit_sink import AuditSink
 from .config import OiInstrumentRoute, OiRuntimeProfile
@@ -47,10 +47,10 @@ def deterministic_client_order_id(
     *,
     namespace: str,
     profile_id: str,
-    signal_id: str,
+    entry_id: str,
     leg: str,
 ) -> ClientOrderId:
-    digest = hashlib.sha256(f"{namespace}:{profile_id}:{signal_id}:{leg}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{namespace}:{profile_id}:{entry_id}:{leg}".encode()).hexdigest()
     return ClientOrderId(f"tf{digest[:30]}")
 
 
@@ -60,30 +60,6 @@ def _protection_leg(generation: int, quantity: Decimal) -> str:
 
 def _exit_leg(generation: int) -> str:
     return "exit" if generation == 0 else f"exit:{generation}"
-
-
-def manual_entry_signal(command: OperatorIntentV1) -> TradeSignalV1:
-    """Project one durable manual command into the shared entry-risk path."""
-
-    if command.action != "manual_entry" or command.market_key is None or command.direction is None:
-        raise ValueError("oi_runtime_manual_entry_invalid")
-    return TradeSignalV1(
-        seq=command.seq,
-        signal_id=command.command_id,
-        case_id=f"manual:{command.command_id}",
-        alpha_contract_sha256=canonical_sha256({"contract": "operator_manual_entry_v1"}),
-        market_key=command.market_key,
-        direction=command.direction,
-        observed_at_ns=command.requested_at_ns,
-        expires_at_ns=command.expires_at_ns,
-        evidence_sha256=canonical_sha256(
-            {
-                "contract": "operator_manual_entry_v1",
-                "command": command.model_dump(mode="json"),
-            }
-        ),
-        alpha_metadata={"source": "operator_manual_entry"},
-    )
 
 
 def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
@@ -99,11 +75,14 @@ def oi_strategy_config(profile: OiRuntimeProfile) -> StrategyConfig:
 
 @dataclass(frozen=True, slots=True)
 class RuntimeReadinessSnapshot:
-    ready: bool
-    reason: str
+    execution_safe: bool
+    entries_armed: bool
+    entry_block_reason: str | None
     singleton_ready: bool
     activation_ready: bool
     startup_reconciled: bool
+    portfolio_ready: bool
+    control_plane_ready: bool
     audit_ready: bool
     day_start_ready: bool
     unexpected_exposure: bool
@@ -115,6 +94,68 @@ class RuntimeControlSnapshot:
     entries_paused: bool
     emergency_halted: bool
     flatten_pending: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeEntryRequest:
+    """One concrete entry request, correlated to exactly one durable fact type."""
+
+    entry_id: str
+    market_key: str
+    direction: Literal["long", "short"]
+    expires_at_ns: int
+    signal: TradeSignalV1 | None = None
+    command: OperatorIntentV1 | None = None
+
+    def __post_init__(self) -> None:
+        if (self.signal is None) == (self.command is None):
+            raise ValueError("oi_runtime_entry_source_invalid")
+        if self.signal is not None:
+            expected = (
+                self.signal.signal_id,
+                self.signal.market_key,
+                self.signal.direction,
+                self.signal.expires_at_ns,
+            )
+        else:
+            command = self.command
+            if (
+                command is None
+                or command.action != "manual_entry"
+                or command.market_key is None
+                or command.direction is None
+            ):
+                raise ValueError("oi_runtime_manual_entry_invalid")
+            expected = (
+                command.command_id,
+                command.market_key,
+                command.direction,
+                command.expires_at_ns,
+            )
+        if expected != (self.entry_id, self.market_key, self.direction, self.expires_at_ns):
+            raise ValueError("oi_runtime_entry_source_invalid")
+
+    @classmethod
+    def from_signal(cls, signal: TradeSignalV1) -> RuntimeEntryRequest:
+        return cls(
+            entry_id=signal.signal_id,
+            market_key=signal.market_key,
+            direction=signal.direction,
+            expires_at_ns=signal.expires_at_ns,
+            signal=signal,
+        )
+
+    @classmethod
+    def from_manual_command(cls, command: OperatorIntentV1) -> RuntimeEntryRequest:
+        if command.action != "manual_entry" or command.market_key is None or command.direction is None:
+            raise ValueError("oi_runtime_manual_entry_invalid")
+        return cls(
+            entry_id=command.command_id,
+            market_key=command.market_key,
+            direction=command.direction,
+            expires_at_ns=command.expires_at_ns,
+            command=command,
+        )
 
 
 class RuntimeReadiness:
@@ -157,33 +198,52 @@ class RuntimeReadiness:
         self,
         *,
         singleton_ready: bool,
+        portfolio_ready: bool,
+        control_plane_ready: bool,
         audit_ready: bool,
         day_start_ready: bool,
+        entries_paused: bool,
+        emergency_halted: bool,
     ) -> RuntimeReadinessSnapshot:
         with self._lock:
             activation = self._activation_ready
             startup = self._startup_reconciled
             unexpected = self._unexpected_exposure
             reconciled_at = self._reconciliation_observed_at_ns
-        gates = (
+        safe_gates = (
             (singleton_ready, "singleton_unavailable"),
             (activation, "activation_missing"),
             (startup, "startup_reconciliation_unproven"),
-            (audit_ready, "audit_unavailable"),
-            (day_start_ready, "day_start_baseline_missing"),
+            (portfolio_ready, "portfolio_unavailable"),
             (not unexpected, "unexpected_exposure"),
         )
-        reason = "ready"
-        for passed, failed_reason in gates:
+        reason: str | None = None
+        for passed, failed_reason in safe_gates:
             if not passed:
                 reason = failed_reason
                 break
+        execution_safe = reason is None
+        if execution_safe:
+            entry_gates = (
+                (not emergency_halted, "emergency_halt"),
+                (not entries_paused, "entries_paused"),
+                (control_plane_ready, "control_plane_unavailable"),
+                (audit_ready, "audit_unavailable"),
+                (day_start_ready, "day_start_baseline_missing"),
+            )
+            for passed, failed_reason in entry_gates:
+                if not passed:
+                    reason = failed_reason
+                    break
         return RuntimeReadinessSnapshot(
-            ready=reason == "ready",
-            reason=reason,
+            execution_safe=execution_safe,
+            entries_armed=reason is None,
+            entry_block_reason=reason,
             singleton_ready=singleton_ready,
             activation_ready=activation,
             startup_reconciled=startup,
+            portfolio_ready=portfolio_ready,
+            control_plane_ready=control_plane_ready,
             audit_ready=audit_ready,
             day_start_ready=day_start_ready,
             unexpected_exposure=unexpected,
@@ -204,9 +264,8 @@ class RecoveredProtectionSeed:
 class RecoveredExecutionSeed:
     """Durable identities needed to reclaim one execution from Nautilus Cache."""
 
-    signal: TradeSignalV1
+    entry: RuntimeEntryRequest
     entry_client_order_id: ClientOrderId
-    command: OperatorIntentV1 | None = None
     position_id: PositionId | None = None
     protections: tuple[RecoveredProtectionSeed, ...] = ()
     exit_client_order_id: ClientOrderId | None = None
@@ -223,12 +282,11 @@ class RuntimeReconciliationSnapshot:
 
 @dataclass(slots=True)
 class _ExecutionState:
-    signal: TradeSignalV1
+    entry: RuntimeEntryRequest
     route: OiInstrumentRoute
     entry_order: Any
     submitted_at_ns: int
     disposition_reason: str
-    command: OperatorIntentV1 | None = None
     active: bool = True
     entry_query_pending: bool = True
     position_id: PositionId | None = None
@@ -261,6 +319,7 @@ class OiNautilusStrategy(Strategy):
         audit: AuditSink,
         readiness: RuntimeReadiness,
         singleton_ready: Any,
+        control_plane_ready: Callable[[], bool],
         day_start: DayStartBaseline | None,
         request_reconciliation: Callable[[PrivateReconciliationReason], None],
         initial_control_state: RuntimeControlSnapshot | None = None,
@@ -278,6 +337,7 @@ class OiNautilusStrategy(Strategy):
         self._audit = audit
         self._readiness = readiness
         self._singleton_ready = singleton_ready
+        self._control_plane_ready = control_plane_ready
         self._day_start = day_start
         self._day_start_lock = Lock()
         self._request_reconciliation = request_reconciliation
@@ -350,8 +410,12 @@ class OiNautilusStrategy(Strategy):
     def readiness(self) -> RuntimeReadinessSnapshot:
         return self._readiness.snapshot(
             singleton_ready=bool(self._singleton_ready()),
+            portfolio_ready=bool(self.portfolio.initialized),
+            control_plane_ready=bool(self._control_plane_ready()),
             audit_ready=self._audit.can_accept_exposure(),
             day_start_ready=self._current_day_start() is not None,
+            entries_paused=self._entries_paused,
+            emergency_halted=self._emergency_halted,
         )
 
     def control_state(self) -> RuntimeControlSnapshot:
@@ -360,6 +424,34 @@ class OiNautilusStrategy(Strategy):
             emergency_halted=self._emergency_halted,
             flatten_pending=tuple(sorted(self._pending_flatten)),
         )
+
+    def protection_status(
+        self,
+        *,
+        positions_count: int,
+        unexpected_exposure: bool,
+    ) -> Literal["not_applicable", "protected", "pending", "unprotected", "unknown"]:
+        """Summarize owned protection without claiming authority over Binance account truth."""
+
+        if positions_count < 0:
+            raise ValueError("oi_runtime_positions_count_invalid")
+        if positions_count == 0:
+            return "not_applicable"
+        owned = tuple(state for state in self._states.values() if state.position_id is not None)
+        if unexpected_exposure or len(owned) != positions_count:
+            return "unknown"
+        protected = tuple(
+            state.stop_order is not None
+            and state.stop_order.is_open
+            and state.stop_quantity == state.position_quantity
+            and state.position_quantity > 0
+            for state in owned
+        )
+        if all(protected):
+            return "protected"
+        if any(state.pending_stop_order is not None for state in owned):
+            return "pending"
+        return "unprotected"
 
     def update_day_start(self, baseline: DayStartBaseline) -> None:
         """Accept a baseline already loaded durably by the background owner."""
@@ -375,34 +467,34 @@ class OiNautilusStrategy(Strategy):
             baseline = self._day_start
         return baseline if baseline is not None and baseline.utc_day == utc_day else None
 
-    def _entry_order_valid(self, *, signal: TradeSignalV1, route: OiInstrumentRoute, entry: Any) -> bool:
+    def _entry_order_valid(self, *, request: RuntimeEntryRequest, route: OiInstrumentRoute, order: Any) -> bool:
         expected_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=signal.signal_id,
+            entry_id=request.entry_id,
             leg="entry",
         )
-        expected_side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
+        expected_side = OrderSide.BUY if request.direction == "long" else OrderSide.SELL
         return bool(
-            entry is not None
-            and entry.client_order_id == expected_id
-            and entry.strategy_id == self.id
-            and entry.account_id == self._profile.account_id
-            and entry.instrument_id == route.instrument_id
-            and entry.side == expected_side
-            and entry.order_type == OrderType.MARKET
-            and not entry.is_reduce_only
-            and entry.quantity.as_decimal() > 0
+            order is not None
+            and order.client_order_id == expected_id
+            and order.strategy_id == self.id
+            and order.account_id == self._profile.account_id
+            and order.instrument_id == route.instrument_id
+            and order.side == expected_side
+            and order.order_type == OrderType.MARKET
+            and not order.is_reduce_only
+            and order.quantity.as_decimal() > 0
         )
 
     def _exit_order_valid(self, *, state: _ExecutionState, exit_order: Any, position: Any) -> bool:
         expected_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=state.signal.signal_id,
+            entry_id=state.entry.entry_id,
             leg=_exit_leg(state.exit_generation),
         )
-        expected_side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         return bool(
             exit_order is not None
             and exit_order.client_order_id == expected_id
@@ -426,45 +518,41 @@ class OiNautilusStrategy(Strategy):
         orders: dict[ClientOrderId, tuple[str, str]] = {}
         positions: dict[PositionId, str] = {}
         for seed in snapshot.executions:
-            signal = seed.signal
-            if seed.command is not None and signal != manual_entry_signal(seed.command):
-                self._readiness.halt_for_unexpected_exposure()
-                return False
-            route = self._routes.get(signal.market_key)
+            request = seed.entry
+            route = self._routes.get(request.market_key)
             expected_entry = deterministic_client_order_id(
                 namespace=self._profile.client_order_namespace,
                 profile_id=self._profile.profile_id,
-                signal_id=signal.signal_id,
+                entry_id=request.entry_id,
                 leg="entry",
             )
-            entry = self.cache.order(seed.entry_client_order_id)
+            entry_order = self.cache.order(seed.entry_client_order_id)
             if (
                 route is None
-                or signal.signal_id in states
+                or request.entry_id in states
                 or seed.entry_client_order_id != expected_entry
-                or not self._entry_order_valid(signal=signal, route=route, entry=entry)
+                or not self._entry_order_valid(request=request, route=route, order=entry_order)
             ):
                 self._readiness.halt_for_unexpected_exposure()
                 return False
             state = _ExecutionState(
-                signal=signal,
+                entry=request,
                 route=route,
-                entry_order=entry,
+                entry_order=entry_order,
                 submitted_at_ns=snapshot.reconciliation_observed_at_ns,
                 disposition_reason="recovered",
-                command=seed.command,
-                entry_query_pending=bool(entry.is_inflight or entry.is_active_local),
+                entry_query_pending=bool(entry_order.is_inflight or entry_order.is_active_local),
             )
-            states[signal.signal_id] = state
-            orders[seed.entry_client_order_id] = (signal.signal_id, "entry")
+            states[request.entry_id] = state
+            orders[seed.entry_client_order_id] = (request.entry_id, "entry")
             if seed.position_id is None:
                 if seed.protections or seed.exit_client_order_id is not None:
                     self._readiness.halt_for_unexpected_exposure()
                     return False
-                state.active = not entry.is_closed
+                state.active = not entry_order.is_closed
                 continue
             position = self.cache.position(seed.position_id)
-            expected_side = PositionSide.LONG if signal.direction == "long" else PositionSide.SHORT
+            expected_side = PositionSide.LONG if request.direction == "long" else PositionSide.SHORT
             if (
                 position is None
                 or not position.is_open
@@ -479,7 +567,7 @@ class OiNautilusStrategy(Strategy):
             state.position_quantity = abs(Decimal(str(position.quantity)))
             state.avg_entry_price = Decimal(str(position.avg_px_open))
             state.desired_stop = (state.position_quantity, state.avg_entry_price)
-            positions[seed.position_id] = signal.signal_id
+            positions[seed.position_id] = request.entry_id
             instrument = self.cache.instrument(route.instrument_id)
             active = tuple(value for value in seed.protections if value.role == "active")
             pending = tuple(value for value in seed.protections if value.role == "pending")
@@ -492,7 +580,8 @@ class OiNautilusStrategy(Strategy):
                 return False
             distance = Decimal(route.stop_distance_bps) / Decimal(10_000)
             desired_trigger = instrument.make_price(
-                state.avg_entry_price * (Decimal(1) - distance if signal.direction == "long" else Decimal(1) + distance)
+                state.avg_entry_price
+                * (Decimal(1) - distance if request.direction == "long" else Decimal(1) + distance)
             ).as_decimal()
             target = pending[0] if pending else active[0]
             if target.quantity != state.position_quantity or target.trigger_price != desired_trigger:
@@ -515,7 +604,7 @@ class OiNautilusStrategy(Strategy):
                     self._positions = positions
                     self.flatten_position(seed.position_id)
                     return False
-                orders[protection_seed.client_order_id] = (signal.signal_id, "protection")
+                orders[protection_seed.client_order_id] = (request.entry_id, "protection")
                 state.protection_generation = max(state.protection_generation, protection_seed.generation)
                 if protection_seed.role == "active":
                     if not protection.is_open:
@@ -546,7 +635,7 @@ class OiNautilusStrategy(Strategy):
                 expected_exit = deterministic_client_order_id(
                     namespace=self._profile.client_order_namespace,
                     profile_id=self._profile.profile_id,
-                    signal_id=signal.signal_id,
+                    entry_id=request.entry_id,
                     leg=_exit_leg(seed.exit_generation),
                 )
                 exit_order = self.cache.order(seed.exit_client_order_id)
@@ -563,7 +652,7 @@ class OiNautilusStrategy(Strategy):
                     state.exit_retry_required = True
                 else:
                     state.exit_order = exit_order
-                    orders[seed.exit_client_order_id] = (signal.signal_id, "exit")
+                    orders[seed.exit_client_order_id] = (request.entry_id, "exit")
         owned_order_ids = frozenset(orders)
         owned_position_ids = frozenset(positions)
         open_orders = tuple(self.cache.orders_open(account_id=self._profile.account_id))
@@ -613,10 +702,10 @@ class OiNautilusStrategy(Strategy):
         expected_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=state.signal.signal_id,
+            entry_id=state.entry.entry_id,
             leg=_protection_leg(seed.generation, seed.quantity),
         )
-        expected_side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         bound_position = None if protection is None else self.cache.position_for_order(protection.client_order_id)
         return bool(
             seed.generation > 0
@@ -651,13 +740,13 @@ class OiNautilusStrategy(Strategy):
         if instrument is None or protection is None or quantity <= 0:
             return False
         current = self.cache.order(protection.client_order_id)
-        expected_side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        expected_side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
         expected_trigger = (
             None
             if avg_price is None
             else instrument.make_price(
-                avg_price * (Decimal(1) - distance if state.signal.direction == "long" else Decimal(1) + distance)
+                avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
             )
         )
         return bool(
@@ -732,36 +821,39 @@ class OiNautilusStrategy(Strategy):
             safe = False
         return safe
 
-    def _handle_signal(self, signal: TradeSignalV1, *, command: OperatorIntentV1 | None = None) -> None:
+    def _handle_signal(self, signal: TradeSignalV1) -> None:
+        self._handle_entry(RuntimeEntryRequest.from_signal(signal))
+
+    def _handle_entry(self, request: RuntimeEntryRequest) -> None:
         now_ns = int(self.clock.timestamp_ns())
-        if command is None and signal.signal_id in self._disposed:
+        if request.signal is not None and request.entry_id in self._disposed:
             return
-        existing_state = self._states.get(signal.signal_id)
+        existing_state = self._states.get(request.entry_id)
         if existing_state is not None:
-            self._dispose_entry(signal, existing_state.disposition_reason, command or existing_state.command)
+            self._dispose_entry(request, existing_state.disposition_reason)
             return
-        route = self._routes.get(signal.market_key)
+        route = self._routes.get(request.market_key)
         if route is None:
-            self._dispose_entry(signal, "instrument_unmapped", command)
+            self._dispose_entry(request, "instrument_unmapped")
             return
         if any(state.active and state.route.instrument_id == route.instrument_id for state in self._states.values()):
-            self._dispose_entry(signal, "instrument_busy", command)
+            self._dispose_entry(request, "instrument_busy")
             return
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=signal.signal_id,
+            entry_id=request.entry_id,
             leg="entry",
         )
         existing = self.cache.order(client_order_id)
         if existing is not None:
-            if not self._entry_order_valid(signal=signal, route=route, entry=existing):
+            if not self._entry_order_valid(request=request, route=route, order=existing):
                 self._readiness.halt_for_unexpected_exposure()
                 self._request_reconciliation("unexpected_exposure")
-                self._dispose_entry(signal, "cached_entry_invalid", command)
+                self._dispose_entry(request, "cached_entry_invalid")
                 return
             position = self.cache.position_for_order(existing.client_order_id)
-            expected_position_side = PositionSide.LONG if signal.direction == "long" else PositionSide.SHORT
+            expected_position_side = PositionSide.LONG if request.direction == "long" else PositionSide.SHORT
             if (
                 position is not None
                 and position.is_open
@@ -774,53 +866,49 @@ class OiNautilusStrategy(Strategy):
             ):
                 self._readiness.halt_for_unexpected_exposure()
                 self._request_reconciliation("unexpected_exposure")
-                self._dispose_entry(signal, "cached_position_invalid", command)
+                self._dispose_entry(request, "cached_position_invalid")
                 return
-            self._orders[client_order_id] = (signal.signal_id, "entry")
+            self._orders[client_order_id] = (request.entry_id, "entry")
             state = _ExecutionState(
-                signal=signal,
+                entry=request,
                 route=route,
                 entry_order=existing,
                 submitted_at_ns=now_ns,
                 disposition_reason="replayed_query_first",
-                command=command,
                 active=bool(position is not None and position.is_open) or not existing.is_closed,
                 entry_query_pending=bool(existing.is_inflight or existing.is_active_local),
             )
-            self._states[signal.signal_id] = state
+            self._states[request.entry_id] = state
             if position is not None and position.is_open:
                 state.position_id = position.id
                 state.position_quantity = abs(Decimal(str(position.quantity)))
                 state.avg_entry_price = Decimal(str(position.avg_px_open))
-                self._positions[position.id] = signal.signal_id
+                self._positions[position.id] = request.entry_id
                 self._readiness.halt_for_unexpected_exposure()
                 self._request_reconciliation("unexpected_exposure")
                 self.flatten_position(position.id)
             self.query_order(existing, client_id=ClientId("BINANCE"))
-            self._dispose_entry(signal, "replayed_query_first", command)
+            self._dispose_entry(request, "replayed_query_first")
             return
-        if signal.expires_at_ns <= now_ns:
-            self._dispose_entry(signal, "expired", command)
-            return
-        if self._emergency_halted:
-            self._dispose_entry(signal, "operator_halt", command)
-            return
-        if self._entries_paused:
-            self._dispose_entry(signal, "operator_paused", command)
+        if request.expires_at_ns <= now_ns:
+            self._dispose_entry(request, "expired")
             return
         exposure_ready = self._verify_owned_exposure()
         ready = self.readiness()
-        if not exposure_ready or not ready.ready:
-            self._dispose_entry(signal, ready.reason if not ready.ready else "protection_unproven", command)
+        if not exposure_ready or not ready.entries_armed:
+            self._dispose_entry(
+                request,
+                (ready.entry_block_reason or "entry_blocked") if not ready.entries_armed else "protection_unproven",
+            )
             return
         day_start = self._current_day_start()
         if day_start is None:
-            self._dispose_entry(signal, "day_start_baseline_missing", command)
+            self._dispose_entry(request, "day_start_baseline_missing")
             return
         instrument = self.cache.instrument(route.instrument_id)
         quote = self.cache.quote_tick(route.instrument_id)
         if instrument is None or quote is None:
-            self._dispose_entry(signal, "instrument_or_market_missing", command)
+            self._dispose_entry(request, "instrument_or_market_missing")
             return
         account_clock, reconciliation_clock = self._readiness.facts_clock()
         try:
@@ -837,7 +925,7 @@ class OiNautilusStrategy(Strategy):
                 reconciliation_observed_at_ns=reconciliation_clock,
             )
         except RuntimeError as exc:
-            self._dispose_entry(signal, str(exc), command)
+            self._dispose_entry(request, str(exc))
             return
         if facts.unexpected_exposure:
             self._readiness.halt_for_unexpected_exposure()
@@ -854,16 +942,16 @@ class OiNautilusStrategy(Strategy):
             candidate_is_new_position=True,
         )
         if decision.action in {"deny", "halt"}:
-            self._dispose_entry(signal, decision.reason, command)
+            self._dispose_entry(request, decision.reason)
             return
         bid = Decimal(str(quote.bid_price))
         ask = Decimal(str(quote.ask_price))
         midpoint = (bid + ask) / Decimal(2)
         spread_bps = (ask - bid) * Decimal(10_000) / midpoint
         if spread_bps > _MAX_SPREAD_BPS:
-            self._dispose_entry(signal, "spread_limit", command)
+            self._dispose_entry(request, "spread_limit")
             return
-        executable_price = ask if signal.direction == "long" else bid
+        executable_price = ask if request.direction == "long" else bid
         price = executable_price * (Decimal(1) + _MAX_ENTRY_DRIFT_BPS / Decimal(10_000))
         try:
             raw_quantity = fixed_risk_quantity(
@@ -880,11 +968,11 @@ class OiNautilusStrategy(Strategy):
                 size_increment=instrument.size_increment.as_decimal(),
             )
         except ValueError as exc:
-            self._dispose_entry(signal, str(exc), command)
+            self._dispose_entry(request, str(exc))
             return
         quantity = instrument.make_qty(raw_quantity)
         if quantity.as_decimal() <= 0:
-            self._dispose_entry(signal, "quantity_below_increment", command)
+            self._dispose_entry(request, "quantity_below_increment")
             return
         stop_fraction = Decimal(route.stop_distance_bps) / Decimal(10_000)
         quantity_notional = quantity.as_decimal() * price
@@ -892,18 +980,18 @@ class OiNautilusStrategy(Strategy):
             facts.gross_position_notional_usd + facts.open_order_notional_usd + facts.inflight_order_notional_usd
         )
         if quantity_notional * stop_fraction > decision.allowed_risk_usd:
-            self._dispose_entry(signal, "quantity_exceeds_risk_after_rounding", command)
+            self._dispose_entry(request, "quantity_exceeds_risk_after_rounding")
             return
         if existing_notional + quantity_notional > facts.equity_usd * self._profile.risk.max_leverage:
-            self._dispose_entry(signal, "quantity_exceeds_leverage_after_rounding", command)
+            self._dispose_entry(request, "quantity_exceeds_leverage_after_rounding")
             return
         if instrument.min_quantity is not None and quantity < instrument.min_quantity:
-            self._dispose_entry(signal, "quantity_below_minimum", command)
+            self._dispose_entry(request, "quantity_below_minimum")
             return
         if instrument.min_notional is not None and quantity.as_decimal() * price < instrument.min_notional.as_decimal():
-            self._dispose_entry(signal, "notional_below_minimum", command)
+            self._dispose_entry(request, "notional_below_minimum")
             return
-        side = OrderSide.BUY if signal.direction == "long" else OrderSide.SELL
+        side = OrderSide.BUY if request.direction == "long" else OrderSide.SELL
         order = self.order_factory.market(
             instrument_id=route.instrument_id,
             order_side=side,
@@ -911,16 +999,15 @@ class OiNautilusStrategy(Strategy):
             reduce_only=False,
             client_order_id=client_order_id,
         )
-        self._orders[client_order_id] = (signal.signal_id, "entry")
+        self._orders[client_order_id] = (request.entry_id, "entry")
         state = _ExecutionState(
-            signal=signal,
+            entry=request,
             route=route,
             entry_order=order,
             submitted_at_ns=now_ns,
             disposition_reason="accepted",
-            command=command,
         )
-        self._states[signal.signal_id] = state
+        self._states[request.entry_id] = state
         try:
             self.submit_order(order, client_id=ClientId("BINANCE"))
         except Exception:
@@ -928,10 +1015,10 @@ class OiNautilusStrategy(Strategy):
             self._request_reconciliation("unknown_outcome")
             self.query_order(order, client_id=ClientId("BINANCE"))
             self._observe_order(state, order, "entry", "unknown_query_first")
-            self._dispose_entry(signal, "unknown_query_first", command)
+            self._dispose_entry(request, "unknown_query_first")
             return
         self._observe_order(state, order, "entry", "submitted")
-        self._dispose_entry(signal, "accepted", command)
+        self._dispose_entry(request, "accepted")
 
     def _handle_command(self, command: OperatorIntentV1) -> None:
         now_ns = int(self.clock.timestamp_ns())
@@ -960,7 +1047,7 @@ class OiNautilusStrategy(Strategy):
             self._dispose_command(command, "accepted", "emergency_halted")
             return
         if command.action == "manual_entry":
-            self._handle_signal(manual_entry_signal(command), command=command)
+            self._handle_entry(RuntimeEntryRequest.from_manual_command(command))
             return
         if command.action != "flatten" or command.scope != "account":
             self._dispose_command(command, "rejected", "flatten_scope_unsupported")
@@ -1068,13 +1155,15 @@ class OiNautilusStrategy(Strategy):
 
     def _dispose_entry(
         self,
-        signal: TradeSignalV1,
+        request: RuntimeEntryRequest,
         reason: str,
-        command: OperatorIntentV1 | None,
     ) -> None:
-        if command is None:
-            self._dispose_signal(signal, reason)
+        if request.signal is not None:
+            self._dispose_signal(request.signal, reason)
             return
+        command = request.command
+        if command is None:
+            raise RuntimeError("oi_runtime_entry_source_invalid")
         disposition = (
             "accepted" if reason in {"accepted", "replayed_query_first", "unknown_query_first"} else "rejected"
         )
@@ -1082,9 +1171,9 @@ class OiNautilusStrategy(Strategy):
 
     @staticmethod
     def _observation_correlation(state: _ExecutionState) -> dict[str, str]:
-        if state.command is not None:
-            return {"command_id": state.command.command_id}
-        return {"signal_id": state.signal.signal_id}
+        if state.entry.command is not None:
+            return {"command_id": state.entry.command.command_id}
+        return {"signal_id": state.entry.entry_id}
 
     def _observe_order(self, state: _ExecutionState, order: Any, leg: str, status: str) -> None:
         occurred_at_ns = int(order.ts_init)
@@ -1121,7 +1210,7 @@ class OiNautilusStrategy(Strategy):
         if event.instrument_id != state.route.instrument_id or event.account_id != self._profile.account_id:
             self._readiness.halt_for_unexpected_exposure()
             return
-        expected_side = PositionSide.LONG if state.signal.direction == "long" else PositionSide.SHORT
+        expected_side = PositionSide.LONG if state.entry.direction == "long" else PositionSide.SHORT
         if event.strategy_id != self.id or event.side != expected_side:
             self._readiness.halt_for_unexpected_exposure()
             return
@@ -1351,8 +1440,8 @@ class OiNautilusStrategy(Strategy):
             self._readiness.halt_for_unexpected_exposure()
             return
         distance = Decimal(state.route.stop_distance_bps) / Decimal(10_000)
-        trigger = avg_price * (Decimal(1) - distance if state.signal.direction == "long" else Decimal(1) + distance)
-        side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        trigger = avg_price * (Decimal(1) - distance if state.entry.direction == "long" else Decimal(1) + distance)
+        side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         quantity_value = instrument.make_qty(quantity)
         trigger_price = instrument.make_price(trigger)
         state.protection_generation += 1
@@ -1360,7 +1449,7 @@ class OiNautilusStrategy(Strategy):
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=state.signal.signal_id,
+            entry_id=state.entry.entry_id,
             leg=leg,
         )
         existing = self.cache.order(client_order_id)
@@ -1373,7 +1462,7 @@ class OiNautilusStrategy(Strategy):
                 generation=state.protection_generation,
             )
             if not self._recovered_protection_valid(state=state, seed=recovered, protection=existing):
-                self._orders[client_order_id] = (state.signal.signal_id, "protection")
+                self._orders[client_order_id] = (state.entry.entry_id, "protection")
                 self._request_reconciliation("protection_ambiguity")
                 if not existing.is_closed:
                     self.query_order(existing, client_id=ClientId("BINANCE"))
@@ -1384,7 +1473,7 @@ class OiNautilusStrategy(Strategy):
             state.pending_stop_order = existing
             state.pending_stop_quantity = quantity_value.as_decimal()
             state.pending_stop_avg_price = avg_price
-            self._orders[client_order_id] = (state.signal.signal_id, "protection")
+            self._orders[client_order_id] = (state.entry.entry_id, "protection")
             self._request_reconciliation("protection_ambiguity")
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._observe_order(state, existing, "protection", "replayed_query_first")
@@ -1405,7 +1494,7 @@ class OiNautilusStrategy(Strategy):
         state.pending_stop_order = order
         state.pending_stop_quantity = quantity_value.as_decimal()
         state.pending_stop_avg_price = avg_price
-        self._orders[client_order_id] = (state.signal.signal_id, "protection")
+        self._orders[client_order_id] = (state.entry.entry_id, "protection")
         try:
             self.submit_order(order, position_id=state.position_id, client_id=ClientId("BINANCE"))
         except Exception:
@@ -1482,11 +1571,11 @@ class OiNautilusStrategy(Strategy):
         instrument = self.cache.instrument(state.route.instrument_id)
         if instrument is None:
             raise RuntimeError("oi_runtime_instrument_missing")
-        side = OrderSide.SELL if state.signal.direction == "long" else OrderSide.BUY
+        side = OrderSide.SELL if state.entry.direction == "long" else OrderSide.BUY
         client_order_id = deterministic_client_order_id(
             namespace=self._profile.client_order_namespace,
             profile_id=self._profile.profile_id,
-            signal_id=signal_id,
+            entry_id=signal_id,
             leg=_exit_leg(state.exit_generation),
         )
         existing = state.exit_order
@@ -1569,10 +1658,10 @@ __all__ = [
     "RecoveredExecutionSeed",
     "RecoveredProtectionSeed",
     "RuntimeControlSnapshot",
+    "RuntimeEntryRequest",
     "RuntimeReadiness",
     "RuntimeReadinessSnapshot",
     "RuntimeReconciliationSnapshot",
     "deterministic_client_order_id",
-    "manual_entry_signal",
     "oi_strategy_config",
 ]
