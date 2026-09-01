@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import UUID
 
@@ -70,3 +71,19 @@ def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:
     assert mismatch["reason"] == "runtime_identity_mismatch"
     assert stale["ready"] is False
     assert stale["reason"] == "runtime_heartbeat_stale"
+
+
+def test_transient_flat_and_unexpected_exposure_facts_remain_fail_closed() -> None:
+    state = replace(
+        _state(),
+        ready=False,
+        unexpected_exposure=True,
+        unavailable_reason="unexpected_exposure",
+    )
+
+    projection = execution_readiness_projection(_execution(), state, now_ns=10_000_000_000)
+
+    assert projection["ready"] is False
+    assert projection["reason"] == "unexpected_exposure"
+    assert projection["account_flat"] is True
+    assert projection["unexpected_exposure"] is True
