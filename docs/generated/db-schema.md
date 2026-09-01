@@ -752,8 +752,9 @@
 |--------|------|----------|---------|
 | `target_sha256` | `TEXT` | False | `None` |
 | `observation_seq` | `BIGINT` | False | `None` |
-| `message_id` | `BIGINT` | False | `None` |
+| `message_id` | `BIGINT` | True | `None` |
 | `delivered_at_ns` | `BIGINT` | False | `None` |
+| `result_delivered_at_ns` | `BIGINT` | True | `None` |
 
 ## `trading_execution_observations`
 

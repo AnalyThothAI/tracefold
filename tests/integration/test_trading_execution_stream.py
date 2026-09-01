@@ -256,6 +256,60 @@ def test_operator_ingress_leaves_active_profile_command_for_the_runtime() -> Non
         conn.close()
 
 
+def test_a_webhook_receipt_carries_no_message_id_and_gains_its_four_hour_result() -> None:
+    """#458 PR-B on real PostgreSQL: the receipt outlives the absence of a provider message id.
+
+    A Feishu custom-bot webhook returns none, so `message_id` is nullable rather than faked, and the
+    four-hour outcome is recorded as a second delivery instant on the same row rather than as an edit
+    of a message this channel cannot address again.
+    """
+
+    observation = _observation(event="a", kind="audit_gap")
+    target = "9" * 64
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        with conn.transaction():
+            sequences = repo.append_execution_observations(prepare_execution_observations((observation,)))
+        with conn.transaction():
+            receipt = repo.append_execution_notification_delivery(
+                target_sha256=target,
+                observation_seq=sequences[0],
+                message_id=None,
+                delivered_at_ns=5_000,
+            )
+        assert receipt["message_id"] is None
+        assert receipt["result_delivered_at_ns"] is None
+        # The watermark advances on the receipt, not on the message id: a webhook target still moves on.
+        assert repo.next_execution_notification(target) is None
+
+        # An `audit_gap` has no Signal and therefore no outcome to report.
+        assert repo.next_execution_notification_result(target, due_at_or_before_ns=10_000_000) is None
+
+        with conn.transaction():
+            assert (
+                repo.mark_execution_notification_result(
+                    target_sha256=target, observation_seq=sequences[0], result_delivered_at_ns=6_000
+                )
+                is True
+            )
+        # Marking is once-only: a retry after the outcome went out must not move the recorded instant.
+        with conn.transaction():
+            assert (
+                repo.mark_execution_notification_result(
+                    target_sha256=target, observation_seq=sequences[0], result_delivered_at_ns=7_000
+                )
+                is False
+            )
+        stored = conn.execute(
+            "SELECT message_id, result_delivered_at_ns FROM trading_execution_notification_deliveries"
+        ).fetchone()
+        assert stored["message_id"] is None
+        assert stored["result_delivered_at_ns"] == 6_000
+    finally:
+        conn.close()
+
+
 def test_notification_delivery_is_append_only_and_anti_joined_without_mutating_observation_truth() -> None:
     non_notifiable = _observation(event="6", kind="risk")
     observation = _observation(event="7", kind="audit_gap")

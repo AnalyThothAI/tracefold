@@ -1933,10 +1933,12 @@ live only in Git history and the pre-cut image. `20260901_0341` performs the
 append-only Trading notification delivery ledger; additive `20260901_0343` adds
 the current execution Runtime projection and bounded recovery indexes; and
 destructive `20260901_0344` restates the `news_verdicts` judgment CHECK for the
-News open-interest push cut; and `20260901_0345`, the current single head,
-removes the stale execution Runtime constraint that rejected a safe transient
-pairing of independently observed flatness and unexpected exposure. Readiness
-still fails closed on unexpected exposure.
+News open-interest push cut; `20260901_0345` removes the stale execution Runtime
+constraint that rejected a safe transient pairing of independently observed
+flatness and unexpected exposure, with readiness still failing closed on
+unexpected exposure; and additive `20260901_0346`, the current single head, lets
+a notification receipt outlive its provider's message id and carry a four-hour
+result.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2088,7 +2090,25 @@ one generation-fenced row is the current readiness/status projection.
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is
 notification transport success, not a trigger; Alpha must not depend on a
-notification channel being reachable. The `trading_manifest_v10` manifest names
+notification channel being reachable.
+
+The operator-readable side of that is the Signal card (#458 PR-B). One
+`signal_disposition` Observation becomes one message stating what the Signal lane
+decided *and the Case's own frozen `policy_checks`* — threshold, operator and
+measured value together — so a reader compares a decision against the numbers that
+made it rather than against today's configuration. Every provider figure on the
+card is labelled as the provider's caliber: #459 measured the vendor's
+five-minute "OI change" as substantially price rather than position, so printing
+it unlabelled beside a venue price would invite the reading that measurement
+disproved. Four hours later a **second** message carries the 1 h/4 h outcome,
+entered at the first close on or after the Signal — the first price a taker could
+have had. It is a second message rather than an edit because the deployed channel
+is a Feishu custom-bot webhook, which returns no message id and has no edit
+endpoint; the operator chose that channel and dropped the earlier one-card-per-
+symbol-per-day ceiling with it. The notification channel is assembled from
+`trading.notifications` and no longer from the Telegram control ingress, which is
+why it had never run: being told what the lane decided used to require standing up
+an authenticated command channel first. The `trading_manifest_v10` manifest names
 exactly one `primary_trigger`, one `policy_id` / `policy_version` / exact typed
 `policy_config` / `policy_config_digest`, a venue-neutral `market_key`, and a
 point-in-time `contexts` object. `contexts.market` is

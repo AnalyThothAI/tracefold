@@ -476,6 +476,26 @@ class TradingExecutionSettings(BaseModel):
         return value
 
 
+class TradingNotificationSettings(BaseModel):
+    """Where durable execution observations are read out to a human (#458 PR-B).
+
+    Separate from `trading.control` on purpose. Until #458 the notifier was assembled only inside the
+    Telegram *control* ingress, so an operator who wanted to be told what the Signal lane decided had
+    to stand up an authenticated command channel first -- and in production nobody had, which is why
+    the notification worker had never run at all.
+
+    `feishu` reuses the `news.push` webhook target rather than asking for a second one: the two
+    capabilities share the HTTP transport at the composition seam and nothing else. It cannot edit a
+    sent message, so a Signal's four-hour outcome arrives as a second message; `telegram` reuses
+    `trading.control`'s bot token and `notification_chat_id`.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    channel: Literal["feishu", "telegram"] = "feishu"
+
+
 class TradingControlSettings(BaseModel):
     """Workers-owned authenticated operator ingress and observation notification target."""
 
@@ -543,6 +563,7 @@ class TradingSettings(BaseModel):
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
     control: TradingControlSettings = Field(default_factory=TradingControlSettings)
+    notifications: TradingNotificationSettings = Field(default_factory=TradingNotificationSettings)
 
 
 class Settings(BaseModel):

@@ -198,9 +198,20 @@ class QueryStorage:
                    observation.signal_id, observation.command_id, observation.normalized_kind,
                    observation.occurred_at_ns, observation.observed_at_ns,
                    observation.native_identity_references, observation.summary,
-                   observation.payload_digest
+                   observation.payload_digest,
+                   -- #458 PR-B: the Case a Signal card states its reasons from. Read here rather than
+                   -- in a second round trip so the rendered text is a pure function of one row, and
+                   -- LEFT so a non-Signal observation is still notifiable.
+                   signal.case_id, signal.market_key, signal.direction,
+                   signal.observed_at_ns AS signal_observed_at_ns,
+                   trading_case.policy_decision, trading_case.policy_reason,
+                   trading_case.policy_checks, trading_case.manifest
               FROM trading_execution_observations observation
               CROSS JOIN delivered
+              LEFT JOIN trading_trade_signals signal
+                     ON observation.normalized_kind = 'signal_disposition'
+                    AND signal.signal_id = observation.signal_id
+              LEFT JOIN trading_cases trading_case ON trading_case.case_id = signal.case_id
              WHERE observation.seq > delivered.watermark
                AND observation.normalized_kind IN (
                      'signal_disposition', 'control_disposition', 'fill', 'audit_gap',
@@ -235,21 +246,29 @@ class QueryStorage:
         *,
         target_sha256: str,
         observation_seq: int,
-        message_id: int,
+        message_id: int | None,
         delivered_at_ns: int,
     ) -> dict[str, Any]:
-        """Append one delivery receipt; retries never mutate an earlier receipt."""
+        """Append one delivery receipt; retries never mutate an earlier receipt.
+
+        `message_id` is optional because a Feishu custom-bot webhook returns none (#458 PR-B). The
+        receipt still records that this observation reached this target at this instant, which is what
+        the watermark and the coverage measure read; only a channel that can address a sent message
+        again has an id worth storing.
+        """
 
         require_transaction(self.conn, operation="append_execution_notification_delivery")
         if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
             raise ValueError("execution_notification_target_invalid")
         if observation_seq <= 0:
             raise ValueError("execution_notification_observation_invalid")
-        if isinstance(message_id, bool) or message_id <= 0 or delivered_at_ns <= 0:
+        if message_id is not None and (isinstance(message_id, bool) or message_id <= 0):
+            raise ValueError("execution_notification_delivery_invalid")
+        if delivered_at_ns <= 0:
             raise ValueError("execution_notification_delivery_invalid")
         existing = self.conn.execute(
             """
-            SELECT target_sha256, observation_seq, message_id, delivered_at_ns
+            SELECT target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
               FROM trading_execution_notification_deliveries
              WHERE target_sha256 = %s AND observation_seq = %s
             """,
@@ -266,14 +285,14 @@ class QueryStorage:
               target_sha256, observation_seq, message_id, delivered_at_ns
             ) VALUES (%s, %s, %s, %s)
             ON CONFLICT (target_sha256, observation_seq) DO NOTHING
-            RETURNING target_sha256, observation_seq, message_id, delivered_at_ns
+            RETURNING target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
             """,
             (target_sha256, observation_seq, message_id, delivered_at_ns),
         ).fetchone()
         if row is None:
             row = self.conn.execute(
                 """
-                SELECT target_sha256, observation_seq, message_id, delivered_at_ns
+                SELECT target_sha256, observation_seq, message_id, delivered_at_ns, result_delivered_at_ns
                   FROM trading_execution_notification_deliveries
                  WHERE target_sha256 = %s AND observation_seq = %s
                 """,
@@ -282,6 +301,63 @@ class QueryStorage:
         if row is None:
             raise RuntimeError("execution_notification_delivery_missing")
         return dict(row)
+
+    def next_execution_notification_result(
+        self, target_sha256: str, *, due_at_or_before_ns: int
+    ) -> dict[str, Any] | None:
+        """The oldest delivered Signal card whose four-hour outcome is due and not yet sent.
+
+        Only `signal_disposition` receipts have an outcome to report: the other observation kinds are
+        stages, not positions. `due_at_or_before_ns` is the caller's clock minus the holding period
+        plus a settling margin, so the decision about *when* a result is due stays with the worker and
+        this read stays a pure function of the row and that instant.
+        """
+
+        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
+            raise ValueError("execution_notification_target_invalid")
+        row = self.conn.execute(
+            """
+            SELECT delivery.observation_seq, delivery.delivered_at_ns,
+                   signal.signal_id, signal.case_id, signal.market_key, signal.direction,
+                   signal.observed_at_ns AS signal_observed_at_ns,
+                   trading_case.manifest
+              FROM trading_execution_notification_deliveries delivery
+              JOIN trading_execution_observations observation
+                ON observation.seq = delivery.observation_seq
+              JOIN trading_trade_signals signal ON signal.signal_id = observation.signal_id
+              JOIN trading_cases trading_case ON trading_case.case_id = signal.case_id
+             WHERE delivery.target_sha256 = %s
+               AND delivery.result_delivered_at_ns IS NULL
+               AND observation.normalized_kind = 'signal_disposition'
+               AND delivery.delivered_at_ns <= %s
+             ORDER BY delivery.observation_seq
+             LIMIT 1
+            """,
+            (target_sha256, int(due_at_or_before_ns)),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def mark_execution_notification_result(
+        self, *, target_sha256: str, observation_seq: int, result_delivered_at_ns: int
+    ) -> bool:
+        """Record that the outcome message went out. Never overwrites an earlier one."""
+
+        require_transaction(self.conn, operation="mark_execution_notification_result")
+        if re.fullmatch(r"[0-9a-f]{64}", target_sha256) is None:
+            raise ValueError("execution_notification_target_invalid")
+        if observation_seq <= 0 or result_delivered_at_ns <= 0:
+            raise ValueError("execution_notification_result_invalid")
+        row = self.conn.execute(
+            """
+            UPDATE trading_execution_notification_deliveries
+               SET result_delivered_at_ns = %s
+             WHERE target_sha256 = %s AND observation_seq = %s
+               AND result_delivered_at_ns IS NULL
+             RETURNING observation_seq
+            """,
+            (int(result_delivered_at_ns), target_sha256, int(observation_seq)),
+        ).fetchone()
+        return row is not None
 
 
 __all__ = ["QueryStorage"]

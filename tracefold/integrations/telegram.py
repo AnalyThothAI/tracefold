@@ -439,6 +439,19 @@ class TelegramNewsPushSender:
         self._client.close()
 
 
+def telegram_bot_id(bot_token: str) -> int:
+    """The bot's own numeric id, which is the token's left half.
+
+    The control webhook authenticates against this and needs nothing else from the token, so it reads
+    it here rather than constructing a notifier -- and an HTTP client -- to discard immediately.
+    """
+
+    normalized = str(bot_token or "").strip()
+    if not _BOT_TOKEN_RE.fullmatch(normalized):
+        raise ValueError("trading_notification_telegram_bot_token_invalid")
+    return int(normalized.partition(":")[0])
+
+
 class TelegramTradingNotifier:
     """Send bounded execution observations to one operator-owned Telegram chat."""
 
@@ -1066,4 +1079,4 @@ def _safe_trade_url(value: str) -> bool:
     )
 
 
-__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender", "TelegramTradingNotifier"]
+__all__ = ["TelegramDeliveryError", "TelegramNewsPushSender", "TelegramTradingNotifier", "telegram_bot_id"]
