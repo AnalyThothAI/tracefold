@@ -39,7 +39,7 @@ class RuntimeAccountProjector:
         self,
         *,
         baseline: DayStartBaseline | None,
-        account_observed_at_ns: int,
+        projected_at_ns: int,
     ) -> ExecutionAccountSnapshot:
         cache = self._engine.cache
         account = cache.account(self._profile.account_id)
@@ -77,7 +77,7 @@ class RuntimeAccountProjector:
                 complete = False
                 continue
             market_clocks.append(quote_observed_at_ns)
-            quote_age_ns = account_observed_at_ns - quote_observed_at_ns
+            quote_age_ns = projected_at_ns - quote_observed_at_ns
             if quote_age_ns < 0 or quote_age_ns > self._profile.risk.market_stale_after_ns:
                 complete = False
                 continue
@@ -174,7 +174,7 @@ class RuntimeAccountProjector:
         positions_truncated = len(position_rows) > _MAX_POSITION_ROWS
         orders_truncated = len(order_rows) > _MAX_ORDER_ROWS
         return ExecutionAccountSnapshot(
-            observed_at_ns=account_observed_at_ns,
+            observed_at_ns=projected_at_ns,
             market_observed_at_ns=min(market_clocks) if market_clocks else None,
             equity_usd=None if equity is None else _text(equity),
             day_start_equity_usd=None if baseline is None else _text(baseline.equity_usd),

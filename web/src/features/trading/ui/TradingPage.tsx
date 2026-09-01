@@ -1,5 +1,6 @@
 import { Card } from "@shared/ui/Card";
 import * as PageState from "@shared/ui/PageState";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import {
@@ -9,6 +10,7 @@ import {
   useTradingSignalsWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
+import { ACCOUNT_FLAT_PROOF_FRESH_MS, currentAccountFlatProof } from "../model/accountFlatProof";
 import { commandProgress, signalProgress } from "../model/executionProgress";
 import { caseStateLabel } from "../model/tradingCases";
 import { caseClock, policyReasonLabel } from "../model/tradingLabels";
@@ -30,6 +32,21 @@ export function TradingPage({ token }: { token: string }) {
   const commandsQuery = useTradingCommandsWithToken(token);
   const observationsQuery = useTradingObservationsWithToken(token);
   const status = statusQuery.data;
+  const [, setFlatProofExpiryTick] = useState(0);
+  const measuredAtMs = status?.measured_at_ms;
+  const serverFlatProof = status?.execution.account_flat_proven ?? false;
+
+  useEffect(() => {
+    if (!serverFlatProof || measuredAtMs == null) return;
+    const nowMs = Date.now();
+    const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS;
+    if (measuredAtMs > nowMs || expiresAtMs < nowMs) return;
+    const timer = window.setTimeout(
+      () => setFlatProofExpiryTick((value) => value + 1),
+      expiresAtMs - nowMs + 1,
+    );
+    return () => window.clearTimeout(timer);
+  }, [measuredAtMs, serverFlatProof]);
 
   if (statusQuery.isPending && !status) {
     return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
@@ -38,6 +55,14 @@ export function TradingPage({ token }: { token: string }) {
     return <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />;
   }
   if (!status) return null;
+
+  const accountFlatProven = currentAccountFlatProof({
+    accountFlatProven: status.execution.account_flat_proven,
+    measuredAtMs: status.measured_at_ms,
+    nowMs: Date.now(),
+    queryHealthy: !statusQuery.isError,
+  });
+  const currentExecution = { ...status.execution, account_flat_proven: accountFlatProven };
 
   const cases = casesQuery.data?.cases ?? [];
   const signals = signalsQuery.data?.signals ?? [];
@@ -58,6 +83,7 @@ export function TradingPage({ token }: { token: string }) {
   };
 
   const failed = [
+    statusQuery.isError ? "Status" : "",
     casesQuery.isError ? "Case" : "",
     signalsQuery.isError ? "Signal" : "",
     commandsQuery.isError ? "Command" : "",
@@ -101,10 +127,10 @@ export function TradingPage({ token }: { token: string }) {
         }
       >
         <div className="trading-body">
-          <TradingAccountOverview execution={status.execution} />
+          <TradingAccountOverview execution={currentExecution} />
 
           <TradingControls
-            accountFlatProven={status.execution.account_flat_proven}
+            accountFlatProven={accountFlatProven}
             entriesPaused={status.execution.entries_paused}
             mode={status.execution.mode}
             token={token}

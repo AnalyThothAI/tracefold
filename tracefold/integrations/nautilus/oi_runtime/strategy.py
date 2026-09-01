@@ -192,10 +192,10 @@ class OiNautilusStrategy(Strategy):
     def control_state(self) -> RuntimeControlSnapshot:
         return self._runtime.control_snapshot()
 
-    def account_snapshot(self, *, account_observed_at_ns: int) -> ExecutionAccountSnapshot:
+    def account_snapshot(self, *, projected_at_ns: int) -> ExecutionAccountSnapshot:
         return self._account_projector.snapshot(
             baseline=self._current_day_start(),
-            account_observed_at_ns=account_observed_at_ns,
+            projected_at_ns=projected_at_ns,
         )
 
     def protection_status(

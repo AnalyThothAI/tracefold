@@ -2,6 +2,7 @@ import { TradingPage } from "@features/trading";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import {
+  TRADING_NOW_MS,
   tradingCaseFixture,
   tradingCasesFixture,
   tradingCommandFixture,
@@ -224,6 +225,40 @@ describe("TradingPage", () => {
     fireEvent.click(screen.getByText("Advanced Audit"));
     expect(screen.getByText("stop-order-1")).toBeVisible();
     expect(screen.getByText("credential-fingerprint-test")).toBeVisible();
+  });
+
+  it("expires a cached flat proof and restores the Flatten safety command", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(TRADING_NOW_MS);
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () =>
+        HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            execution: tradingExecutionFixture({
+              account_flat: true,
+              account_flat_proven: true,
+              alive: true,
+              entries_armed: false,
+              entries_paused: true,
+              entry_block_reason: "entries_paused",
+              execution_safe: true,
+              mode: "paper",
+            }),
+            measured_at_ms: TRADING_NOW_MS,
+          }),
+        }),
+      ),
+    );
+    renderTrading();
+
+    expect(await screen.findByText("PROVEN")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
+
+    now.mockReturnValue(TRADING_NOW_MS + 10_001);
+    fireEvent.click(screen.getByText("HYPE"));
+
+    expect(screen.getByText("NOT PROVEN")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Flatten account" })).toBeEnabled();
   });
 
   it("confirms resume before posting a stable intent and labels success as persistence only", async () => {

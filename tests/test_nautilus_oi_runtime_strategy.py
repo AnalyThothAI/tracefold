@@ -1089,7 +1089,7 @@ def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> N
 def test_account_projection_reports_empty_account_without_claiming_private_flat_proof() -> None:
     context = registered_oi_strategy()
 
-    snapshot = context.strategy.account_snapshot(account_observed_at_ns=NOW_NS)
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS)
 
     assert snapshot.equity_usd == "1000"
     assert snapshot.day_start_equity_usd == "1000"
@@ -1147,7 +1147,7 @@ def test_account_projection_exposes_owned_protection_and_unknown_orders() -> Non
     )
     _accepted(context, foreign)
 
-    snapshot = context.strategy.account_snapshot(account_observed_at_ns=NOW_NS + 3)
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 3)
 
     assert snapshot.positions[0].owned is True
     assert snapshot.positions[0].protection_status == "protected"
@@ -1167,7 +1167,7 @@ def test_account_projection_exposes_owned_protection_and_unknown_orders() -> Non
     canceled = TestEventStubs.order_canceled(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS + 4)
     stop.apply(canceled)
     context.cache.update_order(stop)
-    after_cancel = context.strategy.account_snapshot(account_observed_at_ns=NOW_NS + 5)
+    after_cancel = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 5)
 
     assert after_cancel.positions[0].protection_status == "pending"
     assert after_cancel.positions[0].protection_quantity is None
@@ -1210,7 +1210,7 @@ def test_account_projection_withholds_stale_quote_values() -> None:
     )
 
     snapshot = context.strategy.account_snapshot(
-        account_observed_at_ns=NOW_NS + context.profile.risk.market_stale_after_ns + 1
+        projected_at_ns=NOW_NS + context.profile.risk.market_stale_after_ns + 1
     )
 
     assert snapshot.complete is False
@@ -1218,6 +1218,57 @@ def test_account_projection_withholds_stale_quote_values() -> None:
     assert snapshot.positions[0].mark_price is None
     assert snapshot.positions[0].unrealized_pnl_usd is None
     assert snapshot.aggregate_risk_usd is None
+
+
+def test_account_projection_accepts_quote_newer_than_the_separate_private_account_fact() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    context.strategy.on_order_accepted(_accepted(context, entry))
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-NEWER-QUOTE")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 1,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 1,
+        )
+    )
+    context.cache.add_quote_tick(
+        TestDataStubs.quote_tick(
+            instrument=context.instrument,
+            bid_price=10_000,
+            ask_price=10_001,
+            ts_event=NOW_NS + 2,
+            ts_init=NOW_NS + 2,
+        )
+    )
+
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 3)
+
+    assert snapshot.complete is True
+    assert snapshot.market_observed_at_ns == NOW_NS + 2
+    assert snapshot.positions[0].mark_price == "10000.5"
 
 
 def test_callback_module_has_no_postgres_or_telegram_io() -> None:
