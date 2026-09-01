@@ -280,8 +280,12 @@ process name.
 
 Database access still has mechanical boundaries. Stable `application_name`
 values attribute sessions. The internet-facing Serve HTTP pool sets
-connection-level read-only mode and exposes no HTTP write route. The review CLI
-uses a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
+connection-level read-only mode. Its sole mutation,
+`POST /api/trading/execution/commands`, is semaphore-bounded and opens one
+separate short-lived connection and explicit transaction that can append only
+the existing closed `OperatorIntentV1` grammar; it has no Nautilus, Binance,
+quantity, notional, leverage, or venue authority. The review CLI likewise uses
+a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
 business CHECKs, conditional updates, append-only/state-machine triggers,
 maintenance locks, and repository transaction ownership remain authoritative;
 internal role permission denial is not a business invariant. Runtime code does
@@ -290,8 +294,11 @@ processes. `pg_stat_statements` is naturally visible for the complete
 application identity without a statistics-reader workaround.
 
 HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
-to the served console and every other `/api/*` route requires it as
-`Authorization: Bearer <ws_token>`; `/healthz`, `/readyz`, and `/metrics` are
+to the served console and every other `/api/*` route requires it. Read routes
+also accept the legacy query-token transport; the sole Command POST requires
+`Authorization: Bearer <ws_token>`, exact JSON content type, and a body no
+larger than 2 KiB, and authenticates before reading that body. `/healthz`,
+`/readyz`, and `/metrics` are
 unauthenticated liveness/telemetry surfaces (the compose stack publishes the
 HTTP port on loopback). There is no WebSocket endpoint and no second
 authentication scheme. Exact

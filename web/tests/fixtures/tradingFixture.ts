@@ -3,6 +3,7 @@ import type {
   TradingCases,
   TradingExecutionObservation,
   TradingExecutionObservations,
+  TradingExecutionReadiness,
   TradingGate,
   TradingGateDecision,
   TradingOperatorIntent,
@@ -46,6 +47,7 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     },
     execution: {
       account_flat: false,
+      account_flat_proven: false,
       account_slot: "binance_usdm_primary",
       activation_ready: false,
       alive: false,
@@ -70,6 +72,60 @@ export function tradingStatusFixture(overrides: Partial<TradingStatus> = {}): Tr
     },
     measured_at_ms: TRADING_NOW_MS,
     window_hours: 24,
+    ...overrides,
+  };
+}
+
+export function tradingExecutionFixture(
+  overrides: Partial<TradingExecutionReadiness> = {},
+): TradingExecutionReadiness {
+  return { ...tradingStatusFixture().execution, ...overrides };
+}
+
+export function tradingCurrentAccountFixture(
+  overrides: Partial<NonNullable<TradingExecutionReadiness["current_account"]>> = {},
+): NonNullable<TradingExecutionReadiness["current_account"]> {
+  return {
+    aggregate_risk_usd: "9.9995",
+    complete: true,
+    daily_drawdown_bps: 25,
+    daily_drawdown_usd: "2.50",
+    day_start_equity_usd: "1000",
+    equity_usd: "997.50",
+    inflight_orders_count: 0,
+    market_observed_at_ns: TRADING_NOW_MS * 1_000_000,
+    observed_at_ns: TRADING_NOW_MS * 1_000_000,
+    open_orders_count: 1,
+    orders: [
+      {
+        client_order_id: "stop-order-1",
+        instrument_id: "BTCUSDT-PERP.BINANCE",
+        leg: "protection",
+        owned: true,
+        quantity: "0.05",
+        reduce_only: true,
+        state: "open",
+        trigger_price: "9800",
+      },
+    ],
+    positions: [
+      {
+        entry_price: "10000",
+        instrument_id: "BTCUSDT-PERP.BINANCE",
+        mark_price: "9999.5",
+        owned: true,
+        position_id: "position-1",
+        protection_full_coverage: true,
+        protection_quantity: "0.05",
+        protection_status: "protected",
+        protection_trigger_price: "9800",
+        quantity: "0.05",
+        side: "long",
+        unrealized_pnl_usd: "-0.025",
+      },
+    ],
+    truncated: false,
+    unknown_orders_count: 0,
     ...overrides,
   };
 }

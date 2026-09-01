@@ -46,9 +46,16 @@ export async function getApi<T>(
   return requestApi<T>(path, { ...options, method: "GET" });
 }
 
+export async function postApi<T>(
+  path: string,
+  options: RequestOptions & { body: unknown },
+): Promise<ApiResponse<T>> {
+  return requestApi<T>(path, { ...options, method: "POST" });
+}
+
 async function requestApi<T>(
   path: string,
-  options: RequestOptions & { method: "GET" } = { method: "GET" },
+  options: RequestOptions & { method: "GET" | "POST" },
 ): Promise<ApiResponse<T>> {
   const url = new URL(path, env.apiBaseUrl);
   for (const [key, value] of Object.entries(options.params ?? {})) {

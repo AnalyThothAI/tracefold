@@ -1,5 +1,4 @@
 import { Card } from "@shared/ui/Card";
-import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useSearchParams } from "react-router-dom";
 
@@ -10,15 +9,19 @@ import {
   useTradingSignalsWithToken,
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
+import { commandProgress, signalProgress } from "../model/executionProgress";
 import { caseStateLabel } from "../model/tradingCases";
 import { caseClock, policyReasonLabel } from "../model/tradingLabels";
 
+import { TradingAccountOverview } from "./TradingAccountOverview";
 import { TradingCaseDetail } from "./TradingCaseDetail";
 import { TradingEmptyNote, TradingShell, TradingSourceLine } from "./TradingChrome";
+import { TradingControls } from "./TradingControls";
+import { TradingProgress } from "./TradingProgress";
 
 import "./trading.css";
 
-/** Operator view: every execution claim remains tied to a durable Runtime or venue fact. */
+/** Operator desk: current risk and control come first; immutable audit remains one disclosure away. */
 export function TradingPage({ token }: { token: string }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const statusQuery = useTradingStatusWithToken(token);
@@ -29,20 +32,19 @@ export function TradingPage({ token }: { token: string }) {
   const status = statusQuery.data;
 
   if (statusQuery.isPending && !status) {
-    return <PageState.Loading label="正在读取 Signal 通道状态" layout="panel" rows={4} />;
+    return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
   }
   if (statusQuery.isError && !status) {
     return <PageState.Error error={statusQuery.error} onRetry={() => void statusQuery.refetch()} />;
   }
   if (!status) return null;
 
-  /*
-   * The URL owns the selection, and nothing is selected by default (#460). `/news/alpha` opened on its
-   * first row; this card is one of six on a status page, so auto-expanding a Case would push five
-   * ledgers below the fold to answer a question nobody asked. The three surfaces that link here with
-   * `?case=` are asking about one Case, and they get it open.
-   */
   const cases = casesQuery.data?.cases ?? [];
+  const signals = signalsQuery.data?.signals ?? [];
+  const commands = commandsQuery.data?.commands ?? [];
+  const observations = observationsQuery.data?.observations ?? [];
+  const latestSignal = signals[0];
+  const latestCommand = commands[0];
   const selectedCaseId = searchParams.get("case");
   const selectedCase = selectedCaseId
     ? cases.find((item) => item.case_id === selectedCaseId)
@@ -61,24 +63,21 @@ export function TradingPage({ token }: { token: string }) {
     commandsQuery.isError ? "Command" : "",
     observationsQuery.isError ? "Observation" : "",
   ].filter(Boolean);
+  const progressWarning = observationReadWarning(observationsQuery);
 
   return (
-    <TradingShell label="Alpha Signal 与执行观察">
+    <TradingShell label="可操作交易台">
       <header className="trading-page-header">
         <div className="trading-heading-copy">
-          <h1>Alpha / Execution</h1>
-          <p>Case 与 Signal 原子落库；账户、数量、订单、保护与恢复只属于 Nautilus Runtime。</p>
+          <h1>Trading Desk</h1>
+          <p>先回答现有 exposure 是否安全，再决定是否允许新增 exposure。</p>
         </div>
         <div
           className="trading-heading-aside"
           data-tone={status.execution.execution_safe ? undefined : "caution"}
         >
           <span>ALPHA {status.decision.state}</span>
-          <small>
-            EXECUTION {status.execution.mode} · alive {String(status.execution.alive)} · safe{" "}
-            {String(status.execution.execution_safe)} · armed{" "}
-            {String(status.execution.entries_armed)}
-          </small>
+          <small>EXECUTION {status.execution.mode}</small>
         </div>
       </header>
 
@@ -87,6 +86,7 @@ export function TradingPage({ token }: { token: string }) {
           failed.length ? `${failed.join(" / ")} 读取失败；保留其余已验证事实。` : undefined
         }
         onRetry={() => {
+          void statusQuery.refetch();
           void casesQuery.refetch();
           void signalsQuery.refetch();
           void commandsQuery.refetch();
@@ -101,77 +101,74 @@ export function TradingPage({ token }: { token: string }) {
         }
       >
         <div className="trading-body">
-          <MetricRow className="trading-mandate" columns={8} label="当前持久事实">
-            <Metric eyebrow="ALPHA" value={status.decision.state} caption="Signal 决策面" />
-            <Metric
-              eyebrow="ALIVE"
-              value={status.execution.alive ? "YES" : "NO"}
-              caption="进程 / Node / event loop"
-              tone={status.execution.alive ? "accent" : "caution"}
-            />
-            <Metric
-              eyebrow="EXECUTION SAFE"
-              value={status.execution.execution_safe ? "YES" : "NO"}
-              caption="已有 exposure 可管理"
-              tone={status.execution.execution_safe ? "accent" : "caution"}
-            />
-            <Metric
-              eyebrow="ENTRIES ARMED"
-              value={status.execution.entries_armed ? "YES" : "NO"}
-              caption={status.execution.entry_block_reason ?? "允许新增 exposure"}
-              tone={status.execution.entries_armed ? "accent" : "caution"}
-            />
-            <Metric eyebrow="CASES 24H" value={status.counts.cases_24h} caption="全部终局与在途" />
-            <Metric eyebrow="SIGNALS 24H" value={status.counts.signals_24h} caption="Alpha 输出" />
-            <Metric eyebrow="OPEN" value={status.counts.cases_open} caption="PENDING / RUNNING" />
-            <Metric
-              eyebrow="UNEXPIRED"
-              value={status.counts.signals_unexpired}
-              caption="仍在 TTL 内"
-            />
-          </MetricRow>
+          <TradingAccountOverview execution={status.execution} />
+
+          <TradingControls
+            accountFlatProven={status.execution.account_flat_proven}
+            entriesPaused={status.execution.entries_paused}
+            mode={status.execution.mode}
+            token={token}
+          />
 
           <Card
-            hint={
-              status.execution.runtime_release
-                ? `${status.execution.runtime_release} · reconcile ${status.execution.reconciliation_age_ms ?? "?"}ms`
-                : `${status.alpha.policy_version} · ${status.alpha.contract_sha256.slice(0, 12)}`
-            }
-            title="Alpha / Runtime 边界"
+            className="trading-latest-progress-card"
+            hint="persisted、Runtime、venue、fill 与 private-flat 是五个不同事实"
+            title="最近 Signal / Command"
           >
-            <p>
-              Alpha 只输出 engine-neutral <code>TradeSignalV1</code>。执行配置是独立事实：profile{" "}
-              <code>{status.execution.profile_id}</code>，account slot{" "}
-              <code>{status.execution.account_slot}</code>。Binance account flat：
-              <code>
-                {status.execution.account_flat ? "PROVEN" : "NOT PROVEN"}
-              </code>；credential{" "}
-              <code>{status.execution.credential_fingerprint?.slice(0, 12) ?? "unavailable"}</code>
-              。
-            </p>
-            <TradingSourceLine path="GET /api/trading/status → decision · execution · alpha · counts" />
+            {progressWarning ? (
+              <p className="trading-progress-uncertainty" data-tone="caution">
+                {progressWarning}
+              </p>
+            ) : null}
+            <div className="trading-latest-progress-grid">
+              <section>
+                <span className="trading-section-eyebrow">LATEST COMMAND</span>
+                {latestCommand ? (
+                  <>
+                    <div className="trading-progress-subject">
+                      <b>{commandActionLabel(latestCommand.action)}</b>
+                      <span>{latestCommand.reason}</span>
+                    </div>
+                    <TradingProgress progress={commandProgress(latestCommand, observations)} />
+                  </>
+                ) : (
+                  <TradingEmptyNote>
+                    {ledgerEmpty(commandsQuery.isPending, commandsQuery.isError, "Command")}
+                  </TradingEmptyNote>
+                )}
+              </section>
+              <section>
+                <span className="trading-section-eyebrow">LATEST SIGNAL</span>
+                {latestSignal ? (
+                  <>
+                    <div className="trading-progress-subject">
+                      <b>{latestSignal.direction.toUpperCase()}</b>
+                      <span>{latestSignal.market_key}</span>
+                    </div>
+                    <TradingProgress progress={signalProgress(latestSignal, observations)} />
+                  </>
+                ) : (
+                  <TradingEmptyNote>
+                    {ledgerEmpty(signalsQuery.isPending, signalsQuery.isError, "Signal")}
+                  </TradingEmptyNote>
+                )}
+              </section>
+            </div>
           </Card>
 
           <Card
-            hint="HTTP 200 或 CLI ok 只证明意图已持久化，不证明 Runtime、订单、成交或账户已平"
-            title="操作命令账本"
+            hint="HTTP 200 只证明意图已持久化；每条进度由关联 Observation 推进"
+            title="Command 进度"
           >
-            <p>
-              事实层级：意图已记录 → Runtime 受理 → 订单已接受 → 成交 → Binance
-              账户已平。每一级都必须有自己的持久回执，不能向后推断。
-            </p>
-            {commandsQuery.data?.commands?.length ? (
-              <div className="trading-table">
-                {commandsQuery.data.commands.map((command) => (
-                  <article className="trading-current-row" key={command.command_id}>
-                    <b>{commandActionLabel(command.action)}</b>
-                    <span data-tone={command.disposition ? undefined : "caution"}>
-                      {commandDispositionLabel(command)}
-                    </span>
-                    <code>{command.target_profile_id}</code>
-                    <span>{command.market_key ?? command.scope}</span>
-                    <span>seq {command.seq}</span>
-                    <code title={command.command_id}>{command.command_id.slice(0, 16)}</code>
+            {commands.length ? (
+              <div className="trading-ledger-list">
+                {commands.map((item) => (
+                  <article className="trading-ledger-row" key={item.command_id}>
+                    <div>
+                      <b>{commandActionLabel(item.action)}</b>
+                      <span>{item.reason}</span>
+                    </div>
+                    <TradingProgress progress={commandProgress(item, observations)} />
                   </article>
                 ))}
               </div>
@@ -180,20 +177,20 @@ export function TradingPage({ token }: { token: string }) {
                 {ledgerEmpty(commandsQuery.isPending, commandsQuery.isError, "Command")}
               </TradingEmptyNote>
             )}
-            <TradingSourceLine path="GET /api/trading/execution/commands → commands[] · disposition" />
+            <TradingSourceLine path="GET /api/trading/execution/commands + observations → durable progress" />
           </Card>
 
           <Card
             flush
-            hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal；点一行读它自己冻结的判定证据"
+            hint="每个 SIGNAL_EMITTED Case 必须且只能对应一个 Signal；点一行读冻结证据"
             title="最近 Case"
           >
             {cases.length ? (
-              <div className="trading-table">
+              <div className="trading-case-list">
                 {cases.map((item) => (
                   <button
                     aria-expanded={item.case_id === selectedCaseId}
-                    className="trading-current-row trading-case-row"
+                    className="trading-case-card"
                     data-selected={item.case_id === selectedCaseId || undefined}
                     key={item.case_id}
                     onClick={() =>
@@ -202,11 +199,9 @@ export function TradingPage({ token }: { token: string }) {
                     type="button"
                   >
                     <b>{item.base_symbol}</b>
-                    <span>{caseClock(item.observed_at_ms)}</span>
                     <span>{caseStateLabel(item)}</span>
-                    <code>{item.market_key ?? "—"}</code>
                     <span>{policyReasonLabel(item.policy_reason)}</span>
-                    <code title={item.case_id}>{item.case_id.slice(0, 16)}</code>
+                    <small>{caseClock(item.observed_at_ms)}</small>
                   </button>
                 ))}
               </div>
@@ -217,72 +212,53 @@ export function TradingPage({ token }: { token: string }) {
             )}
             {selectedCase ? <TradingCaseDetail item={selectedCase} /> : null}
             {selectedCaseId && !selectedCase && cases.length ? (
-              /* The window is the lane's published `window_hours`, never a literal: a link from the OI
-                 audit can name a Case the rolling window has already dropped, and saying "24" here
-                 would be wrong the first time an operator changes it. */
               <TradingEmptyNote>
-                这个案例不在当前窗口的 {cases.length} 条里；账本按{" "}
-                {casesQuery.data?.window_hours ?? "—"} 小时滚动。
+                这个案例不在当前 {casesQuery.data?.window_hours ?? "—"} 小时窗口。
               </TradingEmptyNote>
             ) : null}
-            <TradingSourceLine path="GET /api/trading/cases → cases[] · state_counts_24h" />
           </Card>
 
-          <Card flush hint="不含账户、凭证、数量、杠杆、订单或保护参数" title="最近 TradeSignalV1">
-            {signalsQuery.data?.signals?.length ? (
-              <div className="trading-table">
-                {signalsQuery.data.signals?.map((signal) => (
-                  <article className="trading-current-row" key={signal.signal_id}>
-                    <b>{signal.direction.toUpperCase()}</b>
-                    <span data-tone={signal.expired ? "caution" : undefined}>
-                      {signal.expired ? "EXPIRED" : "VALID"}
+          <details className="trading-advanced-audit">
+            <summary>Advanced Audit</summary>
+            <div className="trading-advanced-body">
+              <p>
+                profile <code>{status.execution.profile_id}</code> · account slot{" "}
+                <code>{status.execution.account_slot}</code> · reconcile{" "}
+                <code>{status.execution.reconciliation_age_ms ?? "?"}ms</code>
+              </p>
+              <p>
+                runtime <code>{status.execution.runtime_release ?? "unavailable"}</code> · image{" "}
+                <code>{status.execution.image_digest ?? "unavailable"}</code> · credential{" "}
+                <code>{status.execution.credential_fingerprint ?? "unavailable"}</code>
+              </p>
+              <div className="trading-audit-list">
+                {(status.execution.current_account?.positions ?? []).map((item) => (
+                  <article key={`position:${item.position_id}`}>
+                    <b>current_position</b>
+                    <span>{item.side}</span>
+                    <code>{item.position_id}</code>
+                  </article>
+                ))}
+                {(status.execution.current_account?.orders ?? []).map((item) => (
+                  <article key={`order:${item.client_order_id}`}>
+                    <b>current_order</b>
+                    <span>
+                      {item.state} / {item.leg}
                     </span>
-                    <code>{signal.market_key}</code>
-                    <code title={signal.case_id}>{signal.case_id.slice(0, 16)}</code>
-                    <span>seq {signal.seq}</span>
-                    <code title={signal.signal_id}>{signal.signal_id.slice(0, 16)}</code>
+                    <code>{item.client_order_id}</code>
+                  </article>
+                ))}
+                {observations.map((item) => (
+                  <article key={item.event_id}>
+                    <b>{item.normalized_kind}</b>
+                    <span>seq {item.seq}</span>
+                    <code>{item.event_id}</code>
                   </article>
                 ))}
               </div>
-            ) : (
-              <TradingEmptyNote>
-                {ledgerEmpty(signalsQuery.isPending, signalsQuery.isError, "Signal")}
-              </TradingEmptyNote>
-            )}
-            <TradingSourceLine path="GET /api/trading/signals → signals[]" />
-          </Card>
-
-          <Card
-            flush
-            hint="Runtime 与 venue-native 回执；为空、RUNNING、alive 或 execution_safe 都不能被解释成订单或成交"
-            title="执行观察"
-          >
-            {observationsQuery.data?.observations?.length ? (
-              <div className="trading-table">
-                {observationsQuery.data.observations?.map((observation) => (
-                  <article className="trading-current-row" key={observation.event_id}>
-                    <b>{observation.normalized_kind}</b>
-                    <span>{observation.runtime_profile_id}</span>
-                    <code>
-                      {observation.signal_id?.slice(0, 16) ??
-                        observation.command_id?.slice(0, 16) ??
-                        "—"}
-                    </code>
-                    <span>seq {observation.seq}</span>
-                    <code title={observation.runtime_release}>
-                      {observation.runtime_release.slice(0, 16)}
-                    </code>
-                    <code title={observation.event_id}>{observation.event_id.slice(0, 16)}</code>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <TradingEmptyNote>
-                {ledgerEmpty(observationsQuery.isPending, observationsQuery.isError, "Observation")}
-              </TradingEmptyNote>
-            )}
-            <TradingSourceLine path="GET /api/trading/execution/observations → observations[]" />
-          </Card>
+              <TradingSourceLine path="GET /api/trading/status + execution observations → identities and digests" />
+            </div>
+          </details>
         </div>
       </PageState.Stale>
     </TradingShell>
@@ -293,29 +269,29 @@ function commandActionLabel(action: string): string {
   return (
     {
       emergency_halt: "紧急停止",
-      flatten: "减仓至空",
+      flatten: "Flatten account",
       manual_entry: "手动方向",
-      pause_entries: "暂停开仓",
-      resume_entries: "恢复开仓",
+      pause_entries: "Pause entries",
+      resume_entries: "Resume / Arm",
     }[action] ?? action
   );
-}
-
-function commandDispositionLabel(command: {
-  disposition?: string | null;
-  disposition_reason?: string | null;
-  expired: boolean;
-}): string {
-  if (command.disposition) {
-    return command.disposition_reason
-      ? `${command.disposition} · ${command.disposition_reason}`
-      : command.disposition;
-  }
-  return command.expired ? "已过期 · 未见终局" : "等待 Runtime";
 }
 
 function ledgerEmpty(pending: boolean, failed: boolean, owner: string): string {
   if (pending) return `正在读取 ${owner} 账本…`;
   if (failed) return `${owner} 账本读取失败，不能据此断言为空。`;
   return `当前 24 小时窗口没有 ${owner}。`;
+}
+
+function observationReadWarning(query: {
+  data?: { complete: boolean };
+  isError: boolean;
+  isPending: boolean;
+}): string | null {
+  if (query.isPending) return "正在读取 Observation；persisted 之后的阶段暂时未知。";
+  if (query.isError) return "Observation 账本读取失败；不能断言 Runtime、venue、fill 或完成状态。";
+  if (query.data && !query.data.complete) {
+    return "Observation 窗口已截断；未关联到回执不能解释为尚未发生。";
+  }
+  return null;
 }

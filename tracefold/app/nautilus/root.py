@@ -386,6 +386,7 @@ async def _run_active_runtime_with_state(
             entry_block_reason="runtime_starting",
             started_at_ns=started_at_ns,
             updated_at_ns=started_at_ns,
+            account_snapshot=strategy.account_snapshot(account_observed_at_ns=observed_at_ns),
         )
         _observe_runtime_start(audit=audit, state=state)
         projector.start(state)
@@ -476,6 +477,7 @@ async def _run_active_runtime_with_state(
                     heartbeat_at_ns=now_ns,
                     entry_block_reason=entry_block_reason,
                     updated_at_ns=now_ns,
+                    account_snapshot=strategy.account_snapshot(account_observed_at_ns=observed_at_ns),
                 )
             )
             probe.publish(_probe_payload(state))

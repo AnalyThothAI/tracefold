@@ -1,4 +1,4 @@
-"""Read-only Source, Case, Signal, Observation, and execution-readiness routes."""
+"""Trading reads plus the one authenticated bounded operator-command append."""
 
 from __future__ import annotations
 
@@ -8,17 +8,24 @@ import re
 import time
 from typing import Annotated, Any, Final
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
+from pydantic import ValidationError
 
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.app.trading_config import ADMISSION_VERSION, signal_lane_config
 from tracefold.news.oi_signals import METRIC_VERSION as OI_METRIC_VERSION
-from tracefold.trading import DecisionRuntimeV1, canonical_sha256
+from tracefold.trading import (
+    DecisionRuntimeV1,
+    OperatorCommandError,
+    canonical_sha256,
+    parse_operator_command,
+    prepare_parsed_operator_intent,
+)
 
-from ..dependencies import _authenticated_runtime, _validate_query_params
+from ..dependencies import _authenticated_runtime, _authenticated_write_runtime, _validate_query_params
 from ..exceptions import ApiBadRequest
-from ..responses import _etagged
+from ..responses import _etagged, _validated_json
 from ..schemas import common as api_schemas
 from ..schemas import trading as trading_schemas
 
@@ -30,6 +37,7 @@ _CasesEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingCasesData]
 _SignalsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingSignalsData]
 _ObservationsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingExecutionObservationsData]
 _CommandsEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorIntentsData]
+_CommandReceiptEnvelope = api_schemas.ApiEnvelope[trading_schemas.TradingOperatorCommandReceiptData]
 
 _WINDOW_MS: Final = 24 * 3_600_000
 _ROW_LIMIT: Final = 100
@@ -58,6 +66,17 @@ _OBSERVATION_KINDS: Final = frozenset(
     }
 )
 _COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "emergency_halt", "flatten", "manual_entry"})
+_CONSOLE_COMMAND_ACTIONS: Final = frozenset({"pause_entries", "resume_entries", "flatten"})
+_MAX_FUTURE_SKEW_NS: Final = 30_000_000_000
+_MAX_COMMAND_REQUEST_BYTES: Final = 2_048
+_COMMAND_REQUEST_OPENAPI: Final = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {"schema": trading_schemas.TradingOperatorCommandRequestData.model_json_schema()}
+        },
+    }
+}
 
 
 @router.get("/trading/status", response_model=_StatusEnvelope)
@@ -306,6 +325,65 @@ def get_operator_intents(
         },
         request,
         envelope=_CommandsEnvelope,
+    )
+
+
+@router.post(
+    "/trading/execution/commands",
+    response_model=_CommandReceiptEnvelope,
+    openapi_extra=_COMMAND_REQUEST_OPENAPI,
+)
+async def post_operator_intent(
+    request: Request,
+    runtime: Annotated[Any, Depends(_authenticated_write_runtime)],
+) -> Response:
+    """Persist one bounded console intent; Runtime and venue outcomes remain separate facts."""
+
+    _validate_query_params(request, supported=set())
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_COMMAND_REQUEST_BYTES:
+            raise ApiBadRequest("operator_command_request_too_large")
+    try:
+        command = trading_schemas.TradingOperatorCommandRequestData.model_validate_json(bytes(body))
+    except ValidationError:
+        raise ApiBadRequest("operator_command_request_invalid") from None
+    requested_at_ns = command.requested_at_ms * 1_000_000
+    now_ns = time.time_ns()
+    try:
+        parsed = parse_operator_command(command.text)
+        if parsed.action not in _CONSOLE_COMMAND_ACTIONS:
+            raise OperatorCommandError("operator_console_action_unsupported")
+        prepared = prepare_parsed_operator_intent(
+            parsed,
+            source="http:operator-console:v1",
+            source_command_id=command.request_id,
+            target_profile_id=runtime.settings.trading.execution.profile_id,
+            operator_identity="operator-console",
+            authentication_identity="http-bearer:v1",
+            requested_at_ns=requested_at_ns,
+        )
+        if requested_at_ns > now_ns + _MAX_FUTURE_SKEW_NS:
+            raise OperatorCommandError("operator_command_clock_invalid")
+        if prepared.value.expires_at_ns <= now_ns:
+            raise OperatorCommandError("operator_command_expired")
+    except OperatorCommandError as exc:
+        raise ApiBadRequest(exc.code, field="text") from None
+    receipt = runtime.persist_operator_intent(prepared)
+    return _validated_json(
+        _CommandReceiptEnvelope,
+        {
+            "ok": True,
+            "data": {
+                "command_id": receipt.command_id,
+                "seq": receipt.seq,
+                "requested_at_ns": requested_at_ns,
+                "disposition": receipt.disposition,
+                "reason": receipt.reason,
+                "truth": "intent_recorded_not_runtime_or_venue",
+            },
+        },
     )
 
 

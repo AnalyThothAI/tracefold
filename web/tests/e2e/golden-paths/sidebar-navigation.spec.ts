@@ -7,7 +7,7 @@ import { installMockApi } from "@tests/e2e/support/mockApi";
 
 /**
  * The sidebar is fixed in the frame from 1280px up; below that, the topbar trigger opens the same navigation
- * in a drawer. Both widths reach the same four destinations from one model.
+ * in a drawer. Both widths reach the same three destinations from one model.
  */
 async function expectSidebarRouteChange(page: Page, routeName: string, expectedPath: string) {
   const primaryNavigation = page.getByRole("navigation", { name: "Primary navigation" });
@@ -23,7 +23,7 @@ test.describe("desktop sidebar navigation", () => {
     test.skip(!testInfo.project.name.startsWith("desktop-"), "desktop-only sidebar contract");
   });
 
-  test("keeps all four destinations in the fixed desktop frame", async ({ page }) => {
+  test("keeps all three destinations in the fixed desktop frame", async ({ page }) => {
     await installMockApi(page);
     await page.goto("/");
 
@@ -38,11 +38,11 @@ test.describe("desktop sidebar navigation", () => {
     expect(column?.x ?? 0).toBeGreaterThanOrEqual(panel?.width ?? 0);
 
     await expect(primaryNavigation.getByRole("link", { name: "事件流" })).toBeVisible();
-    await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toBeVisible();
     await expect(primaryNavigation.getByRole("link", { name: "OI 来源与准入审计" })).toBeVisible();
-    // #256: four working surfaces in two groups, and no ReviewDesk destination at all.
-    await expect(primaryNavigation.getByRole("link")).toHaveCount(4);
+    // #256/#460: three working surfaces in two groups, with neither Alpha 判定 nor ReviewDesk duplicated.
+    await expect(primaryNavigation.getByRole("link")).toHaveCount(3);
+    await expect(primaryNavigation.getByRole("link", { name: "Alpha 判定" })).toHaveCount(0);
     await expect(primaryNavigation.getByRole("link", { name: "学习复盘" })).toHaveCount(0);
     // Alpha decision state and explicit execution mode ride beside the label without renaming it.
     await expect(primaryNavigation.getByRole("link", { name: "交易" })).toContainText(

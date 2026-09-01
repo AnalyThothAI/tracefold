@@ -2,7 +2,7 @@
 
 > **Scope.** Owns the `web/` architecture, layer responsibilities, component conventions, and the UI verification gate. Backend layer boundaries live in `ARCHITECTURE.md`; public HTTP contracts live in `CONTRACTS.md`; install and run commands live in `SETUP.md`.
 
-The React operator console is a News workbench with one read-only Alpha/Execution view. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP. Every one of them is a read: since #256 the browser has no write path at all — the ReviewDesk page and its two mutation endpoints are gone, and `lib/api/client.ts` no longer exposes a `postApi`, so "the console cannot write" is true by construction rather than by convention. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
+The React operator console is a News workbench plus one actionable Alpha/Execution desk. It reads exactly `/api/bootstrap`, `/api/status`, `/api/news/feed`, `/api/news/events/{event_id}`, `/api/news/status`, `/api/news/quotes`, `/api/news/symbols/{base}`, `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, `/api/trading/execution/observations`, `/api/trading/execution/commands`, `/api/trading/gate`, and `/api/trading/gate/{event_id}` over HTTP. Every operation is a read except the exact authenticated `POST /api/trading/execution/commands`, which can append only pause, confirmed resume, or confirmed account-flatten intents in the existing closed grammar. It cannot submit an order or accept quantity, notional, leverage, venue, or direction. There is no WebSocket client, no separate Search route, no Token Case, no token identity or DEX/CEX market surface, no provider image lane, and no Macro workbench.
 
 ## Source Layer Map (`web/src/`)
 
@@ -308,22 +308,31 @@ the route components into the eager shell chunk.
   pipeline dropped it and it moved 3%" is the one thing the conclusion cannot
   say. A horizon that has not matured reads `未到期`, never `0.00%`.
 
-  `/trading` is the read-only Alpha/Execution observer. It reads
-  `/api/trading/status`, `/api/trading/cases`, `/api/trading/signals`, and
-  `/api/trading/execution/observations`; the page has no
-  action, mode switch, approval, credential upload, resend, resolve, or
-  alternate backend affordance.
+  `/trading` is the Alpha/Execution operator desk. Its first screen answers
+  `alive`, `execution_safe`, `entries_armed` plus the blocking reason, and
+  `ACCOUNT FLAT · PROVEN`; current equity, UTC-day drawdown, aggregate risk,
+  position side/quantity/entry/mark/unrealized PnL, protection quantity/trigger/
+  full coverage, and open/in-flight/unknown orders come from the Runtime-owned
+  current account read model. Missing or partial current facts remain visibly
+  unavailable; zero visible rows never becomes flatness evidence. Only a fresh
+  Binance private reconciliation may light the proven-flat state.
 
-  The header names Decision state, the frozen Alpha contract, explicit
-  execution mode/profile/account, `ready=false`, and bounded Case/Signal counts.
-  The body keeps Case, Signal, and Observation in three distinct ledger
-  sections. A Signal is labelled as an Alpha handoff, never as an order or fill;
-  an empty Observation section is not flatness evidence.
+  Pause writes immediately; Resume / Arm and Flatten use a confirmation dialog,
+  and Live requires the operator to type `CONFIRM`. `execution.mode=disabled`
+  locks all three controls. A successful POST says only that the Command was
+  persisted. Each recent Signal and Command keeps persisted, Runtime disposition,
+  venue order/fill, position, and final private-flat stages separate, so HTTP
+  success, Runtime acceptance, order acceptance, fill observation, and account
+  flatness are never inferred from one another. Raw IDs, sequence numbers,
+  release/image/config/credential identities, and the Observation stream live
+  only under `Advanced Audit`.
 
   When Decision is disabled, empty ledger copy says the lane has no work; it
   never rebrands execution as paper. Loading, cold failure, stale
   refresh, and a genuinely empty batch remain different page states. Legacy
-  Orders and observations are absent by contract, not filtered in the browser.
+  The responsive desk uses cards and wrapping progress rows at desktop, tablet,
+  and phone widths; it does not depend on the retired 980–1480px Capital,
+  Binding, Authority, or Lifecycle tables.
 
 
   The Event detail's 未成案 chip carries the admission ledger's stage and reason
@@ -531,13 +540,19 @@ Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manual
    The box has no submit button: `Enter` submits, and the visible `/` keycap is inert on every route.
 3. Verify visible loading/empty/error states are structured, labelled, and non-overlapping.
 4. Confirm no failing `/api/*` requests and no WebSocket connection attempt in the browser session.
+   On `/trading`, verify disabled controls; alive-but-unsafe and safe-but-paused
+   states; a protected position; pending/failed protection; an unknown order;
+   persisted, Runtime-accepted, order-accepted, fill-observed, flatten-pending,
+   expired/rejected, and fresh-private-flat progress. Confirm paper Resume and
+   Flatten require the dialog, Live additionally requires typed `CONFIRM`, and
+   every success message still denies Runtime/venue completion.
 5. Confirm the topbar shows no status pill while `/api/status.runtime.ok` is
    true and shows the first runtime reason when it is not, and that the feed
    header shows no health pill while `health.overall` is `ok`.
-6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists.
+6. At `390px`, confirm there is no sidebar trigger, the bottom tab bar shows every destination with 48px targets and clears the home indicator, `.topbar` / `.center-column` / the bar do not overlap, Event rows read as separate cards with no select box and no expand caret, the funnel tiles and task tabs scroll horizontally inside themselves without giving the page a horizontal scroll, `/` lands on the News list, the approved tabs/time/filter controls remain reachable, and no retired Tape/task bar exists. On `/trading`, confirm risk, controls, positions, progress, Cases, confirmation dialog, and `Advanced Audit` remain reachable without page-level horizontal overflow.
 7. At tablet width around `834px`, confirm the desktop sidebar is not mounted, the topbar trigger opens the drawer, drawer route navigation and topbar search still work, and the News list and no-overflow contract remain intact.
    At `1280px` and above, confirm `/news` keeps the sidebar fixed in the frame with no trigger, other routes
-   retain the shared fold trigger, all four destinations are present and 交易 carries its mode word,
+   retain the shared fold trigger, all three destinations are present and 交易 carries its mode word,
    `/news/events/:eventId` keeps `事件流` current, and the feed count matches
    the funnel's `收到`.
 8. Confirm the keyboard binds nothing on `/news`: `⌘K`, `?`, `J`, `K`,

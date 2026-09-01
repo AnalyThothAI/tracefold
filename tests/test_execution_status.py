@@ -6,6 +6,8 @@ from uuid import UUID
 
 from tracefold.app.execution_status import execution_readiness_projection
 from tracefold.trading.storage.execution_stream import (
+    ExecutionAccountPosition,
+    ExecutionAccountSnapshot,
     ExecutionRuntimeControlState,
     ExecutionRuntimeState,
 )
@@ -82,6 +84,69 @@ def test_active_execution_projects_exact_runtime_gates_and_identity() -> None:
     assert projection["runtime_release"] == "nautilus-1.231.0+oi-v1"
     assert projection["credential_fingerprint"] == "d" * 64
     assert projection["reconciliation_age_ms"] == 1_000
+    assert projection["account_flat_proven"] is True
+
+
+def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
+    projection = execution_readiness_projection(
+        _execution(),
+        replace(
+            _state(heartbeat_at_ns=20_000_000_000),
+            reconciliation_observed_at_ns=9_000_000_000,
+            updated_at_ns=20_000_000_000,
+        ),
+        _control(),
+        now_ns=20_000_000_000,
+    )
+
+    assert projection["alive"] is True
+    assert projection["execution_safe"] is True
+    assert projection["account_flat"] is True
+    assert projection["account_flat_proven"] is False
+    assert projection["reconciliation_age_ms"] == 11_000
+
+
+def test_current_account_projection_remains_a_distinct_read_model() -> None:
+    snapshot = ExecutionAccountSnapshot(
+        observed_at_ns=9_000_000_000,
+        market_observed_at_ns=8_900_000_000,
+        equity_usd="995",
+        day_start_equity_usd="1000",
+        daily_drawdown_usd="5",
+        daily_drawdown_bps=50,
+        aggregate_risk_usd="2.5",
+        positions=(
+            ExecutionAccountPosition(
+                position_id="position-1",
+                instrument_id="BTCUSDT-PERP.BINANCE",
+                side="long",
+                quantity="0.01",
+                entry_price="100000",
+                mark_price="100500",
+                unrealized_pnl_usd="5",
+                owned=True,
+                protection_status="protected",
+                protection_quantity="0.01",
+                protection_trigger_price="99000",
+                protection_full_coverage=True,
+            ),
+        ),
+        orders=(),
+        open_orders_count=1,
+        inflight_orders_count=0,
+        unknown_orders_count=0,
+        complete=True,
+    )
+    projection = execution_readiness_projection(
+        _execution(),
+        replace(_state(), account_flat=False, positions_count=1, account_snapshot=snapshot),
+        _control(),
+        now_ns=10_000_000_000,
+    )
+
+    assert projection["account_flat_proven"] is False
+    assert projection["current_account"]["equity_usd"] == "995"
+    assert projection["current_account"]["positions"][0]["protection_full_coverage"] is True
 
 
 def test_active_execution_fails_closed_on_identity_or_heartbeat_drift() -> None:

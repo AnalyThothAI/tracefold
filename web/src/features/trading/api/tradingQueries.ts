@@ -1,7 +1,7 @@
-import { getApi } from "@lib/api/client";
+import { getApi, postApi } from "@lib/api/client";
 import type { components } from "@lib/types/openapi";
 import { queryKeys } from "@shared/query/queryKeys";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 type TradingSchemas = components["schemas"];
 
@@ -19,6 +19,7 @@ export type TradingExecutionObservations = TradingSchemas["TradingExecutionObser
 export type TradingExecutionObservation = TradingSchemas["TradingExecutionObservationData"];
 export type TradingOperatorIntents = TradingSchemas["TradingOperatorIntentsData"];
 export type TradingOperatorIntent = TradingSchemas["TradingOperatorIntentData"];
+export type TradingOperatorCommandReceipt = TradingSchemas["TradingOperatorCommandReceiptData"];
 export type TradingGate = TradingSchemas["TradingGateData"];
 export type TradingGateSource = TradingSchemas["TradingGateSourceData"];
 export type TradingGateDecision = TradingSchemas["TradingGateDecisionData"];
@@ -102,6 +103,32 @@ export const useTradingCommandsWithToken = (token: string) =>
     refetchInterval: TRADING_REFETCH_MS,
     staleTime: 5_000,
   });
+
+export const useIssueTradingCommandWithToken = (token: string) => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationKey: ["trading-operator-command"],
+    mutationFn: async (command: { requestId: string; requestedAtMs: number; text: string }) =>
+      (
+        await postApi<TradingOperatorCommandReceipt>("/api/trading/execution/commands", {
+          body: {
+            request_id: command.requestId,
+            requested_at_ms: command.requestedAtMs,
+            text: command.text,
+          },
+          token,
+        })
+      ).data,
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.tradingCommands() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tradingObservations() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.tradingStatus() }),
+      ]);
+    },
+    retry: false,
+  });
+};
 
 export const useTradingGateWithToken = (token: string) =>
   useQuery({

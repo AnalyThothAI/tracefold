@@ -70,12 +70,12 @@ export function TradingSymbolSection({ base, token }: { base: string; token: str
                   : "未知";
               return (
                 <article className="trading-case-row" key={record.case_id}>
-                  <span>{caseClock(record.observed_at_ms)}</span>
-                  <span>{policyLabel(record.policy_id)}</span>
-                  <span>{caseStateLabel(record)}</span>
-                  <span>{policyReasonLabel(record.policy_reason)}</span>
-                  <span>{signalLabel}</span>
-                  <span>{ttlLabel}</span>
+                  <span data-label="CUTOFF">{caseClock(record.observed_at_ms)}</span>
+                  <span data-label="策略">{policyLabel(record.policy_id)}</span>
+                  <span data-label="Case">{caseStateLabel(record)}</span>
+                  <span data-label="规则">{policyReasonLabel(record.policy_reason)}</span>
+                  <span data-label="Signal">{signalLabel}</span>
+                  <span data-label="TTL">{ttlLabel}</span>
                 </article>
               );
             })}
