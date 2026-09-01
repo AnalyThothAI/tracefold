@@ -1,0 +1,155 @@
+{
+  "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
+  "source_main": "f495a9fc0d0ba0d528e40b588e76108d80cdfefe",
+  "captured_at": "2026-09-01T12:41:45.075355+00:00",
+  "environment": {
+    "platform": "Darwin",
+    "machine": "arm64",
+    "postgresql": "isolated migrated test database",
+    "nautilus": "1.231.0 pinned strategy/cache/portfolio seam",
+    "binance_demo_active": false
+  },
+  "owner_matrix": [
+    {
+      "fact": "unresolved_signal_command_read",
+      "owner": "OiRuntimeDatabaseBridge._cycle",
+      "authority": "PostgreSQL durable indexed anti-join reads",
+      "repair": "production fixed 200 ms cycle; the unused LISTEN loop is the PR-A duplicate to remove",
+      "source": "tracefold/app/nautilus/oi_runtime.py",
+      "symbol": "OiRuntimeDatabaseBridge._cycle"
+    },
+    {
+      "fact": "callback_operational_state",
+      "owner": "OiNautilusStrategy",
+      "authority": "Nautilus Cache and Portfolio",
+      "repair": "complete private reconciliation may refresh Cache outside callbacks",
+      "source": "tracefold/integrations/nautilus/oi_runtime/strategy.py",
+      "symbol": "OiNautilusStrategy"
+    },
+    {
+      "fact": "authoritative_account_flat",
+      "owner": "_reconcile_account",
+      "authority": "complete Binance private position, regular-order, and Algo-order reports",
+      "repair": "startup and current two-second custom private reconciliation",
+      "source": "tracefold/app/nautilus/root.py",
+      "symbol": "_reconcile_account"
+    },
+    {
+      "fact": "current_runtime_status",
+      "owner": "_run_active_runtime",
+      "authority": "generation-fenced trading_execution_runtime_state projection",
+      "repair": "state change plus 500 ms heartbeat before the public stale budget",
+      "source": "tracefold/app/nautilus/root.py",
+      "symbol": "_run_active_runtime"
+    },
+    {
+      "fact": "durable_audit",
+      "owner": "OiRuntimeDatabaseBridge._cycle",
+      "authority": "append-only ExecutionObservationV1 batch",
+      "repair": "bounded in-memory retry and explicit durable audit_gap",
+      "source": "tracefold/app/nautilus/oi_runtime.py",
+      "symbol": "OiRuntimeDatabaseBridge._cycle"
+    }
+  ],
+  "measurements": {
+    "stream_latency": {
+      "status": "observed",
+      "production_delivery_path": "fixed_poll_without_listener",
+      "bursts": {
+        "1": {
+          "samples": 6,
+          "delivery_path": "production_fixed_poll",
+          "poll_cadence_ms": 200,
+          "persisted_to_dequeued_p95_ms": 213.165,
+          "reader_calls_per_cycle": 2,
+          "pending_identity_duplicates": 0
+        },
+        "10": {
+          "samples": 6,
+          "delivery_path": "production_fixed_poll",
+          "poll_cadence_ms": 200,
+          "persisted_to_dequeued_p95_ms": 184.578,
+          "reader_calls_per_cycle": 2,
+          "pending_identity_duplicates": 0
+        },
+        "100": {
+          "samples": 6,
+          "delivery_path": "production_fixed_poll",
+          "poll_cadence_ms": 200,
+          "persisted_to_dequeued_p95_ms": 203.705,
+          "reader_calls_per_cycle": 2,
+          "pending_identity_duplicates": 0
+        }
+      },
+      "missed_wake_repair_ms": 203.767,
+      "repair_cadence_ms": 200,
+      "ttl_ms": 60000
+    },
+    "database": {
+      "status": "observed",
+      "indexed_queries_per_input_cycle": 2,
+      "max_connections_in_isolated_database": 2
+    },
+    "audit_append": {
+      "status": "observed",
+      "batch_count": 100,
+      "queued_bytes_before_flush": 52990,
+      "append_ms": 32.764,
+      "remaining_count": 0,
+      "remaining_bytes": 0
+    },
+    "runtime_lifecycle": {
+      "status": "observed",
+      "seam": "pinned_nautilus_strategy_cache_portfolio",
+      "duration_ms": 2.962,
+      "orders": [
+        {"type": "MARKET", "reduce_only": false},
+        {"type": "STOP_MARKET", "reduce_only": true},
+        {"type": "MARKET", "reduce_only": true}
+      ],
+      "flatten_pending_after_submit": 1
+    },
+    "http_reads_15s": {
+      "status": "observed",
+      "window_seconds": 15.0,
+      "interval_ms": 500,
+      "request_count": 29,
+      "latency_p95_ms": 26.962
+    },
+    "quote_subscriptions": {
+      "status": "derived_from_pinned_source",
+      "synthetic_route_count": 525,
+      "subscription_attempts": 525,
+      "inbound_message_rate": null,
+      "inbound_message_rate_status": "not_observed_without_active_binance_demo_runtime",
+      "is_production_collector": false
+    },
+    "event_loop": {
+      "status": "not_observed",
+      "reason": "requires_active_binance_demo_runtime",
+      "lag_p95_ms": null
+    },
+    "private_reconciliation": {
+      "status": "not_observed",
+      "reason": "requires_active_binance_demo_runtime",
+      "call_count": null,
+      "latency_p95_ms": null,
+      "rate_limit_headers": null
+    },
+    "cpu_rss": {
+      "status": "observed",
+      "scope": "diagnostic_process_including_postgres_and_http_clients",
+      "user_cpu_seconds": 0.679943,
+      "system_cpu_seconds": 0.173086,
+      "max_rss_bytes": 286130176
+    }
+  },
+  "interpretation": {
+    "normal_stream_slo_ms": 250,
+    "missed_wake_ttl_fraction": "1/3",
+    "observed_duplicate_economic_orders": 0,
+    "observed_duplicate_active_protections": 0,
+    "external_provider_claim": "none",
+    "comparison_rule": "later PRs compare only like-for-like observed fields; provider-only fields require Demo evidence"
+  }
+}
