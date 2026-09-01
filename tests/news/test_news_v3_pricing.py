@@ -553,7 +553,10 @@ def test_delivery_points_use_trade_first_and_one_minute_candle_after_a_sixty_sec
         return (Candle(end_ms - 60_000, end_ms, Decimal("100")),)
 
     monkeypatch.setattr("tracefold.integrations.venues.delivery_prices.fetch_binance_trade_before", trades)
-    monkeypatch.setattr("tracefold.integrations.venues.delivery_prices.fetch_binance_candles", candles)
+    # The reader resolves its adapter through `candle_fetcher_for` since #460 rather than naming one
+    # venue's function, so this patches the resolver — which is also the contract worth asserting here:
+    # whatever it hands back is called with the one-minute interval and the target as the window end.
+    monkeypatch.setattr("tracefold.integrations.venues.delivery_prices.candle_fetcher_for", lambda venue: candles)
 
     points = asyncio.run(fetch_delivery_price_points("MSFTUSDT", venue="binance.perp", targets_ms=[current, old]))
 

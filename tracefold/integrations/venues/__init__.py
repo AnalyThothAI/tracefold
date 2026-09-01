@@ -19,6 +19,7 @@ from .binance import (
 )
 from .bitget import BITGET_BASE_URL, fetch_bitget_instruments
 from .candles import (
+    candle_fetcher_for,
     fetch_binance_candles,
     fetch_bitget_candles,
     fetch_hyperliquid_candles,
@@ -59,6 +60,7 @@ __all__ = [
     "US_REFERENCE_VENUE",
     "VenueCatalogTradabilityVerifier",
     "VenueExpectedError",
+    "candle_fetcher_for",
     "fetch_binance_candles",
     "fetch_binance_futures_day_quotes",
     "fetch_binance_futures_quotes",

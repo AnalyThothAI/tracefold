@@ -87,27 +87,44 @@ def _wire_signal_lane(
     )
 
 
-async def _source_native_bars(candidate: OiTradeCandidate, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
-    """Fetch public bars from the Source's own venue; this is evidence, never an execution route."""
+async def _source_native_candles(
+    source_venue: str, base_symbol: str, start_ms: int, end_ms: int
+) -> Sequence[TradingBar]:
+    """Public bars from a Source's own venue, in that venue's own spelling of the market.
 
-    if candidate.venue == "binance.usdm":
+    Two vocabularies meet here and only here. A Source carries the provider's venue key
+    (`binance.usdm`, `hyperliquid.perp`, `hyperliquid.xyz`) and `integrations.venues` answers to the
+    price-plane key (`binance.perp`, `hl.perp`, `hl.xyz`), and the symbol is spelled differently on
+    each side too — `SOLUSDT` against `SOL`, `xyz:AAPL` against a bare ticker on the builder DEX.
+    Writing that translation twice, once for the pre-move read and once for the four-hour result read,
+    is how the two come to disagree about which book a Signal was measured on. It is one function.
+
+    This is evidence, never an execution route: nothing here chooses where an order would go. The
+    return type is Trading's own `Bar` rather than the venue package's `Candle`, because a `Candle` is
+    a News type and this seam belongs to neither capability's tables.
+    """
+
+    if source_venue == "binance.usdm":
         candles = await fetch_binance_candles(
-            f"{candidate.base_symbol}USDT",
-            venue="binance.perp",
-            start_ms=start_ms,
-            end_ms=end_ms,
+            f"{base_symbol}USDT", venue="binance.perp", start_ms=start_ms, end_ms=end_ms
         )
-    elif candidate.venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
-        venue_symbol = f"xyz:{candidate.base_symbol}" if candidate.venue == "hyperliquid.xyz" else candidate.base_symbol
+    elif source_venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
+        builder_dex = source_venue == "hyperliquid.xyz"
         candles = await fetch_hyperliquid_candles(
-            venue_symbol,
-            venue="hl.xyz" if candidate.venue == "hyperliquid.xyz" else "hl.perp",
+            f"xyz:{base_symbol}" if builder_dex else base_symbol,
+            venue="hl.xyz" if builder_dex else "hl.perp",
             start_ms=start_ms,
             end_ms=end_ms,
         )
-    else:  # pragma: no cover - admission carries the closed source venue
+    else:
         raise RuntimeError("trading_source_venue_unresolved")
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
+
+
+async def _source_native_bars(candidate: OiTradeCandidate, start_ms: int, end_ms: int) -> Sequence[TradingBar]:
+    """The pre-move read: the Case's own bars, on the venue its Source was observed on."""
+
+    return await _source_native_candles(candidate.venue, candidate.base_symbol, start_ms, end_ms)
 
 
 async def _source_native_result_bars(
@@ -125,21 +142,8 @@ async def _source_native_result_bars(
     base_symbol = market_key.split(":")[2] if market_key.count(":") >= 3 else ""
     if not base_symbol:
         raise RuntimeError("trading_notification_market_key_unresolved")
-    if venue == "binance.usdm":
-        candles = await fetch_binance_candles(
-            f"{base_symbol}USDT", venue="binance.perp", start_ms=start_ms, end_ms=end_ms
-        )
-    elif venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
-        venue_symbol = f"xyz:{base_symbol}" if venue == "hyperliquid.xyz" else base_symbol
-        candles = await fetch_hyperliquid_candles(
-            venue_symbol,
-            venue="hl.xyz" if venue == "hyperliquid.xyz" else "hl.perp",
-            start_ms=start_ms,
-            end_ms=end_ms,
-        )
-    else:
-        raise RuntimeError("trading_source_venue_unresolved")
-    return tuple((int(candle.open_at_ms), str(candle.close)) for candle in candles)
+    bars = await _source_native_candles(venue, base_symbol, start_ms, end_ms)
+    return tuple((int(bar.open_at_ms), str(bar.close)) for bar in bars)
 
 
 async def run_signal_lane(

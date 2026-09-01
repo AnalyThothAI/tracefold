@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from decimal import Decimal, InvalidOperation
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import httpx
 
@@ -347,6 +347,49 @@ def _mapping_candles(
     return tuple(out)
 
 
+class VenueCandleFetcher(Protocol):
+    """The shape all five adapters share, minus each one's own base-URL keyword."""
+
+    async def __call__(
+        self,
+        venue_symbol: str,
+        *,
+        venue: str,
+        start_ms: int,
+        end_ms: int,
+        interval: str = ...,
+        transport: httpx.AsyncBaseTransport | None = ...,
+    ) -> tuple[Candle, ...]: ...
+
+
+# Which adapter answers for a venue key, in one place. Two callers used to carry their own
+# `startswith` ladder over the same five functions — the reaction loop's over three of them and the
+# delivery-price reader's over all five — and the pair read as an accident rather than as a
+# difference. It is a real difference, so it stays visible at the two call sites as an explicit
+# supported-prefix tuple; what is gone is the second copy of "which function fetches which venue".
+_CANDLE_FETCHERS: Final[tuple[tuple[str, VenueCandleFetcher], ...]] = (
+    ("binance.", fetch_binance_candles),
+    ("hl.", fetch_hyperliquid_candles),
+    ("okx.", fetch_okx_candles),
+    ("lighter.", fetch_lighter_candles),
+    ("bitget.", fetch_bitget_candles),
+)
+
+
+def candle_fetcher_for(venue: str, *, prefixes: Sequence[str] | None = None) -> VenueCandleFetcher | None:
+    """The adapter for `venue`, or `None` when this package cannot fetch candles for it.
+
+    `prefixes` narrows the answer to a caller's own supported set. A caller that passes one is saying
+    "this surface deliberately covers fewer venues than the package does", which is a claim worth
+    having to write down; a caller that omits it gets every venue with an adapter.
+    """
+
+    for prefix, fetcher in _CANDLE_FETCHERS:
+        if venue.startswith(prefix):
+            return fetcher if prefixes is None or venue.startswith(tuple(prefixes)) else None
+    return None
+
+
 def _limit_for(start_ms: int, end_ms: int, *, interval_ms: int) -> int:
     span = max(0, int(end_ms) - int(start_ms))
     return max(1, min(_BINANCE_LIMIT_MAX, span // int(interval_ms) + 2))
@@ -380,6 +423,8 @@ __all__ = [
     "BINANCE_FUTURES_BASE_URL",
     "BINANCE_SPOT_BASE_URL",
     "HYPERLIQUID_BASE_URL",
+    "VenueCandleFetcher",
+    "candle_fetcher_for",
     "fetch_binance_candles",
     "fetch_bitget_candles",
     "fetch_hyperliquid_candles",
