@@ -21,7 +21,7 @@ describe("AppSidebar", () => {
     ]);
   });
 
-  it("renders the four supported primary destinations", () => {
+  it("renders the three supported primary destinations", () => {
     renderSidebar({
       badges: { tradingEnvironment: "Demo" },
       counts: { events: 1463, oiFrames: 188 },
@@ -31,23 +31,22 @@ describe("AppSidebar", () => {
     const links = within(navigation).getAllByRole("link");
     // #207: every slot is a working surface. 流水线状态 kept its route and lost its slot — a healthy
     // pipeline made it a click that answers "everything is fine". #256 removed 学习复盘 outright: the
-    // ReviewDesk is a CLI lane now, and the telemetry audit moved under 数据健康.
+    // ReviewDesk is a CLI lane now, and the telemetry audit moved under 数据健康. #460 removed
+    // Alpha 判定, whose Cases and frozen evidence are both on 交易.
     expect(links.map((link) => link.getAttribute("href"))).toEqual([
       "/news",
-      "/news/alpha",
       "/trading",
       "/news/oi",
     ]);
-    // Both News lanes carry their own 24 h intake, compacted to fit beside the label.
     expect(links[0].textContent).toContain("事件流");
     expect(links[0].textContent).toContain("1.4k");
-    expect(links[1].textContent).toContain("Alpha 判定");
-    // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before opening
-    // it, and a count of orders would not answer that.
-    expect(links[2].textContent).toContain("交易");
-    expect(links[2].textContent).toContain("Demo");
-    expect(links[3].textContent).toContain("OI 来源与准入审计");
-    expect(links[3].textContent).toContain("188");
+    // 交易 carries a word, not a volume: "is any of this real money" is what a reader needs before
+    // opening it, and at 204px the badge and a count together clip the label to one glyph.
+    expect(links[1].textContent).toContain("交易");
+    expect(links[1].textContent).toContain("Demo");
+    expect(links[1].textContent).not.toMatch(/\d/);
+    expect(links[2].textContent).toContain("OI 来源与准入审计");
+    expect(links[2].textContent).toContain("188");
   });
 
   it("no longer offers the retired ReviewDesk destination", () => {

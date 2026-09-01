@@ -106,30 +106,20 @@ the route components into the eager shell chunk.
 - **News routes.** `/news` is a decision-first scan surface over the flat
   Event feed from `/api/news/feed`; the browser never clusters, scores,
   triages, throttles, or reorders. The public News navigation contains
-  exactly `事件流`, `Alpha 判定`, `交易` and `OI 来源与准入审计`. `/news/alpha`
-  is `Alpha 判定`: every frozen Case and
-  the frozen evidence it was decided on. **One read** — `/api/trading/cases` —
-  because the Case/Decision aggregate has one owner. The page renders what the
-  server decided; it re-runs no threshold comparison, infers no phase from an
-  execution state, and joins no feed.
+  exactly `事件流`, `交易` and `OI 来源与准入审计`.
 
-  The version it replaces did all three: it merged the News feed with an Intent
-  batch, derived a phase, and compared each Case against `/api/trading/status` —
-  printing 冲突 on rows the Case had passed, because it was measuring a Case
-  frozen last week with a floor edited yesterday. Every threshold on screen is
-  now the Case's own `policy_config` / `policy_checks`.
-
-  The lane is enumerated by `case_id`, never inferred from symbol/time.
-  `event_id` is only a nullable join hint for deterministic OI source keys. URL
-  state owns the selected Case and tab; when the URL names no tab, the first tab
-  that has rows is selected, because a fixed default on a lane that legitimately
-  emits nothing greets every reader with an empty page.
-
-  The detail shows the Case's terminal answer, its identity and timestamps, and
-  the frozen check table (check, operator, threshold, measured, pass/fail). A
+  `Alpha 判定` at `/news/alpha` was a fourth destination until #460. It read one
+  endpoint — `/api/trading/cases` — and so does `/trading`, so the list of Cases
+  existed twice. The thing it showed that `/trading` did not was one Case's
+  frozen evidence, and that moved into the Trading Case card rather than being
+  deleted with the page: selecting a row there opens the Case's terminal answer,
+  its identity and timestamps, and the frozen check table (check, operator,
+  threshold, measured, pass/fail) with its frozen `policy_config` beneath it. A
   Case written before `policy_checks` existed says so rather than showing an
-  empty table. Frames and admission answers link to the OI audit; a
-  `SIGNAL_EMITTED` Case links to the Signal workbench. Neither is restated here.
+  empty table, and every threshold on screen is the Case's own, never today's
+  configuration. `/trading?case=<id>` opens one directly; the OI audit's frame
+  table and `TradingCaseBadge` link that way. A `case` the rolling window has
+  already dropped says so and names the window rather than rendering nothing.
 
 
   `/news/oi` is `OI 来源与准入审计` (#207, #137, #256, renamed in #331): the
@@ -305,7 +295,7 @@ the route components into the eager shell chunk.
 
   Two things the artifact draws that this lane cannot answer. `thesis_zh` and
   `invalidation_zh` are not written by a pure rule — the same finding #256
-  recorded for Alpha 判定 — so the row expansion names the rule instead of
+  recorded for the Case surface — so the row expansion names the rule instead of
   paraphrasing a sentence nobody wrote. And a token the lane never opened a case
   for gets no reading at all: 「never asked」 and 「asked and found nothing」 are
   different answers, and four unlit quadrants would assert the second.
@@ -418,7 +408,7 @@ the route components into the eager shell chunk.
   open interest rising is not price rising (#104). Only `favicon.svg` and
   the sidebar's `BrandMark` may be filled shapes; they are the same path on the
   same indigo tile, so the tab and the frame are one face.
-- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries four working surfaces in two groups — `Workbench`: `事件流` `/news`, `Alpha 判定` `/news/alpha`, `交易` `/trading`; `System · 数据健康`: `OI 来源与准入审计` `/news/oi`. The feed entry shows the 24 h received count, the Alpha entry shows `counts.cases_24h`, and the OI entry shows telemetry received; Trading names both the Alpha decision state and execution mode without implying readiness. Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/alpha`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
+- **Shell navigation.** `AppSidebar` is a purpose-built 204px aside — one component for the in-frame sidebar and the drawer body, so the two presentations cannot disagree about what exists or which destination is current. `CockpitShell` picks the frame by mounting, not by hiding: from `(min-width: 1280px)` the sidebar is in-frame and stays there. From `768px` to `1279px` the same sidebar is the left `Drawer`; below `768px` `AppBottomNav` takes over. The nav carries three working surfaces in two groups — `Workbench`: `事件流` `/news`, `交易` `/trading`; `System · 数据健康`: `OI 来源与准入审计` `/news/oi`. The feed entry shows the 24 h received count and the OI entry shows telemetry received; `交易` carries the Alpha decision state and execution mode instead of a number, because "is any of this real money" is what a reader needs before opening it — and at 204px a badge and a count together clip the label. `CASES 24H` leads the Trading page's own figure row. Counts are compacted and `aria-hidden`. `/` redirects to `/news`; topbar search always opens a fresh News scope. Public SPA routes are `/`, `/news`, `/news/oi`, `/news/status`, `/news/symbols/:base`, `/news/events/:eventId`, and `/trading`; retired routes, including `/news/alpha` and `/news/leverage`, resolve through the standard not-found route. Operational diagnosis remains on API/CLI surfaces and there is no browser Ops route.
 - **No keyboard layer.** The console has no command palette, no `?` shortcut panel, and no document-level key bindings at all; #82's keyboard layer was cut whole. Every action the palette collapsed — the three destinations, the four feed task tabs, a `symbol` filter — is already a control on the page, so the layer bought a second way to reach what one click reached and a list that had to be kept in sync with the routes; the toolbar was even advertising an `X 复制标注` binding that nothing implemented. The cut removed `shared/ui/CommandPalette`, `shared/ui/ShortcutsDialog`, `features/cockpit/ui/appShortcuts.ts` and `features/news/state/useFeedCursor.ts` together with the shell's own `keydown` listener, the `--surface-cursor` token and every `<kbd>` hint. Do not reintroduce a `document.addEventListener("keydown", ...)` in shell or route code, and do not restore the `⌘K` topbar button: keyboard access is the platform's — real controls, real tab order, `Enter` on a form, and Radix's own `Esc`.
 - **Scrolling.** `body` remains locked for the app shell. `.center-column` is the shell-managed route scroll container. No retired table, bottom deck, controls row, or mobile task-bar reserves height. Route-level nested scrollers are allowed only when they are intentionally bounded and covered by Playwright overflow/reachability assertions.
 - **Breakpoint policy.** Desktop density starts at `1280px`. Tablet uses a single route column from `768px` through `1279px`. Mobile rules are `max-width: 767px` and must appear late enough in the cascade to win over base and desktop/tablet rules. Use container queries for local card/panel behavior when component width matters more than viewport width.
@@ -529,10 +519,10 @@ Production bundles ship inside the same Docker image as the Python service and a
 
 Per `DEVELOPMENT.md`, UI flows that tests cannot exercise must be checked manually before declaring completion. The minimum checklist for frontend architecture changes is:
 
-1. Hard-reload `/`, `/news`, `/news/alpha`, `/news/oi`, `/trading`,
+1. Hard-reload `/`, `/news`, `/news/oi`, `/trading`, `/trading?case=<id>`,
    `/news/status`, `/news/symbols/:base` and `/news/events/:eventId` with representative query
-   params; confirm `/news/review`, `/macro`, `/search`, and `/token/...` render the not-found
-   surface. On the token page, confirm a base no venue lists (`/news/symbols/SPOT`)
+   params; confirm `/news/alpha`, `/news/review`, `/macro`, `/search`, and `/token/...` render the
+   not-found surface. On the token page, confirm a base no venue lists (`/news/symbols/SPOT`)
    says so rather than erroring, and that `/news/symbols/xyz-wif` resolves to the
    same page as `/news/symbols/WIF`.
 2. Submit the topbar search from `/news/status` and from `/news` and confirm

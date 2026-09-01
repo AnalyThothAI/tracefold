@@ -215,7 +215,11 @@ class CandidateGateStorage:
 
         The axis is the source's own observation time rather than the evaluation time, so a runner that
         restarts and re-reads a backlog cannot move yesterday's facts into today's counts — the exact
-        failure mode that made `funnel_today` unable to explain a cross-midnight question.
+        failure mode that made `funnel_today` unable to explain a cross-midnight question. That is why
+        this is the one of the console's three "24 h" figures that does not key on a creation time:
+        `TRADING_STATUS_CASE_COUNTS_SQL` counts Cases on `created_at_ms` because a Case is created once
+        and has no backlog to re-read, and News's `_oi_telemetry_24h` counts its own items on its own
+        table. #460 asked whether to collapse them; collapsing this one would reintroduce the bug.
 
         One row per *source*, not per stored row. Grouping the raw table
         counted a frame once per configuration that had ever looked at it, so a single threshold edit

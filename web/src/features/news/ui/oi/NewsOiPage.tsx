@@ -1,5 +1,5 @@
 import { useTradingGateWithToken } from "@features/trading";
-import { newsAlphaPath } from "@shared/routing/paths";
+import { tradingPath } from "@shared/routing/paths";
 import { Metric, MetricRow } from "@shared/ui/Metric";
 import * as PageState from "@shared/ui/PageState";
 import { useEffect, useState } from "react";
@@ -119,7 +119,7 @@ export function NewsOiPage({ token }: { token: string }) {
         subtitle={
           <>
             遥测帧、解析与资本准入——这一页只答「来源发生了什么」；判定与冻结证据在{" "}
-            <Link to={newsAlphaPath()}>Alpha 判定</Link>
+            <Link to={tradingPath()}>Alpha / Execution</Link>
           </>
         }
         title="OI 来源与准入审计"

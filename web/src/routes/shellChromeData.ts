@@ -23,7 +23,6 @@ const PAGE_TITLES: Array<[RegExp, string]> = [
   [/^\/news\/events\//, "事件详情"],
   [/^\/news\/status$/, "流水线状态"],
   [/^\/news\/oi$/, "OI 来源与准入审计"],
-  [/^\/news\/alpha$/, "Alpha 判定"],
   [/^\/news$/, "事件流"],
   [/^\/trading$/, "Alpha 与执行"],
 ];
@@ -78,10 +77,10 @@ export function useShellChromeData(session: AppSession): ShellChromeData {
           : false,
       navCounts: {
         /*
-         * The Signal lane's own 24 h Cases, from the same `/api/trading/status` this shell already reads.
-         * Every terminal outcome counts; this is Alpha throughput, never an order or position count.
+         * No `cases` here since #460. The count existed for Alpha 判定's slot; that page is gone, and
+         * 交易 inherited its badge rather than its number — the two together clip a 204px row's label to
+         * a single glyph. `CASES 24H` still leads the Trading page's own figure row.
          */
-        cases: tradingStatusQuery.data?.counts?.cases_24h,
         events: newsStatusQuery.data?.funnel_24h?.received,
         // #207: the deterministic OI lane's own 24 h intake, the same figure the monitor's telemetry band
         // leads with. Received, not pushed — the destination is the whole lane, not its output.
@@ -151,15 +150,6 @@ export function topbarFigures(
         label: "SIGNALS 24H",
         value: tradingStatus?.counts.signals_24h,
       },
-    ];
-  }
-
-  if (pathname === "/news/alpha") {
-    // The lane's own load, from the two status reads the frame already holds: how many frames arrived, and
-    // how many of them the Signal lane turned into a Case today. Neither is derived in the browser.
-    return [
-      { label: "OI 帧 24H", value: newsStatus?.pipeline.telemetry_received_24h },
-      oiDailyFigure(tradingStatus, nowMs),
     ];
   }
 

@@ -15,14 +15,6 @@ export function newsOiPath(): string {
 }
 
 /**
- * Alpha 判定. The Signal lane's reading of deterministic OI frames is separate from `/news/oi`, which
- * audits whether those source frames parsed and cleared the push gates.
- */
-export function newsAlphaPath(): string {
-  return "/news/alpha";
-}
-
-/**
  * The token page (#207 PR-W1). Every `base_symbol` on the console routes here, including one the universe
  * has never listed — the endpoint answers `known: false` rather than 404, so a struck-through chip is a
  * link like any other.
@@ -36,4 +28,12 @@ export function newsSymbolPath(base: string): string {
  */
 export function tradingPath(): string {
   return "/trading";
+}
+
+/**
+ * One Case's frozen evidence on the Trading workbench. It was `/news/alpha?case=` until #460 removed
+ * that page; the Case card there opens the linked Case and scrolls no differently from a bare visit.
+ */
+export function tradingCasePath(caseId: string): string {
+  return `/trading?case=${encodeURIComponent(caseId)}`;
 }

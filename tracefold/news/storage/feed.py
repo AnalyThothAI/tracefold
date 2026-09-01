@@ -374,6 +374,17 @@ class FeedStorage:
         }
 
     def _oi_telemetry_24h(self, *, day_ago: int) -> dict[str, int]:
+        """News's own 24 h intake, on `news_items.observed_at_ms`.
+
+        The console shows three numbers called "24 h" and they are keyed on three different clocks
+        (#460 asked whether to unify them; they stay). This one counts *items News received*, so it is
+        keyed on News's own table and stops at the bounded-context boundary — a Trading column here
+        would make the News pipeline's intake depend on what a sibling capability did with it. The
+        other two are `TRADING_STATUS_CASE_COUNTS_SQL`, keyed on when a Case formed, and
+        `CandidateGateStorage.gate_decision_counts`, keyed on when the *frame* was observed so a
+        restarted runner re-reading a backlog cannot move yesterday's facts into today.
+        """
+
         row = self.conn.execute(
             """
             SELECT

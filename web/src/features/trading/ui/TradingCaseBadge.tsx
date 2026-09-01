@@ -1,4 +1,4 @@
-import { newsAlphaPath } from "@shared/routing/paths";
+import { tradingCasePath } from "@shared/routing/paths";
 import { Link } from "react-router-dom";
 
 import { useTradingGateSourceWithToken } from "../api/tradingQueries";
@@ -58,9 +58,7 @@ export function TradingCaseBadge({
     >
       {label}
       {key ? <code>{key}</code> : null}
-      {decision.case_id ? (
-        <Link to={`${newsAlphaPath()}?case=${encodeURIComponent(decision.case_id)}`}>案例</Link>
-      ) : null}
+      {decision.case_id ? <Link to={tradingCasePath(decision.case_id)}>案例</Link> : null}
     </span>
   );
 }
