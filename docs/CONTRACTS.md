@@ -1334,10 +1334,12 @@ standalone `news learning optimize` route and `news learning baseline
 
 `run` writes zero-call readiness, requires both `objective.compilable` and
 `development_profile.ready`, then invokes exactly one `dspy.GEPA.compile(trainset, valset)` over the single
-native `NativeNewsProgram.event_semantics` Predict in a learning-only wrapper. That wrapper converts only a
-receipted task-output truncation into an aligned failed Prediction; the direct metric gives it
+native `NativeNewsProgram.event_semantics` Predict in a learning-only wrapper. That wrapper converts a
+receipted task-output truncation or typed `EventSemantics` validation failure into an aligned failed Prediction;
+the direct metric gives truncation
 `task_output_failure_score = -(train_count + 1)`, which makes any incomplete candidate lose to a complete one without a
-retry or a second evaluator. Reflection truncation, provider/transport failure and budget refusal terminate
+retry or a second evaluator, while typed-invalid output keeps the existing invalid-prediction score `0`.
+Reflection truncation, provider/transport failure and budget refusal terminate
 the run. Production keeps its existing fail-closed truncation contract. The compile uses `instruction_proposer=None` and
 `add_format_failure_as_feedback=True`; there is no component selector, ReaderCard execution, composite case
 metric or judge. Candidate zero's validation score in that same compile is the sole optimization baseline.

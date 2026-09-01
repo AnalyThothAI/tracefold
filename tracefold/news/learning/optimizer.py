@@ -22,7 +22,7 @@ from typing import Any, Final, Literal, Protocol, cast
 
 import dspy  # type: ignore[import-untyped]
 from dspy.teleprompt.gepa.gepa import DspyGEPAResult  # type: ignore[import-untyped]
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ..artifact_identity import canonical_sha
 from ..program.artifact import (
@@ -294,15 +294,26 @@ class GepaNoProgramChange(ValueError):
 
 
 _TASK_OUTPUT_FAILURE = "news_program_compile_task_model_output_truncated"
+_TASK_OUTPUT_INVALID = "news_program_compile_task_model_output_invalid"
+
+
+def _zero_taxonomy_objectives() -> dict[str, float]:
+    return {
+        "subject_codes_set_f1": 0.0,
+        "event_family_accuracy": 0.0,
+        "change_state_accuracy": 0.0,
+        "assertion_status_accuracy": 0.0,
+        "four_axis_exact_accuracy": 0.0,
+    }
 
 
 class _LearningEventSemantics(dspy.Module):  # type: ignore[misc]
-    """Keep one truncated task answer as one scoreable GEPA example.
+    """Keep one candidate-local task failure as one scoreable GEPA example.
 
-    DSPy 3.3.1 re-raises ``LMError`` while capturing GEPA traces, then drops that example before returning
-    the batch. GEPA assumes the batch stayed aligned and indexes past the shortened result. This adapter is
-    deliberately narrower than an evaluator: it preserves the one native Predict and converts only the
-    candidate-local truncation into a Prediction the existing metric can score.
+    DSPy 3.3.1 drops typed validation failures and re-raises ``LMError`` while capturing GEPA traces. GEPA
+    assumes the batch stayed aligned and indexes past either shortened result. This adapter is deliberately
+    narrower than an evaluator: it preserves the one native Predict and converts only candidate-local
+    truncation and typed validation into Predictions the existing metric can score.
     """
 
     def __init__(self, predictor: dspy.Predict) -> None:
@@ -314,6 +325,11 @@ class _LearningEventSemantics(dspy.Module):  # type: ignore[misc]
             return self.event_semantics(evidence_json=evidence_json)
         except LMOutputTruncatedError:
             return dspy.Prediction(task_output_failure=_TASK_OUTPUT_FAILURE)
+        except ValidationError as exc:
+            return dspy.Prediction(
+                task_output_failure=_TASK_OUTPUT_INVALID,
+                task_output_feedback=f"Typed EventSemantics is invalid: {exc}",
+            )
 
 
 class _DspyTaxonomyMetric:
@@ -347,21 +363,20 @@ class _DspyTaxonomyMetric:
                     "four_axis_exact_accuracy": score,
                 },
             )
+        if getattr(pred, "task_output_failure", None) == _TASK_OUTPUT_INVALID:
+            return dspy.Prediction(
+                score=0.0,
+                feedback=getattr(pred, "task_output_feedback", "Typed EventSemantics is invalid."),
+                objective_scores=_zero_taxonomy_objectives(),
+            )
         try:
             semantics = EventSemantics.model_validate(getattr(pred, "semantics", None))
             comparison = compare_taxonomy(expected, semantics.taxonomy)
         except ValueError as exc:
-            zeros = {
-                "subject_codes_set_f1": 0.0,
-                "event_family_accuracy": 0.0,
-                "change_state_accuracy": 0.0,
-                "assertion_status_accuracy": 0.0,
-                "four_axis_exact_accuracy": 0.0,
-            }
             return dspy.Prediction(
                 score=0.0,
                 feedback=f"Typed EventSemantics is invalid: {exc}",
-                objective_scores=zeros,
+                objective_scores=_zero_taxonomy_objectives(),
             )
         objectives = {
             "subject_codes_set_f1": comparison.subject_f1,
@@ -397,8 +412,8 @@ def _taxonomy_metric_receipt(
     task_output_failure_score: float,
 ) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.taxonomy_gepa_metric.v2",
-        "metric_id": "tracefold.news.taxonomy_gepa_direct_v2",
+        "schema": "tracefold.news.taxonomy_gepa_metric.v3",
+        "metric_id": "tracefold.news.taxonomy_gepa_direct_v3",
         "review_rubric_version": review_rubric_version,
         "scalar": "mean(subject_codes_set_f1,event_family_exact,change_state_exact,assertion_status_exact)",
         "axes": list(TAXONOMY_AXES),
@@ -702,7 +717,7 @@ def optimizer_config_receipt(
     val_count: int,
 ) -> dict[str, Any]:
     return {
-        "schema": "tracefold.news.compile_optimizer_config_receipt.v6",
+        "schema": "tracefold.news.compile_optimizer_config_receipt.v7",
         "optimizer": {
             "implementation": "dspy.GEPA",
             "dspy_version": importlib.metadata.version("dspy"),

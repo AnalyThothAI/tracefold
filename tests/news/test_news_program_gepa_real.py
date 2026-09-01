@@ -136,6 +136,25 @@ class _CandidateTruncatedTaskLM(_TaskLM):
         )
 
 
+class _CandidateInvalidTaskLM(_TaskLM):
+    """Stable completes; the reflected instruction emits one typed-invalid held-out answer."""
+
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        self.requests.append(request)
+        rendered = str(request.messages)
+        target = '"title":"taxonomy-target' in rendered
+        taxonomy = _OTHER_TAXONOMY if target and _ADVISORY in rendered else _PRODUCT_TAXONOMY
+        semantics = {**_SEMANTICS, "taxonomy": taxonomy}
+        if _ADVISORY in rendered and '"title":"taxonomy-target 11"' in rendered:
+            semantics = {**semantics, "scope": "world"}
+        return dspy.LMResponse.from_text(
+            canonical_json({"semantics": semantics}),
+            model=self.model,
+            usage={"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+            cost=0,
+        )
+
+
 def _episode(index: int, *, target: bool) -> DevelopmentEpisode:
     opened_at_ms = 1_787_000_000_000 + index * 60_000
     title = f"taxonomy-{'target' if target else 'control'} {index}"
@@ -362,3 +381,48 @@ def test_candidate_task_truncation_is_scored_unsafe_without_terminating_gepa() -
     assert (truncated.input_tokens, truncated.output_tokens, truncated.total_tokens) == (11, 7, 18)
     assert truncated.provider_cost_microusd == 3
     assert any(receipt.model_binding == "task" for receipt in ledger.receipts[truncated_index + 1 :])
+
+
+def test_candidate_typed_invalid_output_keeps_gepa_batch_aligned() -> None:
+    ledger = LMCallLedger(max_calls_per_predictor=None, max_calls_per_route=None, max_calls_per_scope=None)
+    task_delegate = _CandidateInvalidTaskLM()
+    reflection_delegate = _ReflectionLM()
+    task = build_task_lm(
+        model_name=task_delegate.model,
+        api_key="k",
+        api_base="https://scripted-task.invalid/v1",
+        timeout=20.0,
+        max_tokens=1_200,
+        ledger=ledger,
+        delegate=task_delegate,
+    )
+    reflection = build_reflection_lm(
+        model_name=reflection_delegate.model,
+        api_key="k",
+        api_base="https://scripted-reflection.invalid/v1",
+        ledger=ledger,
+        delegate=reflection_delegate,
+    )
+
+    result = run_gepa(
+        base_program=load_stable_program_artifact(),
+        episodes=_corpus(),
+        task_lm=task,
+        reflection_lm=reflection,
+        max_metric_calls=40,
+        seed=456,
+        review_rubric_version=REVIEW_RUBRIC_VERSION,
+    )
+
+    assert result.public_result["best_index"] != 0
+    assert any(
+        score == 0
+        for candidate_scores in result.public_result["validation_subscores"][1:]
+        for score in candidate_scores.values()
+    )
+    invalid_index = next(
+        index
+        for index, request in enumerate(task_delegate.requests)
+        if _ADVISORY in str(request.messages) and '"title":"taxonomy-target 11"' in str(request.messages)
+    )
+    assert task_delegate.requests[invalid_index + 1 :]
