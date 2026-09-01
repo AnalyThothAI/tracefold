@@ -40,14 +40,14 @@ production behavior changed.
 
 | Workload | Result |
 | --- | --- |
-| 1 event Signal + Command | production fixed-poll persisted through actual dequeue p95 219.639 ms; two indexed reads; zero duplicate pending identities |
-| 10 event burst | production fixed-poll p95 221.002 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
-| 100 event burst | production fixed-poll p95 223.763 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
-| all wake hints discarded | repaired in 213.504 ms by the production Bridge's current 200 ms cadence; 60 s fixture TTL |
-| 100 Observation append | 52,990 queued bytes; 39.400 ms append; queue returned to zero |
-| entry -> protection -> flatten submit | 4.981 ms pinned lifecycle seam; one entry, one reduce-only stop and one reduce-only exit |
-| UI 15-second read window | 29 status reads at 500 ms; p95 17.794 ms |
-| process resource envelope | 0.753372 s user CPU, 0.199323 s system CPU; RSS before 251,772,928, after 118,161,408, delta -133,611,520 bytes |
+| 1 event Signal + Command | production fixed-poll persisted through actual dequeue p95 219.710 ms; two indexed reads; zero duplicate pending identities |
+| 10 event burst | production fixed-poll p95 218.764 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
+| 100 event burst | production fixed-poll p95 226.198 ms through actual dequeue; two indexed reads; zero duplicate pending identities |
+| all wake hints discarded | repaired in 216.863 ms by the production Bridge's current 200 ms cadence; 60 s fixture TTL |
+| 100 Observation append | 52,990 queued bytes; 33.363 ms append; queue returned to zero |
+| entry -> protection -> flatten submit | 4.043 ms pinned lifecycle seam; one entry, one reduce-only stop and one reduce-only exit |
+| UI 15-second read window | 29 status reads at 500 ms; p95 16.132 ms |
+| process resource envelope | 0.739236 s user CPU, 0.170980 s system CPU; RSS before 269,189,120, after 204,816,384, delta -64,372,736 bytes |
 
 The optional 525-route capacity case is retained only as a source-derived
 subscription-attempt count: current `on_start` calls subscribe once per route,
