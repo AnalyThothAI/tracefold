@@ -184,7 +184,7 @@ does not apply.
 | US reference instruments | 6 h; 15 m retry if no venue answers | latest directory | reference family | one directory snapshot | one family fetch | venue families serial | 20 s provider | no / yes / yes | failed reference source is omitted; it cannot remove crypto venue rows |
 | Event Reaction | 60 s; 1 h/4 h horizons; at most 20 chained turns | complete before candle history expires | instrument + merged time range | 100 due rows/turn | 32 merged requests/turn | 4 provider calls | no outer deadline / 8 s provider | yes / yes / no | transient no-answer stays due; terminal gap/expiry is persisted explicitly |
 | Trading Signal lane | App-owned poll, 2 s | source age <= configured admission window; Signal TTL = min(180 s, admission window) | underlying / durable source key | 1 Case freeze and 4 decisions/turn | source-native public bar calls serial | one | adapter-owned provider / 10 s PostgreSQL boundaries | bounded overlap / durable source idempotency / no | missing or uncertain evidence creates no Signal; Case+Signal commit atomically |
-| Nautilus OI Runtime | active only for `paper|live`; 0.5 s heartbeat and 2 s private reconciliation | command/Signal TTL; reconciliation <=10 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require flat and explicit resume; unowned exposure or lost singleton halts |
+| Nautilus OI Runtime | active only for `paper|live`; 0.5 s current heartbeat; complete private proof every 5 s and immediately on ambiguity/flatten; Nautilus native in-flight/open/position checks at 2/5/5 s | command/Signal TTL; complete reconciliation <10 s; public heartbeat stale after 5 s | account slot / immutable activation fence | Commands and Signals share one count-and-byte bound; Commands admit and execute first | one Binance USD-M account | one account-slot writer | Runtime-owned | bounded anti-join replay / deterministic client IDs / fail closed | disabled starts no node; new profiles require complete flat proof and explicit resume; unowned exposure or lost singleton halts |
 
 Workers exposes one bounded Prometheus vocabulary at the existing telemetry
 seam. The concrete metric names carry the project prefix:
@@ -2072,9 +2072,11 @@ accepted, fill, and account flat are five distinct facts.
 #433-E activates that existing owner without adding a second OMS. Canonical
 up/deploy/status derives the execution Compose profile from operator config:
 disabled stops Nautilus, while paper/live starts exactly one Binance USD-M
-TradingNode. A session advisory lock owns the account slot; ordinary repository
-work uses short connections outside provider I/O. One immutable activation
-fence binds mode, Runtime release and config digest. A new profile requires a
+TradingNode. A session advisory lock owns the account slot; repository work
+outside the current Runtime projection uses short connections. The projection
+owner keeps one autocommit session but opens transactions only around individual
+reads or writes, never around provider I/O. One immutable activation fence binds
+mode, Runtime release and config digest. A new profile requires a
 complete private Binance flat report and starts paused; a current profile may
 roll forward and reclaim only durable unresolved or nonterminal deterministic
 order/position identities from Nautilus Cache. Signals and manual entries share
@@ -2101,6 +2103,27 @@ hint; every wake and timeout returns to the same durable anti-join queries.
 Database disconnect recovery replaces the session and listener together. The
 standalone `run_signal_poll_loop` no longer exists, and no second connection,
 thread, execution bus or operator cadence setting is introduced.
+
+#475 PR-B gives private account truth and current status one owner each. The App
+root disables Nautilus's duplicate startup reconciliation, then requires one
+complete Binance position + regular-order + Algo-order report before activation.
+That same complete-report owner runs at half the 10-second risk staleness budget
+and wakes immediately for unknown order outcomes, protection ambiguity,
+unexpected exposure, and pending flatten. Its report type keeps regular and
+Algo orders distinct, so only a successfully loaded empty triple can assert
+`account_flat=true`; provider, parse, account-scope, or Cache projection errors
+escape without advancing the reconciliation clock. Nautilus retains its native
+in-flight, missing-open-order, and position consistency loops as
+ExecutionEngine mechanics, not as complete-flat authority. The unused Strategy
+startup/continuous reconciliation callbacks are deleted.
+
+One persistent autocommit `tracefold_nautilus_state` repository session now owns
+profile preflight, activation/recovery reads, the generation-fenced current row,
+and the stopped transition. `_RuntimeStateProjector` writes a semantic change on
+the next root wake and otherwise writes only the code-owned 500 ms heartbeat,
+well before the public 5-second stale boundary; no transaction spans Binance
+I/O. Quote subscription behavior is unchanged because PR-0 recorded provider
+inbound-rate and event-loop evidence as unobserved until the Demo receipt.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

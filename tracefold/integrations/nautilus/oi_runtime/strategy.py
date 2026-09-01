@@ -28,6 +28,15 @@ _AMBIGUOUS_QUERY_AFTER_NS = 5_000_000_000
 _AMBIGUOUS_REASONS = ("-1007", "503", "timeout", "timed out", "response unknown")
 _MAX_ENTRY_DRIFT_BPS = Decimal(25)
 _MAX_SPREAD_BPS = Decimal(30)
+PrivateReconciliationReason = Literal[
+    "unknown_outcome",
+    "protection_ambiguity",
+    "flatten_pending",
+    "unexpected_exposure",
+]
+PRIVATE_RECONCILIATION_REASONS = frozenset(
+    {"unknown_outcome", "protection_ambiguity", "flatten_pending", "unexpected_exposure"}
+)
 
 
 class _AuditBackpressure(RuntimeError):
@@ -238,6 +247,7 @@ class _ExecutionState:
     exit_generation: int = 0
     exit_retry_required: bool = False
     exit_retry_budget: int = 1
+    private_reconciliation_requested: bool = False
 
 
 class OiNautilusStrategy(Strategy):
@@ -252,8 +262,7 @@ class OiNautilusStrategy(Strategy):
         readiness: RuntimeReadiness,
         singleton_ready: Any,
         day_start: DayStartBaseline | None,
-        startup_reconciliation: RuntimeReconciliationSnapshot | None = None,
-        continuous_reconciliation: Callable[[], RuntimeReconciliationSnapshot | None] | None = None,
+        request_reconciliation: Callable[[PrivateReconciliationReason], None],
         initial_control_state: RuntimeControlSnapshot | None = None,
         config: StrategyConfig | None = None,
     ) -> None:
@@ -271,8 +280,7 @@ class OiNautilusStrategy(Strategy):
         self._singleton_ready = singleton_ready
         self._day_start = day_start
         self._day_start_lock = Lock()
-        self._startup_reconciliation = startup_reconciliation
-        self._continuous_reconciliation = continuous_reconciliation
+        self._request_reconciliation = request_reconciliation
         self._routes = {route.market_key: route for route in profile.routes}
         self._stop_bps = {route.instrument_id: route.stop_distance_bps for route in profile.routes}
         self._policy = OiFuturesRiskPolicy(profile.risk)
@@ -297,11 +305,9 @@ class OiNautilusStrategy(Strategy):
         self._emergency_halted = control_state.emergency_halted
         self._pending_flatten: dict[str, OperatorIntentV1] = {}
         self._flatten_accept_observed: set[str] = set()
+        self._unexpected_exposure_reconciliation_requested = False
 
     def on_start(self) -> None:
-        if self._startup_reconciliation is not None:
-            self.reconcile_runtime(self._startup_reconciliation)
-        self._refresh_continuous_reconciliation()
         for route in self._profile.routes:
             self.subscribe_quote_ticks(route.instrument_id)
         self.clock.set_timer(
@@ -319,7 +325,6 @@ class OiNautilusStrategy(Strategy):
             self.unsubscribe_quote_ticks(route.instrument_id)
 
     def on_timer(self, _event: object) -> None:
-        self._refresh_continuous_reconciliation()
         for _ in range(_CALLBACK_BATCH):
             command = self._signals.next_command_nowait()
             if command is None:
@@ -410,22 +415,6 @@ class OiNautilusStrategy(Strategy):
             and exit_order.quantity.as_decimal() == state.position_quantity
             and self.cache.position_for_order(exit_order.client_order_id) == position
         )
-
-    def _refresh_continuous_reconciliation(self) -> None:
-        source = self._continuous_reconciliation
-        if source is None:
-            return
-        try:
-            snapshot = source()
-        except Exception:
-            self._readiness.reconciliation_failed()
-            return
-        if snapshot is None:
-            return
-        _, reconciled_at_ns = self._readiness.facts_clock()
-        if snapshot.reconciliation_observed_at_ns <= reconciled_at_ns:
-            return
-        self.reconcile_runtime(snapshot)
 
     def reconcile_runtime(self, snapshot: RuntimeReconciliationSnapshot) -> bool:
         """Rebuild runtime ownership only from durable identities and current Cache state."""
@@ -594,6 +583,7 @@ class OiNautilusStrategy(Strategy):
         self._states = states
         self._orders = orders
         self._positions = positions
+        self._unexpected_exposure_reconciliation_requested = False
         for state in states.values():
             if state.entry_query_pending:
                 self.query_order(state.entry_order, client_id=ClientId("BINANCE"))
@@ -702,6 +692,9 @@ class OiNautilusStrategy(Strategy):
             for position in self.cache.positions_open(account_id=self._profile.account_id)
         ):
             self._readiness.halt_for_unexpected_exposure()
+            if not self._unexpected_exposure_reconciliation_requested:
+                self._unexpected_exposure_reconciliation_requested = True
+                self._request_reconciliation("unexpected_exposure")
             return False
         safe = True
         for state in self._states.values():
@@ -732,6 +725,9 @@ class OiNautilusStrategy(Strategy):
                 safe = False
                 continue
             self._readiness.halt_for_unexpected_exposure()
+            if not state.private_reconciliation_requested:
+                state.private_reconciliation_requested = True
+                self._request_reconciliation("protection_ambiguity")
             self.flatten_position(state.position_id)
             safe = False
         return safe
@@ -761,6 +757,7 @@ class OiNautilusStrategy(Strategy):
         if existing is not None:
             if not self._entry_order_valid(signal=signal, route=route, entry=existing):
                 self._readiness.halt_for_unexpected_exposure()
+                self._request_reconciliation("unexpected_exposure")
                 self._dispose_entry(signal, "cached_entry_invalid", command)
                 return
             position = self.cache.position_for_order(existing.client_order_id)
@@ -776,6 +773,7 @@ class OiNautilusStrategy(Strategy):
                 )
             ):
                 self._readiness.halt_for_unexpected_exposure()
+                self._request_reconciliation("unexpected_exposure")
                 self._dispose_entry(signal, "cached_position_invalid", command)
                 return
             self._orders[client_order_id] = (signal.signal_id, "entry")
@@ -796,6 +794,7 @@ class OiNautilusStrategy(Strategy):
                 state.avg_entry_price = Decimal(str(position.avg_px_open))
                 self._positions[position.id] = signal.signal_id
                 self._readiness.halt_for_unexpected_exposure()
+                self._request_reconciliation("unexpected_exposure")
                 self.flatten_position(position.id)
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._dispose_entry(signal, "replayed_query_first", command)
@@ -926,6 +925,7 @@ class OiNautilusStrategy(Strategy):
             self.submit_order(order, client_id=ClientId("BINANCE"))
         except Exception:
             state.disposition_reason = "unknown_query_first"
+            self._request_reconciliation("unknown_outcome")
             self.query_order(order, client_id=ClientId("BINANCE"))
             self._observe_order(state, order, "entry", "unknown_query_first")
             self._dispose_entry(signal, "unknown_query_first", command)
@@ -967,6 +967,7 @@ class OiNautilusStrategy(Strategy):
             return
         self._entries_paused = True
         self._pending_flatten[command.command_id] = command
+        self._request_reconciliation("flatten_pending")
 
     def _advance_pending_flatten(self) -> None:
         if not self._pending_flatten:
@@ -1161,6 +1162,8 @@ class OiNautilusStrategy(Strategy):
                 self.cancel_order(retiring, client_id=ClientId("BINANCE"))
         state.exit_retry_required = False
         self._observe_position(state, "closed", int(event.ts_closed))
+        if self._pending_flatten:
+            self._request_reconciliation("flatten_pending")
 
     def on_order_canceled(self, event: Any) -> None:
         identity = self._orders.get(event.client_order_id)
@@ -1233,6 +1236,7 @@ class OiNautilusStrategy(Strategy):
         reason = str(getattr(event, "reason", "")).lower()
         order = self._order_for_event(state, event.client_order_id, identity[1])
         if status == "rejected" and order is not None and any(token in reason for token in _AMBIGUOUS_REASONS):
+            self._request_reconciliation("protection_ambiguity" if identity[1] == "protection" else "unknown_outcome")
             if identity[1] == "entry":
                 state.entry_query_pending = True
                 state.submitted_at_ns = int(self.clock.timestamp_ns())
@@ -1282,6 +1286,7 @@ class OiNautilusStrategy(Strategy):
                 else:
                     state.exit_retry_required = False
                 self._readiness.halt_for_unexpected_exposure()
+                self._request_reconciliation("unknown_outcome")
             return
         if leg != "protection":
             return
@@ -1298,6 +1303,7 @@ class OiNautilusStrategy(Strategy):
         else:
             return
         if state.position_quantity > 0 and state.position_id is not None:
+            self._request_reconciliation("protection_ambiguity")
             self.flatten_position(state.position_id)
 
     def _observe_native_order_event(
@@ -1368,6 +1374,7 @@ class OiNautilusStrategy(Strategy):
             )
             if not self._recovered_protection_valid(state=state, seed=recovered, protection=existing):
                 self._orders[client_order_id] = (state.signal.signal_id, "protection")
+                self._request_reconciliation("protection_ambiguity")
                 if not existing.is_closed:
                     self.query_order(existing, client_id=ClientId("BINANCE"))
                 self._observe_order(state, existing, "protection", "replayed_invalid_flatten")
@@ -1378,6 +1385,7 @@ class OiNautilusStrategy(Strategy):
             state.pending_stop_quantity = quantity_value.as_decimal()
             state.pending_stop_avg_price = avg_price
             self._orders[client_order_id] = (state.signal.signal_id, "protection")
+            self._request_reconciliation("protection_ambiguity")
             self.query_order(existing, client_id=ClientId("BINANCE"))
             self._observe_order(state, existing, "protection", "replayed_query_first")
             if existing.is_open:
@@ -1401,6 +1409,7 @@ class OiNautilusStrategy(Strategy):
         try:
             self.submit_order(order, position_id=state.position_id, client_id=ClientId("BINANCE"))
         except Exception:
+            self._request_reconciliation("protection_ambiguity")
             self.query_order(order, client_id=ClientId("BINANCE"))
             if state.position_id is not None:
                 self.flatten_position(state.position_id)
@@ -1522,6 +1531,7 @@ class OiNautilusStrategy(Strategy):
         try:
             self.submit_order(order, position_id=position_id, client_id=ClientId("BINANCE"))
         except Exception:
+            self._request_reconciliation("unknown_outcome")
             self.query_order(order, client_id=ClientId("BINANCE"))
         self._observe_order(state, order, "exit", "submitted_or_unknown")
 
@@ -1553,7 +1563,9 @@ class OiNautilusStrategy(Strategy):
 
 
 __all__ = [
+    "PRIVATE_RECONCILIATION_REASONS",
     "OiNautilusStrategy",
+    "PrivateReconciliationReason",
     "RecoveredExecutionSeed",
     "RecoveredProtectionSeed",
     "RuntimeControlSnapshot",

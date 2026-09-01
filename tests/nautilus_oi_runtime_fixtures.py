@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -33,7 +32,6 @@ from tracefold.integrations.nautilus.oi_runtime.strategy import (
     OiNautilusStrategy,
     RuntimeControlSnapshot,
     RuntimeReadiness,
-    RuntimeReconciliationSnapshot,
 )
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
@@ -199,8 +197,6 @@ def registered_oi_strategy(
     audit: AuditSink | None = None,
     signal_client: ExecutionSignalClient | None = None,
     cache: Cache | None = None,
-    startup_reconciliation: RuntimeReconciliationSnapshot | None = None,
-    continuous_reconciliation: Callable[[], RuntimeReconciliationSnapshot | None] | None = None,
     mark_reconciled: bool = True,
     initial_control_state: RuntimeControlSnapshot | None = _RESUMED_CONTROL_STATE,
 ) -> SimpleNamespace:
@@ -227,6 +223,7 @@ def registered_oi_strategy(
             reconciliation_observed_at_ns=NOW_NS,
         )
     singleton_state = singleton or [True]
+    reconciliation_requests: list[str] = []
     strategy = RecordingOiStrategy(
         profile=profile,
         signals=selected_signals,
@@ -239,8 +236,7 @@ def registered_oi_strategy(
             recorded_at_ns=NOW_NS - 1_000_000,
             event_id="4" * 64,
         ),
-        startup_reconciliation=startup_reconciliation,
-        continuous_reconciliation=continuous_reconciliation,
+        request_reconciliation=reconciliation_requests.append,
         initial_control_state=initial_control_state,
     )
     clock = TestClock()
@@ -277,6 +273,7 @@ def registered_oi_strategy(
         cache=selected_cache,
         portfolio=portfolio,
         instrument=instrument,
+        reconciliation_requests=reconciliation_requests,
     )
 
 

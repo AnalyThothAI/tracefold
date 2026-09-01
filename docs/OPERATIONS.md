@@ -52,6 +52,25 @@ startup reconciliation, initialized Portfolio, durable audit, fresh heartbeat,
 and the exact configured profile/revision/image/config identity. Serve and
 Workers never receive Binance secrets.
 
+The active Runtime has two deliberately different reconciliation roles. The
+App root owns complete Binance private-account proof: positions, regular orders,
+and Algo orders must all load and project successfully before startup or a
+fresh `account_flat=true` fact exists. It refreshes that proof every five
+seconds—half the ten-second risk staleness budget—and wakes it immediately for
+unknown submit/query outcomes, protection ambiguity, unexpected exposure, and
+pending flatten. Nautilus owns native in-flight, missing-open-order, and
+position consistency mechanics at their pinned 2/5/5-second checks; its
+duplicate startup reconciliation is disabled. Any complete-report or Cache
+projection error terminates the generation without refreshing the old fact.
+
+One persistent autocommit PostgreSQL session owns the Runtime current
+projection; it never holds a transaction across Binance I/O. Semantic changes
+write on the next Runtime wake and the unchanged generation heartbeats every
+500 ms, before the public five-second stale threshold. These cadences are
+code-owned safety budgets, not operator tuning. Current all-route quote
+subscription remains unchanged until active Demo measurement can establish its
+inbound rate, event-loop lag, and adapter cost.
+
 For the first Demo activation, confirm the Binance account is authoritatively
 flat, populate the configured Binance files as regular mode-`0600` files,
 choose a new immutable profile, set `execution.mode: paper`, and run `make up`.

@@ -279,6 +279,7 @@ def test_flatten_is_runtime_accepted_but_not_complete_until_fresh_flat_reconcili
     assert accepted[0].summary == {"action": "flatten", "control_stage": "runtime_accepted"}
     assert context.strategy.control_state().flatten_pending == (flatten.command_id,)
     assert context.signals.pending_command_ids == {flatten.command_id}
+    assert context.reconciliation_requests == ["flatten_pending"]
 
     assert context.strategy.reconcile_runtime(
         RuntimeReconciliationSnapshot(
@@ -453,10 +454,10 @@ def test_restart_reconciliation_rejects_wrong_entry_shape() -> None:
     )
     restarted = registered_oi_strategy(
         cache=first.cache,
-        startup_reconciliation=snapshot,
         mark_reconciled=False,
     )
 
+    restarted.strategy.reconcile_runtime(snapshot)
     restarted.strategy.on_start()
 
     readiness = restarted.strategy.readiness()
@@ -585,10 +586,10 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     restarted = registered_oi_strategy(
         values=(signal,),
         cache=first.cache,
-        startup_reconciliation=snapshot,
         mark_reconciled=False,
     )
 
+    restarted.strategy.reconcile_runtime(snapshot)
     restarted.strategy.on_start()
     if not expected_ready:
         assert restarted.strategy.readiness().ready is False
@@ -609,18 +610,13 @@ def test_restart_reconciliation_validates_stop_shape_and_reclaims_overlap(
     assert [value.normalized_kind for value in written].count("signal_disposition") == 1
 
 
-def test_continuous_reconciliation_refreshes_clock_before_stale_entry_check() -> None:
+def test_app_owned_reconciliation_refreshes_clock_before_stale_entry_check() -> None:
     refreshed_at_ns = NOW_NS + 11_000_000_000
-    snapshots = [
-        RuntimeReconciliationSnapshot(
-            runtime_profile_id=registered_oi_strategy().profile.profile_id,
-            account_observed_at_ns=refreshed_at_ns,
-            reconciliation_observed_at_ns=refreshed_at_ns,
-        )
-    ]
-    context = registered_oi_strategy(
-        values=(trade_signal(signal_id="8" * 64),),
-        continuous_reconciliation=lambda: snapshots.pop(0) if snapshots else None,
+    context = registered_oi_strategy(values=(trade_signal(signal_id="8" * 64),))
+    snapshot = RuntimeReconciliationSnapshot(
+        runtime_profile_id=context.profile.profile_id,
+        account_observed_at_ns=refreshed_at_ns,
+        reconciliation_observed_at_ns=refreshed_at_ns,
     )
     context.clock.set_time(refreshed_at_ns)
     context.cache.add_quote_tick(
@@ -633,6 +629,7 @@ def test_continuous_reconciliation_refreshes_clock_before_stale_entry_check() ->
         )
     )
 
+    assert context.strategy.reconcile_runtime(snapshot) is True
     context.strategy.on_timer(None)
 
     assert len(context.strategy.submitted) == 1
@@ -890,6 +887,23 @@ def test_ambiguous_provider_outcome_is_query_first_and_never_changes_id(reason: 
 
     assert len(context.strategy.submitted) == 1
     assert context.strategy.queried == [entry]
+    assert context.reconciliation_requests == ["unknown_outcome"]
+
+
+def test_submit_exception_queries_the_same_entry_and_wakes_immediate_private_repair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+
+    def lose_response(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("response-lost")
+
+    monkeypatch.setattr(context.strategy, "submit_order", lose_response)
+    context.strategy.on_timer(None)
+
+    assert len(context.strategy.queried) == 1
+    assert context.strategy.queried[0].client_order_id.value.startswith("tf")
+    assert context.reconciliation_requests == ["unknown_outcome"]
 
 
 def test_audit_failure_blocks_new_entries_but_not_protection_or_flatten() -> None:
@@ -938,6 +952,7 @@ def test_canceled_pending_protection_flattens_instead_of_opening_unprotected() -
     flatten = context.strategy.submitted[2][0]
     assert flatten.order_type == OrderType.MARKET
     assert flatten.is_reduce_only is True
+    assert context.reconciliation_requests == ["protection_ambiguity"]
 
 
 def test_periodic_cache_check_flattens_when_active_protection_disappears() -> None:
@@ -951,11 +966,13 @@ def test_periodic_cache_check_flattens_when_active_protection_disappears() -> No
     context.cache.update_order(stop)
 
     context.strategy.on_timer(None)
+    context.strategy.on_timer(None)
 
     flatten = context.strategy.submitted[2][0]
     assert flatten.order_type == OrderType.MARKET
     assert flatten.is_reduce_only is True
     assert context.strategy.readiness().unexpected_exposure is True
+    assert context.reconciliation_requests == ["protection_ambiguity"]
 
 
 def test_repeated_flatten_queries_same_exit_instead_of_submitting_again() -> None:
