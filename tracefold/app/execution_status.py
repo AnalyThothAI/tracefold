@@ -142,7 +142,11 @@ def execution_readiness_projection(
             "positions_count": state.positions_count,
             "open_orders_count": state.open_orders_count,
             "protection_status": state.protection_status,
-            "current_account": None if state.account_snapshot is None else asdict(state.account_snapshot),
+            "current_account": (
+                asdict(state.account_snapshot)
+                if private_reconciliation_fresh and state.account_snapshot is not None
+                else None
+            ),
         }
     )
     return base

@@ -125,6 +125,19 @@ def test_flat_proof_requires_a_fresh_private_reconciliation() -> None:
     assert projection["account_flat"] is True
     assert projection["account_flat_proven"] is False
     assert projection["reconciliation_age_ms"] == 11_000
+    assert projection["current_account"] is None
+
+
+def test_current_account_requires_a_non_future_private_reconciliation() -> None:
+    projection = execution_readiness_projection(
+        _execution(),
+        replace(_state(), reconciliation_observed_at_ns=11_000_000_000),
+        _control(),
+        now_ns=10_000_000_000,
+    )
+
+    assert projection["reconciliation_age_ms"] == 0
+    assert projection["current_account"] is None
 
 
 def test_flat_proof_requires_complete_non_truncated_current_account_facts() -> None:
