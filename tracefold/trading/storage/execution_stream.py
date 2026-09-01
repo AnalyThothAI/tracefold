@@ -96,6 +96,102 @@ class ExecutionProfileActivation:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionAccountPosition:
+    """One bounded position row in the current Runtime read projection."""
+
+    position_id: str
+    instrument_id: str
+    side: Literal["long", "short"]
+    quantity: str
+    entry_price: str
+    mark_price: str | None
+    unrealized_pnl_usd: str | None
+    owned: bool
+    protection_status: Literal["protected", "pending", "unprotected", "unknown"]
+    protection_quantity: str | None
+    protection_trigger_price: str | None
+    protection_full_coverage: bool
+
+    def __post_init__(self) -> None:
+        if not self.position_id or len(self.position_id) > 256 or not _postgres_text_valid(self.position_id):
+            raise ValueError("execution_account_position_identity_invalid")
+        if _IDENTITY.fullmatch(self.instrument_id) is None:
+            raise ValueError("execution_account_position_instrument_invalid")
+        if not self.quantity or not self.entry_price:
+            raise ValueError("execution_account_position_value_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAccountOrder:
+    """One open or in-flight order in the current Runtime read projection."""
+
+    client_order_id: str
+    instrument_id: str
+    state: Literal["open", "inflight"]
+    leg: Literal["entry", "exit", "protection", "unknown"]
+    quantity: str
+    reduce_only: bool
+    trigger_price: str | None
+    owned: bool
+
+    def __post_init__(self) -> None:
+        if (
+            not self.client_order_id
+            or len(self.client_order_id) > 256
+            or not _postgres_text_valid(self.client_order_id)
+        ):
+            raise ValueError("execution_account_order_identity_invalid")
+        if _IDENTITY.fullmatch(self.instrument_id) is None or not self.quantity:
+            raise ValueError("execution_account_order_value_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionAccountSnapshot:
+    """Current account read model derived by the sole Nautilus Runtime owner."""
+
+    observed_at_ns: int
+    market_observed_at_ns: int | None
+    equity_usd: str | None
+    day_start_equity_usd: str | None
+    daily_drawdown_usd: str | None
+    daily_drawdown_bps: int | None
+    aggregate_risk_usd: str | None
+    positions: tuple[ExecutionAccountPosition, ...]
+    orders: tuple[ExecutionAccountOrder, ...]
+    open_orders_count: int
+    inflight_orders_count: int
+    unknown_orders_count: int
+    complete: bool
+    truncated: bool = False
+
+    def __post_init__(self) -> None:
+        if self.observed_at_ns <= 0 or (self.market_observed_at_ns is not None and self.market_observed_at_ns <= 0):
+            raise ValueError("execution_account_snapshot_clock_invalid")
+        if min(self.open_orders_count, self.inflight_orders_count, self.unknown_orders_count) < 0:
+            raise ValueError("execution_account_snapshot_count_invalid")
+        if len(self.positions) > 100 or len(self.orders) > 200:
+            raise ValueError("execution_account_snapshot_bounds_invalid")
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "version": "execution_account_snapshot_v1",
+            **asdict(self),
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> ExecutionAccountSnapshot:
+        if not isinstance(value, dict) or value.get("version") != "execution_account_snapshot_v1":
+            raise ValueError("execution_account_snapshot_invalid")
+        try:
+            payload = {key: item for key, item in value.items() if key != "version"}
+            payload["positions"] = tuple(ExecutionAccountPosition(**item) for item in payload["positions"])
+            payload["orders"] = tuple(ExecutionAccountOrder(**item) for item in payload["orders"])
+            return cls(**payload)
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("execution_account_snapshot_invalid") from None
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionRuntimeState:
     """The sole durable current projection for one execution account slot."""
 
@@ -130,6 +226,7 @@ class ExecutionRuntimeState:
     entry_block_reason: str | None
     started_at_ns: int
     updated_at_ns: int
+    account_snapshot: ExecutionAccountSnapshot | None = None
 
     def __post_init__(self) -> None:
         if _IDENTITY.fullmatch(self.account_slot) is None or _IDENTITY.fullmatch(self.runtime_profile_id) is None:
@@ -849,7 +946,7 @@ class ExecutionStreamStorage:
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns
+                   started_at_ns, updated_at_ns, account_snapshot
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
              FOR UPDATE
@@ -863,7 +960,7 @@ class ExecutionStreamStorage:
                    portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
                    positions_count, open_orders_count, protection_status,
                    reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-                   started_at_ns, updated_at_ns
+                   started_at_ns, updated_at_ns, account_snapshot
               FROM trading_execution_runtime_state
              WHERE account_slot = %s
             """
@@ -883,11 +980,11 @@ class ExecutionStreamStorage:
               portfolio_ready, audit_ready, day_start_ready, unexpected_exposure, account_flat,
               positions_count, open_orders_count, protection_status,
               reconciliation_observed_at_ns, heartbeat_at_ns, entry_block_reason,
-              started_at_ns, updated_at_ns
+              started_at_ns, updated_at_ns, account_snapshot
             ) VALUES (
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
               %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-              %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s::jsonb
             )
             ON CONFLICT (account_slot) DO UPDATE SET
               runtime_profile_id = EXCLUDED.runtime_profile_id,
@@ -919,9 +1016,10 @@ class ExecutionStreamStorage:
               heartbeat_at_ns = EXCLUDED.heartbeat_at_ns,
               entry_block_reason = EXCLUDED.entry_block_reason,
               started_at_ns = EXCLUDED.started_at_ns,
-              updated_at_ns = EXCLUDED.updated_at_ns
+              updated_at_ns = EXCLUDED.updated_at_ns,
+              account_snapshot = EXCLUDED.account_snapshot
             """,
-            tuple(asdict(value).values()),
+            self._runtime_state_values(value),
         )
         return value
 
@@ -939,7 +1037,8 @@ class ExecutionStreamStorage:
                    day_start_ready = %s, unexpected_exposure = %s, account_flat = %s,
                    positions_count = %s, open_orders_count = %s, protection_status = %s,
                    reconciliation_observed_at_ns = %s, heartbeat_at_ns = %s,
-                   entry_block_reason = %s, updated_at_ns = %s
+                   entry_block_reason = %s, updated_at_ns = %s,
+                   account_snapshot = %s::jsonb
              WHERE account_slot = %s AND runtime_id = %s
             """,
             (
@@ -964,6 +1063,7 @@ class ExecutionStreamStorage:
                 value.heartbeat_at_ns,
                 value.entry_block_reason,
                 value.updated_at_ns,
+                self._account_snapshot_json(value.account_snapshot),
                 value.account_slot,
                 value.runtime_id,
             ),
@@ -1004,6 +1104,52 @@ class ExecutionStreamStorage:
             entry_block_reason=(None if row["entry_block_reason"] is None else str(row["entry_block_reason"])),
             started_at_ns=int(row["started_at_ns"]),
             updated_at_ns=int(row["updated_at_ns"]),
+            account_snapshot=(
+                None
+                if row["account_snapshot"] is None
+                else ExecutionAccountSnapshot.from_payload(dict(row["account_snapshot"]))
+            ),
+        )
+
+    @staticmethod
+    def _account_snapshot_json(value: ExecutionAccountSnapshot | None) -> str | None:
+        return None if value is None else _dumps(value.payload())
+
+    @classmethod
+    def _runtime_state_values(cls, value: ExecutionRuntimeState) -> tuple[Any, ...]:
+        return (
+            value.account_slot,
+            value.runtime_profile_id,
+            value.mode,
+            value.runtime_release,
+            value.config_sha256,
+            value.runtime_id,
+            value.runtime_revision,
+            value.image_digest,
+            value.credential_fingerprint,
+            value.lifecycle_state,
+            value.alive,
+            value.execution_safe,
+            value.entries_armed,
+            value.control_plane_ready,
+            value.singleton_ready,
+            value.credential_ready,
+            value.activation_ready,
+            value.startup_reconciled,
+            value.portfolio_ready,
+            value.audit_ready,
+            value.day_start_ready,
+            value.unexpected_exposure,
+            value.account_flat,
+            value.positions_count,
+            value.open_orders_count,
+            value.protection_status,
+            value.reconciliation_observed_at_ns,
+            value.heartbeat_at_ns,
+            value.entry_block_reason,
+            value.started_at_ns,
+            value.updated_at_ns,
+            cls._account_snapshot_json(value.account_snapshot),
         )
 
     def execution_runtime_control_state(
@@ -1091,6 +1237,9 @@ __all__ = [
     "MAX_EXECUTION_READ_BATCH",
     "MAX_OBSERVATION_APPEND_BATCH",
     "MAX_OBSERVATION_APPEND_BYTES",
+    "ExecutionAccountOrder",
+    "ExecutionAccountPosition",
+    "ExecutionAccountSnapshot",
     "ExecutionProfileActivation",
     "ExecutionRuntimeState",
     "ExecutionStreamStorage",

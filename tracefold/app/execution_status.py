@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Any
 
 from tracefold.trading.storage.execution_stream import ExecutionRuntimeControlState, ExecutionRuntimeState
 
 _HEARTBEAT_STALE_AFTER_NS = 5_000_000_000
+_PRIVATE_RECONCILIATION_STALE_AFTER_NS = 10_000_000_000
 
 
 def execution_readiness_projection(
@@ -45,9 +47,11 @@ def execution_readiness_projection(
         "emergency_halted": False,
         "unexpected_exposure": False,
         "account_flat": False,
+        "account_flat_proven": False,
         "positions_count": 0,
         "open_orders_count": 0,
         "protection_status": "unknown",
+        "current_account": None,
     }
     if execution.mode == "disabled" or state is None:
         return base
@@ -61,6 +65,21 @@ def execution_readiness_projection(
     heartbeat_age_ns = max(0, now_ns - state.heartbeat_at_ns)
     reconciliation_age_ns = max(0, now_ns - state.reconciliation_observed_at_ns)
     stale = heartbeat_age_ns > _HEARTBEAT_STALE_AFTER_NS
+    private_reconciliation_fresh = (
+        state.startup_reconciled
+        and state.reconciliation_observed_at_ns <= now_ns
+        and reconciliation_age_ns <= _PRIVATE_RECONCILIATION_STALE_AFTER_NS
+    )
+    account_snapshot_flat = bool(
+        state.account_snapshot is not None
+        and state.account_snapshot.complete
+        and not state.account_snapshot.truncated
+        and not state.account_snapshot.positions
+        and not state.account_snapshot.orders
+        and state.account_snapshot.open_orders_count == 0
+        and state.account_snapshot.inflight_orders_count == 0
+        and state.account_snapshot.unknown_orders_count == 0
+    )
     current_control = control if control is not None and control.runtime_profile_id == execution.profile_id else None
     entries_paused = True if current_control is None else current_control.entries_paused
     emergency_halted = False if current_control is None else current_control.emergency_halted
@@ -113,9 +132,21 @@ def execution_readiness_projection(
             "emergency_halted": emergency_halted,
             "unexpected_exposure": state.unexpected_exposure,
             "account_flat": state.account_flat,
+            "account_flat_proven": bool(
+                alive
+                and execution_safe
+                and private_reconciliation_fresh
+                and account_snapshot_flat
+                and state.account_flat
+            ),
             "positions_count": state.positions_count,
             "open_orders_count": state.open_orders_count,
             "protection_status": state.protection_status,
+            "current_account": (
+                asdict(state.account_snapshot)
+                if private_reconciliation_fresh and state.account_snapshot is not None
+                else None
+            ),
         }
     )
     return base

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from nautilus_trader.model.enums import OmsType, OrderSide, OrderType, PositionSide, TriggerType
-from nautilus_trader.model.identifiers import ClientId, PositionId, VenueOrderId
+from nautilus_trader.model.identifiers import ClientId, ClientOrderId, PositionId, VenueOrderId
 from nautilus_trader.model.objects import Money
 from nautilus_trader.model.position import Position
 from nautilus_trader.test_kit.stubs.data import TestDataStubs
@@ -1084,6 +1084,194 @@ def test_failed_audit_writer_rejects_later_signal_before_any_new_exposure() -> N
 
     assert context.strategy.submitted == []
     assert context.audit.failure_reason == "audit_append_failed"
+
+
+def test_account_projection_reports_empty_account_without_claiming_private_flat_proof() -> None:
+    context = registered_oi_strategy()
+
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS)
+
+    assert snapshot.equity_usd == "1000"
+    assert snapshot.day_start_equity_usd == "1000"
+    assert snapshot.daily_drawdown_usd == "0"
+    assert snapshot.daily_drawdown_bps == 0
+    assert snapshot.aggregate_risk_usd == "0"
+    assert snapshot.positions == ()
+    assert snapshot.orders == ()
+    assert snapshot.complete is True
+
+
+def test_account_projection_exposes_owned_protection_and_unknown_orders() -> None:
+    signal = trade_signal()
+    context = registered_oi_strategy(values=(signal,))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    context.strategy.on_order_accepted(_accepted(context, entry))
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-PROJECTION")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 2,
+        )
+    )
+    stop = context.strategy.submitted[1][0]
+    context.strategy.on_order_accepted(_accepted(context, stop, position_id=position_id))
+    foreign = context.strategy.order_factory.limit(
+        instrument_id=context.instrument.id,
+        order_side=OrderSide.BUY,
+        quantity=context.instrument.make_qty(Decimal("0.01")),
+        price=context.instrument.make_price(Decimal("9900")),
+        client_order_id=ClientOrderId("foreign-open-order"),
+    )
+    _accepted(context, foreign)
+
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 3)
+
+    assert snapshot.positions[0].owned is True
+    assert snapshot.positions[0].protection_status == "protected"
+    assert snapshot.positions[0].protection_full_coverage is True
+    assert snapshot.positions[0].protection_quantity == "0.05"
+    stop_row = next(row for row in snapshot.orders if row.client_order_id == stop.client_order_id.value)
+    assert stop_row.leg == "protection"
+    assert stop_row.reduce_only is True
+    assert stop_row.owned is True
+    foreign_row = next(row for row in snapshot.orders if row.client_order_id == "foreign-open-order")
+    assert foreign_row.leg == "unknown"
+    assert foreign_row.owned is False
+    assert snapshot.open_orders_count == 2
+    assert snapshot.unknown_orders_count == 1
+    assert snapshot.aggregate_risk_usd == "11.9994"
+
+    canceled = TestEventStubs.order_canceled(stop, account_id=ACCOUNT_ID, ts_event=NOW_NS + 4)
+    stop.apply(canceled)
+    context.cache.update_order(stop)
+    after_cancel = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 5)
+
+    assert after_cancel.positions[0].protection_status == "pending"
+    assert after_cancel.positions[0].protection_quantity is None
+    assert after_cancel.positions[0].protection_trigger_price is None
+
+
+def test_account_projection_withholds_stale_quote_values() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    context.strategy.on_order_accepted(_accepted(context, entry))
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-STALE-PROJECTION")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 2,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 2,
+        )
+    )
+
+    snapshot = context.strategy.account_snapshot(
+        projected_at_ns=NOW_NS + context.profile.risk.market_stale_after_ns + 1
+    )
+
+    assert snapshot.complete is False
+    assert snapshot.market_observed_at_ns == NOW_NS
+    assert snapshot.equity_usd is None
+    assert snapshot.daily_drawdown_usd is None
+    assert snapshot.daily_drawdown_bps is None
+    assert snapshot.positions[0].mark_price is None
+    assert snapshot.positions[0].unrealized_pnl_usd is None
+    assert snapshot.aggregate_risk_usd is None
+
+
+def test_account_projection_accepts_quote_newer_than_the_separate_private_account_fact() -> None:
+    context = registered_oi_strategy(values=(trade_signal(),))
+    context.strategy.on_timer(None)
+    entry = context.strategy.submitted[0][0]
+    context.strategy.on_order_accepted(_accepted(context, entry))
+    position_id = PositionId("BTCUSDT-PERP.BINANCE-OI-NEWER-QUOTE")
+    fill = TestEventStubs.order_filled(
+        order=entry,
+        instrument=context.instrument,
+        strategy_id=context.strategy.id,
+        account_id=ACCOUNT_ID,
+        venue_order_id=entry.venue_order_id,
+        position_id=position_id,
+        last_qty=context.instrument.make_qty(Decimal("0.05")),
+        last_px=context.instrument.make_price(Decimal("10000")),
+        commission=Money(0, context.instrument.quote_currency),
+        ts_event=NOW_NS + 1,
+    )
+    entry.apply(fill)
+    context.cache.update_order(entry)
+    context.cache.add_position(Position(context.instrument, fill), OmsType.NETTING)
+    context.strategy.on_position_opened(
+        SimpleNamespace(
+            instrument_id=context.instrument.id,
+            account_id=ACCOUNT_ID,
+            strategy_id=context.strategy.id,
+            opening_order_id=entry.client_order_id,
+            side=PositionSide.LONG,
+            position_id=position_id,
+            quantity=context.instrument.make_qty(Decimal("0.05")),
+            avg_px_open=10_000.0,
+            ts_opened=NOW_NS + 1,
+        )
+    )
+    context.cache.add_quote_tick(
+        TestDataStubs.quote_tick(
+            instrument=context.instrument,
+            bid_price=10_000,
+            ask_price=10_001,
+            ts_event=NOW_NS + 2,
+            ts_init=NOW_NS + 2,
+        )
+    )
+
+    snapshot = context.strategy.account_snapshot(projected_at_ns=NOW_NS + 3)
+
+    assert snapshot.complete is True
+    assert snapshot.market_observed_at_ns == NOW_NS + 2
+    assert snapshot.positions[0].mark_price == "10000.5"
 
 
 def test_callback_module_has_no_postgres_or_telegram_io() -> None:

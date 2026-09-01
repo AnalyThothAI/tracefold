@@ -97,6 +97,7 @@ execution. Configure the one Workers-owned Telegram boundary:
 trading:
   control:
     enabled: true
+    console_write_token_file: "trading_console_write_token"
     telegram_bot_token_file: "telegram_bot_token"
     telegram_webhook_secret_file: "telegram_webhook_secret"
     allowed_chat_ids: [-1001234567890]
@@ -136,6 +137,24 @@ Inspect `trading commands` or `/api/trading/execution/commands` for the command 
 is: intent recorded, Runtime accepted, order accepted, fill observed, fresh
 Binance account-flat reconciliation. Never infer a later stage from an earlier
 one, from Decision `RUNNING`, or from Runtime readiness.
+
+The browser reads use the bootstrap token, but Command writes use the separate
+mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste
+that value into the Trading desk's password field only for the current page
+session. Bootstrap, logs, Issues, screenshots, and browser persistence must
+never carry it. A directly launched Serve reads a replacement on the next
+request. The canonical
+Compose deployment bind-mounts the single file, so an atomic host-side rename
+does not move the running container to the new inode. After securely replacing
+the file, immediately run:
+
+```text
+docker compose up -d --no-deps --force-recreate serve
+```
+
+Treat the old token as valid until the recreated Serve is healthy; verify the
+new token succeeds and the old token returns `401` before considering rotation
+complete.
 
 The local fallback writer uses the identical parser and an OS UID identity:
 
@@ -774,11 +793,12 @@ root, and recovery restores readiness. Invariant failures and an unfinished
 native control future remain process-fatal. This retry does not apply to
 general control writes whose commit outcome could be ambiguous.
 
-Serve owns one pool of seven with ordinary/control admission `6/1`,
+Serve owns one read pool of seven with ordinary/control admission `6/1`,
 50 ms permit wait, 250 ms checkout, one-second statement timeout, JIT off,
 parallel gather off, and 8 MiB work memory. Connections and ordinary requests
-default to read-only, and since #256 the HTTP surface has no write route at
-all. `tracefold news review submit` opens a short-lived connection under the
+default to read-only. The sole authenticated Trading Command POST opens a
+semaphore-bounded short-lived write connection outside that pool; every other
+HTTP route remains read-only. `tracefold news review submit` opens a short-lived connection under the
 same `tracefold` login and uses one ordinary short transaction. Database
 append-only triggers and business constraints—not an internal role ACL—protect
 the review facts. Workers owns the exact pool/lane topology
@@ -1433,13 +1453,14 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260902_0348`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+`20260902_0349`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
 additive `0342` notification delivery ledger, the additive `0343` current
 execution Runtime projection/indexes, and the destructive `0344` News
 open-interest push cut, followed by the `0345` Runtime exposure projection
 constraint hard cut, the additive `0346` notification result column, and the
 destructive `0347` drop of the twenty-two read-only execution tables, then the
-`0348` Runtime readiness hard cut and profile-keyed current control projection, in
+`0348` Runtime readiness hard cut and profile-keyed current control projection,
+then the additive `0349` bounded current account read projection, in
 order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
@@ -1549,7 +1570,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260902_0348`; zero rows in every cleared
+After deployment, require Alembic head `20260902_0349`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

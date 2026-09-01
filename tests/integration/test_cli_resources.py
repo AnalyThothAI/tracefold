@@ -89,9 +89,11 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "emergency_halted": False,
         "unexpected_exposure": False,
         "account_flat": False,
+        "account_flat_proven": False,
         "positions_count": 0,
         "open_orders_count": 0,
         "protection_status": "unknown",
+        "current_account": None,
     }
     assert set(data["counts"]) == {
         "cases_24h",

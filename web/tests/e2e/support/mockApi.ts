@@ -17,6 +17,7 @@ import {
   TRADING_NOW_MS,
   tradingCasesForUnderlying,
   tradingCommandsFixture,
+  tradingExecutionFixture,
   tradingGateFixture,
   tradingObservationsFixture,
   tradingSignalsForMarket,
@@ -31,6 +32,9 @@ export type MockApiOptions = {
   delayNonBootstrapMs?: number;
   emptyFeed?: boolean;
   failNonBootstrap?: boolean;
+  tradingCommands?: ReturnType<typeof tradingCommandsFixture>;
+  tradingExecution?: ReturnType<typeof tradingExecutionFixture>;
+  tradingObservations?: ReturnType<typeof tradingObservationsFixture>;
 };
 
 export type MockFeedControl = {
@@ -88,7 +92,14 @@ export async function installMockApi(
     // URL asked for rather than the fixture's default.
     // #207 PR-W4: the shell reads trading status on every route for the 交易 badge, so every e2e page
     // needs it answered or the unhandled-request assertion fires on routes that have nothing to do with it.
-    if (path === "/api/trading/status") return fulfill(route, tradingStatusFixture());
+    if (path === "/api/trading/status") {
+      return fulfill(
+        route,
+        tradingStatusFixture(
+          options.tradingExecution ? { execution: options.tradingExecution } : undefined,
+        ),
+      );
+    }
     // #282: the token page asks for one underlying, and what it gets back has to belong to that name —
     // otherwise 资本复盘 renders its empty path on every baseline and the panel is frozen in the one
     // state it is least useful in.
@@ -99,10 +110,20 @@ export async function installMockApi(
       return fulfill(route, tradingSignalsForMarket(url.searchParams.get("market")));
     }
     if (path === "/api/trading/execution/observations") {
-      return fulfill(route, tradingObservationsFixture());
+      return fulfill(route, options.tradingObservations ?? tradingObservationsFixture());
     }
     if (path === "/api/trading/execution/commands") {
-      return fulfill(route, tradingCommandsFixture());
+      if (route.request().method() === "POST") {
+        return fulfill(route, {
+          command_id: "a".repeat(64),
+          disposition: "awaiting_runtime",
+          reason: null,
+          requested_at_ns: TRADING_NOW_MS * 1_000_000,
+          seq: 7,
+          truth: "intent_recorded_not_runtime_or_venue",
+        });
+      }
+      return fulfill(route, options.tradingCommands ?? tradingCommandsFixture());
     }
     // #269: the admission ledger the OI audit reads for a whole page of frames at once.
     if (path === "/api/trading/gate") return fulfill(route, tradingGateFixture());

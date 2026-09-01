@@ -468,6 +468,7 @@ class CliTests(unittest.TestCase):
                 "enabled": False,
                 "control": {
                     "enabled": False,
+                    "console_write_token_file": "trading_console_write_token",
                     "telegram_bot_token_file": "telegram_bot_token",
                     "telegram_webhook_secret_file": "telegram_webhook_secret",
                     "allowed_chat_ids": [],
@@ -598,6 +599,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
         "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
+        "trading_console_write_token",
         "postgres_password",
         "postgres_database_password",
     ):
@@ -607,6 +609,7 @@ def test_init_creates_runtime_config(tmp_path, monkeypatch):
     assert (app_home / "telegram_bot_token").read_bytes() == b""
     assert (app_home / "telegram_webhook_secret").read_bytes() == b""
     assert all((app_home / name).read_bytes() == b"" for name in ("binance_usdm_api_key", "binance_usdm_api_secret"))
+    assert len((app_home / "trading_console_write_token").read_text(encoding="utf-8").strip()) >= 32
 
 
 def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeypatch):
@@ -622,6 +625,7 @@ def test_init_is_idempotent_and_does_not_rotate_operator_files(tmp_path, monkeyp
         "telegram_webhook_secret",
         "binance_usdm_api_key",
         "binance_usdm_api_secret",
+        "trading_console_write_token",
         "postgres_password",
         "postgres_database_password",
     )

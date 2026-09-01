@@ -35,13 +35,15 @@ The only Tracefold application configuration file is the operator-owned
 `~/.tracefold/config.yaml`. It owns application paths, the PostgreSQL DSN and
 password-file reference, the OpenNews token, the RabbitMQ URL, the
 Feishu webhook or Telegram target/token-file reference, the API bind address and bearer token, and model
-provider/name. `trading.control` contains only its enable switch, Telegram
-token/webhook-secret file references, chat/user allowlists, and notification
+provider/name. `trading.control` contains only its enable switch, the console
+write-token reference, Telegram token/webhook-secret file references, chat/user allowlists, and notification
 target. `trading.execution.credentials` contains the closed file
 references for the one Binance USD-M Runtime profile. The Signal-only Workers
-process has no execution-secret mount or secret-reading path. Serve has neither.
+process has no execution-secret mount or secret-reading path. Serve mounts only
+the console write token; it never mounts Binance or Telegram credentials.
 
-The complete secret inventory is: `ws_token` (HTTP API bearer token),
+The complete secret inventory is: `ws_token` (bootstrap-disclosed HTTP read token),
+the file named by `trading.control.console_write_token_file` (HTTP command authority),
 `news.opennews_token`, `llm.api_key`, the optional
 `llm.news_reader_card.api_key` (dedicated ReaderCard endpoint), the optional
 `llm.news_triage_fallback.api_key` (second Triage endpoint, issue #65),
@@ -68,15 +70,17 @@ Generated defaults contain no live provider, model, webhook, or bot credential
 and leave outbound News push disabled. They create empty mode-`0600`
 `telegram_bot_token`, `telegram_webhook_secret`, `binance_usdm_api_key`, and `binance_usdm_api_secret`
 placeholders; an empty file is `unconfigured`, never a credential. They do not
-create or populate an execution key. A live
+create or populate an execution key. Init separately creates a random
+`trading_console_write_token`; reruns preserve it. A live
 operator populates each required provider file as a regular,
 non-symlink file of at most 16 KiB with no group/other permission bits
 (normally mode `0600`);
 diagnostics expose only configured/readable booleans and resolved paths, never
 contents.
 
-Compose mounts only the generated Telegram token and webhook-secret filenames,
-and only into Workers. Serve receives neither file nor its contents. If outbound push is
+Compose mounts the generated Telegram token and webhook-secret filenames only
+into Workers, and mounts the console write token only into Serve. Serve never
+receives Telegram or Binance credentials. If outbound push is
 explicitly enabled with an absent, empty, malformed, symlinked, or
 over-permissive token file, Workers fails startup with a stable sanitized reason
 instead of running without the requested delivery boundary.
@@ -280,8 +284,12 @@ process name.
 
 Database access still has mechanical boundaries. Stable `application_name`
 values attribute sessions. The internet-facing Serve HTTP pool sets
-connection-level read-only mode and exposes no HTTP write route. The review CLI
-uses a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
+connection-level read-only mode. Its sole mutation,
+`POST /api/trading/execution/commands`, is semaphore-bounded and opens one
+separate short-lived connection and explicit transaction that can append only
+the existing closed `OperatorIntentV1` grammar; it has no Nautilus, Binance,
+quantity, notional, leverage, or venue authority. The review CLI likewise uses
+a separate short-lived connection and explicit transaction. PK/FK/UNIQUE,
 business CHECKs, conditional updates, append-only/state-machine triggers,
 maintenance locks, and repository transaction ownership remain authoritative;
 internal role permission denial is not a business invariant. Runtime code does
@@ -289,9 +297,18 @@ not execute DDL, and Compose orders the one-shot migration before steady
 processes. `pg_stat_statements` is naturally visible for the complete
 application identity without a statistics-reader workaround.
 
-HTTP authentication is one bearer token: `/api/bootstrap` hands `ws_token`
-to the served console and every other `/api/*` route requires it as
-`Authorization: Bearer <ws_token>`; `/healthz`, `/readyz`, and `/metrics` are
+HTTP reads use one bearer token: `/api/bootstrap` hands `ws_token` to the
+served console and every other GET `/api/*` route requires it. Read routes also
+accept the legacy query-token transport. The sole Command POST requires a
+separate operator write token from the mode-`0600` file named by
+`trading.control.console_write_token_file`; bootstrap never returns it and the
+console keeps a pasted value only in page memory. Serve refuses to start when
+that token equals the bootstrap-disclosed read token, and every request rereads
+the file and fails closed if a later replacement reuses the read token or is
+not an ASCII token. Non-ASCII bearer values likewise fail as unauthorized. The route requires
+`Authorization: Bearer <operator-write-token>`, exact JSON content type, and a
+body no larger than 2 KiB, and authenticates before reading that body. `/healthz`,
+`/readyz`, and `/metrics` are
 unauthenticated liveness/telemetry surfaces (the compose stack publishes the
 HTTP port on loopback). There is no WebSocket endpoint and no second
 authentication scheme. Exact
@@ -430,4 +447,14 @@ Ask before changing authentication, authorisation, billing, or data-deletion beh
 
 ## Frontend API token
 
-The `ws_token` reaches the browser through `/api/bootstrap`. Do not embed it in committed source; the frontend reads it from that bootstrap response and sends it as the bearer token on every other API call.
+The read-only `ws_token` reaches the browser through `/api/bootstrap`. Do not
+embed it in committed source. It cannot authorize a Command. The separate
+operator write token is never returned by an API, committed, logged, or stored
+in browser persistence; an operator pastes it into the Trading desk for the
+current page session.
+
+The canonical Compose deployment mounts this as a single file. An atomic
+host-side replacement does not update the inode already bound into the running
+container: token rotation therefore requires `docker compose up -d --no-deps
+--force-recreate serve`, followed by proving the new token succeeds and the old
+token returns `401`. A plain process restart is not a Compose rotation receipt.

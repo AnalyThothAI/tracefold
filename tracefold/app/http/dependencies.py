@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hmac
 import time
 from typing import Any
 
 from fastapi import Request
+
+from tracefold.platform.config.secret_file import SecretFileError, read_secure_distinct_token
 
 from .exceptions import ApiBadRequest, ApiUnauthorized
 
@@ -17,6 +20,29 @@ def _authenticated_runtime(request: Request) -> Any:
     request_token = _request_token(request)
     if not runtime.settings.ws_token or request_token != runtime.settings.ws_token:
         raise ApiUnauthorized()
+    return runtime
+
+
+def _authenticated_write_runtime(request: Request) -> Any:
+    """Authenticate a mutation from the bearer header only; query tokens are reads only."""
+
+    runtime = _runtime(request)
+    authorization = request.headers.get("authorization", "")
+    scheme, _, value = authorization.partition(" ")
+    supplied = value.strip() if scheme.lower() == "bearer" else ""
+    token_path = runtime.settings.trading_console_write_token_file()
+    try:
+        expected = (
+            read_secure_distinct_token(token_path, forbidden_value=runtime.settings.ws_token)
+            if token_path is not None
+            else ""
+        )
+    except SecretFileError:
+        expected = ""
+    if not supplied or not supplied.isascii() or not expected or not hmac.compare_digest(supplied, expected):
+        raise ApiUnauthorized()
+    if request.headers.get("content-type", "").partition(";")[0].strip().lower() != "application/json":
+        raise ApiBadRequest("content_type_json_required")
     return runtime
 
 

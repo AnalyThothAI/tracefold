@@ -674,6 +674,7 @@
 | `positions_count` | `INTEGER` | False | `None` |
 | `open_orders_count` | `INTEGER` | False | `None` |
 | `protection_status` | `TEXT` | False | `None` |
+| `account_snapshot` | `JSONB` | True | `None` |
 
 ## `trading_operator_intents`
 

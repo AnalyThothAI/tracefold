@@ -90,9 +90,9 @@ PUBLIC_NO_SQL_ROUTES = frozenset(
     }
 )
 
-# The console is read-only and the ReviewDesk moved to the CLI (#256), so the public HTTP surface has no
-# write route at all. The audit still asks for the set rather than assuming it stays empty.
-PUBLIC_WRITE_ROUTES: frozenset[str] = frozenset()
+# #475 PR-E adds exactly one bounded append to the existing Command aggregate. The path is also a GET;
+# recording it in both sets keeps the read plan and the write authority independently explicit.
+PUBLIC_WRITE_ROUTES: frozenset[str] = frozenset({"/api/trading/execution/commands"})
 
 
 def query_audit_catalog(

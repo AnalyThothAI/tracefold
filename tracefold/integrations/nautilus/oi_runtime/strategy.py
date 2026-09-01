@@ -12,8 +12,9 @@ from nautilus_trader.config import StrategyConfig
 from nautilus_trader.model.identifiers import ClientId, PositionId
 from nautilus_trader.trading.strategy import Strategy
 
-from tracefold.trading import OperatorIntentV1
+from tracefold.trading import ExecutionAccountSnapshot, OperatorIntentV1
 
+from .account_projection import RuntimeAccountProjector
 from .audit_sink import AuditSink
 from .config import OiRuntimeProfile
 from .entry import EntryCoordinator
@@ -92,6 +93,7 @@ class OiNautilusStrategy(Strategy):
         ):
             raise ValueError("oi_runtime_audit_identity_invalid")
         self._runtime = RuntimeExecutionState.from_control_snapshot(initial_control_state)
+        self._account_projector = RuntimeAccountProjector(engine=self, profile=profile, state=self._runtime)
         self._observation_writer = RuntimeObservationWriter(
             audit=audit,
             signals=signals,
@@ -189,6 +191,12 @@ class OiNautilusStrategy(Strategy):
 
     def control_state(self) -> RuntimeControlSnapshot:
         return self._runtime.control_snapshot()
+
+    def account_snapshot(self, *, projected_at_ns: int) -> ExecutionAccountSnapshot:
+        return self._account_projector.snapshot(
+            baseline=self._current_day_start(),
+            projected_at_ns=projected_at_ns,
+        )
 
     def protection_status(
         self,

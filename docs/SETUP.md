@@ -110,18 +110,19 @@ key fails `extra="forbid"` rather than silently overriding the artifact.
 `make up` runs `tracefold init`. The command creates `~/.tracefold/` with mode
 `0700`, `logs/` and `cache/`, one config with a locally generated API bearer
 token (`ws_token`) but no external credentials, two PostgreSQL password files,
-and empty Telegram and Binance execution placeholders:
+a generated local console write token, and empty Telegram and Binance execution placeholders:
 
 ```text
 telegram_bot_token
 telegram_webhook_secret
 binance_usdm_api_key
 binance_usdm_api_secret
+trading_console_write_token
 postgres_password
 postgres_database_password
 ```
 
-The config, Telegram placeholders, and all password files are mode `0600`.
+The config, Telegram placeholders, console write token, and all password files are mode `0600`.
 Ordinary `tracefold init` preserves an existing current-schema config, never
 rotates an existing password, and repairs the required permissions on every
 run. The only content rewrites are the validated, backed-up, one-time #433-C
@@ -158,7 +159,7 @@ The credentials a live deployment can hold are exactly: the OpenNews token
 `llm.news_reader_card`, `llm.news_triage_fallback`, and
 `llm.news_reader_card_fallback` triples), the RabbitMQ URL (`news.broker.url`), the
 one push provider's configuration (`news.push.*`), Trading control's Telegram
-bot token and webhook secret (`trading.control.*` file references), the Binance
+bot token, webhook secret, and console write token (`trading.control.*` file references), the Binance
 execution pair, and the PostgreSQL role password files.
 
 The product process is usable without optional live credentials, but affected
@@ -442,13 +443,14 @@ paths, booleans, and diagnostic command status; do not paste the API token,
 model keys, provider passwords, or full config payloads into docs or chat.
 
 Alembic has one root: baseline `20260831_0340` and current head
-`20260902_0348`. A new empty PostgreSQL 18 database applies baseline, the
+`20260902_0349`. A new empty PostgreSQL 18 database applies baseline, the
 `0341` Signal hard cut, the additive `0342` Trading notification delivery
 ledger, the additive `0343` execution Runtime projection/indexes, the
 destructive `0344` News open-interest push cut, and the `0345` Runtime
 projection constraint hard cut, followed by the additive `0346` notification
-result, the destructive `0347` retirement-table drop, and the `0348` Runtime
-readiness/current-control hard cut in order.
+result, the destructive `0347` retirement-table drop, the `0348` Runtime
+readiness/current-control hard cut, and the additive `0349` bounded current
+account read projection in order.
 Current source intentionally has no upgrade path from an earlier revision. To
 recover a pre-#449 backup, use the exact pre-cut image/source to restore and
 advance it to the old terminal `20260831_0340`, take a verified backup, perform

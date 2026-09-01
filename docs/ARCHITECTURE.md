@@ -50,8 +50,10 @@ durable resume. Legacy Capital/Intent/order tables are read-only history after
 migration `20260901_0341`; no active writer or compatibility route reaches
 them. RabbitMQ remains News-only.
 
-`tracefold serve` initializes only public HTTP/static, read repositories, and
-serve telemetry. `tracefold workers` initializes the bounded external
+`tracefold serve` initializes public HTTP/static, read repositories, serve
+telemetry, and the one authenticated bounded operator-command append. That
+append opens its own short write transaction outside the read pool and owns no
+Runtime or venue semantics. `tracefold workers` initializes the bounded external
 capability, singleton runtime status, and the RabbitMQ-driven News consumers
 when News is enabled. News consumers recover by re-consuming durable broker
 queues plus database idempotency keys. There is no database wake plane, no
@@ -1927,9 +1929,10 @@ unexpected exposure; additive `20260901_0346` lets a notification receipt
 outlive its provider's message id and carry a four-hour result; and destructive
 `20260901_0347` drops the twenty-two execution tables
 `0341` had made read-only, together with the thirteen functions only their
-triggers, defaults and CHECKs called; and `20260902_0348`, the current single
-head, hard-cuts Runtime readiness and adds the profile-keyed current control
-projection.
+triggers, defaults and CHECKs called; `20260902_0348` hard-cuts Runtime
+readiness and adds the profile-keyed current control projection; and additive
+`20260902_0349`, the current single head, adds the bounded Runtime-owned current
+account read projection.
 
 Every new schema change is again a normal linear, immutable, forward-only
 revision after the baseline. Exact-image replacement requires source, image,
@@ -2047,7 +2050,7 @@ intent before replying “recorded” and never interprets activation or manufac
 a Runtime disposition. Only the Runtime may append accepted, rejected, or completed
 control Observations. CLI request identity is namespaced by local OS UID and
 hostname before hashing, so two callers reusing the same request ID cannot collide.
-Serve remains read-only.
+Serve's ordinary seven-connection API pool remains transaction-read-only.
 
 Commands and Signals share one bounded Runtime input, with Commands admitted
 and handled first. Queue pressure evicts only volatile Signal admission so a
@@ -2165,6 +2168,29 @@ reconciliation retains report projection and durable snapshot construction but
 cannot reach those private APIs. Deterministic client IDs, query-first handling,
 reduce-only stops/exits, recovery validation, and private-flat proof retain one
 production path with no forwarding helper left in the former modules.
+
+#475 PR-E adds an operator read model and one bounded App command append without
+moving capital authority. `RuntimeAccountProjector` reads only the sole
+Nautilus Cache/Portfolio plus the existing `RuntimeExecutionState` aggregate;
+it calculates current equity/drawdown, aggregate fixed-stop risk, position PnL,
+protection coverage, and open/in-flight/unknown-order rows, then stores one
+bounded replaceable JSON projection on `trading_execution_runtime_state`.
+Migration `0349` adds only that nullable current column. The projection is not
+an execution contract, durable lifecycle ledger, reconciliation owner, risk
+gate, OMS, or alternate account truth; Commands and Observations remain the
+audit path and Binance private reconciliation remains sole flat authority.
+
+The console's only mutation is header-authenticated
+`POST /api/trading/execution/commands`. It reuses the existing parser,
+`OperatorIntentV1`, TTL, confirmation, idempotent request identity, and Runtime
+consumer, admits only pause/resume/flatten, and opens one semaphore-bounded
+short transaction separate from Serve's read-only pool. HTTP success proves
+only persistence. The Trading page therefore renders persisted, Runtime,
+order/fill, position, and fresh-private-flat stages separately; mode disabled
+locks controls, Live resume/flatten require typed second confirmation, and raw
+identities remain in `Advanced Audit`. The responsive card layout deletes the
+retired Capital/Binding/Authority/Lifecycle wide-table presentation rather than
+keeping a second legacy surface.
 
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that

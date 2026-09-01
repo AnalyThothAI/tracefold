@@ -6,7 +6,7 @@ import argparse
 def add_runtime_commands(
     subcommands: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
-    subcommands.add_parser("serve", help="run the read-only HTTP and frontend runtime")
+    subcommands.add_parser("serve", help="run the HTTP and frontend runtime")
     subcommands.add_parser("workers", help="run the News ingestion, triage, and delivery runtime")
     nautilus = subcommands.add_parser("nautilus", help="run the single OI Nautilus Runtime")
     nautilus_subcommands = nautilus.add_subparsers(dest="nautilus_command", required=True)

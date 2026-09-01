@@ -164,7 +164,11 @@ export interface paths {
         /** Get Operator Intents */
         get: operations["get_operator_intents_api_trading_execution_commands_get"];
         put?: never;
-        post?: never;
+        /**
+         * Post Operator Intent
+         * @description Persist one bounded console intent; Runtime and venue outcomes remain separate facts.
+         */
+        post: operations["post_operator_intent_api_trading_execution_commands_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -414,6 +418,16 @@ export interface components {
         /** ApiEnvelope[TradingGateSourceData] */
         ApiEnvelope_TradingGateSourceData_: {
             data?: components["schemas"]["TradingGateSourceData"] | null;
+            /** Error */
+            error?: string | null;
+            /** Field */
+            field?: string | null;
+            /** Ok */
+            ok: boolean;
+        };
+        /** ApiEnvelope[TradingOperatorCommandReceiptData] */
+        ApiEnvelope_TradingOperatorCommandReceiptData_: {
+            data?: components["schemas"]["TradingOperatorCommandReceiptData"] | null;
             /** Error */
             error?: string | null;
             /** Field */
@@ -2325,6 +2339,40 @@ export interface components {
              */
             state: "DISABLED" | "STARTING" | "RUNNING" | "FAULTED";
         };
+        /** TradingExecutionAccountData */
+        TradingExecutionAccountData: {
+            /** Aggregate Risk Usd */
+            aggregate_risk_usd?: string | null;
+            /** Complete */
+            complete: boolean;
+            /** Daily Drawdown Bps */
+            daily_drawdown_bps?: number | null;
+            /** Daily Drawdown Usd */
+            daily_drawdown_usd?: string | null;
+            /** Day Start Equity Usd */
+            day_start_equity_usd?: string | null;
+            /** Equity Usd */
+            equity_usd?: string | null;
+            /** Inflight Orders Count */
+            inflight_orders_count: number;
+            /** Market Observed At Ns */
+            market_observed_at_ns?: number | null;
+            /** Observed At Ns */
+            observed_at_ns: number;
+            /** Open Orders Count */
+            open_orders_count: number;
+            /** Orders */
+            orders?: components["schemas"]["TradingExecutionOrderData"][];
+            /** Positions */
+            positions?: components["schemas"]["TradingExecutionPositionData"][];
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+            /** Unknown Orders Count */
+            unknown_orders_count: number;
+        };
         /** TradingExecutionObservationData */
         TradingExecutionObservationData: {
             /** Command Id */
@@ -2369,6 +2417,64 @@ export interface components {
             /** Window Hours */
             window_hours: number;
         };
+        /** TradingExecutionOrderData */
+        TradingExecutionOrderData: {
+            /** Client Order Id */
+            client_order_id: string;
+            /** Instrument Id */
+            instrument_id: string;
+            /**
+             * Leg
+             * @enum {string}
+             */
+            leg: "entry" | "exit" | "protection" | "unknown";
+            /** Owned */
+            owned: boolean;
+            /** Quantity */
+            quantity: string;
+            /** Reduce Only */
+            reduce_only: boolean;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "open" | "inflight";
+            /** Trigger Price */
+            trigger_price?: string | null;
+        };
+        /** TradingExecutionPositionData */
+        TradingExecutionPositionData: {
+            /** Entry Price */
+            entry_price: string;
+            /** Instrument Id */
+            instrument_id: string;
+            /** Mark Price */
+            mark_price?: string | null;
+            /** Owned */
+            owned: boolean;
+            /** Position Id */
+            position_id: string;
+            /** Protection Full Coverage */
+            protection_full_coverage: boolean;
+            /** Protection Quantity */
+            protection_quantity?: string | null;
+            /**
+             * Protection Status
+             * @enum {string}
+             */
+            protection_status: "protected" | "pending" | "unprotected" | "unknown";
+            /** Protection Trigger Price */
+            protection_trigger_price?: string | null;
+            /** Quantity */
+            quantity: string;
+            /**
+             * Side
+             * @enum {string}
+             */
+            side: "long" | "short";
+            /** Unrealized Pnl Usd */
+            unrealized_pnl_usd?: string | null;
+        };
         /** TradingExecutionReadinessData */
         TradingExecutionReadinessData: {
             /**
@@ -2376,6 +2482,11 @@ export interface components {
              * @default false
              */
             account_flat: boolean;
+            /**
+             * Account Flat Proven
+             * @default false
+             */
+            account_flat_proven: boolean;
             /** Account Slot */
             account_slot: string;
             /**
@@ -2404,6 +2515,7 @@ export interface components {
              * @default false
              */
             credential_ready: boolean;
+            current_account?: components["schemas"]["TradingExecutionAccountData"] | null;
             /**
              * Day Start Ready
              * @default false
@@ -2631,6 +2743,27 @@ export interface components {
             event_id: string;
             /** Joinable */
             joinable: boolean;
+        };
+        /** TradingOperatorCommandReceiptData */
+        TradingOperatorCommandReceiptData: {
+            /** Command Id */
+            command_id: string;
+            /**
+             * Disposition
+             * @constant
+             */
+            disposition: "awaiting_runtime";
+            /** Reason */
+            reason?: string | null;
+            /** Requested At Ns */
+            requested_at_ns: number;
+            /** Seq */
+            seq: number;
+            /**
+             * Truth
+             * @constant
+             */
+            truth: "intent_recorded_not_runtime_or_venue";
         };
         /** TradingOperatorIntentData */
         TradingOperatorIntentData: {
@@ -3098,6 +3231,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    post_operator_intent_api_trading_execution_commands_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Request Id */
+                    request_id: string;
+                    /** Requested At Ms */
+                    requested_at_ms: number;
+                    /** Text */
+                    text: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_TradingOperatorCommandReceiptData_"];
                 };
             };
         };

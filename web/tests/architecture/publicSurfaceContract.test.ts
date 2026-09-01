@@ -26,7 +26,7 @@ describe("public browser surface", () => {
     expect(navigation.flatMap((item) => item.children ?? [])).toEqual([]);
   });
 
-  it("keeps every generated browser API operation read-only", () => {
+  it("keeps one exact browser command write and every other API operation read-only", () => {
     const document = JSON.parse(
       readFileSync(join(webRoot, "../docs/generated/openapi.json"), "utf8"),
     ) as { paths?: Record<string, Record<string, unknown>> };
@@ -57,15 +57,19 @@ describe("public browser surface", () => {
         .filter((method) => HTTP_METHODS.has(method))
         .map((method) => `${method.toUpperCase()} ${path}`),
     );
-    expect(operations.every((operation) => operation.startsWith("GET "))).toBe(true);
-    expect(operations).toHaveLength(apiPaths.length);
+    expect(operations.filter((operation) => !operation.startsWith("GET "))).toEqual([
+      "POST /api/trading/execution/commands",
+    ]);
+    expect(operations).toHaveLength(apiPaths.length + 1);
   });
 
-  it("keeps the runtime API facade without a browser write verb", () => {
+  it("keeps the runtime API facade to GET plus the one POST transport", () => {
     expect(Object.keys(apiClient)).toEqual(
-      expect.arrayContaining(["getApi", "getBootstrap", "getAuthToken", "setAuthToken"]),
+      expect.arrayContaining(["getApi", "postApi", "getBootstrap", "getAuthToken", "setAuthToken"]),
     );
-    expect(apiClient).not.toHaveProperty("postApi");
+    expect(apiClient).not.toHaveProperty("putApi");
+    expect(apiClient).not.toHaveProperty("patchApi");
+    expect(apiClient).not.toHaveProperty("deleteApi");
   });
 });
 

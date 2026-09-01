@@ -181,6 +181,9 @@ def test_compose_preserves_non_postgres_secret_isolation() -> None:
     assert all("hyperliquid_private_key" not in volume for volume in worker_volumes)
     assert all("telegram_bot_token" not in volume for volume in serve_volumes)
     assert all("telegram_webhook_secret" not in volume for volume in serve_volumes)
+    assert any("trading_console_write_token" in volume for volume in serve_volumes)
+    assert all("trading_console_write_token" not in volume for volume in worker_volumes)
+    assert all("trading_console_write_token" not in volume for volume in nautilus_volumes)
     assert any("binance_usdm_api_key" in volume for volume in nautilus_volumes)
     assert any("binance_usdm_api_secret" in volume for volume in nautilus_volumes)
     for service_name, service in services.items():
