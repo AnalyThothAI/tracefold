@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import dspy  # type: ignore[import-untyped]
 import pytest
@@ -18,16 +18,21 @@ from tracefold.news.learning.contracts import (
 from tracefold.news.learning.optimizer import (
     InstructionGrowthBudget,
     OptimizationBudgetExceeded,
+    OptimizationRunTerminated,
     _BudgetMeter,
     _DspyTaxonomyMetric,
+    _MeteredLearningLM,
     optimizer_config_receipt,
     optimizer_constructor,
 )
+from tracefold.news.program.lm import LMOutputTruncatedError
 from tracefold.news.program.signatures import EventSemantics
 
 
 class _RoleLM(dspy.BaseLM):  # type: ignore[misc]
-    def __init__(self, role: str) -> None:
+    forward_contract = "typed_lm"
+
+    def __init__(self, role: Literal["task", "reflection"]) -> None:
         super().__init__(f"openai/{role}", cache=False, num_retries=0)
         max_tokens = REFLECTION_MAX_TOKENS if role == "reflection" else 1_000
         timeout = REFLECTION_TIMEOUT_SECONDS if role == "reflection" else 30
@@ -44,6 +49,12 @@ class _RoleLM(dspy.BaseLM):  # type: ignore[misc]
     def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
         del request
         raise AssertionError("provider call not expected")
+
+
+class _TruncatedRoleLM(_RoleLM):
+    def forward(self, request: dspy.LMRequest) -> dspy.LMResponse:
+        del request
+        raise LMOutputTruncatedError("[task] news_program_lm_output_truncated")
 
 
 def _taxonomy(**overrides: Any) -> dict[str, Any]:
@@ -152,3 +163,29 @@ def test_budget_meter_reserves_before_a_physical_call() -> None:
     assert meter.task_total_tokens == 10
     with pytest.raises(OptimizationBudgetExceeded, match="news_program_compile_task_model_call_budget_exhausted"):
         meter.before("task")
+
+
+def test_truncated_task_output_becomes_a_receiptable_run_termination() -> None:
+    task = _TruncatedRoleLM("task")
+    meter = _BudgetMeter(
+        OptimizationBudget(
+            max_metric_calls=10,
+            max_task_model_calls=1,
+            max_reflection_model_calls=1,
+            max_cost_microusd=10,
+            max_call_cost_microusd=10,
+            max_wall_clock_seconds=60,
+            seed=456,
+        ),
+        imputed_call_cost_microusd=10,
+    )
+    metered = _MeteredLearningLM(task, meter=meter, role="task")
+
+    with pytest.raises(
+        OptimizationRunTerminated,
+        match="news_program_compile_task_model_output_truncated",
+    ):
+        metered(messages=[{"role": "user", "content": "classify"}])
+
+    assert meter.task_model_calls == 1
+    assert meter.task_cost_microusd == 10

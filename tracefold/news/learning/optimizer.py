@@ -36,6 +36,7 @@ from ..program.lm import (
     AuditedConfiguredLM,
     LMCallContext,
     LMCallLedger,
+    LMOutputTruncatedError,
     RuntimeModelIdentity,
     StructuredOutputMode,
     _usage_values,
@@ -1086,6 +1087,8 @@ class _MeteredLearningLM(dspy.BaseLM):  # type: ignore[misc]
     def _terminal_error(self, exc: BaseException) -> BaseException:
         if _is_retryable_lm_failure(exc):
             return OptimizationRunTerminated(f"news_program_compile_{self._role}_provider_unavailable")
+        if isinstance(exc, LMOutputTruncatedError):
+            return OptimizationRunTerminated(f"news_program_compile_{self._role}_model_output_truncated")
         return exc
 
 
