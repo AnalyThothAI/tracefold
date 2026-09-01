@@ -56,7 +56,8 @@ def test_owner_matrix_names_one_concrete_owner_and_existing_symbol_per_fact() ->
 def test_baseline_receipt_covers_every_issue_measurement_without_inventing_provider_evidence() -> None:
     receipt = _receipt()
     assert receipt["schema_version"] == "tracefold_oi_runtime_pr0_baseline_v1"
-    assert len(receipt["source_main"]) == 40
+    assert receipt["baseline_source_main"] == "f495a9fc0d0ba0d528e40b588e76108d80cdfefe"
+    assert len(receipt["measured_git_sha"]) == 40
     measurements = receipt["measurements"]
     assert set(measurements) == {
         "audit_append",

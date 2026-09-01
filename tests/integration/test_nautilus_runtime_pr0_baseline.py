@@ -57,6 +57,7 @@ _BURST_SIZES = (1, 10, 100)
 _REPEATS = 6
 _REPAIR_SECONDS = 0.2
 _UI_WINDOW_SECONDS = 15.0
+_BASELINE_SOURCE_MAIN = "f495a9fc0d0ba0d528e40b588e76108d80cdfefe"
 
 _OWNER_MATRIX = (
     {
@@ -469,17 +470,17 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
     lifecycle = _runtime_lifecycle_sample()
     http = _http_sample(tmp_path)
     after = resource.getrusage(resource.RUSAGE_SELF)
-    parent_line = subprocess.run(
-        ["git", "show", "-s", "--format=%P", "HEAD"],
+    measured_git_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
         cwd=Path(__file__).resolve().parents[2],
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    source_main = parent_line.split()[0]
     report = {
         "schema_version": "tracefold_oi_runtime_pr0_baseline_v1",
-        "source_main": source_main,
+        "baseline_source_main": _BASELINE_SOURCE_MAIN,
+        "measured_git_sha": measured_git_sha,
         "captured_at": datetime.now(UTC).isoformat(),
         "environment": {
             "platform": os.uname().sysname,
