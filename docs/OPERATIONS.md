@@ -142,8 +142,19 @@ The browser reads use the bootstrap token, but Command writes use the separate
 mode-`0600` `trading_console_write_token` created by `tracefold init`. Paste
 that value into the Trading desk's password field only for the current page
 session. Bootstrap, logs, Issues, screenshots, and browser persistence must
-never carry it; rotating the file takes effect on the next request without a
-Serve restart.
+never carry it. A directly launched Serve reads a replacement on the next
+request. The canonical
+Compose deployment bind-mounts the single file, so an atomic host-side rename
+does not move the running container to the new inode. After securely replacing
+the file, immediately run:
+
+```text
+docker compose up -d --no-deps --force-recreate serve
+```
+
+Treat the old token as valid until the recreated Serve is healthy; verify the
+new token succeeds and the old token returns `401` before considering rotation
+complete.
 
 The local fallback writer uses the identical parser and an OS UID identity:
 

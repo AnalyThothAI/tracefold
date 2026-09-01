@@ -449,3 +449,9 @@ embed it in committed source. It cannot authorize a Command. The separate
 operator write token is never returned by an API, committed, logged, or stored
 in browser persistence; an operator pastes it into the Trading desk for the
 current page session.
+
+The canonical Compose deployment mounts this as a single file. An atomic
+host-side replacement does not update the inode already bound into the running
+container: token rotation therefore requires `docker compose up -d --no-deps
+--force-recreate serve`, followed by proving the new token succeeds and the old
+token returns `401`. A plain process restart is not a Compose rotation receipt.
