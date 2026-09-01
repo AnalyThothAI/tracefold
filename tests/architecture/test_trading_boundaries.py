@@ -240,8 +240,11 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
     assert trading.__all__ == [
         "AlphaDecision",
         "Bar",
+        "BinanceDemoReceipt",
         "CaseState",
         "DecisionRuntimeV1",
+        "DemoReceiptError",
+        "DemoReceiptObservation",
         "ExecutionObservationV1",
         "OiTradeCandidate",
         "OperatorCommandError",
@@ -254,6 +257,7 @@ def test_package_root_exports_only_current_app_facing_values() -> None:
         "parse_operator_command",
         "prepare_execution_observations",
         "prepare_parsed_operator_intent",
+        "verify_binance_demo_receipt",
     ]
     assert "TradingRepository" not in trading.__dict__
     assert "CapitalLane" not in trading.__dict__
