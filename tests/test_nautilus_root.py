@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import nullcontext
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from nautilus_trader.model.identifiers import InstrumentId
 
 from tests.nautilus_oi_runtime_fixtures import oi_profile
+from tracefold.app.nautilus import root as nautilus_root
 from tracefold.app.nautilus.root import (
     _activate_profile,
+    _discover_routes,
     _observe_reconciliation,
     _observe_runtime_start,
     _preflight_profile,
 )
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
+from tracefold.integrations.nautilus.oi_runtime.config import BinanceRuntimeCredentials
 from tracefold.trading.storage.execution_stream import ExecutionProfileActivation
 
 
@@ -54,6 +59,50 @@ def _activation(profile_id: str = "oi-paper-profile") -> ExecutionProfileActivat
         config_sha256=profile.config_sha256,
         created_at_ns=100,
     )
+
+
+def test_route_discovery_uses_real_clock_and_skips_unaddressable_provider_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class _Instrument:
+        def __init__(self, base_code: str) -> None:
+            self.quote_currency = nautilus_root.USDT
+            self.settlement_currency = nautilus_root.USDT
+            self.info = {"status": "TRADING"}
+            self.base_currency = SimpleNamespace(code=base_code)
+            self.id = InstrumentId.from_str(f"{base_code}USDT-PERP.BINANCE")
+
+    class _Provider:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["provider"] = kwargs
+
+        async def load_all_async(self) -> None:
+            captured["loaded"] = True
+
+        def list_all(self) -> list[_Instrument]:
+            return [_Instrument("测试测试"), _Instrument("BTC")]
+
+    monkeypatch.setattr(nautilus_root, "CryptoPerpetual", _Instrument)
+    monkeypatch.setattr(
+        nautilus_root,
+        "get_cached_binance_http_client",
+        lambda **kwargs: captured.setdefault("client", kwargs),
+    )
+    monkeypatch.setattr(nautilus_root, "BinanceFuturesInstrumentProvider", _Provider)
+
+    routes = asyncio.run(
+        _discover_routes(
+            "paper",
+            BinanceRuntimeCredentials(api_key="demo-key", api_secret="demo-secret"),
+        )
+    )
+
+    assert captured["loaded"] is True
+    assert captured["client"]["environment"] == nautilus_root.BinanceEnvironment.DEMO
+    assert type(captured["client"]["clock"]).__name__ == "LiveClock"
+    assert [route.market_key for route in routes] == ["crypto:perp:BTC:USDT"]
 
 
 def test_new_profile_activation_requires_authoritative_binance_flat() -> None:

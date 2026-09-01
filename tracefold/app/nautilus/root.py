@@ -492,7 +492,7 @@ async def _discover_routes(
     credentials: BinanceRuntimeCredentials,
 ) -> tuple[OiInstrumentRoute, ...]:
     environment = BinanceEnvironment.DEMO if mode == "paper" else BinanceEnvironment.LIVE
-    clock = LiveClock(asyncio.get_running_loop())
+    clock = LiveClock()
     client = get_cached_binance_http_client(
         clock=clock,
         account_type=BinanceAccountType.USDT_FUTURES,
@@ -516,13 +516,19 @@ async def _discover_routes(
         if str((instrument.info or {}).get("status")) != "TRADING":
             continue
         market_key = f"crypto:perp:{instrument.base_currency.code}:USDT"
+        try:
+            route = OiInstrumentRoute(
+                market_key=market_key,
+                instrument_id=instrument.id,
+                stop_distance_bps=_DEFAULT_STOP_DISTANCE_BPS,
+            )
+        except ValueError as exc:
+            if str(exc) == "oi_runtime_market_key_invalid":
+                continue
+            raise
         if market_key in routes:
             raise RuntimeError("oi_runtime_market_route_ambiguous")
-        routes[market_key] = OiInstrumentRoute(
-            market_key=market_key,
-            instrument_id=instrument.id,
-            stop_distance_bps=_DEFAULT_STOP_DISTANCE_BPS,
-        )
+        routes[market_key] = route
     if not routes:
         raise RuntimeError("oi_runtime_route_catalog_empty")
     return tuple(routes[key] for key in sorted(routes))
