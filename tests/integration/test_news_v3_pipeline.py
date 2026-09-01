@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from tracefold.app.repository_session import repositories_for_connection
 from tracefold.news.artifact_identity import canonical_sha
 from tracefold.news.models import TRIAGE_POLICY_VERSION, TriageVerdict
 from tracefold.news.oi_signals import PROGRAM_VERSION as OI_PROGRAM_VERSION
-from tracefold.news.oi_signals import OiPolicy, OiSignal, evaluate_oi, oi_parse_failure, oi_source_contract
+from tracefold.news.oi_signals import oi_parse_failure, oi_source_contract
 from tracefold.news.opennews import parse_opennews_message, source_artifact_identity
 from tracefold.news.pipeline.admission import admit_frame, admit_item
 from tracefold.news.program.runtime import PROGRAM_VERSION as SEMANTIC_PROGRAM_VERSION
@@ -956,150 +955,6 @@ def _insert_test_verdict(
         focus_fact_id=str(evidence["focus_fact_id"]),
         now_ms=now_ms,
     )
-
-
-def test_oi_rank_ignores_ineligible_frames_in_the_same_window(conn) -> None:
-    """#179: low-concentration frames remain auditable without spending a later signal's rank."""
-
-    repos = repositories_for_connection(conn)
-    titles = (
-        "Alpha expands capacity",
-        "Beta opens a new facility",
-        "Gamma names a director",
-        "Delta starts production",
-        "Epsilon updates guidance",
-    )
-    event_ids = _admit_test_events(conn, hit_base=1_790_000, titles=titles, hour=10)
-
-    observed_at_ms = 1_777_000_000_000
-    rows = (
-        (event_ids[0], "BTC", 4_000, 500, observed_at_ms - 20 * 60_000),
-        (event_ids[1], "BTC", 6_000, 500, observed_at_ms - 10 * 60_000),
-        # The lower edge is open: a qualifying frame exactly at the cutoff has aged out.
-        (event_ids[2], "BTC", 9_100, 500, observed_at_ms - 4 * 3_600_000),
-        # A different symbol owns a different rank window.
-        (event_ids[3], "ETH", 9_100, 500, observed_at_ms - 5 * 60_000),
-        # With a positive change floor this row is ineligible too.
-        (event_ids[4], "BTC", 9_100, 99, observed_at_ms - 5 * 60_000),
-    )
-    with repos.transaction():
-        for event_id, symbol, ratio_bps, change_bps, at_ms in rows:
-            card = repos.news.event_card(event_id)
-            assert card is not None
-            repos.news.insert_oi_signal(
-                event_id=event_id,
-                metric_version="oi_issue_179_repro",
-                symbol=symbol,
-                direction="rise",
-                oi_change_bps=change_bps,
-                oi_value_usd=10_000_000,
-                whale_long_profit_bps=9_000,
-                whale_oi_ratio_bps=ratio_bps,
-                observed_at_ms=at_ms,
-                rank_in_window=99,
-                now_ms=observed_at_ms,
-                source_item_id=str(card["leader_item_id"]),
-                source_venue="binance",
-            )
-
-    earlier_eligible_count = repos.news.count_recent_eligible_oi_signals(
-        symbol="BTC",
-        metric_version="oi_issue_179_repro",
-        since_ms=observed_at_ms - 4 * 3_600_000,
-        before_ms=observed_at_ms,
-        whale_oi_ratio_above_bps=8_000,
-        oi_change_at_least_bps=100,
-    )
-    judgment = evaluate_oi(
-        OiSignal(
-            symbol="BTC",
-            direction="rise",
-            oi_change_bps=500,
-            oi_value_usd=10_000_000,
-            whale_long_profit_bps=9_000,
-            whale_oi_ratio_bps=9_100,
-        ),
-        earlier_eligible_count=earlier_eligible_count,
-        policy=OiPolicy(oi_change_at_least_bps=100),
-    )
-
-    assert earlier_eligible_count == 0
-    assert (judgment.rank_in_window, judgment.decision.final) == (1, "push")
-    assert conn.execute(
-        "SELECT count(*) AS n FROM news_oi_signals WHERE metric_version = 'oi_issue_179_repro'"
-    ).fetchone()["n"] == len(rows), "every parsed frame remains auditable"
-    assert repos.news.status_snapshot(now_ms=observed_at_ms + 1)["pipeline"]["telemetry_parsed_24h"] >= len(rows)
-
-
-def test_same_symbol_concurrency_serializes_eligible_rank_and_caps_pushes(conn) -> None:
-    event_ids = _admit_test_events(
-        conn,
-        hit_base=1_792_000,
-        titles=(
-            "Northwind expands its logistics network",
-            "Contoso appoints a new finance chief",
-            "Fabrikam opens a manufacturing site",
-        ),
-        hour=12,
-    )
-    observed_at_ms = 1_777_100_000_000
-
-    def judge(event_id: str) -> str:
-        connection = connect_postgres_test(read_only=False)
-        try:
-            repos = repositories_for_connection(connection)
-            with repos.transaction():
-                repos.news.lock_storyline("asset:BTC")
-                count = repos.news.count_recent_eligible_oi_signals(
-                    symbol="BTC",
-                    metric_version="oi_issue_179_concurrency",
-                    since_ms=observed_at_ms - 4 * 3_600_000,
-                    before_ms=observed_at_ms,
-                    whale_oi_ratio_above_bps=8_000,
-                    oi_change_at_least_bps=0,
-                    exclude_event_id=event_id,
-                )
-                judgment = evaluate_oi(
-                    OiSignal(
-                        symbol="BTC",
-                        direction="rise",
-                        oi_change_bps=500,
-                        oi_value_usd=10_000_000,
-                        whale_long_profit_bps=9_000,
-                        whale_oi_ratio_bps=9_100,
-                    ),
-                    earlier_eligible_count=count,
-                )
-                card = repos.news.event_card(event_id)
-                assert card is not None
-                repos.news.insert_oi_signal(
-                    event_id=event_id,
-                    metric_version="oi_issue_179_concurrency",
-                    symbol="BTC",
-                    direction="rise",
-                    oi_change_bps=500,
-                    oi_value_usd=10_000_000,
-                    whale_long_profit_bps=9_000,
-                    whale_oi_ratio_bps=9_100,
-                    observed_at_ms=observed_at_ms,
-                    rank_in_window=judgment.rank_in_window,
-                    now_ms=observed_at_ms,
-                    source_item_id=str(card["leader_item_id"]),
-                    source_venue="binance",
-                )
-            return judgment.decision.final
-        finally:
-            connection.close()
-
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        decisions = list(pool.map(judge, event_ids))
-
-    assert sorted(decisions) == ["drop", "push", "push"]
-    ranks = conn.execute(
-        "SELECT rank_in_window FROM news_oi_signals "
-        "WHERE metric_version = 'oi_issue_179_concurrency' ORDER BY rank_in_window"
-    ).fetchall()
-    assert [row["rank_in_window"] for row in ranks] == [1, 2, 3]
 
 
 def test_strategy_1019_format_drift_reaches_triage_instead_of_near_duplicate_merging(conn) -> None:

@@ -1,5 +1,4 @@
 import { TradingSymbolSection } from "@features/trading";
-import { newsOiPath } from "@shared/routing/paths";
 import { routeReferrerFromState } from "@shared/routing/routeReferrer";
 import * as PageState from "@shared/ui/PageState";
 import { RouteBackLink } from "@shared/ui/RouteBackLink";
@@ -11,7 +10,6 @@ import {
   useNewsFeedHistoryWithToken,
   useNewsFeedWithToken,
   useNewsQuotesWithToken,
-  useNewsStatusWithToken,
   useNewsSymbolWithToken,
   type NewsFeedFilters,
 } from "../../api/newsQueries";
@@ -21,7 +19,6 @@ import { NewsQuoteReadState } from "../chrome/NewsQuoteReadState";
 
 import { NewsSymbolEvents } from "./NewsSymbolEvents";
 import { NewsSymbolIdentity } from "./NewsSymbolIdentity";
-import { NewsSymbolWindow } from "./NewsSymbolWindow";
 
 import "./newsSymbol.css";
 
@@ -32,10 +29,10 @@ import "./newsSymbol.css";
  * not "what has been going on with this token" — the question a reader actually arrives with after seeing a
  * headline. Every `base_symbol` on the console now routes here.
  *
- * Four reads, each already existing and each on its own key: identity from `/api/news/symbols/{base}`, the
- * Events from `/api/news/feed?symbol=`, the current quote from `/api/news/quotes`, and this symbol's rank
- * occupancy out of the OI section of `/api/news/status`. Nothing is recomputed and nothing is merged into a
- * field the browser owns.
+ * Three reads, each already existing and each on its own key: identity from `/api/news/symbols/{base}`,
+ * the Events from `/api/news/feed?symbol=`, and the current quote from `/api/news/quotes`. Nothing is
+ * recomputed and nothing is merged into a field the browser owns. The fourth was this symbol's rank
+ * occupancy out of `/api/news/status`; #458 removed the rank window with the push rule that spent it.
  *
  * Deliberately not built. There is no watchlist star because this read-only page owns no second watchlist
  * product or browser write. There is no price chart and no
@@ -70,7 +67,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
     [normalized],
   );
   const feedQuery = useNewsFeedWithToken(token, filters);
-  const statusQuery = useNewsStatusWithToken(token);
   /* One Case batch feeds both compact Alpha summaries on this symbol page. */
   const quotesQuery = useNewsQuotesWithToken(token, normalized ? [normalized] : []);
 
@@ -95,10 +91,6 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
         .flat()
         .map((event) => [event.event_id, event]),
     ).values(),
-  );
-
-  const occupancy = (statusQuery.data?.oi?.window_occupancy ?? []).find(
-    (row) => row.symbol === normalized,
   );
 
   return (
@@ -139,23 +131,9 @@ export function NewsSymbolPage({ base, token }: { base: string; token: string })
                 tone: "accent",
                 value: count(firstPage?.counts?.pushed),
               },
-              {
-                key: "window",
-                label: "OI 窗口",
-                // Caution only when the window is full, which is the one state with a consequence: the
-                // next qualifying frame for this name will be withheld by `beyond_window_rank`.
-                tone: occupancy?.full ? "caution" : undefined,
-                value: occupancy ? `${occupancy.used} / ${occupancy.max_rank_in_window}` : "—",
-              },
             ]}
           />
         </NewsQuoteReadState>
-
-        <NewsSymbolWindow
-          occupancy={occupancy}
-          oiPath={newsOiPath()}
-          policy={statusQuery.data?.oi?.policy ?? null}
-        />
 
         {/*
          * Alpha 复盘 sits above the event list. The list is the long

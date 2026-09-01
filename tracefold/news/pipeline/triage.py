@@ -182,7 +182,6 @@ class TriageConsumer:
         circuit_failures: int,
         circuit_open_seconds: float,
         policy: DecidePolicy = DEFAULT_POLICY,
-        oi_policy: oi_signals.OiPolicy = oi_signals.DEFAULT_OI_POLICY,
         stable_bundle_sha: str | None = None,
         canary_arms: Mapping[str, CanaryRuntimeArm] | None = None,
         runtime_manifest: Mapping[str, Any] | None = None,
@@ -200,7 +199,6 @@ class TriageConsumer:
         self._circuit_open_seconds = float(circuit_open_seconds)
         self._candidate_circuits: dict[str, _Circuit] = {}
         self.policy = policy
-        self.oi_policy = oi_policy
         self._canary_enabled = stable_bundle_sha is not None
         self.stable_bundle_sha = (
             stable_bundle_sha
@@ -771,9 +769,8 @@ class TriageConsumer:
             "queue_lag_ms": max(0, stamp - int(message.occurred_at_ms or stamp)),
             "attempt": message.attempt,
             "program_version": oi_signals.PROGRAM_VERSION,
-            "program_sha256": oi_signals.program_sha256(self.oi_policy),
+            "program_sha256": oi_signals.program_sha256(),
             "runtime_manifest_sha": self.runtime_manifest_sha,
-            "policy": self.oi_policy.as_dict(),
             "gate_policy_version": GATE_POLICY_VERSION,
             "evidence_version": int(card.get("evidence_version") or 0),
             "evidence_sha256": str(card.get("evidence_sha256") or ""),
@@ -810,7 +807,7 @@ class TriageConsumer:
                 stamp=stamp,
                 error_code="oi_parse_failed",
                 program_version=oi_signals.PROGRAM_VERSION,
-                program_sha256=oi_signals.program_sha256(self.oi_policy),
+                program_sha256=oi_signals.program_sha256(),
             )
 
             prepared = self._prepare_settlement(settle)
@@ -829,22 +826,12 @@ class TriageConsumer:
                 str(provider_metadata.get("source") or "") or None if isinstance(provider_metadata, Mapping) else None
             )
 
-            def _rank_and_insert(repos: Any) -> int:
-                # The key is a pure function of the symbol for this admission, so it is known before
-                # the verdict exists and can be locked first. The callback performs only SQL and
-                # immediate scalar mapping; arithmetic judgment happens after commit.
-                repos.news.lock_storyline(f"asset:{signal.symbol}")
-                earlier_eligible_count = repos.news.count_recent_eligible_oi_signals(
-                    symbol=signal.symbol,
-                    metric_version=oi_signals.METRIC_VERSION,
-                    since_ms=observed - self.oi_policy.window_ms,
-                    before_ms=observed,
-                    whale_oi_ratio_above_bps=self.oi_policy.whale_oi_ratio_above_bps,
-                    oi_change_at_least_bps=self.oi_policy.oi_change_at_least_bps,
-                    exclude_event_id=event_id,
-                )
-                rank = earlier_eligible_count + 1
-                stored_rank = repos.news.insert_oi_signal(
+            def _store_frame(repos: Any) -> None:
+                # No storyline lock here any more (#458). It serialised "count this symbol's earlier
+                # eligible frames -> decide -> insert" so a concurrent sibling could not be missed from
+                # the count. Nothing is counted now: the insert is an idempotent append keyed on
+                # `(event_id, metric_version)`, which PostgreSQL already serialises on its own.
+                repos.news.insert_oi_signal(
                     event_id=event_id,
                     metric_version=oi_signals.METRIC_VERSION,
                     symbol=signal.symbol,
@@ -854,7 +841,6 @@ class TriageConsumer:
                     whale_long_profit_bps=signal.whale_long_profit_bps,
                     whale_oi_ratio_bps=signal.whale_oi_ratio_bps,
                     observed_at_ms=observed,
-                    rank_in_window=rank,
                     now_ms=stamp,
                     source_strategy_id=None if source is None else source.strategy_id,
                     source_contract_version=None if source is None else source.contract_version,
@@ -862,15 +848,10 @@ class TriageConsumer:
                     source_item_id=str(card["leader_item_id"]),
                     source_venue=source_venue,
                 )
-                return rank if stored_rank is None else int(stored_rank)
 
-            rank_in_window = await self.db.tx("news_signal_rank", _rank_and_insert)
-            judgment = oi_signals.evaluate_oi(
-                signal,
-                earlier_eligible_count=rank_in_window - 1,
-                policy=self.oi_policy,
-            )
-            trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, policy=self.oi_policy, source=source)
+            await self.db.tx("news_oi_frame_store", _store_frame)
+            judgment = oi_signals.evaluate_oi(signal)
+            trace["oi_signal"] = oi_signals.oi_judgment_trace(judgment, source=source)
             settle = self._deterministic_settle(
                 event_id=event_id,
                 card=card,
@@ -880,7 +861,7 @@ class TriageConsumer:
                 trace=trace,
                 stamp=stamp,
                 program_version=oi_signals.PROGRAM_VERSION,
-                program_sha256=oi_signals.program_sha256(self.oi_policy),
+                program_sha256=oi_signals.program_sha256(),
             )
             prepared = self._prepare_settlement(settle)
             outcome = await self.db.tx(

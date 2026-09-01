@@ -263,9 +263,6 @@ def test_day_loss_baseline_survives_policy_restart_and_fails_closed() -> None:
             2,
             "reconciliation_stale",
         ),
-        ({"market_observed_at_ns": NOW_NS + 1}, 2, "market_clock_invalid"),
-        ({"account_observed_at_ns": NOW_NS + 1}, 2, "account_clock_invalid"),
-        ({"reconciliation_observed_at_ns": NOW_NS + 1}, 2, "reconciliation_clock_invalid"),
     ],
 )
 def test_closed_position_leverage_and_staleness_guards(
@@ -299,6 +296,47 @@ def test_closed_position_leverage_and_staleness_guards(
 
     assert decision.action in {"deny", "halt"}
     assert decision.reason == reason
+
+
+@pytest.mark.parametrize(
+    "clock_updates",
+    [
+        {"market_observed_at_ns": NOW_NS + 60_000_000_000},
+        {"account_observed_at_ns": NOW_NS + 60_000_000_000},
+        {"reconciliation_observed_at_ns": NOW_NS + 60_000_000_000},
+    ],
+)
+def test_future_source_clocks_do_not_gate_entry(clock_updates: dict[str, int]) -> None:
+    context = registered_oi_strategy()
+    base = NautilusRiskFacts(
+        equity_usd=Decimal("1000"),
+        gross_position_notional_usd=Decimal(0),
+        open_order_notional_usd=Decimal(0),
+        inflight_order_notional_usd=Decimal(0),
+        aggregate_risk_usd=Decimal(0),
+        current_positions=0,
+        market_observed_at_ns=NOW_NS,
+        account_observed_at_ns=NOW_NS,
+        reconciliation_observed_at_ns=NOW_NS,
+        unexpected_exposure=False,
+    )
+    facts = replace(base, **clock_updates)
+
+    decision = OiFuturesRiskPolicy(context.profile.risk).evaluate_entry(
+        facts=facts,
+        baseline=DayStartBaseline(
+            utc_day="2026-08-31",
+            equity_usd=Decimal("1000"),
+            recorded_at_ns=NOW_NS - 1,
+            event_id="a" * 64,
+        ),
+        now_ns=NOW_NS,
+        requested_risk_usd=Decimal("10"),
+        requested_leverage=1,
+        candidate_is_new_position=True,
+    )
+
+    assert decision.action == "allow"
 
 
 def test_aggregate_risk_reduces_then_denies_without_creating_a_reservation() -> None:

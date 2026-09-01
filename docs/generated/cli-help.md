@@ -762,10 +762,10 @@ options:
 
 ```
 usage: tracefold trading [-h]
-                         {status,cases,signals,observations,commands,demo-receipt,issue} ...
+                         {status,cases,signals,observations,commands,demo-receipt,issue,oi-corpus,oi-replay} ...
 
 positional arguments:
-  {status,cases,signals,observations,commands,demo-receipt,issue}
+  {status,cases,signals,observations,commands,demo-receipt,issue,oi-corpus,oi-replay}
     status              show Alpha producer and disabled execution readiness
     cases               list Trading cases newest first
     signals             list engine-neutral TradeSignalV1 rows
@@ -774,6 +774,10 @@ positional arguments:
     demo-receipt        verify a paper entry/restart/flatten venue receipt
     issue               durably record one local OS-authenticated operator
                         intent
+    oi-corpus           pull or re-seal the sealed Binance open-interest
+                        research corpus (#459)
+    oi-replay           score the pre-registered #459 rule over a sealed
+                        corpus; writes a receipt
 
 options:
   -h, --help            show this help message and exit
@@ -871,6 +875,42 @@ options:
   --requested-at-ns REQUESTED_AT_NS
                         caller-sealed Unix nanosecond clock; preserve it on
                         retries
+
+```
+
+## `trading oi-corpus`
+
+```
+usage: tracefold trading oi-corpus [-h] [--out OUT] [--days DAYS]
+                                   [--symbols [SYMBOLS ...]]
+                                   [--concurrency CONCURRENCY]
+                                   {pull,seal}
+
+positional arguments:
+  {pull,seal}
+
+options:
+  -h, --help            show this help message and exit
+  --out OUT             corpus directory (default: a dated one under
+                        ~/.tracefold)
+  --days DAYS           window length; Binance keeps 30
+  --symbols [SYMBOLS ...]
+                        restrict the universe, for a smoke pull
+  --concurrency CONCURRENCY
+
+```
+
+## `trading oi-replay`
+
+```
+usage: tracefold trading oi-replay [-h] [--corpus CORPUS] [--out OUT]
+                                   [--trials TRIALS]
+
+options:
+  -h, --help       show this help message and exit
+  --corpus CORPUS  corpus directory (default: a dated one under ~/.tracefold)
+  --out OUT        receipt path (default: <corpus>/replay_receipt.json)
+  --trials TRIALS  permutation draws
 
 ```
 

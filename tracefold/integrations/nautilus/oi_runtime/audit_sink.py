@@ -91,25 +91,24 @@ class ObservationFactory:
         equity_usd: Decimal,
         recorded_at_ns: int,
     ) -> tuple[DayStartBaseline, ExecutionObservationV1]:
-        scaled = equity_usd * _EQUITY_SCALE
-        if scaled != scaled.to_integral_value() or equity_usd <= 0:
+        if not equity_usd.is_finite() or equity_usd <= 0:
             raise ValueError("oi_runtime_day_start_equity_precision_invalid")
+        scaled = equity_usd * _EQUITY_SCALE
+        summary: dict[str, str | int] = {
+            "risk_fact": "day_start_equity",
+            "utc_day": utc_day,
+            "equity_usd_decimal": format(equity_usd, "f"),
+        }
+        if scaled == scaled.to_integral_value():
+            summary["equity_usd_micros"] = int(scaled)
         event_identity = f"day-start:{utc_day}"
         fixed_event_id = self.day_start_event_id(utc_day)
         observation = self.create(
             normalized_kind="risk",
             occurred_at_ns=recorded_at_ns,
             observed_at_ns=recorded_at_ns,
-            summary={
-                "risk_fact": "day_start_equity",
-                "utc_day": utc_day,
-                "equity_usd_micros": int(scaled),
-            },
-            payload={
-                "risk_fact": "day_start_equity",
-                "utc_day": utc_day,
-                "equity_usd_micros": int(scaled),
-            },
+            summary=summary,
+            payload=summary,
             event_identity=event_identity,
             fixed_event_id=fixed_event_id,
         )
@@ -141,12 +140,24 @@ def day_start_baseline_from_observation(observation: ExecutionObservationV1) -> 
     if observation.normalized_kind != "risk" or summary.get("risk_fact") != "day_start_equity":
         raise ValueError("oi_runtime_day_start_observation_invalid")
     utc_day = summary.get("utc_day")
+    decimal_value = summary.get("equity_usd_decimal")
     micros = summary.get("equity_usd_micros")
-    if not isinstance(utc_day, str) or type(micros) is not int:
+    if not isinstance(utc_day, str):
+        raise ValueError("oi_runtime_day_start_observation_invalid")
+    if isinstance(decimal_value, str):
+        try:
+            equity_usd = Decimal(decimal_value)
+        except ArithmeticError as exc:
+            raise ValueError("oi_runtime_day_start_observation_invalid") from exc
+        if not equity_usd.is_finite() or equity_usd <= 0 or format(equity_usd, "f") != decimal_value:
+            raise ValueError("oi_runtime_day_start_observation_invalid")
+    elif type(micros) is int and micros > 0:
+        equity_usd = Decimal(micros) / _EQUITY_SCALE
+    else:
         raise ValueError("oi_runtime_day_start_observation_invalid")
     return DayStartBaseline(
         utc_day=utc_day,
-        equity_usd=Decimal(micros) / _EQUITY_SCALE,
+        equity_usd=equity_usd,
         recorded_at_ns=observation.occurred_at_ns,
         event_id=observation.event_id,
     )

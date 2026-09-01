@@ -114,7 +114,6 @@ class OiCandidateRow(TypedDict):
     oi_value_usd: int
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
-    rank_in_window: int
     observed_at_ms: int
     source_available_at_ms: int
     ingest_mode: str
@@ -221,7 +220,6 @@ class OiTradeCandidate(_Frozen):
     oi_value_usd: int
     whale_long_profit_bps: int
     whale_oi_ratio_bps: int
-    rank_in_window: int
 
     # The reader's verdict on the same frame, frozen into the manifest so an Alpha decision can be read
     # beside the judgment that accompanied it. Deliberately `str` rather than a `Literal`: it is no longer
@@ -237,7 +235,7 @@ class OiTradeCandidate(_Frozen):
     source_contract_version: str | None = None
     measurement_window_ms: int | None = None
     learning_epoch: str = Field(min_length=1, max_length=64)
-    program_version: Literal["news_oi_signal_v2"]
+    program_version: Literal["news_oi_signal_v3"]
     program_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     policy_version: Literal["news_triage_policy_v11"]
     judgment_contract_version: Literal["news_judgment_v2"]

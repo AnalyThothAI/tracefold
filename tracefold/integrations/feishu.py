@@ -195,12 +195,67 @@ class FeishuNewsPushSender:
         self._client.close()
 
 
+class FeishuTradingNotifier:
+    """Send one bounded execution observation to the operator's Feishu bot (#458 PR-B).
+
+    The same interface the Telegram notifier presents to `TradingNotificationWorker`, minus the one
+    thing this channel cannot do. A Feishu custom-bot webhook returns no message id and has no edit
+    endpoint, so `send` answers `None` and a Signal's four-hour outcome is a second message rather
+    than an edit of the first. Editing would need a Feishu *app* (`PATCH /im/v1/messages/:id`, an
+    `im:message` scope and a tenant token), which is a different credential than the deployed bot.
+
+    `target_sha256` is derived from the webhook's hook id -- the part of the URL that names the
+    destination -- and never from the signing secret, so a receipt identifies where a message went
+    without carrying anything that could send another one.
+    """
+
+    def __init__(
+        self,
+        *,
+        webhook_url: str,
+        signing_secret: str | None = None,
+        transport: httpx.BaseTransport | None = None,
+        timestamp_seconds: Callable[[], int] | None = None,
+    ) -> None:
+        normalized_url = str(webhook_url or "").strip()
+        hook_id = urlsplit(normalized_url).path.removeprefix(_FEISHU_WEBHOOK_PATH_PREFIX)
+        self._client = FeishuWebhookClient(
+            webhook_url=normalized_url, signing_secret=signing_secret, transport=transport
+        )
+        self._target_sha256 = hashlib.sha256(f"feishu-trading-target-v1:{hook_id}".encode()).hexdigest()
+        self._timestamp_seconds = timestamp_seconds or (lambda: int(time.time()))
+
+    @property
+    def target_sha256(self) -> str:
+        return self._target_sha256
+
+    def prepare(self) -> None:
+        """A webhook has no target preflight; the lifecycle stays uniform with the Telegram notifier."""
+
+    def send(self, text: str) -> int | None:
+        """Send one plain-text observation as an interactive card. Returns no id: this channel has none."""
+
+        normalized = str(text or "").strip()
+        if not normalized:
+            raise FeishuDeliveryError("trading_notification_feishu_message_invalid")
+        card = {
+            "config": {"wide_screen_mode": True},
+            "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": normalized}}],
+        }
+        self._client.send(card, timestamp_seconds=self._timestamp_seconds())
+        return None
+
+    def close(self) -> None:
+        self._client.close()
+
+
 __all__ = [
     "FEISHU_WEBHOOK_RATE_LIMIT_CODE",
     "FEISHU_WEBHOOK_REQUEST_MAX_BYTES",
     "FeishuDeliveryError",
     "FeishuDeliveryReceipt",
     "FeishuNewsPushSender",
+    "FeishuTradingNotifier",
     "FeishuWebhookClient",
     "NewsPushExternalError",
     "generate_feishu_signature",

@@ -407,7 +407,6 @@
 | `whale_long_profit_bps` | `BIGINT` | False | `None` |
 | `whale_oi_ratio_bps` | `BIGINT` | False | `None` |
 | `observed_at_ms` | `BIGINT` | False | `None` |
-| `rank_in_window` | `INTEGER` | False | `None` |
 | `created_at_ms` | `BIGINT` | False | `None` |
 | `source_strategy_id` | `TEXT` | True | `None` |
 | `source_contract_version` | `TEXT` | True | `None` |
@@ -753,8 +752,9 @@
 |--------|------|----------|---------|
 | `target_sha256` | `TEXT` | False | `None` |
 | `observation_seq` | `BIGINT` | False | `None` |
-| `message_id` | `BIGINT` | False | `None` |
+| `message_id` | `BIGINT` | True | `None` |
 | `delivered_at_ns` | `BIGINT` | False | `None` |
+| `result_delivered_at_ns` | `BIGINT` | True | `None` |
 
 ## `trading_execution_observations`
 

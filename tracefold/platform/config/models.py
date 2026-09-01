@@ -292,33 +292,6 @@ class NewsTriageSettings(BaseModel):
         return self
 
 
-class NewsOiSettings(BaseModel):
-    """Operator-owned thresholds for the deterministic open-interest lane (tracefold.news.oi_signals)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    window_ms: int = 4 * 3_600_000
-    # The opening eligible moves of a run, by count. This is the knob that decides volume.
-    max_rank_in_window: int = 2
-    # A frame must *exceed* this: the rule is 大于 80%, so exactly 8000 does not qualify.
-    whale_oi_ratio_above_bps: int = 8_000
-    oi_change_at_least_bps: int = 0
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> NewsOiSettings:
-        # A 1-10 band, because this is "the opening N moves of a run": a mistyped 1000 would silently
-        # mean "every frame", and the 持仓异动 window card renders one rank slot per unit. Fail at
-        # startup instead. Trading carried a rank ceiling of its own until #348 retired it; this one
-        # is the *notification* gate's and is unrelated to capital.
-        if not 1 <= self.max_rank_in_window <= 10:
-            raise ValueError("news_oi_max_rank_invalid")
-        if not 300_000 <= self.window_ms <= 86_400_000:
-            raise ValueError("news_oi_window_invalid")
-        if self.whale_oi_ratio_above_bps < 0 or self.oi_change_at_least_bps < 0:
-            raise ValueError("news_oi_threshold_invalid")
-        return self
-
-
 class NewsPolicySettings(BaseModel):
     """The four operator-owned v10 duplicate/safety knobs used by ``decide()``."""
 
@@ -420,7 +393,6 @@ class NewsSettings(BaseModel):
     triage: NewsTriageSettings = Field(default_factory=NewsTriageSettings)
     push: NewsPushSettings = Field(default_factory=NewsPushSettings)
     policy: NewsPolicySettings = Field(default_factory=NewsPolicySettings)
-    oi: NewsOiSettings = Field(default_factory=NewsOiSettings)
     retention: NewsRetentionSettings = Field(default_factory=NewsRetentionSettings)
     gate: NewsGateSettings = Field(default_factory=NewsGateSettings)
     venues: NewsVenuesSettings = Field(default_factory=NewsVenuesSettings)
@@ -504,6 +476,26 @@ class TradingExecutionSettings(BaseModel):
         return value
 
 
+class TradingNotificationSettings(BaseModel):
+    """Where durable execution observations are read out to a human (#458 PR-B).
+
+    Separate from `trading.control` on purpose. Until #458 the notifier was assembled only inside the
+    Telegram *control* ingress, so an operator who wanted to be told what the Signal lane decided had
+    to stand up an authenticated command channel first -- and in production nobody had, which is why
+    the notification worker had never run at all.
+
+    `feishu` reuses the `news.push` webhook target rather than asking for a second one: the two
+    capabilities share the HTTP transport at the composition seam and nothing else. It cannot edit a
+    sent message, so a Signal's four-hour outcome arrives as a second message; `telegram` reuses
+    `trading.control`'s bot token and `notification_chat_id`.
+    """
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    enabled: bool = False
+    channel: Literal["feishu", "telegram"] = "feishu"
+
+
 class TradingControlSettings(BaseModel):
     """Workers-owned authenticated operator ingress and observation notification target."""
 
@@ -571,6 +563,7 @@ class TradingSettings(BaseModel):
     candidates: TradingCandidateSettings = Field(default_factory=TradingCandidateSettings)
     execution: TradingExecutionSettings = Field(default_factory=TradingExecutionSettings)
     control: TradingControlSettings = Field(default_factory=TradingControlSettings)
+    notifications: TradingNotificationSettings = Field(default_factory=TradingNotificationSettings)
 
 
 class Settings(BaseModel):

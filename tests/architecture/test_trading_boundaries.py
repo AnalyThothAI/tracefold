@@ -33,6 +33,13 @@ SIGNAL_PATH = (
     "app/workers/wiring/news_to_trading.py",
     "app/trading_config.py",
 )
+# Offline and one-shot (#459 Stage A). Never imported by the Signal path, never on a live clock, and
+# the reason the Signal path's capability ban does not reach it: reading a sealed corpus off disk is
+# what it is for.
+RESEARCH = {
+    "trading/research/oi_corpus.py",
+    "trading/research/oi_replay.py",
+}
 EXECUTION_PATH = {
     "trading/demo_receipt.py",
     "trading/execution_contracts.py",
@@ -117,7 +124,7 @@ def _trading_sources() -> list[Path]:
 def test_signal_path_manifest_is_complete_and_every_trading_module_is_classified() -> None:
     assert SIGNAL_PATH
     assert [relative for relative in SIGNAL_PATH if not (SRC / relative).is_file()] == []
-    classified = set(SIGNAL_PATH) | EXECUTION_PATH
+    classified = set(SIGNAL_PATH) | EXECUTION_PATH | RESEARCH
     unclassified = [
         str(path.relative_to(SRC))
         for path in _trading_sources()

@@ -35,7 +35,6 @@ from tracefold.integrations.venues import VenueCatalogTradabilityVerifier
 from tracefold.news import ProgressionVerifier
 from tracefold.news.learning.contracts import ArmManifest, CandidateManifest
 from tracefold.news.market_review.loops import QuoteDatabasePort, ReactionDatabasePort
-from tracefold.news.oi_signals import OiPolicy
 from tracefold.news.pipeline.admission import DeduperConsumer
 from tracefold.news.pipeline.delivery import DelivererConsumer
 from tracefold.news.pipeline.maintenance import JanitorLoop
@@ -372,7 +371,6 @@ def _compose_news_pipeline(
     telemetry: TelemetryRegistry | None,
 ) -> NewsPipeline:
     watchlist_symbols = settings.news.watchlist_symbols
-    oi_policy = OiPolicy(**settings.news.oi.model_dump())
     return NewsPipeline(
         receiver=receiver,
         recovery=recovery,
@@ -394,7 +392,6 @@ def _compose_news_pipeline(
             circuit_failures=settings.news.triage.circuit_failures,
             circuit_open_seconds=settings.news.triage.circuit_open_seconds,
             policy=DecidePolicy(**settings.news.policy.model_dump()),
-            oi_policy=oi_policy,
             stable_bundle_sha=arms.stable_bundle_sha,
             canary_arms=arms.canary_arms,
             runtime_manifest=arms.runtime_manifest,
@@ -405,7 +402,6 @@ def _compose_news_pipeline(
             sender=_news_push_sender(settings),
             finite_operations=finite,
             min_interval_seconds=settings.news.push.min_interval_seconds,
-            oi_policy=oi_policy,
             price_fetcher_for=functools.partial(_delivery_price_fetcher_for, settings),
             progression_verifier=arms.progression_verifier,
             tradability_verifier=(

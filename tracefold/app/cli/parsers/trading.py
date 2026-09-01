@@ -52,5 +52,24 @@ def add_trading_commands(
         help="caller-sealed Unix nanosecond clock; preserve it on retries",
     )
 
+    # #459 Stage A: offline research, two commands rather than one. Collection is a fact about a
+    # 30-day Binance window that cannot be served again; evaluation is a claim about a rule. Folding
+    # them together would make every re-scoring re-collect, and no receipt could name its own data.
+    corpus = commands.add_parser(
+        "oi-corpus", help="pull or re-seal the sealed Binance open-interest research corpus (#459)"
+    )
+    corpus.add_argument("corpus_action", choices=("pull", "seal"))
+    corpus.add_argument("--out", default=None, help="corpus directory (default: a dated one under ~/.tracefold)")
+    corpus.add_argument("--days", type=_positive_int, default=29, help="window length; Binance keeps 30")
+    corpus.add_argument("--symbols", nargs="*", default=None, help="restrict the universe, for a smoke pull")
+    corpus.add_argument("--concurrency", type=_positive_int, default=8)
+
+    replay = commands.add_parser(
+        "oi-replay", help="score the pre-registered #459 rule over a sealed corpus; writes a receipt"
+    )
+    replay.add_argument("--corpus", default=None, help="corpus directory (default: a dated one under ~/.tracefold)")
+    replay.add_argument("--out", default=None, help="receipt path (default: <corpus>/replay_receipt.json)")
+    replay.add_argument("--trials", type=_positive_int, default=2_000, help="permutation draws")
+
 
 __all__ = ["add_trading_commands"]

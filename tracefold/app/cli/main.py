@@ -46,6 +46,16 @@ def main(argv: list[str] | None = None, *, stdout: TextIO = sys.stdout) -> int:
 
         return _finish(news_diagnostics.handle_news(args), stdout)
     if command == "trading":
+        trading_command = str(getattr(args, "trading_command", "") or "")
+        if trading_command in {"oi-corpus", "oi-replay"}:
+            from .commands import trading_research
+
+            handler = (
+                trading_research.handle_trading_oi_corpus
+                if trading_command == "oi-corpus"
+                else trading_research.handle_trading_oi_replay
+            )
+            return _finish(handler(args), stdout)
         from .commands import trading
 
         return _finish(trading.handle_trading(args), stdout)

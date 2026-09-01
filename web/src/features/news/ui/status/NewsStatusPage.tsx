@@ -383,7 +383,6 @@ function TechnicalMetrics({ status }: { status: NewsStatus }) {
             k="telemetry_parse_failed_24h"
             v={String(status.pipeline.telemetry_parse_failed_24h)}
           />
-          <KeyValueRow k="telemetry_push_24h" v={String(status.pipeline.telemetry_push_24h)} />
           <KeyValueRow
             k="duplicates_withheld_24h"
             v={`${status.pipeline.duplicates_withheld_24h?.all ?? 0} 全量比对`}

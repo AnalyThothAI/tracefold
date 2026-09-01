@@ -135,10 +135,6 @@ class _FakeNewsRepository:
         self.calls.append(("asset_usage_24h", {"now_ms": now_ms}))
         return {"ev-1": ["COPPER", "SPOT"], "ev-2": ["SPOT"]}
 
-    def oi_window_occupancy(self, **kwargs: Any) -> list[dict[str, Any]]:
-        self.calls.append(("oi_window_occupancy", kwargs))
-        return [{"symbol": "WIF", "used": 2}, {"symbol": "DOGE", "used": 1}]
-
     def status_snapshot(self, *, now_ms: int) -> dict[str, Any]:
         self.calls.append(("status_snapshot", {"now_ms": now_ms}))
         return {
@@ -150,7 +146,7 @@ class _FakeNewsRepository:
                 "open_incidents": [],
             },
             "pipeline": {"events_1h": 0, "events_24h": 0},
-            "oi": {"by_rule_24h": {"opening_move_with_whale_concentration": 3, "whale_ratio_below_threshold": 7}},
+            "oi": {"by_rule_24h": {"stored": 3, "oi_parse_failed": 7}},
             "delivery": {
                 "sent_24h": 0,
                 "sent_1h": 0,
@@ -1356,38 +1352,25 @@ def test_status_reports_the_price_plane_beside_the_pipeline(client) -> None:
     assert data["price"]["oldest_due_age_ms"] == 0
 
 
-def test_status_reports_the_oi_lane_with_both_threshold_sets(client) -> None:
-    """#207: what the 持仓异动 monitor reads, in one section of the status the whole console already polls."""
+def test_status_reports_the_oi_lane_as_counts_and_never_as_a_threshold(client) -> None:
+    """#207/#458: what the 持仓异动 monitor reads, in one section of the status the console already polls.
 
-    api, news = client
+    Since #458 that section is one map. The lane has no operator-owned threshold left to echo, and no
+    rank window to report occupancy in — publishing either would put a gate on the console that no
+    code applies.
+    """
+
+    api, _ = client
     data = api.get("/api/news/status", params={"token": TOKEN}).json()["data"]
 
-    # The gate names are the judge's own, from its trace. `pipeline.dropped_by_rule` groups `override_rule`,
-    # which `decide()` sets to the admission for every OI verdict, so it can never carry them.
-    assert data["oi"]["by_rule_24h"] == {
-        "opening_move_with_whale_concentration": 3,
-        "whale_ratio_below_threshold": 7,
-    }
-    assert "whale_ratio_below_threshold" not in data["pipeline"].get("dropped_by_rule", {})
-
-    # The News gates, echoed from `news.oi` exactly as they are running.
-    assert data["oi"]["policy"] == {
-        "window_ms": 4 * 3_600_000,
-        "max_rank_in_window": 2,
-        "whale_oi_ratio_above_bps": 8_000,
-        "oi_change_at_least_bps": 0,
-    }
-    # No `trade_floors` (#331). News republished the capital lane's thresholds here, which invited a
-    # console to compare a Case frozen last week against a floor edited yesterday. The lane's rules
-    # belong to `/api/trading/*`, and the ones that decided a Case travel with that Case.
+    # The rule names are the judge's own, from its trace. `pipeline.dropped_by_rule` groups
+    # `override_rule`, which `decide()` sets to the admission for every OI verdict, so it can never
+    # carry them.
+    assert data["oi"]["by_rule_24h"] == {"stored": 3, "oi_parse_failed": 7}
+    assert "stored" not in data["pipeline"].get("dropped_by_rule", {})
+    assert set(data["oi"]) == {"by_rule_24h"}
+    # No `trade_floors` (#331) and no `policy` (#458). Both invited a console to compare a Case frozen
+    # last week against a number edited yesterday; the second one now names nothing at all.
     assert "trade_floors" not in data["oi"]
-
-    # The live window, read under the running thresholds and folded against the rank ceiling here.
-    assert data["oi"]["window_occupancy"] == [
-        {"symbol": "WIF", "used": 2, "max_rank_in_window": 2, "full": True},
-        {"symbol": "DOGE", "used": 1, "max_rank_in_window": 2, "full": False},
-    ]
-    occupancy = next(call for name, call in news.calls if name == "oi_window_occupancy")
-    assert occupancy["window_ms"] == 4 * 3_600_000
-    assert occupancy["whale_oi_ratio_above_bps"] == 8_000
-    assert occupancy["oi_change_at_least_bps"] == 0
+    assert "policy" not in data["oi"]
+    assert "window_occupancy" not in data["oi"]

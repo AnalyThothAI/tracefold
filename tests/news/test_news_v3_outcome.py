@@ -252,19 +252,17 @@ def test_vocabulary_names_current_public_rule_codes_and_falls_back_for_unknown_c
         "degraded_listing_objective",
         "degraded_no_objective_guard",
         "degraded_watchlist_objective",
-        "beyond_window_rank",
         "listing_deterministic",
         "liquidation_fact_only",
         "liquidation_parse_failed",
-        "oi_change_below_threshold",
         "oi_parse_failed",
-        "opening_move_with_whale_concentration",
         "restatement",
         "stale_source_artifact",
+        # #458 replaced the OI lane's four push-gate names with one: a frame is parsed and stored.
+        "stored",
         "trade_relevance_escalate",
         "trade_relevance_inconsistent",
         "trade_relevance_realtime",
-        "whale_ratio_below_threshold",
         "watchlist_objective_guard",
     }
     missing = sorted(rule for rule in current_rules if rule not in OVERRIDE_RULE_ZH)

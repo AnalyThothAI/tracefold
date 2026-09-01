@@ -3,10 +3,8 @@ import {
   oiBuckets,
   oiChangeLabel,
   oiPercent,
-  oiRankLabel,
   oiTabCount,
   oiValueZh,
-  oiWindowLabel,
   parseOiTab,
 } from "@features/news/model/oiSignals";
 import { describe, expect, it } from "vitest";
@@ -46,46 +44,17 @@ describe("oiSignals", () => {
     });
   });
 
-  describe("oiRankLabel", () => {
-    it("prints the slot a qualifying frame spent", () => {
-      expect(oiRankLabel(frame({ eligible_rank_in_window: 2, max_rank_in_window: 2 }))).toBe(
-        "2 / 2",
-      );
-    });
-
-    it.each(["whale_ratio_below_threshold", "oi_change_below_threshold"])(
-      "prints nothing for a frame %s rejected, which spent no slot",
-      (rule) => {
-        // `evaluate_oi` ranks every frame and the trace records it, so the number is present and means
-        // "the rank it would have taken". Printing it would say the window is fuller than it is.
-        expect(oiRankLabel(frame({ eligible_rank_in_window: 1, rule }))).toBe("—");
-      },
-    );
-
-    it("prints nothing when the frame never parsed", () => {
-      expect(oiRankLabel(null)).toBe("—");
-      expect(oiRankLabel(frame({ eligible_rank_in_window: null, parsed: false }))).toBe("—");
-    });
-  });
-
   describe("oiTabCount", () => {
-    const byRule = {
-      whale_ratio_below_threshold: 106,
-      beyond_window_rank: 30,
-      opening_move_with_whale_concentration: 3,
-      oi_parse_failed: 1,
-    };
+    const byRule = { stored: 139, oi_parse_failed: 1 };
 
-    it("counts the three judged tabs from the gate that decided them", () => {
-      expect(oiTabCount("pushed", byRule, 141)).toBe(3);
-      expect(oiTabCount("withheld", byRule, 141)).toBe(136);
+    it("counts 解析失败 from the judged rule that names it", () => {
       expect(oiTabCount("parse_failed", byRule, 141)).toBe(1);
     });
 
     it("counts 全部 as Events, which is neither the intake nor the sum of the judged", () => {
       /*
-       * The three buckets hold judged verdicts and sum to 140; a frame still awaiting one renders as a row
-       * with no `oi` block and belongs to none of them, so the sum would advertise fewer than the tab can
+       * The two buckets hold judged verdicts and sum to 140; a frame still awaiting one renders as a row
+       * with no `oi` block and belongs to neither, so the sum would advertise fewer than the tab can
        * reach. `telemetry_received_24h` (142) is the other wrong answer — it counts provider items before
        * the Gate, so it names frames no row can ever show.
        */
@@ -94,7 +63,7 @@ describe("oiSignals", () => {
     });
 
     it("has no number at all until the aggregate arrives", () => {
-      for (const tab of ["all", "pushed", "withheld", "parse_failed"] as const) {
+      for (const tab of ["all", "parse_failed"] as const) {
         expect(oiTabCount(tab, undefined, undefined)).toBeNull();
       }
     });
@@ -143,19 +112,10 @@ describe("oiSignals", () => {
       expect(oiPercent(null)).toBe("—");
     });
 
-    it("spells the rank window exactly, including the sub-hour ones config admits", () => {
-      // `news.oi.window_ms` is a duration and its bounds start at five minutes. Rounding to whole hours
-      // printed `1 小时` beside a live 30-minute threshold on both the gate row and the occupancy card.
-      expect(oiWindowLabel(14_400_000)).toBe("4 小时");
-      expect(oiWindowLabel(1_800_000)).toBe("30 分钟");
-      expect(oiWindowLabel(5_400_000)).toBe("1.5 小时");
-      expect(oiWindowLabel(300_000)).toBe("5 分钟");
-      // No policy yet: the caller drops the label rather than printing a zero.
-      expect(oiWindowLabel(null)).toBe("");
-    });
-
     it("falls back to the whole lane for an unknown tab in the URL", () => {
-      expect(parseOiTab("withheld")).toBe("withheld");
+      expect(parseOiTab("parse_failed")).toBe("parse_failed");
+      // Both a rule name and a tab #458 retired resolve to the whole lane rather than a 4xx.
+      expect(parseOiTab("withheld")).toBe("all");
       expect(parseOiTab("whale_ratio_below_threshold")).toBe("all");
       expect(parseOiTab(null)).toBe("all");
     });
@@ -164,21 +124,16 @@ describe("oiSignals", () => {
 
 function frame(overrides: Partial<NewsFeedOi> = {}): NewsFeedOi {
   return {
-    eligible_rank_in_window: 1,
     failure_stage: null,
-    max_rank_in_window: 2,
-    oi_change_at_least_bps: 0,
     oi_change_bps: 671,
     oi_value_usd: 11_030_000,
     parsed: true,
     parser_version: null,
-    rank_semantics: "eligible_rank_v1",
-    rule: "opening_move_with_whale_concentration",
+    rule: "stored",
+    symbol: "SKR",
     title_sha256: null,
     whale_long_profit_bps: 8_840,
-    whale_oi_ratio_above_bps: 8_000,
     whale_oi_ratio_bps: 14_390,
-    window_ms: 14_400_000,
     ...overrides,
   };
 }

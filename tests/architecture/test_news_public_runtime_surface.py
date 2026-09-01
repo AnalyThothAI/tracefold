@@ -25,6 +25,8 @@ PUBLIC_NEWS_INTERFACE = {
     "NEWS_RETRIEVAL_SHA256",
     "NewsTaxonomyV1",
     "OI_METRIC_VERSION",
+    # #458: the `?oi=` vocabulary the HTTP route validates against, so the route stops restating it.
+    "OI_OUTCOMES",
     "NewsFeedEntry",
     "OpenNewsEvent",
     "OpenNewsExpectedError",
