@@ -296,7 +296,7 @@ def test_real_trading_wiring_fault_fails_workers_startup_and_readiness(tmp_path:
 
 
 @pytest.mark.slow
-def test_real_non_disabled_execution_request_fails_workers_startup_and_readiness(tmp_path: Path) -> None:
+def test_real_workers_accept_active_execution_without_owning_the_nautilus_runtime(tmp_path: Path) -> None:
     port = _free_port()
     process = _start_workers_process(
         "trading_execution_requested",
@@ -304,11 +304,11 @@ def test_real_non_disabled_execution_request_fails_workers_startup_and_readiness
         extra_env={"TRACEFOLD_TEST_CONFIG_DIR": str(tmp_path)},
     )
     try:
-        assert process.wait(timeout=10.0) != 0
-        _assert_probe_closed(port)
-        row = _runtime_row()
-        assert row["lifecycle_state"] == "failed"
-        assert row["fatal_code"] == "startup_failed"
+        _wait_ready(process, port)
+        _wait_decision_state("RUNNING")
+
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5.0) == 0
     finally:
         _ensure_process_stopped(process)
 
