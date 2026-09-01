@@ -1,0 +1,175 @@
+{
+  "baseline_source_main": "f495a9fc0d0ba0d528e40b588e76108d80cdfefe",
+  "captured_at": "2026-09-01T13:45:53.746472+00:00",
+  "environment": {
+    "binance_demo_active": false,
+    "machine": "arm64",
+    "nautilus": "1.231.0 pinned strategy/cache/portfolio seam",
+    "platform": "Darwin",
+    "postgresql": "isolated migrated test database"
+  },
+  "interpretation": {
+    "comparison_rule": "later PRs compare only like-for-like observed fields; provider-only fields require Demo evidence",
+    "duplicate_active_protections": {
+      "count": null,
+      "reason": "requires_replay_or_concurrent_admission_workload",
+      "status": "not_observed"
+    },
+    "duplicate_economic_orders": {
+      "count": null,
+      "reason": "requires_replay_or_concurrent_admission_workload",
+      "status": "not_observed"
+    },
+    "external_provider_claim": "none",
+    "missed_wake_ttl_fraction": "1/3",
+    "normal_stream_slo_ms": 250
+  },
+  "measured_git_sha": "1e0ac22905ad69d3d36e38157520913b008dbb8e",
+  "measurements": {
+    "audit_append": {
+      "append_ms": 36.613,
+      "batch_count": 100,
+      "queued_bytes_before_flush": 52990,
+      "remaining_bytes": 0,
+      "remaining_count": 0,
+      "status": "observed"
+    },
+    "cpu_rss": {
+      "rss_bytes_after": 116080640,
+      "rss_bytes_before": 269074432,
+      "rss_delta_bytes": -152993792,
+      "scope": "diagnostic_process_including_postgres_and_http_clients",
+      "status": "observed",
+      "system_cpu_seconds": 0.185739,
+      "user_cpu_seconds": 0.744586
+    },
+    "database": {
+      "indexed_queries_per_input_cycle": 2,
+      "max_connections_in_isolated_database": 2,
+      "status": "observed"
+    },
+    "event_loop": {
+      "lag_p95_ms": null,
+      "reason": "requires_active_binance_demo_runtime",
+      "status": "not_observed"
+    },
+    "http_reads_15s": {
+      "interval_ms": 500,
+      "latency_p95_ms": 17.169,
+      "request_count": 29,
+      "status": "observed",
+      "window_seconds": 15.0
+    },
+    "private_reconciliation": {
+      "call_count": null,
+      "latency_p95_ms": null,
+      "rate_limit_headers": null,
+      "reason": "requires_active_binance_demo_runtime",
+      "status": "not_observed"
+    },
+    "quote_subscriptions": {
+      "inbound_message_rate": null,
+      "inbound_message_rate_status": "not_observed_without_active_binance_demo_runtime",
+      "is_production_collector": false,
+      "status": "derived_from_pinned_source",
+      "subscription_attempts": 525,
+      "synthetic_route_count": 525
+    },
+    "runtime_lifecycle": {
+      "duration_ms": 3.866,
+      "flatten_pending_after_submit": 1,
+      "orders": [
+        {
+          "reduce_only": false,
+          "type": "MARKET"
+        },
+        {
+          "reduce_only": true,
+          "type": "STOP_MARKET"
+        },
+        {
+          "reduce_only": true,
+          "type": "MARKET"
+        }
+      ],
+      "seam": "pinned_nautilus_strategy_cache_portfolio",
+      "status": "observed"
+    },
+    "stream_latency": {
+      "bursts": {
+        "1": {
+          "delivery_path": "production_fixed_poll",
+          "pending_identity_duplicates": 0,
+          "persisted_to_dequeued_p95_ms": 224.098,
+          "poll_cadence_ms": 200,
+          "reader_calls_per_cycle": 2,
+          "samples": 6
+        },
+        "10": {
+          "delivery_path": "production_fixed_poll",
+          "pending_identity_duplicates": 0,
+          "persisted_to_dequeued_p95_ms": 221.299,
+          "poll_cadence_ms": 200,
+          "reader_calls_per_cycle": 2,
+          "samples": 6
+        },
+        "100": {
+          "delivery_path": "production_fixed_poll",
+          "pending_identity_duplicates": 0,
+          "persisted_to_dequeued_p95_ms": 229.614,
+          "poll_cadence_ms": 200,
+          "reader_calls_per_cycle": 2,
+          "samples": 6
+        }
+      },
+      "missed_wake_repair_ms": 218.693,
+      "production_delivery_path": "fixed_poll_without_listener",
+      "repair_cadence_ms": 200,
+      "status": "observed",
+      "ttl_ms": 60000
+    }
+  },
+  "owner_matrix": [
+    {
+      "authority": "PostgreSQL durable indexed anti-join reads",
+      "fact": "unresolved_signal_command_read",
+      "owner": "OiRuntimeDatabaseBridge._cycle",
+      "repair": "production fixed 200 ms cycle; the unused LISTEN loop is the PR-A duplicate to remove",
+      "source": "tracefold/app/nautilus/oi_runtime.py",
+      "symbol": "OiRuntimeDatabaseBridge._cycle"
+    },
+    {
+      "authority": "Nautilus Cache and Portfolio",
+      "fact": "callback_operational_state",
+      "owner": "OiNautilusStrategy",
+      "repair": "complete private reconciliation may refresh Cache outside callbacks",
+      "source": "tracefold/integrations/nautilus/oi_runtime/strategy.py",
+      "symbol": "OiNautilusStrategy"
+    },
+    {
+      "authority": "complete Binance private position, regular-order, and Algo-order reports",
+      "fact": "authoritative_account_flat",
+      "owner": "_reconcile_account",
+      "repair": "startup and current two-second custom private reconciliation",
+      "source": "tracefold/app/nautilus/root.py",
+      "symbol": "_reconcile_account"
+    },
+    {
+      "authority": "generation-fenced trading_execution_runtime_state projection",
+      "fact": "current_runtime_status",
+      "owner": "_run_active_runtime",
+      "repair": "state change plus 500 ms heartbeat before the public stale budget",
+      "source": "tracefold/app/nautilus/root.py",
+      "symbol": "_run_active_runtime"
+    },
+    {
+      "authority": "append-only ExecutionObservationV1 batch",
+      "fact": "durable_audit",
+      "owner": "OiRuntimeDatabaseBridge._cycle",
+      "repair": "bounded in-memory retry and explicit durable audit_gap",
+      "source": "tracefold/app/nautilus/oi_runtime.py",
+      "symbol": "OiRuntimeDatabaseBridge._cycle"
+    }
+  ],
+  "schema_version": "tracefold_oi_runtime_pr0_baseline_v1"
+}

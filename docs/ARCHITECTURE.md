@@ -2082,6 +2082,17 @@ the same fixed-risk 1x path. Private reconciliation, Runtime start, order,
 fill, protection, exit and flat facts remain append-only Observations, while
 one generation-fenced row is the current readiness/status projection.
 
+#475 PR-0 binds the exact pre-change Runtime owner matrix and concurrency
+measurements in
+[`research/oi-runtime-pr0-baseline-2026-09-01.md`](research/oi-runtime-pr0-baseline-2026-09-01.md).
+It changes no production cadence. The current production input owner remains
+`OiRuntimeDatabaseBridge._cycle`; the dormant LISTEN/timeout loop is measured
+as duplicate implementation, not a second production consumer. The receipt
+also keeps provider-only event-loop, inbound-rate, private-reconciliation and
+rate-limit evidence explicitly unobserved until an active Binance Demo
+Runtime can produce it. A 525-route synthetic count is capacity headroom only
+and is never an OI market-data collector or business SLO.
+
 **Trigger and context are different types.** A trigger is the one persisted
 fact that starts an evaluation and fixes its cutoff. Context may enrich that
 evaluation only when it existed no later than the cutoff. Notification `sent` is
