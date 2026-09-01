@@ -301,7 +301,7 @@ class OiNautilusStrategy(Strategy):
             except _AuditBackpressure:
                 break
         self._advance_pending_flatten()
-        if self._signals.queued_command_count == 0:
+        if self._signals.queued_command_count == 0 and self._signals.command_scan_complete:
             for _ in range(_CALLBACK_BATCH):
                 signal = self._signals.next_nowait()
                 if signal is None:

@@ -39,6 +39,8 @@ class ExecutionSignalClient:
         self._commands: deque[tuple[OperatorIntentV1, int]] = deque()
         self._pending_ids: set[str] = set()
         self._pending_command_ids: set[str] = set()
+        self._command_priority_enabled = False
+        self._command_scan_complete = True
         self._bytes = 0
         self._lock = Lock()
 
@@ -51,6 +53,11 @@ class ExecutionSignalClient:
     def queued_command_count(self) -> int:
         with self._lock:
             return len(self._commands)
+
+    @property
+    def command_scan_complete(self) -> bool:
+        with self._lock:
+            return self._command_scan_complete
 
     @property
     def queued_bytes(self) -> int:
@@ -69,6 +76,8 @@ class ExecutionSignalClient:
 
     def poll_once(self, reader: SignalReader) -> int:
         with self._lock:
+            if self._command_priority_enabled and not self._command_scan_complete:
+                return 0
             free_count = self._max_count - len(self._values) - len(self._commands)
         if free_count <= 0:
             return 0
@@ -93,23 +102,40 @@ class ExecutionSignalClient:
 
     def poll_commands_once(self, reader: CommandReader) -> int:
         with self._lock:
+            self._command_priority_enabled = True
+            self._command_scan_complete = False
+            if len(self._values) + len(self._commands) >= self._max_count and self._values:
+                self._evict_latest_signal_unlocked()
             free_count = self._max_count - len(self._values) - len(self._commands)
         if free_count <= 0:
             return 0
         values = reader(self.runtime_profile_id, self.execution_strategy, free_count)
+        scan_complete = len(values) < free_count
         admitted = 0
         for value in values:
             size = len(value.model_dump_json().encode())
             with self._lock:
                 if value.command_id in self._pending_command_ids:
                     continue
+                while self._values and (
+                    len(self._values) + len(self._commands) >= self._max_count or self._bytes + size > self._max_bytes
+                ):
+                    self._evict_latest_signal_unlocked()
                 if len(self._values) + len(self._commands) >= self._max_count or self._bytes + size > self._max_bytes:
+                    scan_complete = False
                     break
                 self._commands.append((value, size))
                 self._pending_command_ids.add(value.command_id)
                 self._bytes += size
                 admitted += 1
+        with self._lock:
+            self._command_scan_complete = scan_complete
         return admitted
+
+    def _evict_latest_signal_unlocked(self) -> None:
+        value, size = self._values.pop()
+        self._pending_ids.remove(value.signal_id)
+        self._bytes -= size
 
     def next_nowait(self) -> TradeSignalV1 | None:
         with self._lock:

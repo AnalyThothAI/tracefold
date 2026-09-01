@@ -25,6 +25,7 @@ from tests.nautilus_oi_runtime_fixtures import (
 )
 from tracefold.integrations.nautilus.oi_runtime.audit_sink import AuditSink, ObservationFactory
 from tracefold.integrations.nautilus.oi_runtime.risk import DayStartBaseline
+from tracefold.integrations.nautilus.oi_runtime.signal_client import ExecutionSignalClient
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
@@ -165,6 +166,33 @@ def test_signal_waits_until_the_persisted_command_backlog_is_drained() -> None:
 
     assert context.signals.queued_command_count == 0
     assert context.strategy.control_state().entries_paused is True
+    assert context.strategy.submitted == []
+
+
+def test_signal_full_queue_yields_to_a_later_durable_pause_scan() -> None:
+    client = ExecutionSignalClient(
+        runtime_profile_id="oi-paper-profile",
+        execution_strategy="oi_nautilus_v1",
+        max_count=2,
+    )
+    first = trade_signal(signal_id="1" * 64)
+    second = trade_signal(signal_id="2" * 64)
+    assert client.poll_once(SignalRows(first, second)) == 2
+    pause = operator_intent(command_id="3" * 64)
+    assert client.poll_commands_once(CommandRows(pause)) == 1
+    context = registered_oi_strategy(signal_client=client)
+
+    context.strategy.on_timer(None)
+
+    assert context.strategy.control_state().entries_paused is True
+    assert context.signals.queued_command_count == 0
+    assert context.signals.command_scan_complete is False
+    assert context.strategy.submitted == []
+
+    assert context.signals.poll_commands_once(CommandRows()) == 0
+    context.strategy.on_timer(None)
+
+    assert context.signals.command_scan_complete is True
     assert context.strategy.submitted == []
 
 
