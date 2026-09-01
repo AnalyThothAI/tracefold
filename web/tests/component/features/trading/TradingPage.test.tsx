@@ -243,6 +243,7 @@ describe("TradingPage", () => {
               entry_block_reason: "entries_paused",
               execution_safe: true,
               mode: "paper",
+              reconciliation_age_ms: 9_000,
             }),
             measured_at_ms: TRADING_NOW_MS,
           }),
@@ -254,7 +255,7 @@ describe("TradingPage", () => {
     expect(await screen.findByText("PROVEN")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
 
-    now.mockReturnValue(TRADING_NOW_MS + 10_001);
+    now.mockReturnValue(TRADING_NOW_MS + 1_001);
     fireEvent.click(screen.getByText("HYPE"));
 
     expect(screen.getByText("NOT PROVEN")).toBeVisible();

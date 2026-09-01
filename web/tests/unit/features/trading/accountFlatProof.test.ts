@@ -11,6 +11,7 @@ describe("currentAccountFlatProof", () => {
         measuredAtMs,
         nowMs: measuredAtMs + 10_000,
         queryHealthy: true,
+        reconciliationAgeMs: 0,
       }),
     ).toBe(true);
     expect(
@@ -19,6 +20,7 @@ describe("currentAccountFlatProof", () => {
         measuredAtMs,
         nowMs: measuredAtMs + 10_001,
         queryHealthy: true,
+        reconciliationAgeMs: 0,
       }),
     ).toBe(false);
   });
@@ -30,6 +32,7 @@ describe("currentAccountFlatProof", () => {
         measuredAtMs,
         nowMs: measuredAtMs,
         queryHealthy: false,
+        reconciliationAgeMs: 0,
       }),
     ).toBe(false);
     expect(
@@ -38,6 +41,37 @@ describe("currentAccountFlatProof", () => {
         measuredAtMs: measuredAtMs + 1,
         nowMs: measuredAtMs,
         queryHealthy: true,
+        reconciliationAgeMs: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("uses the server reconciliation age instead of restarting the proof budget", () => {
+    expect(
+      currentAccountFlatProof({
+        accountFlatProven: true,
+        measuredAtMs,
+        nowMs: measuredAtMs + 1_000,
+        queryHealthy: true,
+        reconciliationAgeMs: 9_000,
+      }),
+    ).toBe(true);
+    expect(
+      currentAccountFlatProof({
+        accountFlatProven: true,
+        measuredAtMs,
+        nowMs: measuredAtMs + 1_001,
+        queryHealthy: true,
+        reconciliationAgeMs: 9_000,
+      }),
+    ).toBe(false);
+    expect(
+      currentAccountFlatProof({
+        accountFlatProven: true,
+        measuredAtMs,
+        nowMs: measuredAtMs,
+        queryHealthy: true,
+        reconciliationAgeMs: null,
       }),
     ).toBe(false);
   });

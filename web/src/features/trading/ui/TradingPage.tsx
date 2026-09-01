@@ -35,18 +35,19 @@ export function TradingPage({ token }: { token: string }) {
   const [, setFlatProofExpiryTick] = useState(0);
   const measuredAtMs = status?.measured_at_ms;
   const serverFlatProof = status?.execution.account_flat_proven ?? false;
+  const reconciliationAgeMs = status?.execution.reconciliation_age_ms;
 
   useEffect(() => {
-    if (!serverFlatProof || measuredAtMs == null) return;
+    if (!serverFlatProof || measuredAtMs == null || reconciliationAgeMs == null) return;
     const nowMs = Date.now();
-    const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS;
-    if (measuredAtMs > nowMs || expiresAtMs < nowMs) return;
+    const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS - reconciliationAgeMs;
+    if (measuredAtMs > nowMs || reconciliationAgeMs < 0 || expiresAtMs < nowMs) return;
     const timer = window.setTimeout(
       () => setFlatProofExpiryTick((value) => value + 1),
       expiresAtMs - nowMs + 1,
     );
     return () => window.clearTimeout(timer);
-  }, [measuredAtMs, serverFlatProof]);
+  }, [measuredAtMs, reconciliationAgeMs, serverFlatProof]);
 
   if (statusQuery.isPending && !status) {
     return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
@@ -61,6 +62,7 @@ export function TradingPage({ token }: { token: string }) {
     measuredAtMs: status.measured_at_ms,
     nowMs: Date.now(),
     queryHealthy: !statusQuery.isError,
+    reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
   });
   const currentExecution = { ...status.execution, account_flat_proven: accountFlatProven };
 

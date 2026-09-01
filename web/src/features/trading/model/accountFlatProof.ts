@@ -5,18 +5,22 @@ export function currentAccountFlatProof({
   measuredAtMs,
   nowMs,
   queryHealthy,
+  reconciliationAgeMs,
 }: {
   accountFlatProven: boolean;
   measuredAtMs: number;
   nowMs: number;
   queryHealthy: boolean;
+  reconciliationAgeMs: number | null;
 }): boolean {
-  const ageMs = nowMs - measuredAtMs;
+  const cacheAgeMs = nowMs - measuredAtMs;
   return (
     accountFlatProven &&
     queryHealthy &&
     measuredAtMs > 0 &&
-    ageMs >= 0 &&
-    ageMs <= ACCOUNT_FLAT_PROOF_FRESH_MS
+    cacheAgeMs >= 0 &&
+    reconciliationAgeMs != null &&
+    reconciliationAgeMs >= 0 &&
+    cacheAgeMs + reconciliationAgeMs <= ACCOUNT_FLAT_PROOF_FRESH_MS
   );
 }
