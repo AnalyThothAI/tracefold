@@ -47,36 +47,25 @@ def test_workers_wires_control_only_from_two_secure_files_and_redacted_config(
         def __init__(self, **kwargs: object) -> None:
             captured["webhook"] = kwargs
 
-    class Notifier:
-        target_sha256 = "a" * 64
-        bot_id = 123456
-
-        def __init__(self, **kwargs: object) -> None:
-            captured["notifier"] = kwargs
-
-        def close(self) -> None:
-            return None
-
     monkeypatch.setattr(components, "TelegramControlWebhook", Webhook)
-    monkeypatch.setattr(components, "TelegramTradingNotifier", Notifier)
 
-    ingress, notifications = components._wire_telegram_control(
+    ingress = components._wire_telegram_control(
         settings=_settings(tmp_path),
         db=object(),  # type: ignore[arg-type]
-        finite=object(),  # type: ignore[arg-type]
     )
 
+    # #458 PR-B: the command ingress no longer builds the notification channel, and no longer builds
+    # an HTTP client to read a number out of the token. The bot id it authenticates against is the
+    # token's left half, read directly.
     assert ingress is not None
-    assert notifications is not None
     assert captured == {
         "webhook": {
             "webhook_secret": _WEBHOOK_SECRET,
-            "bot_id": 123456,
+            "bot_id": int(_BOT_TOKEN.partition(":")[0]),
             "allowed_chat_ids": frozenset({_CHAT_ID}),
             "allowed_user_ids": frozenset({_USER_ID}),
             "target_profile_id": "binance_usdm_primary",
         },
-        "notifier": {"bot_token": _BOT_TOKEN, "chat_id": _CHAT_ID},
     }
 
 
@@ -98,6 +87,5 @@ def test_workers_rejects_insecure_control_secret_before_constructing_an_adapter(
         components._wire_telegram_control(
             settings=_settings(tmp_path),
             db=object(),  # type: ignore[arg-type]
-            finite=object(),  # type: ignore[arg-type]
         )
     assert constructed is False

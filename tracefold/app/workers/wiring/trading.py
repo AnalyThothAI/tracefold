@@ -110,6 +110,38 @@ async def _source_native_bars(candidate: OiTradeCandidate, start_ms: int, end_ms
     return tuple(TradingBar(open_at_ms=c.open_at_ms, close_at_ms=c.close_at_ms, close=c.close) for c in candles)
 
 
+async def _source_native_result_bars(
+    market_key: str, venue: str, start_ms: int, end_ms: int
+) -> tuple[tuple[int, str], ...]:
+    """Public closes for one already-decided Signal's market, for the four-hour outcome card (#458 PR-B).
+
+    Keyed on the engine-neutral `market_key` and the Case's frozen source venue rather than on a live
+    candidate, because by the time an outcome is due the candidate is hours gone and the only durable
+    identities are the ones the Case froze. Returns `(bar open ms, close)` pairs as strings: the card
+    prints them and computes a ratio, and going through `float` on the way out of the venue would put
+    a rounding artefact into a number a reader compares against their own screen.
+    """
+
+    base_symbol = market_key.split(":")[2] if market_key.count(":") >= 3 else ""
+    if not base_symbol:
+        raise RuntimeError("trading_notification_market_key_unresolved")
+    if venue == "binance.usdm":
+        candles = await fetch_binance_candles(
+            f"{base_symbol}USDT", venue="binance.perp", start_ms=start_ms, end_ms=end_ms
+        )
+    elif venue in {"hyperliquid.perp", "hyperliquid.xyz"}:
+        venue_symbol = f"xyz:{base_symbol}" if venue == "hyperliquid.xyz" else base_symbol
+        candles = await fetch_hyperliquid_candles(
+            venue_symbol,
+            venue="hl.xyz" if venue == "hyperliquid.xyz" else "hl.perp",
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+    else:
+        raise RuntimeError("trading_source_venue_unresolved")
+    return tuple((int(candle.open_at_ms), str(candle.close)) for candle in candles)
+
+
 async def run_signal_lane(
     lane: SignalLane,
     *,
