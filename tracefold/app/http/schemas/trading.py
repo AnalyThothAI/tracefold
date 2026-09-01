@@ -29,8 +29,10 @@ class TradingExecutionReadinessData(ExactApiSchema):
     mode: Literal["disabled", "paper", "live"]
     profile_id: str
     account_slot: str
-    ready: bool
-    reason: str
+    alive: bool
+    execution_safe: bool
+    entries_armed: bool
+    entry_block_reason: str | None = None
     runtime_release: str | None = None
     config_sha256: str | None = None
     runtime_revision: str | None = None
@@ -45,9 +47,16 @@ class TradingExecutionReadinessData(ExactApiSchema):
     activation_ready: bool = False
     startup_reconciled: bool = False
     portfolio_ready: bool = False
+    control_plane_ready: bool = False
     audit_ready: bool = False
+    day_start_ready: bool = False
+    entries_paused: bool = True
+    emergency_halted: bool = False
     unexpected_exposure: bool = False
     account_flat: bool = False
+    positions_count: int = Field(default=0, ge=0)
+    open_orders_count: int = Field(default=0, ge=0)
+    protection_status: Literal["not_applicable", "protected", "pending", "unprotected", "unknown"] = "unknown"
 
 
 class TradingRuntimeCountsData(ExactApiSchema):

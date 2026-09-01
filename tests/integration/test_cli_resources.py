@@ -64,8 +64,10 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "mode": "disabled",
         "profile_id": "binance_usdm_primary",
         "account_slot": "binance_usdm_primary",
-        "ready": False,
-        "reason": "disabled",
+        "alive": False,
+        "execution_safe": False,
+        "entries_armed": False,
+        "entry_block_reason": "disabled",
         "runtime_release": None,
         "config_sha256": None,
         "runtime_revision": None,
@@ -80,9 +82,16 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
         "activation_ready": False,
         "startup_reconciled": False,
         "portfolio_ready": False,
+        "control_plane_ready": False,
         "audit_ready": False,
+        "day_start_ready": False,
+        "entries_paused": True,
+        "emergency_halted": False,
         "unexpected_exposure": False,
         "account_flat": False,
+        "positions_count": 0,
+        "open_orders_count": 0,
+        "protection_status": "unknown",
     }
     assert set(data["counts"]) == {
         "cases_24h",
@@ -94,7 +103,7 @@ def test_trading_status_reports_orthogonal_durable_runtime_facts() -> None:
     }
 
 
-def test_trading_issue_records_idempotent_not_applied_intent_without_an_active_profile(
+def test_trading_issue_records_idempotent_intent_without_interpreting_activation(
     postgres_clone_dsn: str,
 ) -> None:
     requested_at_ns = time.time_ns()
@@ -121,8 +130,8 @@ def test_trading_issue_records_idempotent_not_applied_intent_without_an_active_p
         "command_id": responses[0]["data"]["command_id"],
         "seq": 1,
         "requested_at_ns": requested_at_ns,
-        "disposition": "not_applied",
-        "reason": "execution_profile_inactive",
+        "disposition": "awaiting_runtime",
+        "reason": None,
         "truth": "intent_recorded_not_order_or_fill",
     }
 

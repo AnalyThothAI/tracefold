@@ -66,8 +66,10 @@ def test_disabled_helper_constructs_no_node_and_rejects_active_profiles() -> Non
     readiness = run_nautilus(profile)
 
     assert readiness.mode == "disabled"
-    assert readiness.ready is False
-    assert readiness.reason == "disabled"
+    assert readiness.alive is False
+    assert readiness.execution_safe is False
+    assert readiness.entries_armed is False
+    assert readiness.entry_block_reason == "disabled"
     with pytest.raises(ValueError, match="oi_runtime_disabled_has_no_node"):
         build_oi_node_config(profile, BinanceRuntimeCredentials(api_key="x", api_secret="y"))
     with pytest.raises(RuntimeError, match="oi_runtime_active_profile_requires_composition_root"):
@@ -118,6 +120,7 @@ def test_canonical_root_builds_one_real_binance_execution_client() -> None:
         ),
         readiness=RuntimeReadiness(),
         singleton_ready=lambda: True,
+        control_plane_ready=lambda: True,
         day_start=DayStartBaseline(
             utc_day="2030-03-17",
             equity_usd=Decimal("1000"),

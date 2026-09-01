@@ -71,11 +71,13 @@ export function TradingPage({ token }: { token: string }) {
         </div>
         <div
           className="trading-heading-aside"
-          data-tone={status.execution.ready ? undefined : "caution"}
+          data-tone={status.execution.execution_safe ? undefined : "caution"}
         >
           <span>ALPHA {status.decision.state}</span>
           <small>
-            EXECUTION {status.execution.mode} · {status.execution.reason}
+            EXECUTION {status.execution.mode} · alive {String(status.execution.alive)} · safe{" "}
+            {String(status.execution.execution_safe)} · armed{" "}
+            {String(status.execution.entries_armed)}
           </small>
         </div>
       </header>
@@ -99,13 +101,25 @@ export function TradingPage({ token }: { token: string }) {
         }
       >
         <div className="trading-body">
-          <MetricRow className="trading-mandate" columns={6} label="当前持久事实">
+          <MetricRow className="trading-mandate" columns={8} label="当前持久事实">
             <Metric eyebrow="ALPHA" value={status.decision.state} caption="Signal 决策面" />
             <Metric
-              eyebrow="EXECUTION"
-              value={status.execution.mode}
-              caption={status.execution.ready ? "Runtime ready" : status.execution.reason}
-              tone={status.execution.ready ? "accent" : "caution"}
+              eyebrow="ALIVE"
+              value={status.execution.alive ? "YES" : "NO"}
+              caption="进程 / Node / event loop"
+              tone={status.execution.alive ? "accent" : "caution"}
+            />
+            <Metric
+              eyebrow="EXECUTION SAFE"
+              value={status.execution.execution_safe ? "YES" : "NO"}
+              caption="已有 exposure 可管理"
+              tone={status.execution.execution_safe ? "accent" : "caution"}
+            />
+            <Metric
+              eyebrow="ENTRIES ARMED"
+              value={status.execution.entries_armed ? "YES" : "NO"}
+              caption={status.execution.entry_block_reason ?? "允许新增 exposure"}
+              tone={status.execution.entries_armed ? "accent" : "caution"}
             />
             <Metric eyebrow="CASES 24H" value={status.counts.cases_24h} caption="全部终局与在途" />
             <Metric eyebrow="SIGNALS 24H" value={status.counts.signals_24h} caption="Alpha 输出" />
@@ -240,7 +254,7 @@ export function TradingPage({ token }: { token: string }) {
 
           <Card
             flush
-            hint="Runtime 与 venue-native 回执；为空、RUNNING 或 ready 都不能被解释成订单或成交"
+            hint="Runtime 与 venue-native 回执；为空、RUNNING、alive 或 execution_safe 都不能被解释成订单或成交"
             title="执行观察"
           >
             {observationsQuery.data?.observations?.length ? (

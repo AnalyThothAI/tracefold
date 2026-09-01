@@ -421,7 +421,7 @@ def test_production_bridge_reconnect_reinstalls_listener_before_consuming(
         writer.close()
 
 
-def test_restart_control_state_folds_durable_pause_resume_and_sticky_halt() -> None:
+def test_restart_control_state_reads_current_pause_resume_and_sticky_halt_projection() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)
@@ -451,7 +451,72 @@ def test_restart_control_state_folds_durable_pause_resume_and_sticky_halt() -> N
         conn.close()
 
 
-def test_restart_control_state_without_accepted_history_stays_paused() -> None:
+def test_current_control_projection_is_idempotent_and_never_regresses_on_out_of_order_observations() -> None:
+    conn = connect_postgres_test(read_only=False)
+    try:
+        repo = TradingRepository(conn)
+        _activate(repo)
+        factory = ObservationFactory("oi-paper-profile", "runtime-test", "oi_nautilus_v1")
+        resume = _append_command(repo, suffix="7", action="resume_entries")
+        pause = _append_command(repo, suffix="8", action="pause_entries")
+
+        def accepted(prepared: PreparedOperatorIntent, action: str, *, observed_at_ns: int):
+            return factory.create(
+                normalized_kind="control_disposition",
+                command_id=prepared.value.command_id,
+                occurred_at_ns=observed_at_ns,
+                observed_at_ns=observed_at_ns,
+                summary={"action": action, "disposition": "accepted", "reason": "test"},
+                payload={"action": action, "disposition": "accepted"},
+                event_identity="accepted",
+            )
+
+        pause_observation = accepted(pause, "pause_entries", observed_at_ns=NOW_NS + 2)
+        with conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((pause_observation,)))
+        after_pause = repo.execution_runtime_control_state("oi-paper-profile")
+        assert after_pause is not None
+        assert after_pause.entries_paused is True
+        assert after_pause.last_command_seq == 2
+
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations((accepted(resume, "resume_entries", observed_at_ns=NOW_NS + 1),))
+            )
+        assert repo.execution_runtime_control_state("oi-paper-profile") == after_pause
+
+        with conn.transaction():
+            repo.append_execution_observations(prepare_execution_observations((pause_observation,)))
+        assert repo.execution_runtime_control_state("oi-paper-profile") == after_pause
+
+        halt = _append_command(repo, suffix="9", action="emergency_halt")
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations((accepted(halt, "emergency_halt", observed_at_ns=NOW_NS + 3),))
+            )
+        halted = repo.execution_runtime_control_state("oi-paper-profile")
+        assert halted is not None
+        assert halted.entries_paused is True
+        assert halted.emergency_halted is True
+        assert halted.last_command_seq == 3
+
+        impossible_resume = _append_command(repo, suffix="a", action="resume_entries")
+        with conn.transaction():
+            repo.append_execution_observations(
+                prepare_execution_observations(
+                    (accepted(impossible_resume, "resume_entries", observed_at_ns=NOW_NS + 4),)
+                )
+            )
+        still_halted = repo.execution_runtime_control_state("oi-paper-profile")
+        assert still_halted is not None
+        assert still_halted.entries_paused is True
+        assert still_halted.emergency_halted is True
+        assert still_halted.last_command_seq == 4
+    finally:
+        conn.close()
+
+
+def test_restart_control_state_without_accepted_observations_stays_paused() -> None:
     conn = connect_postgres_test(read_only=False)
     try:
         repo = TradingRepository(conn)

@@ -12,9 +12,9 @@ from tracefold.integrations.nautilus.oi_runtime.config import OiRuntimeProfile
 from tracefold.integrations.nautilus.oi_runtime.strategy import (
     RecoveredExecutionSeed,
     RecoveredProtectionSeed,
+    RuntimeEntryRequest,
     RuntimeReconciliationSnapshot,
     deterministic_client_order_id,
-    manual_entry_signal,
 )
 from tracefold.trading import OperatorIntentV1, TradeSignalV1
 
@@ -102,17 +102,17 @@ def build_runtime_reconciliation_snapshot(
     """Match durable Signal identities to current Nautilus orders and positions."""
 
     orders = tuple(cache.orders(account_id=profile.account_id))
-    subjects: list[tuple[TradeSignalV1, OperatorIntentV1 | None]] = [(signal, None) for signal in signals]
-    subjects.extend((manual_entry_signal(command), command) for command in manual_entries)
-    identities = tuple(signal.signal_id for signal, _command in subjects)
+    subjects = [RuntimeEntryRequest.from_signal(signal) for signal in signals]
+    subjects.extend(RuntimeEntryRequest.from_manual_command(command) for command in manual_entries)
+    identities = tuple(request.entry_id for request in subjects)
     if len(identities) != len(set(identities)):
         raise RuntimeError("oi_runtime_recovery_identity_ambiguous")
     seeds: list[RecoveredExecutionSeed] = []
-    for signal, command in subjects:
+    for request in subjects:
         entry_id = deterministic_client_order_id(
             namespace=profile.client_order_namespace,
             profile_id=profile.profile_id,
-            signal_id=signal.signal_id,
+            entry_id=request.entry_id,
             leg="entry",
         )
         entry = cache.order(entry_id)
@@ -120,15 +120,14 @@ def build_runtime_reconciliation_snapshot(
             continue
         position = cache.position_for_order(entry_id)
         position_id = None if position is None or not position.is_open else position.id
-        protections = _recovered_protections(profile=profile, signal=signal, orders=orders)
-        exit_id, exit_generation = _recovered_exit(profile=profile, signal=signal, orders=orders)
+        protections = _recovered_protections(profile=profile, request=request, orders=orders)
+        exit_id, exit_generation = _recovered_exit(profile=profile, request=request, orders=orders)
         if entry.is_closed and position_id is None and not protections and exit_id is None:
             continue
         seeds.append(
             RecoveredExecutionSeed(
-                signal=signal,
+                entry=request,
                 entry_client_order_id=entry_id,
-                command=command,
                 position_id=position_id,
                 protections=protections,
                 exit_client_order_id=exit_id,
@@ -146,7 +145,7 @@ def build_runtime_reconciliation_snapshot(
 def _recovered_protections(
     *,
     profile: OiRuntimeProfile,
-    signal: TradeSignalV1,
+    request: RuntimeEntryRequest,
     orders: tuple[Any, ...],
 ) -> tuple[RecoveredProtectionSeed, ...]:
     matched: list[tuple[int, Any]] = []
@@ -156,7 +155,7 @@ def _recovered_protections(
             expected = deterministic_client_order_id(
                 namespace=profile.client_order_namespace,
                 profile_id=profile.profile_id,
-                signal_id=signal.signal_id,
+                entry_id=request.entry_id,
                 leg=f"protection:{generation}:{format(quantity.normalize(), 'f')}",
             )
             if order.client_order_id == expected:
@@ -184,7 +183,7 @@ def _recovered_protections(
 def _recovered_exit(
     *,
     profile: OiRuntimeProfile,
-    signal: TradeSignalV1,
+    request: RuntimeEntryRequest,
     orders: tuple[Any, ...],
 ) -> tuple[ClientOrderId | None, int]:
     by_id = {order.client_order_id: order for order in orders}
@@ -193,7 +192,7 @@ def _recovered_exit(
         expected = deterministic_client_order_id(
             namespace=profile.client_order_namespace,
             profile_id=profile.profile_id,
-            signal_id=signal.signal_id,
+            entry_id=request.entry_id,
             leg=leg,
         )
         if expected in by_id:

@@ -96,7 +96,10 @@ class _ProbeState:
         return cls(
             payload={
                 "ok": False,
-                "reason": "runtime_starting",
+                "alive": True,
+                "execution_safe": False,
+                "entries_armed": False,
+                "entry_block_reason": "runtime_starting",
                 "mode": profile.mode,
                 "runtime_profile_id": profile.profile_id,
                 "runtime_release": profile.runtime_release,
@@ -107,7 +110,9 @@ class _ProbeState:
                 "activation_ready": False,
                 "startup_reconciled": False,
                 "portfolio_ready": False,
+                "control_plane_ready": False,
                 "audit_ready": False,
+                "day_start_ready": False,
                 "unexpected_exposure": False,
                 "account_flat": False,
                 "reconciliation_observed_at_ns": 0,
@@ -277,12 +282,14 @@ async def _run_active_runtime_with_state(
     loop = asyncio.get_running_loop()
     runtime_wake = asyncio.Event()
     reconciliation_requests = _PrivateReconciliationRequests(loop=loop, wake=runtime_wake)
+    bridge: OiRuntimeDatabaseBridge | None = None
     strategy = OiNautilusStrategy(
         profile=profile,
         signals=signals,
         audit=audit,
         readiness=readiness,
         singleton_ready=lambda: singleton.acquired,
+        control_plane_ready=lambda: bridge is not None and bridge.connected,
         day_start=None,
         request_reconciliation=reconciliation_requests.request,
         initial_control_state=control,
@@ -304,7 +311,6 @@ async def _run_active_runtime_with_state(
     installed_signals = _install_signal_handlers(loop, request_stop)
     node_task = asyncio.create_task(node.run_async(), name="oi-nautilus-node")
     probe_task = asyncio.create_task(server.serve(), name="oi-nautilus-probe")
-    bridge: OiRuntimeDatabaseBridge | None = None
     projector = _RuntimeStateProjector(state_repos)
     try:
         await _await_node_started(node=node, node_task=node_task)
@@ -357,18 +363,25 @@ async def _run_active_runtime_with_state(
             image_digest=identity.image_digest,
             credential_fingerprint=credential_fingerprint,
             lifecycle_state="starting",
-            ready=False,
+            alive=True,
+            execution_safe=False,
+            entries_armed=False,
+            control_plane_ready=False,
             singleton_ready=True,
             credential_ready=True,
             activation_ready=True,
             startup_reconciled=False,
             portfolio_ready=bool(node.portfolio.initialized),
             audit_ready=False,
+            day_start_ready=False,
             unexpected_exposure=False,
             account_flat=account_reports_are_flat(reports),
+            positions_count=len(reports.positions),
+            open_orders_count=len(reports.orders),
+            protection_status="unknown" if reports.positions else "not_applicable",
             reconciliation_observed_at_ns=observed_at_ns,
             heartbeat_at_ns=started_at_ns,
-            unavailable_reason="runtime_starting",
+            entry_block_reason="runtime_starting",
             started_at_ns=started_at_ns,
             updated_at_ns=started_at_ns,
         )
@@ -424,21 +437,14 @@ async def _run_active_runtime_with_state(
             audit_ready = audit.can_accept_exposure() and bridge.connected
             latest = state_repos.trading.latest_execution_profile_activation(profile.account_slot)
             activation_current = latest == activation
-            ready = bool(
-                strategy_readiness.ready
-                and activation_current
-                and portfolio_ready
-                and audit_ready
-                and singleton.acquired
-            )
-            reason = _unavailable_reason(
-                ready=ready,
-                singleton_ready=singleton.acquired,
+            execution_safe = bool(strategy_readiness.execution_safe and activation_current)
+            entries_armed = bool(strategy_readiness.entries_armed and execution_safe)
+            entry_block_reason = _entry_block_reason(
+                entries_armed=entries_armed,
                 activation_ready=activation_current,
-                portfolio_ready=portfolio_ready,
-                bridge_connected=bridge.connected,
-                strategy_reason=strategy_readiness.reason,
+                strategy_reason=strategy_readiness.entry_block_reason,
             )
+            positions_count = len(reports.positions)
             current_state = projector.current
             if current_state is None:
                 raise RuntimeError("oi_runtime_projection_not_started")
@@ -446,17 +452,27 @@ async def _run_active_runtime_with_state(
                 replace(
                     current_state,
                     lifecycle_state="running",
-                    ready=ready,
+                    alive=True,
+                    execution_safe=execution_safe,
+                    entries_armed=entries_armed,
+                    control_plane_ready=strategy_readiness.control_plane_ready,
                     singleton_ready=singleton.acquired,
                     activation_ready=activation_current,
                     startup_reconciled=strategy_readiness.startup_reconciled,
                     portfolio_ready=portfolio_ready,
                     audit_ready=audit_ready,
+                    day_start_ready=strategy_readiness.day_start_ready,
                     unexpected_exposure=strategy_readiness.unexpected_exposure,
                     account_flat=account_reports_are_flat(reports),
+                    positions_count=positions_count,
+                    open_orders_count=len(reports.orders),
+                    protection_status=strategy.protection_status(
+                        positions_count=positions_count,
+                        unexpected_exposure=strategy_readiness.unexpected_exposure,
+                    ),
                     reconciliation_observed_at_ns=strategy_readiness.reconciliation_observed_at_ns,
                     heartbeat_at_ns=now_ns,
-                    unavailable_reason=reason,
+                    entry_block_reason=entry_block_reason,
                     updated_at_ns=now_ns,
                 )
             )
@@ -473,9 +489,12 @@ async def _run_active_runtime_with_state(
             stopped = replace(
                 stopped_state,
                 lifecycle_state="stopped",
-                ready=False,
+                alive=False,
+                execution_safe=False,
+                entries_armed=False,
+                control_plane_ready=False,
                 heartbeat_at_ns=stopped_at_ns,
-                unavailable_reason="runtime_stopped",
+                entry_block_reason="runtime_stopped",
                 updated_at_ns=stopped_at_ns,
             )
             with suppress(Exception):
@@ -835,32 +854,26 @@ def _account_equity(node: TradingNode, profile: OiRuntimeProfile) -> Decimal | N
     return Decimal(str(total)) if method is None else Decimal(method())
 
 
-def _unavailable_reason(
+def _entry_block_reason(
     *,
-    ready: bool,
-    singleton_ready: bool,
+    entries_armed: bool,
     activation_ready: bool,
-    portfolio_ready: bool,
-    bridge_connected: bool,
-    strategy_reason: str,
+    strategy_reason: str | None,
 ) -> str | None:
-    if ready:
+    if entries_armed:
         return None
-    if not singleton_ready:
-        return "singleton_unavailable"
     if not activation_ready:
         return "activation_not_current"
-    if not bridge_connected:
-        return "database_bridge_unavailable"
-    if not portfolio_ready:
-        return "portfolio_unavailable"
-    return strategy_reason
+    return strategy_reason or "entry_blocked"
 
 
 def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
     return {
-        "ok": state.ready,
-        "reason": state.unavailable_reason or "ready",
+        "ok": state.alive and state.execution_safe,
+        "alive": state.alive,
+        "execution_safe": state.execution_safe,
+        "entries_armed": state.entries_armed,
+        "entry_block_reason": state.entry_block_reason,
         "mode": state.mode,
         "runtime_profile_id": state.runtime_profile_id,
         "runtime_release": state.runtime_release,
@@ -873,9 +886,14 @@ def _probe_payload(state: ExecutionRuntimeState) -> dict[str, Any]:
         "activation_ready": state.activation_ready,
         "startup_reconciled": state.startup_reconciled,
         "portfolio_ready": state.portfolio_ready,
+        "control_plane_ready": state.control_plane_ready,
         "audit_ready": state.audit_ready,
+        "day_start_ready": state.day_start_ready,
         "unexpected_exposure": state.unexpected_exposure,
         "account_flat": state.account_flat,
+        "positions_count": state.positions_count,
+        "open_orders_count": state.open_orders_count,
+        "protection_status": state.protection_status,
         "reconciliation_observed_at_ns": state.reconciliation_observed_at_ns,
         "heartbeat_at_ns": state.heartbeat_at_ns,
     }

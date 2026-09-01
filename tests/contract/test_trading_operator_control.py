@@ -7,10 +7,15 @@ import pytest
 from pydantic import ValidationError
 from starlette.requests import Request
 
+from tracefold.app.cli.commands.trading import _cli_request_source
 from tracefold.app.workers.operator_control import _bounded_request_body
 from tracefold.integrations.telegram_control import TelegramControlError, TelegramControlWebhook
 from tracefold.platform.config.models import Settings
-from tracefold.trading.operator_control import OperatorCommandError, parse_operator_command
+from tracefold.trading.operator_control import (
+    OperatorCommandError,
+    parse_operator_command,
+    prepare_parsed_operator_intent,
+)
 
 _SECRET = "webhook-secret-for-tests"
 _CHAT_ID = -1001234567890
@@ -143,6 +148,25 @@ def test_update_identity_is_namespaced_by_stable_bot_identity() -> None:
 
     assert first.intent is not None and replacement.intent is not None
     assert first.intent.value.command_id != replacement.intent.value.command_id
+
+
+def test_cli_request_identity_is_stable_per_uid_and_host_and_separate_across_callers() -> None:
+    parsed = parse_operator_command("/pause investigate")
+
+    def command_id(*, uid: int, hostname: str) -> str:
+        return prepare_parsed_operator_intent(
+            parsed,
+            source=_cli_request_source(local_uid=uid, hostname=hostname),
+            source_command_id="ops-1",
+            target_profile_id="binance-usdm-demo-v1",
+            operator_identity=f"local-cli:{uid}",
+            authentication_identity=f"local-os-uid:{uid}",
+            requested_at_ns=1_800_000_000_000_000_000,
+        ).value.command_id
+
+    assert command_id(uid=501, hostname="Desk-A") == command_id(uid=501, hostname="desk-a")
+    assert command_id(uid=501, hostname="desk-a") != command_id(uid=502, hostname="desk-a")
+    assert command_id(uid=501, hostname="desk-a") != command_id(uid=501, hostname="desk-b")
 
 
 @pytest.mark.parametrize(

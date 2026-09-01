@@ -144,7 +144,7 @@ export function topbarFigures(
       {
         label: "EXECUTION",
         text: execution?.mode,
-        tone: execution?.ready ? undefined : "caution",
+        tone: execution?.execution_safe ? undefined : "caution",
       },
       {
         label: "SIGNALS 24H",

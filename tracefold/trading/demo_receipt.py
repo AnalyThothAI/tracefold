@@ -65,7 +65,7 @@ def verify_binance_demo_receipt(
     flatten_command_id: str,
     now_ns: int,
 ) -> BinanceDemoReceipt:
-    if state is None or state.mode != "paper" or not state.ready or not state.account_flat:
+    if state is None or state.mode != "paper" or not state.alive or not state.execution_safe or not state.account_flat:
         raise DemoReceiptError("binance_demo_current_runtime_not_ready_flat")
     if now_ns - state.heartbeat_at_ns > 5_000_000_000:
         raise DemoReceiptError("binance_demo_current_runtime_stale")

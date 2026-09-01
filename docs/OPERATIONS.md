@@ -45,12 +45,14 @@ make status
 uv run tracefold trading status
 ```
 
-Disabled status reports `ready=false` and canonical deployment stops any stale
-Nautilus container. Active status additionally requires exactly one current
-account-slot owner, secure non-empty credential files, immutable activation,
-startup reconciliation, initialized Portfolio, durable audit, fresh heartbeat,
-and the exact configured profile/revision/image/config identity. Serve and
-Workers never receive Binance secrets.
+Disabled status reports `alive=false`, `execution_safe=false`, and
+`entries_armed=false`; canonical deployment stops any stale Nautilus container.
+Active safety additionally requires exactly one current account-slot owner,
+secure non-empty credential files, immutable activation, startup reconciliation,
+initialized Portfolio, no unexpected exposure, a fresh heartbeat, and the exact
+configured profile/revision/image/config identity. Durable audit, current control,
+day-start baseline, pause, and halt govern `entries_armed` without taking away
+existing-exposure safety. Serve and Workers never receive Binance secrets.
 
 The active Runtime has two deliberately different reconciliation roles. The
 App root owns complete Binance private-account proof: positions, regular orders,
@@ -123,9 +125,9 @@ state. The same bot keeps command identity across token rotation; replacing the
 bot creates a new namespace because Telegram `update_id` values are bot-scoped.
 
 Telegram's “意图已记录” and CLI `ok` prove only the PostgreSQL intent. With no
-active execution profile, the same transaction records
-`not_applied/execution_profile_inactive`. Otherwise inspect `trading commands`
-or `/api/trading/execution/commands` for the command disposition and
+active execution profile, the intent remains `awaiting_runtime`; ingress never
+interprets activation and never fabricates a terminal Runtime Observation.
+Inspect `trading commands` or `/api/trading/execution/commands` for the command disposition and
 `trading observations` for later Runtime facts. The only valid evidence ladder
 is: intent recorded, Runtime accepted, order accepted, fill observed, fresh
 Binance account-flat reconciliation. Never infer a later stage from an earlier
@@ -143,6 +145,21 @@ after a send, so a crash between send and receipt commit may duplicate a message
 A Telegram outage or transient shared database-admission timeout leaves the
 observation unreceipted and retries; it never blocks Runtime protection, exits,
 reconciliation, or PostgreSQL audit.
+
+The execution Runtime publishes three independent states. `alive` proves only
+the process/TradingNode/event loop; `execution_safe` proves existing exposure can
+still be reconciled, protected, canceled, exited, flattened, and recovered;
+`entries_armed` alone permits new exposure. Nautilus `/readyz` requires the first
+two and deliberately stays green when entries are paused, audit admission is
+backpressured, the day-start baseline is absent, or the control plane cannot arm
+new exposure. Use `entry_block_reason`, `positions_count`, `open_orders_count`,
+`protection_status`, `unexpected_exposure`, and `reconciliation_age_ms` to locate
+the blocked layer; none is an order, fill, or account-flat receipt.
+
+Runtime control restart reads the single
+`trading_execution_runtime_control_state` row for the active profile. Accepted or
+completed Runtime Observations advance it atomically with append-only history;
+do not reconstruct current pause/halt state by scanning historical Commands.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
 composition is invalid, Workers must fail startup/readiness or record Decision
@@ -1412,12 +1429,13 @@ snapshot.
 ## Migrations
 
 Alembic has one root, baseline `20260831_0340`, and current head
-`20260901_0347`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
+`20260902_0348`. A fresh PostgreSQL 18 database applies baseline, `0341`, the
 additive `0342` notification delivery ledger, the additive `0343` current
 execution Runtime projection/indexes, and the destructive `0344` News
 open-interest push cut, followed by the `0345` Runtime exposure projection
 constraint hard cut, the additive `0346` notification result column, and the
-destructive `0347` drop of the twenty-two read-only execution tables, in
+destructive `0347` drop of the twenty-two read-only execution tables, then the
+`0348` Runtime readiness hard cut and profile-keyed current control projection, in
 order. This
 source may merge or deploy only after the supported pre-cut database
 is advanced to the old terminal revision with its recorded image, backed up,
@@ -1527,7 +1545,7 @@ extra field, invalid identity, unverified snapshot, nonzero or unobserved queue
 count, a Git mismatch, an image/runtime-manifest mismatch or schema-object
 inventory drift before deleting anything.
 
-After deployment, require Alembic head `20260901_0347`; zero rows in every cleared
+After deployment, require Alembic head `20260902_0348`; zero rows in every cleared
 owner except the single new `news_learning_artifacts(kind='epoch_reset')` row
 and fresh singleton rows in `news_ingest_state` and
 `news_learning_retention_state`;

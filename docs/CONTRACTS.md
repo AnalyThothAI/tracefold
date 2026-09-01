@@ -970,7 +970,7 @@ A database on that retired chain must be restored with its exact pre-#449
 image/source, advanced to the old terminal head, and cut over before current
 source is used. A fresh database applies baseline `20260831_0340`, the
 `20260901_0341` Signal hard cut, and current head
-`20260901_0347`; `0342` adds the Trading notification delivery ledger,
+`20260902_0348`; `0342` adds the Trading notification delivery ledger,
 `0343` adds the current execution Runtime projection and recovery indexes, and
 destructive `0344` restates the `news_verdicts` judgment CHECK for the News
 open-interest push cut, dropping `news_oi_signals.rank_in_window` and every
@@ -983,7 +983,9 @@ custom-bot webhook returns none — and adds `result_delivered_at_ns` for the
 four-hour outcome message. Destructive `0347` drops the twenty-two execution
 tables `0341` had frozen read-only, and the thirteen functions only their
 triggers, defaults and CHECKs called; their 390 archived rows were dumped to
-`~/.tracefold/backups` first. The exact
+`~/.tracefold/backups` first. `0348` hard-cuts Runtime readiness into liveness,
+existing-exposure safety, and new-entry admission while adding the profile-keyed
+current control projection. The exact
 News base-table set plus four security-barrier review views is asserted by
 the schema integration test instead of a duplicated prose allowlist. Migrations
 perform no provider, broker, model, or outbound call and have no compatibility
@@ -1041,8 +1043,12 @@ Runtime facts, and status carries readiness plus bounded totals.
 - `GET /api/trading/status` — `decision`, `alpha`, `execution`, and `counts`.
   Decision exposes state/heartbeat/reason; Alpha exposes the current frozen
   policy identity and content digest; execution exposes mode/profile/account,
-  exact Runtime/revision/image/config identity, readiness gates, flatness,
-  heartbeat and reconciliation age. Serve reads no secret file and constructs
+  exact Runtime/revision/image/config identity, independent `alive`,
+  `execution_safe`, and `entries_armed` facts, `entry_block_reason`, control,
+  audit/day-start gates, position/open-order counts, protection status, flatness,
+  heartbeat and reconciliation age. Nautilus `/readyz` means
+  `alive && execution_safe`; it remains green when only new entries are paused
+  or otherwise blocked. Serve reads no secret file and constructs
   no provider client. Counts are bounded durable
   Case/Signal aggregations: input rows are the 24-hour window plus exceptional
   older open Cases or unexpired Signals, backed by their time/state indexes.
@@ -1490,8 +1496,9 @@ bounded 24-hour Case/Signal counts. It never infers protection, PnL, or fees.
 `trading commands [--action] [--limit]` lists authenticated operator intents
 and their final disposition when present. `trading issue TEXT --request-id ID
 --requested-at-ns NS` is the one local OS-authenticated writer: callers preserve
-both sealed fields on retries, it accepts only the shared closed slash grammar,
-and manual entry still flows through Runtime risk/OMS; success says
+both sealed fields on retries, request identity is scoped by OS UID and hostname,
+it accepts only the shared closed slash grammar, and manual entry still flows
+through Runtime risk/OMS without fabricating Signal/Case/Alpha facts; success says
 `intent_recorded_not_order_or_fill`. `trading demo-receipt` is a strict
 read-only Demo closure verifier over durable native receipts. There is no blacklist,
 capability, replay, evidence, quantity, leverage, venue, or direct order command.

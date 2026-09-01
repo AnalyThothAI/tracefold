@@ -115,7 +115,7 @@ describe("TradingPage", () => {
     expect(screen.getAllByText("demo-v1").length).toBeGreaterThan(0);
   });
 
-  it("renders an intent disposition without calling it a Runtime or venue success", async () => {
+  it("renders an awaiting intent without manufacturing a Runtime disposition", async () => {
     server.use(
       http.get(/.*\/api\/trading\/execution\/commands$/, () =>
         HttpResponse.json({
@@ -128,7 +128,7 @@ describe("TradingPage", () => {
     renderTrading();
 
     expect(await screen.findByText("暂停开仓")).toBeVisible();
-    expect(screen.getByText("not_applied · execution_profile_inactive")).toBeVisible();
+    expect(screen.getByText("等待 Runtime")).toBeVisible();
     expect(screen.getByText(/HTTP 200 或 CLI ok 只证明意图已持久化/)).toBeVisible();
   });
 });

@@ -230,6 +230,7 @@ def registered_oi_strategy(
         audit=selected_audit,
         readiness=readiness,
         singleton_ready=lambda: singleton_state[0],
+        control_plane_ready=lambda: True,
         day_start=DayStartBaseline(
             utc_day="2030-03-17",
             equity_usd=Decimal("1000"),
@@ -261,6 +262,8 @@ def registered_oi_strategy(
     if selected_cache.account(ACCOUNT_ID) is None:
         selected_cache.add_account(account)
     portfolio = Portfolio(msgbus, selected_cache, clock)
+    portfolio.initialize_orders()
+    portfolio.initialize_positions()
     strategy.register(TraderId("OI-TEST"), portfolio, msgbus, selected_cache, clock)
     return SimpleNamespace(
         strategy=strategy,
