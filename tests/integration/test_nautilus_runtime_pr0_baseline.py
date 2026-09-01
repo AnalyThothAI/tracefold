@@ -615,8 +615,16 @@ def test_emit_pr0_runtime_baseline(tmp_path: Path) -> None:
         "interpretation": {
             "normal_stream_slo_ms": 250,
             "missed_wake_ttl_fraction": "1/3",
-            "observed_duplicate_economic_orders": 0,
-            "observed_duplicate_active_protections": 0,
+            "duplicate_economic_orders": {
+                "status": "not_observed",
+                "reason": "requires_replay_or_concurrent_admission_workload",
+                "count": None,
+            },
+            "duplicate_active_protections": {
+                "status": "not_observed",
+                "reason": "requires_replay_or_concurrent_admission_workload",
+                "count": None,
+            },
             "external_provider_claim": "none",
             "comparison_rule": (
                 "later PRs compare only like-for-like observed fields; provider-only fields require Demo evidence"

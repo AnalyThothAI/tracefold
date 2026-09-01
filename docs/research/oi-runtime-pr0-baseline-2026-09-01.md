@@ -62,6 +62,12 @@ reconciliation count/latency and exchange rate-limit headers are recorded as
 `not_observed`, not simulated. Those fields become valid only with active Demo
 evidence and are required before PR-F closes the Issue.
 
+Duplicate economic orders and duplicate active protections are also
+`not_observed`: the PR-0 lifecycle sample crosses one entry, one protection and
+one flatten submission, but it does not replay an identity or exercise
+concurrent admission. Later PRs may report those counts only from the required
+replay/concurrency workload.
+
 Reproduce the complete machine-readable schema, including explicit
 `not_observed` provider fields, with:
 
