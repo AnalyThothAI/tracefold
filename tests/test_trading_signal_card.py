@@ -313,8 +313,8 @@ class _FakeDb:
     async def tx(self, _name: str, function: Any, **_kwargs: Any) -> Any:
         return function(_FakeTradingRepos(self))
 
-    def next_execution_notification(self, target_sha256: str) -> dict[str, Any] | None:
-        self.calls.append(("next", {"target": target_sha256}))
+    def next_execution_notification(self, target_sha256: str, *, now_ns: int) -> dict[str, Any] | None:
+        self.calls.append(("next", {"target": target_sha256, "now_ns": now_ns}))
         row, self._observation = self._observation, None
         return row
 
