@@ -2,7 +2,7 @@
 
 This is the before-change receipt for Issue #475. It binds the current owner
 matrix and reproducible local measurements to measured commit
-`2316a56dce904183e5c6099990540ff8358ad148`, whose immutable pre-change main
+`8385003dc23540cde3aec9b4ecfa2e242f0d32ec`, whose immutable pre-change main
 baseline is `f495a9fc0d0ba0d528e40b588e76108d80cdfefe`. The machine-readable receipt is
 [`oi-runtime-pr0-baseline-2026-09-01.json`](oi-runtime-pr0-baseline-2026-09-01.json).
 
