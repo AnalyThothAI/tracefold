@@ -140,8 +140,6 @@ class ExecutionRuntimeState:
             raise ValueError("execution_runtime_clock_invalid")
         if self.updated_at_ns < max(self.heartbeat_at_ns, self.started_at_ns):
             raise ValueError("execution_runtime_clock_invalid")
-        if self.account_flat and self.unexpected_exposure:
-            raise ValueError("execution_runtime_exposure_invalid")
         gates = (
             self.lifecycle_state == "running",
             self.singleton_ready,
