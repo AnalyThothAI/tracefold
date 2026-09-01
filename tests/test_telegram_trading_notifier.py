@@ -43,6 +43,7 @@ def test_trading_notifier_preflights_target_and_returns_native_message_id() -> N
     assert calls[-1][1]["chat_id"] == _CHAT_ID
     assert calls[-1][1]["text"] == "Runtime accepted command 1234"
     assert len(notifier.target_sha256) == 64
+    assert notifier.bot_id == 1234567
 
 
 def test_trading_notifier_outage_is_a_sanitized_expected_failure() -> None:

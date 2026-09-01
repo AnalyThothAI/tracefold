@@ -138,15 +138,19 @@ def _wire_telegram_control(
     chat_id = control.notification_chat_id
     if chat_id is None:
         raise RuntimeError("trading_control_notification_chat_unavailable")
+    notifier: TelegramTradingNotifier | None = None
     try:
+        notifier = TelegramTradingNotifier(bot_token=bot_token, chat_id=chat_id)
         webhook = TelegramControlWebhook(
             webhook_secret=webhook_secret,
+            bot_id=notifier.bot_id,
             allowed_chat_ids=frozenset(control.allowed_chat_ids),
             allowed_user_ids=frozenset(control.allowed_user_ids),
             target_profile_id=settings.trading.execution.profile_id,
         )
-        notifier = TelegramTradingNotifier(bot_token=bot_token, chat_id=chat_id)
     except ValueError as exc:
+        if notifier is not None:
+            notifier.close()
         raise RuntimeError("trading_control_configuration_invalid") from exc
     return (
         WorkersTelegramControl(webhook=webhook, db=db),

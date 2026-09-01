@@ -2041,21 +2041,25 @@ the Telegram secret header and both configured chat/user allowlists must pass
 before parsing. `/status` is read-only. `/pause`, confirmed `/resume`, confirmed
 `/halt`, account-only confirmed `/flatten`, and optional short-lived `/long` /
 `/short` commands map to `OperatorIntentV1`; the grammar contains no quantity,
-notional, leverage, venue, or order parameter. The Telegram `update_id` or the
-CLI request identity makes the command deterministic. Workers appends the
+notional, leverage, venue, or order parameter. The stable Telegram bot identity
+plus its bot-scoped `update_id`, or the CLI request identity, makes the command
+deterministic. Workers appends the
 intent before replying “recorded”; without an active target profile it appends
 the final `not_applied/execution_profile_inactive` observation in the same
 transaction. Serve remains read-only.
 
 Commands and Signals share one bounded Runtime input, with Commands admitted
-and handled first. Pause blocks only new entries; halt is sticky and does not
+and handled first. Queue pressure evicts only volatile Signal admission so a
+durable Command can be scanned; PostgreSQL replays that unresolved Signal.
+Pause blocks only new entries; halt is sticky, rejects resume, and does not
 mean flatten; flatten pauses entries, touches only Runtime-owned exposure, and
 does not complete until a later fresh Binance-account reconciliation proves
 flat. The Strategy callback reaches only Cache/Portfolio and in-memory queues.
 PostgreSQL polling/audit and Telegram I/O remain background work. The optional
 Workers notifier advances through append-only target/observation delivery receipts and
 records one only after delivery; it has no mutable cursor or ACK state machine.
-An outage cannot block protection, exits, or reconciliation. Delivery is
+Telegram or transient database-admission unavailability retries the unreceipted
+observation and cannot block protection, exits, or reconciliation. Delivery is
 at-least-once across the send/receipt crash window, so a duplicate message is
 allowed but a skipped notifiable durable observation is not. HTTP/CLI/React command and
 observation views are read projections: recorded, Runtime accepted, order

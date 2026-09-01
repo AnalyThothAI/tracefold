@@ -313,6 +313,7 @@ def test_authenticated_webhook_to_postgres_to_nautilus_command_observation_proce
 ) -> None:
     webhook = TelegramControlWebhook(
         webhook_secret="test-webhook-secret-433d",
+        bot_id=1234567,
         allowed_chat_ids=frozenset({-433}),
         allowed_user_ids=frozenset({433}),
         target_profile_id="oi-paper-profile",

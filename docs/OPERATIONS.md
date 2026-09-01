@@ -94,6 +94,10 @@ manual TTL are 5–120 seconds; control TTL is five minutes. There is no quantit
 notional, leverage, venue, order type, or direct order option. Manual direction
 is recorded but the D Runtime explicitly rejects it as
 `manual_entry_not_enabled`.
+An accepted emergency halt is sticky for the Runtime lifetime: `/resume` is
+explicitly rejected as `emergency_halt_sticky` and cannot manufacture a resumed
+state. The same bot keeps command identity across token rotation; replacing the
+bot creates a new namespace because Telegram `update_id` values are bot-scoped.
 
 Telegram's “意图已记录” and CLI `ok` prove only the PostgreSQL intent. With no
 active execution profile, the same transaction records
@@ -113,8 +117,9 @@ uv run tracefold trading issue "/pause maintenance" --request-id ops-20260901-1 
 Preserve both request fields exactly on retries. The notification worker is
 asynchronous and at-least-once: it appends a target/observation delivery receipt only
 after a send, so a crash between send and receipt commit may duplicate a message.
-A Telegram outage leaves the observation unreceipted and retries; it never blocks Runtime
-protection, exits, reconciliation, or PostgreSQL audit.
+A Telegram outage or transient shared database-admission timeout leaves the
+observation unreceipted and retries; it never blocks Runtime protection, exits,
+reconciliation, or PostgreSQL audit.
 
 If Decision is enabled and schema, wiring, policy, or News-generation
 composition is invalid, Workers must fail startup/readiness or record Decision

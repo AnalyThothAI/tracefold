@@ -457,6 +457,7 @@ class TelegramTradingNotifier:
             raise ValueError("trading_notification_telegram_chat_id_invalid")
         self._chat_id = chat_id
         bot_id = int(normalized_token.partition(":")[0])
+        self._bot_id = bot_id
         self._target_sha256 = hashlib.sha256(f"telegram-trading-target-v1:{bot_id}:{chat_id}".encode()).hexdigest()
         self._prepared = False
         self._monotonic = monotonic or time.monotonic
@@ -472,6 +473,10 @@ class TelegramTradingNotifier:
     @property
     def target_sha256(self) -> str:
         return self._target_sha256
+
+    @property
+    def bot_id(self) -> int:
+        return self._bot_id
 
     def prepare(self) -> None:
         deadline_at = self._monotonic() + _TELEGRAM_TOTAL_CALL_BUDGET_SECONDS

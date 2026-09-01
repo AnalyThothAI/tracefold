@@ -36,6 +36,7 @@ def _body(text: str, *, update_id: int = 91, chat_id: int = _CHAT_ID, user_id: i
 def _webhook() -> TelegramControlWebhook:
     return TelegramControlWebhook(
         webhook_secret=_SECRET,
+        bot_id=1234567,
         allowed_chat_ids=frozenset({_CHAT_ID}),
         allowed_user_ids=frozenset({_USER_ID}),
         target_profile_id="binance-usdm-demo-v1",
@@ -123,6 +124,25 @@ def test_authenticated_allowlisted_update_is_stable_and_secret_free() -> None:
     assert first.intent.value.operator_identity == f"telegram:user:{_USER_ID}"
     assert _SECRET not in first.intent.payload_json
     assert first.intent.value.expires_at_ns - first.intent.value.requested_at_ns == 30_000_000_000
+
+
+def test_update_identity_is_namespaced_by_stable_bot_identity() -> None:
+    kwargs = {
+        "headers": {"X-Telegram-Bot-Api-Secret-Token": _SECRET},
+        "body": _body("/pause investigate"),
+        "received_at_ns": (_SENT_AT_SECONDS + 1) * 1_000_000_000,
+    }
+    first = _webhook().parse(**kwargs)
+    replacement = TelegramControlWebhook(
+        webhook_secret=_SECRET,
+        bot_id=7654321,
+        allowed_chat_ids=frozenset({_CHAT_ID}),
+        allowed_user_ids=frozenset({_USER_ID}),
+        target_profile_id="binance-usdm-demo-v1",
+    ).parse(**kwargs)
+
+    assert first.intent is not None and replacement.intent is not None
+    assert first.intent.value.command_id != replacement.intent.value.command_id
 
 
 @pytest.mark.parametrize(

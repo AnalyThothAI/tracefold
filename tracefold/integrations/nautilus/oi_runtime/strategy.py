@@ -914,6 +914,9 @@ class OiNautilusStrategy(Strategy):
             self._dispose_command(command, "accepted", "entries_paused")
             return
         if command.action == "resume_entries":
+            if self._emergency_halted:
+                self._dispose_command(command, "rejected", "emergency_halt_sticky")
+                return
             self._entries_paused = False
             self._dispose_command(command, "accepted", "entries_resumed")
             return

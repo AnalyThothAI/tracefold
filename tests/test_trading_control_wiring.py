@@ -49,6 +49,7 @@ def test_workers_wires_control_only_from_two_secure_files_and_redacted_config(
 
     class Notifier:
         target_sha256 = "a" * 64
+        bot_id = 123456
 
         def __init__(self, **kwargs: object) -> None:
             captured["notifier"] = kwargs
@@ -70,6 +71,7 @@ def test_workers_wires_control_only_from_two_secure_files_and_redacted_config(
     assert captured == {
         "webhook": {
             "webhook_secret": _WEBHOOK_SECRET,
+            "bot_id": 123456,
             "allowed_chat_ids": frozenset({_CHAT_ID}),
             "allowed_user_ids": frozenset({_USER_ID}),
             "target_profile_id": "binance_usdm_primary",

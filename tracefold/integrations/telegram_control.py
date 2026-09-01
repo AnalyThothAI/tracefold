@@ -50,15 +50,19 @@ class TelegramControlWebhook:
         self,
         *,
         webhook_secret: str,
+        bot_id: int,
         allowed_chat_ids: frozenset[int],
         allowed_user_ids: frozenset[int],
         target_profile_id: str,
     ) -> None:
         if _WEBHOOK_SECRET.fullmatch(webhook_secret) is None:
             raise ValueError("telegram_control_webhook_secret_invalid")
+        if isinstance(bot_id, bool) or not isinstance(bot_id, int) or bot_id <= 0:
+            raise ValueError("telegram_control_bot_identity_invalid")
         if not allowed_chat_ids or not allowed_user_ids:
             raise ValueError("telegram_control_allowlist_empty")
         self._webhook_secret = webhook_secret
+        self._bot_id = bot_id
         self._allowed_chat_ids = allowed_chat_ids
         self._allowed_user_ids = allowed_user_ids
         self._target_profile_id = target_profile_id
@@ -94,7 +98,7 @@ class TelegramControlWebhook:
                 if command.kind == "status"
                 else prepare_parsed_operator_intent(
                     command,
-                    source="telegram",
+                    source=f"telegram:bot:{self._bot_id}",
                     source_command_id=str(update_id),
                     target_profile_id=self._target_profile_id,
                     operator_identity=f"telegram:user:{user_id}",

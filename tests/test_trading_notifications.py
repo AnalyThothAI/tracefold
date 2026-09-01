@@ -11,6 +11,11 @@ from tracefold.app.workers.trading_notifications import (
     trading_notification_text,
 )
 from tracefold.integrations.telegram import TelegramDeliveryError
+from tracefold.platform.resource import (
+    ResourceAdmissionTimeout,
+    ResourceCapability,
+    ResourceOperationOverrun,
+)
 
 
 class _Trading:
@@ -44,15 +49,27 @@ class _Trading:
 
 
 class _Database:
-    def __init__(self, trading: _Trading) -> None:
+    def __init__(
+        self,
+        trading: _Trading,
+        *,
+        read_error: BaseException | None = None,
+        tx_error: BaseException | None = None,
+    ) -> None:
         self.repos = SimpleNamespace(trading=trading)
+        self.read_error = read_error
+        self.tx_error = tx_error
 
     async def read(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
         assert timeout_seconds > 0
+        if self.read_error is not None:
+            raise self.read_error
         return fn(self.repos)
 
     async def tx(self, _name: str, fn: Any, *, timeout_seconds: float) -> Any:
         assert timeout_seconds > 0
+        if self.tx_error is not None:
+            raise self.tx_error
         return fn(self.repos)
 
 
@@ -118,6 +135,41 @@ def test_telegram_outage_never_appends_delivery_or_raises_into_workers_root() ->
         "correlation: cccccccccccccccc\n"
         "event: bbbbbbbbbbbbbbbb"
     ]
+
+
+def test_notification_read_admission_timeout_retries_without_terminating_workers() -> None:
+    trading = _Trading(_row())
+    sender = _Sender()
+    worker = TradingNotificationWorker(
+        db=_Database(trading, read_error=ResourceAdmissionTimeout()),  # type: ignore[arg-type]
+        finite=_Finite(),  # type: ignore[arg-type]
+        sender=sender,  # type: ignore[arg-type]
+    )
+
+    assert asyncio.run(worker.advance_once()) == "delivery_unavailable"
+    assert trading.deliveries == {}
+    assert sender.messages == []
+
+
+def test_notification_receipt_overrun_retries_the_unreceipted_delivery() -> None:
+    trading = _Trading(_row())
+    sender = _Sender()
+    sender.available = True
+    worker = TradingNotificationWorker(
+        db=_Database(
+            trading,
+            tx_error=ResourceOperationOverrun(
+                capability=ResourceCapability.DATABASE_BUSINESS,
+                operation_name="trading_notification_delivery_append",
+            ),
+        ),  # type: ignore[arg-type]
+        finite=_Finite(),  # type: ignore[arg-type]
+        sender=sender,  # type: ignore[arg-type]
+    )
+
+    assert asyncio.run(worker.advance_once()) == "delivery_unavailable"
+    assert trading.deliveries == {}
+    assert len(sender.messages) == 1
 
 
 @pytest.mark.parametrize(

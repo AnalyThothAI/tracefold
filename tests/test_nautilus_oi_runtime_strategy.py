@@ -143,8 +143,15 @@ def test_pause_resume_and_halt_are_distinct_and_never_bypass_entry_risk() -> Non
     halted = registered_oi_strategy(values=(trade_signal(),), commands=(halt, resume))
     halted.strategy.on_timer(None)
     assert halted.strategy.submitted == []
-    assert halted.strategy.control_state().entries_paused is False
+    assert halted.strategy.control_state().entries_paused is True
     assert halted.strategy.control_state().emergency_halted is True
+    observations = halted.audit.flush_once(lambda _values: None)
+    resume_observation = next(value for value in observations if value.command_id == resume.command_id)
+    assert resume_observation.summary == {
+        "action": "resume_entries",
+        "disposition": "rejected",
+        "reason": "emergency_halt_sticky",
+    }
 
 
 def test_signal_waits_until_the_persisted_command_backlog_is_drained() -> None:

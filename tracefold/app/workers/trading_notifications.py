@@ -44,11 +44,15 @@ class TradingNotificationWorker:
                 await asyncio.wait_for(stop_event.wait(), timeout=delay)
 
     async def advance_once(self) -> str:
-        row = await self._db.read(
-            "trading_notification_observation",
-            lambda repos: repos.trading.next_execution_notification(self._sender.target_sha256),
-            timeout_seconds=_DB_TIMEOUT_SECONDS,
-        )
+        try:
+            row = await self._db.read(
+                "trading_notification_observation",
+                lambda repos: repos.trading.next_execution_notification(self._sender.target_sha256),
+                timeout_seconds=_DB_TIMEOUT_SECONDS,
+            )
+        except (ResourceAdmissionTimeout, ResourceOperationOverrun) as exc:
+            logger.bind(error=type(exc).__name__).warning("Trading notification database unavailable")
+            return "delivery_unavailable"
         if row is None:
             return "idle"
         text = trading_notification_text(row)
@@ -72,16 +76,20 @@ class TradingNotificationWorker:
             self._prepared = False
             logger.bind(error=type(exc).__name__).warning("Trading Telegram notification unavailable")
             return "delivery_unavailable"
-        await self._db.tx(
-            "trading_notification_delivery_append",
-            lambda repos: repos.trading.append_execution_notification_delivery(
-                target_sha256=self._sender.target_sha256,
-                observation_seq=int(row["seq"]),
-                message_id=int(message_id),
-                delivered_at_ns=time.time_ns(),
-            ),
-            timeout_seconds=_DB_TIMEOUT_SECONDS,
-        )
+        try:
+            await self._db.tx(
+                "trading_notification_delivery_append",
+                lambda repos: repos.trading.append_execution_notification_delivery(
+                    target_sha256=self._sender.target_sha256,
+                    observation_seq=int(row["seq"]),
+                    message_id=int(message_id),
+                    delivered_at_ns=time.time_ns(),
+                ),
+                timeout_seconds=_DB_TIMEOUT_SECONDS,
+            )
+        except (ResourceAdmissionTimeout, ResourceOperationOverrun) as exc:
+            logger.bind(error=type(exc).__name__).warning("Trading notification database unavailable")
+            return "delivery_unavailable"
         return "sent"
 
     def close(self) -> None:
