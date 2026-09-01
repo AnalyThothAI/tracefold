@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.migration, pytest.mark.usefix
 ROOT = Path(__file__).resolve().parents[2]
 VERSIONS = ROOT / "tracefold" / "platform" / "postgres" / "alembic" / "versions"
 BASELINE = "20260831_0340"
-HEAD = "20260901_0346"
+HEAD = "20260901_0347"
 
 
 def _config():
@@ -58,6 +58,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
     assert Path(script.dir).resolve() == VERSIONS.parent.resolve()
     assert [revision.revision for revision in revisions] == [
         HEAD,
+        "20260901_0346",
         "20260901_0345",
         "20260901_0344",
         "20260901_0343",
@@ -65,13 +66,14 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0341",
         BASELINE,
     ]
-    assert revisions[0].down_revision == "20260901_0345"
-    assert revisions[1].down_revision == "20260901_0344"
-    assert revisions[2].down_revision == "20260901_0343"
-    assert revisions[3].down_revision == "20260901_0342"
-    assert revisions[4].down_revision == "20260901_0341"
-    assert revisions[5].down_revision == BASELINE
-    assert revisions[6].down_revision is None
+    assert revisions[0].down_revision == "20260901_0346"
+    assert revisions[1].down_revision == "20260901_0345"
+    assert revisions[2].down_revision == "20260901_0344"
+    assert revisions[3].down_revision == "20260901_0343"
+    assert revisions[4].down_revision == "20260901_0342"
+    assert revisions[5].down_revision == "20260901_0341"
+    assert revisions[6].down_revision == BASELINE
+    assert revisions[7].down_revision is None
     assert sorted(path.name for path in VERSIONS.glob("*.py")) == [
         "20260831_0340_baseline.py",
         "20260901_0341_trading_signal_hard_cut.py",
@@ -80,6 +82,7 @@ def test_migration_tree_is_one_root_and_head_in_the_flat_package() -> None:
         "20260901_0344_news_oi_push_cut.py",
         "20260901_0345_trading_runtime_exposure_race.py",
         "20260901_0346_trading_notification_result.py",
+        "20260901_0347_drop_retired_trading_tables.py",
     ]
 
 
@@ -111,7 +114,7 @@ def test_current_head_downgrade_is_irreversible() -> None:
     _empty_the_schema()
     command.upgrade(config, "head")
 
-    with pytest.raises(RuntimeError, match="trading_notification_result_forward_only"):
+    with pytest.raises(RuntimeError, match="20260901_0347 deletes the retired execution rows"):
         command.downgrade(config, "base")
 
     assert _stamped_revision() == HEAD

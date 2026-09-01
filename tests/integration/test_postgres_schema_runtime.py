@@ -178,7 +178,7 @@ def test_current_postgres_schema_is_news_v3_only(tmp_path) -> None:
     assert "published_at_ms IS NULL" in verdict_handoff_index
     assert "stage = 'triage'" in verdict_handoff_index
     assert "final_decision = ANY" in verdict_handoff_index
-    assert version == latest_migration_version() == "20260901_0346"
+    assert version == latest_migration_version() == "20260901_0347"
 
 
 def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> None:
@@ -203,7 +203,7 @@ def test_current_head_is_a_noop_for_an_already_current_database(tmp_path) -> Non
         conn.close()
 
     assert after == before
-    assert version == latest_migration_version() == "20260901_0346"
+    assert version == latest_migration_version() == "20260901_0347"
 
 
 def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None:
@@ -212,22 +212,14 @@ def test_fresh_baseline_contains_only_current_structural_seeds(tmp_path) -> None
         migrate(conn)
         ingest = conn.execute("SELECT singleton_key, updated_at_ms FROM news_ingest_state").fetchall()
         retention = conn.execute("SELECT singleton, updated_at_ms FROM news_learning_retention_state").fetchall()
-        runtime = conn.execute("SELECT id, control, orders_today, updated_at_ms FROM trading_runtime_state").fetchall()
-        blacklist = conn.execute(
-            "SELECT base_symbol, reason, expires_at_ms FROM trading_symbol_blacklist ORDER BY base_symbol"
-        ).fetchall()
         artifacts = conn.execute("SELECT count(*) AS n FROM news_learning_artifacts").fetchone()["n"]
     finally:
         conn.close()
 
     assert ingest == [{"singleton_key": "opennews", "updated_at_ms": 0}]
     assert retention == [{"singleton": True, "updated_at_ms": 0}]
-    assert runtime == [{"id": 1, "control": "PAUSED", "orders_today": 0, "updated_at_ms": 0}]
-    assert blacklist == [
-        {"base_symbol": "BTC", "reason": "benchmark_large_cap", "expires_at_ms": None},
-        {"base_symbol": "CL", "reason": "commodity_not_target", "expires_at_ms": None},
-        {"base_symbol": "ETH", "reason": "benchmark_large_cap", "expires_at_ms": None},
-    ]
+    # A fresh install used to arrive with a `PAUSED` runtime row and three blacklisted symbols. Both
+    # seeds belonged to tables `20260901_0347` dropped, so the only structural seeds left are News's.
     assert artifacts == 0
 
 
