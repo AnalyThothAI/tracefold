@@ -166,6 +166,7 @@ describe("TradingPage", () => {
   });
 
   it("shows current risk, position protection, and order uncertainty without inferring flat", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(TRADING_NOW_MS);
     const position = tradingCurrentAccountFixture().positions![0]!;
     const account = tradingCurrentAccountFixture({
       complete: false,
@@ -196,6 +197,7 @@ describe("TradingPage", () => {
               entries_paused: true,
               entry_block_reason: "entries_paused",
               execution_safe: true,
+              heartbeat_at_ns: TRADING_NOW_MS * 1_000_000,
               image_digest: `sha256:${"a".repeat(64)}`,
               mode: "paper",
               open_orders_count: 1,
@@ -242,6 +244,7 @@ describe("TradingPage", () => {
               entries_paused: true,
               entry_block_reason: "entries_paused",
               execution_safe: true,
+              heartbeat_at_ns: TRADING_NOW_MS * 1_000_000,
               mode: "paper",
               reconciliation_age_ms: 9_000,
             }),
@@ -260,6 +263,56 @@ describe("TradingPage", () => {
 
     expect(screen.getByText("NOT PROVEN")).toBeVisible();
     expect(screen.getByRole("button", { name: "Flatten account" })).toBeEnabled();
+  });
+
+  it("expires all cached positive execution safety facts and fails closed after refresh error", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(TRADING_NOW_MS);
+    let statusReads = 0;
+    server.use(
+      http.get(/.*\/api\/trading\/status$/, () => {
+        statusReads += 1;
+        if (statusReads > 1) {
+          return HttpResponse.json({ ok: false, error: "status_unavailable" }, { status: 503 });
+        }
+        return HttpResponse.json({
+          ok: true,
+          data: tradingStatusFixture({
+            execution: tradingExecutionFixture({
+              account_flat: true,
+              account_flat_proven: true,
+              alive: true,
+              entries_armed: true,
+              entries_paused: false,
+              entry_block_reason: null,
+              execution_safe: true,
+              heartbeat_at_ns: (TRADING_NOW_MS - 4_000) * 1_000_000,
+              mode: "paper",
+              reconciliation_age_ms: 0,
+            }),
+          }),
+        });
+      }),
+    );
+    const { client } = renderTrading();
+
+    expect(await screen.findByText("允许新增 exposure")).toBeVisible();
+    expect(within(screen.getByLabelText("执行安全状态")).getAllByText("YES")).toHaveLength(3);
+    expect(screen.getByText("PROVEN")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Flatten account" })).toBeDisabled();
+
+    now.mockReturnValue(TRADING_NOW_MS + 1_001);
+    fireEvent.click(screen.getByText("HYPE"));
+
+    expect(within(screen.getByLabelText("执行安全状态")).getAllByText("NO")).toHaveLength(3);
+    expect(screen.getByText("runtime_heartbeat_stale")).toBeVisible();
+    expect(screen.getByText("NOT PROVEN")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Flatten account" })).toBeEnabled();
+
+    now.mockReturnValue(TRADING_NOW_MS);
+    await client.refetchQueries({ queryKey: ["trading-status"] });
+    await waitFor(() => expect(screen.getByText(/Status 读取失败/)).toBeVisible());
+    expect(within(screen.getByLabelText("执行安全状态")).getAllByText("NO")).toHaveLength(3);
+    expect(screen.getByText("status_refresh_failed")).toBeVisible();
   });
 
   it("confirms resume before posting a stable intent and labels success as persistence only", async () => {
@@ -432,11 +485,14 @@ describe("TradingPage", () => {
 
 function renderTrading() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <TradingPage token="test-token" />
-      </QueryClientProvider>
-    </MemoryRouter>,
-  );
+  return {
+    client,
+    ...render(
+      <MemoryRouter>
+        <QueryClientProvider client={client}>
+          <TradingPage token="test-token" />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    ),
+  };
 }

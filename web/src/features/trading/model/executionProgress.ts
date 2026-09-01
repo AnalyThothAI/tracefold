@@ -35,30 +35,47 @@ export function commandProgress(
         item.normalized_kind === "readiness" && item.summary?.control_stage === "runtime_accepted",
     );
   const runtimeExpired = command.disposition_reason === "expired";
+  const manualEntry = command.action === "manual_entry";
+  const runtimeAmbiguous =
+    manualEntry &&
+    ["unknown_query_first", "replayed_query_first"].includes(command.disposition_reason ?? "");
   const runtimeRejected = command.disposition === "rejected" && !runtimeExpired;
   const orderAccepted = correlated.some(
     (item) =>
       ["order", "protection"].includes(item.normalized_kind) && item.summary?.status === "accepted",
   );
   const fillObserved = correlated.some((item) => item.normalized_kind === "fill");
+  const positionOpened = correlated.some(
+    (item) => item.normalized_kind === "position" && item.summary?.status === "opened",
+  );
   const accountFlat =
     command.disposition === "completed" && command.disposition_reason === "binance_account_flat";
   const controlCompleted =
-    command.action !== "flatten" && command.disposition === "accepted" && !runtimeRejected;
+    !["flatten", "manual_entry"].includes(command.action) &&
+    command.disposition === "accepted" &&
+    !runtimeRejected;
   const expired = runtimeExpired || (command.expired && !command.disposition);
-  const venueApplicable = command.action === "flatten";
+  const venueApplicable = ["flatten", "manual_entry"].includes(command.action);
 
   const steps: ExecutionProgressStep[] = [
     { label: "已持久化", tone: "complete" },
     {
-      label: runtimeRejected ? "Runtime 拒绝" : expired ? "Runtime 已过期" : "Runtime 受理",
+      label: runtimeRejected
+        ? "Runtime 拒绝"
+        : runtimeAmbiguous
+          ? "Runtime 结果不确定"
+          : expired
+            ? "Runtime 已过期"
+            : "Runtime 受理",
       tone: runtimeRejected
         ? "rejected"
-        : expired
-          ? "expired"
-          : runtimeAccepted
-            ? "complete"
-            : "current",
+        : runtimeAmbiguous
+          ? "ambiguous"
+          : expired
+            ? "expired"
+            : runtimeAccepted
+              ? "complete"
+              : "current",
     },
     {
       label: venueApplicable
@@ -75,7 +92,9 @@ export function commandProgress(
             ? "current"
             : expired
               ? "expired"
-              : "pending"
+              : runtimeAmbiguous
+                ? "ambiguous"
+                : "pending"
         : runtimeAccepted
           ? "complete"
           : "pending",
@@ -83,37 +102,47 @@ export function commandProgress(
     {
       label: accountFlat
         ? "账户已平 · 私有对账证明"
-        : controlCompleted
-          ? "控制已完成"
-          : expired
-            ? "已过期"
-            : "等待完成",
+        : manualEntry && positionOpened
+          ? "仓位已打开"
+          : controlCompleted
+            ? "控制已完成"
+            : expired
+              ? "已过期"
+              : manualEntry
+                ? "等待仓位事实"
+                : "等待完成",
       tone:
-        accountFlat || controlCompleted
+        accountFlat || positionOpened || controlCompleted
           ? "complete"
           : expired
             ? "expired"
             : runtimeRejected
               ? "rejected"
-              : "pending",
+              : runtimeAmbiguous
+                ? "ambiguous"
+                : "pending",
     },
   ];
   return {
     label: accountFlat
       ? "ACCOUNT FLAT · PROVEN"
-      : controlCompleted
-        ? "COMPLETED"
-        : runtimeRejected
-          ? "RUNTIME REJECTED"
-          : fillObserved
-            ? "FILL OBSERVED"
-            : orderAccepted
-              ? "ORDER ACCEPTED"
-              : runtimeAccepted
-                ? "RUNTIME ACCEPTED"
-                : expired
-                  ? "EXPIRED"
-                  : "PERSISTED",
+      : manualEntry && positionOpened
+        ? "POSITION OPENED"
+        : controlCompleted
+          ? "COMPLETED"
+          : runtimeRejected
+            ? "RUNTIME REJECTED"
+            : fillObserved
+              ? "FILL OBSERVED"
+              : orderAccepted
+                ? "ORDER ACCEPTED"
+                : runtimeAmbiguous
+                  ? "RUNTIME AMBIGUOUS"
+                  : runtimeAccepted
+                    ? "RUNTIME ACCEPTED"
+                    : expired
+                      ? "EXPIRED"
+                      : "PERSISTED",
     steps,
   };
 }

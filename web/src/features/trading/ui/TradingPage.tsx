@@ -11,6 +11,10 @@ import {
   useTradingStatusWithToken,
 } from "../api/tradingQueries";
 import { ACCOUNT_FLAT_PROOF_FRESH_MS, currentAccountFlatProof } from "../model/accountFlatProof";
+import {
+  currentExecutionHeartbeat,
+  EXECUTION_HEARTBEAT_FRESH_MS,
+} from "../model/executionFreshness";
 import { commandProgress, signalProgress } from "../model/executionProgress";
 import { caseStateLabel } from "../model/tradingCases";
 import { caseClock, policyReasonLabel } from "../model/tradingLabels";
@@ -32,7 +36,7 @@ export function TradingPage({ token }: { token: string }) {
   const commandsQuery = useTradingCommandsWithToken(token);
   const observationsQuery = useTradingObservationsWithToken(token);
   const status = statusQuery.data;
-  const [, setFlatProofExpiryTick] = useState(0);
+  const [, setFreshnessExpiryTick] = useState(0);
   const measuredAtMs = status?.measured_at_ms;
   const serverFlatProof = status?.execution.account_flat_proven ?? false;
   const reconciliationAgeMs = status?.execution.reconciliation_age_ms;
@@ -43,11 +47,30 @@ export function TradingPage({ token }: { token: string }) {
     const expiresAtMs = measuredAtMs + ACCOUNT_FLAT_PROOF_FRESH_MS - reconciliationAgeMs;
     if (measuredAtMs > nowMs || reconciliationAgeMs < 0 || expiresAtMs < nowMs) return;
     const timer = window.setTimeout(
-      () => setFlatProofExpiryTick((value) => value + 1),
+      () => setFreshnessExpiryTick((value) => value + 1),
       expiresAtMs - nowMs + 1,
     );
     return () => window.clearTimeout(timer);
   }, [measuredAtMs, reconciliationAgeMs, serverFlatProof]);
+
+  const heartbeatAtNs = status?.execution.heartbeat_at_ns;
+  const serverPositiveSafety = Boolean(
+    status?.execution.alive || status?.execution.execution_safe || status?.execution.entries_armed,
+  );
+  useEffect(() => {
+    if (!serverPositiveSafety || measuredAtMs == null || heartbeatAtNs == null) return;
+    const nowMs = Date.now();
+    const heartbeatAtMs = Math.trunc(heartbeatAtNs / 1_000_000);
+    const serverAgeMs = measuredAtMs - heartbeatAtMs;
+    const expiresAtMs = measuredAtMs + EXECUTION_HEARTBEAT_FRESH_MS - serverAgeMs;
+    if (heartbeatAtMs <= 0 || serverAgeMs < 0 || measuredAtMs > nowMs || expiresAtMs < nowMs)
+      return;
+    const timer = window.setTimeout(
+      () => setFreshnessExpiryTick((value) => value + 1),
+      expiresAtMs - nowMs + 1,
+    );
+    return () => window.clearTimeout(timer);
+  }, [heartbeatAtNs, measuredAtMs, serverPositiveSafety]);
 
   if (statusQuery.isPending && !status) {
     return <PageState.Loading label="正在读取执行账户状态" layout="panel" rows={4} />;
@@ -64,7 +87,27 @@ export function TradingPage({ token }: { token: string }) {
     queryHealthy: !statusQuery.isError,
     reconciliationAgeMs: status.execution.reconciliation_age_ms ?? null,
   });
-  const currentExecution = { ...status.execution, account_flat_proven: accountFlatProven };
+  const executionHeartbeatCurrent = currentExecutionHeartbeat({
+    heartbeatAtNs: status.execution.heartbeat_at_ns ?? null,
+    measuredAtMs: status.measured_at_ms,
+    nowMs: Date.now(),
+    queryHealthy: !statusQuery.isError,
+  });
+  const positiveExecutionSafety =
+    status.execution.alive || status.execution.execution_safe || status.execution.entries_armed;
+  const currentExecution = {
+    ...status.execution,
+    account_flat_proven: accountFlatProven && executionHeartbeatCurrent,
+    alive: status.execution.alive && executionHeartbeatCurrent,
+    entries_armed: status.execution.entries_armed && executionHeartbeatCurrent,
+    entry_block_reason:
+      positiveExecutionSafety && !executionHeartbeatCurrent
+        ? statusQuery.isError
+          ? "status_refresh_failed"
+          : "runtime_heartbeat_stale"
+        : status.execution.entry_block_reason,
+    execution_safe: status.execution.execution_safe && executionHeartbeatCurrent,
+  };
 
   const cases = casesQuery.data?.cases ?? [];
   const signals = signalsQuery.data?.signals ?? [];
@@ -102,7 +145,7 @@ export function TradingPage({ token }: { token: string }) {
         </div>
         <div
           className="trading-heading-aside"
-          data-tone={status.execution.execution_safe ? undefined : "caution"}
+          data-tone={currentExecution.execution_safe ? undefined : "caution"}
         >
           <span>ALPHA {status.decision.state}</span>
           <small>EXECUTION {status.execution.mode}</small>
@@ -132,7 +175,7 @@ export function TradingPage({ token }: { token: string }) {
           <TradingAccountOverview execution={currentExecution} />
 
           <TradingControls
-            accountFlatProven={accountFlatProven}
+            accountFlatProven={currentExecution.account_flat_proven}
             entriesPaused={status.execution.entries_paused}
             mode={status.execution.mode}
             token={token}

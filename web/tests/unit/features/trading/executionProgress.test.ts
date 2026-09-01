@@ -53,6 +53,35 @@ describe("executionProgress", () => {
     ).toBe("ACCOUNT FLAT · PROVEN");
   });
 
+  it("keeps manual entry in the venue lifecycle through position opened", () => {
+    const command = tradingCommandFixture({ action: "manual_entry", disposition: "accepted" });
+    const order = tradingObservationFixture({
+      command_id: command.command_id,
+      normalized_kind: "order",
+      summary: { leg: "entry", status: "accepted" },
+    });
+    const fill = tradingObservationFixture({
+      command_id: command.command_id,
+      event_id: "6".repeat(64),
+      normalized_kind: "fill",
+      summary: { leg: "entry" },
+    });
+    const position = tradingObservationFixture({
+      command_id: command.command_id,
+      event_id: "7".repeat(64),
+      normalized_kind: "position",
+      summary: { status: "opened" },
+    });
+
+    expect(commandProgress(command, []).label).toBe("RUNTIME ACCEPTED");
+    expect(commandProgress(command, [order]).label).toBe("ORDER ACCEPTED");
+    expect(commandProgress(command, [order, fill]).label).toBe("FILL OBSERVED");
+    expect(commandProgress(command, [order, fill, position]).label).toBe("POSITION OPENED");
+    expect(
+      commandProgress({ ...command, disposition_reason: "unknown_query_first" }, []).label,
+    ).toBe("RUNTIME AMBIGUOUS");
+  });
+
   it("keeps rejected and expired commands distinct", () => {
     expect(commandProgress(tradingCommandFixture({ disposition: "rejected" }), []).label).toBe(
       "RUNTIME REJECTED",
